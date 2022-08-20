@@ -43,7 +43,7 @@ impl Coordinate {
         let mut chars = s.chars();
         let c = Coordinate {
             file: File::try_from(chars.next().unwrap())?,
-            rank: u8::try_from(chars.next().unwrap()).or_else(|e| Err(e.to_string()))?,
+            rank: u8::try_from(chars.next().unwrap()).map_err(|e| e.to_string())?,
         };
         Ok(Some(c))
     }
@@ -95,19 +95,19 @@ impl CastlePermissions {
     fn to_string(&self) -> String {
         let mut s = String::new();
         if self.white_king_side {
-            s.push_str("K")
+            s.push('K')
         };
         if self.white_queen_side {
-            s.push_str("Q")
+            s.push('Q')
         };
         if self.black_king_side {
-            s.push_str("k")
+            s.push('k')
         };
         if self.black_queen_side {
-            s.push_str("q")
+            s.push('q')
         };
-        if s.len() == 0 {
-            s.push_str("-")
+        if s.is_empty() {
+            s.push('-')
         };
         s
     }
@@ -139,8 +139,8 @@ impl BitBoard for u64 {
         self.count_ones() as usize
     }
     fn debug_print(&self) {
-        print!("    a b c d e f g h\n");
-        print!("  -----------------\n");
+        println!("    a b c d e f g h");
+        println!("  -----------------");
         for rank in 1..9 {
             print!("{} |", rank);
             for file in File::variants() {
@@ -150,14 +150,14 @@ impl BitBoard for u64 {
                     print!(" .");
                 }
             }
-            print!("\n")
+            println!()
         }
     }
 }
 
 impl Board {
     fn new() -> Board {
-        let mut board = Board {
+        Board {
             pawns: 0,
             knights: 0,
             bishops: 0,
@@ -172,8 +172,7 @@ impl Board {
             half_move_clock: 0,
             move_number: 0,
             en_passant: None,
-        };
-        board
+        }
     }
 
     fn set_piece(&mut self, piece: Piece, color: Color, rank: u64, file: &File) {
@@ -192,7 +191,7 @@ impl Board {
     }
 
     fn from_fen(fen: String) -> Result<Board, String> {
-        let mut fen_iter = fen.split(" ");
+        let mut fen_iter = fen.split(' ');
         let position = fen_iter
             .next()
             .ok_or("Error parsing FEN: could not find position block")?;
@@ -233,12 +232,8 @@ impl Board {
                 .ok_or("Failed to parse active color from token")?,
             castle: CastlePermissions::from_string(castle)?,
 
-            half_move_clock: half_move_clock
-                .parse::<u64>()
-                .or_else(|e| Err(e.to_string()))?,
-            move_number: full_move_clock
-                .parse::<u64>()
-                .or_else(|e| Err(e.to_string()))?,
+            half_move_clock: half_move_clock.parse::<u64>().map_err(|e| e.to_string())?,
+            move_number: full_move_clock.parse::<u64>().map_err(|e| e.to_string())?,
             en_passant: Coordinate::from_string(en_passant)?,
         };
 
@@ -310,8 +305,8 @@ impl Board {
     }
 
     fn debug_print(&self) {
-        print!("    a b c d e f g h\n");
-        print!("  -----------------\n");
+        println!("    a b c d e f g h");
+        println!("  -----------------");
         for rank in 1..=8 {
             print!("{} |", rank);
             for file in File::variants() {
@@ -330,9 +325,9 @@ impl Board {
                     _ => print!(" {}", c),
                 };
             }
-            print!("\n")
+            println!()
         }
-        print!("\n");
+        println!();
         println!(
             "{:?} {} {:?} {} {}",
             self.active_color,
