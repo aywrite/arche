@@ -3,6 +3,7 @@ use super::misc::{
 };
 use crate::Game;
 
+#[derive(Debug)]
 pub struct Board {
     pawns: u64,
     knights: u64,
@@ -126,7 +127,7 @@ impl Game for Board {
 
             active_color: Color::from_char(active_color_token)
                 .ok_or("Failed to parse active color from token")?,
-            castle: CastlePermissions::from_string(castle)?,
+            castle: CastlePermissions::from_fen(castle)?,
 
             half_move_clock: half_move_clock.parse::<u64>().map_err(|e| e.to_string())?,
             move_number: full_move_clock.parse::<u64>().map_err(|e| e.to_string())?,
@@ -134,9 +135,12 @@ impl Game for Board {
         };
 
         // parse out the pieces on the board
-        let mut rank = 1;
+        let mut rank = 8;
         let mut file = File::A;
         for c in position.chars() {
+            if rank < 1 {
+                return Err("Too many ranks found".to_string());
+            }
             // TODO change piece to PieceType and implement a Piece with from char and to char
             // methods
             let piece = match c {
@@ -148,13 +152,13 @@ impl Game for Board {
                 'k' | 'K' => Some(Piece::King),
                 '/' => None,
                 '1'..='8' => None,
-                _ => panic!("unexpected character in fen"),
+                _ => return Err("unexpected character in fen".to_string()),
             };
             if let Some(p) = piece {
                 let color = if c.is_uppercase() {
-                    Color::Black
-                } else {
                     Color::White
+                } else {
+                    Color::Black
                 };
                 board.set_piece(p, color, rank, &file);
             }
@@ -164,10 +168,10 @@ impl Game for Board {
                 'r' | 'b' | 'n' | 'k' | 'q' | 'p' => file.add(1),
                 'R' | 'B' | 'N' | 'K' | 'Q' | 'P' => file.add(1),
                 '/' => {
-                    rank += 1;
+                    rank -= 1;
                     File::A
                 }
-                _ => panic!("unexpected character in fen"),
+                _ => return Err("unexpected character in fen".to_string()),
             };
         }
         Ok(board)
@@ -190,7 +194,7 @@ impl Game for Board {
                     None => '.',
                 };
                 match color {
-                    Some(Color::Black) => print!(" {}", c.to_uppercase()),
+                    Some(Color::White) => print!(" {}", c.to_uppercase()),
                     _ => print!(" {}", c),
                 };
             }
@@ -205,5 +209,77 @@ impl Game for Board {
             self.half_move_clock,
             self.move_number,
         );
+    }
+}
+
+
+#[cfg(test)]
+mod test_fen {
+    use super::Board;
+    use super::Game;
+    use proptest::prelude::*;
+
+    proptest! {
+        #![proptest_config(ProptestConfig::with_cases(1000))]
+
+        #[test]
+        fn random_str_doesnt_crash(s in ".*") {
+            _ = Board::from_fen(s);
+        }
+
+        #[test]
+        fn random_fen_doesnt_crash(s in ("([NBRPKQnbrpkq1-9]{9}/){7}[NBRPKQnbrpkq1-9]{4,} [bw]{1} [kqKQ-]{1,4} [a-hA-H][1-9] [1-9]{1,} [1-9]{1,}").prop_filter("", |v| {println!("{}", v); true})) {
+            _ = Board::from_fen(s);
+        }
+    }
+
+    #[test]
+    fn test_starting() {
+        assert!(Board::from_fen(
+            "rnbqkbnr/pppppppp/8/8/8/8/PPPPPPPP/RNBQKBNR w KQkq - 0 1".to_string()
+        )
+        .is_ok());
+    }
+
+    #[test]
+    fn test_from_wikipedia() -> Result<(), String> {
+        Board::from_fen("rnbqkbnr/pppppppp/8/8/4P3/8/PPPP1PPP/RNBQKBNR b KQkq e3 0 1".to_string())?;
+        Board::from_fen(
+            "rnbqkbnr/pp1ppppp/8/2p5/4P3/8/PPPP1PPP/RNBQKBNR w KQkq c6 0 2".to_string(),
+        )?;
+        Board::from_fen(
+            "rnbqkbnr/pp1ppppp/8/2p5/4P3/5N2/PPPP1PPP/RNBQKB1R b KQkq - 1 2".to_string(),
+        )?;
+        Ok(())
+    }
+
+    #[test]
+    fn test_invalid_extra_ranks() {
+        assert!(Board::from_fen(
+            "rnbqkbnr/pppppppp/8/8/8/8/8/4P3/8/PPPP1PPP/RNBQKBNR b KQkq e3 0 1".to_string()
+        )
+        .is_err());
+    }
+    #[test]
+    fn test_invalid_extra_slash() {
+        assert!(Board::from_fen(
+            "rnbqkbnr/pppppppp/8/8//4P3/8/PPPP1PPP/RNBQKBNR b KQkq e3 0 1".to_string()
+        )
+        .is_err());
+    }
+    // TODO uncomment this test and fix
+    //#[test]
+    //fn test_invalid_extra_file() {
+    //    assert!(Board::from_fen(
+    //        "rnbqkbnr/ppppppppp/8/8/4P3/8/PPPP1PPP/RNBQKBNR b KQkq e3 0 1".to_string()
+    //    )
+    //    .is_err());
+    //}
+    #[test]
+    fn test_invalid_bad_piece() {
+        assert!(Board::from_fen(
+            "rnbqkbnar/pppppppp/8/8/4P3/8/PPPP1PPP/RNBQKBNR b KQkq e3 0 1".to_string()
+        )
+        .is_err());
     }
 }

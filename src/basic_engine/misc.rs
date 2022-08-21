@@ -24,6 +24,7 @@ impl Coordinate {
 }
 
 // Each color/side bit is true if that color is still allowed to castle on that side
+#[derive(Debug)]
 pub struct CastlePermissions {
     black_king_side: bool,
     black_queen_side: bool,
@@ -40,7 +41,7 @@ impl CastlePermissions {
             white_queen_side: true,
         }
     }
-    pub fn from_string(s: &str) -> Result<CastlePermissions, String> {
+    pub fn from_fen(s: &str) -> Result<CastlePermissions, String> {
         let mut perms = CastlePermissions {
             black_king_side: false,
             black_queen_side: false,
@@ -87,6 +88,44 @@ impl CastlePermissions {
     }
 }
 
+#[cfg(test)]
+mod test_castle_permissions {
+    use super::CastlePermissions;
+
+    #[test]
+    fn round_trip_all() {
+        let initial = "KQkq";
+        assert_eq!(
+            CastlePermissions::from_fen(initial).unwrap().to_fen(),
+            initial,
+        );
+    }
+
+    #[test]
+    fn round_trip_none() {
+        let initial = "-";
+        assert_eq!(
+            CastlePermissions::from_fen(initial).unwrap().to_fen(),
+            initial,
+        );
+    }
+
+    #[test]
+    fn round_trip_mixed() {
+        let initial = "Kq";
+        assert_eq!(
+            CastlePermissions::from_fen(initial).unwrap().to_fen(),
+            initial,
+        );
+    }
+
+    #[test]
+    fn invalid_chars() {
+        let initial = "ksd";
+        assert!(CastlePermissions::from_fen(initial).is_err());
+    }
+}
+
 pub trait BitBoard {
     fn set_bit(&mut self, index: u64);
     fn clear_bit(&mut self, index: u64);
@@ -102,10 +141,14 @@ pub trait BitBoard {
 
 impl BitBoard for u64 {
     fn set_bit(&mut self, index: u64) {
+        // TODO how should this guard be implemented
+        debug_assert!(index <= 64);
         // TODO precompute the set bit mask in an array
         _ = mem::replace(self, *self | (1u64 << index));
     }
     fn clear_bit(&mut self, index: u64) {
+        // TODO how should this guard be implemented
+        debug_assert!(index <= 64);
         // TODO precompute the clear bit mask in an array
         _ = mem::replace(self, *self ^ (1u64 << index));
     }
@@ -172,6 +215,7 @@ pub enum File {
 
 impl File {
     pub fn variants() -> [File; 8] {
+        // TODO make this static
         [
             File::A,
             File::B,
@@ -207,14 +251,14 @@ impl TryFrom<char> for File {
 
     fn try_from(c: char) -> Result<Self, Self::Error> {
         match c {
-            'A' => Ok(File::A),
-            'B' => Ok(File::B),
-            'C' => Ok(File::C),
-            'D' => Ok(File::D),
-            'E' => Ok(File::E),
-            'F' => Ok(File::F),
-            'G' => Ok(File::G),
-            'H' => Ok(File::H),
+            'A' | 'a' => Ok(File::A),
+            'B' | 'b' => Ok(File::B),
+            'C' | 'c' => Ok(File::C),
+            'D' | 'd' => Ok(File::D),
+            'E' | 'e' => Ok(File::E),
+            'F' | 'f' => Ok(File::F),
+            'G' | 'g' => Ok(File::G),
+            'H' | 'h' => Ok(File::H),
             _ => Err(format!("{} is not a valid File token", c)),
         }
     }
