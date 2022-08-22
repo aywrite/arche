@@ -137,6 +137,7 @@ pub trait BitBoard {
         self.clear_bit(coordinate_to_index(rank, file));
     }
     fn debug_print(&self);
+    fn is_bit_set(&self, index: u64) -> bool;
 }
 
 impl BitBoard for u64 {
@@ -151,6 +152,9 @@ impl BitBoard for u64 {
         debug_assert!(index <= 64);
         // TODO precompute the clear bit mask in an array
         _ = mem::replace(self, *self ^ (1u64 << index));
+    }
+    fn is_bit_set(&self, index: u64) -> bool {
+        return (self & (1u64 << index)) > 0;
     }
     fn count(&self) -> usize {
         self.count_ones() as usize
@@ -174,6 +178,31 @@ impl BitBoard for u64 {
 
 pub fn coordinate_to_index(rank: u64, file: &File) -> u64 {
     ((rank - 1) * 8) + (*file) as u64
+}
+
+pub fn coordinate_to_large_index(rank: u8, file: &File) -> u8 {
+    ((rank - 1) * 10) + (*file) as u8 + 11
+}
+
+pub fn index_to_coordinate(index: u64) -> (u64, File) {
+    let rank = ((index) / 8) + 1;
+    let file = File::try_from(index % 8).unwrap();
+    (rank, file)
+}
+
+#[cfg(test)]
+mod test_index_coordinate_conversion {
+    use super::coordinate_to_index;
+    use super::index_to_coordinate;
+    use proptest::prelude::*;
+
+    proptest! {
+        #[test]
+        fn round_trip(i in 1u64..=64) {
+            let (rank, file) = index_to_coordinate(i);
+            assert_eq!(i, coordinate_to_index(rank, &file));
+        }
+    }
 }
 
 pub enum Piece {
@@ -243,6 +272,33 @@ impl TryFrom<&str> for File {
         };
         let c = s.chars().next().unwrap();
         File::try_from(c)
+    }
+}
+
+impl From<File> for u64 {
+    fn from(file: File) -> Self {
+        return file as u64;
+    }
+}
+
+impl TryFrom<u64> for File {
+    type Error = String;
+
+    fn try_from(i: u64) -> Result<Self, Self::Error> {
+        match i {
+            0 => Ok(File::A),
+            1 => Ok(File::B),
+            2 => Ok(File::C),
+            3 => Ok(File::D),
+            4 => Ok(File::E),
+            5 => Ok(File::F),
+            6 => Ok(File::G),
+            7 => Ok(File::H),
+            _ => Err(format!(
+                "{} is not a valid File value. File only has 8 variants.",
+                i
+            )),
+        }
     }
 }
 

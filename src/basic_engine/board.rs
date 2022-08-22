@@ -1,5 +1,6 @@
 use super::misc::{
-    coordinate_to_index, BitBoard, CastlePermissions, Color, Coordinate, File, Piece,
+    coordinate_to_index, coordinate_to_large_index, index_to_coordinate, BitBoard,
+    CastlePermissions, Color, Coordinate, File, Piece,
 };
 use crate::Game;
 
@@ -23,6 +24,152 @@ pub struct Board {
     move_number: u64,
 }
 
+lazy_static! {
+    static ref ATTACK_MASKS: AttackMasks = AttackMasks::new();
+    static ref BASE_CONVERSIONS: BaseConversions = BaseConversions::new();
+}
+
+struct AttackMasks {
+    black_pawns: [u64; 64],
+    white_pawns: [u64; 64],
+    knights: [u64; 64],
+    straight: [u64; 64], // rooks and queens
+    diagonal: [u64; 64], // bishops and queens
+    kings: [u64; 64],
+}
+
+struct BaseConversions {
+    index_64_to_index_100: [u8; 64],
+    index_100_to_index_64: [u8; 100],
+}
+
+impl BaseConversions {
+    const OFF_BOARD: u8 = 101;
+    fn new() -> Self {
+        let mut base = BaseConversions {
+            index_100_to_index_64: [Self::OFF_BOARD; 100],
+            index_64_to_index_100: [0u8; 64],
+        };
+        for rank in 1..=8 {
+            for file in File::variants() {
+                let index = coordinate_to_large_index(rank, &file);
+                let index_64 = coordinate_to_index(rank.into(), &file) as usize;
+                base.index_100_to_index_64[index as usize] = index_64 as u8;
+                base.index_64_to_index_100[index_64] = index;
+            }
+        }
+        base
+    }
+
+    fn is_offboard(&self, index_100: usize) -> bool {
+        return self.index_100_to_index_64[index_100] == Self::OFF_BOARD;
+    }
+
+    fn debug_print(&self) {
+        for rank in 0..10 {
+            for file in 0..10 {
+                let index = file + (rank * 10);
+                print!(" {}", self.index_100_to_index_64[index as usize]);
+            }
+            println!();
+        }
+    }
+}
+
+impl AttackMasks {
+    fn new() -> Self {
+        let mut am = AttackMasks {
+            black_pawns: [0; 64],
+            white_pawns: [0; 64],
+            knights: [0; 64],
+            straight: [0; 64], // rooks and queens
+            diagonal: [0; 64], // bishops and queens
+            kings: [0; 64],
+        };
+        for i in 0isize..64 {
+            let (rank, file) = index_to_coordinate(i as u64);
+            let mut kings: Vec<isize> = vec![-1, 1, -8, 8, 7, 9, -7, -9];
+            let mut black_pawns: Vec<isize> = vec![7, 9]; // TODO these seem the wrong way around?
+            let mut white_pawns: Vec<isize> = vec![-7, -9];
+            let knights = [15, 17, -15, -17, 6, 10, -6, -10];
+
+            let top_rank = i <= 7;
+            let bottom_rank = i > 55;
+            let left_edge = (i % 8) == 0;
+            let right_edge = (i % 8) == 7;
+
+            if top_rank {
+                kings.retain(|j| ![-7, -8, -9].contains(j));
+                white_pawns = vec![];
+            } else if bottom_rank {
+                kings.retain(|j| ![7, 8, 9].contains(j));
+                black_pawns = vec![]
+            }
+
+            if left_edge {
+                kings.retain(|j| ![-1, -9, 7].contains(j));
+                white_pawns.retain(|j| ![-9].contains(j));
+                black_pawns.retain(|j| ![7].contains(j));
+            } else if right_edge {
+                kings.retain(|j| ![1, -7, 9].contains(j));
+                black_pawns.retain(|j| ![9].contains(j));
+                white_pawns.retain(|j| ![-7].contains(j));
+            }
+
+            for j in kings.iter() {
+                let index = i + j;
+                am.kings[i as usize].set_bit(index as u64);
+            }
+
+            for j in white_pawns.iter() {
+                let index = i + j;
+                am.white_pawns[i as usize].set_bit(index as u64);
+            }
+            for j in black_pawns.iter() {
+                let index = i + j;
+                am.black_pawns[i as usize].set_bit(index as u64);
+            }
+            for j in knights.iter() {
+                let index = i + j;
+                if index < 64 && index > 0 {
+                    let (new_rank, new_file) = index_to_coordinate(index as u64);
+                    let rank_diff = rank as isize - new_rank as isize;
+                    let file_diff = file as isize - new_file as isize;
+
+                    if (rank_diff).abs() <= 2 && (file_diff).abs() <= 2 {
+                        am.knights[i as usize].set_bit(index as u64);
+                    };
+                }
+            }
+
+            for j in 0..8 {
+                let horizontal_index = (i / 8 * 8) + j;
+                let vertical_index = (i % 8) + (j * 8);
+                am.straight[i as usize].set_bit(horizontal_index as u64);
+                am.straight[i as usize].set_bit(vertical_index as u64);
+            }
+
+            let directions = [9isize, -9, 11, -11];
+            for k in directions {
+                let mut j = 0;
+                loop {
+                    let check_100_index =
+                        BASE_CONVERSIONS.index_64_to_index_100[i as usize] as isize + (k * j);
+                    if BASE_CONVERSIONS.is_offboard(check_100_index as usize) {
+                        break;
+                    };
+                    let check_index =
+                        BASE_CONVERSIONS.index_100_to_index_64[check_100_index as usize] as u64;
+                    j += 1;
+                    am.diagonal[i as usize].set_bit(check_index);
+                }
+            }
+            //am.diagonal[i as usize].debug_print();
+        }
+        am
+    }
+}
+
 impl Board {
     fn new() -> Board {
         Board {
@@ -41,6 +188,103 @@ impl Board {
             move_number: 0,
             en_passant: None,
         }
+    }
+
+    fn square_attacked(&self, index: u8, color: Color) -> bool {
+        //BASE_CONVERSIONS.debug_print();
+        let all = self.black | self.white;
+        let attack_masks = &ATTACK_MASKS; //AttackMasks::new(); // TODO pre-compute this as a global
+        let color_mask = match color {
+            Color::Black => self.black,
+            Color::White => self.white,
+        };
+        // pawns
+        let pawn_masks = match color {
+            Color::Black => attack_masks.black_pawns,
+            Color::White => attack_masks.white_pawns,
+        };
+        if (pawn_masks[index as usize] & self.pawns & color_mask) > 0 {
+            return true;
+        }
+        // TODO handle en passant
+
+        // knights
+        if (attack_masks.knights[index as usize] & self.knights & color_mask) > 0 {
+            return true;
+        }
+
+        // rooks & queens
+        if (attack_masks.straight[index as usize] & (self.rooks | self.queens) & color_mask) > 0 {
+            // if is necessary but not sufficient to show attack
+            let directions = [10isize, -10, 1, -1];
+            for i in directions {
+                let mut j = 1;
+                loop {
+                    let check_100_index =
+                        BASE_CONVERSIONS.index_64_to_index_100[index as usize] as isize + (i * j);
+                    if BASE_CONVERSIONS.is_offboard(check_100_index as usize) {
+                        break;
+                    };
+                    let check_index =
+                        BASE_CONVERSIONS.index_100_to_index_64[check_100_index as usize] as u64;
+                    if (self.rooks | self.queens).is_bit_set(check_index) {
+                        return true;
+                    } else if all.is_bit_set(check_index) {
+                        break;
+                    }
+                    j += 1;
+                }
+            }
+            //todo!()
+        };
+
+        // bishops & queens
+        if (attack_masks.diagonal[index as usize] & (self.bishops | self.queens) & color_mask) > 0 {
+            // if is necessary but not sufficient to show attack
+            let directions = [9isize, -9, 11, -11];
+            for i in directions {
+                let mut j = 1;
+                loop {
+                    let check_100_index =
+                        BASE_CONVERSIONS.index_64_to_index_100[index as usize] as isize + (i * j);
+                    if BASE_CONVERSIONS.is_offboard(check_100_index as usize) {
+                        break;
+                    };
+                    let check_index =
+                        BASE_CONVERSIONS.index_100_to_index_64[check_100_index as usize] as u64;
+                    if (self.bishops | self.queens).is_bit_set(check_index) {
+                        return true;
+                    } else if all.is_bit_set(check_index) {
+                        break;
+                    }
+                    j += 1;
+                }
+            }
+        };
+
+        // kings
+        if (attack_masks.kings[index as usize] & self.kings & color_mask) > 0 {
+            return true;
+        };
+        return false;
+    }
+
+    fn attacked_print(&self) {
+        println!("    a b c d e f g h");
+        println!("  -----------------");
+        for rank in 1..=8 {
+            print!("{} |", rank);
+            for file in File::variants() {
+                let index = coordinate_to_index(rank, &file);
+                if self.square_attacked(index as u8, Color::White) {
+                    print!(" x");
+                } else {
+                    print!(" .");
+                }
+            }
+            println!()
+        }
+        println!();
     }
 
     fn set_piece(&mut self, piece: Piece, color: Color, rank: u64, file: &File) {
@@ -209,9 +453,10 @@ impl Game for Board {
             self.half_move_clock,
             self.move_number,
         );
+        println!();
+        self.attacked_print();
     }
 }
-
 
 #[cfg(test)]
 mod test_fen {
