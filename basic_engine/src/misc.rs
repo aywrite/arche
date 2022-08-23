@@ -130,9 +130,11 @@ pub trait BitBoard {
     fn set_bit(&mut self, index: u64);
     fn clear_bit(&mut self, index: u64);
     fn count(&self) -> usize;
+    #[inline(always)]
     fn set_bit_from_coordinate(&mut self, rank: u64, file: &File) {
         self.set_bit(coordinate_to_index(rank, file));
     }
+    #[inline(always)]
     fn clear_bit_from_coordinate(&mut self, rank: u64, file: &File) {
         self.clear_bit(coordinate_to_index(rank, file));
     }
@@ -141,21 +143,25 @@ pub trait BitBoard {
 }
 
 impl BitBoard for u64 {
+    #[inline(always)]
     fn set_bit(&mut self, index: u64) {
         // TODO how should this guard be implemented
         debug_assert!(index <= 64);
         // TODO precompute the set bit mask in an array
         _ = mem::replace(self, *self | (1u64 << index));
     }
+    #[inline(always)]
     fn clear_bit(&mut self, index: u64) {
         // TODO how should this guard be implemented
         debug_assert!(index <= 64);
         // TODO precompute the clear bit mask in an array
         _ = mem::replace(self, *self ^ (1u64 << index));
     }
+    #[inline(always)]
     fn is_bit_set(&self, index: u64) -> bool {
-        return (self & (1u64 << index)) > 0;
+        (self & (1u64 << index)) > 0
     }
+    #[inline(always)]
     fn count(&self) -> usize {
         self.count_ones() as usize
     }
@@ -164,7 +170,7 @@ impl BitBoard for u64 {
         println!("  -----------------");
         for rank in 1..9 {
             print!("{} |", rank);
-            for file in File::variants() {
+            for file in File::VARIANTS {
                 if (self & (1u64 << coordinate_to_index(rank, &file))) > 0 {
                     print!(" x");
                 } else {
@@ -243,23 +249,20 @@ pub enum File {
 }
 
 impl File {
-    pub fn variants() -> [File; 8] {
-        // TODO make this static
-        [
-            File::A,
-            File::B,
-            File::C,
-            File::D,
-            File::E,
-            File::F,
-            File::G,
-            File::H,
-        ]
-    }
+    pub const VARIANTS: [File; 8] = [
+        File::A,
+        File::B,
+        File::C,
+        File::D,
+        File::E,
+        File::F,
+        File::G,
+        File::H,
+    ];
 
     pub fn add(&self, value: u32) -> File {
         let new_value = ((*self as usize) + value as usize) % 8;
-        File::variants()[new_value]
+        File::VARIANTS[new_value]
     }
 }
 
@@ -277,7 +280,7 @@ impl TryFrom<&str> for File {
 
 impl From<File> for u64 {
     fn from(file: File) -> Self {
-        return file as u64;
+        file as u64
     }
 }
 

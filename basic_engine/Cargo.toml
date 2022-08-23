@@ -1,0 +1,18 @@
+[package]
+name = "basic_engine"
+version = "0.1.0"
+edition = "2021"
+
+[lib]
+bench = false #https://bheisler.github.io/criterion.rs/book/faq.html#cargo-bench-gives-unrecognized-option-errors-for-valid-command-line-options
+
+[dependencies]
+lazy_static = "1.4.0"
+
+[dev-dependencies]
+proptest = "1.0.0"
+criterion = "0.3"
+
+[[bench]]
+name = "my_benchmark"
+harness = false

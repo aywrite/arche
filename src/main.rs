@@ -1,10 +1,7 @@
-#[macro_use]
-extern crate lazy_static;
+//extern crate basic_engine;
 
-mod basic_engine;
-mod lib;
-use crate::basic_engine::Board;
-use crate::lib::Game;
+use basic_engine::Board;
+use basic_engine::Game;
 
 fn main() {
     //let game =
@@ -17,5 +14,5 @@ fn main() {
 }
 
 fn play<G: Game>(game: G) {
-    game.debug_print();
+    println!("{}", game);
 }

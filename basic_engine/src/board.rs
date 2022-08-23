@@ -3,6 +3,7 @@ use super::misc::{
     CastlePermissions, Color, Coordinate, File, Piece,
 };
 use crate::Game;
+use std::fmt;
 
 #[derive(Debug)]
 pub struct Board {
@@ -29,15 +30,6 @@ lazy_static! {
     static ref BASE_CONVERSIONS: BaseConversions = BaseConversions::new();
 }
 
-struct AttackMasks {
-    black_pawns: [u64; 64],
-    white_pawns: [u64; 64],
-    knights: [u64; 64],
-    straight: [u64; 64], // rooks and queens
-    diagonal: [u64; 64], // bishops and queens
-    kings: [u64; 64],
-}
-
 struct BaseConversions {
     index_64_to_index_100: [u8; 64],
     index_100_to_index_64: [u8; 100],
@@ -51,7 +43,7 @@ impl BaseConversions {
             index_64_to_index_100: [0u8; 64],
         };
         for rank in 1..=8 {
-            for file in File::variants() {
+            for file in File::VARIANTS {
                 let index = coordinate_to_large_index(rank, &file);
                 let index_64 = coordinate_to_index(rank.into(), &file) as usize;
                 base.index_100_to_index_64[index as usize] = index_64 as u8;
@@ -62,18 +54,30 @@ impl BaseConversions {
     }
 
     fn is_offboard(&self, index_100: usize) -> bool {
-        return self.index_100_to_index_64[index_100] == Self::OFF_BOARD;
+        self.index_100_to_index_64[index_100] == Self::OFF_BOARD
     }
+}
 
-    fn debug_print(&self) {
+impl fmt::Display for BaseConversions {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         for rank in 0..10 {
             for file in 0..10 {
                 let index = file + (rank * 10);
-                print!(" {}", self.index_100_to_index_64[index as usize]);
+                write!(f, " {:0>3}", self.index_100_to_index_64[index as usize])?;
             }
-            println!();
+            writeln!(f)?;
         }
+        Ok(())
     }
+}
+
+struct AttackMasks {
+    black_pawns: [u64; 64],
+    white_pawns: [u64; 64],
+    knights: [u64; 64],
+    straight: [u64; 64], // rooks and queens
+    diagonal: [u64; 64], // bishops and queens
+    kings: [u64; 64],
 }
 
 impl AttackMasks {
@@ -164,7 +168,6 @@ impl AttackMasks {
                     am.diagonal[i as usize].set_bit(check_index);
                 }
             }
-            //am.diagonal[i as usize].debug_print();
         }
         am
     }
@@ -190,10 +193,9 @@ impl Board {
         }
     }
 
-    fn square_attacked(&self, index: u8, color: Color) -> bool {
-        //BASE_CONVERSIONS.debug_print();
+    pub fn square_attacked(&self, index: u8, color: Color) -> bool {
         let all = self.black | self.white;
-        let attack_masks = &ATTACK_MASKS; //AttackMasks::new(); // TODO pre-compute this as a global
+        let attack_masks = &ATTACK_MASKS;
         let color_mask = match color {
             Color::Black => self.black,
             Color::White => self.white,
@@ -206,7 +208,7 @@ impl Board {
         if (pawn_masks[index as usize] & self.pawns & color_mask) > 0 {
             return true;
         }
-        // TODO handle en passant
+        // TODO handle en passant?
 
         // knights
         if (attack_masks.knights[index as usize] & self.knights & color_mask) > 0 {
@@ -235,12 +237,10 @@ impl Board {
                     j += 1;
                 }
             }
-            //todo!()
         };
 
         // bishops & queens
         if (attack_masks.diagonal[index as usize] & (self.bishops | self.queens) & color_mask) > 0 {
-            // if is necessary but not sufficient to show attack
             let directions = [9isize, -9, 11, -11];
             for i in directions {
                 let mut j = 1;
@@ -266,7 +266,7 @@ impl Board {
         if (attack_masks.kings[index as usize] & self.kings & color_mask) > 0 {
             return true;
         };
-        return false;
+        false
     }
 
     fn attacked_print(&self) {
@@ -274,7 +274,7 @@ impl Board {
         println!("  -----------------");
         for rank in 1..=8 {
             print!("{} |", rank);
-            for file in File::variants() {
+            for file in File::VARIANTS {
                 let index = coordinate_to_index(rank, &file);
                 if self.square_attacked(index as u8, Color::White) {
                     print!(" x");
@@ -420,13 +420,15 @@ impl Game for Board {
         }
         Ok(board)
     }
+}
 
-    fn debug_print(&self) {
-        println!("    a b c d e f g h");
-        println!("  -----------------");
+impl fmt::Display for Board {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        writeln!(f, "    a b c d e f g h")?;
+        writeln!(f, "  -----------------")?;
         for rank in 1..=8 {
-            print!("{} |", rank);
-            for file in File::variants() {
+            write!(f, "{} |", rank)?;
+            for file in File::VARIANTS {
                 let (piece, color) = self.get_piece(rank, file);
                 let c = match piece {
                     Some(Piece::Pawn) => 'p',
@@ -438,23 +440,24 @@ impl Game for Board {
                     None => '.',
                 };
                 match color {
-                    Some(Color::White) => print!(" {}", c.to_uppercase()),
-                    _ => print!(" {}", c),
+                    Some(Color::White) => write!(f, " {}", c.to_uppercase())?,
+                    _ => write!(f, " {}", c)?,
                 };
             }
-            println!()
+            writeln!(f)?;
         }
-        println!();
-        println!(
+        writeln!(f)?;
+        writeln!(
+            f,
             "{:?} {} {:?} {} {}",
             self.active_color,
             self.castle.to_fen(),
             self.en_passant,
             self.half_move_clock,
             self.move_number,
-        );
-        println!();
-        self.attacked_print();
+        )?;
+        writeln!(f)?;
+        Ok(())
     }
 }
 
