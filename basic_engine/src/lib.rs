@@ -3,6 +3,7 @@ extern crate lazy_static;
 
 mod board;
 mod misc;
+mod play;
 
 pub use board::Board;
 pub use misc::Color;

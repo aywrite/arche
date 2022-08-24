@@ -17,19 +17,22 @@ impl Coordinate {
         let mut chars = s.chars();
         let c = Coordinate {
             file: File::try_from(chars.next().unwrap())?,
-            rank: u8::try_from(chars.next().unwrap()).map_err(|e| e.to_string())?,
+            rank: chars.next().unwrap().to_digit(10).unwrap() as u8,
         };
         Ok(Some(c))
+    }
+    pub fn to_index(&self) -> u8 {
+        coordinate_to_index(self.rank.into(), &self.file) as u8
     }
 }
 
 // Each color/side bit is true if that color is still allowed to castle on that side
 #[derive(Debug)]
 pub struct CastlePermissions {
-    black_king_side: bool,
-    black_queen_side: bool,
-    white_king_side: bool,
-    white_queen_side: bool,
+    pub black_king_side: bool,
+    pub black_queen_side: bool,
+    pub white_king_side: bool,
+    pub white_queen_side: bool,
 }
 
 impl CastlePermissions {
@@ -140,6 +143,7 @@ pub trait BitBoard {
     }
     fn debug_print(&self);
     fn is_bit_set(&self, index: u64) -> bool;
+    fn get_set_bits(&self) -> Vec<usize>;
 }
 
 impl BitBoard for u64 {
@@ -180,6 +184,16 @@ impl BitBoard for u64 {
             println!()
         }
     }
+    fn get_set_bits(&self) -> Vec<usize> {
+        // TODO this is very inefficient - use trailing ones instead
+        let mut v = Vec::new();
+        for i in 0..64 {
+            if self.is_bit_set(i) {
+                v.push(i as usize);
+            }
+        }
+        v
+    }
 }
 
 pub fn coordinate_to_index(rank: u64, file: &File) -> u64 {
@@ -211,6 +225,35 @@ mod test_index_coordinate_conversion {
     }
 }
 
+#[derive(Debug, Copy, Clone)]
+pub enum PromotePiece {
+    Knight,
+    Bishop,
+    Rook,
+    Queen,
+}
+
+impl PromotePiece {
+    pub const VARIANTS: [PromotePiece; 4] = [
+        PromotePiece::Knight,
+        PromotePiece::Bishop,
+        PromotePiece::Rook,
+        PromotePiece::Queen,
+    ];
+}
+
+impl From<&PromotePiece> for char {
+    fn from(c: &PromotePiece) -> Self {
+        match c {
+            PromotePiece::Knight => 'n',
+            PromotePiece::Bishop => 'b',
+            PromotePiece::Rook => 'r',
+            PromotePiece::Queen => 'q',
+        }
+    }
+}
+
+#[derive(Debug, Copy, Clone)]
 pub enum Piece {
     Pawn,
     Knight,

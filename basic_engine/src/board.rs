@@ -1,7 +1,8 @@
 use super::misc::{
     coordinate_to_index, coordinate_to_large_index, index_to_coordinate, BitBoard,
-    CastlePermissions, Color, Coordinate, File, Piece,
+    CastlePermissions, Color, Coordinate, File, Piece, PromotePiece,
 };
+use super::play::Play;
 use crate::Game;
 use std::fmt;
 
@@ -193,6 +194,203 @@ impl Board {
         }
     }
 
+    pub fn generate_moves(&self) -> Vec<Play> {
+        let mut moves = Vec::new();
+        let (color_mask, capture_mask) = match self.active_color {
+            Color::Black => (self.black, self.white),
+            Color::White => (self.white, self.black),
+        };
+        let all_pieces = self.black | self.white;
+        // knights
+        let knights = (self.knights & color_mask).get_set_bits();
+        for from in knights {
+            // Only include moves which don't have another piece of our color at the to square
+            let kmoves = ATTACK_MASKS.knights[from] & (!color_mask);
+            for to in kmoves.get_set_bits() {
+                let mut capture = None;
+                if capture_mask.is_bit_set(to as u64) {
+                    capture = self.get_piece_index(to as u8);
+                }
+                moves.push(Play::new(from as u8, to as u8, capture, None));
+            }
+        }
+        // queens and rooks
+        let queens_and_rooks = ((self.queens | self.rooks) & color_mask).get_set_bits();
+        for from in queens_and_rooks {
+            let directions = [10isize, -10, 1, -1];
+            for i in directions {
+                let mut j = 1;
+                loop {
+                    let mut capture = None;
+                    let check_100_index =
+                        BASE_CONVERSIONS.index_64_to_index_100[from] as isize + (i * j);
+                    if BASE_CONVERSIONS.is_offboard(check_100_index as usize) {
+                        break;
+                    };
+                    let to = BASE_CONVERSIONS.index_100_to_index_64[check_100_index as usize];
+                    if capture_mask.is_bit_set(to.into()) {
+                        capture = self.get_piece_index(to);
+                        moves.push(Play::new(from as u8, to, capture, None));
+                        break;
+                    } else if color_mask.is_bit_set(to.into()) {
+                        break;
+                    }
+                    moves.push(Play::new(from as u8, to, capture, None));
+                    j += 1;
+                }
+            }
+        }
+        // queens and bishops
+        let queens_and_bishops = ((self.queens | self.bishops) & color_mask).get_set_bits();
+        for from in queens_and_bishops {
+            let directions = [9isize, -9, 11, -11];
+            for i in directions {
+                let mut j = 1;
+                loop {
+                    let mut capture = None;
+                    let check_100_index =
+                        BASE_CONVERSIONS.index_64_to_index_100[from] as isize + (i * j);
+                    if BASE_CONVERSIONS.is_offboard(check_100_index as usize) {
+                        break;
+                    };
+                    let to = BASE_CONVERSIONS.index_100_to_index_64[check_100_index as usize];
+                    if capture_mask.is_bit_set(to.into()) {
+                        capture = self.get_piece_index(to);
+                        moves.push(Play::new(from as u8, to, capture, None));
+                        break;
+                    } else if color_mask.is_bit_set(to.into()) {
+                        break;
+                    }
+                    moves.push(Play::new(from as u8, to, capture, None));
+                    j += 1;
+                }
+            }
+        }
+        // kings
+        let kings = (self.kings & color_mask).get_set_bits();
+        for from in kings {
+            // Only include moves which don't have another piece of our color at the to square
+            let kmove = ATTACK_MASKS.kings[from] & (!color_mask);
+            for to in kmove.get_set_bits() {
+                let mut capture = None;
+                if capture_mask.is_bit_set(to as u64) {
+                    capture = self.get_piece_index(to as u8);
+                }
+                moves.push(Play::new(from as u8, to as u8, capture, None));
+            }
+            // 1. castle permission is available
+            // 2. king is not in check
+            // 3. movement squares are not occupied
+            // 4. None of the squares are in check
+            if matches!(self.active_color, Color::White) {
+                let check = self.square_attacked(4, Color::Black);
+                if self.castle.white_queen_side && !check {
+                    if [1u64, 2, 3].iter().all(|i| !all_pieces.is_bit_set(*i))
+                        && [2u8, 3]
+                            .iter()
+                            .all(|i| !self.square_attacked(*i, Color::Black))
+                    {
+                        moves.push(Play::new(from as u8, 2u8, None, None));
+                    }
+                }
+                if self.castle.white_king_side && !check {
+                    if [5, 6].iter().all(|i| !all_pieces.is_bit_set(*i))
+                        && [5u8, 6]
+                            .iter()
+                            .all(|i| !self.square_attacked(*i, Color::Black))
+                    {
+                        moves.push(Play::new(from as u8, 6u8, None, None));
+                    }
+                }
+            }
+            if matches!(self.active_color, Color::Black) {
+                let check = self.square_attacked(4, Color::White);
+                if self.castle.black_queen_side && !check {
+                    if [57, 58, 59].iter().all(|i| !all_pieces.is_bit_set(*i))
+                        && [58u8, 59]
+                            .iter()
+                            .all(|i| !self.square_attacked(*i, Color::White))
+                    {
+                        moves.push(Play::new(from as u8, 58u8, None, None));
+                    }
+                }
+                if self.castle.black_king_side && !check {
+                    if [61, 62].iter().all(|i| !all_pieces.is_bit_set(*i))
+                        && [61u8, 62]
+                            .iter()
+                            .all(|i| !self.square_attacked(*i, Color::White))
+                    {
+                        moves.push(Play::new(from as u8, 62u8, None, None));
+                    }
+                }
+            }
+        }
+        //pawns
+        let pawns = (self.pawns & color_mask).get_set_bits();
+        for from in pawns {
+            let (rank, _) = index_to_coordinate(from as u64);
+            let can_promote = match self.active_color {
+                Color::White => rank == 7,
+                Color::Black => rank == 2,
+            };
+            // move diagonally and capture
+            let pmoves = match self.active_color {
+                Color::White => ATTACK_MASKS.black_pawns[from] & (capture_mask),
+                Color::Black => ATTACK_MASKS.white_pawns[from] & (capture_mask),
+            };
+            for to in pmoves.get_set_bits() {
+                let capture = self.get_piece_index(to as u8);
+                if can_promote {
+                    for p in PromotePiece::VARIANTS {
+                        moves.push(Play::new(from as u8, to as u8, capture, Some(p)));
+                    }
+                } else {
+                    moves.push(Play::new(from as u8, to as u8, capture, None));
+                }
+            }
+            // move forward
+            let to = match self.active_color {
+                Color::White => from as isize + 8,
+                Color::Black => from as isize - 8,
+            };
+            // can't make a forward move if the square is occupied
+            if to >= 0 && to < 64 && !all_pieces.is_bit_set(to as u64) {
+                if can_promote {
+                    for p in PromotePiece::VARIANTS {
+                        moves.push(Play::new(from as u8, to as u8, None, Some(p)));
+                    }
+                } else {
+                    moves.push(Play::new(from as u8, to as u8, None, None));
+                    if match self.active_color {
+                        Color::White => rank == 2,
+                        Color::Black => rank == 7,
+                    } {
+                        let to = match self.active_color {
+                            Color::White => to as isize + 8,
+                            Color::Black => to as isize - 8,
+                        };
+                        // can't make a double forward move if the to square is occupied
+                        if !all_pieces.is_bit_set(to as u64) {
+                            moves.push(Play::new(from as u8, to as u8, None, None));
+                        }
+                    }
+                }
+            }
+            // en passant
+            if let Some(en_passant) = &self.en_passant {
+                let i = en_passant.to_index();
+                let can_en_passant = match self.active_color {
+                    Color::White => ATTACK_MASKS.black_pawns[from].is_bit_set(i.into()),
+                    Color::Black => ATTACK_MASKS.white_pawns[from].is_bit_set(i.into()),
+                };
+                if can_en_passant {
+                    moves.push(Play::new(from as u8, i, Some(Piece::Pawn), None));
+                }
+            }
+        }
+        moves
+    }
+
     pub fn square_attacked(&self, index: u8, color: Color) -> bool {
         let all = self.black | self.white;
         let attack_masks = &ATTACK_MASKS;
@@ -300,6 +498,26 @@ impl Board {
             Color::Black => self.black.set_bit_from_coordinate(rank, file),
             Color::White => self.white.set_bit_from_coordinate(rank, file),
         };
+    }
+
+    fn get_piece_index(&self, index: u8) -> Option<Piece> {
+        let mask = 1u64 << index;
+        let piece = if (self.pawns & mask) > 0 {
+            Some(Piece::Pawn)
+        } else if (self.knights & mask) > 0 {
+            Some(Piece::Knight)
+        } else if (self.bishops & mask) > 0 {
+            Some(Piece::Bishop)
+        } else if (self.rooks & mask) > 0 {
+            Some(Piece::Rook)
+        } else if (self.queens & mask) > 0 {
+            Some(Piece::Queen)
+        } else if (self.kings & mask) > 0 {
+            Some(Piece::King)
+        } else {
+            None
+        };
+        piece
     }
 
     fn get_piece(&self, rank: u64, file: File) -> (Option<Piece>, Option<Color>) {
