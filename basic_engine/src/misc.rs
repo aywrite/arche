@@ -24,6 +24,13 @@ impl Coordinate {
     pub fn to_index(&self) -> u8 {
         coordinate_to_index(self.rank.into(), &self.file) as u8
     }
+    pub fn from_index(index: u8) -> Self {
+        let (rank, file) = index_to_coordinate(index as u64);
+        Coordinate {
+            rank: rank as u8,
+            file,
+        }
+    }
 }
 
 // Each color/side bit is true if that color is still allowed to castle on that side
@@ -263,7 +270,18 @@ pub enum Piece {
     King,
 }
 
-#[derive(Debug)]
+impl From<&PromotePiece> for Piece {
+    fn from(c: &PromotePiece) -> Self {
+        match c {
+            PromotePiece::Knight => Piece::Knight,
+            PromotePiece::Bishop => Piece::Bishop,
+            PromotePiece::Rook => Piece::Rook,
+            PromotePiece::Queen => Piece::Queen,
+        }
+    }
+}
+
+#[derive(Debug, Copy, Clone)]
 pub enum Color {
     Black,
     White,

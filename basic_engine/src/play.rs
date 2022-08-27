@@ -4,19 +4,31 @@ use std::fmt;
 
 #[derive(Debug)]
 pub struct Play {
-    from: u8,
-    to: u8,
-    capture: Option<Piece>,
-    promote: Option<PromotePiece>,
+    pub from: u8,
+    pub to: u8,
+    pub capture: Option<Piece>,
+    pub promote: Option<PromotePiece>,
+
+    pub en_passant: bool, // True if an en_passant move was played
+    pub castle: bool,     // True if the move was a castling
 }
 
 impl Play {
-    pub fn new(from: u8, to: u8, capture: Option<Piece>, promote: Option<PromotePiece>) -> Self {
+    pub fn new(
+        from: u8,
+        to: u8,
+        capture: Option<Piece>,
+        promote: Option<PromotePiece>,
+        en_passant: bool,
+        castle: bool,
+    ) -> Self {
         Play {
             from,
             to,
             capture,
             promote,
+            en_passant,
+            castle,
         }
     }
 }
