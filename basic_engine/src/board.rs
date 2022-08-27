@@ -140,7 +140,7 @@ impl AttackMasks {
             let mut white_pawns: Vec<isize> = vec![-7, -9];
             let knights = [15, 17, -15, -17, 6, 10, -6, -10];
 
-            let top_rank = i <= 7;
+            let top_rank = i <= 7; // TODO use coord constants here
             let bottom_rank = i > 55;
             let left_edge = (i % 8) == 0;
             let right_edge = (i % 8) == 7;
@@ -178,7 +178,7 @@ impl AttackMasks {
             }
             for j in knights.iter() {
                 let index = i + j;
-                if index < 64 && index > 0 {
+                if index < 64 && index >= 0 {
                     let (new_rank, new_file) = index_to_coordinate(index as u64);
                     let rank_diff = rank as isize - new_rank as isize;
                     let file_diff = file as isize - new_file as isize;
@@ -218,25 +218,8 @@ impl AttackMasks {
 
 impl Board {
     fn new() -> Board {
-        Board {
-            pawns: 0,
-            knights: 0,
-            bishops: 0,
-            rooks: 0,
-            queens: 0,
-            kings: 0,
-            white: 0,
-            black: 0,
-
-            active_color: Color::White,
-            castle: CastlePermissions::new(),
-            half_move_clock: 0,
-            move_number: 0,
-            en_passant: None,
-            fifty_move_rule: 0,
-
-            history: Vec::new(),
-        }
+        Board::from_fen("rnbqkbnr/pppppppp/8/8/8/8/PPPPPPPP/RNBQKBNR w KQkq - 0 1".to_string())
+            .unwrap()
     }
 
     pub fn generate_moves(&self) -> Vec<Play> {
@@ -328,10 +311,9 @@ impl Board {
             // 3. movement squares are not occupied
             // 4. None of the squares are in check
             if matches!(self.active_color, Color::White) {
-                let check = self.square_attacked(4, Color::Black);
+                let check = self.square_attacked(E1, Color::Black);
                 if !check {
                     if self.castle.white_queen_side
-                        && !check
                         && [B1, C1, D1]
                             .iter()
                             .all(|i| !all_pieces.is_bit_set((*i).into()))
@@ -342,7 +324,6 @@ impl Board {
                         moves.push(Play::new(from as u8, 2u8, None, None, false, true));
                     }
                     if self.castle.white_king_side
-                        && !check
                         && [5, 6].iter().all(|i| !all_pieces.is_bit_set(*i))
                         && [5u8, 6]
                             .iter()
@@ -353,7 +334,7 @@ impl Board {
                 }
             }
             if matches!(self.active_color, Color::Black) {
-                let check = self.square_attacked(4, Color::White);
+                let check = self.square_attacked(E8, Color::White);
                 if !check {
                     if self.castle.black_queen_side
                         && [57, 58, 59].iter().all(|i| !all_pieces.is_bit_set(*i))
@@ -469,7 +450,6 @@ impl Board {
         if (pawn_masks[index as usize] & self.pawns & color_mask) > 0 {
             return true;
         }
-        // TODO handle en passant?
 
         // knights
         if (attack_masks.knights[index as usize] & self.knights & color_mask) > 0 {
@@ -490,7 +470,7 @@ impl Board {
                     };
                     let check_index =
                         BASE_CONVERSIONS.index_100_to_index_64[check_100_index as usize] as u64;
-                    if (self.rooks | self.queens).is_bit_set(check_index) {
+                    if ((self.rooks | self.queens) & color_mask).is_bit_set(check_index) {
                         return true;
                     } else if all.is_bit_set(check_index) {
                         break;
@@ -513,7 +493,7 @@ impl Board {
                     };
                     let check_index =
                         BASE_CONVERSIONS.index_100_to_index_64[check_100_index as usize] as u64;
-                    if (self.bishops | self.queens).is_bit_set(check_index) {
+                    if ((self.bishops | self.queens) & color_mask).is_bit_set(check_index) {
                         return true;
                     } else if all.is_bit_set(check_index) {
                         break;
@@ -543,18 +523,25 @@ impl Board {
         };
         // update castleing permissions
         match play.from {
-            0 => self.castle.white_queen_side = false,
-            4 => {
+            A1 => self.castle.white_queen_side = false,
+            E1 => {
                 self.castle.white_queen_side = false;
                 self.castle.white_king_side = false
             }
-            7 => self.castle.white_king_side = false,
-            56 => self.castle.black_queen_side = false,
-            60 => {
+            H1 => self.castle.white_king_side = false,
+            A8 => self.castle.black_queen_side = false,
+            E8 => {
                 self.castle.black_queen_side = false;
                 self.castle.black_king_side = false
             }
-            63 => self.castle.black_king_side = false,
+            H8 => self.castle.black_king_side = false,
+            _ => (),
+        }
+        match play.to {
+            A1 => self.castle.white_queen_side = false,
+            H1 => self.castle.white_king_side = false,
+            A8 => self.castle.black_queen_side = false,
+            H8 => self.castle.black_king_side = false,
             _ => (),
         }
         self.en_passant = None;
@@ -649,7 +636,7 @@ impl Board {
             self.move_number -= 1;
         }
 
-        if self.pawns.is_bit_set(play.from.into()) {
+        if self.pawns.is_bit_set(play.to.into()) {
             // pawn moves reset the fifty move rule
             if play.en_passant {
                 let en_passant_index = match opposing_color {
@@ -701,7 +688,8 @@ impl Board {
         promote_piece: Option<PromotePiece>,
         color: Color,
     ) {
-        debug_assert!(!(self.black & self.white).is_bit_set(to.into()));
+        debug_assert!((self.black | self.white).is_bit_set(from.into()));
+        debug_assert!(!(self.black | self.white).is_bit_set(to.into()));
         self.clear_piece_index(from, piece, color);
         if let Some(promote) = promote_piece {
             self.set_piece_index(to, (&promote).into(), color);
@@ -710,17 +698,17 @@ impl Board {
         }
     }
 
-    fn attacked_print(&self) {
-        println!("    a b c d e f g h");
-        println!("  -----------------");
-        for rank in 1..=8 {
+    fn attacked_print(&self, color: Color) {
+        println!("   a|b|c|d|e|f|g|h|");
+        println!("  ----------------");
+        for rank in (1..=8).rev() {
             print!("{} |", rank);
             for file in File::VARIANTS {
                 let index = coordinate_to_index(rank, &file);
-                if self.square_attacked(index as u8, Color::White) {
-                    print!(" x");
+                if self.square_attacked(index as u8, color) {
+                    print!("x|");
                 } else {
-                    print!(" .");
+                    print!(".|");
                 }
             }
             println!()
@@ -729,6 +717,8 @@ impl Board {
     }
 
     fn set_piece_index(&mut self, index: u8, piece: Piece, color: Color) {
+        debug_assert!(!self.black.is_bit_set(index.into()));
+        debug_assert!(!self.white.is_bit_set(index.into()));
         match piece {
             Piece::Pawn => self.pawns.set_bit(index.into()),
             Piece::Knight => self.knights.set_bit(index.into()),
@@ -749,6 +739,7 @@ impl Board {
     }
 
     fn clear_piece_index(&mut self, index: u8, piece: Piece, color: Color) {
+        debug_assert!((self.black | self.white).is_bit_set(index.into()));
         match piece {
             Piece::Pawn => self.pawns.clear_bit(index.into()),
             Piece::Knight => self.knights.clear_bit(index.into()),
@@ -795,6 +786,29 @@ impl Board {
         };
         let piece = self.get_piece_index(index as u8);
         (piece, color)
+    }
+
+    fn perft(&mut self, depth: u8) -> u64 {
+        // Based on psedocode at https://www.chessprogramming.org/Perft
+        let mut nodes = 0;
+
+        if depth == 0 {
+            return 1;
+        }
+
+        for m in self.generate_moves().iter() {
+            let mut branch = 0;
+            if self.make_move(m) {
+                branch = self.perft(depth - 1);
+                nodes += branch;
+                self.undo_move().unwrap();
+            }
+            // TODO remove this debug
+            if depth == 2 {
+                println!("m {} => {}", m, branch); // perft divide
+            };
+        }
+        nodes
     }
 }
 
@@ -897,7 +911,7 @@ impl fmt::Display for Board {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         writeln!(f, "    a b c d e f g h")?;
         writeln!(f, "  -----------------")?;
-        for rank in 1..=8 {
+        for rank in (1..=8).rev() {
             write!(f, "{} |", rank)?;
             for file in File::VARIANTS {
                 let (piece, color) = self.get_piece(rank, file);
@@ -960,12 +974,90 @@ mod make_move {
     }
 
     #[test]
-    fn test_reversible_1() {
+    fn test_reversible_promotion() {
         let board = Board::from_fen(
             "rnbqkbnr/pp1ppppp/8/2p5/3Pp3/8/PPPP1PpP/RNBQKB1R b KQkq e5 0 2".to_string(),
         )
         .unwrap();
         do_undo(board);
+    }
+
+    #[test]
+    fn test_reversible_casteling() {
+        let board = Board::from_fen(
+            "r4rk1/1pp1qppp/p1np1n2/2b1p1B1/2B1P1b1/P1NP1N2/1PP1QPPP/R4RK1 w - - 0 10".to_string(),
+        )
+        .unwrap();
+        do_undo(board);
+    }
+
+    #[test]
+    fn test_perft_starting() {
+        let mut board =
+            Board::from_fen("rnbqkbnr/pppppppp/8/8/8/8/PPPPPPPP/RNBQKBNR w KQkq - 0 1".to_string())
+                .unwrap();
+        assert_eq!(board.perft(1), 20);
+        assert_eq!(board.perft(2), 400);
+        assert_eq!(board.perft(3), 8902);
+    }
+
+    #[test]
+    fn test_perft_position_2() {
+        let mut board = Board::from_fen(
+            "r3k2r/p1ppqpb1/bn2pnp1/3PN3/1p2P3/2N2Q1p/PPPBBPPP/R3K2R w KQkq - 0 1".to_string(),
+        )
+        .unwrap();
+        assert_eq!(board.perft(1), 48);
+        assert_eq!(board.perft(2), 2039);
+        assert_eq!(board.perft(3), 97862);
+        assert_eq!(board.perft(4), 4085603);
+    }
+
+    #[test]
+    fn test_perft_position_3() {
+        let mut board =
+            Board::from_fen("8/2p5/3p4/KP5r/1R3p1k/8/4P1P1/8 w - - 0 1".to_string()).unwrap();
+        assert_eq!(board.perft(1), 14);
+        assert_eq!(board.perft(2), 191);
+        assert_eq!(board.perft(3), 2812);
+        assert_eq!(board.perft(4), 43238);
+        assert_eq!(board.perft(5), 674624);
+        assert_eq!(board.perft(6), 11030083);
+    }
+
+    #[test]
+    fn test_perft_position_4() {
+        let mut board = Board::from_fen(
+            "r3k2r/Pppp1ppp/1b3nbN/nP6/BBP1P3/q4N2/Pp1P2PP/R2Q1RK1 w kq - 0 1".to_string(),
+        )
+        .unwrap();
+        assert_eq!(board.perft(1), 6);
+        assert_eq!(board.perft(2), 264);
+        assert_eq!(board.perft(3), 9467);
+        assert_eq!(board.perft(4), 422333);
+        assert_eq!(board.perft(5), 15833292);
+    }
+
+    #[test]
+    fn test_perft_position_5() {
+        let mut board = Board::from_fen(
+            "rnbq1k1r/pp1Pbppp/2p5/8/2B5/8/PPP1NnPP/RNBQK2R w KQ - 1 8  ".to_string(),
+        )
+        .unwrap();
+        assert_eq!(board.perft(1), 44);
+        assert_eq!(board.perft(2), 1486);
+        assert_eq!(board.perft(3), 62379);
+    }
+
+    #[test]
+    fn test_perft_position_6() {
+        let mut board = Board::from_fen(
+            "r4rk1/1pp1qppp/p1np1n2/2b1p1B1/2B1P1b1/P1NP1N2/1PP1QPPP/R4RK1 w - - 0 10 ".to_string(),
+        )
+        .unwrap();
+        assert_eq!(board.perft(1), 46);
+        assert_eq!(board.perft(2), 2079);
+        assert_eq!(board.perft(3), 89890);
     }
 }
 

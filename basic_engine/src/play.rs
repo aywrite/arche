@@ -45,6 +45,9 @@ impl fmt::Display for Play {
         if let Some(capture) = &self.capture {
             write!(f, "  x[{:?}]", capture)?;
         }
+        if self.castle {
+            write!(f, "  -- (castled)")?;
+        }
         Ok(())
     }
 }
