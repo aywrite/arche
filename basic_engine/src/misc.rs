@@ -1,6 +1,6 @@
 use std::mem;
 
-#[derive(Debug)]
+#[derive(Debug, Copy, Clone, PartialEq)]
 pub struct Coordinate {
     rank: u8,
     file: File,
@@ -34,7 +34,7 @@ impl Coordinate {
 }
 
 // Each color/side bit is true if that color is still allowed to castle on that side
-#[derive(Debug)]
+#[derive(Debug, Copy, Clone, PartialEq)]
 pub struct CastlePermissions {
     pub black_king_side: bool,
     pub black_queen_side: bool,
@@ -232,7 +232,7 @@ mod test_index_coordinate_conversion {
     }
 }
 
-#[derive(Debug, Copy, Clone)]
+#[derive(Debug, Copy, Clone, PartialEq)]
 pub enum PromotePiece {
     Knight,
     Bishop,
@@ -260,7 +260,7 @@ impl From<&PromotePiece> for char {
     }
 }
 
-#[derive(Debug, Copy, Clone)]
+#[derive(Debug, Copy, Clone, PartialEq)]
 pub enum Piece {
     Pawn,
     Knight,
@@ -281,7 +281,7 @@ impl From<&PromotePiece> for Piece {
     }
 }
 
-#[derive(Debug, Copy, Clone)]
+#[derive(Debug, Copy, Clone, PartialEq)]
 pub enum Color {
     Black,
     White,
@@ -297,7 +297,7 @@ impl Color {
     }
 }
 
-#[derive(Copy, Clone, Debug)]
+#[derive(Copy, Clone, Debug, PartialEq)]
 pub enum File {
     A = 0,
     B = 1,

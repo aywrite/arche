@@ -6,7 +6,20 @@ use super::play::Play;
 use crate::Game;
 use std::fmt;
 
-#[derive(Debug)]
+/// Play State is used to store the history of moves (plays)
+///
+/// Although the move/play object already contains most of the information we need, in order to
+/// undo a move we need some additional state.
+#[derive(Debug, Copy, Clone, PartialEq)]
+struct PlayState {
+    play: Play,
+
+    en_passant: Option<Coordinate>,
+    castle: CastlePermissions,
+    fifty_move_rule: u64,
+}
+
+#[derive(Debug, PartialEq, Clone)]
 pub struct Board {
     pawns: u64,
     knights: u64,
@@ -25,6 +38,8 @@ pub struct Board {
     half_move_clock: u64,
     move_number: u64,
     fifty_move_rule: u64,
+
+    history: Vec<PlayState>,
 }
 
 const A1: u8 = 0;
@@ -219,6 +234,8 @@ impl Board {
             move_number: 0,
             en_passant: None,
             fifty_move_rule: 0,
+
+            history: Vec::new(),
         }
     }
 
@@ -514,6 +531,12 @@ impl Board {
     }
 
     pub fn make_move(&mut self, play: &Play) -> bool {
+        self.history.push(PlayState {
+            play: *play,
+            en_passant: self.en_passant,
+            castle: self.castle,
+            fifty_move_rule: self.fifty_move_rule,
+        });
         let opposing_color = match self.active_color {
             Color::White => Color::Black,
             Color::Black => Color::White,
@@ -556,23 +579,30 @@ impl Board {
         }
 
         // move piece
-        let from_piece = self
-            .get_piece_index(play.from)
-            .expect("The from square must always be occupied");
-        self.move_piece(play.from, play.to, from_piece, play.promote);
         if let Some(capture) = play.capture {
             if !play.en_passant {
                 self.fifty_move_rule = 0;
                 self.clear_piece_index(play.to, capture, opposing_color);
             }
         }
+        let from_piece = self
+            .get_piece_index(play.from)
+            .expect("The from square must always be occupied");
+        self.move_piece(
+            play.from,
+            play.to,
+            from_piece,
+            play.promote,
+            self.active_color,
+        );
+
         if play.castle {
             // move rook if casteling
             match play.to {
-                C1 => self.move_piece(A1, D1, Piece::Rook, None),
-                C8 => self.move_piece(A8, D8, Piece::Rook, None),
-                G1 => self.move_piece(H1, F1, Piece::Rook, None),
-                G8 => self.move_piece(H8, F8, Piece::Rook, None),
+                C1 => self.move_piece(A1, D1, Piece::Rook, None, self.active_color),
+                C8 => self.move_piece(A8, D8, Piece::Rook, None, self.active_color),
+                G1 => self.move_piece(H1, F1, Piece::Rook, None, self.active_color),
+                G8 => self.move_piece(H8, F8, Piece::Rook, None, self.active_color),
                 _ => unreachable!(),
             }
         }
@@ -590,15 +620,93 @@ impl Board {
             Color::Black => (self.kings & self.black).get_set_bits()[0],
         };
         self.active_color = opposing_color;
-        self.square_attacked(king_index as u8, opposing_color)
+        return if self.square_attacked(king_index as u8, opposing_color) {
+            self.undo_move().unwrap();
+            false
+        } else {
+            true
+        };
     }
 
-    fn move_piece(&mut self, from: u8, to: u8, piece: Piece, promote_piece: Option<PromotePiece>) {
-        self.clear_piece_index(from, piece, self.active_color);
-        if let Some(promote) = promote_piece {
-            self.set_piece_index(to, (&promote).into(), self.active_color);
+    pub fn undo_move(&mut self) -> Result<(), &str> {
+        let history = self
+            .history
+            .pop()
+            .ok_or("Failed to undo move: no more history")?;
+        let play = history.play;
+
+        let opposing_color = match self.active_color {
+            Color::White => Color::Black,
+            Color::Black => Color::White,
+        };
+        // update castleing permissions
+        self.castle = history.castle;
+        self.en_passant = history.en_passant;
+        self.fifty_move_rule = history.fifty_move_rule;
+        self.half_move_clock -= 1;
+        if matches!(opposing_color, Color::Black) {
+            // update the full move counter
+            self.move_number -= 1;
+        }
+
+        if self.pawns.is_bit_set(play.from.into()) {
+            // pawn moves reset the fifty move rule
+            if play.en_passant {
+                let en_passant_index = match opposing_color {
+                    Color::White => play.to - 8,
+                    Color::Black => play.to + 8,
+                };
+                self.set_piece_index(en_passant_index, Piece::Pawn, self.active_color);
+            }
+        }
+
+        // move piece
+        let from_piece = self
+            .get_piece_index(play.to)
+            .expect("The to square must always be occupied when undoing");
+        if let Some(promote) = play.promote {
+            self.clear_piece_index(play.to, (&promote).into(), opposing_color);
+            self.set_piece_index(play.from, Piece::Pawn, opposing_color);
         } else {
-            self.set_piece_index(to, piece, self.active_color);
+            self.clear_piece_index(play.to, from_piece, opposing_color);
+            self.set_piece_index(play.from, from_piece, opposing_color);
+        }
+
+        if let Some(capture) = play.capture {
+            if !play.en_passant {
+                self.set_piece_index(play.to, capture, self.active_color);
+            }
+        }
+        if play.castle {
+            // move rook if casteling
+            match play.to {
+                C1 => self.move_piece(D1, A1, Piece::Rook, None, opposing_color),
+                C8 => self.move_piece(D8, A8, Piece::Rook, None, opposing_color),
+                G1 => self.move_piece(F1, H1, Piece::Rook, None, opposing_color),
+                G8 => self.move_piece(F8, H8, Piece::Rook, None, opposing_color),
+                _ => unreachable!(),
+            }
+        }
+
+        self.active_color = opposing_color;
+        Ok(())
+    }
+
+    #[inline(always)]
+    fn move_piece(
+        &mut self,
+        from: u8,
+        to: u8,
+        piece: Piece,
+        promote_piece: Option<PromotePiece>,
+        color: Color,
+    ) {
+        debug_assert!(!(self.black & self.white).is_bit_set(to.into()));
+        self.clear_piece_index(from, piece, color);
+        if let Some(promote) = promote_piece {
+            self.set_piece_index(to, (&promote).into(), color);
+        } else {
+            self.set_piece_index(to, piece, color);
         }
     }
 
@@ -737,6 +845,8 @@ impl Game for Board {
             move_number: full_move_clock.parse::<u64>().map_err(|e| e.to_string())?,
             en_passant: Coordinate::from_string(en_passant)?,
             fifty_move_rule: 0,
+
+            history: Vec::new(),
         };
 
         // parse out the pieces on the board
@@ -823,14 +933,49 @@ impl fmt::Display for Board {
 }
 
 #[cfg(test)]
+mod make_move {
+    use super::Board;
+    use super::Game;
+    use pretty_assertions::{assert_eq, assert_ne};
+
+    fn do_undo(board: Board) {
+        let moves = board.generate_moves();
+        for m in moves.iter() {
+            let old = board.clone();
+            let mut new = board.clone();
+            if new.make_move(m) {
+                assert_ne!(old, new);
+                new.undo_move().unwrap();
+                assert_eq!(old, new);
+            }
+        }
+    }
+
+    #[test]
+    fn test_reversible_starting() {
+        let board =
+            Board::from_fen("rnbqkbnr/pppppppp/8/8/8/8/PPPPPPPP/RNBQKBNR w KQkq - 0 1".to_string())
+                .unwrap();
+        do_undo(board);
+    }
+
+    #[test]
+    fn test_reversible_1() {
+        let board = Board::from_fen(
+            "rnbqkbnr/pp1ppppp/8/2p5/3Pp3/8/PPPP1PpP/RNBQKB1R b KQkq e5 0 2".to_string(),
+        )
+        .unwrap();
+        do_undo(board);
+    }
+}
+
+#[cfg(test)]
 mod test_fen {
     use super::Board;
     use super::Game;
     use proptest::prelude::*;
 
     proptest! {
-        #![proptest_config(ProptestConfig::with_cases(1000))]
-
         #[test]
         fn random_str_doesnt_crash(s in ".*") {
             _ = Board::from_fen(s);
