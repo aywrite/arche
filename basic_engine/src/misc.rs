@@ -1,6 +1,6 @@
 use std::mem;
 
-#[derive(Debug, Copy, Clone, PartialEq)]
+#[derive(Debug, Copy, Clone, PartialEq, Eq)]
 pub struct Coordinate {
     rank: u8,
     file: File,
@@ -21,11 +21,11 @@ impl Coordinate {
         };
         Ok(Some(c))
     }
-    pub fn to_index(&self) -> u8 {
-        coordinate_to_index(self.rank.into(), &self.file) as u8
+    pub fn as_index(&self) -> u8 {
+        coordinate_to_index(self.rank, &self.file) as u8
     }
     pub fn from_index(index: u8) -> Self {
-        let (rank, file) = index_to_coordinate(index as u64);
+        let (rank, file) = index_to_coordinate(index);
         Coordinate {
             rank: rank as u8,
             file,
@@ -34,7 +34,7 @@ impl Coordinate {
 }
 
 // Each color/side bit is true if that color is still allowed to castle on that side
-#[derive(Debug, Copy, Clone, PartialEq)]
+#[derive(Debug, Copy, Clone, PartialEq, Eq)]
 pub struct CastlePermissions {
     pub black_king_side: bool,
     pub black_queen_side: bool,
@@ -77,7 +77,7 @@ impl CastlePermissions {
         }
         Ok(perms)
     }
-    pub fn to_fen(&self) -> String {
+    pub fn as_fen(&self) -> String {
         let mut s = String::new();
         if self.white_king_side {
             s.push('K')
@@ -106,7 +106,7 @@ mod test_castle_permissions {
     fn round_trip_all() {
         let initial = "KQkq";
         assert_eq!(
-            CastlePermissions::from_fen(initial).unwrap().to_fen(),
+            CastlePermissions::from_fen(initial).unwrap().as_fen(),
             initial,
         );
     }
@@ -115,7 +115,7 @@ mod test_castle_permissions {
     fn round_trip_none() {
         let initial = "-";
         assert_eq!(
-            CastlePermissions::from_fen(initial).unwrap().to_fen(),
+            CastlePermissions::from_fen(initial).unwrap().as_fen(),
             initial,
         );
     }
@@ -124,7 +124,7 @@ mod test_castle_permissions {
     fn round_trip_mixed() {
         let initial = "Kq";
         assert_eq!(
-            CastlePermissions::from_fen(initial).unwrap().to_fen(),
+            CastlePermissions::from_fen(initial).unwrap().as_fen(),
             initial,
         );
     }
@@ -137,44 +137,46 @@ mod test_castle_permissions {
 }
 
 pub trait BitBoard {
-    fn set_bit(&mut self, index: u64);
-    fn clear_bit(&mut self, index: u64);
-    fn count(&self) -> usize;
+    fn set_bit(&mut self, index: u8);
+    fn clear_bit(&mut self, index: u8);
+    fn count(&self) -> u8;
+    fn debug_print(&self);
+    fn is_bit_set(&self, index: u8) -> bool;
+    fn get_set_bits(&self) -> Vec<u8>;
+
+    // TODO Remove these?
     #[inline(always)]
-    fn set_bit_from_coordinate(&mut self, rank: u64, file: &File) {
+    fn set_bit_from_coordinate(&mut self, rank: u8, file: &File) {
         self.set_bit(coordinate_to_index(rank, file));
     }
     #[inline(always)]
-    fn clear_bit_from_coordinate(&mut self, rank: u64, file: &File) {
+    fn clear_bit_from_coordinate(&mut self, rank: u8, file: &File) {
         self.clear_bit(coordinate_to_index(rank, file));
     }
-    fn debug_print(&self);
-    fn is_bit_set(&self, index: u64) -> bool;
-    fn get_set_bits(&self) -> Vec<usize>;
 }
 
 impl BitBoard for u64 {
     #[inline(always)]
-    fn set_bit(&mut self, index: u64) {
+    fn set_bit(&mut self, index: u8) {
         // TODO how should this guard be implemented
         debug_assert!(index <= 64);
         // TODO precompute the set bit mask in an array
         _ = mem::replace(self, *self | (1u64 << index));
     }
     #[inline(always)]
-    fn clear_bit(&mut self, index: u64) {
+    fn clear_bit(&mut self, index: u8) {
         // TODO how should this guard be implemented
         debug_assert!(index <= 64);
         // TODO precompute the clear bit mask in an array
         _ = mem::replace(self, *self ^ (1u64 << index));
     }
     #[inline(always)]
-    fn is_bit_set(&self, index: u64) -> bool {
+    fn is_bit_set(&self, index: u8) -> bool {
         (self & (1u64 << index)) > 0
     }
     #[inline(always)]
-    fn count(&self) -> usize {
-        self.count_ones() as usize
+    fn count(&self) -> u8 {
+        self.count_ones() as u8
     }
     fn debug_print(&self) {
         println!("    a b c d e f g h");
@@ -191,29 +193,29 @@ impl BitBoard for u64 {
             println!()
         }
     }
-    fn get_set_bits(&self) -> Vec<usize> {
-        // TODO this is very inefficient - use trailing ones instead
-        let mut v = Vec::new();
-        for i in 0..64 {
-            if self.is_bit_set(i) {
-                v.push(i as usize);
-            }
+    fn get_set_bits(&self) -> Vec<u8> {
+        let mut v = Vec::with_capacity(self.count_ones() as usize);
+        let mut value = *self;
+        while value != 0 {
+            let index = value.trailing_zeros();
+            value ^= 1 << index;
+            v.push(index as u8);
         }
         v
     }
 }
 
-pub fn coordinate_to_index(rank: u64, file: &File) -> u64 {
-    ((rank - 1) * 8) + (*file) as u64
+pub fn coordinate_to_index(rank: u8, file: &File) -> u8 {
+    ((rank - 1) * 8) + (*file) as u8
 }
 
 pub fn coordinate_to_large_index(rank: u8, file: &File) -> u8 {
     ((rank - 1) * 10) + (*file) as u8 + 11
 }
 
-pub fn index_to_coordinate(index: u64) -> (u64, File) {
+pub fn index_to_coordinate(index: u8) -> (u8, File) {
     let rank = ((index) / 8) + 1;
-    let file = File::try_from(index % 8).unwrap();
+    let file = File::try_from((index % 8) as u64).unwrap(); // TODO remove as u64
     (rank, file)
 }
 
@@ -225,14 +227,14 @@ mod test_index_coordinate_conversion {
 
     proptest! {
         #[test]
-        fn round_trip(i in 1u64..=64) {
+        fn round_trip(i in 1u8..=64) {
             let (rank, file) = index_to_coordinate(i);
             assert_eq!(i, coordinate_to_index(rank, &file));
         }
     }
 }
 
-#[derive(Debug, Copy, Clone, PartialEq)]
+#[derive(Debug, Copy, Clone, PartialEq, Eq)]
 pub enum PromotePiece {
     Knight,
     Bishop,
@@ -260,7 +262,7 @@ impl From<&PromotePiece> for char {
     }
 }
 
-#[derive(Debug, Copy, Clone, PartialEq)]
+#[derive(Debug, Copy, Clone, PartialEq, Eq)]
 pub enum Piece {
     Pawn,
     Knight,
@@ -281,7 +283,7 @@ impl From<&PromotePiece> for Piece {
     }
 }
 
-#[derive(Debug, Copy, Clone, PartialEq)]
+#[derive(Debug, Copy, Clone, PartialEq, Eq)]
 pub enum Color {
     Black,
     White,
@@ -297,7 +299,7 @@ impl Color {
     }
 }
 
-#[derive(Copy, Clone, Debug, PartialEq)]
+#[derive(Copy, Clone, Debug, PartialEq, Eq)]
 pub enum File {
     A = 0,
     B = 1,

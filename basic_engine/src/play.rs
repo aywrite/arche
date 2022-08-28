@@ -2,7 +2,7 @@ use crate::misc::index_to_coordinate;
 use crate::misc::{Piece, PromotePiece};
 use std::fmt;
 
-#[derive(Debug, Copy, Clone, PartialEq)]
+#[derive(Debug, Copy, Clone, PartialEq, Eq)]
 pub struct Play {
     pub from: u8,
     pub to: u8,
@@ -35,8 +35,8 @@ impl Play {
 
 impl fmt::Display for Play {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
-        let (from_rank, from_file) = index_to_coordinate(self.from.into());
-        let (to_rank, to_file) = index_to_coordinate(self.to.into());
+        let (from_rank, from_file) = index_to_coordinate(self.from);
+        let (to_rank, to_file) = index_to_coordinate(self.to);
         write!(f, "{:?}{}", from_file, from_rank)?;
         write!(f, "{:?}{}", to_file, to_rank)?;
         if let Some(promote) = &self.promote {
