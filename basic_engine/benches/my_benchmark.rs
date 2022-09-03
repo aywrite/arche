@@ -1,6 +1,6 @@
 use criterion::{black_box, criterion_group, criterion_main, Criterion};
 
-use basic_engine::{Board, Color, Game};
+use basic_engine::{Board, Color, Game, AlphaBeta, Engine};
 
 pub fn attacked_benchmark(c: &mut Criterion) {
     let b = black_box(
@@ -51,6 +51,22 @@ pub fn perft_benchmark(c: &mut Criterion) {
     });
 }
 
-criterion_group!(basic_benchs, attacked_benchmark, generate_moves_benchmark);
+pub fn alpha_beta_benchmark(c: &mut Criterion) {
+    let b = black_box(
+        Board::from_fen(
+            "r3k2r/p1ppqpb1/bn2pnp1/3PN3/1p2P3/2N2Q1p/PPPBBPPP/R3K2R w KQkq - 0 1".to_string(),
+        )
+        .unwrap(),
+    );
+    let mut engine = <AlphaBeta as Engine>::new(b.clone());
+    c.bench_function("alpha_beta 6", |d| {
+        d.iter(|| {
+            engine.iterative_deepening_search(6) // TODO hardcode the depth here
+        })
+    });
+}
+
+criterion_group!(board_benches, attacked_benchmark, generate_moves_benchmark);
 criterion_group!(perft_benches, perft_initial_benchmark, perft_benchmark);
-criterion_main!(basic_benchs, perft_benches);
+criterion_group!(search_benches, alpha_beta_benchmark);
+criterion_main!(board_benches, perft_benches, search_benches);

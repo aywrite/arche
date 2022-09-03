@@ -45,6 +45,7 @@ dependencies = [
  "lazy_static",
  "pretty_assertions",
  "proptest",
+ "rand",
 ]
 
 [[package]]

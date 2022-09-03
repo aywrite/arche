@@ -13,4 +13,5 @@ lazy_static = "1.4.0"
 basic_engine = { path = "./basic_engine" }
 rand = "0.8.5"
 
-
+[profile.bench]
+debug = true

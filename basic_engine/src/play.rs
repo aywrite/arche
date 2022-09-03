@@ -1,3 +1,4 @@
+use crate::board::Board;
 use crate::misc::index_to_coordinate;
 use crate::misc::{Piece, PromotePiece};
 use std::fmt;
@@ -30,6 +31,28 @@ impl Play {
             en_passant,
             castle,
         }
+    }
+
+    pub fn mmv_lva(&self, board: &Board) -> u64 {
+        let victim_score = match self.capture {
+            None => return 0,
+            Some(Piece::Pawn) => 10,
+            Some(Piece::Knight) => 25,
+            Some(Piece::Bishop) => 40,
+            Some(Piece::Rook) => 40,
+            Some(Piece::Queen) => 50,
+            Some(Piece::King) => 100,
+        };
+        let attacker_score = match board.get_piece_index(self.from) {
+            None => return 0,
+            Some(Piece::Pawn) => 1,
+            Some(Piece::Knight) => 2,
+            Some(Piece::Bishop) => 3,
+            Some(Piece::Rook) => 4,
+            Some(Piece::Queen) => 5,
+            Some(Piece::King) => 6,
+        };
+        victim_score + attacker_score
     }
 }
 

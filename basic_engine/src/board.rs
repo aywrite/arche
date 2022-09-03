@@ -5,41 +5,19 @@ use super::misc::{
 use super::play::Play;
 use crate::Game;
 use std::fmt;
+use std::hash::{Hash, Hasher};
 
 /// Play State is used to store the history of moves (plays)
 ///
 /// Although the move/play object already contains most of the information we need, in order to
 /// undo a move we need some additional state.
-#[derive(Debug, Copy, Clone, PartialEq)]
+#[derive(Debug, Copy, Clone, PartialEq, Eq)]
 struct PlayState {
     play: Play,
 
     en_passant: Option<Coordinate>,
     castle: CastlePermissions,
     fifty_move_rule: u64,
-}
-
-#[derive(Debug, PartialEq, Clone)]
-pub struct Board {
-    pawns: u64,
-    knights: u64,
-    bishops: u64,
-    rooks: u64,
-    queens: u64,
-    kings: u64,
-
-    white: u64,
-    black: u64,
-
-    active_color: Color,
-    castle: CastlePermissions,
-    en_passant: Option<Coordinate>,
-
-    half_move_clock: u64,
-    move_number: u64,
-    fifty_move_rule: u64,
-
-    history: Vec<PlayState>,
 }
 
 const A1: u8 = 0;
@@ -141,8 +119,8 @@ impl AttackMasks {
             let mut white_pawns: Vec<isize> = vec![-7, -9];
             let knights = [15, 17, -15, -17, 6, 10, -6, -10];
 
-            let top_rank = i <= 7; // TODO use coord constants here
-            let bottom_rank = i > 55;
+            let top_rank = i <= H1.into(); // TODO use coord constants here
+            let bottom_rank = i >= A8.into();
             let left_edge = (i % 8) == 0;
             let right_edge = (i % 8) == 7;
 
@@ -213,6 +191,58 @@ impl AttackMasks {
             }
         }
         am
+    }
+}
+
+#[derive(Debug, PartialEq, Clone, Eq)]
+pub struct Board {
+    pawns: u64,
+    knights: u64,
+    bishops: u64,
+    rooks: u64,
+    queens: u64,
+    kings: u64,
+
+    white: u64,
+    black: u64,
+
+    pub active_color: Color,
+    castle: CastlePermissions,
+    en_passant: Option<Coordinate>,
+
+    pub ply: u64,
+    move_number: u64,
+    fifty_move_rule: u64,
+
+    pub white_value: u32,
+    pub black_value: u32,
+
+    history: Vec<PlayState>,
+}
+
+impl Hash for Board {
+    fn hash<H: Hasher>(&self, state: &mut H) {
+        self.pawns.hash(state);
+        self.knights.hash(state);
+        self.bishops.hash(state);
+        self.rooks.hash(state);
+        self.queens.hash(state);
+        self.kings.hash(state);
+
+        self.black.hash(state);
+        self.white.hash(state);
+        self.active_color.hash(state);
+        self.castle.hash(state);
+        self.en_passant.hash(state);
+
+        self.fifty_move_rule.hash(state);
+    }
+}
+
+impl Default for Board {
+    fn default() -> Self {
+        Board::from_fen("rnbqkbnr/pppppppp/8/8/8/8/PPPPPPPP/RNBQKBNR w KQkq - 0 1".to_string())
+            .unwrap()
     }
 }
 
@@ -319,15 +349,15 @@ impl Board {
                             .iter()
                             .all(|i| !self.square_attacked(*i, Color::Black))
                     {
-                        moves.push(Play::new(from, 2u8, None, None, false, true));
+                        moves.push(Play::new(from, C1, None, None, false, true));
                     }
                     if self.castle.white_king_side
-                        && [5, 6].iter().all(|i| !all_pieces.is_bit_set(*i))
-                        && [5u8, 6]
+                        && [F1, G1].iter().all(|i| !all_pieces.is_bit_set(*i))
+                        && [F1, G1]
                             .iter()
                             .all(|i| !self.square_attacked(*i, Color::Black))
                     {
-                        moves.push(Play::new(from, 6u8, None, None, false, true));
+                        moves.push(Play::new(from, G1, None, None, false, true));
                     }
                 }
             }
@@ -335,20 +365,20 @@ impl Board {
                 let check = self.square_attacked(E8, Color::White);
                 if !check {
                     if self.castle.black_queen_side
-                        && [57, 58, 59].iter().all(|i| !all_pieces.is_bit_set(*i))
-                        && [58u8, 59]
+                        && [B8, C8, D8].iter().all(|i| !all_pieces.is_bit_set(*i))
+                        && [C8, D8]
                             .iter()
                             .all(|i| !self.square_attacked(*i, Color::White))
                     {
-                        moves.push(Play::new(from, 58u8, None, None, false, true));
+                        moves.push(Play::new(from, C8, None, None, false, true));
                     }
                     if self.castle.black_king_side
-                        && [61, 62].iter().all(|i| !all_pieces.is_bit_set(*i))
-                        && [61u8, 62]
+                        && [F8, G8].iter().all(|i| !all_pieces.is_bit_set(*i))
+                        && [F8, G8]
                             .iter()
                             .all(|i| !self.square_attacked(*i, Color::White))
                     {
-                        moves.push(Play::new(from, 62u8, None, None, false, true));
+                        moves.push(Play::new(from, G8, None, None, false, true));
                     }
                 }
             }
@@ -518,6 +548,8 @@ impl Board {
             _ => (),
         }
         match play.to {
+            // This covers the case where a rook which hasn't moved is captured
+            // since it would end the game we don't need to check the same for king
             A1 => self.castle.white_queen_side = false,
             H1 => self.castle.white_king_side = false,
             A8 => self.castle.black_queen_side = false,
@@ -575,7 +607,7 @@ impl Board {
         }
 
         // update the ply
-        self.half_move_clock += 1;
+        self.ply += 1;
         if matches!(self.active_color, Color::Black) {
             // update the full move counter
             self.move_number += 1;
@@ -610,7 +642,7 @@ impl Board {
         self.castle = history.castle;
         self.en_passant = history.en_passant;
         self.fifty_move_rule = history.fifty_move_rule;
-        self.half_move_clock -= 1;
+        self.ply -= 1;
         if matches!(opposing_color, Color::Black) {
             // update the full move counter
             self.move_number -= 1;
@@ -678,6 +710,14 @@ impl Board {
         }
     }
 
+    pub fn is_king_attacked(&self) -> bool {
+        let (index, opposing_color) = match self.active_color {
+            Color::White => ((self.kings & self.white).get_set_bits(), Color::Black),
+            Color::Black => ((self.kings & self.black).get_set_bits(), Color::White),
+        };
+        self.square_attacked(index[0], opposing_color)
+    }
+
     pub fn attacked_print(&self, color: Color) {
         println!("   a|b|c|d|e|f|g|h|");
         println!("  ----------------");
@@ -708,8 +748,14 @@ impl Board {
             Piece::King => self.kings.set_bit(index),
         };
         match color {
-            Color::Black => self.black.set_bit(index),
-            Color::White => self.white.set_bit(index),
+            Color::Black => {
+                self.black.set_bit(index);
+                self.black_value += piece.material_value()
+            }
+            Color::White => {
+                self.white.set_bit(index);
+                self.white_value += piece.material_value()
+            }
         };
     }
 
@@ -729,12 +775,18 @@ impl Board {
             Piece::King => self.kings.clear_bit(index),
         };
         match color {
-            Color::Black => self.black.clear_bit(index),
-            Color::White => self.white.clear_bit(index),
+            Color::Black => {
+                self.black.clear_bit(index);
+                self.black_value -= piece.material_value()
+            }
+            Color::White => {
+                self.white.clear_bit(index);
+                self.white_value -= piece.material_value()
+            }
         };
     }
 
-    fn get_piece_index(&self, index: u8) -> Option<Piece> {
+    pub fn get_piece_index(&self, index: u8) -> Option<Piece> {
         // TODO this should also return color
         let mask = 1u64 << index;
         if (self.pawns & mask) > 0 {
@@ -766,6 +818,31 @@ impl Board {
         };
         let piece = self.get_piece_index(index);
         (piece, color)
+    }
+
+    fn material_value(&self) -> (u32, u32) {
+        let mut black_value = 0;
+        let mut white_value = 0;
+
+        white_value += (self.pawns & self.white).count_ones() * Piece::Pawn.material_value();
+        black_value += (self.pawns & self.black).count_ones() * Piece::Pawn.material_value();
+
+        white_value += (self.knights & self.white).count_ones() * Piece::Knight.material_value();
+        black_value += (self.knights & self.black).count_ones() * Piece::Knight.material_value();
+
+        white_value += (self.bishops & self.white).count_ones() * Piece::Bishop.material_value();
+        black_value += (self.bishops & self.black).count_ones() * Piece::Bishop.material_value();
+
+        white_value += (self.rooks & self.white).count_ones() * Piece::Rook.material_value();
+        black_value += (self.rooks & self.black).count_ones() * Piece::Rook.material_value();
+
+        white_value += (self.queens & self.white).count_ones() * Piece::Queen.material_value();
+        black_value += (self.queens & self.black).count_ones() * Piece::Queen.material_value();
+
+        white_value += (self.kings & self.white).count_ones() * Piece::King.material_value();
+        black_value += (self.kings & self.black).count_ones() * Piece::King.material_value();
+
+        (white_value, black_value)
     }
 
     pub fn perft(&mut self, depth: u8) -> u64 {
@@ -835,10 +912,12 @@ impl Game for Board {
                 .ok_or("Failed to parse active color from token")?,
             castle: CastlePermissions::from_fen(castle)?,
 
-            half_move_clock: half_move_clock.parse::<u64>().map_err(|e| e.to_string())?,
+            ply: half_move_clock.parse::<u64>().map_err(|e| e.to_string())?,
             move_number: full_move_clock.parse::<u64>().map_err(|e| e.to_string())?,
             en_passant: Coordinate::from_string(en_passant)?,
             fifty_move_rule: 0,
+            white_value: 0,
+            black_value: 0,
 
             history: Vec::with_capacity(200),
         };
@@ -883,6 +962,7 @@ impl Game for Board {
                 _ => return Err("unexpected character in fen".to_string()),
             };
         }
+        (board.white_value, board.black_value) = board.material_value();
         Ok(board)
     }
 }
@@ -914,12 +994,13 @@ impl fmt::Display for Board {
         writeln!(f)?;
         writeln!(
             f,
-            "{:?} {} {:?} {} {}",
+            "{:?} to play.  | {} {:?} {} {} material: {}",
             self.active_color,
             self.castle.as_fen(),
             self.en_passant,
-            self.half_move_clock,
+            self.ply,
             self.move_number,
+            (self.white_value as i64 - self.black_value as i64),
         )?;
         writeln!(f)?;
         Ok(())
@@ -939,6 +1020,10 @@ mod make_move {
             let mut new = board.clone();
             if new.make_move(m) {
                 assert_ne!(old, new);
+                assert_eq!(
+                    (board.white_value, board.black_value),
+                    board.material_value()
+                );
                 new.undo_move().unwrap();
                 assert_eq!(old, new);
             }
