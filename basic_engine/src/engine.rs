@@ -1,98 +1,87 @@
 use crate::board::Board;
 use crate::misc::Color;
 use crate::play::Play;
-use rand::seq::SliceRandom;
+use crate::Game;
+//use rand::seq::SliceRandom;
 use std::collections::HashMap;
+use std::fmt;
+use std::time;
 
 const CHECKMATE_SCORE: i64 = 888000;
+const MAX_DEPTH: u8 = 10;
 
 pub trait Engine {
     fn new(board: Board) -> Self;
 
-    fn search(&mut self, depth: u8) -> Option<Play>;
+    fn parse_fen(&mut self, fen_string: &str) -> Result<(), String>;
 
-    fn make_move(&mut self, play: &Play);
+    fn should_stop(&self) -> bool;
 
-    fn iterative_deepening_search(&mut self, max_depth: u8) -> Play {
-        // TODO add init search call which sets nodes to 0
+    fn search(&mut self, depth: u8) -> Option<SearchResult>;
+
+    //fn make_move(&mut self, play: &Play);
+
+    fn make_move_str(&mut self, play: &str) -> bool;
+
+    fn iterative_deepening_search(&mut self, search_options: SearchParameters) -> Play {
         let mut best_move: Option<Play> = None;
-        let mut best_score: i64;
+        let max_depth = match search_options.depth {
+            Some(depth) => depth,
+            None => MAX_DEPTH,
+        };
+        self.configure(search_options.start_time, search_options.search_duration);
 
         for depth in 1..=max_depth {
-            best_move = self.search(depth);
-            //println!("Depth: {} Move: {}", depth, best_move.unwrap());
-            //println!(
-            //    "Depth: {} Score: {}, Move: {}, Nodes {}",
-            //    depth,
-            //    best_score,
-            //    best_move.unwrap(),
-            //    self.nodes
-            //);
+            let search_result = self.search(depth);
+            if self.should_stop() {
+                return best_move.unwrap();
+            }
+            if let Some(m) = &search_result {
+                best_move = Some(m.best_move);
+                println!(
+                    "info depth {} nodes {} score cp {} pv {}",
+                    depth,
+                    m.nodes,
+                    m.score,
+                    self.pv_line(),
+                    // TODO add search time to this
+                    // TODO add nodes per second
+                );
+            }
         }
         best_move.unwrap()
     }
+
+    fn configure(&mut self, start_time: time::Instant, search_duration: Option<time::Duration>);
+
+    fn display_board(&self);
+
+    fn pv_line(&self) -> PvLine;
+
+    fn active_color(&self) -> Color;
 }
 
-pub struct RandomEngine {
-    pub board: Board,
+pub struct SearchParameters {
+    pub depth: Option<u8>,
+    pub search_duration: Option<time::Duration>,
+    pub start_time: time::Instant,
 }
 
-impl Engine for RandomEngine {
-    fn new(board: Board) -> Self {
-        Self { board }
-    }
-
-    fn search(&mut self, depth: u8) -> Option<Play> {
-        // TODO make this not mut
-        let mut moves = self.board.generate_moves();
-        moves.shuffle(&mut rand::thread_rng());
-        for m in moves.iter() {
-            if self.board.make_move(m) {
-                self.board.undo_move().unwrap();
-                return Some(*m);
-            }
+impl SearchParameters {
+    pub fn new() -> Self {
+        Self {
+            depth: None,
+            search_duration: None,
+            start_time: time::Instant::now(),
         }
-        None
     }
 
-    fn make_move(&mut self, play: &Play) {
-        self.board.make_move(play);
-    }
-}
-
-pub struct SimpleEngine {
-    pub board: Board,
-}
-
-impl Engine for SimpleEngine {
-    fn new(board: Board) -> Self {
-        Self { board }
-    }
-
-    fn search(&mut self, depth: u8) -> Option<Play> {
-        // TODO make this not mut
-        let mut best_score = 0;
-        let mut best_move: Option<&Play> = None;
-
-        let moves = self.board.generate_moves();
-        for m in moves.iter() {
-            if self.board.make_move(m) {
-                // TODO switch on color instead of using abs
-                if self.board.white_value >= best_score {
-                    best_score = self.board.white_value;
-                    best_move = Some(m);
-                }
-                self.board.undo_move().unwrap();
-            }
+    pub fn new_with_depth(depth: u8) -> Self {
+        Self {
+            depth: Some(depth),
+            search_duration: None,
+            start_time: time::Instant::now(),
         }
-        if let Some(play) = best_move {
-            return Some(*play);
-        }
-        None
-    }
-
-    fn make_move(&mut self, play: &Play) {
-        self.board.make_move(play);
     }
 }
 
@@ -101,30 +90,23 @@ pub struct AlphaBeta {
     nodes: u64,
     score: i64,
     moves: HashMap<Board, Pv>,
+    // search parameters
+    search_depth: u8,
+    // search state
+    start_time: time::Instant,
+    search_duration: Option<time::Duration>,
+    should_stop: bool,
 }
 
 impl AlphaBeta {
-    //fn iterative_deepening_search(&mut self) -> Play {
-    //    self.nodes = 0;
-    //    let mut best_move: Option<&Play> = None;
-    //    let mut best_score: i64;
-
-    //    for depth in 1..=AlphaBeta::MAX_DEPTH {
-    //        best_score = self.alpha_beta(i64::MIN + 1, i64::MAX - 1, depth);
-    //        best_move = Some(self.moves.get(&self.board).unwrap());
-    //        //println!(
-    //        //    "Depth: {} Score: {}, Move: {}, Nodes {}",
-    //        //    depth,
-    //        //    best_score,
-    //        //    best_move.unwrap(),
-    //        //    self.nodes
-    //        //);
-    //    }
-    //    *best_move.unwrap()
-    //}
-
     fn eval(&self) -> i64 {
         self.board.white_value as i64 - self.board.black_value as i64
+    }
+
+    fn check_if_should_stop(&mut self) {
+        if let Some(search_time) = self.search_duration {
+            self.should_stop = self.start_time.elapsed() >= search_time
+        }
     }
 
     fn alpha_beta(&mut self, old_alpha: i64, beta: i64, depth: u8) -> i64 {
@@ -135,6 +117,11 @@ impl AlphaBeta {
                 Color::Black => return -self.eval(),
             }
         }
+
+        if self.nodes % 1000 == 0 {
+            self.check_if_should_stop()
+        }
+
         self.nodes += 1;
 
         let mut alpha = old_alpha;
@@ -143,28 +130,42 @@ impl AlphaBeta {
         let mut best_move: Option<&Play> = None;
         let mut moves = self.board.generate_moves();
         let mut best_board: Option<Board> = None;
-        moves.sort_unstable_by_key(|m| m.mmv_lva(&self.board));
+        let pv_line = self.moves.get(&self.board);
+
+        moves.sort_unstable_by_key(|m| {
+            let mut score = m.mmv_lva(&self.board);
+            if let Some(pv) = pv_line {
+                if pv.play == *m {
+                    score += 100000;
+                }
+            }
+            score
+        });
 
         for m in moves.iter().rev() {
             if self.board.make_move(m) {
                 found_legal_move = true;
                 score = -self.alpha_beta(-beta, -alpha, depth - 1);
-                let next_board = Some(self.board.clone());
-                self.board.undo_move().unwrap();
                 if score > alpha {
                     if score >= beta {
+                        self.board.undo_move().unwrap();
                         return beta;
                     }
                     alpha = score;
                     best_move = Some(m);
-                    best_board = next_board;
+                    best_board = Some(self.board.clone());
+                }
+                self.board.undo_move().unwrap();
+                if self.should_stop {
+                    // TODO return an error instead
+                    return 0;
                 }
             }
         }
 
         if !found_legal_move {
             if self.board.is_king_attacked() {
-                return -CHECKMATE_SCORE + self.board.ply as i64;
+                return -CHECKMATE_SCORE + ((self.search_depth - depth) as i64);
             }
             return 0;
         }
@@ -180,25 +181,30 @@ impl AlphaBeta {
         }
         alpha
     }
-
-    fn get_line(&self) {
-        let mut pv = self.moves.get(&self.board).unwrap();
-        print!("PV: {}", pv.play);
-        loop {
-            if let Some(next) = self.moves.get(&pv.next_board) {
-                print!("->{}", next.play);
-                pv = next;
-            } else {
-                println!();
-                break;
-            }
-        }
-    }
 }
 
 struct Pv {
     next_board: Board,
     play: Play,
+}
+
+pub struct PvLine {
+    line: Vec<Play>,
+}
+
+impl fmt::Display for PvLine {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        let out: Vec<String> = self.line.iter().map(|p| format!("{}", p)).collect();
+        let new = out.join(" ");
+        write!(f, "{}", new)?;
+        Ok(())
+    }
+}
+
+pub struct SearchResult {
+    nodes: u64,      // The number of results examined as part of the search
+    best_move: Play, // The best move found as part of the search
+    score: i64,      // The estimated score for the best move if played
 }
 
 impl Engine for AlphaBeta {
@@ -208,22 +214,73 @@ impl Engine for AlphaBeta {
             nodes: 0,
             score: 0,
             moves: HashMap::new(),
+            search_depth: 0,
+            start_time: time::Instant::now(),
+            search_duration: None,
+            should_stop: false,
         }
     }
 
-    fn search(&mut self, depth: u8) -> Option<Play> {
-        self.nodes = 0;
-        self.score = self.alpha_beta(i64::MIN + 1, i64::MAX - 1, depth);
-        let pv = self.moves.get(&self.board).unwrap();
-        println!(
-            "Depth: {} Score: {}, Move: {}, Nodes {}",
-            depth, self.score, pv.play, self.nodes
-        );
-        self.get_line();
-        Some(pv.play)
+    fn configure(&mut self, start_time: time::Instant, search_duration: Option<time::Duration>) {
+        self.start_time = start_time;
+        self.search_duration = search_duration;
+        self.should_stop = false;
     }
 
-    fn make_move(&mut self, play: &Play) {
-        self.board.make_move(play);
+    fn active_color(&self) -> Color {
+        self.board.active_color
+    }
+
+    fn should_stop(&self) -> bool {
+        self.should_stop
+    }
+
+    fn parse_fen(&mut self, fen_string: &str) -> Result<(), String> {
+        self.nodes = 0;
+        self.score = 0;
+        self.board = Board::from_fen(fen_string)?;
+        Ok(())
+    }
+
+    fn search(&mut self, depth: u8) -> Option<SearchResult> {
+        self.nodes = 0;
+        self.search_depth = depth;
+        self.score = self.alpha_beta(i64::MIN + 1, i64::MAX - 1, depth);
+        if let Some(best_move) = self.moves.get(&self.board) {
+            return Some(SearchResult {
+                nodes: self.nodes,
+                score: self.score,
+                best_move: best_move.play,
+            });
+        }
+        None
+    }
+
+    //fn make_move(&mut self, play: &Play) {
+    //    self.board.make_move(play);
+    //}
+
+    fn make_move_str(&mut self, play: &str) -> bool {
+        for p in self.board.generate_moves() {
+            let play_str = format!("{}", p).to_lowercase();
+            if play == play_str {
+                return self.board.make_move(&p); // TODO change this to return Result
+            };
+        }
+        false
+    }
+
+    fn display_board(&self) {
+        println!("{}", self.board);
+    }
+
+    fn pv_line(&self) -> PvLine {
+        let mut pv_line = Vec::new();
+        let mut pv = self.moves.get(&self.board).unwrap();
+        while let Some(next) = self.moves.get(&pv.next_board) {
+            pv_line.push(next.play);
+            pv = next;
+        }
+        PvLine { line: pv_line }
     }
 }

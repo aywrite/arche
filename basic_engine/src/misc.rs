@@ -1,3 +1,4 @@
+use std::fmt;
 use std::mem;
 
 #[derive(Debug, Copy, Clone, PartialEq, Eq, Hash)]
@@ -282,7 +283,6 @@ impl Piece {
             Piece::Queen => 900,
             Piece::King => 10000,
         }
-
     }
 }
 
@@ -340,6 +340,22 @@ impl File {
     pub fn add(&self, value: u32) -> File {
         let new_value = ((*self as usize) + value as usize) % 8;
         File::VARIANTS[new_value]
+    }
+}
+
+impl fmt::Display for File {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        match self {
+            File::A => write!(f, "a")?,
+            File::B => write!(f, "b")?,
+            File::C => write!(f, "c")?,
+            File::D => write!(f, "d")?,
+            File::E => write!(f, "e")?,
+            File::F => write!(f, "f")?,
+            File::G => write!(f, "g")?,
+            File::H => write!(f, "h")?,
+        }
+        Ok(())
     }
 }
 

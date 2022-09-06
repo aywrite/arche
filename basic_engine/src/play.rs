@@ -60,16 +60,10 @@ impl fmt::Display for Play {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         let (from_rank, from_file) = index_to_coordinate(self.from);
         let (to_rank, to_file) = index_to_coordinate(self.to);
-        write!(f, "{:?}{}", from_file, from_rank)?;
-        write!(f, "{:?}{}", to_file, to_rank)?;
+        write!(f, "{}{}", from_file, from_rank)?;
+        write!(f, "{}{}", to_file, to_rank)?;
         if let Some(promote) = &self.promote {
             write!(f, "{}", char::from(promote))?;
-        }
-        if let Some(capture) = &self.capture {
-            write!(f, "  x[{:?}]", capture)?;
-        }
-        if self.castle {
-            write!(f, "  -- (castled)")?;
         }
         Ok(())
     }
