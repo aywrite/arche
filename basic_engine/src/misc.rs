@@ -235,7 +235,7 @@ mod test_index_coordinate_conversion {
     }
 }
 
-#[derive(Debug, Copy, Clone, PartialEq, Eq)]
+#[derive(Debug, Copy, Clone, PartialEq, Eq, Hash)]
 pub enum PromotePiece {
     Knight,
     Bishop,
@@ -263,7 +263,7 @@ impl From<&PromotePiece> for char {
     }
 }
 
-#[derive(Debug, Copy, Clone, PartialEq, Eq)]
+#[derive(Debug, Copy, Clone, PartialEq, Eq, Hash)]
 pub enum Piece {
     Pawn,
     Knight,
@@ -277,8 +277,8 @@ impl Piece {
     pub fn material_value(&self) -> u32 {
         match self {
             Piece::Pawn => 100,
-            Piece::Knight => 300,
-            Piece::Bishop => 300,
+            Piece::Knight => 310,
+            Piece::Bishop => 320,
             Piece::Rook => 500,
             Piece::Queen => 900,
             Piece::King => 10000,

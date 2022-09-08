@@ -2,13 +2,16 @@ use crate::board::Board;
 use crate::misc::Color;
 use crate::play::Play;
 use crate::Game;
+use std::mem;
 //use rand::seq::SliceRandom;
-use std::collections::HashMap;
+//use std::collections::HashMap;
 use std::fmt;
 use std::time;
+extern crate lru;
+use lru::LruCache;
 
-const CHECKMATE_SCORE: i64 = 888000;
-const MAX_DEPTH: u8 = 10;
+const CHECKMATE_SCORE: i64 = 800000;
+const MAX_DEPTH: u8 = 16;
 
 pub trait Engine {
     fn new(board: Board) -> Self;
@@ -38,15 +41,27 @@ pub trait Engine {
             }
             if let Some(m) = &search_result {
                 best_move = Some(m.best_move);
-                println!(
-                    "info depth {} nodes {} score cp {} pv {}",
-                    depth,
-                    m.nodes,
-                    m.score,
-                    self.pv_line(),
-                    // TODO add search time to this
-                    // TODO add nodes per second
-                );
+                if search_options.print_info {
+                    if let Some(mate_in) = m.checkmate_in() {
+                        println!(
+                            "info depth {} nodes {} score mate {} pv {}",
+                            depth,
+                            m.nodes,
+                            mate_in,
+                            self.pv_line(),
+                        );
+                    } else {
+                        println!(
+                            "info depth {} nodes {} score cp {} pv {}",
+                            depth,
+                            m.nodes,
+                            m.score,
+                            self.pv_line(),
+                            // TODO add search time to this
+                            // TODO add nodes per second
+                        );
+                    }
+                }
             }
         }
         best_move.unwrap()
@@ -65,6 +80,7 @@ pub struct SearchParameters {
     pub depth: Option<u8>,
     pub search_duration: Option<time::Duration>,
     pub start_time: time::Instant,
+    pub print_info: bool,
 }
 
 impl SearchParameters {
@@ -73,6 +89,7 @@ impl SearchParameters {
             depth: None,
             search_duration: None,
             start_time: time::Instant::now(),
+            print_info: false,
         }
     }
 
@@ -81,6 +98,7 @@ impl SearchParameters {
             depth: Some(depth),
             search_duration: None,
             start_time: time::Instant::now(),
+            print_info: false,
         }
     }
 }
@@ -89,7 +107,7 @@ pub struct AlphaBeta {
     pub board: Board,
     nodes: u64,
     score: i64,
-    moves: HashMap<Board, Pv>,
+    moves: LruCache<Board, Pv>,
     // search parameters
     search_depth: u8,
     // search state
@@ -99,8 +117,14 @@ pub struct AlphaBeta {
 }
 
 impl AlphaBeta {
+    const CACHE_SIZE: usize = 500 * 1024 * 1024;
+
     fn eval(&self) -> i64 {
-        self.board.white_value as i64 - self.board.black_value as i64
+        let eval = self.board.white_value as i64 - self.board.black_value as i64;
+        match self.board.active_color {
+            Color::White => eval,
+            Color::Black => -eval,
+        }
     }
 
     fn check_if_should_stop(&mut self) {
@@ -109,36 +133,95 @@ impl AlphaBeta {
         }
     }
 
-    fn alpha_beta(&mut self, old_alpha: i64, beta: i64, depth: u8) -> i64 {
-        if depth == 0 {
-            self.nodes += 1;
-            match self.board.active_color {
-                Color::White => return self.eval(),
-                Color::Black => return -self.eval(),
+    fn quiescence(&mut self, mut alpha: i64, beta: i64) -> i64 {
+        if self.board.line_ply >= MAX_DEPTH.into() {
+            return self.eval();
+        }
+        if self.nodes % 3000 == 0 {
+            self.check_if_should_stop()
+        }
+        self.nodes += 1;
+
+        let score = self.eval();
+        if score >= beta {
+            return beta;
+        } else if score >= alpha {
+            alpha = score;
+        }
+
+        let mut best_move: Option<&Play> = None;
+        let mut best_board: Option<Board> = None;
+        let old_alpha = alpha;
+        let mut score: i64;
+        let moves = self.board.generate_moves();
+
+        for m in moves.iter().filter(|m| m.capture.is_some()).rev() {
+            // TODO custom move generation for just captures
+            if self.board.make_move(m) {
+                score = -self.quiescence(-beta, -alpha);
+                if score > alpha {
+                    if score >= beta {
+                        self.board.undo_move().unwrap();
+                        return beta;
+                    }
+                    alpha = score;
+                    best_move = Some(m);
+                    best_board = Some(self.board);
+                }
+                self.board.undo_move().unwrap();
+                if self.should_stop {
+                    // TODO return an error instead
+                    return 0;
+                }
             }
         }
 
-        if self.nodes % 1000 == 0 {
+        if alpha != old_alpha {
+            self.moves.put(
+                self.board,
+                Pv {
+                    play: *best_move.unwrap(),
+                    next_board: best_board.unwrap(),
+                },
+            );
+        }
+        alpha
+    }
+
+    fn alpha_beta(&mut self, mut alpha: i64, beta: i64, depth: u8) -> i64 {
+        if self.nodes % 3000 == 0 {
             self.check_if_should_stop()
         }
-
         self.nodes += 1;
 
-        let mut alpha = old_alpha;
+        if depth == 0 {
+            if self.search_depth >= 3 {
+                return self.quiescence(alpha, beta);
+            } else {
+                return self.eval();
+            }
+        }
+
+        if self.board.fifty_move_rule >= 100 {
+            // TODO also check for three fold repetition
+            return 0;
+        }
+
+        let old_alpha = alpha;
         let mut score: i64;
         let mut found_legal_move = false;
         let mut best_move: Option<&Play> = None;
-        let mut moves = self.board.generate_moves();
         let mut best_board: Option<Board> = None;
         let pv_line = self.moves.get(&self.board);
 
-        moves.sort_unstable_by_key(|m| {
+        let mut moves = self.board.generate_moves();
+        moves.sort_by_cached_key(|m| {
             let mut score = m.mmv_lva(&self.board);
             if let Some(pv) = pv_line {
                 if pv.play == *m {
                     score += 100000;
                 }
-            }
+            };
             score
         });
 
@@ -153,7 +236,7 @@ impl AlphaBeta {
                     }
                     alpha = score;
                     best_move = Some(m);
-                    best_board = Some(self.board.clone());
+                    best_board = Some(self.board);
                 }
                 self.board.undo_move().unwrap();
                 if self.should_stop {
@@ -165,14 +248,14 @@ impl AlphaBeta {
 
         if !found_legal_move {
             if self.board.is_king_attacked() {
-                return -CHECKMATE_SCORE + ((self.search_depth - depth) as i64);
+                return -CHECKMATE_SCORE + (self.board.line_ply as i64);
             }
             return 0;
         }
 
         if alpha != old_alpha {
-            self.moves.insert(
-                self.board.clone(),
+            self.moves.put(
+                self.board,
                 Pv {
                     play: *best_move.unwrap(),
                     next_board: best_board.unwrap(),
@@ -207,13 +290,27 @@ pub struct SearchResult {
     score: i64,      // The estimated score for the best move if played
 }
 
+impl SearchResult {
+    fn checkmate_in(&self) -> Option<i64> {
+        if (CHECKMATE_SCORE - self.score.abs()) < 300 {
+            let mut mate = ((CHECKMATE_SCORE - self.score.abs()) / 2) + 1;
+            if self.score < 0 {
+                mate = -mate;
+            };
+            return Some(mate);
+        }
+        return None;
+    }
+}
+
 impl Engine for AlphaBeta {
     fn new(board: Board) -> Self {
+        let entry_size = mem::size_of::<Board>() + mem::size_of::<Pv>();
         Self {
             board,
             nodes: 0,
             score: 0,
-            moves: HashMap::new(),
+            moves: LruCache::new(AlphaBeta::CACHE_SIZE / entry_size),
             search_depth: 0,
             start_time: time::Instant::now(),
             search_duration: None,
@@ -276,8 +373,9 @@ impl Engine for AlphaBeta {
 
     fn pv_line(&self) -> PvLine {
         let mut pv_line = Vec::new();
-        let mut pv = self.moves.get(&self.board).unwrap();
-        while let Some(next) = self.moves.get(&pv.next_board) {
+        let mut pv = self.moves.peek(&self.board).unwrap();
+        pv_line.push(pv.play);
+        while let Some(next) = self.moves.peek(&pv.next_board) {
             pv_line.push(next.play);
             pv = next;
         }

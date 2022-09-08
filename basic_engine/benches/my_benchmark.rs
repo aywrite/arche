@@ -51,7 +51,18 @@ pub fn alpha_beta_initial_benchmark(c: &mut Criterion) {
     });
 }
 
-pub fn alpha_beta_benchmark(c: &mut Criterion) {
+pub fn alpha_beta_benchmark_5(c: &mut Criterion) {
+    let b = black_box(
+        Board::from_fen("r3k2r/p1ppqpb1/bn2pnp1/3PN3/1p2P3/2N2Q1p/PPPBBPPP/R3K2R w KQkq - 0 1")
+            .unwrap(),
+    );
+    let mut engine = <AlphaBeta as Engine>::new(b.clone());
+    c.bench_function("alpha_beta 5", |d| {
+        d.iter(|| engine.iterative_deepening_search(SearchParameters::new_with_depth(5)))
+    });
+}
+
+pub fn alpha_beta_benchmark_6(c: &mut Criterion) {
     let b = black_box(
         Board::from_fen("r3k2r/p1ppqpb1/bn2pnp1/3PN3/1p2P3/2N2Q1p/PPPBBPPP/R3K2R w KQkq - 0 1")
             .unwrap(),
@@ -67,6 +78,7 @@ criterion_group!(perft_benches, perft_initial_benchmark, perft_benchmark);
 criterion_group!(
     search_benches,
     alpha_beta_initial_benchmark,
-    alpha_beta_benchmark
+    alpha_beta_benchmark_5,
+    alpha_beta_benchmark_6,
 );
 criterion_main!(board_benches, perft_benches, search_benches);
