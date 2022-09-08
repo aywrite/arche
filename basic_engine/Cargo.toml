@@ -9,6 +9,7 @@ bench = false #https://bheisler.github.io/criterion.rs/book/faq.html#cargo-bench
 [dependencies]
 lazy_static = "1.4.0"
 rand = "0.8.5"
+lru = "0.7.8"
 
 [dev-dependencies]
 proptest = "1.0.0"
@@ -18,4 +19,3 @@ pretty_assertions = "1.2.1"
 [[bench]]
 name = "my_benchmark"
 harness = false
-debug = true

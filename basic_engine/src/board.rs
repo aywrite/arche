@@ -11,7 +11,7 @@ use std::hash::{Hash, Hasher};
 ///
 /// Although the move/play object already contains most of the information we need, in order to
 /// undo a move we need some additional state.
-#[derive(Debug, Copy, Clone, PartialEq, Eq)]
+#[derive(Debug, Copy, Clone, PartialEq, Eq, Hash)]
 struct PlayState {
     play: Play,
 
@@ -19,6 +19,9 @@ struct PlayState {
     castle: CastlePermissions,
     fifty_move_rule: u64,
 }
+
+const MAX_GAME_SIZE: usize = 375;
+const EMPTY_HISTORY: [Option<PlayState>; MAX_GAME_SIZE] = [None; MAX_GAME_SIZE];
 
 const A1: u8 = 0;
 const B1: u8 = 1;
@@ -115,11 +118,11 @@ impl AttackMasks {
         for i in 0isize..64 {
             let (rank, file) = index_to_coordinate(i as u8);
             let mut kings: Vec<isize> = vec![-1, 1, -8, 8, 7, 9, -7, -9];
-            let mut black_pawns: Vec<isize> = vec![7, 9]; // TODO these seem the wrong way around?
+            let mut black_pawns: Vec<isize> = vec![7, 9];
             let mut white_pawns: Vec<isize> = vec![-7, -9];
             let knights = [15, 17, -15, -17, 6, 10, -6, -10];
 
-            let top_rank = i <= H1.into(); // TODO use coord constants here
+            let top_rank = i <= H1.into();
             let bottom_rank = i >= A8.into();
             let left_edge = (i % 8) == 0;
             let right_edge = (i % 8) == 7;
@@ -194,7 +197,7 @@ impl AttackMasks {
     }
 }
 
-#[derive(Debug, PartialEq, Clone, Eq)]
+#[derive(Debug, PartialEq, Copy, Clone, Eq, Hash)]
 pub struct Board {
     pawns: u64,
     knights: u64,
@@ -210,34 +213,36 @@ pub struct Board {
     castle: CastlePermissions,
     en_passant: Option<Coordinate>,
 
-    pub ply: u64,
-    move_number: u64,
-    fifty_move_rule: u64,
+    pub ply: usize,
+    pub line_ply: usize,
+    move_number: usize,
+    pub fifty_move_rule: u64,
 
     pub white_value: u32,
     pub black_value: u32,
 
-    history: Vec<PlayState>,
+    //history: Vec<PlayState>,
+    history: [Option<PlayState>; MAX_GAME_SIZE],
 }
 
-impl Hash for Board {
-    fn hash<H: Hasher>(&self, state: &mut H) {
-        self.pawns.hash(state);
-        self.knights.hash(state);
-        self.bishops.hash(state);
-        self.rooks.hash(state);
-        self.queens.hash(state);
-        self.kings.hash(state);
-
-        self.black.hash(state);
-        self.white.hash(state);
-        self.active_color.hash(state);
-        self.castle.hash(state);
-        self.en_passant.hash(state);
-
-        self.fifty_move_rule.hash(state);
-    }
-}
+//impl Hash for Board {
+//    fn hash<H: Hasher>(&self, state: &mut H) {
+//        self.pawns.hash(state);
+//        self.knights.hash(state);
+//        self.bishops.hash(state);
+//        self.rooks.hash(state);
+//        self.queens.hash(state);
+//        self.kings.hash(state);
+//
+//        self.black.hash(state);
+//        self.white.hash(state);
+//        self.active_color.hash(state);
+//        self.castle.hash(state);
+//        self.en_passant.hash(state);
+//
+//        self.fifty_move_rule.hash(state);
+//    }
+//}
 
 impl Default for Board {
     fn default() -> Self {
@@ -451,8 +456,8 @@ impl Board {
         let all = self.black | self.white;
         let attack_masks = &ATTACK_MASKS;
         let (color_mask, pawn_masks) = match color {
-            Color::Black => (self.black, attack_masks.black_pawns),
-            Color::White => (self.white, attack_masks.white_pawns),
+            Color::Black => (self.black, &attack_masks.black_pawns),
+            Color::White => (self.white, &attack_masks.white_pawns),
         };
         // pawns
         if (pawn_masks[index as usize] & self.pawns & color_mask) > 0 {
@@ -519,12 +524,19 @@ impl Board {
     }
 
     pub fn make_move(&mut self, play: &Play) -> bool {
-        self.history.push(PlayState {
+        //self.history.push(PlayState {
+        //    play: *play,
+        //    en_passant: self.en_passant,
+        //    castle: self.castle,
+        //    fifty_move_rule: self.fifty_move_rule,
+        //});
+        self.history[self.ply] = Some(PlayState {
             play: *play,
             en_passant: self.en_passant,
             castle: self.castle,
             fifty_move_rule: self.fifty_move_rule,
         });
+
         let opposing_color = match self.active_color {
             Color::White => Color::Black,
             Color::Black => Color::White,
@@ -606,6 +618,7 @@ impl Board {
 
         // update the ply
         self.ply += 1;
+        self.line_ply += 1;
         if matches!(self.active_color, Color::Black) {
             // update the full move counter
             self.move_number += 1;
@@ -626,10 +639,12 @@ impl Board {
     }
 
     pub fn undo_move(&mut self) -> Result<(), &str> {
-        let history = self
-            .history
-            .pop()
-            .ok_or("Failed to undo move: no more history")?;
+        let history = self.history[self.ply - 1].unwrap();
+        self.history[self.ply - 1] = None;
+        //let history = self
+        //    .history
+        //    .pop()
+        //    .ok_or("Failed to undo move: no more history")?;
         let play = history.play;
 
         let opposing_color = match self.active_color {
@@ -641,6 +656,7 @@ impl Board {
         self.en_passant = history.en_passant;
         self.fifty_move_rule = history.fifty_move_rule;
         self.ply -= 1;
+        self.line_ply -= 1;
         if matches!(opposing_color, Color::Black) {
             // update the full move counter
             self.move_number -= 1;
@@ -910,14 +926,15 @@ impl Game for Board {
                 .ok_or("Failed to parse active color from token")?,
             castle: CastlePermissions::from_fen(castle)?,
 
-            ply: half_move_clock.parse::<u64>().map_err(|e| e.to_string())?,
-            move_number: full_move_clock.parse::<u64>().map_err(|e| e.to_string())?,
+            ply: half_move_clock.parse::<usize>().map_err(|e| e.to_string())?,
+            line_ply: 0,
+            move_number: full_move_clock.parse::<usize>().map_err(|e| e.to_string())?,
             en_passant: Coordinate::from_string(en_passant)?,
             fifty_move_rule: 0,
             white_value: 0,
             black_value: 0,
 
-            history: Vec::with_capacity(200),
+            history: EMPTY_HISTORY,
         };
 
         // parse out the pieces on the board

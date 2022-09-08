@@ -2,7 +2,7 @@ use basic_engine::Color;
 use basic_engine::Engine;
 use basic_engine::SearchParameters;
 use regex::Regex;
-use std::time::{Duration, Instant};
+use std::time::Duration;
 
 const START_FEN: &str = "rnbqkbnr/pppppppp/8/8/8/8/PPPPPPPP/RNBQKBNR w KQkq - 0 1";
 
@@ -86,6 +86,7 @@ impl<T: Engine> UCI<T> {
 
     fn parse_go(&mut self, line: &str) {
         let mut sp = SearchParameters::new();
+        sp.print_info = true;
 
         let mut time = match self.engine.active_color() {
             Color::White => {
@@ -131,14 +132,18 @@ impl<T: Engine> UCI<T> {
 
         if let Some(time) = time {
             let mut duration = if let Some(inc) = increment {
-                (time / 50) + inc - 50
+                (time / 40) + inc - 50
             } else {
-                (time / 50) - 50
+                (time / 40) - 50
             };
             if duration >= 100 {
                 duration -= 50;
             }
             sp.search_duration = Some(Duration::from_millis(duration));
+        }
+
+        if INFINITE_RE.is_match(line) {
+            sp.search_duration = None;
         }
 
         println!("bestmove {}", self.engine.iterative_deepening_search(sp));
