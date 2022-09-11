@@ -2,13 +2,9 @@ use crate::board::Board;
 use crate::misc::Color;
 use crate::play::Play;
 use crate::Game;
-use std::mem;
-//use rand::seq::SliceRandom;
-//use std::collections::HashMap;
 use std::fmt;
+use std::mem;
 use std::time;
-extern crate lru;
-use lru::LruCache;
 
 const CHECKMATE_SCORE: i64 = 800000;
 const MAX_DEPTH: u8 = 16;
@@ -107,7 +103,7 @@ pub struct AlphaBeta {
     pub board: Board,
     nodes: u64,
     score: i64,
-    moves: LruCache<Board, Pv>,
+    moves: HashTable,
     // search parameters
     search_depth: u8,
     // search state
@@ -177,8 +173,8 @@ impl AlphaBeta {
         }
 
         if alpha != old_alpha {
-            self.moves.put(
-                self.board,
+            self.moves.set(
+                self.board.key,
                 Pv {
                     play: *best_move.unwrap(),
                     next_board: best_board.unwrap(),
@@ -195,15 +191,14 @@ impl AlphaBeta {
         self.nodes += 1;
 
         if depth == 0 {
-            if self.search_depth >= 3 {
+            if self.search_depth >= 4 {
                 return self.quiescence(alpha, beta);
             } else {
                 return self.eval();
             }
         }
 
-        if self.board.fifty_move_rule >= 100 {
-            // TODO also check for three fold repetition
+        if self.board.fifty_move_rule >= 100 || self.board.is_repetition() {
             return 0;
         }
 
@@ -212,7 +207,7 @@ impl AlphaBeta {
         let mut found_legal_move = false;
         let mut best_move: Option<&Play> = None;
         let mut best_board: Option<Board> = None;
-        let pv_line = self.moves.get(&self.board);
+        let pv_line = self.moves.get(self.board.key);
 
         let mut moves = self.board.generate_moves();
         moves.sort_by_cached_key(|m| {
@@ -254,8 +249,8 @@ impl AlphaBeta {
         }
 
         if alpha != old_alpha {
-            self.moves.put(
-                self.board,
+            self.moves.set(
+                self.board.key,
                 Pv {
                     play: *best_move.unwrap(),
                     next_board: best_board.unwrap(),
@@ -266,9 +261,44 @@ impl AlphaBeta {
     }
 }
 
+#[derive(Copy, Clone)]
 struct Pv {
     next_board: Board,
     play: Play,
+}
+
+struct HashTable {
+    table: Vec<Option<Pv>>,
+    capacity: usize,
+}
+
+impl HashTable {
+    // TODO make generic
+    fn new() -> Self {
+        HashTable::with_capacity(10000)
+    }
+
+    fn with_capacity(capacity: usize) -> Self {
+        Self {
+            table: vec![None; capacity as usize],
+            capacity,
+        }
+    }
+
+    fn with_capacity_bytes(bytes: usize) -> Self {
+        let entry_size = mem::size_of::<u64>() + mem::size_of::<Pv>();
+        Self::with_capacity(bytes / entry_size)
+    }
+
+    fn get(&self, index: u64) -> Option<&Pv> {
+        let key = (index % self.capacity as u64) as usize;
+        (&self.table[key]).as_ref()
+    }
+
+    fn set(&mut self, index: u64, pv: Pv) {
+        let key = (index % self.capacity as u64) as usize;
+        self.table[key] = Some(pv);
+    }
 }
 
 pub struct PvLine {
@@ -299,18 +329,17 @@ impl SearchResult {
             };
             return Some(mate);
         }
-        return None;
+        None
     }
 }
 
 impl Engine for AlphaBeta {
     fn new(board: Board) -> Self {
-        let entry_size = mem::size_of::<Board>() + mem::size_of::<Pv>();
         Self {
             board,
             nodes: 0,
             score: 0,
-            moves: LruCache::new(AlphaBeta::CACHE_SIZE / entry_size),
+            moves: HashTable::with_capacity_bytes(500 * 1024 * 1024),
             search_depth: 0,
             start_time: time::Instant::now(),
             search_duration: None,
@@ -342,8 +371,9 @@ impl Engine for AlphaBeta {
     fn search(&mut self, depth: u8) -> Option<SearchResult> {
         self.nodes = 0;
         self.search_depth = depth;
+        self.board.line_ply = 0;
         self.score = self.alpha_beta(i64::MIN + 1, i64::MAX - 1, depth);
-        if let Some(best_move) = self.moves.get(&self.board) {
+        if let Some(best_move) = self.moves.get(self.board.key) {
             return Some(SearchResult {
                 nodes: self.nodes,
                 score: self.score,
@@ -373,11 +403,14 @@ impl Engine for AlphaBeta {
 
     fn pv_line(&self) -> PvLine {
         let mut pv_line = Vec::new();
-        let mut pv = self.moves.peek(&self.board).unwrap();
+        let mut pv = self.moves.get(self.board.key).unwrap();
         pv_line.push(pv.play);
-        while let Some(next) = self.moves.peek(&pv.next_board) {
+        while let Some(next) = self.moves.get(pv.next_board.key) {
             pv_line.push(next.play);
             pv = next;
+            if pv_line.len() >= 16 {
+                break; // TODO
+            }
         }
         PvLine { line: pv_line }
     }

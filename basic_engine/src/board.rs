@@ -3,9 +3,9 @@ use super::misc::{
     CastlePermissions, Color, Coordinate, File, Piece, PromotePiece,
 };
 use super::play::Play;
+use crate::zorbrist::Zorbrist;
 use crate::Game;
 use std::fmt;
-use std::hash::{Hash, Hasher};
 
 /// Play State is used to store the history of moves (plays)
 ///
@@ -17,8 +17,11 @@ struct PlayState {
 
     en_passant: Option<Coordinate>,
     castle: CastlePermissions,
-    fifty_move_rule: u64,
+    fifty_move_rule: usize,
+    position_key: u64,
 }
+
+// TODO use zorb en_passant & castling
 
 const MAX_GAME_SIZE: usize = 375;
 const EMPTY_HISTORY: [Option<PlayState>; MAX_GAME_SIZE] = [None; MAX_GAME_SIZE];
@@ -52,6 +55,7 @@ lazy_static! {
         coordinate_to_index(8, &File::E) as u8,
         coordinate_to_index(8, &File::H) as u8,
     ];
+    static ref ZORB: Zorbrist = Zorbrist::new();
 }
 
 struct BaseConversions {
@@ -216,13 +220,14 @@ pub struct Board {
     pub ply: usize,
     pub line_ply: usize,
     move_number: usize,
-    pub fifty_move_rule: u64,
+    pub fifty_move_rule: usize,
 
     pub white_value: u32,
     pub black_value: u32,
 
     //history: Vec<PlayState>,
     history: [Option<PlayState>; MAX_GAME_SIZE],
+    pub key: u64,
 }
 
 //impl Hash for Board {
@@ -523,25 +528,30 @@ impl Board {
         false
     }
 
+    pub fn is_repetition(&self) -> bool {
+        //let i = self.ply - self.fifty_move_rule;
+        for p in self.history.iter().flatten() {
+            if p.position_key == self.key {
+                return true;
+            }
+        }
+        false
+    }
+
     pub fn make_move(&mut self, play: &Play) -> bool {
-        //self.history.push(PlayState {
-        //    play: *play,
-        //    en_passant: self.en_passant,
-        //    castle: self.castle,
-        //    fifty_move_rule: self.fifty_move_rule,
-        //});
         self.history[self.ply] = Some(PlayState {
             play: *play,
             en_passant: self.en_passant,
             castle: self.castle,
             fifty_move_rule: self.fifty_move_rule,
+            position_key: self.key,
         });
 
         let opposing_color = match self.active_color {
             Color::White => Color::Black,
             Color::Black => Color::White,
         };
-        // update castleing permissions
+        // update castling permissions
         match play.from {
             A1 => self.castle.white_queen_side = false,
             E1 => {
@@ -606,7 +616,7 @@ impl Board {
         );
 
         if play.castle {
-            // move rook if casteling
+            // move rook if castling
             match play.to {
                 C1 => self.move_piece(A1, D1, Piece::Rook, None, self.active_color),
                 C8 => self.move_piece(A8, D8, Piece::Rook, None, self.active_color),
@@ -630,6 +640,7 @@ impl Board {
             Color::Black => (self.kings & self.black).get_set_bits()[0],
         };
         self.active_color = opposing_color;
+        self.key ^= ZORB.side;
         return if self.square_attacked(king_index as u8, opposing_color) {
             self.undo_move().unwrap();
             false
@@ -641,24 +652,19 @@ impl Board {
     pub fn undo_move(&mut self) -> Result<(), &str> {
         let history = self.history[self.ply - 1].unwrap();
         self.history[self.ply - 1] = None;
-        //let history = self
-        //    .history
-        //    .pop()
-        //    .ok_or("Failed to undo move: no more history")?;
         let play = history.play;
 
         let opposing_color = match self.active_color {
             Color::White => Color::Black,
             Color::Black => Color::White,
         };
-        // update castleing permissions
+        // update castling permissions
         self.castle = history.castle;
         self.en_passant = history.en_passant;
         self.fifty_move_rule = history.fifty_move_rule;
         self.ply -= 1;
         self.line_ply -= 1;
         if matches!(opposing_color, Color::Black) {
-            // update the full move counter
             self.move_number -= 1;
         }
 
@@ -691,7 +697,7 @@ impl Board {
             }
         }
         if play.castle {
-            // move rook if casteling
+            // move rook if castling
             match play.to {
                 C1 => self.move_piece(D1, A1, Piece::Rook, None, opposing_color),
                 C8 => self.move_piece(D8, A8, Piece::Rook, None, opposing_color),
@@ -702,6 +708,7 @@ impl Board {
         }
 
         self.active_color = opposing_color;
+        self.key ^= ZORB.side;
         Ok(())
     }
 
@@ -753,6 +760,7 @@ impl Board {
     fn set_piece_index(&mut self, index: u8, piece: Piece, color: Color) {
         debug_assert!(!self.black.is_bit_set(index));
         debug_assert!(!self.white.is_bit_set(index));
+        self.key ^= ZORB.get_piece_key(index, piece, color);
         match piece {
             Piece::Pawn => self.pawns.set_bit(index),
             Piece::Knight => self.knights.set_bit(index),
@@ -780,6 +788,7 @@ impl Board {
 
     fn clear_piece_index(&mut self, index: u8, piece: Piece, color: Color) {
         debug_assert!((self.black | self.white).is_bit_set(index));
+        self.key ^= ZORB.get_piece_key(index, piece, color);
         match piece {
             Piece::Pawn => self.pawns.clear_bit(index),
             Piece::Knight => self.knights.clear_bit(index),
@@ -926,16 +935,27 @@ impl Game for Board {
                 .ok_or("Failed to parse active color from token")?,
             castle: CastlePermissions::from_fen(castle)?,
 
-            ply: half_move_clock.parse::<usize>().map_err(|e| e.to_string())?,
+            ply: (full_move_clock
+                .parse::<usize>()
+                .map_err(|e| e.to_string())?)
+                * 2,
             line_ply: 0,
-            move_number: full_move_clock.parse::<usize>().map_err(|e| e.to_string())?,
+            move_number: full_move_clock
+                .parse::<usize>()
+                .map_err(|e| e.to_string())?,
             en_passant: Coordinate::from_string(en_passant)?,
-            fifty_move_rule: 0,
+            fifty_move_rule: half_move_clock
+                .parse::<usize>()
+                .map_err(|e| e.to_string())?,
             white_value: 0,
             black_value: 0,
 
             history: EMPTY_HISTORY,
+            key: 2340980257093, // TODO start with random number?
         };
+        if matches!(board.active_color, Color::Black) {
+            board.ply += 1;
+        }
 
         // parse out the pieces on the board
         let mut rank = 8;
@@ -1026,6 +1046,8 @@ impl fmt::Display for Board {
 mod make_move {
     use super::Board;
     use super::Game;
+    use super::Play;
+    use super::{A8, B8, A1, B1};
     use pretty_assertions::{assert_eq, assert_ne};
 
     fn do_undo(board: Board) {
@@ -1067,6 +1089,21 @@ mod make_move {
         )
         .unwrap();
         do_undo(board);
+    }
+
+    #[test]
+    fn test_is_repetition() {
+        let mut board = Board::from_fen(
+            "r4rk1/1pp1qppp/p1np1n2/2b1p1B1/2B1P1b1/P1NP1N2/1PP1QPPP/R4RK1 b - - 3 19",
+        )
+        .unwrap();
+        board.make_move(&Play::new(A8, B8, None, None, false, false));
+        board.make_move(&Play::new(A1, B1, None, None, false, false));
+        assert_eq!(board.is_repetition(), false);
+        board.make_move(&Play::new(B8, A8, None, None, false, false));
+        assert_eq!(board.is_repetition(), false);
+        board.make_move(&Play::new(B1, A1, None, None, false, false));
+        assert_eq!(board.is_repetition(), true);
     }
 }
 
