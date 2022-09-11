@@ -3,6 +3,7 @@ use super::misc::{
     CastlePermissions, Color, Coordinate, File, Piece, PromotePiece,
 };
 use super::play::Play;
+use crate::pvt::PieceValueTables;
 use crate::zorbrist::Zorbrist;
 use crate::Game;
 use std::fmt;
@@ -56,6 +57,7 @@ lazy_static! {
         coordinate_to_index(8, &File::H) as u8,
     ];
     static ref ZORB: Zorbrist = Zorbrist::new();
+    static ref PVT: PieceValueTables = PieceValueTables::new();
 }
 
 struct BaseConversions {
@@ -457,6 +459,13 @@ impl Board {
         moves
     }
 
+    pub fn piece_value(&self, index: u8) -> isize {
+        match self.get_piece_index(index) {
+            Some(p) => PVT.get_value(index as usize, p, self.active_color),
+            None => 0,
+        }
+    }
+
     pub fn square_attacked(&self, index: u8, color: Color) -> bool {
         let all = self.black | self.white;
         let attack_masks = &ATTACK_MASKS;
@@ -586,7 +595,8 @@ impl Board {
                 self.en_passant = match self.active_color {
                     Color::White => Some(Coordinate::from_index(play.to - 8)),
                     Color::Black => Some(Coordinate::from_index(play.to + 8)),
-                }
+                };
+                self.key ^= ZORB.en_passant_key(play.to);
             }
             if play.en_passant {
                 let clear_index = match self.active_color {
@@ -658,6 +668,9 @@ impl Board {
             Color::White => Color::Black,
             Color::Black => Color::White,
         };
+        if self.en_passant.is_some() {
+            self.key ^= ZORB.en_passant_key(play.to);
+        }
         // update castling permissions
         self.castle = history.castle;
         self.en_passant = history.en_passant;
@@ -723,6 +736,7 @@ impl Board {
     ) {
         debug_assert!((self.black | self.white).is_bit_set(from));
         debug_assert!(!(self.black | self.white).is_bit_set(to));
+        //debug_assert!(self.get_piece_index()); // TODO check from piece is of active_color
         self.clear_piece_index(from, piece, color);
         if let Some(promote) = promote_piece {
             self.set_piece_index(to, (&promote).into(), color);
@@ -1047,7 +1061,7 @@ mod make_move {
     use super::Board;
     use super::Game;
     use super::Play;
-    use super::{A8, B8, A1, B1};
+    use super::{A1, A8, B1, B8};
     use pretty_assertions::{assert_eq, assert_ne};
 
     fn do_undo(board: Board) {

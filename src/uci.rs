@@ -30,7 +30,7 @@ impl<T: Engine> UCI<T> {
         Self {
             author: "Andrew".to_string(), // TODO get from Cargo.toml?
             name: "Arche".to_string(),    // TODO change based on engine?
-            version: "1.2".to_string(),   // TODO change based on git?
+            version: "1.6(pvt)".to_string(),   // TODO change based on git?
             engine,
         }
     }
