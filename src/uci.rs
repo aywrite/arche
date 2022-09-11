@@ -20,6 +20,7 @@ lazy_static! {
 pub struct UCI<T: Engine> {
     author: String,
     name: String,
+    version: String,
 
     engine: T,
 }
@@ -29,6 +30,7 @@ impl<T: Engine> UCI<T> {
         Self {
             author: "Andrew".to_string(), // TODO get from Cargo.toml?
             name: "Arche".to_string(),    // TODO change based on engine?
+            version: "1.2".to_string(),   // TODO change based on git?
             engine,
         }
     }
@@ -38,13 +40,16 @@ impl<T: Engine> UCI<T> {
             if let Some(result) = std::io::stdin().lines().next() {
                 let line = result.unwrap();
                 if line.starts_with("quit") {
-                    return ();
+                    return;
                 } else if line.starts_with("isready") {
                     println!("readyok");
                 } else if line.starts_with("ucinewgame") {
                     self.parse_position("position startpos");
                 } else if line.starts_with("uci") {
-                    println!("id name arche {} author {}", self.name, self.author);
+                    println!(
+                        "id name {}-{} author {}",
+                        self.name, self.version, self.author
+                    );
                     println!("uciok");
                 } else if line.starts_with("position") {
                     self.parse_position(&line);

@@ -5,6 +5,8 @@ mod board;
 mod engine;
 mod misc;
 mod play;
+mod pvt;
+mod zorbrist;
 
 pub use board::Board;
 pub use engine::{AlphaBeta, Engine, SearchParameters};
