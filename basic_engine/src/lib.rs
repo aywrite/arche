@@ -7,6 +7,7 @@ mod misc;
 mod play;
 mod pvt;
 mod zorbrist;
+mod magic;
 
 pub use board::Board;
 pub use engine::{AlphaBeta, Engine, SearchParameters};

@@ -113,10 +113,15 @@ pub struct AlphaBeta {
 }
 
 impl AlphaBeta {
-    const CACHE_SIZE: usize = 500 * 1024 * 1024;
-
     fn eval(&self) -> i64 {
         let eval = self.board.white_value as i64 - self.board.black_value as i64;
+
+        let mut score = 0i64;
+        for i in 0..64u8 {
+            score += self.board.piece_value(i) as i64;
+        }
+        let eval = eval + score;
+
         match self.board.active_color {
             Color::White => eval,
             Color::Black => -eval,
