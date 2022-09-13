@@ -3,6 +3,7 @@ use super::misc::{
     CastlePermissions, Color, Coordinate, File, Piece, PromotePiece,
 };
 use super::play::Play;
+use crate::magic::Magic;
 use crate::pvt::PieceValueTables;
 use crate::zorbrist::Zorbrist;
 use crate::Game;
@@ -34,9 +35,9 @@ const D1: u8 = 3;
 const E1: u8 = 4;
 const F1: u8 = 5;
 const G1: u8 = 6;
-const H1: u8 = 7;
+pub const H1: u8 = 7;
 
-const A8: u8 = 56;
+pub const A8: u8 = 56;
 const B8: u8 = 57;
 const C8: u8 = 58;
 const D8: u8 = 59;
@@ -47,7 +48,7 @@ const H8: u8 = 63;
 
 lazy_static! {
     static ref ATTACK_MASKS: AttackMasks = AttackMasks::new();
-    static ref BASE_CONVERSIONS: BaseConversions = BaseConversions::new();
+    pub static ref BASE_CONVERSIONS: BaseConversions = BaseConversions::new();
     static ref CASTLE_PERMISSION_SQUARES: [u8; 6] = [
         coordinate_to_index(1, &File::A) as u8,
         coordinate_to_index(1, &File::E) as u8,
@@ -58,11 +59,19 @@ lazy_static! {
     ];
     static ref ZORB: Zorbrist = Zorbrist::new();
     static ref PVT: PieceValueTables = PieceValueTables::new();
+    static ref MAGIC: Magic = Magic::new();
+    static ref WHITE_CASTLE_MASK: u64 = {
+        let mut mask = 0u64;
+        mask.set_bit(B1);
+        mask.set_bit(C1);
+        mask.set_bit(D1);
+        mask
+    };
 }
 
-struct BaseConversions {
-    base_64_to_100: [u8; 64],
-    base_100_to_64: [u8; 100],
+pub struct BaseConversions {
+    pub base_64_to_100: [u8; 64],
+    pub base_100_to_64: [u8; 100],
 }
 
 impl BaseConversions {
@@ -84,7 +93,7 @@ impl BaseConversions {
     }
 
     #[inline(always)]
-    fn is_offboard(&self, index_100: usize) -> bool {
+    pub fn is_offboard(&self, index_100: usize) -> bool {
         self.base_100_to_64[index_100] == Self::OFF_BOARD
     }
 }
@@ -262,6 +271,90 @@ impl Board {
         Board::from_fen("rnbqkbnr/pppppppp/8/8/8/8/PPPPPPPP/RNBQKBNR w KQkq - 0 1").unwrap()
     }
 
+    // TODO test this has same output as generate_moves after filtering
+    pub fn generate_captures(&self) -> Vec<Play> {
+        let mut moves = Vec::with_capacity(25);
+        let (color_mask, capture_mask) = match self.active_color {
+            Color::Black => (self.black, self.white),
+            Color::White => (self.white, self.black),
+        };
+        let all_pieces = self.black | self.white;
+        // knights
+        let knights = (self.knights & color_mask).get_set_bits();
+        for from in knights {
+            // Only include moves which don't have another piece of our color at the to square
+            let kmoves = ATTACK_MASKS.knights[from as usize] & (capture_mask);
+            for to in kmoves.get_set_bits() {
+                let capture = self.get_piece_index(to);
+                moves.push(Play::new(from as u8, to as u8, capture, None, false, false));
+            }
+        }
+        // queens and rooks
+        let queens_and_rooks = ((self.queens | self.rooks) & color_mask).get_set_bits();
+        for from in queens_and_rooks {
+            let move_mask = MAGIC.get_straight_move(from, all_pieces) & capture_mask;
+            for to in move_mask.get_set_bits() {
+                let capture = self.get_piece_index(to);
+                moves.push(Play::new(from, to, capture, None, false, false));
+            }
+        }
+        // queens and bishops
+        let queens_and_bishops = ((self.queens | self.bishops) & color_mask).get_set_bits();
+        for from in queens_and_bishops {
+            let move_mask = MAGIC.get_diagonal_move(from, all_pieces) & capture_mask;
+            for to in move_mask.get_set_bits() {
+                let capture = self.get_piece_index(to);
+                moves.push(Play::new(from, to, capture, None, false, false));
+            }
+        }
+        // kings
+        let kings = (self.kings & color_mask).get_set_bits();
+        for from in kings {
+            // Only include moves which don't have another piece of our color at the to square
+            let kmove = ATTACK_MASKS.kings[from as usize] & capture_mask;
+            for to in kmove.get_set_bits() {
+                let capture = self.get_piece_index(to);
+                moves.push(Play::new(from, to, capture, None, false, false));
+            }
+        }
+        //pawns
+        let pawns = (self.pawns & color_mask).get_set_bits();
+        for from in pawns {
+            let (rank, _) = index_to_coordinate(from);
+            let can_promote = match self.active_color {
+                Color::White => rank == 7,
+                Color::Black => rank == 2,
+            };
+            // move diagonally and capture
+            let pmoves: u64 = match self.active_color {
+                Color::White => ATTACK_MASKS.black_pawns[from as usize] & (capture_mask),
+                Color::Black => ATTACK_MASKS.white_pawns[from as usize] & (capture_mask),
+            };
+            for to in pmoves.get_set_bits() {
+                let capture = self.get_piece_index(to);
+                if can_promote {
+                    for p in PromotePiece::VARIANTS {
+                        moves.push(Play::new(from, to, capture, Some(p), false, false));
+                    }
+                } else {
+                    moves.push(Play::new(from, to, capture, None, false, false));
+                }
+            }
+            // en passant
+            if let Some(en_passant) = &self.en_passant {
+                let i = en_passant.as_index();
+                let can_en_passant = match self.active_color {
+                    Color::White => ATTACK_MASKS.black_pawns[from as usize].is_bit_set(i),
+                    Color::Black => ATTACK_MASKS.white_pawns[from as usize].is_bit_set(i),
+                };
+                if can_en_passant {
+                    moves.push(Play::new(from, i, Some(Piece::Pawn), None, true, false));
+                }
+            }
+        }
+        moves
+    }
+
     pub fn generate_moves(&self) -> Vec<Play> {
         let mut moves = Vec::with_capacity(50);
         let (color_mask, capture_mask) = match self.active_color {
@@ -285,53 +378,25 @@ impl Board {
         // queens and rooks
         let queens_and_rooks = ((self.queens | self.rooks) & color_mask).get_set_bits();
         for from in queens_and_rooks {
-            let directions = [10isize, -10, 1, -1];
-            for i in directions {
-                let mut j = 1;
-                loop {
-                    let mut capture = None;
-                    let check_100_index =
-                        BASE_CONVERSIONS.base_64_to_100[from as usize] as isize + (i * j);
-                    if BASE_CONVERSIONS.is_offboard(check_100_index as usize) {
-                        break;
-                    };
-                    let to = BASE_CONVERSIONS.base_100_to_64[check_100_index as usize];
-                    if capture_mask.is_bit_set(to) {
-                        capture = self.get_piece_index(to);
-                        moves.push(Play::new(from, to, capture, None, false, false));
-                        break;
-                    } else if color_mask.is_bit_set(to) {
-                        break;
-                    }
-                    moves.push(Play::new(from, to, capture, None, false, false));
-                    j += 1;
+            let move_mask = MAGIC.get_straight_move(from, all_pieces) & !color_mask;
+            for to in move_mask.get_set_bits() {
+                let mut capture = None;
+                if capture_mask.is_bit_set(to) {
+                    capture = self.get_piece_index(to);
                 }
+                moves.push(Play::new(from, to, capture, None, false, false));
             }
         }
         // queens and bishops
         let queens_and_bishops = ((self.queens | self.bishops) & color_mask).get_set_bits();
         for from in queens_and_bishops {
-            let directions = [9isize, -9, 11, -11];
-            for i in directions {
-                let mut j = 1;
-                loop {
-                    let mut capture = None;
-                    let check_100_index =
-                        BASE_CONVERSIONS.base_64_to_100[from as usize] as isize + (i * j);
-                    if BASE_CONVERSIONS.is_offboard(check_100_index as usize) {
-                        break;
-                    };
-                    let to = BASE_CONVERSIONS.base_100_to_64[check_100_index as usize];
-                    if capture_mask.is_bit_set(to) {
-                        capture = self.get_piece_index(to);
-                        moves.push(Play::new(from, to, capture, None, false, false));
-                        break;
-                    } else if color_mask.is_bit_set(to) {
-                        break;
-                    }
-                    moves.push(Play::new(from, to, capture, None, false, false));
-                    j += 1;
+            let move_mask = MAGIC.get_diagonal_move(from, all_pieces) & !color_mask;
+            for to in move_mask.get_set_bits() {
+                let mut capture = None;
+                if capture_mask.is_bit_set(to) {
+                    capture = self.get_piece_index(to);
                 }
+                moves.push(Play::new(from, to, capture, None, false, false));
             }
         }
         // kings
@@ -350,7 +415,9 @@ impl Board {
             // 2. king is not in check
             // 3. movement squares are not occupied
             // 4. None of the squares are in check
-            if matches!(self.active_color, Color::White) {
+            if matches!(self.active_color, Color::White)
+                && (self.castle.white_king_side || self.castle.white_queen_side)
+            {
                 let check = self.square_attacked(E1, Color::Black);
                 if !check {
                     if self.castle.white_queen_side
@@ -370,8 +437,9 @@ impl Board {
                         moves.push(Play::new(from, G1, None, None, false, true));
                     }
                 }
-            }
-            if matches!(self.active_color, Color::Black) {
+            } else if matches!(self.active_color, Color::Black)
+                && (self.castle.black_king_side || self.castle.black_queen_side)
+            {
                 let check = self.square_attacked(E8, Color::White);
                 if !check {
                     if self.castle.black_queen_side
@@ -483,52 +551,24 @@ impl Board {
             return true;
         }
 
-        // rooks & queens
-        let rook_or_queen = (self.rooks | self.queens) & color_mask;
-        if (attack_masks.straight[index as usize] & rook_or_queen) > 0 {
-            // if is necessary but not sufficient to show attack
-            let directions = [10isize, -10, 1, -1];
-            for i in directions {
-                let mut j = 1;
-                loop {
-                    let check_100_index =
-                        BASE_CONVERSIONS.base_64_to_100[index as usize] as isize + (i * j);
-                    if BASE_CONVERSIONS.is_offboard(check_100_index as usize) {
-                        break;
-                    };
-                    let check_index = BASE_CONVERSIONS.base_100_to_64[check_100_index as usize];
-                    if rook_or_queen.is_bit_set(check_index) {
-                        return true;
-                    } else if all.is_bit_set(check_index) {
-                        break;
-                    }
-                    j += 1;
-                }
-            }
-        };
-
         // bishops & queens
         let bishop_or_queen = (self.bishops | self.queens) & color_mask;
         if (attack_masks.diagonal[index as usize] & bishop_or_queen) > 0 {
-            let directions = [9isize, -9, 11, -11];
-            for i in directions {
-                let mut j = 1;
-                loop {
-                    let check_100_index =
-                        BASE_CONVERSIONS.base_64_to_100[index as usize] as isize + (i * j);
-                    if BASE_CONVERSIONS.is_offboard(check_100_index as usize) {
-                        break;
-                    };
-                    let check_index = BASE_CONVERSIONS.base_100_to_64[check_100_index as usize];
-                    if bishop_or_queen.is_bit_set(check_index) {
-                        return true;
-                    } else if all.is_bit_set(check_index) {
-                        break;
-                    }
-                    j += 1;
-                }
+            let move_mask = MAGIC.get_diagonal_move(index, all);
+            if (move_mask & bishop_or_queen) > 0 {
+                return true;
             }
-        };
+        }
+
+        // rooks & queens
+        let rook_or_queen = (self.rooks | self.queens) & color_mask;
+        if (attack_masks.straight[index as usize] & rook_or_queen) > 0 {
+            let move_mask = MAGIC.get_straight_move(index, all);
+            if (move_mask & rook_or_queen) > 0 {
+                return true;
+            }
+        }
+
         // kings
         if (attack_masks.kings[index as usize] & self.kings & color_mask) > 0 {
             return true;
@@ -895,6 +935,7 @@ impl Board {
             if self.make_move(m) {
                 branch = self.perft(depth - 1);
                 nodes += branch;
+                //println!("{}", m);
                 self.undo_move().unwrap();
             }
             // TODO remove this debug

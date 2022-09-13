@@ -57,6 +57,8 @@ impl<T: Engine> UCI<T> {
                     self.engine.display_board();
                 } else if line.starts_with("go") {
                     self.parse_go(&line);
+                } else if line.starts_with("perft") {
+                    self.engine.perft();
                 } else {
                     println!("Failed to parse line: {}", line);
                 }
