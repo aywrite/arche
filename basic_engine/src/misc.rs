@@ -169,7 +169,7 @@ impl BitBoard for u64 {
         // TODO how should this guard be implemented
         debug_assert!(index <= 64);
         // TODO precompute the clear bit mask in an array
-        _ = mem::replace(self, *self ^ (1u64 << index));
+        _ = mem::replace(self, *self & !(1u64 << index));
     }
     #[inline(always)]
     fn is_bit_set(&self, index: u8) -> bool {
@@ -194,6 +194,7 @@ impl BitBoard for u64 {
             println!()
         }
     }
+    #[inline(always)]
     fn get_set_bits(&self) -> Vec<u8> {
         let mut v = Vec::with_capacity(self.count_ones() as usize);
         let mut value = *self;

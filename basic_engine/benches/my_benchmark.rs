@@ -14,6 +14,7 @@ pub fn attacked_benchmark(c: &mut Criterion) {
 }
 
 pub fn generate_moves_benchmark(c: &mut Criterion) {
+    // generate_moves once to prepare the benchmark
     let b = black_box(Board::from_fen("3k3p/1p4p1/8/8/8/P1P3P1/8/RNBQKBNR w KQkq - 0 1").unwrap());
     c.bench_function("generate_moves_1", |d| {
         d.iter(|| {

@@ -16,6 +16,8 @@ pub trait Engine {
 
     fn should_stop(&self) -> bool;
 
+    fn perft(&mut self);
+
     fn search(&mut self, depth: u8) -> Option<SearchResult>;
 
     //fn make_move(&mut self, play: &Play);
@@ -150,11 +152,22 @@ impl AlphaBeta {
             alpha = score;
         }
 
-        let mut best_move: Option<&Play> = None;
+        let mut best_move: Option<Play> = None;
         let mut best_board: Option<Board> = None;
         let old_alpha = alpha;
         let mut score: i64;
-        let moves = self.board.generate_moves();
+        let pv_line = self.moves.get(self.board.key);
+        //let moves = self.board.generate_moves();
+        let mut moves = self.board.generate_captures();
+        moves.sort_by_cached_key(|m| {
+            let mut score = m.mmv_lva(&self.board);
+            if let Some(pv) = pv_line {
+                if pv.play == *m {
+                    score += 100000;
+                }
+            };
+            score
+        });
 
         for m in moves.iter().filter(|m| m.capture.is_some()).rev() {
             // TODO custom move generation for just captures
@@ -166,7 +179,7 @@ impl AlphaBeta {
                         return beta;
                     }
                     alpha = score;
-                    best_move = Some(m);
+                    best_move = Some(*m);
                     best_board = Some(self.board);
                 }
                 self.board.undo_move().unwrap();
@@ -181,7 +194,7 @@ impl AlphaBeta {
             self.moves.set(
                 self.board.key,
                 Pv {
-                    play: *best_move.unwrap(),
+                    play: best_move.unwrap(),
                     next_board: best_board.unwrap(),
                 },
             );
@@ -351,6 +364,12 @@ impl Engine for AlphaBeta {
             should_stop: false,
         }
     }
+
+    fn perft(&mut self) {
+        // TODO add a param
+        self.board.perft(1);
+    }
+
 
     fn configure(&mut self, start_time: time::Instant, search_duration: Option<time::Duration>) {
         self.start_time = start_time;
