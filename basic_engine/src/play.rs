@@ -36,12 +36,12 @@ impl Play {
     pub fn mmv_lva(&self, board: &Board) -> u64 {
         let victim_score = match self.capture {
             None => return 0,
-            Some(Piece::Pawn) => 10,
-            Some(Piece::Knight) => 25,
-            Some(Piece::Bishop) => 40,
-            Some(Piece::Rook) => 40,
-            Some(Piece::Queen) => 50,
-            Some(Piece::King) => 100,
+            Some(Piece::Pawn) => 100,
+            Some(Piece::Knight) => 250,
+            Some(Piece::Bishop) => 300,
+            Some(Piece::Rook) => 400,
+            Some(Piece::Queen) => 500,
+            Some(Piece::King) => 1000,
         };
         let attacker_score = match board.get_piece_index(self.from) {
             None => return 0,

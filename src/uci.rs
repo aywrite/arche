@@ -28,9 +28,9 @@ pub struct UCI<T: Engine> {
 impl<T: Engine> UCI<T> {
     pub fn new_with_engine(engine: T) -> Self {
         Self {
-            author: "Andrew".to_string(), // TODO get from Cargo.toml?
-            name: "Arche".to_string(),    // TODO change based on engine?
-            version: "1.6(pvt)".to_string(),   // TODO change based on git?
+            author: env!("CARGO_PKG_AUTHORS").to_string(),
+            name: env!("CARGO_PKG_NAME").to_string(), // TODO change based on engine?
+            version: env!("CARGO_PKG_VERSION").to_string(),
             engine,
         }
     }

@@ -23,7 +23,7 @@ struct PlayState {
     position_key: u64,
 }
 
-// TODO use zorb en_passant & castling
+// TODO use zorb for castling
 
 const MAX_GAME_SIZE: usize = 375;
 const EMPTY_HISTORY: [Option<PlayState>; MAX_GAME_SIZE] = [None; MAX_GAME_SIZE];
@@ -35,9 +35,9 @@ const D1: u8 = 3;
 const E1: u8 = 4;
 const F1: u8 = 5;
 const G1: u8 = 6;
-pub const H1: u8 = 7;
+const H1: u8 = 7;
 
-pub const A8: u8 = 56;
+const A8: u8 = 56;
 const B8: u8 = 57;
 const C8: u8 = 58;
 const D8: u8 = 59;
@@ -50,21 +50,40 @@ lazy_static! {
     static ref ATTACK_MASKS: AttackMasks = AttackMasks::new();
     pub static ref BASE_CONVERSIONS: BaseConversions = BaseConversions::new();
     static ref CASTLE_PERMISSION_SQUARES: [u8; 6] = [
-        coordinate_to_index(1, &File::A) as u8,
-        coordinate_to_index(1, &File::E) as u8,
-        coordinate_to_index(1, &File::H) as u8,
-        coordinate_to_index(8, &File::A) as u8,
-        coordinate_to_index(8, &File::E) as u8,
-        coordinate_to_index(8, &File::H) as u8,
+        coordinate_to_index(1, File::A) as u8,
+        coordinate_to_index(1, File::E) as u8,
+        coordinate_to_index(1, File::H) as u8,
+        coordinate_to_index(8, File::A) as u8,
+        coordinate_to_index(8, File::E) as u8,
+        coordinate_to_index(8, File::H) as u8,
     ];
     static ref ZORB: Zorbrist = Zorbrist::new();
     static ref PVT: PieceValueTables = PieceValueTables::new();
     static ref MAGIC: Magic = Magic::new();
-    static ref WHITE_CASTLE_MASK: u64 = {
+    static ref B1_C1_D1: u64 = {
         let mut mask = 0u64;
         mask.set_bit(B1);
         mask.set_bit(C1);
         mask.set_bit(D1);
+        mask
+    };
+    static ref F1_G1: u64 = {
+        let mut mask = 0u64;
+        mask.set_bit(F1);
+        mask.set_bit(G1);
+        mask
+    };
+    static ref B8_C8_D8: u64 = {
+        let mut mask = 0u64;
+        mask.set_bit(B8);
+        mask.set_bit(C8);
+        mask.set_bit(D8);
+        mask
+    };
+    static ref F8_G8: u64 = {
+        let mut mask = 0u64;
+        mask.set_bit(F8);
+        mask.set_bit(G8);
         mask
     };
 }
@@ -83,8 +102,8 @@ impl BaseConversions {
         };
         for rank in 1..=8 {
             for file in File::VARIANTS {
-                let index = coordinate_to_large_index(rank, &file);
-                let index_64 = coordinate_to_index(rank, &file) as usize;
+                let index = coordinate_to_large_index(rank, file);
+                let index_64 = coordinate_to_index(rank, file) as usize;
                 base.base_100_to_64[index as usize] = index_64 as u8;
                 base.base_64_to_100[index_64] = index;
             }
@@ -147,7 +166,7 @@ impl AttackMasks {
                 white_pawns = vec![];
             } else if bottom_rank {
                 kings.retain(|j| ![7, 8, 9].contains(j));
-                black_pawns = vec![]
+                black_pawns = vec![];
             }
 
             if left_edge {
@@ -160,20 +179,21 @@ impl AttackMasks {
                 white_pawns.retain(|j| ![-7].contains(j));
             }
 
-            for j in kings.iter() {
+            for j in &kings {
                 let index = i + j;
                 am.kings[i as usize].set_bit(index as u8);
             }
 
-            for j in white_pawns.iter() {
+            for j in &white_pawns {
                 let index = i + j;
                 am.white_pawns[i as usize].set_bit(index as u8);
             }
-            for j in black_pawns.iter() {
+            for j in &black_pawns {
                 let index = i + j;
                 am.black_pawns[i as usize].set_bit(index as u8);
             }
-            for j in knights.iter() {
+
+            for j in &knights {
                 let index = i + j;
                 if (0..64).contains(&index) {
                     let (new_rank, new_file) = index_to_coordinate(index as u8);
@@ -241,25 +261,6 @@ pub struct Board {
     pub key: u64,
 }
 
-//impl Hash for Board {
-//    fn hash<H: Hasher>(&self, state: &mut H) {
-//        self.pawns.hash(state);
-//        self.knights.hash(state);
-//        self.bishops.hash(state);
-//        self.rooks.hash(state);
-//        self.queens.hash(state);
-//        self.kings.hash(state);
-//
-//        self.black.hash(state);
-//        self.white.hash(state);
-//        self.active_color.hash(state);
-//        self.castle.hash(state);
-//        self.en_passant.hash(state);
-//
-//        self.fifty_move_rule.hash(state);
-//    }
-//}
-
 impl Default for Board {
     fn default() -> Self {
         Board::from_fen("rnbqkbnr/pppppppp/8/8/8/8/PPPPPPPP/RNBQKBNR w KQkq - 0 1").unwrap()
@@ -268,10 +269,10 @@ impl Default for Board {
 
 impl Board {
     pub fn new() -> Board {
+        lazy_static::initialize(&MAGIC); // TODO move this to engine/parse fen?
         Board::from_fen("rnbqkbnr/pppppppp/8/8/8/8/PPPPPPPP/RNBQKBNR w KQkq - 0 1").unwrap()
     }
 
-    // TODO test this has same output as generate_moves after filtering
     pub fn generate_captures(&self) -> Vec<Play> {
         let mut moves = Vec::with_capacity(25);
         let (color_mask, capture_mask) = match self.active_color {
@@ -327,8 +328,8 @@ impl Board {
             };
             // move diagonally and capture
             let pmoves: u64 = match self.active_color {
-                Color::White => ATTACK_MASKS.black_pawns[from as usize] & (capture_mask),
-                Color::Black => ATTACK_MASKS.white_pawns[from as usize] & (capture_mask),
+                Color::White => ATTACK_MASKS.black_pawns[from as usize] & capture_mask,
+                Color::Black => ATTACK_MASKS.white_pawns[from as usize] & capture_mask,
             };
             for to in pmoves.get_set_bits() {
                 let capture = self.get_piece_index(to);
@@ -368,10 +369,7 @@ impl Board {
             // Only include moves which don't have another piece of our color at the to square
             let kmoves = ATTACK_MASKS.knights[from as usize] & (!color_mask);
             for to in kmoves.get_set_bits() {
-                let mut capture = None;
-                if capture_mask.is_bit_set(to) {
-                    capture = self.get_piece_index(to);
-                }
+                let capture = self.get_piece_index(to);
                 moves.push(Play::new(from as u8, to as u8, capture, None, false, false));
             }
         }
@@ -380,10 +378,7 @@ impl Board {
         for from in queens_and_rooks {
             let move_mask = MAGIC.get_straight_move(from, all_pieces) & !color_mask;
             for to in move_mask.get_set_bits() {
-                let mut capture = None;
-                if capture_mask.is_bit_set(to) {
-                    capture = self.get_piece_index(to);
-                }
+                let capture = self.get_piece_index(to);
                 moves.push(Play::new(from, to, capture, None, false, false));
             }
         }
@@ -392,10 +387,7 @@ impl Board {
         for from in queens_and_bishops {
             let move_mask = MAGIC.get_diagonal_move(from, all_pieces) & !color_mask;
             for to in move_mask.get_set_bits() {
-                let mut capture = None;
-                if capture_mask.is_bit_set(to) {
-                    capture = self.get_piece_index(to);
-                }
+                let capture = self.get_piece_index(to);
                 moves.push(Play::new(from, to, capture, None, false, false));
             }
         }
@@ -405,10 +397,7 @@ impl Board {
             // Only include moves which don't have another piece of our color at the to square
             let kmove = ATTACK_MASKS.kings[from as usize] & (!color_mask);
             for to in kmove.get_set_bits() {
-                let mut capture = None;
-                if capture_mask.is_bit_set(to) {
-                    capture = self.get_piece_index(to);
-                }
+                let capture = self.get_piece_index(to);
                 moves.push(Play::new(from, to, capture, None, false, false));
             }
             // 1. castle permission is available
@@ -421,7 +410,7 @@ impl Board {
                 let check = self.square_attacked(E1, Color::Black);
                 if !check {
                     if self.castle.white_queen_side
-                        && [B1, C1, D1].iter().all(|i| !all_pieces.is_bit_set(*i))
+                        && (*B1_C1_D1 & all_pieces) == 0
                         && [C1, D1]
                             .iter()
                             .all(|i| !self.square_attacked(*i, Color::Black))
@@ -429,7 +418,7 @@ impl Board {
                         moves.push(Play::new(from, C1, None, None, false, true));
                     }
                     if self.castle.white_king_side
-                        && [F1, G1].iter().all(|i| !all_pieces.is_bit_set(*i))
+                        && (*F1_G1 & all_pieces) == 0
                         && [F1, G1]
                             .iter()
                             .all(|i| !self.square_attacked(*i, Color::Black))
@@ -443,7 +432,7 @@ impl Board {
                 let check = self.square_attacked(E8, Color::White);
                 if !check {
                     if self.castle.black_queen_side
-                        && [B8, C8, D8].iter().all(|i| !all_pieces.is_bit_set(*i))
+                        && (*B8_C8_D8 & all_pieces) == 0
                         && [C8, D8]
                             .iter()
                             .all(|i| !self.square_attacked(*i, Color::White))
@@ -451,7 +440,7 @@ impl Board {
                         moves.push(Play::new(from, C8, None, None, false, true));
                     }
                     if self.castle.black_king_side
-                        && [F8, G8].iter().all(|i| !all_pieces.is_bit_set(*i))
+                        && (*F8_G8 & all_pieces) == 0
                         && [F8, G8]
                             .iter()
                             .all(|i| !self.square_attacked(*i, Color::White))
@@ -471,8 +460,8 @@ impl Board {
             };
             // move diagonally and capture
             let pmoves: u64 = match self.active_color {
-                Color::White => ATTACK_MASKS.black_pawns[from as usize] & (capture_mask),
-                Color::Black => ATTACK_MASKS.white_pawns[from as usize] & (capture_mask),
+                Color::White => ATTACK_MASKS.black_pawns[from as usize] & capture_mask,
+                Color::Black => ATTACK_MASKS.white_pawns[from as usize] & capture_mask,
             };
             for to in pmoves.get_set_bits() {
                 let capture = self.get_piece_index(to);
@@ -579,12 +568,14 @@ impl Board {
 
     pub fn is_repetition(&self) -> bool {
         //let i = self.ply - self.fifty_move_rule;
-        for p in self.history.iter().flatten() {
-            if p.position_key == self.key {
-                return true;
-            }
-        }
-        false
+        let matching = self
+            .history
+            .iter()
+            .flatten()
+            .map(|h| h.position_key)
+            .filter(|k| *k == self.key)
+            .count();
+        matching >= 2
     }
 
     pub fn make_move(&mut self, play: &Play) -> bool {
@@ -605,14 +596,14 @@ impl Board {
             A1 => self.castle.white_queen_side = false,
             E1 => {
                 self.castle.white_queen_side = false;
-                self.castle.white_king_side = false
-            }
+                self.castle.white_king_side = false;
+            },
             H1 => self.castle.white_king_side = false,
             A8 => self.castle.black_queen_side = false,
             E8 => {
                 self.castle.black_queen_side = false;
-                self.castle.black_king_side = false
-            }
+                self.castle.black_king_side = false;
+            },
             H8 => self.castle.black_king_side = false,
             _ => (),
         }
@@ -765,7 +756,7 @@ impl Board {
         Ok(())
     }
 
-    #[inline(always)]
+    #[inline]
     fn move_piece(
         &mut self,
         from: u8,
@@ -776,7 +767,10 @@ impl Board {
     ) {
         debug_assert!((self.black | self.white).is_bit_set(from));
         debug_assert!(!(self.black | self.white).is_bit_set(to));
-        //debug_assert!(self.get_piece_index()); // TODO check from piece is of active_color
+        //debug_assert!(match self.active_color {
+        //    Color::White => self.white.is_bit_set(from),
+        //    Color::Black => self.black.is_bit_set(from),
+        //}); may be wrong if called from undo_move
         self.clear_piece_index(from, piece, color);
         if let Some(promote) = promote_piece {
             self.set_piece_index(to, (&promote).into(), color);
@@ -799,14 +793,14 @@ impl Board {
         for rank in (1..=8).rev() {
             print!("{} |", rank);
             for file in File::VARIANTS {
-                let index = coordinate_to_index(rank, &file);
+                let index = coordinate_to_index(rank, file);
                 if self.square_attacked(index as u8, color) {
                     print!("x|");
                 } else {
                     print!(".|");
                 }
             }
-            println!()
+            println!();
         }
         println!();
     }
@@ -826,16 +820,16 @@ impl Board {
         match color {
             Color::Black => {
                 self.black.set_bit(index);
-                self.black_value += piece.material_value()
+                self.black_value += piece.material_value();
             }
             Color::White => {
                 self.white.set_bit(index);
-                self.white_value += piece.material_value()
+                self.white_value += piece.material_value();
             }
         };
     }
 
-    fn set_piece(&mut self, piece: Piece, color: Color, rank: u8, file: &File) {
+    fn set_piece(&mut self, piece: Piece, color: Color, rank: u8, file: File) {
         let index = coordinate_to_index(rank, file);
         self.set_piece_index(index, piece, color);
     }
@@ -854,11 +848,11 @@ impl Board {
         match color {
             Color::Black => {
                 self.black.clear_bit(index);
-                self.black_value -= piece.material_value()
+                self.black_value -= piece.material_value();
             }
             Color::White => {
                 self.white.clear_bit(index);
-                self.white_value -= piece.material_value()
+                self.white_value -= piece.material_value();
             }
         };
     }
@@ -884,7 +878,7 @@ impl Board {
     }
 
     fn get_piece(&self, rank: u8, file: File) -> (Option<Piece>, Option<Color>) {
-        let index = coordinate_to_index(rank, &file);
+        let index = coordinate_to_index(rank, file);
         let mask = 1u64 << index;
         let color = if (self.black & mask) > 0 {
             Some(Color::Black)
@@ -930,7 +924,7 @@ impl Board {
             return 1;
         }
 
-        for m in self.generate_moves().iter() {
+        for m in &self.generate_moves() {
             let mut branch = 0;
             if self.make_move(m) {
                 branch = self.perft(depth - 1);
@@ -955,10 +949,10 @@ impl Game for Board {
             .ok_or("Error parsing FEN: could not find position block")?;
         let active_color_token = match fen_iter.next() {
             Some(c) => {
-                if c.len() != 1 {
-                    Err("Expected a single character token")
-                } else {
+                if c.len() == 1 {
                     c.chars().next().ok_or("Expected a single character token")
+                } else {
+                    Err("Expected a single character token")
                 }
             }
             None => Err("Error parsing FEN: expected active color token found none"),
@@ -1038,7 +1032,7 @@ impl Game for Board {
                 } else {
                     Color::Black
                 };
-                board.set_piece(p, color, rank, &file);
+                board.set_piece(p, color, rank, file);
             }
 
             file = match c {
@@ -1084,13 +1078,14 @@ impl fmt::Display for Board {
         writeln!(f)?;
         writeln!(
             f,
-            "{:?} to play.  | {} {:?} {} {} material: {}",
+            "{:?} to play.  | {} {:?} ply: {} move: {} last capture: {} material: {}",
             self.active_color,
             self.castle.as_fen(),
             self.en_passant,
             self.ply,
             self.move_number,
-            (self.white_value as i64 - self.black_value as i64),
+            self.fifty_move_rule,
+            (i64::from(self.white_value) - i64::from(self.black_value)),
         )?;
         writeln!(f)?;
         Ok(())
@@ -1147,17 +1142,45 @@ mod make_move {
     }
 
     #[test]
+    fn test_generate_captures() {
+        let board = Board::from_fen(
+            "r4rk1/1pp1qppp/p1np1n2/2b1p1B1/2B1P1b1/P1NP1N2/1PP1QPPP/R4RK1 w - - 0 10",
+        )
+        .unwrap();
+        let filtered_captures: Vec<Play> = board
+            .generate_moves()
+            .iter()
+            .filter(|c| c.capture.is_some())
+            .map(|c| c.clone())
+            .collect();
+        let captures = board.generate_captures();
+        assert_eq!(captures, filtered_captures);
+    }
+
+    #[test]
     fn test_is_repetition() {
         let mut board = Board::from_fen(
             "r4rk1/1pp1qppp/p1np1n2/2b1p1B1/2B1P1b1/P1NP1N2/1PP1QPPP/R4RK1 b - - 3 19",
         )
         .unwrap();
+        // Position 1
+        assert_eq!(board.is_repetition(), false);
         board.make_move(&Play::new(A8, B8, None, None, false, false));
         board.make_move(&Play::new(A1, B1, None, None, false, false));
         assert_eq!(board.is_repetition(), false);
         board.make_move(&Play::new(B8, A8, None, None, false, false));
         assert_eq!(board.is_repetition(), false);
         board.make_move(&Play::new(B1, A1, None, None, false, false));
+        assert_eq!(board.is_repetition(), false);
+        // Position 1 - (first repeat)
+        board.make_move(&Play::new(A8, B8, None, None, false, false));
+        assert_eq!(board.is_repetition(), false);
+        board.make_move(&Play::new(A1, B1, None, None, false, false));
+        assert_eq!(board.is_repetition(), false);
+        board.make_move(&Play::new(B8, A8, None, None, false, false));
+        assert_eq!(board.is_repetition(), false);
+        board.make_move(&Play::new(B1, A1, None, None, false, false));
+        // Position 1 - (second repeat)
         assert_eq!(board.is_repetition(), true);
     }
 }

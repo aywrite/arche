@@ -23,7 +23,7 @@ impl Coordinate {
         Ok(Some(c))
     }
     pub fn as_index(&self) -> u8 {
-        coordinate_to_index(self.rank, &self.file) as u8
+        coordinate_to_index(self.rank, self.file) as u8
     }
     pub fn from_index(index: u8) -> Self {
         let (rank, file) = index_to_coordinate(index);
@@ -81,19 +81,19 @@ impl CastlePermissions {
     pub fn as_fen(&self) -> String {
         let mut s = String::new();
         if self.white_king_side {
-            s.push('K')
+            s.push('K');
         };
         if self.white_queen_side {
-            s.push('Q')
+            s.push('Q');
         };
         if self.black_king_side {
-            s.push('k')
+            s.push('k');
         };
         if self.black_queen_side {
-            s.push('q')
+            s.push('q');
         };
         if s.is_empty() {
-            s.push('-')
+            s.push('-');
         };
         s
     }
@@ -144,14 +144,15 @@ pub trait BitBoard {
     fn debug_print(&self);
     fn is_bit_set(&self, index: u8) -> bool;
     fn get_set_bits(&self) -> Vec<u8>;
+    fn pop_bit(&mut self) -> Option<u8>;
 
     // TODO Remove these?
     #[inline(always)]
-    fn set_bit_from_coordinate(&mut self, rank: u8, file: &File) {
+    fn set_bit_from_coordinate(&mut self, rank: u8, file: File) {
         self.set_bit(coordinate_to_index(rank, file));
     }
     #[inline(always)]
-    fn clear_bit_from_coordinate(&mut self, rank: u8, file: &File) {
+    fn clear_bit_from_coordinate(&mut self, rank: u8, file: File) {
         self.clear_bit(coordinate_to_index(rank, file));
     }
 }
@@ -185,13 +186,13 @@ impl BitBoard for u64 {
         for rank in 1..9 {
             print!("{} |", rank);
             for file in File::VARIANTS {
-                if (self & (1u64 << coordinate_to_index(rank, &file))) > 0 {
+                if (self & (1u64 << coordinate_to_index(rank, file))) > 0 {
                     print!(" x");
                 } else {
                     print!(" .");
                 }
             }
-            println!()
+            println!();
         }
     }
     #[inline(always)]
@@ -205,19 +206,28 @@ impl BitBoard for u64 {
         }
         v
     }
+
+    fn pop_bit(&mut self) -> Option<u8> {
+        if *self == 0 {
+            return None;
+        }
+        let index = self.trailing_zeros();
+        *self ^= 1 << index;
+        Some(index as u8)
+    }
 }
 
-pub fn coordinate_to_index(rank: u8, file: &File) -> u8 {
-    ((rank - 1) * 8) + (*file) as u8
+pub fn coordinate_to_index(rank: u8, file: File) -> u8 {
+    ((rank - 1) * 8) + (file) as u8
 }
 
-pub fn coordinate_to_large_index(rank: u8, file: &File) -> u8 {
-    ((rank - 1) * 10) + (*file) as u8 + 11
+pub fn coordinate_to_large_index(rank: u8, file: File) -> u8 {
+    ((rank - 1) * 10) + (file) as u8 + 11
 }
 
 pub fn index_to_coordinate(index: u8) -> (u8, File) {
     let rank = ((index) / 8) + 1;
-    let file = File::try_from((index % 8) as u64).unwrap(); // TODO remove as u64
+    let file = File::try_from(index % 8).unwrap();
     (rank, file)
 }
 
@@ -231,7 +241,7 @@ mod test_index_coordinate_conversion {
         #[test]
         fn round_trip(i in 1u8..=64) {
             let (rank, file) = index_to_coordinate(i);
-            assert_eq!(i, coordinate_to_index(rank, &file));
+            assert_eq!(i, coordinate_to_index(rank, file));
         }
     }
 }
@@ -275,7 +285,7 @@ pub enum Piece {
 }
 
 impl Piece {
-    pub fn material_value(&self) -> u32 {
+    pub fn material_value(self) -> u32 {
         match self {
             Piece::Pawn => 100,
             Piece::Knight => 310,
@@ -338,8 +348,8 @@ impl File {
         File::H,
     ];
 
-    pub fn add(&self, value: u32) -> File {
-        let new_value = ((*self as usize) + value as usize) % 8;
+    pub fn add(self, value: u32) -> File {
+        let new_value = ((self as usize) + value as usize) % 8;
         File::VARIANTS[new_value]
     }
 }
@@ -378,10 +388,10 @@ impl From<File> for u64 {
     }
 }
 
-impl TryFrom<u64> for File {
+impl TryFrom<u8> for File {
     type Error = String;
 
-    fn try_from(i: u64) -> Result<Self, Self::Error> {
+    fn try_from(i: u8) -> Result<Self, Self::Error> {
         match i {
             0 => Ok(File::A),
             1 => Ok(File::B),
