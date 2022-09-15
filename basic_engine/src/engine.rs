@@ -6,7 +6,7 @@ use std::fmt;
 use std::mem;
 use std::time;
 
-const CHECKMATE_SCORE: i64 = 800000;
+const CHECKMATE_SCORE: i64 = 800_000;
 const MAX_DEPTH: u8 = 16;
 
 pub trait Engine {
@@ -57,9 +57,12 @@ pub trait Engine {
                             self.pv_line(),
                             // TODO add search time to this
                             // TODO add nodes per second
+                            // TODO add selective depth (qui)
                         );
                     }
                 }
+            } else {
+                println!("info string no legal moves identified");
             }
         }
         best_move.unwrap()
@@ -116,7 +119,7 @@ pub struct AlphaBeta {
 
 impl AlphaBeta {
     fn eval(&self) -> i64 {
-        let eval = self.board.white_value as i64 - self.board.black_value as i64;
+        let eval = i64::from(self.board.white_value) - i64::from(self.board.black_value);
 
         let mut score = 0i64;
         for i in 0..64u8 {
@@ -132,7 +135,7 @@ impl AlphaBeta {
 
     fn check_if_should_stop(&mut self) {
         if let Some(search_time) = self.search_duration {
-            self.should_stop = self.start_time.elapsed() >= search_time
+            self.should_stop = self.start_time.elapsed() >= search_time;
         }
     }
 
@@ -141,7 +144,7 @@ impl AlphaBeta {
             return self.eval();
         }
         if self.nodes % 3000 == 0 {
-            self.check_if_should_stop()
+            self.check_if_should_stop();
         }
         self.nodes += 1;
 
@@ -153,7 +156,7 @@ impl AlphaBeta {
         }
 
         let mut best_move: Option<Play> = None;
-        let mut best_board: Option<Board> = None;
+        let mut best_board: Option<u64> = None;
         let old_alpha = alpha;
         let mut score: i64;
         let pv_line = self.moves.get(self.board.key);
@@ -169,8 +172,7 @@ impl AlphaBeta {
             score
         });
 
-        for m in moves.iter().filter(|m| m.capture.is_some()).rev() {
-            // TODO custom move generation for just captures
+        for m in moves.iter().rev() {
             if self.board.make_move(m) {
                 score = -self.quiescence(-beta, -alpha);
                 if score > alpha {
@@ -180,7 +182,7 @@ impl AlphaBeta {
                     }
                     alpha = score;
                     best_move = Some(*m);
-                    best_board = Some(self.board);
+                    best_board = Some(self.board.key);
                 }
                 self.board.undo_move().unwrap();
                 if self.should_stop {
@@ -195,7 +197,7 @@ impl AlphaBeta {
                 self.board.key,
                 Pv {
                     play: best_move.unwrap(),
-                    next_board: best_board.unwrap(),
+                    next_key: best_board.unwrap(),
                 },
             );
         }
@@ -204,16 +206,15 @@ impl AlphaBeta {
 
     fn alpha_beta(&mut self, mut alpha: i64, beta: i64, depth: u8) -> i64 {
         if self.nodes % 3000 == 0 {
-            self.check_if_should_stop()
+            self.check_if_should_stop();
         }
         self.nodes += 1;
 
         if depth == 0 {
             if self.search_depth >= 4 {
                 return self.quiescence(alpha, beta);
-            } else {
-                return self.eval();
             }
+            return self.eval();
         }
 
         if self.board.fifty_move_rule >= 100 || self.board.is_repetition() {
@@ -224,7 +225,7 @@ impl AlphaBeta {
         let mut score: i64;
         let mut found_legal_move = false;
         let mut best_move: Option<&Play> = None;
-        let mut best_board: Option<Board> = None;
+        let mut best_board: Option<u64> = None;
         let pv_line = self.moves.get(self.board.key);
 
         let mut moves = self.board.generate_moves();
@@ -232,7 +233,7 @@ impl AlphaBeta {
             let mut score = m.mmv_lva(&self.board);
             if let Some(pv) = pv_line {
                 if pv.play == *m {
-                    score += 100000;
+                    score += 100_000;
                 }
             };
             score
@@ -249,7 +250,7 @@ impl AlphaBeta {
                     }
                     alpha = score;
                     best_move = Some(m);
-                    best_board = Some(self.board);
+                    best_board = Some(self.board.key);
                 }
                 self.board.undo_move().unwrap();
                 if self.should_stop {
@@ -271,7 +272,7 @@ impl AlphaBeta {
                 self.board.key,
                 Pv {
                     play: *best_move.unwrap(),
-                    next_board: best_board.unwrap(),
+                    next_key: best_board.unwrap(),
                 },
             );
         }
@@ -279,12 +280,13 @@ impl AlphaBeta {
     }
 }
 
-#[derive(Copy, Clone)]
+#[derive(Copy, Clone, Debug)]
 struct Pv {
-    next_board: Board,
+    next_key: u64,
     play: Play,
 }
 
+#[derive(Debug)]
 struct HashTable {
     table: Vec<Option<Pv>>,
     capacity: usize,
@@ -370,7 +372,6 @@ impl Engine for AlphaBeta {
         self.board.perft(1);
     }
 
-
     fn configure(&mut self, start_time: time::Instant, search_duration: Option<time::Duration>) {
         self.start_time = start_time;
         self.search_duration = search_duration;
@@ -429,11 +430,11 @@ impl Engine for AlphaBeta {
         let mut pv_line = Vec::new();
         let mut pv = self.moves.get(self.board.key).unwrap();
         pv_line.push(pv.play);
-        while let Some(next) = self.moves.get(pv.next_board.key) {
+        while let Some(next) = self.moves.get(pv.next_key) {
             pv_line.push(next.play);
             pv = next;
             if pv_line.len() >= 16 {
-                break; // TODO
+                break; // TODO resolve hash colisions to prevent errors here
             }
         }
         PvLine { line: pv_line }

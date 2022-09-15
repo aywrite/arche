@@ -1,7 +1,10 @@
 [package]
 name = "arche"
-version = "0.2.0"
+version = "0.2.3"
 edition = "2021"
+authors = [
+  "Andrew Wright"
+]
 
 [workspace]
 members = [
@@ -13,6 +16,10 @@ lazy_static = "1.4.0"
 regex = "1"
 basic_engine = { path = "./basic_engine" }
 rand = "0.8.5"
+
+[profile.release]
+lto = true
+codegen-units = 1
 
 [profile.bench]
 debug = true

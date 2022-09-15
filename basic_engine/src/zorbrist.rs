@@ -13,7 +13,7 @@ pub struct Zorbrist {
 
 impl Zorbrist {
     pub fn new() -> Self {
-        let mut rng: SmallRng = <SmallRng as SeedableRng>::seed_from_u64(0xDEADBEEF);
+        let mut rng: SmallRng = <SmallRng as SeedableRng>::seed_from_u64(0xDEAD_BEEF);
         let mut pieces = [[0u64; 64]; 12];
         for b in &mut pieces {
             let mut array = [0u64; 64];

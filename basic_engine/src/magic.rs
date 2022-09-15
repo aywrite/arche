@@ -1,4 +1,4 @@
-use crate::board::{A8, BASE_CONVERSIONS, H1};
+use crate::board::BASE_CONVERSIONS;
 use crate::misc::BitBoard;
 use rand::rngs::SmallRng;
 use rand::{Rng, SeedableRng};
@@ -89,7 +89,7 @@ impl Magic {
 
     fn find_magic(
         rng: &mut SmallRng,
-        blockers: &Vec<u64>,
+        blockers: &[u64],
         move_boards: &Vec<u64>,
         bits: u8,
     ) -> (u64, Vec<u64>) {
@@ -97,8 +97,8 @@ impl Magic {
         let shift = 64 - bits;
         'outer: loop {
             let magic_candidate: u64 = rng.gen::<u64>() & rng.gen::<u64>() & rng.gen::<u64>();
-            for i in 0..result.len() {
-                result[i] = 0;
+            for item in &mut result {
+                *item = 0;
             }
 
             for (blocker, &move_b) in blockers.iter().zip(move_boards) {
@@ -110,20 +110,20 @@ impl Magic {
                 }
             }
             return (magic_candidate, result);
-        };
+        }
     }
 
     pub fn get_straight_move(&self, square: u8, mask: u64) -> u64 {
         let blockers = mask & self.blocker_masks.straight[square as usize];
-        let index =
-            (blockers * self.straight[square as usize]) >> self.straight_bits[square as usize];
+        let index = (blockers.wrapping_mul(self.straight[square as usize]))
+            >> self.straight_bits[square as usize];
         self.straight_moves[square as usize][index as usize]
     }
 
     pub fn get_diagonal_move(&self, square: u8, mask: u64) -> u64 {
         let blockers = mask & self.blocker_masks.diagonal[square as usize];
-        let index =
-            (blockers * self.diagonal[square as usize]) >> self.diagonal_bits[square as usize];
+        let index = (blockers.wrapping_mul(self.diagonal[square as usize]))
+            >> self.diagonal_bits[square as usize];
         self.diagonal_moves[square as usize][index as usize]
     }
 }
@@ -239,7 +239,7 @@ impl BlockerBoards {
         for i in 0u8..64 {
             if mask.is_bit_set(i) {
                 if !index.is_bit_set(bit_index) {
-                    board.clear_bit(i)
+                    board.clear_bit(i);
                 }
                 bit_index += 1;
             }
@@ -254,18 +254,6 @@ impl BlockerMasks {
             straight: [0; 64], // rooks and queens
             diagonal: [0; 64], // bishops and queens
         };
-        let mut edge = 0;
-        for i in 0u8..64 {
-            let top_rank = i <= H1.into();
-            let bottom_rank = i >= A8.into();
-            let left_edge = (i % 8) == 0;
-            let right_edge = (i % 8) == 7;
-            if top_rank || bottom_rank {
-                edge.set_bit(i);
-            } else if left_edge || right_edge {
-                edge.set_bit(i);
-            }
-        }
         for i in 0usize..64 {
             for j in 1..7 {
                 let horizontal_index = (i / 8 * 8) + j;
@@ -291,8 +279,6 @@ impl BlockerMasks {
             }
             am.diagonal[i].clear_bit(i as u8); // can't be blocked by self
             am.straight[i].clear_bit(i as u8); // can't be blocked by self
-                                               //am.diagonal[i] &= !edge;
-                                               //am.straight[i] &= !edge;
         }
         am
     }
