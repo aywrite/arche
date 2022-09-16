@@ -198,10 +198,35 @@ impl AlphaBeta {
                 Pv {
                     play: best_move.unwrap(),
                     next_key: best_board.unwrap(),
+                    score: alpha,
+                    depth: 0,          // TODO what to do here
+                    node: Node::Exact, // TODO change to none?
                 },
             );
         }
         alpha
+    }
+
+    fn get_transposition(&self, key: u64, alpha: i64, beta: i64, depth: u8) -> (Option<&Pv>, bool) {
+        let pv = self.moves.get(key);
+        if let Some(pv) = pv {
+            if pv.depth >= depth.into() {
+                match pv.node {
+                    Node::Exact => return (Some(pv), true),
+                    Node::Alpha => {
+                        if pv.score <= alpha {
+                            return (Some(pv), true);
+                        }
+                    }
+                    Node::Beta => {
+                        if pv.score >= beta {
+                            return (Some(pv), true);
+                        }
+                    }
+                }
+            }
+        }
+        (pv, false)
     }
 
     fn alpha_beta(&mut self, mut alpha: i64, beta: i64, depth: u8) -> i64 {
@@ -226,7 +251,10 @@ impl AlphaBeta {
         let mut found_legal_move = false;
         let mut best_move: Option<&Play> = None;
         let mut best_board: Option<u64> = None;
-        let pv_line = self.moves.get(self.board.key);
+        let (pv_line, cutoff) = self.get_transposition(self.board.key, alpha, beta, depth);
+        if cutoff {
+            return pv_line.unwrap().score;
+        }
 
         let mut moves = self.board.generate_moves();
         moves.sort_by_cached_key(|m| {
@@ -244,13 +272,25 @@ impl AlphaBeta {
                 found_legal_move = true;
                 score = -self.alpha_beta(-beta, -alpha, depth - 1);
                 if score > alpha {
+                    best_move = Some(m);
+                    best_board = Some(self.board.key);
                     if score >= beta {
                         self.board.undo_move().unwrap();
+                        self.moves.set(
+                            self.board.key,
+                            Pv {
+                                play: *best_move.unwrap(),
+                                next_key: best_board.unwrap(),
+                                depth: depth as usize,
+                                score: beta,
+                                node: Node::Beta,
+                            },
+                        );
                         return beta;
                     }
                     alpha = score;
-                    best_move = Some(m);
-                    best_board = Some(self.board.key);
+                    //best_move = Some(m);
+                    //best_board = Some(self.board.key);
                 }
                 self.board.undo_move().unwrap();
                 if self.should_stop {
@@ -273,6 +313,20 @@ impl AlphaBeta {
                 Pv {
                     play: *best_move.unwrap(),
                     next_key: best_board.unwrap(),
+                    depth: depth as usize,
+                    score: alpha,
+                    node: Node::Exact,
+                },
+            );
+        } else if let Some(&bm) = best_move {
+            self.moves.set(
+                self.board.key,
+                Pv {
+                    play: bm,
+                    next_key: best_board.unwrap(),
+                    depth: depth as usize,
+                    score: alpha,
+                    node: Node::Alpha,
                 },
             );
         }
@@ -284,6 +338,16 @@ impl AlphaBeta {
 struct Pv {
     next_key: u64,
     play: Play,
+    score: i64,
+    depth: usize,
+    node: Node,
+}
+
+#[derive(Copy, Clone, Debug)]
+enum Node {
+    Exact,
+    Alpha,
+    Beta,
 }
 
 #[derive(Debug)]
