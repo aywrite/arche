@@ -517,6 +517,7 @@ impl Board {
     }
 
     pub fn piece_value(&self, index: u8) -> isize {
+        // TODO this is a big bug, color is wrong?
         match self.get_piece_index(index) {
             Some(p) => PVT.get_value(index as usize, p, self.active_color),
             None => 0,
