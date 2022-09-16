@@ -1,2 +1,10 @@
 /target
 ./basic_engine/target
+.cargo
+.rustup
+
+# profiling
+perf.data*
+callgrind.out*
+dhat.out*
+flamegraph.svg*

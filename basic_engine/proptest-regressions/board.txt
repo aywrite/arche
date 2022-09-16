@@ -4,4 +4,4 @@
 #
 # It is recommended to check this file in to source control so that
 # everyone who runs the test benefits from these saved cases.
-cc 1fa64202aaaf9ffe279a7a42a6e11d3a752a467ed4e3364180fd0fc2491ecdc2 # shrinks to i = 0
+cc ed604ae5dd6e93761412b00ff46c37912ccca9bc0a42823cd0c6c86651405f40 # shrinks to s = "1BNNPkbnP/KpKNB1BbN/kKKbBkN1N/N1pkk1bNP/nb1p1NKnB/kbb1KbPnB/BPpbkpPpP/KpkN w - A1 1 1"
