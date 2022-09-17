@@ -2,6 +2,39 @@
 
 All notable changes to this project will be documented in this file.
 
+## [0.3.3] - 2022-09-17
+
+### Bug Fixes
+
+- Try re-ordering draw check to prevent draws in winning positions
+- Slightly increase score for 5th rank pawns
+- Add template for cargo-release commit messages
+
+### Documentation
+
+- Add basic usage to readme
+
+### Miscellaneous Tasks
+
+- Add CI job to compare benchmarks on pull requests
+
+### Performance
+
+- Use small vec instead to reduce allocations in move generation
+
+### Refactor
+
+- Clean up some tests by using a macro
+
+### Styling
+
+- Minor lint fixes based on clippy output
+- Add pre-commit config and associated initial fixes
+
+### Testing
+
+- Fix transposition table shortcutting alpha-beta benchmarks
+
 ## [0.3.2] - 2022-09-17
 
 ### Bug Fixes
