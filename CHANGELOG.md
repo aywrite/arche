@@ -2,6 +2,14 @@
 
 All notable changes to this project will be documented in this file.
 
+## [0.3.2] - 2022-09-17
+
+### Bug Fixes
+
+- Bug in evaluation causing non-symmetric scores
+- Incorrect calculation of moves until checkmate
+- Incorrect calculation of hash table size
+
 ## [0.3.0] - 2022-09-16
 
 ### Miscellaneous Tasks
