@@ -84,9 +84,11 @@ impl<T: Engine> UCI<T> {
 
         if let Some(moves) = move_list {
             for m in moves.split_whitespace() {
-                if !self.engine.make_move_str(m.trim()) {
-                    panic!("Failed to parse/play {}", m);
-                }
+                assert!(
+                    self.engine.make_move_str(m.trim()),
+                    "Failed to parse/play {}",
+                    m
+                );
             }
         }
     }

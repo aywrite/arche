@@ -22,7 +22,7 @@ impl Coordinate {
         };
         Ok(Some(c))
     }
-    pub fn as_index(&self) -> u8 {
+    pub fn as_index(self) -> u8 {
         coordinate_to_index(self.rank, self.file) as u8
     }
     pub fn from_index(index: u8) -> Self {

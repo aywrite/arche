@@ -334,11 +334,4 @@ pub fn test() {
     moves_d.debug_print();
     println!("MOVES");
     moves.debug_print();
-
-    //bm.diagonal[55].debug_print();
-    //bm.diagonal[27].debug_print();
-    //println!("bb");
-    //bb.diagonal[27][3].debug_print();
-    //println!("mb");
-    //mv.diagonal[27][3].debug_print();
 }
