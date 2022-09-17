@@ -119,18 +119,7 @@ pub struct AlphaBeta {
 
 impl AlphaBeta {
     fn eval(&self) -> i64 {
-        let eval = i64::from(self.board.white_value) - i64::from(self.board.black_value);
-
-        let mut score = 0i64;
-        for i in 0..64u8 {
-            score += self.board.piece_value(i) as i64;
-        }
-        let eval = eval + score;
-
-        match self.board.active_color {
-            Color::White => eval,
-            Color::Black => -eval,
-        }
+        self.board.eval()
     }
 
     fn check_if_should_stop(&mut self) {
