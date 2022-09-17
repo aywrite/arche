@@ -396,7 +396,7 @@ pub struct SearchResult {
 impl SearchResult {
     fn checkmate_in(&self) -> Option<i64> {
         if (CHECKMATE_SCORE - self.score.abs()) < 300 {
-            let mut mate = ((CHECKMATE_SCORE - self.score.abs()) / 2) + 1;
+            let mut mate = (CHECKMATE_SCORE - self.score.abs()) / 2;
             if self.score < 0 {
                 mate = -mate;
             };
