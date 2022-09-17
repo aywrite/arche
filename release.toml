@@ -4,3 +4,4 @@ push = false
 pre-release-hook = [
 "git-cliff", "-o", "CHANGELOG.md", "--tag", "{{version}}"
 ]
+pre-release-commit-message="chore: release {{version}}"
