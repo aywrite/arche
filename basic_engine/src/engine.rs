@@ -224,15 +224,15 @@ impl AlphaBeta {
         }
         self.nodes += 1;
 
+        if self.board.fifty_move_rule >= 100 || self.board.is_repetition() {
+            return 0;
+        }
+
         if depth == 0 {
             if self.search_depth >= 4 {
                 return self.quiescence(alpha, beta);
             }
             return self.eval();
-        }
-
-        if self.board.fifty_move_rule >= 100 || self.board.is_repetition() {
-            return 0;
         }
 
         let old_alpha = alpha;
@@ -278,8 +278,6 @@ impl AlphaBeta {
                         return beta;
                     }
                     alpha = score;
-                    //best_move = Some(m);
-                    //best_board = Some(self.board.key);
                 }
                 self.board.undo_move().unwrap();
                 if self.should_stop {
@@ -347,11 +345,6 @@ struct HashTable {
 }
 
 impl HashTable {
-    // TODO make generic
-    fn new() -> Self {
-        HashTable::with_capacity(10000)
-    }
-
     fn with_capacity(capacity: usize) -> Self {
         Self {
             table: vec![None; capacity as usize],
