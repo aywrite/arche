@@ -3,13 +3,15 @@ Andrew's Rust Chess Engine
 
 ## TODO
  
-- transposition table
+[x] transposition table
 - null move pruning
 - killer moves
 - perft command from uci
 - fix magics to load on engine start
-- evaluate drawn positions
 - better evaluation
+  - mobility in evaluation
+  - evaluate drawn positions
+  - special cases (bishop pair, open files etc)
 - winboard
 
 ## Acknowledgements
