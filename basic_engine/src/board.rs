@@ -516,11 +516,28 @@ impl Board {
         moves
     }
 
-    pub fn piece_value(&self, index: u8) -> isize {
-        // TODO this is a big bug, color is wrong?
-        match self.get_piece_index(index) {
-            Some(p) => PVT.get_value(index as usize, p, self.active_color),
+    fn piece_value(&self, index: u8) -> isize {
+        match self.get_piece_and_color_index(index) {
+            Some((p, Color::White)) => PVT.get_value(index as usize, p, Color::White),
+            Some((p, Color::Black)) => -PVT.get_value(index as usize, p, Color::Black),
             None => 0,
+        }
+    }
+
+    pub fn eval(&self) -> i64 {
+        // TODO should this return white value & black value as separate numbers instead?
+        // TODO should this return i32 or isize instead
+        let eval = i64::from(self.white_value) - i64::from(self.black_value);
+
+        let mut score = 0i64;
+        for i in 0..64u8 {
+            score += self.piece_value(i) as i64;
+        }
+        let eval = eval + score;
+
+        match self.active_color {
+            Color::White => eval,
+            Color::Black => -eval,
         }
     }
 
@@ -598,13 +615,13 @@ impl Board {
             E1 => {
                 self.castle.white_queen_side = false;
                 self.castle.white_king_side = false;
-            },
+            }
             H1 => self.castle.white_king_side = false,
             A8 => self.castle.black_queen_side = false,
             E8 => {
                 self.castle.black_queen_side = false;
                 self.castle.black_king_side = false;
-            },
+            }
             H8 => self.castle.black_king_side = false,
             _ => (),
         }
@@ -878,6 +895,33 @@ impl Board {
         }
     }
 
+    pub fn get_piece_and_color_index(&self, index: u8) -> Option<(Piece, Color)> {
+        let mask = 1u64 << index;
+        let piece = if (self.pawns & mask) > 0 {
+            Piece::Pawn
+        } else if (self.knights & mask) > 0 {
+            Piece::Knight
+        } else if (self.bishops & mask) > 0 {
+            Piece::Bishop
+        } else if (self.rooks & mask) > 0 {
+            Piece::Rook
+        } else if (self.queens & mask) > 0 {
+            Piece::Queen
+        } else if (self.kings & mask) > 0 {
+            Piece::King
+        } else {
+            return None;
+        };
+        let color = if (self.black & mask) > 0 {
+            Color::Black
+        } else if (self.white & mask) > 0 {
+            Color::White
+        } else {
+            return None;
+        };
+        Some((piece, color))
+    }
+
     fn get_piece(&self, rank: u8, file: File) -> (Option<Piece>, Option<Color>) {
         let index = coordinate_to_index(rank, file);
         let mask = 1u64 << index;
@@ -1094,7 +1138,59 @@ impl fmt::Display for Board {
 }
 
 #[cfg(test)]
+mod evaluate {
+    use super::Board;
+    use super::Color;
+    use super::Game;
+    use pretty_assertions::assert_eq;
+
+    macro_rules! test_fen {
+        ($func:ident, $f:expr) => {
+            #[test]
+            fn $func() {
+                let mut board = Board::from_fen($f).unwrap();
+                for m in &board.generate_moves() {
+                    if board.make_move(m) {
+                        assert_eq!(
+                            (board.white_value, board.black_value),
+                            board.material_value()
+                        );
+                        let score = board.eval();
+                        match board.active_color {
+                            Color::Black => board.active_color = Color::White,
+                            Color::White => board.active_color = Color::Black,
+                        }
+                        let opp_score = board.eval();
+                        assert_eq!(score, -opp_score);
+                        match board.active_color {
+                            Color::Black => board.active_color = Color::White,
+                            Color::White => board.active_color = Color::Black,
+                        }
+                        board.undo_move().unwrap();
+                    }
+                }
+            }
+        };
+    }
+
+    test_fen!(
+        initial_position,
+        "rnbqkbnr/pppppppp/8/8/8/8/PPPPPPPP/RNBQKBNR w KQkq - 0 1"
+    );
+    test_fen!(
+        promotion,
+        "rnbqkbnr/pp1ppppp/8/2p5/3Pp3/8/PPPP1PpP/RNBQKB1R b KQkq e5 0 2"
+    );
+    test_fen!(
+        castling,
+        "r4rk1/1pp1qppp/p1np1n2/2b1p1B1/2B1P1b1/P1NP1N2/1PP1QPPP/R4RK1 w - - 0 10"
+    );
+    test_fen!(position_3, "8/2p5/3p4/KP5r/1R3p1k/8/4P1P1/8 w - - 0 1");
+}
+
+#[cfg(test)]
 mod make_move {
+    // TODO convert these tests to use macros
     use super::Board;
     use super::Game;
     use super::Play;
@@ -1108,10 +1204,6 @@ mod make_move {
             let mut new = board.clone();
             if new.make_move(m) {
                 assert_ne!(old, new);
-                assert_eq!(
-                    (board.white_value, board.black_value),
-                    board.material_value()
-                );
                 new.undo_move().unwrap();
                 assert_eq!(old, new);
             }
@@ -1191,6 +1283,7 @@ mod perft {
     use super::Board;
     use super::Game;
     use pretty_assertions::assert_eq;
+    // TODO convert these tests to use macros
     // Positions and perft results taken from https://www.chessprogramming.org/Perft_Results
 
     #[test]
