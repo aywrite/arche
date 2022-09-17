@@ -333,6 +333,7 @@ struct Pv {
 }
 
 #[derive(Copy, Clone, Debug)]
+// TODO better name for this
 enum Node {
     Exact,
     Alpha,
@@ -359,7 +360,7 @@ impl HashTable {
     }
 
     fn with_capacity_bytes(bytes: usize) -> Self {
-        let entry_size = mem::size_of::<u64>() + mem::size_of::<Pv>();
+        let entry_size = mem::size_of::<Pv>();
         Self::with_capacity(bytes / entry_size)
     }
 
