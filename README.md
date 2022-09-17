@@ -8,7 +8,7 @@ The engine does not ship with any GUI. It currently implements a subset of the U
 The program does not accept posix style arguments it will immediately start in UCI mode.
 
 ## TODO
- 
+
 [x] transposition table
 - null move pruning
 - killer moves
