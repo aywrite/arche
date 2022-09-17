@@ -1,3 +1,4 @@
+use smallvec::SmallVec;
 use std::fmt;
 use std::mem;
 
@@ -143,7 +144,7 @@ pub trait BitBoard {
     fn count(&self) -> u8;
     fn debug_print(&self);
     fn is_bit_set(&self, index: u8) -> bool;
-    fn get_set_bits(&self) -> Vec<u8>;
+    fn get_set_bits(&self) -> SmallVec<[u8; 16]>;
     fn pop_bit(&mut self) -> Option<u8>;
 
     // TODO Remove these?
@@ -196,8 +197,8 @@ impl BitBoard for u64 {
         }
     }
     #[inline(always)]
-    fn get_set_bits(&self) -> Vec<u8> {
-        let mut v = Vec::with_capacity(self.count_ones() as usize);
+    fn get_set_bits(&self) -> SmallVec<[u8; 16]> {
+        let mut v = SmallVec::<[u8; 16]>::new();
         let mut value = *self;
         while value != 0 {
             let index = value.trailing_zeros();
