@@ -1197,58 +1197,68 @@ mod make_move {
     use super::{A1, A8, B1, B8};
     use pretty_assertions::{assert_eq, assert_ne};
 
-    fn do_undo(board: Board) {
-        let moves = board.generate_moves();
-        for m in moves.iter() {
-            let old = board.clone();
-            let mut new = board.clone();
-            if new.make_move(m) {
-                assert_ne!(old, new);
-                new.undo_move().unwrap();
-                assert_eq!(old, new);
+    macro_rules! test_fen_reversible {
+        ($func:ident, $f:expr) => {
+            #[test]
+            fn $func() {
+                let board = Board::from_fen($f).unwrap();
+                for m in &board.generate_moves() {
+                    let old = board.clone();
+                    let mut new = board.clone();
+                    if new.make_move(m) {
+                        assert_ne!(old, new);
+                        new.undo_move().unwrap();
+                        assert_eq!(old, new);
+                    }
+                }
             }
-        }
+        };
     }
 
-    #[test]
-    fn test_reversible_starting() {
-        let board =
-            Board::from_fen("rnbqkbnr/pppppppp/8/8/8/8/PPPPPPPP/RNBQKBNR w KQkq - 0 1").unwrap();
-        do_undo(board);
+    test_fen_reversible!(
+        initial_position_reversible,
+        "rnbqkbnr/pppppppp/8/8/8/8/PPPPPPPP/RNBQKBNR w KQkq - 0 1"
+    );
+    test_fen_reversible!(
+        promotion_reversible,
+        "rnbqkbnr/pp1ppppp/8/2p5/3Pp3/8/PPPP1PpP/RNBQKB1R b KQkq e5 0 2"
+    );
+    test_fen_reversible!(
+        castling_reversible,
+        "r4rk1/1pp1qppp/p1np1n2/2b1p1B1/2B1P1b1/P1NP1N2/1PP1QPPP/R4RK1 w - - 0 10"
+    );
+    test_fen_reversible!(position_3_reversible, "8/2p5/3p4/KP5r/1R3p1k/8/4P1P1/8 w - - 0 1");
+
+    macro_rules! test_fen_captures {
+        ($func:ident, $f:expr) => {
+            #[test]
+            fn $func() {
+                let board = Board::from_fen($f).unwrap();
+                let filtered_captures: Vec<Play> = board
+                    .generate_moves()
+                    .iter()
+                    .filter(|c| c.capture.is_some())
+                    .map(|c| c.clone())
+                    .collect();
+                let captures = board.generate_captures();
+                assert_eq!(captures, filtered_captures);
+            }
+        };
     }
 
-    #[test]
-    fn test_reversible_promotion() {
-        let board =
-            Board::from_fen("rnbqkbnr/pp1ppppp/8/2p5/3Pp3/8/PPPP1PpP/RNBQKB1R b KQkq e5 0 2")
-                .unwrap();
-        do_undo(board);
-    }
-
-    #[test]
-    fn test_reversible_casteling() {
-        let board = Board::from_fen(
-            "r4rk1/1pp1qppp/p1np1n2/2b1p1B1/2B1P1b1/P1NP1N2/1PP1QPPP/R4RK1 w - - 0 10",
-        )
-        .unwrap();
-        do_undo(board);
-    }
-
-    #[test]
-    fn test_generate_captures() {
-        let board = Board::from_fen(
-            "r4rk1/1pp1qppp/p1np1n2/2b1p1B1/2B1P1b1/P1NP1N2/1PP1QPPP/R4RK1 w - - 0 10",
-        )
-        .unwrap();
-        let filtered_captures: Vec<Play> = board
-            .generate_moves()
-            .iter()
-            .filter(|c| c.capture.is_some())
-            .map(|c| c.clone())
-            .collect();
-        let captures = board.generate_captures();
-        assert_eq!(captures, filtered_captures);
-    }
+    test_fen_captures!(
+        initial_position,
+        "rnbqkbnr/pppppppp/8/8/8/8/PPPPPPPP/RNBQKBNR w KQkq - 0 1"
+    );
+    test_fen_captures!(
+        promotion,
+        "rnbqkbnr/pp1ppppp/8/2p5/3Pp3/8/PPPP1PpP/RNBQKB1R b KQkq e5 0 2"
+    );
+    test_fen_captures!(
+        castling,
+        "r4rk1/1pp1qppp/p1np1n2/2b1p1B1/2B1P1b1/P1NP1N2/1PP1QPPP/R4RK1 w - - 0 10"
+    );
+    test_fen_captures!(position_3, "8/2p5/3p4/KP5r/1R3p1k/8/4P1P1/8 w - - 0 1");
 
     #[test]
     fn test_is_repetition() {
