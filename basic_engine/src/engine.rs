@@ -122,6 +122,10 @@ impl AlphaBeta {
         self.board.eval()
     }
 
+    pub fn clear_cache(&mut self) {
+        self.moves.clear()
+    }
+
     fn check_if_should_stop(&mut self) {
         if let Some(search_time) = self.search_duration {
             self.should_stop = self.start_time.elapsed() >= search_time;
@@ -149,7 +153,6 @@ impl AlphaBeta {
         let old_alpha = alpha;
         let mut score: i64;
         let pv_line = self.moves.get(self.board.key);
-        //let moves = self.board.generate_moves();
         let mut moves = self.board.generate_captures();
         moves.sort_by_cached_key(|m| {
             let mut score = m.mmv_lva(&self.board);
@@ -350,6 +353,10 @@ impl HashTable {
             table: vec![None; capacity as usize],
             capacity,
         }
+    }
+
+    fn clear(&mut self) {
+        self.table = vec![None; self.capacity as usize];
     }
 
     fn with_capacity_bytes(bytes: usize) -> Self {

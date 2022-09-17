@@ -48,7 +48,10 @@ pub fn alpha_beta_initial_benchmark(c: &mut Criterion) {
     let b = black_box(Board::new());
     let mut engine = <AlphaBeta as Engine>::new(b.clone());
     c.bench_function("alpha_beta initial 5", |d| {
-        d.iter(|| engine.iterative_deepening_search(SearchParameters::new_with_depth(5)))
+        d.iter(|| {
+            engine.clear_cache();
+            engine.iterative_deepening_search(SearchParameters::new_with_depth(5))
+        })
     });
 }
 
@@ -59,7 +62,10 @@ pub fn alpha_beta_benchmark_5(c: &mut Criterion) {
     );
     let mut engine = <AlphaBeta as Engine>::new(b.clone());
     c.bench_function("alpha_beta 5", |d| {
-        d.iter(|| engine.iterative_deepening_search(SearchParameters::new_with_depth(5)))
+        d.iter(|| {
+            engine.clear_cache();
+            engine.iterative_deepening_search(SearchParameters::new_with_depth(5))
+        })
     });
 }
 
@@ -70,7 +76,10 @@ pub fn alpha_beta_benchmark_6(c: &mut Criterion) {
     );
     let mut engine = <AlphaBeta as Engine>::new(b.clone());
     c.bench_function("alpha_beta 6", |d| {
-        d.iter(|| engine.iterative_deepening_search(SearchParameters::new_with_depth(6)))
+        d.iter(|| {
+            engine.clear_cache();
+            engine.iterative_deepening_search(SearchParameters::new_with_depth(6))
+        })
     });
 }
 
