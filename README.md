@@ -1,6 +1,12 @@
 # Arche
 Andrew's Rust Chess Engine
 
+## Usage
+
+The engine does not ship with any GUI. It currently implements a subset of the UCI protocol, you can use it with an open source GUI such as [Arena](http://www.playwitharena.de/).
+
+The program does not accept posix style arguments it will immediately start in UCI mode.
+
 ## TODO
  
 [x] transposition table
