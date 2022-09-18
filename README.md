@@ -1,6 +1,12 @@
 # Arche
 Andrew's Rust Chess Engine
 
+## About
+
+This project is mostly indented for self-edification. The engine is not intended to be particularly novel or powerful.
+
+The board is currently represented using only bitboards (with magic bitboards for move generation of sliding pieces).
+
 ## Usage
 
 The engine does not ship with any GUI. It currently implements a subset of the UCI protocol, you can use it with an open source GUI such as [Arena](http://www.playwitharena.de/).
@@ -19,6 +25,7 @@ The program does not accept posix style arguments it will immediately start in U
   - evaluate drawn positions
   - special cases (bishop pair, open files etc)
 - winboard
+- Implement the rest of the UCI protocol
 
 ## Acknowledgements
 
