@@ -530,7 +530,7 @@ impl Board {
         let eval = i64::from(self.white_value) - i64::from(self.black_value);
 
         let mut score = 0i64;
-        for i in 0..64u8 {
+        for i in (self.black | self.white).get_set_bits() {
             score += self.piece_value(i) as i64;
         }
         let eval = eval + score;
