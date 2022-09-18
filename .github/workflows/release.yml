@@ -35,5 +35,7 @@ jobs:
           bin: "arche"
           tar: unix
           zip: windows
+          checksum: "md5,sha256"
+          archive: $bin-$tag-$target
           # (required) GitHub token for uploading assets to GitHub Releases.
           token: ${{ secrets.GITHUB_TOKEN }}
