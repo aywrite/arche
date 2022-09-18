@@ -369,6 +369,11 @@ impl HashTable {
         (&self.table[key]).as_ref()
     }
 
+    fn clear_key(&mut self, index: u64) {
+        let key = (index % self.capacity as u64) as usize;
+        self.table[key] = None;
+    }
+
     fn set(&mut self, index: u64, pv: Pv) {
         let key = (index % self.capacity as u64) as usize;
         self.table[key] = Some(pv);
@@ -470,7 +475,10 @@ impl Engine for AlphaBeta {
         for p in self.board.generate_moves() {
             let play_str = format!("{}", p).to_lowercase();
             if play == play_str {
-                return self.board.make_move(&p); // TODO change this to return Result
+                let result = self.board.make_move(&p);
+                self.moves.clear_key(self.board.key); // TODO this is a hack to try to fix bad
+                                                      // cache hits, particularly for draws
+                return result; // TODO change this to return Result
             };
         }
         false
