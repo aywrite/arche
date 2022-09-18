@@ -144,7 +144,7 @@ pub trait BitBoard {
     fn count(&self) -> u8;
     fn debug_print(&self);
     fn is_bit_set(&self, index: u8) -> bool;
-    fn get_set_bits(&self) -> SmallVec<[u8; 16]>;
+    fn get_set_bits(&self) -> SmallVec<[u8; 32]>;
     fn pop_bit(&mut self) -> Option<u8>;
 
     // TODO Remove these?
@@ -197,8 +197,8 @@ impl BitBoard for u64 {
         }
     }
     #[inline(always)]
-    fn get_set_bits(&self) -> SmallVec<[u8; 16]> {
-        let mut v = SmallVec::<[u8; 16]>::new();
+    fn get_set_bits(&self) -> SmallVec<[u8; 32]> {
+        let mut v = SmallVec::<[u8; 32]>::new();
         let mut value = *self;
         while value != 0 {
             let index = value.trailing_zeros();
