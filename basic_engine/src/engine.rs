@@ -7,7 +7,7 @@ use std::mem;
 use std::time;
 
 const CHECKMATE_SCORE: i64 = 800_000;
-const MAX_DEPTH: u8 = 16;
+const MAX_DEPTH: u8 = 20;
 
 pub trait Engine {
     fn new(board: Board) -> Self;

@@ -263,6 +263,7 @@ pub struct Board {
 
 impl Default for Board {
     fn default() -> Self {
+        lazy_static::initialize(&MAGIC); // TODO move this to engine/parse fen?
         Board::from_fen("rnbqkbnr/pppppppp/8/8/8/8/PPPPPPPP/RNBQKBNR w KQkq - 0 1").unwrap()
     }
 }
@@ -1190,7 +1191,6 @@ mod evaluate {
 
 #[cfg(test)]
 mod make_move {
-    // TODO convert these tests to use macros
     use super::Board;
     use super::Game;
     use super::Play;
