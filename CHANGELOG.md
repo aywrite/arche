@@ -2,6 +2,32 @@
 
 All notable changes to this project will be documented in this file.
 
+## [0.3.4] - 2022-09-20
+
+### Bug Fixes
+
+- Try clearing cache key for moves made
+- Fix off by one error for white checkmate in calculations
+
+### Documentation
+
+- Add brief description of project purpose to README
+
+### Miscellaneous Tasks
+
+- Add checksum to release created in CI
+- Update pretty_assertions to fix security warning
+- Disable criterion compare CI step until it is fixed
+
+### Performance
+
+- Use bitmask to avoid checking empty squares during evaluation
+- Increase maximum depth for quiescence search to prevent horizon effects
+
+### Refactor
+
+- Use array instead of vector for magic bits
+
 ## [0.3.3] - 2022-09-17
 
 ### Bug Fixes
@@ -17,6 +43,7 @@ All notable changes to this project will be documented in this file.
 ### Miscellaneous Tasks
 
 - Add CI job to compare benchmarks on pull requests
+- Release 0.3.3
 
 ### Performance
 
