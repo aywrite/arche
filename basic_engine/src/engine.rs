@@ -59,7 +59,6 @@ pub trait Engine {
                             self.pv_line(),
                             // TODO add search time to this
                             // TODO add nodes per second
-                            // TODO add selective depth (qui)
                         );
                     }
                 }
@@ -226,7 +225,7 @@ impl AlphaBeta {
         (pv, false)
     }
 
-    fn alpha_beta(&mut self, mut alpha: i64, beta: i64, depth: u8) -> i64 {
+    fn alpha_beta(&mut self, mut alpha: i64, beta: i64, mut depth: u8) -> i64 {
         if self.nodes % 3000 == 0 {
             self.check_if_should_stop();
         }
@@ -235,6 +234,10 @@ impl AlphaBeta {
 
         if self.board.fifty_move_rule >= 100 || self.board.is_repetition() {
             return 0;
+        }
+        let in_check = self.board.is_king_attacked();
+        if in_check {
+            depth += 1;
         }
 
         if depth == 0 {
@@ -297,7 +300,7 @@ impl AlphaBeta {
         }
 
         if !found_legal_move {
-            if self.board.is_king_attacked() {
+            if in_check {
                 return -CHECKMATE_SCORE + (self.board.line_ply as i64);
             }
             return 0;
