@@ -3,8 +3,6 @@ use crate::misc::BitBoard;
 use rand::rngs::SmallRng;
 use rand::{Rng, SeedableRng};
 
-//static MAGIC: Magic = Magic::new();
-
 // Mask for locations of possible blockers
 // for a given slider movement type and board square
 struct BlockerMasks {
@@ -15,8 +13,8 @@ struct BlockerMasks {
 struct BlockerBoards {
     straight: Vec<Vec<u64>>,
     diagonal: Vec<Vec<u64>>,
-    straight_bits: Vec<u8>,
-    diagonal_bits: Vec<u8>,
+    straight_bits: [u8; 64],
+    diagonal_bits: [u8; 64],
 }
 
 struct MoveBoards {
@@ -228,8 +226,8 @@ impl BlockerBoards {
         Self {
             straight: straight_blockers,
             diagonal: diagonal_blockers,
-            straight_bits,
-            diagonal_bits,
+            straight_bits: straight_bits.try_into().unwrap(),
+            diagonal_bits: diagonal_bits.try_into().unwrap(),
         }
     }
 
