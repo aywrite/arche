@@ -402,13 +402,41 @@ pub struct SearchResult {
 impl SearchResult {
     fn checkmate_in(&self) -> Option<i64> {
         if (CHECKMATE_SCORE - self.score.abs()) < 300 {
-            let mut mate = (CHECKMATE_SCORE - self.score.abs()) / 2;
+            let mut mate = (CHECKMATE_SCORE - self.score.abs() + 1) / 2;
             if self.score < 0 {
                 mate = -mate;
             };
             return Some(mate);
         }
         None
+    }
+}
+
+#[cfg(test)]
+mod test_search {
+    use super::AlphaBeta;
+    use super::Board;
+    use super::Engine;
+    use super::Game;
+    use pretty_assertions::assert_eq;
+
+    #[test]
+    fn test_checkmate_in_2_white() {
+        let game =
+            Board::from_fen("2rr3k/pp3pp1/1nnqbN1p/3pN3/2pP4/2P3Q1/PPB4P/R4RK1 w - - 0 0").unwrap();
+        let mut e = <AlphaBeta as Engine>::new(game);
+        let result = e.search(4).unwrap();
+        assert_eq!(result.checkmate_in(), Some(2));
+        assert_eq!(format!("{}", result.best_move), "g3g6");
+    }
+
+    #[test]
+    fn test_checkmate_in_1_black() {
+        let game =
+            Board::from_fen("2rr3k/pp3pp1/1nnqbNQp/3pN3/2pP4/2P5/PPB4P/R4RK1 b - - 1 1").unwrap();
+        let mut e = <AlphaBeta as Engine>::new(game);
+        let result = e.search(4).unwrap();
+        assert_eq!(result.checkmate_in(), Some(-1));
     }
 }
 
