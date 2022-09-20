@@ -46,10 +46,8 @@ impl<T: Engine> UCI<T> {
                 } else if line.starts_with("ucinewgame") {
                     self.parse_position("position startpos");
                 } else if line.starts_with("uci") {
-                    println!(
-                        "id name {}-{} author {}",
-                        self.name, self.version, self.author
-                    );
+                    println!("id name {} {}", self.name, self.version);
+                    println!("author {}", self.author);
                     println!("uciok");
                 } else if line.starts_with("position") {
                     self.parse_position(&line);
