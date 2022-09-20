@@ -26,6 +26,7 @@ The program does not accept posix style arguments it will immediately start in U
   - special cases (bishop pair, open files etc)
 - winboard
 - Implement the rest of the UCI protocol
+- opening books
 
 ## Acknowledgements
 

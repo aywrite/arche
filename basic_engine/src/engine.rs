@@ -42,16 +42,18 @@ pub trait Engine {
                 if search_options.print_info {
                     if let Some(mate_in) = m.checkmate_in() {
                         println!(
-                            "info depth {} nodes {} score mate {} pv {}",
+                            "info depth {} seldepth {} nodes {} score mate {} pv {}",
                             depth,
+                            m.selective_depth,
                             m.nodes,
                             mate_in,
                             self.pv_line(),
                         );
                     } else {
                         println!(
-                            "info depth {} nodes {} score cp {} pv {}",
+                            "info depth {} seldepth {} nodes {} score cp {} pv {}",
                             depth,
+                            m.selective_depth,
                             m.nodes,
                             m.score,
                             self.pv_line(),
@@ -109,6 +111,7 @@ pub struct AlphaBeta {
     nodes: u64,
     score: i64,
     moves: HashTable,
+    selective_depth: usize,
     // search parameters
     search_depth: u8,
     // search state
@@ -133,9 +136,11 @@ impl AlphaBeta {
     }
 
     fn quiescence(&mut self, mut alpha: i64, beta: i64) -> i64 {
+        self.selective_depth = self.selective_depth.max(self.board.line_ply);
         if self.board.line_ply >= MAX_DEPTH.into() {
             return self.eval();
         }
+
         if self.nodes % 3000 == 0 {
             self.check_if_should_stop();
         }
@@ -225,6 +230,7 @@ impl AlphaBeta {
         if self.nodes % 3000 == 0 {
             self.check_if_should_stop();
         }
+        self.selective_depth = self.selective_depth.max(self.board.line_ply);
         self.nodes += 1;
 
         if self.board.fifty_move_rule >= 100 || self.board.is_repetition() {
@@ -394,9 +400,10 @@ impl fmt::Display for PvLine {
 }
 
 pub struct SearchResult {
-    nodes: u64,      // The number of results examined as part of the search
-    best_move: Play, // The best move found as part of the search
-    score: i64,      // The estimated score for the best move if played
+    nodes: u64,             // The number of results examined as part of the search
+    selective_depth: usize, // Selective search depth in plies
+    best_move: Play,        // The best move found as part of the search
+    score: i64,             // The estimated score for the best move if played
 }
 
 impl SearchResult {
@@ -448,6 +455,7 @@ impl Engine for AlphaBeta {
             score: 0,
             moves: HashTable::with_capacity_bytes(500 * 1024 * 1024),
             search_depth: 0,
+            selective_depth: 0,
             start_time: time::Instant::now(),
             search_duration: None,
             should_stop: false,
@@ -489,6 +497,7 @@ impl Engine for AlphaBeta {
             return Some(SearchResult {
                 nodes: self.nodes,
                 score: self.score,
+                selective_depth: self.selective_depth,
                 best_move: best_move.play,
             });
         }
