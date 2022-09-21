@@ -402,6 +402,7 @@ impl fmt::Display for PvLine {
     }
 }
 
+#[derive(Debug)]
 pub struct SearchResult {
     nodes: u64,             // The number of results examined as part of the search
     selective_depth: usize, // Selective search depth in plies
@@ -447,6 +448,24 @@ mod test_search {
         let mut e = <AlphaBeta as Engine>::new(game);
         let result = e.search(4).unwrap();
         assert_eq!(result.checkmate_in(), Some(-1));
+    }
+
+    #[test]
+    fn test_fifty_move_rule_play_for_draw() {
+        // white is down material in this position so should play for fifty move draw
+        let game = Board::from_fen("5k2/1p3p1p/p3pK1P/P1P1P3/4bP2/2B5/8/8 w - - 99 112").unwrap();
+        let mut e = <AlphaBeta as Engine>::new(game);
+        let result = e.search(3).unwrap();
+        assert_eq!(result.score, 0);
+    }
+
+    #[test]
+    fn test_fifty_move_rule_no_legal_moves() {
+        // The fifty move rules has been triggered - there should not be any legal moves
+        let game = Board::from_fen("5k2/1p3p1p/p3pK1P/P1P1P3/4bP2/2B5/8/8 w - - 100 112").unwrap();
+        let mut e = <AlphaBeta as Engine>::new(game);
+        let result = e.search(3);
+        assert!(result.is_none());
     }
 }
 

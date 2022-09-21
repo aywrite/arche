@@ -636,6 +636,7 @@ impl Board {
             _ => (),
         }
         self.en_passant = None;
+        self.fifty_move_rule += 1;
 
         if self.pawns.is_bit_set(play.from) {
             // pawn moves reset the fifty move rule
