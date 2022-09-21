@@ -139,13 +139,11 @@ impl<T: Engine> UCI<T> {
 
         if let Some(time) = time {
             let mut duration = if let Some(inc) = increment {
-                (time / 40) + inc - 50
+                (time / 40) + inc
             } else {
-                (time / 40) - 50
+                time / 40
             };
-            if duration >= 100 {
-                duration -= 50;
-            }
+            duration -= (duration / 10).min(50); // Buffer to be sure we don't run out of time
             sp.search_duration = Some(Duration::from_millis(duration));
         }
 
