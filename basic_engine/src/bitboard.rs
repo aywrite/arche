@@ -1,6 +1,5 @@
 use crate::misc::{coordinate_to_index, File};
 use smallvec::SmallVec;
-use std::mem;
 
 pub trait BitBoard {
     fn set_bit(&mut self, index: u8);
@@ -25,17 +24,13 @@ pub trait BitBoard {
 impl BitBoard for u64 {
     #[inline(always)]
     fn set_bit(&mut self, index: u8) {
-        // TODO how should this guard be implemented
         debug_assert!(index <= 64);
-        // TODO precompute the set bit mask in an array
-        _ = mem::replace(self, *self | (1u64 << index));
+        *self |= 1u64 << index;
     }
     #[inline(always)]
     fn clear_bit(&mut self, index: u8) {
-        // TODO how should this guard be implemented
         debug_assert!(index <= 64);
-        // TODO precompute the clear bit mask in an array
-        _ = mem::replace(self, *self & !(1u64 << index));
+        *self &= !(1u64 << index);
     }
     #[inline(always)]
     fn is_bit_set(&self, index: u8) -> bool {
