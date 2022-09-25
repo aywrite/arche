@@ -1,5 +1,5 @@
 /target
-./basic_engine/target
+/basic_engine/target
 .cargo
 .rustup
 
