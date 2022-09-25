@@ -2,6 +2,13 @@
 
 All notable changes to this project will be documented in this file.
 
+## [0.3.5] - 2022-09-25
+
+### Testing
+
+- Refactor benchmarks to use shared test positions
+- Add basic iai benchmark for alpha beta
+
 ## [0.3.5-rc.1] - 2022-09-25
 
 ### Bug Fixes
