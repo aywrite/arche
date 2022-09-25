@@ -110,7 +110,7 @@ pub struct AlphaBeta {
     nodes: u64,
     score: i64,
     moves: HashTable,
-    selective_depth: usize,
+    selective_depth: u8,
     // search parameters
     search_depth: u8,
     // search state
@@ -135,7 +135,7 @@ impl AlphaBeta {
     }
 
     fn quiescence(&mut self, mut alpha: i64, beta: i64) -> i64 {
-        self.selective_depth = self.selective_depth.max(self.board.line_ply);
+        self.selective_depth = self.selective_depth.max(self.board.line_ply as u8);
         if self.board.line_ply >= MAX_DEPTH.into() {
             return self.eval();
         }
@@ -229,7 +229,7 @@ impl AlphaBeta {
         if self.nodes % 3000 == 0 {
             self.check_if_should_stop();
         }
-        self.selective_depth = self.selective_depth.max(self.board.line_ply);
+        self.selective_depth = self.selective_depth.max(self.board.line_ply as u8);
         self.nodes += 1;
 
         if self.board.fifty_move_rule >= 100 || self.board.is_repetition() {
@@ -404,10 +404,10 @@ impl fmt::Display for PvLine {
 
 #[derive(Debug)]
 pub struct SearchResult {
-    nodes: u64,             // The number of results examined as part of the search
-    selective_depth: usize, // Selective search depth in plies
-    best_move: Play,        // The best move found as part of the search
-    score: i64,             // The estimated score for the best move if played
+    nodes: u64,          // The number of results examined as part of the search
+    selective_depth: u8, // Selective search depth in plies
+    best_move: Play,     // The best move found as part of the search
+    score: i64,          // The estimated score for the best move if played
 }
 
 impl SearchResult {
@@ -513,6 +513,7 @@ impl Engine for AlphaBeta {
     fn search(&mut self, depth: u8) -> Option<SearchResult> {
         self.nodes = 0;
         self.search_depth = depth;
+        self.selective_depth = depth;
         self.board.line_ply = 0;
         self.score = self.alpha_beta(i64::MIN + 1, i64::MAX - 1, depth);
         if let Some(best_move) = self.moves.get(self.board.key) {
