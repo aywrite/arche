@@ -1,6 +1,7 @@
 #[macro_use]
 extern crate lazy_static;
 
+mod bitboard;
 mod board;
 mod engine;
 mod magic;

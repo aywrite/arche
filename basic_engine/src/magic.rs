@@ -1,5 +1,5 @@
+use crate::bitboard::BitBoard;
 use crate::board::BASE_CONVERSIONS;
-use crate::misc::BitBoard;
 use rand::rngs::SmallRng;
 use rand::{Rng, SeedableRng};
 

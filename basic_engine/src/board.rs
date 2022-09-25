@@ -1,6 +1,7 @@
+use super::bitboard::BitBoard;
 use super::misc::{
-    coordinate_to_index, coordinate_to_large_index, index_to_coordinate, BitBoard,
-    CastlePermissions, Color, Coordinate, File, Piece, PromotePiece,
+    coordinate_to_index, coordinate_to_large_index, index_to_coordinate, CastlePermissions, Color,
+    Coordinate, File, Piece, PromotePiece,
 };
 use super::play::Play;
 use crate::magic::Magic;
