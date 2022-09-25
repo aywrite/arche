@@ -45,6 +45,7 @@ impl BitBoard for u64 {
     fn count(&self) -> u8 {
         self.count_ones() as u8
     }
+
     #[inline(always)]
     fn get_set_bits(&self) -> SmallVec<[u8; 32]> {
         let mut v = SmallVec::<[u8; 32]>::new();

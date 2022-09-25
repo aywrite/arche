@@ -587,12 +587,10 @@ impl Board {
     }
 
     pub fn is_repetition(&self) -> bool {
-        //let i = self.ply - self.fifty_move_rule;
-        let matching = self
-            .history
+        let i = self.ply - self.fifty_move_rule;
+        let matching = self.history[i..(self.ply + 1)]
             .iter()
-            .flatten()
-            .map(|h| h.position_key)
+            .filter_map(|h| h.map(|hh| hh.position_key))
             .filter(|k| *k == self.key)
             .count();
         matching >= 2
