@@ -2,6 +2,31 @@
 
 All notable changes to this project will be documented in this file.
 
+## [0.3.5-rc.1] - 2022-09-25
+
+### Bug Fixes
+
+- Display engine author and name on separate id lines
+- Add missing increment for fifty move rule
+- Improve calculation of move time
+
+### Features
+
+- Include selective search depth in uci info output
+- Increase selective search depth for positions where in check
+
+### Miscellaneous Tasks
+
+- Don't include release commits in changelog
+
+### Performance
+
+- Optimize check for repeated positions
+
+### Refactor
+
+- Move bitboard trait to standalone module
+
 ## [0.3.4] - 2022-09-20
 
 ### Bug Fixes
@@ -18,6 +43,7 @@ All notable changes to this project will be documented in this file.
 - Add checksum to release created in CI
 - Update pretty_assertions to fix security warning
 - Disable criterion compare CI step until it is fixed
+- Release 0.3.4
 
 ### Performance
 
