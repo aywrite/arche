@@ -91,7 +91,7 @@ impl Magic {
         move_boards: &Vec<u64>,
         bits: u8,
     ) -> (u64, Vec<u64>) {
-        let mut result = vec![0; 2usize.pow(bits as u32)];
+        let mut result = vec![0; 2usize.pow(u32::from(bits))];
         let shift = 64 - bits;
         'outer: loop {
             let magic_candidate: u64 = rng.gen::<u64>() & rng.gen::<u64>() & rng.gen::<u64>();
@@ -131,7 +131,7 @@ impl MoveBoards {
         let mut straight_moves = Vec::with_capacity(64);
         for i in 0u8..64 {
             let mut v: Vec<u64> = Vec::new();
-            for mask in &bb.straight[i as usize] {
+            for &mask in &bb.straight[i as usize] {
                 v.push(Self::gen_straight_moves(i, mask));
             }
             straight_moves.push(v);
@@ -140,7 +140,7 @@ impl MoveBoards {
         let mut diagonal_moves = Vec::with_capacity(64);
         for i in 0u8..64 {
             let mut v: Vec<u64> = Vec::new();
-            for mask in &bb.diagonal[i as usize] {
+            for &mask in &bb.diagonal[i as usize] {
                 v.push(Self::gen_diagonal_moves(i, mask));
             }
             diagonal_moves.push(v);
@@ -152,7 +152,7 @@ impl MoveBoards {
         }
     }
 
-    fn gen_straight_moves(from: u8, blocker_board: &u64) -> u64 {
+    fn gen_straight_moves(from: u8, blocker_board: u64) -> u64 {
         let mut moves = 0u64;
         let directions = [10isize, -10, 1, -1];
         for i in directions {
@@ -175,7 +175,7 @@ impl MoveBoards {
         moves
     }
 
-    fn gen_diagonal_moves(from: u8, blocker_board: &u64) -> u64 {
+    fn gen_diagonal_moves(from: u8, blocker_board: u64) -> u64 {
         let mut moves = 0u64;
         let directions = [9isize, -9, 11, -11];
         for i in directions {

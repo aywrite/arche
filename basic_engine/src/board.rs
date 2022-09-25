@@ -482,12 +482,13 @@ impl Board {
             };
             // can't make a forward move if the square is occupied
             if (0..64).contains(&to) && !all_pieces.is_bit_set(to as u8) {
+                let to = to as u8;
                 if can_promote {
                     for p in PromotePiece::VARIANTS {
-                        moves.push(Play::new(from, to as u8, None, Some(p), false, false));
+                        moves.push(Play::new(from, to, None, Some(p), false, false));
                     }
                 } else {
-                    moves.push(Play::new(from, to as u8, None, None, false, false));
+                    moves.push(Play::new(from, to, None, None, false, false));
                     if match self.active_color {
                         Color::White => rank == 2,
                         Color::Black => rank == 7,
@@ -588,7 +589,7 @@ impl Board {
 
     pub fn is_repetition(&self) -> bool {
         let i = self.ply - self.fifty_move_rule;
-        let matching = self.history[i..(self.ply + 1)]
+        let matching = self.history[i..=self.ply]
             .iter()
             .filter_map(|h| h.map(|hh| hh.position_key))
             .filter(|k| *k == self.key)

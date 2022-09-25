@@ -125,7 +125,7 @@ impl AlphaBeta {
     }
 
     pub fn clear_cache(&mut self) {
-        self.moves.clear()
+        self.moves.clear();
     }
 
     fn check_if_should_stop(&mut self) {
