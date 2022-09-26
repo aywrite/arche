@@ -2,14 +2,28 @@
 
 All notable changes to this project will be documented in this file.
 
+## [0.3.6-rc.1] - 2022-09-26
+
+### Bug Fixes
+
+- Reinitialize selective depth on call to search
+- Fix inverted calculation of least valuable attacker score
+
+### Miscellaneous Tasks
+
+- Various minor lint fixes
+- Stop including release candidate tags in changelog
+
+### Performance
+
+- Decrease default size of hash table
+- Calculate negative score when sorting instead of sort then reverse
+
+### Refactor
+
+- Clean up syntax used for bitboard mutations
+
 ## [0.3.5] - 2022-09-25
-
-### Testing
-
-- Refactor benchmarks to use shared test positions
-- Add basic iai benchmark for alpha beta
-
-## [0.3.5-rc.1] - 2022-09-25
 
 ### Bug Fixes
 
@@ -33,6 +47,11 @@ All notable changes to this project will be documented in this file.
 ### Refactor
 
 - Move bitboard trait to standalone module
+
+### Testing
+
+- Refactor benchmarks to use shared test positions
+- Add basic iai benchmark for alpha beta
 
 ## [0.3.4] - 2022-09-20
 
