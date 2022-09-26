@@ -165,10 +165,10 @@ impl AlphaBeta {
                     score += 100000;
                 }
             };
-            score
+            -(score as i64)
         });
 
-        for m in moves.iter().rev() {
+        for m in &moves {
             if self.board.make_move(m) {
                 score = -self.quiescence(-beta, -alpha);
                 if score > alpha {
@@ -195,7 +195,7 @@ impl AlphaBeta {
                     play: best_move.unwrap(),
                     next_key: best_board.unwrap(),
                     score: alpha,
-                    depth: 0,          // TODO what to do here
+                    depth: 0, // Never use a quiescence move instead of evaluating, only for move ordering
                     node: Node::Exact, // TODO change to none?
                 },
             );
@@ -265,10 +265,10 @@ impl AlphaBeta {
                     score += 100_000;
                 }
             };
-            score
+            -(score as i64)
         });
 
-        for m in moves.iter().rev() {
+        for m in &moves {
             if self.board.make_move(m) {
                 found_legal_move = true;
                 score = -self.alpha_beta(-beta, -alpha, depth - 1);
