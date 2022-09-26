@@ -137,6 +137,7 @@ impl<T: Engine> UCI<T> {
             None
         };
 
+        // TODO what if inc is set but not time?
         if let Some(time) = time {
             let mut duration = if let Some(inc) = increment {
                 (time / 40) + inc
