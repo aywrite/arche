@@ -2,7 +2,7 @@
 
 All notable changes to this project will be documented in this file.
 
-## [0.3.6-rc.1] - 2022-09-26
+## [0.3.6-rc.2] - 2022-09-26
 
 ### Bug Fixes
 
@@ -18,10 +18,15 @@ All notable changes to this project will be documented in this file.
 
 - Decrease default size of hash table
 - Calculate negative score when sorting instead of sort then reverse
+- Further decrease default hash table size
 
 ### Refactor
 
 - Clean up syntax used for bitboard mutations
+
+### Testing
+
+- Add assert to help prevent erroneous retrival of best move from hash table
 
 ## [0.3.5] - 2022-09-25
 
