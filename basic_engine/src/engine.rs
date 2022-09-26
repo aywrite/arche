@@ -196,7 +196,7 @@ impl AlphaBeta {
                     next_key: best_board.unwrap(),
                     score: alpha,
                     depth: 0, // Never use a quiescence move instead of evaluating, only for move ordering
-                    node: Node::Exact, // TODO change to none?
+                    node: Node::Ordering,
                 },
             );
         }
@@ -219,10 +219,13 @@ impl AlphaBeta {
                             return (Some(pv), true);
                         }
                     }
+                    Node::Ordering => {
+                        return (None, false);
+                    }
                 }
             }
         }
-        (pv, false)
+        (None, false)
     }
 
     fn alpha_beta(&mut self, mut alpha: i64, beta: i64, mut depth: u8) -> i64 {
@@ -348,6 +351,7 @@ enum Node {
     Exact,
     Alpha,
     Beta,
+    Ordering,
 }
 
 #[derive(Debug)]
@@ -517,6 +521,7 @@ impl Engine for AlphaBeta {
         self.board.line_ply = 0;
         self.score = self.alpha_beta(i64::MIN + 1, i64::MAX - 1, depth);
         if let Some(best_move) = self.moves.get(self.board.key) {
+            assert!(matches!(best_move.node, Node::Exact));
             return Some(SearchResult {
                 nodes: self.nodes,
                 score: self.score,
