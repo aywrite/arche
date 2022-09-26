@@ -45,12 +45,12 @@ impl Play {
         };
         let attacker_score = match board.get_piece_index(self.from) {
             None => return 0,
-            Some(Piece::Pawn) => 1,
-            Some(Piece::Knight) => 2,
-            Some(Piece::Bishop) => 3,
-            Some(Piece::Rook) => 4,
-            Some(Piece::Queen) => 5,
-            Some(Piece::King) => 6,
+            Some(Piece::Pawn) => 6,
+            Some(Piece::Knight) => 5,
+            Some(Piece::Bishop) => 4,
+            Some(Piece::Rook) => 3,
+            Some(Piece::Queen) => 2,
+            Some(Piece::King) => 1,
         };
         victim_score + attacker_score
     }
