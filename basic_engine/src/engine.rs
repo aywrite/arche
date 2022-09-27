@@ -171,6 +171,11 @@ impl AlphaBeta {
         for m in &moves {
             if self.board.make_move(m) {
                 score = -self.quiescence(-beta, -alpha);
+                if self.should_stop {
+                    // TODO return an error instead
+                    self.board.undo_move().unwrap();
+                    return 0;
+                }
                 if score > alpha {
                     if score >= beta {
                         self.board.undo_move().unwrap();
@@ -181,10 +186,6 @@ impl AlphaBeta {
                     best_board = Some(self.board.key);
                 }
                 self.board.undo_move().unwrap();
-                if self.should_stop {
-                    // TODO return an error instead
-                    return 0;
-                }
             }
         }
 
@@ -201,31 +202,6 @@ impl AlphaBeta {
             );
         }
         alpha
-    }
-
-    fn get_transposition(&self, key: u64, alpha: i64, beta: i64, depth: u8) -> (Option<&Pv>, bool) {
-        let pv = self.moves.get(key);
-        if let Some(pv) = pv {
-            if pv.depth >= depth.into() {
-                match pv.node {
-                    Node::Exact => return (Some(pv), true),
-                    Node::Alpha => {
-                        if pv.score <= alpha {
-                            return (Some(pv), true);
-                        }
-                    }
-                    Node::Beta => {
-                        if pv.score >= beta {
-                            return (Some(pv), true);
-                        }
-                    }
-                    Node::Ordering => {
-                        return (None, false);
-                    }
-                }
-            }
-        }
-        (None, false)
     }
 
     fn alpha_beta(&mut self, mut alpha: i64, beta: i64, mut depth: u8) -> i64 {
@@ -275,6 +251,11 @@ impl AlphaBeta {
             if self.board.make_move(m) {
                 found_legal_move = true;
                 score = -self.alpha_beta(-beta, -alpha, depth - 1);
+                if self.should_stop {
+                    // TODO return an error instead
+                    self.board.undo_move().unwrap();
+                    return 0;
+                }
                 if score > alpha {
                     best_move = Some(m);
                     best_board = Some(self.board.key);
@@ -295,10 +276,6 @@ impl AlphaBeta {
                     alpha = score;
                 }
                 self.board.undo_move().unwrap();
-                if self.should_stop {
-                    // TODO return an error instead
-                    return 0;
-                }
             }
         }
 
@@ -333,6 +310,31 @@ impl AlphaBeta {
             );
         }
         alpha
+    }
+
+    fn get_transposition(&self, key: u64, alpha: i64, beta: i64, depth: u8) -> (Option<&Pv>, bool) {
+        let pv = self.moves.get(key);
+        if let Some(pv) = pv {
+            if pv.depth >= depth.into() {
+                match pv.node {
+                    Node::Exact => return (Some(pv), true),
+                    Node::Alpha => {
+                        if pv.score <= alpha {
+                            return (Some(pv), true);
+                        }
+                    }
+                    Node::Beta => {
+                        if pv.score >= beta {
+                            return (Some(pv), true);
+                        }
+                    }
+                    Node::Ordering => {
+                        return (None, false);
+                    }
+                }
+            }
+        }
+        (None, false)
     }
 }
 
@@ -521,7 +523,11 @@ impl Engine for AlphaBeta {
         self.board.line_ply = 0;
         self.score = self.alpha_beta(i64::MIN + 1, i64::MAX - 1, depth);
         if let Some(best_move) = self.moves.get(self.board.key) {
-            assert!(matches!(best_move.node, Node::Exact));
+            assert!(
+                matches!(best_move.node, Node::Exact),
+                "played best move from non exact node {:?}",
+                best_move.node
+            );
             return Some(SearchResult {
                 nodes: self.nodes,
                 score: self.score,
