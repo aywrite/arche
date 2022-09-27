@@ -356,7 +356,7 @@ enum Node {
 
 #[derive(Debug)]
 struct HashTable {
-    table: Vec<Option<Pv>>,
+    table: Vec<Option<(Pv, u64)>>,
     capacity: usize,
 }
 
@@ -373,28 +373,36 @@ impl HashTable {
     }
 
     fn with_capacity_bytes(bytes: usize) -> Self {
-        let entry_size = mem::size_of::<Pv>();
+        let entry_size = mem::size_of::<u64>() + mem::size_of::<Pv>();
         Self::with_capacity(bytes / entry_size)
     }
 
-    fn get(&self, index: u64) -> Option<&Pv> {
-        let key = (index % self.capacity as u64) as usize;
-        (&self.table[key]).as_ref()
+    fn get(&self, key: u64) -> Option<&Pv> {
+        let index = (key % self.capacity as u64) as usize;
+        if let Some((pv, k)) = &self.table[index] {
+            if *k == key {
+                return Some(&pv);
+            }
+        }
+        None
     }
 
-    fn clear_key(&mut self, index: u64) {
-        let key = (index % self.capacity as u64) as usize;
-        self.table[key] = None;
+    fn clear_key(&mut self, key: u64) {
+        let index = (key % self.capacity as u64) as usize;
+        self.table[index] = None;
     }
 
-    fn set(&mut self, index: u64, pv: Pv) {
-        let key = (index % self.capacity as u64) as usize;
-        if let Some(old_pv) = self.table[key] {
-            if matches!(old_pv.node, Node::Exact) && !matches!(pv.node, Node::Exact) {
+    fn set(&mut self, key: u64, pv: Pv) {
+        let index = (key % self.capacity as u64) as usize;
+        if let Some((old_pv, old_key)) = self.table[index] {
+            if key == old_key
+                && matches!(old_pv.node, Node::Exact)
+                && !matches!(pv.node, Node::Exact)
+            {
                 return;
             }
         }
-        self.table[key] = Some(pv);
+        self.table[index] = Some((pv, key));
     }
 }
 
@@ -439,6 +447,30 @@ mod test_search {
     use super::Engine;
     use super::Game;
     use pretty_assertions::assert_eq;
+
+    #[test]
+    fn test_regression_bad_cache() {
+        // This is a losing position but running a search on a previous position then the losing
+        // position seems to cause hash/cache collisions in some cases.
+        let game =
+            Board::from_fen("r4rk1/pppb1ppp/4pn2/6N1/3P4/2qBP3/P4PPP/3R1R1K w - - 2 16").unwrap();
+        let mut e = <AlphaBeta as Engine>::new(game);
+        let result = e.search(7).unwrap();
+        assert!(
+            result.score < -800,
+            "expect bad score (first) got {}",
+            result.score
+        );
+
+        let game =
+            Board::from_fen("r1b2rk1/ppp1qppp/4pn2/6N1/Qn1P4/2NBP3/PP3PPP/R3K2R w KQ - 9 12")
+                .unwrap();
+        let mut e = <AlphaBeta as Engine>::new(game);
+        e.search(7).unwrap();
+        let _ = e.parse_fen("r4rk1/pppb1ppp/4pn2/6N1/3P4/2qBP3/P4PPP/3R1R1K w - - 2 16");
+        let result = e.search(7).unwrap();
+        assert!(result.score < -800, "expect bad score got {}", result.score);
+    }
 
     #[test]
     fn test_checkmate_in_2_white() {
