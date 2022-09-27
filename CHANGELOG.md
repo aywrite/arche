@@ -2,12 +2,15 @@
 
 All notable changes to this project will be documented in this file.
 
-## [0.3.6-rc.2] - 2022-09-26
+## [0.3.6-rc.3] - 2022-09-27
 
 ### Bug Fixes
 
 - Reinitialize selective depth on call to search
 - Fix inverted calculation of least valuable attacker score
+- Move abort for search to before hash table save
+- Don't overwrite exact hash table entries with non-exact evals
+- Resolve hash collisions by comparing to original key
 
 ### Miscellaneous Tasks
 
@@ -19,6 +22,7 @@ All notable changes to this project will be documented in this file.
 - Decrease default size of hash table
 - Calculate negative score when sorting instead of sort then reverse
 - Further decrease default hash table size
+- Revert changes to default hash table size
 
 ### Refactor
 
@@ -27,6 +31,7 @@ All notable changes to this project will be documented in this file.
 ### Testing
 
 - Add assert to help prevent erroneous retrival of best move from hash table
+- Add test for hash key random uniqueness
 
 ## [0.3.5] - 2022-09-25
 
