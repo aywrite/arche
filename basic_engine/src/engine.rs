@@ -389,6 +389,11 @@ impl HashTable {
 
     fn set(&mut self, index: u64, pv: Pv) {
         let key = (index % self.capacity as u64) as usize;
+        if let Some(old_pv) = self.table[key] {
+            if matches!(old_pv.node, Node::Exact) && !matches!(pv.node, Node::Exact) {
+                return;
+            }
+        }
         self.table[key] = Some(pv);
     }
 }
