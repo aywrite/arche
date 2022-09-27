@@ -518,7 +518,7 @@ impl Engine for AlphaBeta {
             board,
             nodes: 0,
             score: 0,
-            moves: HashTable::with_capacity_bytes(16 * 1024 * 1024),
+            moves: HashTable::with_capacity_bytes(500 * 1024 * 1024),
             search_depth: 0,
             selective_depth: 0,
             start_time: time::Instant::now(),
