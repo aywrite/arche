@@ -33,7 +33,7 @@ impl Play {
         }
     }
 
-    pub fn mmv_lva(&self, board: &Board) -> u64 {
+    pub fn mmv_lva(&self, board: &Board) -> i64 {
         let victim_score = match self.capture {
             None => return 0,
             Some(Piece::Pawn) => 100,
@@ -52,7 +52,11 @@ impl Play {
             Some(Piece::Queen) => 2,
             Some(Piece::King) => 1,
         };
-        victim_score + attacker_score
+        let score = victim_score + attacker_score;
+        if attacker_score == 2 && board.square_attacked(self.to, !board.active_color) {
+            return score - 300;
+        }
+        score
     }
 }
 

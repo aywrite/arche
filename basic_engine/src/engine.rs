@@ -558,7 +558,11 @@ impl Engine for AlphaBeta {
         self.board.line_ply = 0;
         self.score = self.alpha_beta(i64::MIN + 1, i64::MAX - 1, depth);
         if let Some(best_move) = self.moves.get(self.board.key) {
-            assert!(matches!(best_move.node, Node::Exact));
+            assert!(
+                matches!(best_move.node, Node::Exact),
+                "played best move from non exact node {:?}",
+                best_move.node
+            );
             return Some(SearchResult {
                 nodes: self.nodes,
                 score: self.score,
