@@ -1,4 +1,5 @@
 use std::fmt;
+use std::ops::Not;
 
 #[derive(Debug, Copy, Clone, PartialEq, Eq, Hash)]
 pub struct Coordinate {
@@ -239,6 +240,17 @@ impl Color {
             'b' | 'B' => Some(Color::Black),
             'w' | 'W' => Some(Color::White),
             _ => None,
+        }
+    }
+}
+
+impl Not for Color {
+    type Output = Self;
+
+    fn not(self) -> Self::Output {
+        match self {
+            Color::White => Color::Black,
+            Color::Black => Color::White,
         }
     }
 }
