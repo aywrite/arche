@@ -606,10 +606,7 @@ impl Board {
             position_key: self.key,
         });
 
-        let opposing_color = match self.active_color {
-            Color::White => Color::Black,
-            Color::Black => Color::White,
-        };
+        let opposing_color = !self.active_color;
         // update castling permissions
         match play.from {
             A1 => self.castle.white_queen_side = false,
@@ -715,10 +712,7 @@ impl Board {
         self.history[self.ply - 1] = None;
         let play = history.play;
 
-        let opposing_color = match self.active_color {
-            Color::White => Color::Black,
-            Color::Black => Color::White,
-        };
+        let opposing_color = !self.active_color;
         if self.en_passant.is_some() {
             self.key ^= ZORB.en_passant_key(play.to);
         }
@@ -787,10 +781,6 @@ impl Board {
     ) {
         debug_assert!((self.black | self.white).is_bit_set(from));
         debug_assert!(!(self.black | self.white).is_bit_set(to));
-        //debug_assert!(match self.active_color {
-        //    Color::White => self.white.is_bit_set(from),
-        //    Color::Black => self.black.is_bit_set(from),
-        //}); may be wrong if called from undo_move
         self.clear_piece_index(from, piece, color);
         if let Some(promote) = promote_piece {
             self.set_piece_index(to, (&promote).into(), color);
@@ -1158,16 +1148,10 @@ mod evaluate {
                             board.material_value()
                         );
                         let score = board.eval();
-                        match board.active_color {
-                            Color::Black => board.active_color = Color::White,
-                            Color::White => board.active_color = Color::Black,
-                        }
+                        board.active_color = !board.active_color;
                         let opp_score = board.eval();
                         assert_eq!(score, -opp_score);
-                        match board.active_color {
-                            Color::Black => board.active_color = Color::White,
-                            Color::White => board.active_color = Color::Black,
-                        }
+                        board.active_color = !board.active_color;
                         board.undo_move().unwrap();
                     }
                 }
