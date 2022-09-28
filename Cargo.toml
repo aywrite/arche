@@ -1,6 +1,6 @@
 [package]
 name = "arche"
-version = "0.3.6-rc.3"
+version = "0.3.6-rc.4"
 edition = "2021"
 authors = [
   "Andrew Wright"

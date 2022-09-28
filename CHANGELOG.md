@@ -2,13 +2,12 @@
 
 All notable changes to this project will be documented in this file.
 
-## [0.3.6-rc.3] - 2022-09-27
+## [0.3.6-rc.4] - 2022-09-28
 
 ### Bug Fixes
 
 - Reinitialize selective depth on call to search
 - Fix inverted calculation of least valuable attacker score
-- Move abort for search to before hash table save
 - Don't overwrite exact hash table entries with non-exact evals
 - Resolve hash collisions by comparing to original key
 
@@ -19,14 +18,13 @@ All notable changes to this project will be documented in this file.
 
 ### Performance
 
-- Decrease default size of hash table
 - Calculate negative score when sorting instead of sort then reverse
-- Further decrease default hash table size
-- Revert changes to default hash table size
+- Modify move ordering score when destination is attacked
 
 ### Refactor
 
 - Clean up syntax used for bitboard mutations
+- Implement Not operator for Color enum to simplify some match blocks
 
 ### Testing
 
