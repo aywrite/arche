@@ -2,12 +2,13 @@
 
 All notable changes to this project will be documented in this file.
 
-## [0.3.6-rc.4] - 2022-09-28
+## [0.3.6-rc.5] - 2022-09-29
 
 ### Bug Fixes
 
 - Reinitialize selective depth on call to search
 - Fix inverted calculation of least valuable attacker score
+- Ensure quiescence nodes are never used for pv
 - Don't overwrite exact hash table entries with non-exact evals
 - Resolve hash collisions by comparing to original key
 
@@ -20,6 +21,7 @@ All notable changes to this project will be documented in this file.
 
 - Calculate negative score when sorting instead of sort then reverse
 - Modify move ordering score when destination is attacked
+- Use depth in hash table replacement strategy
 
 ### Refactor
 
@@ -28,7 +30,6 @@ All notable changes to this project will be documented in this file.
 
 ### Testing
 
-- Add assert to help prevent erroneous retrival of best move from hash table
 - Add test for hash key random uniqueness
 
 ## [0.3.5] - 2022-09-25
