@@ -197,6 +197,7 @@ impl AlphaBeta {
                     score: alpha,
                     depth: 0, // Never use a quiescence move instead of evaluating, only for move ordering
                     node: Node::Ordering,
+                    ply: self.board.ply,
                 },
             );
         }
@@ -288,6 +289,7 @@ impl AlphaBeta {
                                 depth: depth as usize,
                                 score: beta,
                                 node: Node::Beta,
+                                ply: self.board.ply,
                             },
                         );
                         return beta;
@@ -318,6 +320,7 @@ impl AlphaBeta {
                     depth: depth as usize,
                     score: alpha,
                     node: Node::Exact,
+                    ply: self.board.ply,
                 },
             );
         } else if let Some(&bm) = best_move {
@@ -329,6 +332,7 @@ impl AlphaBeta {
                     depth: depth as usize,
                     score: alpha,
                     node: Node::Alpha,
+                    ply: self.board.ply,
                 },
             );
         }
@@ -343,6 +347,7 @@ struct Pv {
     score: i64,
     depth: usize,
     node: Node,
+    ply: usize,
 }
 
 #[derive(Copy, Clone, Debug)]
@@ -381,7 +386,7 @@ impl HashTable {
         let index = (key % self.capacity as u64) as usize;
         if let Some((pv, k)) = &self.table[index] {
             if *k == key {
-                return Some(&pv);
+                return Some(pv);
             }
         }
         None
@@ -394,13 +399,19 @@ impl HashTable {
 
     fn set(&mut self, key: u64, pv: Pv) {
         let index = (key % self.capacity as u64) as usize;
-        if let Some((old_pv, old_key)) = self.table[index] {
-            if key == old_key
-                && matches!(old_pv.node, Node::Exact)
-                && !matches!(pv.node, Node::Exact)
-            {
+        if let Some((old_pv, _)) = self.table[index] {
+            // if new is exact and old isn't replace
+            if matches!(pv.node, Node::Exact) {
+                self.table[index] = Some((pv, key));
+                return;
+            } else if !matches!(old_pv.node, Node::Exact) {
+                self.table[index] = Some((pv, key));
+                return;
+            } else if (pv.ply as isize - old_pv.ply as isize) > (MAX_DEPTH as isize + 3) {
+                self.table[index] = Some((pv, key));
                 return;
             }
+            return;
         }
         self.table[index] = Some((pv, key));
     }
