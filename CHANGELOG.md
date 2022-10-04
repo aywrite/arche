@@ -2,7 +2,7 @@
 
 All notable changes to this project will be documented in this file.
 
-## [0.3.6-rc.5] - 2022-09-29
+## [0.3.6] - 2022-09-29
 
 ### Bug Fixes
 
