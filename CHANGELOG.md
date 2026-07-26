@@ -2,6 +2,24 @@
 
 All notable changes to this project will be documented in this file.
 
+## [0.3.7] - 2026-07-26
+
+### Bug Fixes
+
+- Fix position key generation and transposition table bugs
+- Use depth and key when replacing hash table entries
+
+### Miscellaneous Tasks
+
+- Bump bumpalo from 3.11.0 to 3.12.0
+- Bump bumpalo from 3.11.0 to 3.12.0 in /basic_engine
+- Update to Rust 2024 edition and latest dependency versions
+- Fix release tooling config for current cargo-release and git-cliff
+
+### Testing
+
+- Add tests for hash table replacement and cache reuse
+
 ## [0.3.6] - 2022-09-29
 
 ### Bug Fixes
