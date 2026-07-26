@@ -1,5 +1,5 @@
-use crate::misc::Piece;
 use crate::Color;
+use crate::misc::{CastlePermissions, Piece};
 
 use rand::rngs::SmallRng;
 use rand::{Rng, SeedableRng};
@@ -7,7 +7,7 @@ use rand::{Rng, SeedableRng};
 pub struct Zorbrist {
     pieces: [[u64; 64]; 12],
     pub side: u64,
-    //TODO castling:
+    castling: [u64; 4],
     en_passant: [u64; 8],
 }
 
@@ -24,6 +24,7 @@ impl Zorbrist {
         Self {
             pieces,
             side: rng.random(),
+            castling: rng.random(),
             en_passant: rng.random(),
         }
     }
@@ -39,6 +40,25 @@ impl Zorbrist {
     pub fn en_passant_key(&self, index: u8) -> u64 {
         self.en_passant[(index % 8) as usize]
     }
+
+    /// The combined key for a set of castle permissions. XORing the keys for
+    /// the old and new permissions into the position key updates it in place.
+    pub fn castle_key(&self, castle: CastlePermissions) -> u64 {
+        let mut key = 0;
+        if castle.white_king_side {
+            key ^= self.castling[0];
+        }
+        if castle.white_queen_side {
+            key ^= self.castling[1];
+        }
+        if castle.black_king_side {
+            key ^= self.castling[2];
+        }
+        if castle.black_queen_side {
+            key ^= self.castling[3];
+        }
+        key
+    }
 }
 
 #[cfg(test)]
@@ -51,9 +71,11 @@ mod test_zorbrist {
         let z = Zorbrist::new();
         let mut all = z.pieces.iter().flatten().map(|&c| c).collect::<Vec<u64>>();
         all.push(z.side);
+        all.extend(z.castling);
         all.extend(z.en_passant);
-        let mut unique = all.clone();
-        unique.dedup();
-        assert_eq!(all.len(), unique.len());
+        let len = all.len();
+        all.sort_unstable();
+        all.dedup();
+        assert_eq!(len, all.len());
     }
 }

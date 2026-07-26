@@ -12,13 +12,21 @@ impl Coordinate {
         if s == "-" {
             return Ok(None);
         }
-        if s.len() != 2 {
-            return Err(format!("Expected two characters, got {}", s.len()));
-        }
         let mut chars = s.chars();
+        let (Some(file_char), Some(rank_char), None) = (chars.next(), chars.next(), chars.next())
+        else {
+            return Err(format!("Expected two characters, got {}", s));
+        };
+        let rank = rank_char
+            .to_digit(10)
+            .ok_or_else(|| format!("Expected a digit for the rank, got {}", rank_char))?
+            as u8;
+        if !(1..=8).contains(&rank) {
+            return Err(format!("Rank must be between 1 and 8, got {}", rank));
+        }
         let c = Coordinate {
-            file: File::try_from(chars.next().unwrap())?,
-            rank: chars.next().unwrap().to_digit(10).unwrap() as u8,
+            file: File::try_from(file_char)?,
+            rank,
         };
         Ok(Some(c))
     }
@@ -31,6 +39,30 @@ impl Coordinate {
             rank: rank as u8,
             file,
         }
+    }
+}
+
+#[cfg(test)]
+mod test_coordinate {
+    use super::Coordinate;
+
+    #[test]
+    fn parse_valid() {
+        assert!(Coordinate::from_string("e3").unwrap().is_some());
+        assert!(Coordinate::from_string("a1").unwrap().is_some());
+        assert!(Coordinate::from_string("h8").unwrap().is_some());
+        assert!(Coordinate::from_string("-").unwrap().is_none());
+    }
+
+    #[test]
+    fn parse_invalid_does_not_panic() {
+        assert!(Coordinate::from_string("").is_err());
+        assert!(Coordinate::from_string("e").is_err());
+        assert!(Coordinate::from_string("ee").is_err());
+        assert!(Coordinate::from_string("e0").is_err());
+        assert!(Coordinate::from_string("e9").is_err());
+        assert!(Coordinate::from_string("e33").is_err());
+        assert!(Coordinate::from_string("é").is_err()); // two bytes, one char
     }
 }
 
@@ -72,7 +104,7 @@ impl CastlePermissions {
                     return Err(format!(
                         "Unexpected character {} in castle permissions token",
                         c
-                    ))
+                    ));
                 }
             }
         }

@@ -1,13 +1,42 @@
+use crate::Game;
 use crate::board::Board;
 use crate::misc::Color;
 use crate::play::Play;
-use crate::Game;
 use std::fmt;
 use std::mem;
 use std::time;
 
 const CHECKMATE_SCORE: i64 = 800_000;
 const MAX_DEPTH: u8 = 20;
+// Any score this close to CHECKMATE_SCORE is a forced mate. Regular evals are
+// bounded by material values which are orders of magnitude smaller.
+const CHECKMATE_THRESHOLD: i64 = CHECKMATE_SCORE - 1000;
+
+/// Convert a score to its transposition table form. Mate scores are stored
+/// relative to the node they are stored at (plies-to-mate from this node)
+/// rather than relative to the root of the search, so that they remain correct
+/// when the entry is reused at a different distance from the root.
+fn score_to_tt(score: i64, line_ply: usize) -> i64 {
+    if score > CHECKMATE_THRESHOLD {
+        score + line_ply as i64
+    } else if score < -CHECKMATE_THRESHOLD {
+        score - line_ply as i64
+    } else {
+        score
+    }
+}
+
+/// The inverse of score_to_tt: convert a stored mate score back to being
+/// relative to the root of the current search.
+fn score_from_tt(score: i64, line_ply: usize) -> i64 {
+    if score > CHECKMATE_THRESHOLD {
+        score - line_ply as i64
+    } else if score < -CHECKMATE_THRESHOLD {
+        score + line_ply as i64
+    } else {
+        score
+    }
+}
 
 pub trait Engine {
     fn new(board: Board) -> Self;
@@ -35,7 +64,13 @@ pub trait Engine {
         for depth in 1..=max_depth {
             let search_result = self.search(depth);
             if self.should_stop() {
-                return best_move.unwrap();
+                // Fall back to the interrupted iteration's move if we ran out
+                // of time before the first iteration completed
+                return match (best_move, search_result) {
+                    (Some(play), _) => play,
+                    (None, Some(result)) => result.best_move,
+                    (None, None) => panic!("search stopped before any move was found"),
+                };
             }
             if let Some(m) = &search_result {
                 best_move = Some(m.best_move);
@@ -171,19 +206,21 @@ impl AlphaBeta {
         for m in &moves {
             if self.board.make_move(m) {
                 score = -self.quiescence(-beta, -alpha);
+                let move_key = self.board.key;
+                self.board.undo_move().unwrap();
+                if self.should_stop {
+                    // The search was aborted somewhere below us, so the score
+                    // is meaningless and must not be stored or used.
+                    // TODO return an error instead
+                    return 0;
+                }
                 if score > alpha {
                     if score >= beta {
-                        self.board.undo_move().unwrap();
                         return beta;
                     }
                     alpha = score;
                     best_move = Some(*m);
-                    best_board = Some(self.board.key);
-                }
-                self.board.undo_move().unwrap();
-                if self.should_stop {
-                    // TODO return an error instead
-                    return 0;
+                    best_board = Some(move_key);
                 }
             }
         }
@@ -194,7 +231,7 @@ impl AlphaBeta {
                 Pv {
                     play: best_move.unwrap(),
                     next_key: best_board.unwrap(),
-                    score: alpha,
+                    score: score_to_tt(alpha, self.board.line_ply),
                     depth: 0, // Never use a quiescence move instead of evaluating, only for move ordering
                     node: Node::Ordering,
                     ply: self.board.ply,
@@ -204,29 +241,40 @@ impl AlphaBeta {
         alpha
     }
 
-    fn get_transposition(&self, key: u64, alpha: i64, beta: i64, depth: u8) -> (Option<&Pv>, bool) {
+    /// Look up the current position in the transposition table.
+    ///
+    /// Returns the stored best move (if any) which is always safe to use for
+    /// move ordering, and a score when the stored entry is deep enough and its
+    /// bound allows a cutoff at the current alpha/beta window.
+    fn get_transposition(
+        &self,
+        key: u64,
+        alpha: i64,
+        beta: i64,
+        depth: u8,
+    ) -> (Option<Play>, Option<i64>) {
         let pv = self.moves.get(key);
         if let Some(pv) = pv {
             if pv.depth >= depth.into() {
+                let score = score_from_tt(pv.score, self.board.line_ply);
                 match pv.node {
-                    Node::Exact => return (Some(pv), true),
+                    Node::Exact => return (Some(pv.play), Some(score)),
                     Node::Alpha => {
-                        if pv.score <= alpha {
-                            return (Some(pv), true);
+                        if score <= alpha {
+                            return (Some(pv.play), Some(score));
                         }
                     }
                     Node::Beta => {
-                        if pv.score >= beta {
-                            return (Some(pv), true);
+                        if score >= beta {
+                            return (Some(pv.play), Some(score));
                         }
                     }
-                    Node::Ordering => {
-                        return (None, false);
-                    }
+                    Node::Ordering => (),
                 }
             }
+            return (Some(pv.play), None);
         }
-        (None, false)
+        (None, None)
     }
 
     fn alpha_beta(&mut self, mut alpha: i64, beta: i64, mut depth: u8) -> i64 {
@@ -256,16 +304,16 @@ impl AlphaBeta {
         let mut found_legal_move = false;
         let mut best_move: Option<&Play> = None;
         let mut best_board: Option<u64> = None;
-        let (pv_line, cutoff) = self.get_transposition(self.board.key, alpha, beta, depth);
-        if cutoff {
-            return pv_line.unwrap().score;
+        let (pv_play, tt_score) = self.get_transposition(self.board.key, alpha, beta, depth);
+        if let Some(tt_score) = tt_score {
+            return tt_score;
         }
 
         let mut moves = self.board.generate_moves();
         moves.sort_by_cached_key(|m| {
             let mut score = m.mmv_lva(&self.board);
-            if let Some(pv) = pv_line {
-                if pv.play == *m {
+            if let Some(pv) = pv_play {
+                if pv == *m {
                     score += 100_000;
                 }
             };
@@ -276,18 +324,25 @@ impl AlphaBeta {
             if self.board.make_move(m) {
                 found_legal_move = true;
                 score = -self.alpha_beta(-beta, -alpha, depth - 1);
+                let move_key = self.board.key;
+                self.board.undo_move().unwrap();
+                if self.should_stop {
+                    // The search was aborted somewhere below us, so the score
+                    // is meaningless and must not be stored or used.
+                    // TODO return an error instead
+                    return 0;
+                }
                 if score > alpha {
                     best_move = Some(m);
-                    best_board = Some(self.board.key);
+                    best_board = Some(move_key);
                     if score >= beta {
-                        self.board.undo_move().unwrap();
                         self.moves.set(
                             self.board.key,
                             Pv {
-                                play: *best_move.unwrap(),
-                                next_key: best_board.unwrap(),
+                                play: *m,
+                                next_key: move_key,
                                 depth: depth as usize,
-                                score: beta,
+                                score: score_to_tt(beta, self.board.line_ply),
                                 node: Node::Beta,
                                 ply: self.board.ply,
                             },
@@ -295,11 +350,6 @@ impl AlphaBeta {
                         return beta;
                     }
                     alpha = score;
-                }
-                self.board.undo_move().unwrap();
-                if self.should_stop {
-                    // TODO return an error instead
-                    return 0;
                 }
             }
         }
@@ -318,20 +368,8 @@ impl AlphaBeta {
                     play: *best_move.unwrap(),
                     next_key: best_board.unwrap(),
                     depth: depth as usize,
-                    score: alpha,
+                    score: score_to_tt(alpha, self.board.line_ply),
                     node: Node::Exact,
-                    ply: self.board.ply,
-                },
-            );
-        } else if let Some(&bm) = best_move {
-            self.moves.set(
-                self.board.key,
-                Pv {
-                    play: bm,
-                    next_key: best_board.unwrap(),
-                    depth: depth as usize,
-                    score: alpha,
-                    node: Node::Alpha,
                     ply: self.board.ply,
                 },
             );
@@ -494,6 +532,20 @@ mod test_search {
     }
 
     #[test]
+    fn test_checkmate_in_2_white_warm_cache() {
+        let game =
+            Board::from_fen("2rr3k/pp3pp1/1nnqbN1p/3pN3/2pP4/2P3Q1/PPB4P/R4RK1 w - - 0 0").unwrap();
+        let mut e = <AlphaBeta as Engine>::new(game);
+        let result = e.search(4).unwrap();
+        assert_eq!(result.checkmate_in(), Some(2));
+        // searching again deeper with a warm cache reuses mate scores stored
+        // at different plies, the reported mate distance must not change
+        let result = e.search(6).unwrap();
+        assert_eq!(result.checkmate_in(), Some(2));
+        assert_eq!(format!("{}", result.best_move), "g3g6");
+    }
+
+    #[test]
     fn test_checkmate_in_1_black() {
         let game =
             Board::from_fen("2rr3k/pp3pp1/1nnqbNQp/3pN3/2pP4/2P5/PPB4P/R4RK1 b - - 1 1").unwrap();
@@ -589,7 +641,7 @@ impl Engine for AlphaBeta {
             if play == play_str {
                 let result = self.board.make_move(&p);
                 self.moves.clear_key(self.board.key); // TODO this is a hack to try to fix bad
-                                                      // cache hits, particularly for draws
+                // cache hits, particularly for draws
                 return result; // TODO change this to return Result
             };
         }
