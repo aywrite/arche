@@ -1,13 +1,13 @@
 use super::bitboard::BitBoard;
 use super::misc::{
-    coordinate_to_index, coordinate_to_large_index, index_to_coordinate, CastlePermissions, Color,
-    Coordinate, File, Piece, PromotePiece,
+    CastlePermissions, Color, Coordinate, File, Piece, PromotePiece, coordinate_to_index,
+    coordinate_to_large_index, index_to_coordinate,
 };
 use super::play::Play;
+use crate::Game;
 use crate::magic::Magic;
 use crate::pvt::PieceValueTables;
 use crate::zorbrist::Zorbrist;
-use crate::Game;
 use std::fmt;
 
 /// Play State is used to store the history of moves (plays)
@@ -23,8 +23,6 @@ struct PlayState {
     fifty_move_rule: usize,
     position_key: u64,
 }
-
-// TODO use zorb for castling
 
 const MAX_GAME_SIZE: usize = 375;
 const EMPTY_HISTORY: [Option<PlayState>; MAX_GAME_SIZE] = [None; MAX_GAME_SIZE];
@@ -608,6 +606,7 @@ impl Board {
 
         let opposing_color = !self.active_color;
         // update castling permissions
+        let old_castle = self.castle;
         match play.from {
             A1 => self.castle.white_queen_side = false,
             E1 => {
@@ -631,6 +630,13 @@ impl Board {
             A8 => self.castle.black_queen_side = false,
             H8 => self.castle.black_king_side = false,
             _ => (),
+        }
+        // XORing both the old and new castle keys removes the old permissions
+        // from the position key and adds the new ones (a no-op when unchanged)
+        self.key ^= ZORB.castle_key(old_castle) ^ ZORB.castle_key(self.castle);
+        if let Some(en_passant) = self.en_passant {
+            // the en passant rights of the previous position have expired
+            self.key ^= ZORB.en_passant_key(en_passant.as_index());
         }
         self.en_passant = None;
         self.fifty_move_rule += 1;
@@ -713,9 +719,6 @@ impl Board {
         let play = history.play;
 
         let opposing_color = !self.active_color;
-        if self.en_passant.is_some() {
-            self.key ^= ZORB.en_passant_key(play.to);
-        }
         // update castling permissions
         self.castle = history.castle;
         self.en_passant = history.en_passant;
@@ -766,7 +769,9 @@ impl Board {
         }
 
         self.active_color = opposing_color;
-        self.key ^= ZORB.side;
+        // restore the position key exactly as it was before the move was made,
+        // this guarantees make/undo can never let the key drift out of sync
+        self.key = history.position_key;
         Ok(())
     }
 
@@ -1083,6 +1088,16 @@ impl Game for Board {
                 _ => return Err("unexpected character in fen".to_string()),
             };
         }
+        // fold the non-piece state into the position key so that keys are
+        // comparable between boards parsed from FEN and boards reached by
+        // playing moves
+        if matches!(board.active_color, Color::Black) {
+            board.key ^= ZORB.side;
+        }
+        board.key ^= ZORB.castle_key(board.castle);
+        if let Some(en_passant) = board.en_passant {
+            board.key ^= ZORB.en_passant_key(en_passant.as_index());
+        }
         (board.white_value, board.black_value) = board.material_value();
         Ok(board)
     }
@@ -1277,6 +1292,93 @@ mod make_move {
 }
 
 #[cfg(test)]
+mod position_key {
+    use super::Board;
+    use super::Game;
+    use pretty_assertions::{assert_eq, assert_ne};
+
+    fn play_move(board: &mut Board, mv: &str) {
+        let m = *board
+            .generate_moves()
+            .iter()
+            .find(|m| format!("{}", m) == mv)
+            .unwrap_or_else(|| panic!("move {} not found", mv));
+        assert!(board.make_move(&m));
+    }
+
+    #[test]
+    fn castle_rights_change_key() {
+        let all = Board::from_fen("r3k2r/8/8/8/8/8/8/R3K2R w KQkq - 0 1").unwrap();
+        let none = Board::from_fen("r3k2r/8/8/8/8/8/8/R3K2R w - - 0 1").unwrap();
+        let white_only = Board::from_fen("r3k2r/8/8/8/8/8/8/R3K2R w KQ - 0 1").unwrap();
+        assert_ne!(all.key, none.key);
+        assert_ne!(all.key, white_only.key);
+        assert_ne!(none.key, white_only.key);
+    }
+
+    #[test]
+    fn en_passant_changes_key() {
+        let without =
+            Board::from_fen("rnbqkbnr/pppppppp/8/8/4P3/8/PPPP1PPP/RNBQKBNR b KQkq - 0 1").unwrap();
+        let with =
+            Board::from_fen("rnbqkbnr/pppppppp/8/8/4P3/8/PPPP1PPP/RNBQKBNR b KQkq e3 0 1").unwrap();
+        assert_ne!(without.key, with.key);
+    }
+
+    #[test]
+    fn active_color_changes_key() {
+        let white = Board::from_fen("r3k2r/8/8/8/8/8/8/R3K2R w - - 0 1").unwrap();
+        let black = Board::from_fen("r3k2r/8/8/8/8/8/8/R3K2R b - - 0 1").unwrap();
+        assert_ne!(white.key, black.key);
+    }
+
+    #[test]
+    fn key_matches_fen_after_moves() {
+        // the key of a position reached by playing moves must equal the key of
+        // the same position parsed directly from FEN
+        let mut board = Board::new();
+
+        play_move(&mut board, "e2e4");
+        let fen =
+            Board::from_fen("rnbqkbnr/pppppppp/8/8/4P3/8/PPPP1PPP/RNBQKBNR b KQkq e3 0 1").unwrap();
+        assert_eq!(board.key, fen.key);
+
+        // after the reply the en passant rights expire and the key must no
+        // longer include them (this used to leave a stale en passant key)
+        play_move(&mut board, "g8f6");
+        let fen = Board::from_fen("rnbqkb1r/pppppppp/5n2/8/4P3/8/PPPP1PPP/RNBQKBNR w KQkq - 1 2")
+            .unwrap();
+        assert_eq!(board.key, fen.key);
+
+        // moving the king drops castle rights, which must change the key
+        play_move(&mut board, "e1e2");
+        let fen = Board::from_fen("rnbqkb1r/pppppppp/5n2/8/4P3/8/PPPPKPPP/RNBQ1BNR b KQkq - 2 2")
+            .unwrap();
+        assert_ne!(board.key, fen.key);
+        let fen =
+            Board::from_fen("rnbqkb1r/pppppppp/5n2/8/4P3/8/PPPPKPPP/RNBQ1BNR b kq - 2 2").unwrap();
+        assert_eq!(board.key, fen.key);
+    }
+
+    #[test]
+    fn key_is_path_independent() {
+        // reaching the same position via different move orders (with different
+        // numbers of double pawn pushes on the way) must produce the same key
+        let mut a = Board::new();
+        for m in ["e2e4", "d7d5", "g1f3", "b8c6"] {
+            play_move(&mut a, m);
+        }
+        let mut b = Board::new();
+        for m in ["g1f3", "d7d5", "e2e4", "b8c6"] {
+            play_move(&mut b, m);
+        }
+        // Note: both lines end with a knight move so any en passant rights
+        // created along the way have expired in both final positions
+        assert_eq!(a.key, b.key);
+    }
+}
+
+#[cfg(test)]
 mod perft {
     use super::Board;
     use super::Game;
@@ -1385,10 +1487,10 @@ mod test_fen {
 
     #[test]
     fn test_invalid_extra_ranks() {
-        assert!(Board::from_fen(
-            "rnbqkbnr/pppppppp/8/8/8/8/8/4P3/8/PPPP1PPP/RNBQKBNR b KQkq e3 0 1"
-        )
-        .is_err());
+        assert!(
+            Board::from_fen("rnbqkbnr/pppppppp/8/8/8/8/8/4P3/8/PPPP1PPP/RNBQKBNR b KQkq e3 0 1")
+                .is_err()
+        );
     }
     #[test]
     fn test_invalid_extra_slash() {
