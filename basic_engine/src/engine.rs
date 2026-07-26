@@ -8,6 +8,7 @@ use std::time;
 
 const CHECKMATE_SCORE: i64 = 800_000;
 const MAX_DEPTH: u8 = 20;
+const DEFAULT_TABLE_BYTES: usize = 500 * 1024 * 1024;
 // Any score this close to CHECKMATE_SCORE is a forced mate. Regular evals are
 // bounded by material values which are orders of magnitude smaller.
 const CHECKMATE_THRESHOLD: i64 = CHECKMATE_SCORE - 1000;
@@ -155,6 +156,20 @@ pub struct AlphaBeta {
 }
 
 impl AlphaBeta {
+    pub fn with_table_bytes(board: Board, bytes: usize) -> Self {
+        Self {
+            board,
+            nodes: 0,
+            score: 0,
+            moves: HashTable::with_capacity_bytes(bytes),
+            search_depth: 0,
+            selective_depth: 0,
+            start_time: time::Instant::now(),
+            search_duration: None,
+            should_stop: false,
+        }
+    }
+
     fn eval(&self) -> i64 {
         self.board.eval()
     }
@@ -437,19 +452,21 @@ impl HashTable {
 
     fn set(&mut self, key: u64, pv: Pv) {
         let index = (key % self.capacity as u64) as usize;
-        if let Some((old_pv, _)) = self.table[index] {
-            // if new is exact and old isn't replace
-            if matches!(pv.node, Node::Exact) {
-                self.table[index] = Some((pv, key));
-                return;
-            } else if !matches!(old_pv.node, Node::Exact) {
-                self.table[index] = Some((pv, key));
-                return;
-            } else if (pv.ply as isize - old_pv.ply as isize) > (MAX_DEPTH as isize + 3) {
-                self.table[index] = Some((pv, key));
-                return;
+        if let Some((old_pv, old_key)) = self.table[index] {
+            // entries left over from an earlier point in the game are always replaced
+            let stale = (pv.ply as isize - old_pv.ply as isize) > (MAX_DEPTH as isize + 3);
+            if !stale {
+                if pv.depth < old_pv.depth {
+                    return;
+                }
+                if pv.depth == old_pv.depth
+                    && old_key == key
+                    && matches!(old_pv.node, Node::Exact)
+                    && !matches!(pv.node, Node::Exact)
+                {
+                    return;
+                }
             }
-            return;
         }
         self.table[index] = Some((pv, key));
     }
@@ -604,6 +621,24 @@ mod test_search {
     }
 
     #[test]
+    fn test_small_table_matches_large_table() {
+        // a table small enough to force constant collisions must not change the result
+        let fen = "r1b2rk1/ppp1qppp/4pn2/6N1/Qn1P4/2NBP3/PP3PPP/R3K2R w KQ - 9 12";
+        let mut big = <AlphaBeta as Engine>::new(Board::from_fen(fen).unwrap());
+        let expected = big.search(5).unwrap();
+        let mut small = AlphaBeta::with_table_bytes(Board::from_fen(fen).unwrap(), 8 * 1024);
+        let result = small.search(5).unwrap();
+        assert_eq!(result.score, expected.score);
+    }
+
+    #[test]
+    fn test_pv_line_without_cache_entry() {
+        let game = Board::new();
+        let e = <AlphaBeta as Engine>::new(game);
+        assert_eq!(format!("{}", e.pv_line()), "");
+    }
+
+    #[test]
     fn test_stopped_search_does_not_poison_cache() {
         let fen = "r1b2rk1/ppp1qppp/4pn2/6N1/Qn1P4/2NBP3/PP3PPP/R3K2R w KQ - 9 12";
         let game = Board::from_fen(fen).unwrap();
@@ -661,10 +696,7 @@ mod test_hash_table {
         assert!(matches!(table.get(1).unwrap().node, Node::Exact));
     }
 
-    // TODO known issue (see README): replacement never compares depth so a shallower exact entry
-    // replaces a deeper one for the same position
     #[test]
-    #[ignore = "known issue: replacement strategy does not compare entry depth"]
     fn test_deeper_exact_entry_survives_shallower_exact_entry() {
         let mut table = HashTable::with_capacity(1);
         table.set(1, new_pv(Node::Exact, 8, 1));
@@ -672,31 +704,43 @@ mod test_hash_table {
         assert_eq!(table.get(1).unwrap().depth, 8);
     }
 
-    // TODO known issue (see README): an exact entry blocks non-exact stores even when the stored
-    // key is for a different position, so colliding positions can never enter the table
     #[test]
-    #[ignore = "known issue: exact entries block stores for other positions in the same slot"]
-    fn test_exact_entry_does_not_block_other_positions() {
+    fn test_deeper_entry_replaces_exact_entry_for_another_position() {
+        let mut table = HashTable::with_capacity(1);
+        table.set(1, new_pv(Node::Exact, 1, 1));
+        table.set(2, new_pv(Node::Beta, 8, 1));
+        assert!(table.get(2).is_some());
+        assert!(table.get(1).is_none());
+    }
+
+    #[test]
+    fn test_shallower_entry_does_not_evict_deeper_entry_for_another_position() {
+        let mut table = HashTable::with_capacity(1);
+        table.set(1, new_pv(Node::Beta, 8, 1));
+        table.set(2, new_pv(Node::Exact, 1, 1));
+        assert_eq!(table.get(1).unwrap().depth, 8);
+    }
+
+    #[test]
+    fn test_quiescence_entry_does_not_evict_searched_entry() {
+        let mut table = HashTable::with_capacity(1);
+        table.set(1, new_pv(Node::Exact, 5, 1));
+        table.set(2, new_pv(Node::Ordering, 0, 1));
+        assert_eq!(table.get(1).unwrap().depth, 5);
+    }
+
+    #[test]
+    fn test_stale_entry_is_replaced_regardless_of_depth() {
         let mut table = HashTable::with_capacity(1);
         table.set(1, new_pv(Node::Exact, 8, 1));
-        table.set(2, new_pv(Node::Beta, 1, 1));
+        table.set(2, new_pv(Node::Beta, 1, 100));
         assert!(table.get(2).is_some());
     }
 }
 
 impl Engine for AlphaBeta {
     fn new(board: Board) -> Self {
-        Self {
-            board,
-            nodes: 0,
-            score: 0,
-            moves: HashTable::with_capacity_bytes(500 * 1024 * 1024),
-            search_depth: 0,
-            selective_depth: 0,
-            start_time: time::Instant::now(),
-            search_duration: None,
-            should_stop: false,
-        }
+        AlphaBeta::with_table_bytes(board, DEFAULT_TABLE_BYTES)
     }
 
     fn perft(&mut self) {
@@ -764,16 +808,15 @@ impl Engine for AlphaBeta {
     }
 
     fn pv_line(&self) -> PvLine {
-        let mut pv_line = Vec::new();
-        let mut pv = self.moves.get(self.board.key).unwrap();
-        pv_line.push(pv.play);
-        while let Some(next) = self.moves.get(pv.next_key) {
-            pv_line.push(next.play);
-            pv = next;
-            if pv_line.len() >= 16 {
+        let mut line = Vec::new();
+        let mut key = self.board.key;
+        while let Some(pv) = self.moves.get(key) {
+            line.push(pv.play);
+            key = pv.next_key;
+            if line.len() >= 16 {
                 break; // TODO resolve hash colisions to prevent errors here
             }
         }
-        PvLine { line: pv_line }
+        PvLine { line }
     }
 }
