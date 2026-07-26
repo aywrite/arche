@@ -94,7 +94,8 @@ impl Magic {
         let mut result = vec![0; 2usize.pow(u32::from(bits))];
         let shift = 64 - bits;
         'outer: loop {
-            let magic_candidate: u64 = rng.gen::<u64>() & rng.gen::<u64>() & rng.gen::<u64>();
+            let magic_candidate: u64 =
+                rng.random::<u64>() & rng.random::<u64>() & rng.random::<u64>();
             for item in &mut result {
                 *item = 0;
             }
@@ -270,7 +271,7 @@ impl BlockerMasks {
                     let check_100_index = BASE_CONVERSIONS.base_64_to_100[i] as isize + (k * j);
                     if BASE_CONVERSIONS.is_offboard(check_100_index as usize) {
                         break; // if the next one is offboard then break now before setting the bit
-                               // since a piece on the edge in direction of movement can't block
+                        // since a piece on the edge in direction of movement can't block
                     };
                     am.diagonal[i].set_bit(check_index);
                 }

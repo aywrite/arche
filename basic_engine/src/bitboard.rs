@@ -1,4 +1,4 @@
-use crate::misc::{coordinate_to_index, File};
+use crate::misc::{File, coordinate_to_index};
 use smallvec::SmallVec;
 
 pub trait BitBoard {
