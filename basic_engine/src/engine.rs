@@ -496,6 +496,7 @@ mod test_search {
     use super::Engine;
     use super::Game;
     use pretty_assertions::assert_eq;
+    use std::time;
 
     #[test]
     fn test_regression_bad_cache() {
@@ -570,6 +571,116 @@ mod test_search {
         let mut e = <AlphaBeta as Engine>::new(game);
         let result = e.search(3);
         assert!(result.is_none());
+    }
+
+    #[test]
+    fn test_warm_cache_matches_cold_search() {
+        // Searching a position with a cache warmed by unrelated positions must give the same
+        // result as searching it with an empty cache
+        let fens = [
+            "r3k2r/p1ppqpb1/bn2pnp1/3PN3/1p2P3/2N2Q1p/PPPBBPPP/R3K2R w KQkq - 0 1",
+            "8/2p5/3p4/KP5r/1R3p1k/8/4P1P1/8 w - - 10 10",
+            "r3k2r/Pppp1ppp/1b3nbN/nP6/BBP1P3/q4N2/Pp1P2PP/R2Q1RK1 w kq - 0 1",
+        ];
+        let mut warm = <AlphaBeta as Engine>::new(Board::new());
+        for fen in fens {
+            warm.parse_fen(fen).unwrap();
+            warm.search(5).unwrap();
+        }
+        for fen in fens {
+            let game = Board::from_fen(fen).unwrap();
+            let mut cold = <AlphaBeta as Engine>::new(game);
+            let expected = cold.search(5).unwrap();
+            warm.parse_fen(fen).unwrap();
+            let result = warm.search(5).unwrap();
+            assert_eq!(result.score, expected.score, "score differs for {}", fen);
+            assert_eq!(
+                format!("{}", result.best_move),
+                format!("{}", expected.best_move),
+                "best move differs for {}",
+                fen
+            );
+        }
+    }
+
+    #[test]
+    fn test_stopped_search_does_not_poison_cache() {
+        let fen = "r1b2rk1/ppp1qppp/4pn2/6N1/Qn1P4/2NBP3/PP3PPP/R3K2R w KQ - 9 12";
+        let game = Board::from_fen(fen).unwrap();
+        let mut cold = <AlphaBeta as Engine>::new(game);
+        let expected = cold.search(6).unwrap();
+
+        // a search with no time budget stops immediately, it must not leave partial results in
+        // the hash table which change the outcome of the next search
+        let game = Board::from_fen(fen).unwrap();
+        let mut e = <AlphaBeta as Engine>::new(game);
+        e.configure(time::Instant::now(), Some(time::Duration::ZERO));
+        e.search(6);
+        assert!(e.should_stop());
+
+        e.configure(time::Instant::now(), None);
+        let result = e.search(6).unwrap();
+        assert_eq!(result.score, expected.score);
+        assert_eq!(
+            format!("{}", result.best_move),
+            format!("{}", expected.best_move),
+        );
+    }
+}
+
+#[cfg(test)]
+mod test_hash_table {
+    use super::{HashTable, Node, Play, Pv};
+    use pretty_assertions::assert_eq;
+
+    fn new_pv(node: Node, depth: usize, ply: usize) -> Pv {
+        Pv {
+            next_key: 0,
+            play: Play::new(0, 1, None, None, false, false),
+            score: 0,
+            depth,
+            node,
+            ply,
+        }
+    }
+
+    #[test]
+    fn test_get_compares_key_not_just_slot() {
+        // two different keys which map to the same slot must not be confused for each other
+        let mut table = HashTable::with_capacity(1);
+        table.set(1, new_pv(Node::Exact, 1, 1));
+        assert!(table.get(1).is_some());
+        assert!(table.get(2).is_none());
+    }
+
+    #[test]
+    fn test_exact_entry_replaces_non_exact_entry() {
+        let mut table = HashTable::with_capacity(1);
+        table.set(1, new_pv(Node::Beta, 1, 1));
+        table.set(1, new_pv(Node::Exact, 1, 1));
+        assert!(matches!(table.get(1).unwrap().node, Node::Exact));
+    }
+
+    // TODO known issue (see README): replacement never compares depth so a shallower exact entry
+    // replaces a deeper one for the same position
+    #[test]
+    #[ignore = "known issue: replacement strategy does not compare entry depth"]
+    fn test_deeper_exact_entry_survives_shallower_exact_entry() {
+        let mut table = HashTable::with_capacity(1);
+        table.set(1, new_pv(Node::Exact, 8, 1));
+        table.set(1, new_pv(Node::Exact, 2, 1));
+        assert_eq!(table.get(1).unwrap().depth, 8);
+    }
+
+    // TODO known issue (see README): an exact entry blocks non-exact stores even when the stored
+    // key is for a different position, so colliding positions can never enter the table
+    #[test]
+    #[ignore = "known issue: exact entries block stores for other positions in the same slot"]
+    fn test_exact_entry_does_not_block_other_positions() {
+        let mut table = HashTable::with_capacity(1);
+        table.set(1, new_pv(Node::Exact, 8, 1));
+        table.set(2, new_pv(Node::Beta, 1, 1));
+        assert!(table.get(2).is_some());
     }
 }
 
