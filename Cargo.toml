@@ -1,7 +1,8 @@
 [package]
 name = "arche"
 version = "0.3.6"
-edition = "2021"
+edition = "2024"
+rust-version = "1.85"
 authors = [
   "Andrew Wright"
 ]
@@ -12,10 +13,10 @@ members = [
 ]
 
 [dependencies]
-lazy_static = "1.4.0"
+lazy_static = "1.5.0"
 regex = "1"
 basic_engine = { path = "./basic_engine" }
-rand = "0.8.5"
+rand = "0.9.2"
 
 [profile.release]
 lto = true

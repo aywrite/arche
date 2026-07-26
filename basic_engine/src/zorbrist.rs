@@ -23,8 +23,8 @@ impl Zorbrist {
 
         Self {
             pieces,
-            side: rng.gen(),
-            en_passant: rng.gen(),
+            side: rng.random(),
+            en_passant: rng.random(),
         }
     }
 
