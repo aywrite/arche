@@ -2,6 +2,7 @@ allow-branch = ["master"]
 publish = false
 push = false
 pre-release-hook = [
-"git-cliff", "-o", "CHANGELOG.md", "--tag", "{{version}}"
+"git-cliff", "--unreleased", "--tag", "{{version}}", "--prepend", "CHANGELOG.md"
 ]
+consolidate-commits = false
 pre-release-commit-message="chore(release): prepare for {{version}}"
