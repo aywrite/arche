@@ -7,11 +7,38 @@ This project is mostly indented for self-edification. The engine is not intended
 
 The board is currently represented using only bitboards (with magic bitboards for move generation of sliding pieces).
 
+The search is alpha beta with a transposition table, iterative deepening, quiescence search and
+MVV-LVA move ordering. Evaluation is material plus piece square tables.
+
 ## Usage
 
 The engine does not ship with any GUI. It currently implements a subset of the UCI protocol, you can use it with an open source GUI such as [Arena](http://www.playwitharena.de/).
 
 The program does not accept posix style arguments it will immediately start in UCI mode.
+
+Binaries for linux, macos and windows are attached to each
+[release](https://github.com/aywrite/arche/releases). To build from source:
+
+```
+cargo build --release
+```
+
+The binary is written to `target/release/arche`. Note that the engine allocates a 500MB
+transposition table on startup and that the size is not yet configurable over UCI.
+
+## Strength
+
+Each release plays a short match against its predecessor and the result is added to the
+release notes. The estimate is only as good as the number of games behind it, which is why
+the error bar is published alongside it.
+
+The engine has not been entered into any rating list, so there is no comparable rating
+against other engines.
+
+## Development
+
+See [docs/DEVELOPMENT.md](docs/DEVELOPMENT.md) for how to run the tests and benchmarks,
+play a match against a previous version, and cut a release.
 
 ## Lichess
 
