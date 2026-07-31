@@ -8,7 +8,18 @@ use crate::Game;
 use crate::magic::Magic;
 use crate::pvt::PieceValueTables;
 use crate::zorbrist::Zorbrist;
+use smallvec::SmallVec;
 use std::fmt;
+
+pub type MoveList = SmallVec<[Play; 64]>;
+
+/// Pop the lowest set bit and return its index.
+#[inline(always)]
+fn pop_lsb(bb: &mut u64) -> u8 {
+    let i = bb.trailing_zeros() as u8;
+    *bb &= *bb - 1;
+    i
+}
 
 /// Play State is used to store the history of moves (plays)
 ///
@@ -257,6 +268,7 @@ pub struct Board {
 
     pub white_value: u32,
     pub black_value: u32,
+    // piece square table score, kept up to date incrementally
 
     //history: Vec<PlayState>,
     history: [Option<PlayState>; MAX_GAME_SIZE],
@@ -276,54 +288,69 @@ impl Board {
         Board::from_fen("rnbqkbnr/pppppppp/8/8/8/8/PPPPPPPP/RNBQKBNR w KQkq - 0 1").unwrap()
     }
 
-    pub fn generate_captures(&self) -> Vec<Play> {
-        let mut moves = Vec::with_capacity(25);
+    pub fn generate_captures(&self) -> MoveList {
+        let mut moves = MoveList::new();
         let (color_mask, capture_mask) = match self.active_color {
             Color::Black => (self.black, self.white),
             Color::White => (self.white, self.black),
         };
         let all_pieces = self.black | self.white;
+        let attack_masks: &AttackMasks = &ATTACK_MASKS;
+        let magic: &Magic = &MAGIC;
         // knights
-        let knights = (self.knights & color_mask).get_set_bits();
-        for from in knights {
+        let mut knights = self.knights & color_mask;
+        while knights != 0 {
+            let from = pop_lsb(&mut knights);
             // Only include moves which don't have another piece of our color at the to square
-            let kmoves = ATTACK_MASKS.knights[from as usize] & (capture_mask);
-            for to in kmoves.get_set_bits() {
+            let kmoves = attack_masks.knights[from as usize] & (capture_mask);
+            let mut __m = kmoves;
+            while __m != 0 {
+                let to = pop_lsb(&mut __m);
                 let capture = self.get_piece_index(to);
                 moves.push(Play::new(from, to, capture, None, false, false));
             }
         }
         // queens and rooks
-        let queens_and_rooks = ((self.queens | self.rooks) & color_mask).get_set_bits();
-        for from in queens_and_rooks {
-            let move_mask = MAGIC.get_straight_move(from, all_pieces) & capture_mask;
-            for to in move_mask.get_set_bits() {
+        let mut queens_and_rooks = (self.queens | self.rooks) & color_mask;
+        while queens_and_rooks != 0 {
+            let from = pop_lsb(&mut queens_and_rooks);
+            let move_mask = magic.get_straight_move(from, all_pieces) & capture_mask;
+            let mut __m = move_mask;
+            while __m != 0 {
+                let to = pop_lsb(&mut __m);
                 let capture = self.get_piece_index(to);
                 moves.push(Play::new(from, to, capture, None, false, false));
             }
         }
         // queens and bishops
-        let queens_and_bishops = ((self.queens | self.bishops) & color_mask).get_set_bits();
-        for from in queens_and_bishops {
-            let move_mask = MAGIC.get_diagonal_move(from, all_pieces) & capture_mask;
-            for to in move_mask.get_set_bits() {
+        let mut queens_and_bishops = (self.queens | self.bishops) & color_mask;
+        while queens_and_bishops != 0 {
+            let from = pop_lsb(&mut queens_and_bishops);
+            let move_mask = magic.get_diagonal_move(from, all_pieces) & capture_mask;
+            let mut __m = move_mask;
+            while __m != 0 {
+                let to = pop_lsb(&mut __m);
                 let capture = self.get_piece_index(to);
                 moves.push(Play::new(from, to, capture, None, false, false));
             }
         }
         // kings
-        let kings = (self.kings & color_mask).get_set_bits();
-        for from in kings {
+        let mut kings = self.kings & color_mask;
+        while kings != 0 {
+            let from = pop_lsb(&mut kings);
             // Only include moves which don't have another piece of our color at the to square
-            let kmove = ATTACK_MASKS.kings[from as usize] & capture_mask;
-            for to in kmove.get_set_bits() {
+            let kmove = attack_masks.kings[from as usize] & capture_mask;
+            let mut __m = kmove;
+            while __m != 0 {
+                let to = pop_lsb(&mut __m);
                 let capture = self.get_piece_index(to);
                 moves.push(Play::new(from, to, capture, None, false, false));
             }
         }
         //pawns
-        let pawns = (self.pawns & color_mask).get_set_bits();
-        for from in pawns {
+        let mut pawns = self.pawns & color_mask;
+        while pawns != 0 {
+            let from = pop_lsb(&mut pawns);
             let (rank, _) = index_to_coordinate(from);
             let can_promote = match self.active_color {
                 Color::White => rank == 7,
@@ -331,10 +358,12 @@ impl Board {
             };
             // move diagonally and capture
             let pmoves: u64 = match self.active_color {
-                Color::White => ATTACK_MASKS.black_pawns[from as usize] & capture_mask,
-                Color::Black => ATTACK_MASKS.white_pawns[from as usize] & capture_mask,
+                Color::White => attack_masks.black_pawns[from as usize] & capture_mask,
+                Color::Black => attack_masks.white_pawns[from as usize] & capture_mask,
             };
-            for to in pmoves.get_set_bits() {
+            let mut __m = pmoves;
+            while __m != 0 {
+                let to = pop_lsb(&mut __m);
                 let capture = self.get_piece_index(to);
                 if can_promote {
                     for p in PromotePiece::VARIANTS {
@@ -348,8 +377,8 @@ impl Board {
             if let Some(en_passant) = &self.en_passant {
                 let i = en_passant.as_index();
                 let can_en_passant = match self.active_color {
-                    Color::White => ATTACK_MASKS.black_pawns[from as usize].is_bit_set(i),
-                    Color::Black => ATTACK_MASKS.white_pawns[from as usize].is_bit_set(i),
+                    Color::White => attack_masks.black_pawns[from as usize].is_bit_set(i),
+                    Color::Black => attack_masks.white_pawns[from as usize].is_bit_set(i),
                 };
                 if can_en_passant {
                     moves.push(Play::new(from, i, Some(Piece::Pawn), None, true, false));
@@ -359,47 +388,61 @@ impl Board {
         moves
     }
 
-    pub fn generate_moves(&self) -> Vec<Play> {
-        let mut moves = Vec::with_capacity(50);
+    pub fn generate_moves(&self) -> MoveList {
+        let mut moves = MoveList::new();
         let (color_mask, capture_mask) = match self.active_color {
             Color::Black => (self.black, self.white),
             Color::White => (self.white, self.black),
         };
         let all_pieces = self.black | self.white;
+        let attack_masks: &AttackMasks = &ATTACK_MASKS;
+        let magic: &Magic = &MAGIC;
         // knights
-        let knights = (self.knights & color_mask).get_set_bits();
-        for from in knights {
+        let mut knights = self.knights & color_mask;
+        while knights != 0 {
+            let from = pop_lsb(&mut knights);
             // Only include moves which don't have another piece of our color at the to square
-            let kmoves = ATTACK_MASKS.knights[from as usize] & (!color_mask);
-            for to in kmoves.get_set_bits() {
+            let kmoves = attack_masks.knights[from as usize] & (!color_mask);
+            let mut __m = kmoves;
+            while __m != 0 {
+                let to = pop_lsb(&mut __m);
                 let capture = self.get_piece_index(to);
                 moves.push(Play::new(from, to, capture, None, false, false));
             }
         }
         // queens and rooks
-        let queens_and_rooks = ((self.queens | self.rooks) & color_mask).get_set_bits();
-        for from in queens_and_rooks {
-            let move_mask = MAGIC.get_straight_move(from, all_pieces) & !color_mask;
-            for to in move_mask.get_set_bits() {
+        let mut queens_and_rooks = (self.queens | self.rooks) & color_mask;
+        while queens_and_rooks != 0 {
+            let from = pop_lsb(&mut queens_and_rooks);
+            let move_mask = magic.get_straight_move(from, all_pieces) & !color_mask;
+            let mut __m = move_mask;
+            while __m != 0 {
+                let to = pop_lsb(&mut __m);
                 let capture = self.get_piece_index(to);
                 moves.push(Play::new(from, to, capture, None, false, false));
             }
         }
         // queens and bishops
-        let queens_and_bishops = ((self.queens | self.bishops) & color_mask).get_set_bits();
-        for from in queens_and_bishops {
-            let move_mask = MAGIC.get_diagonal_move(from, all_pieces) & !color_mask;
-            for to in move_mask.get_set_bits() {
+        let mut queens_and_bishops = (self.queens | self.bishops) & color_mask;
+        while queens_and_bishops != 0 {
+            let from = pop_lsb(&mut queens_and_bishops);
+            let move_mask = magic.get_diagonal_move(from, all_pieces) & !color_mask;
+            let mut __m = move_mask;
+            while __m != 0 {
+                let to = pop_lsb(&mut __m);
                 let capture = self.get_piece_index(to);
                 moves.push(Play::new(from, to, capture, None, false, false));
             }
         }
         // kings
-        let kings = (self.kings & color_mask).get_set_bits();
-        for from in kings {
+        let mut kings = self.kings & color_mask;
+        while kings != 0 {
+            let from = pop_lsb(&mut kings);
             // Only include moves which don't have another piece of our color at the to square
-            let kmove = ATTACK_MASKS.kings[from as usize] & (!color_mask);
-            for to in kmove.get_set_bits() {
+            let kmove = attack_masks.kings[from as usize] & (!color_mask);
+            let mut __m = kmove;
+            while __m != 0 {
+                let to = pop_lsb(&mut __m);
                 let capture = self.get_piece_index(to);
                 moves.push(Play::new(from, to, capture, None, false, false));
             }
@@ -454,8 +497,9 @@ impl Board {
             }
         }
         //pawns
-        let pawns = (self.pawns & color_mask).get_set_bits();
-        for from in pawns {
+        let mut pawns = self.pawns & color_mask;
+        while pawns != 0 {
+            let from = pop_lsb(&mut pawns);
             let (rank, _) = index_to_coordinate(from);
             let can_promote = match self.active_color {
                 Color::White => rank == 7,
@@ -463,10 +507,12 @@ impl Board {
             };
             // move diagonally and capture
             let pmoves: u64 = match self.active_color {
-                Color::White => ATTACK_MASKS.black_pawns[from as usize] & capture_mask,
-                Color::Black => ATTACK_MASKS.white_pawns[from as usize] & capture_mask,
+                Color::White => attack_masks.black_pawns[from as usize] & capture_mask,
+                Color::Black => attack_masks.white_pawns[from as usize] & capture_mask,
             };
-            for to in pmoves.get_set_bits() {
+            let mut __m = pmoves;
+            while __m != 0 {
+                let to = pop_lsb(&mut __m);
                 let capture = self.get_piece_index(to);
                 if can_promote {
                     for p in PromotePiece::VARIANTS {
@@ -509,8 +555,8 @@ impl Board {
             if let Some(en_passant) = &self.en_passant {
                 let i = en_passant.as_index();
                 let can_en_passant = match self.active_color {
-                    Color::White => ATTACK_MASKS.black_pawns[from as usize].is_bit_set(i),
-                    Color::Black => ATTACK_MASKS.white_pawns[from as usize].is_bit_set(i),
+                    Color::White => attack_masks.black_pawns[from as usize].is_bit_set(i),
+                    Color::Black => attack_masks.white_pawns[from as usize].is_bit_set(i),
                 };
                 if can_en_passant {
                     moves.push(Play::new(from, i, Some(Piece::Pawn), None, true, false));
@@ -520,6 +566,7 @@ impl Board {
         moves
     }
 
+    #[inline]
     fn piece_value(&self, index: u8) -> isize {
         match self.get_piece_and_color_index(index) {
             Some((p, Color::White)) => PVT.get_value(index as usize, p, Color::White),
@@ -534,8 +581,9 @@ impl Board {
         let eval = i64::from(self.white_value) - i64::from(self.black_value);
 
         let mut score = 0i64;
-        for i in (self.black | self.white).get_set_bits() {
-            score += self.piece_value(i) as i64;
+        let mut occupied = self.black | self.white;
+        while occupied != 0 {
+            score += self.piece_value(pop_lsb(&mut occupied)) as i64;
         }
         let eval = eval + score;
 
@@ -547,7 +595,8 @@ impl Board {
 
     pub fn square_attacked(&self, index: u8, color: Color) -> bool {
         let all = self.black | self.white;
-        let attack_masks = &ATTACK_MASKS;
+        let attack_masks: &AttackMasks = &ATTACK_MASKS;
+        let magic: &Magic = &MAGIC;
         let (color_mask, pawn_masks) = match color {
             Color::Black => (self.black, &attack_masks.black_pawns),
             Color::White => (self.white, &attack_masks.white_pawns),
@@ -565,7 +614,7 @@ impl Board {
         // bishops & queens
         let bishop_or_queen = (self.bishops | self.queens) & color_mask;
         if (attack_masks.diagonal[index as usize] & bishop_or_queen) > 0 {
-            let move_mask = MAGIC.get_diagonal_move(index, all);
+            let move_mask = magic.get_diagonal_move(index, all);
             if (move_mask & bishop_or_queen) > 0 {
                 return true;
             }
@@ -574,7 +623,7 @@ impl Board {
         // rooks & queens
         let rook_or_queen = (self.rooks | self.queens) & color_mask;
         if (attack_masks.straight[index as usize] & rook_or_queen) > 0 {
-            let move_mask = MAGIC.get_straight_move(index, all);
+            let move_mask = magic.get_straight_move(index, all);
             if (move_mask & rook_or_queen) > 0 {
                 return true;
             }
@@ -614,6 +663,7 @@ impl Board {
         });
 
         let opposing_color = !self.active_color;
+        let zorb: &Zorbrist = &ZORB;
         // update castling permissions
         let old_castle = self.castle;
         match play.from {
@@ -642,10 +692,10 @@ impl Board {
         }
         // XORing both the old and new castle keys removes the old permissions
         // from the position key and adds the new ones (a no-op when unchanged)
-        self.key ^= ZORB.castle_key(old_castle) ^ ZORB.castle_key(self.castle);
+        self.key ^= zorb.castle_key(old_castle) ^ zorb.castle_key(self.castle);
         if let Some(en_passant) = self.en_passant {
             // the en passant rights of the previous position have expired
-            self.key ^= ZORB.en_passant_key(en_passant.as_index());
+            self.key ^= zorb.en_passant_key(en_passant.as_index());
         }
         self.en_passant = None;
         self.fifty_move_rule += 1;
@@ -659,7 +709,7 @@ impl Board {
                     Color::White => Some(Coordinate::from_index(play.to - 8)),
                     Color::Black => Some(Coordinate::from_index(play.to + 8)),
                 };
-                self.key ^= ZORB.en_passant_key(play.to);
+                self.key ^= zorb.en_passant_key(play.to);
             }
             if play.en_passant {
                 let clear_index = match self.active_color {
@@ -709,11 +759,11 @@ impl Board {
 
         // return false if king in check
         let king_index = match self.active_color {
-            Color::White => (self.kings & self.white).get_set_bits()[0],
-            Color::Black => (self.kings & self.black).get_set_bits()[0],
+            Color::White => (self.kings & self.white).trailing_zeros() as u8,
+            Color::Black => (self.kings & self.black).trailing_zeros() as u8,
         };
         self.active_color = opposing_color;
-        self.key ^= ZORB.side;
+        self.key ^= zorb.side;
         if self.square_attacked(king_index, opposing_color) {
             self.undo_move().unwrap();
             false
@@ -805,10 +855,16 @@ impl Board {
 
     pub fn is_king_attacked(&self) -> bool {
         let (index, opposing_color) = match self.active_color {
-            Color::White => ((self.kings & self.white).get_set_bits(), Color::Black),
-            Color::Black => ((self.kings & self.black).get_set_bits(), Color::White),
+            Color::White => (
+                (self.kings & self.white).trailing_zeros() as u8,
+                Color::Black,
+            ),
+            Color::Black => (
+                (self.kings & self.black).trailing_zeros() as u8,
+                Color::White,
+            ),
         };
-        self.square_attacked(index[0], opposing_color)
+        self.square_attacked(index, opposing_color)
     }
 
     pub fn attacked_print(&self, color: Color) {
@@ -829,10 +885,12 @@ impl Board {
         println!();
     }
 
+    #[inline]
     fn set_piece_index(&mut self, index: u8, piece: Piece, color: Color) {
         debug_assert!(!self.black.is_bit_set(index));
         debug_assert!(!self.white.is_bit_set(index));
-        self.key ^= ZORB.get_piece_key(index, piece, color);
+        let zorb: &Zorbrist = &ZORB;
+        self.key ^= zorb.get_piece_key(index, piece, color);
         match piece {
             Piece::Pawn => self.pawns.set_bit(index),
             Piece::Knight => self.knights.set_bit(index),
@@ -858,9 +916,11 @@ impl Board {
         self.set_piece_index(index, piece, color);
     }
 
+    #[inline]
     fn clear_piece_index(&mut self, index: u8, piece: Piece, color: Color) {
         debug_assert!((self.black | self.white).is_bit_set(index));
-        self.key ^= ZORB.get_piece_key(index, piece, color);
+        let zorb: &Zorbrist = &ZORB;
+        self.key ^= zorb.get_piece_key(index, piece, color);
         match piece {
             Piece::Pawn => self.pawns.clear_bit(index),
             Piece::Knight => self.knights.clear_bit(index),
@@ -881,6 +941,7 @@ impl Board {
         };
     }
 
+    #[inline]
     pub fn get_piece_index(&self, index: u8) -> Option<Piece> {
         // TODO this should also return color
         let mask = 1u64 << index;
@@ -901,6 +962,7 @@ impl Board {
         }
     }
 
+    #[inline]
     pub fn get_piece_and_color_index(&self, index: u8) -> Option<(Piece, Color)> {
         let mask = 1u64 << index;
         let piece = if (self.pawns & mask) > 0 {
@@ -1245,7 +1307,7 @@ mod make_move {
             #[test]
             fn $func() {
                 let board = Board::from_fen($f).unwrap();
-                let filtered_captures: Vec<Play> = board
+                let filtered_captures: super::MoveList = board
                     .generate_moves()
                     .iter()
                     .filter(|c| c.capture.is_some())
