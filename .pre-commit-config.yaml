@@ -1,19 +1,39 @@
+default_install_hook_types: [pre-commit, commit-msg]
+
 repos:
--   repo: https://github.com/pre-commit/pre-commit-hooks
-    rev: v2.3.0
+  - repo: https://github.com/pre-commit/pre-commit-hooks
+    rev: v6.0.0
     hooks:
-    -   id: check-yaml
-    -   id: check-toml
-    -   id: check-json
-    -   id: trailing-whitespace
-    -   id: check-merge-conflict
--   repo: https://github.com/doublify/pre-commit-rust
-    rev: v1.0
+      - id: check-yaml
+      - id: check-toml
+      - id: check-json
+      - id: trailing-whitespace
+      - id: end-of-file-fixer
+      - id: check-merge-conflict
+  - repo: https://github.com/astral-sh/ruff-pre-commit
+    rev: v0.16.1
     hooks:
-    -   id: fmt
-    -   id: cargo-check
-- repo: https://github.com/compilerla/conventional-pre-commit
-  rev: v2.0.0
-  hooks:
-    - id: conventional-pre-commit
-      stages: [commit-msg]
+      - id: ruff-check
+        args: [--fix]
+      - id: ruff-format
+  # Run cargo directly rather than through a hook repo, the ones that wrap it
+  # have all gone unmaintained.
+  - repo: local
+    hooks:
+      - id: fmt
+        name: cargo fmt
+        entry: cargo fmt --all --
+        language: system
+        types: [rust]
+        pass_filenames: false
+      - id: cargo-check
+        name: cargo check
+        entry: cargo check --workspace
+        language: system
+        types: [rust]
+        pass_filenames: false
+  - repo: https://github.com/compilerla/conventional-pre-commit
+    rev: v4.4.0
+    hooks:
+      - id: conventional-pre-commit
+        stages: [commit-msg]
