@@ -54,7 +54,7 @@ pub trait Engine {
 
     fn make_move_str(&mut self, play: &str) -> bool;
 
-    fn iterative_deepening_search(&mut self, search_options: SearchParameters) -> Play {
+    fn iterative_deepening_search(&mut self, search_options: SearchParameters) -> Option<Play> {
         let mut best_move: Option<Play> = None;
         let max_depth = match search_options.depth {
             Some(depth) => depth,
@@ -68,9 +68,8 @@ pub trait Engine {
                 // Fall back to the interrupted iteration's move if we ran out
                 // of time before the first iteration completed
                 return match (best_move, search_result) {
-                    (Some(play), _) => play,
-                    (None, Some(result)) => result.best_move,
-                    (None, None) => panic!("search stopped before any move was found"),
+                    (Some(play), _) => Some(play),
+                    (None, result) => result.map(|r| r.best_move),
                 };
             }
             if let Some(m) = &search_result {
@@ -102,7 +101,7 @@ pub trait Engine {
                 println!("info string no legal moves identified");
             }
         }
-        best_move.unwrap()
+        best_move
     }
 
     fn configure(&mut self, start_time: time::Instant, search_duration: Option<time::Duration>);
@@ -299,7 +298,11 @@ impl AlphaBeta {
         self.selective_depth = self.selective_depth.max(self.board.line_ply as u8);
         self.nodes += 1;
 
-        if self.board.fifty_move_rule >= 100 || self.board.is_repetition() {
+        // a repetition at the root is not a finished game, the engine still has to move, so only
+        // score it as a draw further down the line
+        if self.board.fifty_move_rule >= 100
+            || (self.board.line_ply > 0 && self.board.is_repetition())
+        {
             return 0;
         }
         let in_check = self.board.is_king_attacked();
@@ -629,6 +632,20 @@ mod test_search {
         let mut small = AlphaBeta::with_table_bytes(Board::from_fen(fen).unwrap(), 8 * 1024);
         let result = small.search(5).unwrap();
         assert_eq!(result.score, expected.score);
+    }
+
+    #[test]
+    fn test_search_at_repetition_returns_a_move() {
+        let game = Board::from_fen(
+            "r4rk1/1pp1qppp/p1np1n2/2b1p1B1/2B1P1b1/P1NP1N2/1PP1QPPP/R4RK1 b - - 3 19",
+        )
+        .unwrap();
+        let mut e = <AlphaBeta as Engine>::new(game);
+        for m in ["a8b8", "a1b1", "b8a8", "b1a1", "a8b8", "a1b1", "b8a8", "b1a1"] {
+            assert!(e.make_move_str(m), "failed to play {}", m);
+        }
+        assert!(e.board.is_repetition());
+        assert!(e.search(3).is_some());
     }
 
     #[test]

@@ -152,6 +152,10 @@ impl<T: Engine> UCI<T> {
             sp.search_duration = None;
         }
 
-        println!("bestmove {}", self.engine.iterative_deepening_search(sp));
+        match self.engine.iterative_deepening_search(sp) {
+            // 0000 is the null move, used to report that there is no move to make
+            Some(play) => println!("bestmove {}", play),
+            None => println!("bestmove 0000"),
+        }
     }
 }
