@@ -9,11 +9,23 @@ updates:
     directory: "/"
     schedule:
       interval: "weekly"
+    groups:
+      cargo:
+        patterns:
+          - "*"
   - package-ecosystem: "github-actions"
     directory: "/"
     schedule:
       interval: "weekly"
+    groups:
+      actions:
+        patterns:
+          - "*"
   - package-ecosystem: "docker"
     directory: "/docker"
     schedule:
       interval: "weekly"
+    groups:
+      docker:
+        patterns:
+          - "*"
