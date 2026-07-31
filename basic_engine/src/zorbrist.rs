@@ -29,6 +29,7 @@ impl Zorbrist {
         }
     }
 
+    #[inline]
     pub fn get_piece_key(&self, index: u8, piece: Piece, color: Color) -> u64 {
         let piece_index = match color {
             Color::White => piece as usize,
@@ -37,12 +38,14 @@ impl Zorbrist {
         self.pieces[piece_index][index as usize]
     }
 
+    #[inline]
     pub fn en_passant_key(&self, index: u8) -> u64 {
         self.en_passant[(index % 8) as usize]
     }
 
     /// The combined key for a set of castle permissions. XORing the keys for
     /// the old and new permissions into the position key updates it in place.
+    #[inline]
     pub fn castle_key(&self, castle: CastlePermissions) -> u64 {
         let mut key = 0;
         if castle.white_king_side {
