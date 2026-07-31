@@ -438,7 +438,7 @@ impl HashTable {
     }
 
     fn clear(&mut self) {
-        self.table = vec![None; self.capacity];
+        self.table.fill(None);
     }
 
     fn with_capacity_bytes(bytes: usize) -> Self {
@@ -446,8 +446,15 @@ impl HashTable {
         Self::with_capacity(bytes / entry_size)
     }
 
+    #[inline]
+    fn index_for(&self, key: u64) -> usize {
+        // multiply-shift: maps key uniformly onto 0..capacity without a 64 bit
+        // division on every probe
+        (((key as u128) * (self.capacity as u128)) >> 64) as usize
+    }
+
     fn get(&self, key: u64) -> Option<&Pv> {
-        let index = (key % self.capacity as u64) as usize;
+        let index = self.index_for(key);
         if let Some((pv, k)) = &self.table[index] {
             if *k == key {
                 return Some(pv);
@@ -457,12 +464,12 @@ impl HashTable {
     }
 
     fn clear_key(&mut self, key: u64) {
-        let index = (key % self.capacity as u64) as usize;
+        let index = self.index_for(key);
         self.table[index] = None;
     }
 
     fn set(&mut self, key: u64, pv: Pv) {
-        let index = (key % self.capacity as u64) as usize;
+        let index = self.index_for(key);
         if let Some((old_pv, old_key)) = self.table[index] {
             // entries left over from an earlier point in the game are always replaced
             let stale = (pv.ply as isize - old_pv.ply as isize) > (MAX_DEPTH as isize + 3);
