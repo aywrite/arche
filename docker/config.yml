@@ -1,0 +1,58 @@
+# lichess-bot configuration baked into the arche image.
+#
+# The token is taken from the LICHESS_BOT_TOKEN environment variable at startup,
+# so the placeholder below is never used. To change anything else, mount your own
+# file over /lichess-bot/config.yml. The full set of options is documented in
+# https://github.com/lichess-bot-devs/lichess-bot/blob/master/config.yml.default
+
+token: "set LICHESS_BOT_TOKEN instead"
+url: "https://lichess.org/"
+
+engine:
+  dir: "./engines/"
+  name: "arche"
+  protocol: "uci"
+  # Arche reads UCI commands from a single blocking loop and does not implement
+  # "stop", so it can neither ponder nor be interrupted during a search.
+  ponder: false
+
+  polyglot:
+    enabled: true
+    book:
+      standard:
+        - "engines/arche-book.bin"
+    min_weight: 1
+    selection: "weighted_random"
+    max_depth: 8
+    normalization: "none"
+
+  draw_or_resign:
+    resign_enabled: false
+    offer_draw_enabled: false
+
+challenge:
+  # Each engine process allocates a 500MB transposition table, so playing several
+  # games at once needs a correspondingly larger memory limit on the container.
+  concurrency: 1
+  sort_by: "best"
+  accept_bot: true
+  only_bot: false
+  max_simultaneous_games_per_user: 1
+  variants:
+    - standard
+  time_controls:
+    - bullet
+    - blitz
+    - rapid
+    - classical
+  modes:
+    - casual
+    - rated
+  bullet_requires_increment: true
+  min_base: 60
+  max_base: 3600
+  min_increment: 0
+  max_increment: 180
+
+matchmaking:
+  allow_matchmaking: false
