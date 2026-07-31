@@ -43,13 +43,22 @@ jobs:
           fetch-depth: 0
 
       - uses: Swatinem/rust-cache@v2
+        with:
+          # this job installs cargo-release into CARGO_HOME/bin, which this
+          # action caches by default. restoring that cache made the install
+          # below a no-op without the binary actually being there.
+          cache-bin: false
 
       - uses: taiki-e/install-action@v2
         with:
           tool: cargo-binstall,git-cliff
 
       - name: Install cargo-release
-        run: cargo binstall --no-confirm cargo-release
+        run: |
+          cargo binstall --no-confirm cargo-release
+          # binstall can exit zero without installing anything, so fail here
+          # rather than several steps later with a confusing error
+          cargo release --version
 
       # the release workflow runs these again, but failing here means nothing is
       # created at all, rather than a pull request that has to be closed again
