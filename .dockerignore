@@ -1,0 +1,7 @@
+*
+!Cargo.toml
+!Cargo.lock
+!src
+!basic_engine
+!docker
+basic_engine/target
