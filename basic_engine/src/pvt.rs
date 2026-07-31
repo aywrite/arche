@@ -27,6 +27,7 @@ pub struct PieceValueTables {
 }
 
 impl PieceValueTables {
+    #[inline]
     pub fn get_value(&self, index: usize, piece: Piece, color: Color) -> isize {
         match (piece, color) {
             (Piece::Pawn, Color::White) => self.white_pawns[index],
