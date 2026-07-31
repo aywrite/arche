@@ -7,6 +7,10 @@ on:
   push:
     tags:
       - v[0-9]+.*
+  # run against a tag from the actions tab, either to redo a release or because
+  # the prepare release workflow started it, a tag it pushed itself does not set
+  # off the trigger above
+  workflow_dispatch:
 
 jobs:
   # a tag can be pushed from anywhere, so the tests are run again here rather
@@ -14,6 +18,13 @@ jobs:
   test:
     runs-on: ubuntu-latest
     steps:
+      # everything below expects to be looking at a release tag, which is not
+      # true if this was started by hand against a branch
+      - name: Check this is a tag
+        if: ${{ !startsWith(github.ref, 'refs/tags/') }}
+        run: |
+          echo "::error::this has to run against a release tag, got ${{ github.ref }}"
+          exit 1
       - uses: actions/checkout@v7
       - uses: Swatinem/rust-cache@v2
       - name: Run tests
