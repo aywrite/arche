@@ -95,13 +95,14 @@ jobs:
         uses: actions/cache@v4
         with:
           path: tools
-          key: match-tools-fastchess-1.8.2-8moves-v3
+          key: match-tools-fastchess-1.8.2-alpha-8moves-v3
 
       - name: Build the match tools
         if: steps.previous.outputs.tag != '' && steps.tools.outputs.cache-hit != 'true'
         run: |
           mkdir -p tools
-          git clone --depth 1 --branch v1.8.2 \
+          # every fastchess release is tagged -alpha, there is no plain v1.8.2
+          git clone --depth 1 --branch v1.8.2-alpha \
             https://github.com/Disservin/fastchess.git /tmp/fastchess
           make -C /tmp/fastchess -j"$(nproc)"
           cp /tmp/fastchess/fastchess tools/
