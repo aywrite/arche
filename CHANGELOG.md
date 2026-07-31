@@ -2,6 +2,8 @@
 
 All notable changes to this project will be documented in this file.
 
+## [0.3.8] - 2026-07-31
+
 ## [0.3.8-rc.2] - 2026-07-31
 
 ### Bug Fixes
