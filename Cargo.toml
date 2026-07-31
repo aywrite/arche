@@ -1,15 +1,23 @@
 [package]
 name = "arche"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+authors.workspace = true
+publish = false
+
+[workspace]
+members = [
+  "basic_engine"
+]
+
+# shared so that the release tooling has a single version to bump
+[workspace.package]
 version = "0.3.7"
 edition = "2024"
 rust-version = "1.85"
 authors = [
   "Andrew Wright"
-]
-
-[workspace]
-members = [
-  "basic_engine"
 ]
 
 [dependencies]
