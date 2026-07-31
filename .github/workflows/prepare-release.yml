@@ -1,0 +1,102 @@
+name: Prepare release
+
+# Cuts a release from the actions tab. Bumps the version, writes the changelog,
+# tags, and hands over to the release workflow, which is everything that
+# otherwise has to be done by hand on a laptop.
+
+on:
+  workflow_dispatch:
+    inputs:
+      level:
+        description: How much to bump the version by
+        required: true
+        type: choice
+        options:
+          - patch
+          - minor
+          - major
+          - rc
+        default: patch
+
+permissions:
+  contents: write
+  # needed to start the release workflow at the end
+  actions: write
+
+# releases are not something to run two of at once
+concurrency:
+  group: release
+  cancel-in-progress: false
+
+jobs:
+  prepare:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Check the branch before doing any work
+        if: github.ref_name != 'master'
+        run: |
+          echo "::error::releases are cut from master, this was started from ${{ github.ref_name }}"
+          exit 1
+
+      - uses: actions/checkout@v7
+        with:
+          # cargo-release and git-cliff both need the history and the tags
+          fetch-depth: 0
+
+      - uses: Swatinem/rust-cache@v2
+
+      - uses: taiki-e/install-action@v2
+        with:
+          tool: cargo-binstall,git-cliff
+
+      - name: Install cargo-release
+        run: cargo binstall --no-confirm cargo-release
+
+      # the release workflow runs these again, but failing here means no tag is
+      # created at all, rather than one that has to be deleted afterwards
+      - name: Run the tests
+        run: cargo test --workspace --locked --release
+
+      - name: Attribute the release commit to whoever started this
+        run: |
+          git config user.name "${{ github.actor }}"
+          git config user.email "${{ github.actor_id }}+${{ github.actor }}@users.noreply.github.com"
+
+      - name: Bump the version and write the changelog
+        run: cargo release ${{ inputs.level }} --execute --no-confirm
+
+      - name: Read the tag that was created
+        id: tag
+        run: |
+          tag=$(git tag --points-at HEAD)
+          if [ -z "$tag" ]; then
+            echo "::error::cargo-release did not create a tag"
+            exit 1
+          fi
+          echo "tag=${tag}" >> "$GITHUB_OUTPUT"
+
+      # release.toml sets push = false so that a release can be inspected before
+      # it goes anywhere, which is still what happens locally
+      - name: Push the release commit and tag
+        run: |
+          git push origin HEAD:master
+          git push origin "${{ steps.tag.outputs.tag }}"
+
+      # a tag pushed with GITHUB_TOKEN does not trigger the tag filter on the
+      # release workflow, github suppresses that to avoid workflows setting each
+      # other off. workflow_dispatch is the documented exception, so start it
+      # explicitly, at the new tag.
+      - name: Start the release workflow
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: gh workflow run release.yml --ref "${{ steps.tag.outputs.tag }}"
+
+      - name: Summary
+        run: |
+          {
+            echo "### Released ${{ steps.tag.outputs.tag }}"
+            echo
+            echo "The release workflow is building the binaries and playing the"
+            echo "sanity check match, which takes a while. It will add the result"
+            echo "to the release notes when it finishes."
+          } >> "$GITHUB_STEP_SUMMARY"
