@@ -40,13 +40,18 @@ bench_board_fen!(perft_3, b, {
     b.perft(3);
 });
 
+// The engine defaults to a 500MB transposition table, which is far more than a
+// depth 5 search needs and makes clearing it between iterations cost more than
+// the search itself.
+const BENCH_TABLE_BYTES: usize = 16 * 1024 * 1024;
+
 macro_rules! bench_engine_fen {
     ($func:ident, $e:ident, $f:block) => {
         pub fn $func(c: &mut Criterion) {
             let mut group = c.benchmark_group(stringify!($func));
             for fen in TEST_POSITIONS {
                 let b = black_box(Board::from_fen(fen).unwrap());
-                let mut $e = <AlphaBeta as Engine>::new(b.clone());
+                let mut $e = AlphaBeta::with_table_bytes(b, BENCH_TABLE_BYTES);
                 group.significance_level(0.05).sample_size(50);
                 group.bench_with_input(BenchmarkId::from_parameter(fen), fen, |d, _fen| {
                     d.iter(|| $f)
