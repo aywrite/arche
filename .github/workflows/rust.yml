@@ -63,7 +63,7 @@ jobs:
       RUSTUP_TOOLCHAIN: "1.85"
     steps:
     - uses: actions/checkout@v7
-    - uses: dtolnay/rust-toolchain@1.85
+    - uses: dtolnay/rust-toolchain@1.100
     - uses: Swatinem/rust-cache@v2
     - name: Check the workspace
       run: cargo check --workspace --locked --all-targets

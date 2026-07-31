@@ -49,7 +49,7 @@ jobs:
           # below a no-op without the binary actually being there.
           cache-bin: false
 
-      - uses: taiki-e/install-action@v2
+      - uses: taiki-e/install-action@v2.85.3
         with:
           tool: cargo-binstall,git-cliff
 
