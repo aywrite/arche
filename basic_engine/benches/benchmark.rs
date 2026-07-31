@@ -1,5 +1,6 @@
 use criterion::{BenchmarkId, Criterion, criterion_group, criterion_main};
 use std::hint::black_box;
+use std::time::{Duration, Instant};
 
 use basic_engine::{AlphaBeta, Board, Color, Engine, Game, SearchParameters};
 
@@ -45,8 +46,11 @@ bench_board_fen!(perft_3, b, {
 // the search itself.
 const BENCH_TABLE_BYTES: usize = 16 * 1024 * 1024;
 
+// The cache has to be cleared between iterations or each one searches a tree
+// the last one already filled in, but clearing it is comparable to the search
+// itself, so only the search is timed.
 macro_rules! bench_engine_fen {
-    ($func:ident, $e:ident, $f:block) => {
+    ($func:ident, $e:ident, $setup:block, $routine:block) => {
         pub fn $func(c: &mut Criterion) {
             let mut group = c.benchmark_group(stringify!($func));
             for fen in TEST_POSITIONS {
@@ -54,7 +58,16 @@ macro_rules! bench_engine_fen {
                 let mut $e = AlphaBeta::with_table_bytes(b, BENCH_TABLE_BYTES);
                 group.significance_level(0.05).sample_size(50);
                 group.bench_with_input(BenchmarkId::from_parameter(fen), fen, |d, _fen| {
-                    d.iter(|| $f)
+                    d.iter_custom(|iters| {
+                        let mut elapsed = Duration::ZERO;
+                        for _ in 0..iters {
+                            $setup
+                            let start = Instant::now();
+                            black_box($routine);
+                            elapsed += start.elapsed();
+                        }
+                        elapsed
+                    })
                 });
             }
             group.finish();
@@ -62,10 +75,14 @@ macro_rules! bench_engine_fen {
     };
 }
 
-bench_engine_fen!(alpha_beta_5, engine, {
-    engine.clear_cache();
-    engine.iterative_deepening_search(SearchParameters::new_with_depth(5))
-});
+bench_engine_fen!(
+    alpha_beta_5,
+    engine,
+    {
+        engine.clear_cache();
+    },
+    { engine.iterative_deepening_search(SearchParameters::new_with_depth(5)) }
+);
 
 criterion_group!(board_benches, square_attacked, generate_moves,);
 criterion_group!(perft_benches, perft_3);
