@@ -1,7 +1,5 @@
 allow-branch = ["master"]
 publish = false
 push = false
-pre-release-hook = [
-"git-cliff", "--unreleased", "--tag", "{{version}}", "--prepend", "CHANGELOG.md"
-]
+pre-release-hook = ["./scripts/changelog.sh", "{{version}}"]
 pre-release-commit-message="chore(release): prepare for {{version}}"
