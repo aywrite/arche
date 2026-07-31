@@ -269,6 +269,7 @@ pub struct Board {
     pub white_value: u32,
     pub black_value: u32,
     // piece square table score, kept up to date incrementally
+    psqt: isize,
 
     //history: Vec<PlayState>,
     history: [Option<PlayState>; MAX_GAME_SIZE],
@@ -567,25 +568,12 @@ impl Board {
     }
 
     #[inline]
-    fn piece_value(&self, index: u8) -> isize {
-        match self.get_piece_and_color_index(index) {
-            Some((p, Color::White)) => PVT.get_value(index as usize, p, Color::White),
-            Some((p, Color::Black)) => -PVT.get_value(index as usize, p, Color::Black),
-            None => 0,
-        }
-    }
-
     pub fn eval(&self) -> i64 {
         // TODO should this return white value & black value as separate numbers instead?
         // TODO should this return i32 or isize instead
         let eval = i64::from(self.white_value) - i64::from(self.black_value);
 
-        let mut score = 0i64;
-        let mut occupied = self.black | self.white;
-        while occupied != 0 {
-            score += self.piece_value(pop_lsb(&mut occupied)) as i64;
-        }
-        let eval = eval + score;
+        let eval = eval + self.psqt as i64;
 
         match self.active_color {
             Color::White => eval,
@@ -891,6 +879,10 @@ impl Board {
         debug_assert!(!self.white.is_bit_set(index));
         let zorb: &Zorbrist = &ZORB;
         self.key ^= zorb.get_piece_key(index, piece, color);
+        self.psqt += match color {
+            Color::White => PVT.get_value(index as usize, piece, Color::White),
+            Color::Black => -PVT.get_value(index as usize, piece, Color::Black),
+        };
         match piece {
             Piece::Pawn => self.pawns.set_bit(index),
             Piece::Knight => self.knights.set_bit(index),
@@ -921,6 +913,10 @@ impl Board {
         debug_assert!((self.black | self.white).is_bit_set(index));
         let zorb: &Zorbrist = &ZORB;
         self.key ^= zorb.get_piece_key(index, piece, color);
+        self.psqt -= match color {
+            Color::White => PVT.get_value(index as usize, piece, Color::White),
+            Color::Black => -PVT.get_value(index as usize, piece, Color::Black),
+        };
         match piece {
             Piece::Pawn => self.pawns.clear_bit(index),
             Piece::Knight => self.knights.clear_bit(index),
@@ -1110,6 +1106,7 @@ impl Game for Board {
                 .map_err(|e| e.to_string())?,
             white_value: 0,
             black_value: 0,
+            psqt: 0,
 
             history: EMPTY_HISTORY,
             key: 2340980257093, // TODO start with random number?
