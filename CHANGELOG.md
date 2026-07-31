@@ -2,6 +2,46 @@
 
 All notable changes to this project will be documented in this file.
 
+## [0.3.8-rc.1] - 2026-07-31
+
+### Bug Fixes
+
+- Report the engine author with an id line
+- Search the root position even when it has repeated
+- Stop long games from running past the end of the history
+
+### Documentation
+
+- Document building, strength and the development workflow
+
+### Features
+
+- Bundle the engine and an opening book into a lichess-bot image
+
+### Miscellaneous Tasks
+
+- Update workflow actions, cache builds and check formatting
+- Modernise the pre-commit hooks
+- Build and publish the lichess-bot docker image
+- Remove the iai benchmark
+- Replace the disabled benchmark workflow
+- Group the dependabot updates
+
+### Performance
+
+- Stop the search benchmark timing a 500MB memset
+
+### Styling
+
+- Fix the clippy warnings across the workspace
+
+### Ci
+
+- Add a short match against the previous release
+- Add clippy, debug and msrv jobs to the test workflow
+- Add a workflow to cut a release from the actions tab
+- Open a pull request to release rather than pushing to master
+
 ## [0.3.7] - 2026-07-26
 
 ### Bug Fixes
