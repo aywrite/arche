@@ -39,3 +39,97 @@ jobs:
           archive: $bin-$tag-$target
           # (required) GitHub token for uploading assets to GitHub Releases.
           token: ${{ secrets.GITHUB_TOKEN }}
+
+  # Plays a short match against the previous release and adds the result to the
+  # release notes. Fifty games is only enough to detect a large change, the
+  # error margin is published alongside the estimate so it can be read honestly.
+  sanity-check:
+    needs: create-release
+    runs-on: ubuntu-latest
+    env:
+      GAMES: 50
+      TIME_CONTROL: 10+0.1
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+
+      - name: Find the previous release
+        id: previous
+        run: |
+          tag=$(git tag --list 'v[0-9]*' --sort=-v:refname \
+                | grep -v -- '-rc' \
+                | grep -v -x "$GITHUB_REF_NAME" \
+                | head -1)
+          echo "tag=${tag}" >> "$GITHUB_OUTPUT"
+          if [ -z "$tag" ]; then
+            echo "::notice::No previous release to compare against, skipping"
+          fi
+
+      - name: Cache the match tools
+        if: steps.previous.outputs.tag != ''
+        id: tools
+        uses: actions/cache@v4
+        with:
+          path: tools
+          key: match-tools-fastchess-1.8.2-8moves-v3
+
+      - name: Build the match tools
+        if: steps.previous.outputs.tag != '' && steps.tools.outputs.cache-hit != 'true'
+        run: |
+          mkdir -p tools
+          git clone --depth 1 --branch v1.8.2 \
+            https://github.com/Disservin/fastchess.git /tmp/fastchess
+          make -C /tmp/fastchess -j"$(nproc)"
+          cp /tmp/fastchess/fastchess tools/
+          curl -sSLf -o /tmp/book.zip \
+            https://raw.githubusercontent.com/official-stockfish/books/master/8moves_v3.pgn.zip
+          unzip -qo /tmp/book.zip -d tools
+
+      - name: Build both releases
+        if: steps.previous.outputs.tag != ''
+        run: |
+          cargo build --release
+          cp target/release/arche tools/new
+          git checkout --detach "${{ steps.previous.outputs.tag }}"
+          cargo build --release
+          cp target/release/arche tools/old
+          git checkout --detach "$GITHUB_SHA"
+
+      - name: Play the match
+        if: steps.previous.outputs.tag != ''
+        working-directory: tools
+        run: |
+          # the default startup timeout is too short for the magic bitboards to
+          # be generated when several engines start at once
+          ./fastchess \
+            -engine "name=$GITHUB_REF_NAME" cmd=./new \
+            -engine "name=${{ steps.previous.outputs.tag }}" cmd=./old \
+            -each proto=uci "tc=$TIME_CONTROL" -startup-ms 60000 \
+            -openings file=8moves_v3.pgn format=pgn order=random \
+            -rounds "$((GAMES / 2))" -repeat 2 -concurrency 2 -recover \
+            | tee result.txt
+
+      - name: Add the result to the release notes
+        if: steps.previous.outputs.tag != ''
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          PREVIOUS: ${{ steps.previous.outputs.tag }}
+        run: |
+          if grep -qiE 'disconnect|stalled|loses on time' tools/result.txt; then
+            echo "::warning::An engine crashed or lost on time, the estimate is unreliable"
+          fi
+          summary=$(python3 - <<'PY'
+          import re
+          text = open("tools/result.txt").read()
+          # the lookbehind keeps this from matching the nElo figure on the same line
+          elo, margin = re.findall(r"(?<![A-Za-z])Elo:\s*(-?[\d.]+)\s*\+/-\s*([\d.]+)", text)[-1]
+          games = re.findall(r"Games:\s*(\d+)", text)[-1]
+          print(f"{round(float(elo)):+d} ±{round(float(margin))} Elo ({games} games)")
+          PY
+          )
+          line="Sanity Check: performance compared to $PREVIOUS | $summary"
+          echo "::notice::$line"
+          gh release view "$GITHUB_REF_NAME" --json body -q .body > notes.md
+          printf '\n%s\n' "$line" >> notes.md
+          gh release edit "$GITHUB_REF_NAME" --notes-file notes.md
