@@ -96,46 +96,28 @@ impl<T: Engine> UCI<T> {
         sp.print_info = true;
 
         let mut time = match self.engine.active_color() {
-            Color::White => {
-                if let Some(wtime) = WTIME_RE.captures(line) {
-                    Some(wtime.get(1).unwrap().as_str().parse::<u64>().unwrap())
-                } else {
-                    None
-                }
-            }
-            Color::Black => {
-                if let Some(btime) = BTIME_RE.captures(line) {
-                    Some(btime.get(1).unwrap().as_str().parse::<u64>().unwrap())
-                } else {
-                    None
-                }
-            }
+            Color::White => WTIME_RE
+                .captures(line)
+                .map(|wtime| wtime.get(1).unwrap().as_str().parse::<u64>().unwrap()),
+            Color::Black => BTIME_RE
+                .captures(line)
+                .map(|btime| btime.get(1).unwrap().as_str().parse::<u64>().unwrap()),
         };
         let increment = match self.engine.active_color() {
-            Color::White => {
-                if let Some(winc) = WINC_RE.captures(line) {
-                    Some(winc.get(1).unwrap().as_str().parse::<u64>().unwrap())
-                } else {
-                    None
-                }
-            }
-            Color::Black => {
-                if let Some(binc) = BINC_RE.captures(line) {
-                    Some(binc.get(1).unwrap().as_str().parse::<u64>().unwrap())
-                } else {
-                    None
-                }
-            }
+            Color::White => WINC_RE
+                .captures(line)
+                .map(|winc| winc.get(1).unwrap().as_str().parse::<u64>().unwrap()),
+            Color::Black => BINC_RE
+                .captures(line)
+                .map(|binc| binc.get(1).unwrap().as_str().parse::<u64>().unwrap()),
         };
         if let Some(move_time) = MOVE_TIME.captures(line) {
             time = Some(move_time.get(1).unwrap().as_str().parse::<u64>().unwrap());
         }
 
-        sp.depth = if let Some(depth_str) = DEPTH_RE.captures(line) {
-            Some(depth_str.get(1).unwrap().as_str().parse::<u8>().unwrap())
-        } else {
-            None
-        };
+        sp.depth = DEPTH_RE
+            .captures(line)
+            .map(|depth_str| depth_str.get(1).unwrap().as_str().parse::<u8>().unwrap());
 
         // TODO what if inc is set but not time?
         if let Some(time) = time {

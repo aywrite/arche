@@ -69,7 +69,7 @@ mod test_zorbrist {
     #[test]
     fn test_all_random_numbers_unique() {
         let z = Zorbrist::new();
-        let mut all = z.pieces.iter().flatten().map(|&c| c).collect::<Vec<u64>>();
+        let mut all = z.pieces.iter().flatten().copied().collect::<Vec<u64>>();
         all.push(z.side);
         all.extend(z.castling);
         all.extend(z.en_passant);

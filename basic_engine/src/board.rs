@@ -28,7 +28,7 @@ struct PlayState {
 // replayed by the gui plus the depth of the current search, 375 was not enough
 // for games which reached move 175 or so.
 const MAX_GAME_SIZE: usize = 1024;
-const EMPTY_HISTORY: [Option<PlayState>; MAX_GAME_SIZE] = [None; MAX_GAME_SIZE];
+static EMPTY_HISTORY: [Option<PlayState>; MAX_GAME_SIZE] = [None; MAX_GAME_SIZE];
 
 const A1: u8 = 0;
 const B1: u8 = 1;
@@ -52,12 +52,12 @@ lazy_static! {
     static ref ATTACK_MASKS: AttackMasks = AttackMasks::new();
     pub static ref BASE_CONVERSIONS: BaseConversions = BaseConversions::new();
     static ref CASTLE_PERMISSION_SQUARES: [u8; 6] = [
-        coordinate_to_index(1, File::A) as u8,
-        coordinate_to_index(1, File::E) as u8,
-        coordinate_to_index(1, File::H) as u8,
-        coordinate_to_index(8, File::A) as u8,
-        coordinate_to_index(8, File::E) as u8,
-        coordinate_to_index(8, File::H) as u8,
+        coordinate_to_index(1, File::A),
+        coordinate_to_index(1, File::E),
+        coordinate_to_index(1, File::H),
+        coordinate_to_index(8, File::A),
+        coordinate_to_index(8, File::E),
+        coordinate_to_index(8, File::H),
     ];
     static ref ZORB: Zorbrist = Zorbrist::new();
     static ref PVT: PieceValueTables = PieceValueTables::new();
@@ -290,7 +290,7 @@ impl Board {
             let kmoves = ATTACK_MASKS.knights[from as usize] & (capture_mask);
             for to in kmoves.get_set_bits() {
                 let capture = self.get_piece_index(to);
-                moves.push(Play::new(from as u8, to as u8, capture, None, false, false));
+                moves.push(Play::new(from, to, capture, None, false, false));
             }
         }
         // queens and rooks
@@ -373,7 +373,7 @@ impl Board {
             let kmoves = ATTACK_MASKS.knights[from as usize] & (!color_mask);
             for to in kmoves.get_set_bits() {
                 let capture = self.get_piece_index(to);
-                moves.push(Play::new(from as u8, to as u8, capture, None, false, false));
+                moves.push(Play::new(from, to, capture, None, false, false));
             }
         }
         // queens and rooks
@@ -714,12 +714,12 @@ impl Board {
         };
         self.active_color = opposing_color;
         self.key ^= ZORB.side;
-        return if self.square_attacked(king_index as u8, opposing_color) {
+        if self.square_attacked(king_index, opposing_color) {
             self.undo_move().unwrap();
             false
         } else {
             true
-        };
+        }
     }
 
     pub fn undo_move(&mut self) -> Result<(), &str> {
@@ -818,7 +818,7 @@ impl Board {
             print!("{} |", rank);
             for file in File::VARIANTS {
                 let index = coordinate_to_index(rank, file);
-                if self.square_attacked(index as u8, color) {
+                if self.square_attacked(index, color) {
                     print!("x|");
                 } else {
                     print!(".|");
@@ -976,17 +976,16 @@ impl Board {
         }
 
         for m in &self.generate_moves() {
-            let mut branch = 0;
             if self.make_move(m) {
-                branch = self.perft(depth - 1);
+                let branch = self.perft(depth - 1);
                 nodes += branch;
                 //println!("{}", m);
                 self.undo_move().unwrap();
+                // TODO remove this debug
+                //if depth == 2 {
+                //    println!("m {} => {}", m, branch); // perft divide
+                //};
             }
-            // TODO remove this debug
-            //if depth == 2 {
-            //    println!("m {} => {}", m, branch); // perft divide
-            //};
         }
         nodes
     }
@@ -1156,7 +1155,7 @@ impl fmt::Display for Board {
 #[cfg(test)]
 mod evaluate {
     use super::Board;
-    use super::Color;
+
     use super::Game;
     use pretty_assertions::assert_eq;
 
