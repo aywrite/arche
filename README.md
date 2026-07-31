@@ -24,8 +24,8 @@ The program does not accept posix style arguments it will immediately start in U
     clears the key for played moves as a workaround
   - hash table size is only configurable from code, there is no UCI Hash option, so every engine
     allocates the 500MB default
-  - history array is fixed at 375 plies and ply is initialised to twice the full move number, so
-    very long games can overflow it
+  - the history array is a fixed size and ply is initialised to twice the full move number, so a
+    game of more than about five hundred moves would still run past the end of it
   - en passant is hashed for every double pawn push, even when no capture is possible, which
     slightly reduces transposition hits
 - perft command from uci

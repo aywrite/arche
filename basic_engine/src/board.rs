@@ -24,7 +24,10 @@ struct PlayState {
     position_key: u64,
 }
 
-const MAX_GAME_SIZE: usize = 375;
+// Plies of history the board can record. This has to cover the whole game as
+// replayed by the gui plus the depth of the current search, 375 was not enough
+// for games which reached move 175 or so.
+const MAX_GAME_SIZE: usize = 1024;
 const EMPTY_HISTORY: [Option<PlayState>; MAX_GAME_SIZE] = [None; MAX_GAME_SIZE];
 
 const A1: u8 = 0;
@@ -586,8 +589,14 @@ impl Board {
     }
 
     pub fn is_repetition(&self) -> bool {
-        let i = self.ply - self.fifty_move_rule;
-        let matching = self.history[i..=self.ply]
+        // a position parsed from fen can have a fifty move count higher than the number of plies
+        // we hold history for, and a long enough game runs past the end of the history
+        let start = self.ply.saturating_sub(self.fifty_move_rule);
+        let end = self.ply.min(MAX_GAME_SIZE - 1);
+        if start > end {
+            return false;
+        }
+        let matching = self.history[start..=end]
             .iter()
             .filter_map(|h| h.map(|hh| hh.position_key))
             .filter(|k| *k == self.key)
@@ -1262,6 +1271,30 @@ mod make_move {
         "r4rk1/1pp1qppp/p1np1n2/2b1p1B1/2B1P1b1/P1NP1N2/1PP1QPPP/R4RK1 w - - 0 10"
     );
     test_fen_captures!(position_3, "8/2p5/3p4/KP5r/1R3p1k/8/4P1P1/8 w - - 0 1");
+
+    #[test]
+    fn test_long_game_does_not_run_off_the_history() {
+        // games which reached about move 175 used to panic in is_repetition
+        let mut board = Board::new();
+        let cycle = ["g1f3", "b8c6", "f3g1", "c6b8"];
+        for i in 0..400 {
+            let name = cycle[i % 4];
+            let m = *board
+                .generate_moves()
+                .iter()
+                .find(|m| format!("{}", m) == name)
+                .unwrap_or_else(|| panic!("move {} not found at ply {}", name, i));
+            assert!(board.make_move(&m));
+            board.is_repetition();
+        }
+    }
+
+    #[test]
+    fn test_is_repetition_with_fifty_move_count_beyond_history() {
+        // the fifty move counter from the fen is larger than the history we hold
+        let board = Board::from_fen("5k2/1p3p1p/p3pK1P/P1P1P3/4bP2/2B5/8/8 w - - 99 1").unwrap();
+        assert_eq!(board.is_repetition(), false);
+    }
 
     #[test]
     fn test_is_repetition() {

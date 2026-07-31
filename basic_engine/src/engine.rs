@@ -641,7 +641,9 @@ mod test_search {
         )
         .unwrap();
         let mut e = <AlphaBeta as Engine>::new(game);
-        for m in ["a8b8", "a1b1", "b8a8", "b1a1", "a8b8", "a1b1", "b8a8", "b1a1"] {
+        for m in [
+            "a8b8", "a1b1", "b8a8", "b1a1", "a8b8", "a1b1", "b8a8", "b1a1",
+        ] {
             assert!(e.make_move_str(m), "failed to play {}", m);
         }
         assert!(e.board.is_repetition());
