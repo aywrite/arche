@@ -1,8 +1,8 @@
 name: Prepare release
 
-# Cuts a release from the actions tab. Bumps the version, writes the changelog,
-# tags, and hands over to the release workflow, which is everything that
-# otherwise has to be done by hand on a laptop.
+# Starts a release from the actions tab. Bumps the version and writes the
+# changelog, then opens a pull request with the result. Merging that pull
+# request is what tags and releases it, see tag-release.yml.
 
 on:
   workflow_dispatch:
@@ -20,8 +20,7 @@ on:
 
 permissions:
   contents: write
-  # needed to start the release workflow at the end
-  actions: write
+  pull-requests: write
 
 # releases are not something to run two of at once
 concurrency:
@@ -52,8 +51,8 @@ jobs:
       - name: Install cargo-release
         run: cargo binstall --no-confirm cargo-release
 
-      # the release workflow runs these again, but failing here means no tag is
-      # created at all, rather than one that has to be deleted afterwards
+      # the release workflow runs these again, but failing here means nothing is
+      # created at all, rather than a pull request that has to be closed again
       - name: Run the tests
         run: cargo test --workspace --locked --release
 
@@ -62,41 +61,54 @@ jobs:
           git config user.name "${{ github.actor }}"
           git config user.email "${{ github.actor_id }}+${{ github.actor }}@users.noreply.github.com"
 
+      # no tag here, tag-release.yml makes it once this lands, so that it points
+      # at the commit that is on master rather than one on a branch
       - name: Bump the version and write the changelog
-        run: cargo release ${{ inputs.level }} --execute --no-confirm
+        run: cargo release ${{ inputs.level }} --execute --no-confirm --no-tag
 
-      - name: Read the tag that was created
-        id: tag
+      - name: Read the new version
+        id: version
         run: |
-          tag=$(git tag --points-at HEAD)
-          if [ -z "$tag" ]; then
-            echo "::error::cargo-release did not create a tag"
-            exit 1
-          fi
-          echo "tag=${tag}" >> "$GITHUB_OUTPUT"
+          version=$(python3 -c "import tomllib; print(tomllib.load(open('Cargo.toml','rb'))['workspace']['package']['version'])")
+          echo "version=${version}" >> "$GITHUB_OUTPUT"
+          echo "branch=release/v${version}" >> "$GITHUB_OUTPUT"
 
-      # release.toml sets push = false so that a release can be inspected before
-      # it goes anywhere, which is still what happens locally
-      - name: Push the release commit and tag
+      # master only takes changes through a pull request, so the release commit
+      # goes through one like anything else
+      - name: Push the release branch
         run: |
-          git push origin HEAD:master
-          git push origin "${{ steps.tag.outputs.tag }}"
+          git switch -c "${{ steps.version.outputs.branch }}"
+          git push -u origin "${{ steps.version.outputs.branch }}"
 
-      # a tag pushed with GITHUB_TOKEN does not trigger the tag filter on the
-      # release workflow, github suppresses that to avoid workflows setting each
-      # other off. workflow_dispatch is the documented exception, so start it
-      # explicitly, at the new tag.
-      - name: Start the release workflow
+      - name: Open the pull request
+        id: pr
         env:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
-        run: gh workflow run release.yml --ref "${{ steps.tag.outputs.tag }}"
+          VERSION: ${{ steps.version.outputs.version }}
+        run: |
+          cat > body.md <<EOF
+          Prepares \`v${VERSION}\`, bumped by \`cargo release ${{ inputs.level }}\`.
+
+          The version and the changelog are the whole diff. Merging this tags
+          \`v${VERSION}\` and starts the release, which builds the binaries and
+          plays the sanity check match against the previous release.
+
+          Close it without merging to call the release off, nothing has been
+          tagged or published yet.
+          EOF
+          url=$(gh pr create \
+            --base master \
+            --head "${{ steps.version.outputs.branch }}" \
+            --title "chore(release): prepare for ${VERSION}" \
+            --body-file body.md)
+          echo "url=${url}" >> "$GITHUB_OUTPUT"
 
       - name: Summary
         run: |
           {
-            echo "### Released ${{ steps.tag.outputs.tag }}"
+            echo "### Release pull request for v${{ steps.version.outputs.version }}"
             echo
-            echo "The release workflow is building the binaries and playing the"
-            echo "sanity check match, which takes a while. It will add the result"
-            echo "to the release notes when it finishes."
+            echo "${{ steps.pr.outputs.url }}"
+            echo
+            echo "Merging it tags the release and starts the build."
           } >> "$GITHUB_STEP_SUMMARY"

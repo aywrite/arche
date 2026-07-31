@@ -109,15 +109,33 @@ declared once in `[workspace.package]` in the root `Cargo.toml`.
 ### From the actions tab
 
 Run the **Prepare release** workflow from `master` and pick how much to bump the
-version by. It runs the tests, bumps the version, writes the changelog, commits,
-tags, pushes, and then starts the release workflow, which is the whole procedure
-below without needing anything installed locally.
+version by. It runs the tests, bumps the version, writes the changelog and opens
+a pull request with the result. `rc` gives a release candidate, `0.3.7` becomes
+`0.3.8-rc.1`.
 
-The one thing to know is that a tag pushed by a workflow does not set off
-another workflow. Github suppresses that so workflows cannot trigger each other
-in a loop, and `workflow_dispatch` is the documented exception, which is why the
-prepare workflow starts the release workflow explicitly rather than leaving it
-to the tag filter.
+Merging that pull request tags the release and starts the build. Closing it
+without merging calls the release off, nothing is tagged or published until it
+lands.
+
+Two things are worth knowing about why it is shaped this way:
+
+- `master` only takes changes through a pull request, so a workflow cannot push
+  the release commit to it directly. The release commit goes through a pull
+  request like anything else.
+- A tag pushed by a workflow does not set off another workflow. Github
+  suppresses that so workflows cannot trigger each other in a loop, and
+  `workflow_dispatch` is the documented exception, which is why the tag workflow
+  starts the release workflow explicitly rather than leaving it to the tag
+  filter.
+
+**Tag release** decides whether to tag by comparing the version in `Cargo.toml`
+against the existing tags, rather than by looking at the commit message, because
+the message of a merged pull request depends on whether it was merged, squashed
+or rebased.
+
+Github requires a maintainer to approve the first workflow run on a pull request
+opened by a workflow, so the checks on a release pull request may need the
+**Approve and run** button before they start.
 
 The release workflow can also be run from the actions tab on its own, against an
 existing tag, if a release needs redoing.
