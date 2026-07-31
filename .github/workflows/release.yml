@@ -69,7 +69,7 @@ jobs:
       - name: Cache the match tools
         if: steps.previous.outputs.tag != ''
         id: tools
-        uses: actions/cache@v4
+        uses: actions/cache@v6
         with:
           path: tools
           key: match-tools-fastchess-1.8.2-8moves-v3
