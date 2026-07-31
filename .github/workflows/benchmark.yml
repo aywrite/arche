@@ -1,18 +1,67 @@
-# TODO uncomment when https://github.com/boa-dev/criterion-compare-action/issues/51 is fixed
-#name: benchmark pull requests
-#
-#on:
-#  pull_request:
-#    branches: [ "master" ]
-#
-#jobs:
-#  runBenchmark:
-#    name: run benchmark
-#    runs-on: ubuntu-latest
-#    steps:
-#      - uses: actions/checkout@master
-#      - uses: boa-dev/criterion-compare-action@v3.0.0
-#        with:
-#          cwd: "basic_engine"
-#          branchName: master
-#          token: ${{ secrets.GITHUB_TOKEN }}
+name: Benchmark
+
+on:
+  push:
+    branches: [ "master" ]
+  pull_request:
+    branches: [ "master" ]
+
+env:
+  CARGO_TERM_COLOR: always
+
+permissions:
+  contents: read
+  pull-requests: write
+
+jobs:
+  benchmark:
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    steps:
+      - uses: actions/checkout@v7
+      - uses: Swatinem/rust-cache@v2
+
+      # --output-format bencher prints the libtest format that
+      # github-action-benchmark parses.
+      - name: Run benchmarks
+        # Naming the shell is what turns on pipefail, without it a failing
+        # cargo bench is hidden by tee.
+        shell: bash
+        run: |
+          cargo bench -p basic_engine --bench benchmark -- \
+            --output-format bencher --noplot | tee benchmark-output.txt
+
+      # Only master writes the baseline. Caches saved on the default branch are
+      # the ones pull requests are allowed to read.
+      - name: Restore the master baseline
+        uses: actions/cache/restore@v6
+        with:
+          path: ./cache
+          key: benchmark-master-${{ github.run_id }}
+          restore-keys: benchmark-master-
+
+      - name: Compare against the baseline
+        uses: benchmark-action/github-action-benchmark@v1
+        with:
+          name: basic_engine
+          tool: cargo
+          output-file-path: benchmark-output.txt
+          external-data-json-path: ./cache/benchmark-data.json
+          # These run on shared runners, so only report large changes and never
+          # fail the build on what is usually just a noisy neighbour.
+          alert-threshold: "150%"
+          fail-on-alert: false
+          # Only pull requests get comments. On a push the action falls back to
+          # commenting on the commit, which would need contents: write, and a
+          # fork's token is read only however this job is permissioned.
+          comment-always: ${{ github.event_name == 'pull_request' && !github.event.pull_request.head.repo.fork }}
+          comment-on-alert: ${{ github.event_name == 'pull_request' && !github.event.pull_request.head.repo.fork }}
+          summary-always: true
+          github-token: ${{ secrets.GITHUB_TOKEN }}
+
+      - name: Save the master baseline
+        if: github.event_name == 'push'
+        uses: actions/cache/save@v6
+        with:
+          path: ./cache
+          key: benchmark-master-${{ github.run_id }}
