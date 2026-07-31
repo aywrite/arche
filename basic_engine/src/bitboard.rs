@@ -1,6 +1,8 @@
 use crate::misc::{File, coordinate_to_index};
 use smallvec::SmallVec;
 
+// some of these are only used by tests and debugging helpers
+#[allow(dead_code)]
 pub trait BitBoard {
     fn set_bit(&mut self, index: u8);
     fn clear_bit(&mut self, index: u8);

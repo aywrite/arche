@@ -96,9 +96,7 @@ impl Magic {
         'outer: loop {
             let magic_candidate: u64 =
                 rng.random::<u64>() & rng.random::<u64>() & rng.random::<u64>();
-            for item in &mut result {
-                *item = 0;
-            }
+            result.fill(0);
 
             for (blocker, &move_b) in blockers.iter().zip(move_boards) {
                 let magic_index = blocker.wrapping_mul(magic_candidate) >> shift;
@@ -284,16 +282,6 @@ impl BlockerMasks {
 }
 
 #[cfg(test)]
-mod magic_test {
-    use super::test;
-    //use pretty_assertions::assert_eq;
-
-    #[test]
-    fn test_perft_starting() {
-        test();
-    }
-}
-
 pub fn test() {
     let bm = BlockerMasks::new();
     let bb = BlockerBoards::new(&bm);
@@ -333,4 +321,15 @@ pub fn test() {
     moves_d.debug_print();
     println!("MOVES");
     moves.debug_print();
+}
+
+#[cfg(test)]
+mod magic_test {
+    use super::test;
+    //use pretty_assertions::assert_eq;
+
+    #[test]
+    fn test_perft_starting() {
+        test();
+    }
 }

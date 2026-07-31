@@ -120,6 +120,12 @@ pub struct SearchParameters {
     pub print_info: bool,
 }
 
+impl Default for SearchParameters {
+    fn default() -> Self {
+        Self::new()
+    }
+}
+
 impl SearchParameters {
     pub fn new() -> Self {
         Self {
@@ -214,7 +220,7 @@ impl AlphaBeta {
                     score += 100000;
                 }
             };
-            -(score as i64)
+            -score
         });
 
         for m in &moves {
@@ -335,7 +341,7 @@ impl AlphaBeta {
                     score += 100_000;
                 }
             };
-            -(score as i64)
+            -score
         });
 
         for m in &moves {
@@ -410,6 +416,8 @@ struct Pv {
 // TODO better name for this
 enum Node {
     Exact,
+    // fail low nodes are not stored yet, see the known issues in the readme
+    #[allow(dead_code)]
     Alpha,
     Beta,
     Ordering,
@@ -424,13 +432,13 @@ struct HashTable {
 impl HashTable {
     fn with_capacity(capacity: usize) -> Self {
         Self {
-            table: vec![None; capacity as usize],
+            table: vec![None; capacity],
             capacity,
         }
     }
 
     fn clear(&mut self) {
-        self.table = vec![None; self.capacity as usize];
+        self.table = vec![None; self.capacity];
     }
 
     fn with_capacity_bytes(bytes: usize) -> Self {

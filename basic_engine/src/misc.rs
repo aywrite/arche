@@ -31,14 +31,11 @@ impl Coordinate {
         Ok(Some(c))
     }
     pub fn as_index(self) -> u8 {
-        coordinate_to_index(self.rank, self.file) as u8
+        coordinate_to_index(self.rank, self.file)
     }
     pub fn from_index(index: u8) -> Self {
         let (rank, file) = index_to_coordinate(index);
-        Coordinate {
-            rank: rank as u8,
-            file,
-        }
+        Coordinate { rank, file }
     }
 }
 
@@ -76,6 +73,7 @@ pub struct CastlePermissions {
 }
 
 impl CastlePermissions {
+    #[allow(dead_code)]
     pub fn new() -> Self {
         CastlePermissions {
             black_king_side: true,
