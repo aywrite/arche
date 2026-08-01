@@ -4,17 +4,8 @@ All notable changes to this project will be documented in this file.
 
 ## [0.3.8] - 2026-07-31
 
-## [0.3.8-rc.2] - 2026-07-31
-
-### Bug Fixes
-
 - Point the sanity check at a fastchess tag that exists
 - Stop the cargo-release install being cached away
-
-## [0.3.8-rc.1] - 2026-07-31
-
-### Bug Fixes
-
 - Report the engine author with an id line
 - Search the root position even when it has repeated
 - Stop long games from running past the end of the history
