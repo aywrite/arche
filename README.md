@@ -87,7 +87,6 @@ docker/smoke_test.sh arche-lichess-bot
   - `ponderhit`, `debug` and `register` are not handled either
 - winboard
 - known issues
-  - `ucinewgame` resets the board but leaves the transposition table holding the previous game
   - malformed uci input panics rather than being reported and ignored
   - fail low (alpha) nodes are never stored in the transposition table, only exact and beta nodes
   - transposition table scores don't account for repetition or fifty move history, make_move_str

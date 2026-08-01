@@ -69,6 +69,7 @@ impl<T: Engine> UCI<T> {
                 } else if line.starts_with("isready") {
                     println!("readyok");
                 } else if line.starts_with("ucinewgame") {
+                    self.engine.new_game();
                     self.parse_position("position startpos");
                 } else if line.starts_with("uci") {
                     println!("id name {} {}", self.name, self.version);

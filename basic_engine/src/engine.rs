@@ -44,6 +44,12 @@ pub trait Engine {
 
     fn parse_fen(&mut self, fen_string: &str) -> Result<(), String>;
 
+    /// Forget what was learned from the game just finished. Stored scores do not
+    /// account for repetition or the fifty move counter, so a position that
+    /// comes up again in a new game would otherwise be scored from a line that
+    /// no longer applies to it.
+    fn new_game(&mut self);
+
     fn should_stop(&self) -> bool;
 
     fn perft(&mut self);
@@ -666,6 +672,19 @@ mod test_search {
     }
 
     #[test]
+    fn test_new_game_forgets_the_previous_game() {
+        let fen = "r1b2rk1/ppp1qppp/4pn2/6N1/Qn1P4/2NBP3/PP3PPP/R3K2R w KQ - 9 12";
+        let mut e = <AlphaBeta as Engine>::new(Board::from_fen(fen).unwrap());
+        e.search(4).unwrap();
+        assert!(e.moves.get(e.board.key).is_some(), "nothing was stored");
+        assert_ne!(format!("{}", e.pv_line()), "");
+
+        e.new_game();
+        assert!(e.moves.get(e.board.key).is_none());
+        assert_eq!(format!("{}", e.pv_line()), "");
+    }
+
+    #[test]
     fn test_pv_line_without_cache_entry() {
         let game = Board::new();
         let e = <AlphaBeta as Engine>::new(game);
@@ -801,6 +820,10 @@ impl Engine for AlphaBeta {
         self.score = 0;
         self.board = Board::from_fen(fen_string)?;
         Ok(())
+    }
+
+    fn new_game(&mut self) {
+        self.clear_cache();
     }
 
     fn search(&mut self, depth: u8) -> Option<SearchResult> {
