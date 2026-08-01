@@ -3,10 +3,16 @@ name: Docker
 on:
   push:
     branches: [ "master" ]
-    tags:
-      - v[0-9]+.*
   pull_request:
     branches: [ "master" ]
+  # a tag is published by the release workflow calling this one, so that the
+  # image is only built once the tests have passed and the release exists
+  workflow_call:
+    inputs:
+      release:
+        description: Add the published image to the release notes for this tag
+        type: boolean
+        default: false
 
 env:
   REGISTRY: ghcr.io
@@ -26,6 +32,8 @@ jobs:
     permissions:
       contents: read
       packages: write
+    outputs:
+      digest: ${{ steps.push.outputs.digest }}
     steps:
       - uses: actions/checkout@v7
 
@@ -68,12 +76,14 @@ jobs:
           images: ${{ env.REGISTRY }}/${{ env.IMAGE_NAME }}
           tags: |
             type=ref,event=branch
+            type=ref,event=tag
             type=semver,pattern={{version}}
             type=semver,pattern={{major}}.{{minor}}
             type=sha
 
       - name: Build and push
         if: github.event_name != 'pull_request'
+        id: push
         uses: docker/build-push-action@v7
         with:
           context: .
@@ -85,3 +95,25 @@ jobs:
           labels: ${{ steps.meta.outputs.labels }}
           cache-from: type=gha
           cache-to: type=gha,mode=max
+
+  # The strength workflow appends to the same release notes, and the edit is a
+  # read and a write rather than an append, so the two have to take turns.
+  release-notes:
+    needs: build
+    if: inputs.release
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+    concurrency:
+      group: release-notes-${{ github.ref }}
+    steps:
+      - name: Add the image to the release notes
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          GH_REPO: ${{ github.repository }}
+          IMAGE: ${{ env.REGISTRY }}/${{ env.IMAGE_NAME }}:${{ github.ref_name }}
+          DIGEST: ${{ needs.build.outputs.digest }}
+        run: |
+          gh release view "$GITHUB_REF_NAME" --json body -q .body > notes.md
+          printf '\nDocker image: `%s` (`%s`)\n' "$IMAGE" "$DIGEST" >> notes.md
+          gh release edit "$GITHUB_REF_NAME" --notes-file notes.md

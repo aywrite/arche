@@ -63,6 +63,18 @@ jobs:
           # (required) GitHub token for uploading assets to GitHub Releases.
           token: ${{ secrets.GITHUB_TOKEN }}
 
+  # Builds and publishes the lichess-bot image for the tag. It runs from here
+  # rather than from its own tag trigger so that it waits for the tests and for
+  # the release it writes to.
+  docker:
+    needs: create-release
+    permissions:
+      contents: write
+      packages: write
+    uses: ./.github/workflows/docker.yml
+    with:
+      release: true
+
   # Plays a short match against the previous release and adds the result to the
   # release notes. Fifty games is only enough to detect a large change, the
   # error margin is published alongside the estimate so it can be read honestly.

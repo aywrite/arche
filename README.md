@@ -46,7 +46,8 @@ play a match against a previous version, and cut a release.
 [lichess-bot](https://github.com/lichess-bot-devs/lichess-bot), the engine and an opening book,
 which is enough to run the engine as a bot account on [lichess.org](https://lichess.org).
 Images are published to `ghcr.io/aywrite/arche-lichess-bot`, tagged `master` on every push to
-master and `latest`, `<major>.<minor>` and `<version>` on every release tag.
+master. A release is tagged `latest`, `<major>.<minor>`, `<version>` and `v<version>`, the last
+of which matches the git tag and is the one quoted in the release notes along with its digest.
 
 ```
 docker run -e LICHESS_BOT_TOKEN=<token> ghcr.io/aywrite/arche-lichess-bot:master

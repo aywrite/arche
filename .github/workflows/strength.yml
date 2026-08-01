@@ -54,9 +54,8 @@ jobs:
     needs: previous
     if: needs.previous.outputs.tag != ''
     runs-on: ubuntu-latest
-    permissions:
-      # only used when publishing, the release notes are edited in place
-      contents: write
+    outputs:
+      line: ${{ steps.summary.outputs.line }}
     # enough for about five hundred games at the time control above, a run that
     # wants more is better split up
     timeout-minutes: 180
@@ -122,11 +121,22 @@ jobs:
           echo "line=${line}" >> "$GITHUB_OUTPUT"
           echo "$line" >> "$GITHUB_STEP_SUMMARY"
 
+  # The docker workflow appends to the same release notes, and the edit is a
+  # read and a write rather than an append, so the two have to take turns.
+  release-notes:
+    needs: match
+    if: inputs.publish
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+    concurrency:
+      group: release-notes-${{ github.ref }}
+    steps:
       - name: Add the result to the release notes
-        if: inputs.publish
         env:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
-          LINE: ${{ steps.summary.outputs.line }}
+          GH_REPO: ${{ github.repository }}
+          LINE: ${{ needs.match.outputs.line }}
         run: |
           gh release view "$GITHUB_REF_NAME" --json body -q .body > notes.md
           printf '\n%s\n' "$LINE" >> notes.md
