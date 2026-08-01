@@ -72,28 +72,33 @@ docker/smoke_test.sh arche-lichess-bot
 
 ## TODO
 
-[x] transposition table
 - null move pruning
 - killer moves
-- known issues
-  - fail low (alpha) nodes are never stored in the transposition table, only exact and beta nodes
-  - transposition table scores don't account for repetition or fifty move history, make_move_str
-    clears the key for played moves as a workaround
-  - hash table size is only configurable from code, there is no UCI Hash option, so every engine
-    allocates the 500MB default
-  - the history array is a fixed size and ply is initialised to twice the full move number, so a
-    game of more than about five hundred moves would still run past the end of it
-  - en passant is hashed for every double pawn push, even when no capture is possible, which
-    slightly reduces transposition hits
-- perft command from uci
-- fix magics to load on engine start
 - better evaluation
   - mobility in evaluation
   - evaluate drawn positions
   - special cases (bishop pair, open files etc)
+- read an opening book in the engine, only the lichess-bot image has one at the moment and it is
+  lichess-bot that reads it rather than the engine
+- the rest of the uci protocol
+  - `setoption` is not handled and no options are advertised, so the 500MB transposition table
+    can only be changed in code
+  - `stop` is not handled, which rules out pondering and `go infinite`
+  - `ponderhit`, `debug` and `register` are not handled either
 - winboard
-- Implement the rest of the UCI protocol
-- opening books
+- known issues
+  - `go movetime x` is divided by forty as though it were a clock, so a ten second move is
+    searched for about two hundred milliseconds
+  - `movestogo` is parsed and then never used, forty moves are always assumed to remain
+  - `ucinewgame` resets the board but leaves the transposition table holding the previous game
+  - malformed uci input panics rather than being reported and ignored
+  - fail low (alpha) nodes are never stored in the transposition table, only exact and beta nodes
+  - transposition table scores don't account for repetition or fifty move history, make_move_str
+    clears the key for played moves as a workaround
+  - the history array is a fixed size and ply is initialised to twice the full move number, so a
+    game of more than about five hundred moves would still run past the end of it
+  - en passant is hashed for every double pawn push, even when no capture is possible, which
+    slightly reduces transposition hits
 
 ## Acknowledgements
 

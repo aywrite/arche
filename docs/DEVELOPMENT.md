@@ -70,6 +70,7 @@ commit under **Development** whatever its type is:
 | `ci` | github workflows and the pre-commit configuration |
 | `deps`, `deps-dev` | dependency bumps, what dependabot uses |
 | `docker` | the lichess-bot image |
+| `docs` | the readme and this file, when the change spans more than one area |
 | `lint` | fmt and clippy fallout |
 | `release` | cargo-release, git-cliff and the release workflows |
 
