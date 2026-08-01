@@ -1,8 +1,8 @@
+use crate::time_control::TimeControl;
 use basic_engine::Color;
 use basic_engine::Engine;
 use basic_engine::SearchParameters;
 use regex::Regex;
-use std::time::Duration;
 
 const START_FEN: &str = "rnbqkbnr/pppppppp/8/8/8/8/PPPPPPPP/RNBQKBNR w KQkq - 0 1";
 
@@ -15,6 +15,31 @@ lazy_static! {
     static ref MOVE_TIME: Regex = Regex::new(r"movetime (\d+)").unwrap();
     static ref DEPTH_RE: Regex = Regex::new(r"depth (\d+)").unwrap();
     static ref INFINITE_RE: Regex = Regex::new(r"infinite").unwrap();
+}
+
+/// Reads the value that follows a keyword. The value is matched as digits, so
+/// the only way it can fail to parse is by being too large to hold, in which
+/// case use the largest value we can. Discarding it would read as the keyword
+/// having been absent, which for a clock means searching without a limit.
+fn capture(re: &Regex, line: &str) -> Option<u64> {
+    let digits = re.captures(line)?.get(1)?.as_str();
+    Some(digits.parse().unwrap_or(u64::MAX))
+}
+
+fn time_control_from(line: &str, color: Color) -> TimeControl {
+    TimeControl {
+        time: match color {
+            Color::White => capture(&WTIME_RE, line),
+            Color::Black => capture(&BTIME_RE, line),
+        },
+        increment: match color {
+            Color::White => capture(&WINC_RE, line),
+            Color::Black => capture(&BINC_RE, line),
+        },
+        moves_to_go: capture(&MOVES_TO_GO_RE, line),
+        move_time: capture(&MOVE_TIME, line),
+        infinite: INFINITE_RE.is_match(line),
+    }
 }
 
 pub struct UCI<T: Engine> {
@@ -95,49 +120,75 @@ impl<T: Engine> UCI<T> {
         let mut sp = SearchParameters::new();
         sp.print_info = true;
 
-        let mut time = match self.engine.active_color() {
-            Color::White => WTIME_RE
-                .captures(line)
-                .map(|wtime| wtime.get(1).unwrap().as_str().parse::<u64>().unwrap()),
-            Color::Black => BTIME_RE
-                .captures(line)
-                .map(|btime| btime.get(1).unwrap().as_str().parse::<u64>().unwrap()),
-        };
-        let increment = match self.engine.active_color() {
-            Color::White => WINC_RE
-                .captures(line)
-                .map(|winc| winc.get(1).unwrap().as_str().parse::<u64>().unwrap()),
-            Color::Black => BINC_RE
-                .captures(line)
-                .map(|binc| binc.get(1).unwrap().as_str().parse::<u64>().unwrap()),
-        };
-        if let Some(move_time) = MOVE_TIME.captures(line) {
-            time = Some(move_time.get(1).unwrap().as_str().parse::<u64>().unwrap());
-        }
-
-        sp.depth = DEPTH_RE
-            .captures(line)
-            .map(|depth_str| depth_str.get(1).unwrap().as_str().parse::<u8>().unwrap());
-
-        // TODO what if inc is set but not time?
-        if let Some(time) = time {
-            let mut duration = if let Some(inc) = increment {
-                (time / 40) + inc
-            } else {
-                time / 40
-            };
-            duration -= (duration / 10).min(50); // Buffer to be sure we don't run out of time
-            sp.search_duration = Some(Duration::from_millis(duration));
-        }
-
-        if INFINITE_RE.is_match(line) {
-            sp.search_duration = None;
-        }
+        sp.search_duration = time_control_from(line, self.engine.active_color()).budget();
+        sp.depth = capture(&DEPTH_RE, line).map(|depth| depth.try_into().unwrap_or(u8::MAX));
 
         match self.engine.iterative_deepening_search(sp) {
             // 0000 is the null move, used to report that there is no move to make
             Some(play) => println!("bestmove {}", play),
             None => println!("bestmove 0000"),
         }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn each_colour_reads_its_own_clock() {
+        let line = "go wtime 111 btime 222 winc 333 binc 444 movestogo 5";
+        assert_eq!(
+            time_control_from(line, Color::White),
+            TimeControl {
+                time: Some(111),
+                increment: Some(333),
+                moves_to_go: Some(5),
+                move_time: None,
+                infinite: false,
+            }
+        );
+        assert_eq!(
+            time_control_from(line, Color::Black),
+            TimeControl {
+                time: Some(222),
+                increment: Some(444),
+                moves_to_go: Some(5),
+                move_time: None,
+                infinite: false,
+            }
+        );
+    }
+
+    #[test]
+    fn a_missing_clock_for_our_colour_is_not_taken_from_the_other() {
+        let control = time_control_from("go btime 222 binc 444", Color::White);
+        assert_eq!(control.time, None);
+        assert_eq!(control.increment, None);
+    }
+
+    #[test]
+    fn move_time_and_infinite_are_read() {
+        assert_eq!(
+            time_control_from("go movetime 500", Color::White).move_time,
+            Some(500)
+        );
+        assert!(time_control_from("go infinite", Color::White).infinite);
+        assert!(!time_control_from("go wtime 1000", Color::White).infinite);
+    }
+
+    #[test]
+    fn a_clock_too_large_to_hold_is_not_read_as_absent() {
+        let line = "go wtime 99999999999999999999999";
+        assert_eq!(
+            time_control_from(line, Color::White).time,
+            Some(u64::MAX),
+            "an unreadable clock must not turn into an unlimited search"
+        );
+    }
+
+    #[test]
+    fn an_oversized_depth_does_not_panic() {
+        assert_eq!(capture(&DEPTH_RE, "go depth 999"), Some(999));
     }
 }
