@@ -1606,3 +1606,171 @@ mod test_fen {
         );
     }
 }
+
+#[cfg(test)]
+mod perft_edge_cases {
+    use super::Board;
+    use super::Game;
+    use pretty_assertions::assert_eq;
+
+    /// Positions that the six standard perft positions do not reach: the two
+    /// en passant pins, en passant giving check, castling into or through an
+    /// attack, promoting out of check, and stalemate. Each entry was checked
+    /// against python-chess rather than transcribed, since a published table is
+    /// only worth as much as the copy of it.
+    const CASES: [(&str, u8, u64, &str); 23] = [
+        (
+            "3k4/3p4/8/K1P4r/8/8/8/8 b - - 0 1",
+            6,
+            1_134_888,
+            "en passant capture is pinned along the rank",
+        ),
+        (
+            "8/8/4k3/8/2p5/8/B2P2K1/8 w - - 0 1",
+            6,
+            1_015_133,
+            "en passant capture is pinned along the diagonal",
+        ),
+        (
+            "8/8/1k6/2b5/2pP4/8/5K2/8 b - d3 0 1",
+            6,
+            1_440_467,
+            "en passant capture gives check",
+        ),
+        (
+            "5k2/8/8/8/8/8/8/4K2R w K - 0 1",
+            6,
+            661_072,
+            "castling short gives check",
+        ),
+        (
+            "3k4/8/8/8/8/8/8/R3K3 w Q - 0 1",
+            6,
+            803_711,
+            "castling long gives check",
+        ),
+        (
+            "r3k2r/1b4bq/8/8/8/8/7B/R3K2R w KQkq - 0 1",
+            4,
+            1_274_206,
+            "castling rights are given up correctly",
+        ),
+        (
+            "r3k2r/8/3Q4/8/8/5q2/8/R3K2R b KQkq - 0 1",
+            4,
+            1_720_476,
+            "castling is prevented by attacked squares",
+        ),
+        (
+            "2K2r2/4P3/8/8/8/8/8/3k4 w - - 0 1",
+            6,
+            3_821_001,
+            "promoting gets out of check",
+        ),
+        (
+            "8/8/1P2K3/8/2n5/1q6/8/5k2 b - - 0 1",
+            5,
+            1_004_658,
+            "discovered check",
+        ),
+        (
+            "4k3/1P6/8/8/8/8/K7/8 w - - 0 1",
+            6,
+            217_342,
+            "promoting gives check",
+        ),
+        (
+            "8/P1k5/K7/8/8/8/8/8 w - - 0 1",
+            6,
+            92_683,
+            "underpromoting gives check",
+        ),
+        (
+            "K1k5/8/P7/8/8/8/8/8 w - - 0 1",
+            6,
+            2_217,
+            "stalemating ourselves",
+        ),
+        (
+            "8/k1P5/8/1K6/8/8/8/8 w - - 0 1",
+            7,
+            567_584,
+            "stalemate and checkmate",
+        ),
+        (
+            "8/8/2k5/5q2/5n2/8/5K2/8 b - - 0 1",
+            4,
+            23_527,
+            "stalemate and checkmate again",
+        ),
+        (
+            "rnbqkbnr/pppppppp/8/8/8/8/PPPPPPPP/RNBQKBNR w KQkq - 0 1",
+            5,
+            4_865_609,
+            "the start, deeper than the other suite goes",
+        ),
+        (
+            "n1n5/PPPk4/8/8/8/8/4Kppp/5N1N w - - 0 1",
+            5,
+            3_605_103,
+            "promotions of every piece for both sides",
+        ),
+        (
+            "8/8/8/3k4/8/3K4/8/8 w - - 0 1",
+            1,
+            5,
+            "the kings may not stand next to each other",
+        ),
+        (
+            "r6r/1b2k1bq/8/8/7B/8/8/R3K2R b KQ - 3 2",
+            1,
+            8,
+            "moving into check is not legal",
+        ),
+        (
+            "8/8/8/2k5/2pP4/8/B7/4K3 b - d3 0 3",
+            1,
+            8,
+            "en passant would expose the king",
+        ),
+        (
+            "r1bqkbnr/pppppppp/n7/8/8/P7/1PPPPPPP/RNBQKBNR w KQkq - 2 2",
+            1,
+            19,
+            "a quiet position, move count only",
+        ),
+        (
+            "r3k2r/p1pp1pb1/bn2Qnp1/2qPN3/1p2P3/2N5/PPPBBPPP/R3K2R b KQkq - 3 2",
+            1,
+            5,
+            "only check evasions are legal",
+        ),
+        (
+            "2kr3r/p1ppqpb1/bn2Qnp1/3PN3/1p2P3/2N5/PPPBBPPP/R3K2R b KQ - 3 2",
+            1,
+            44,
+            "not in check despite the queen",
+        ),
+        (
+            "rnb2k1r/pp1Pbppp/2p5/q7/2B5/8/PPPQNnPP/RNB1K2R w KQ - 3 9",
+            1,
+            39,
+            "castling with a knight on f2",
+        ),
+    ];
+
+    #[test]
+    fn test_perft_edge_cases() {
+        for (fen, depth, expected, description) in CASES {
+            let mut board = Board::from_fen(fen).unwrap();
+            assert_eq!(
+                board.perft(depth),
+                expected,
+                "{} ({} at depth {})",
+                description,
+                fen,
+                depth
+            );
+        }
+    }
+}
