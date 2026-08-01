@@ -100,12 +100,13 @@ jobs:
       - name: Play the match
         working-directory: tools
         run: |
-          # the default startup timeout is too short for the magic bitboards to
-          # be generated when several engines start at once
+          # the engine allocates a 500MB transposition table before it answers
+          # uci, which four copies starting at once can take longer over than
+          # the ten second default allows
           ./fastchess \
             -engine "name=$GITHUB_REF_NAME" cmd=./new \
             -engine "name=$PREVIOUS" cmd=./old \
-            -each proto=uci "tc=$TIME_CONTROL" -startup-ms 60000 \
+            -each proto=uci "tc=$TIME_CONTROL" -startup-ms 20000 \
             -openings file=8moves_v3.pgn format=pgn order=random \
             -rounds "$((GAMES / 2))" -repeat 2 -concurrency 2 -recover \
             | tee result.txt
@@ -138,6 +139,10 @@ jobs:
           GH_REPO: ${{ github.repository }}
           LINE: ${{ needs.match.outputs.line }}
         run: |
-          gh release view "$GITHUB_REF_NAME" --json body -q .body > notes.md
-          printf '\n%s\n' "$LINE" >> notes.md
+          # the marker is an html comment, so it does not render but does let a
+          # rerun replace the line it wrote last time rather than add another
+          # cat -s closes up the blank line the deleted line leaves behind
+          body=$(gh release view "$GITHUB_REF_NAME" --json body -q .body \
+                 | sed '/<!-- arche:strength -->/d' | cat -s)
+          printf '%s\n\n%s <!-- arche:strength -->\n' "$body" "$LINE" > notes.md
           gh release edit "$GITHUB_REF_NAME" --notes-file notes.md

@@ -114,6 +114,11 @@ jobs:
           IMAGE: ${{ env.REGISTRY }}/${{ env.IMAGE_NAME }}:${{ github.ref_name }}
           DIGEST: ${{ needs.build.outputs.digest }}
         run: |
-          gh release view "$GITHUB_REF_NAME" --json body -q .body > notes.md
-          printf '\nDocker image: `%s` (`%s`)\n' "$IMAGE" "$DIGEST" >> notes.md
+          # the marker is an html comment, so it does not render but does let a
+          # rerun replace the line it wrote last time rather than add another
+          line="Docker image: \`$IMAGE\` (\`$DIGEST\`) <!-- arche:image -->"
+          # cat -s closes up the blank line the deleted line leaves behind
+          body=$(gh release view "$GITHUB_REF_NAME" --json body -q .body \
+                 | sed '/<!-- arche:image -->/d' | cat -s)
+          printf '%s\n\n%s\n' "$body" "$line" > notes.md
           gh release edit "$GITHUB_REF_NAME" --notes-file notes.md
