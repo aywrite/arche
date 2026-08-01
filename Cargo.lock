@@ -25,7 +25,7 @@ checksum = "940b3a0ca603d1eade50a4846a2afffd5ef57a9feac2c0e2ec2e14f9ead76000"
 
 [[package]]
 name = "arche"
-version = "0.3.8-rc.2"
+version = "0.3.8"
 dependencies = [
  "basic_engine",
  "lazy_static",
@@ -41,7 +41,7 @@ checksum = "f2032f911046de80f0a198e0901378627c33f59ea0ac00e363d481118bd70a53"
 
 [[package]]
 name = "basic_engine"
-version = "0.3.8-rc.2"
+version = "0.3.8"
 dependencies = [
  "criterion",
  "lazy_static",
