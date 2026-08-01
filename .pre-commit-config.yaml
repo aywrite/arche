@@ -16,6 +16,10 @@ repos:
       - id: ruff-check
         args: [--fix]
       - id: ruff-format
+  - repo: https://github.com/shellcheck-py/shellcheck-py
+    rev: v0.11.0.1
+    hooks:
+      - id: shellcheck
   # Run cargo directly rather than through a hook repo, the ones that wrap it
   # have all gone unmaintained.
   - repo: local
@@ -46,4 +50,4 @@ repos:
           - --verbose
           - --force-scope
           - --scopes
-          - bench,board,book,ci,deps,deps-dev,docker,eval,lint,movegen,release,search,uci,zorbrist
+          - bench,board,book,ci,deps,deps-dev,docker,eval,lint,magic,release,search,uci,zorbrist
