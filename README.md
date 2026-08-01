@@ -87,12 +87,14 @@ docker/smoke_test.sh arche-lichess-bot
   - `ponderhit`, `debug` and `register` are not handled either
 - winboard
 - known issues
-  - malformed uci input panics rather than being reported and ignored
   - fail low (alpha) nodes are never stored in the transposition table, only exact and beta nodes
   - transposition table scores don't account for repetition or fifty move history, make_move_str
     clears the key for played moves as a workaround
+  - a fen is barely validated, so one without a king is accepted and then panics as soon as the
+    position is searched
   - the history array is a fixed size and ply is initialised to twice the full move number, so a
-    game of more than about five hundred moves would still run past the end of it
+    game of more than about five hundred moves runs past the end of it. A fen with a full move
+    number that high panics on the first search rather than after five hundred moves
   - en passant is hashed for every double pawn push, even when no capture is possible, which
     slightly reduces transposition hits
 
