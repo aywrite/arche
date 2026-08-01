@@ -126,16 +126,18 @@ git checkout - && cargo build --release && cp target/release/arche /tmp/new
 fastchess \
   -engine name=new cmd=/tmp/new \
   -engine name=old cmd=/tmp/old \
-  -each proto=uci tc=10+0.1 -startup-ms 60000 \
+  -each proto=uci tc=10+0.1 -startup-ms 20000 \
   -openings file=8moves_v3.pgn format=pgn order=random \
   -rounds 200 -repeat 2 -concurrency 2 -recover
 ```
 
 Notes on the flags:
 
-- `-startup-ms 60000` is needed because the engine generates its magic bitboards
-  and allocates the transposition table before it answers `uci`, which is longer
-  than the ten second default when several copies start at once.
+- `-startup-ms 20000` is needed because the engine allocates its 500MB
+  transposition table before it answers `uci`, which four copies starting at
+  once can take longer over than the ten second default allows. Generating the
+  magic bitboards used to dominate this and no longer does, they are constants
+  now, so the allowance does not need to be anywhere near as generous as it was.
 - `-repeat 2` plays each opening twice with the colours reversed, which removes
   most of the advantage of drawing a good opening.
 - `-recover` keeps the match going if an engine crashes rather than aborting.
