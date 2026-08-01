@@ -69,6 +69,6 @@ jobs:
             echo "### Tagged ${{ steps.version.outputs.tag }}"
             echo
             echo "The release workflow is building the binaries and playing the"
-            echo "sanity check match, which takes a while. It will add the result"
+            echo "strength match, which takes a while. It will add the result"
             echo "to the release notes when it finishes."
           } >> "$GITHUB_STEP_SUMMARY"

@@ -1,0 +1,133 @@
+name: Strength
+
+# Plays the checked out version against the last full release and reports the
+# elo difference. Run it from the actions tab against any branch or tag, or let
+# the release workflow call it.
+
+on:
+  workflow_dispatch:
+    inputs:
+      games:
+        description: Games to play, rounded down to an even number
+        type: number
+        default: 50
+  workflow_call:
+    inputs:
+      games:
+        type: number
+        default: 50
+      publish:
+        description: Append the result to the release notes for this tag
+        type: boolean
+        default: false
+
+env:
+  TIME_CONTROL: 10+0.1
+
+jobs:
+  # Split out so the match job can be skipped in one place rather than every
+  # step having to ask whether there is anything to compare against.
+  previous:
+    runs-on: ubuntu-latest
+    outputs:
+      tag: ${{ steps.find.outputs.tag }}
+    steps:
+      - uses: actions/checkout@v7
+        with:
+          fetch-depth: 0
+
+      # Release candidates are not a baseline worth measuring against, and a
+      # release is compared with the one before it rather than with itself.
+      - name: Find the last full release
+        id: find
+        run: |
+          tag=$(git tag --list 'v[0-9]*' --sort=-v:refname \
+                | grep -v -- '-' \
+                | grep -v -x "$GITHUB_REF_NAME" \
+                | head -1)
+          echo "tag=${tag}" >> "$GITHUB_OUTPUT"
+          if [ -z "$tag" ]; then
+            echo "::notice::No previous release to compare against, skipping"
+          fi
+
+  match:
+    needs: previous
+    if: needs.previous.outputs.tag != ''
+    runs-on: ubuntu-latest
+    permissions:
+      # only used when publishing, the release notes are edited in place
+      contents: write
+    # enough for about five hundred games at the time control above, a run that
+    # wants more is better split up
+    timeout-minutes: 180
+    env:
+      GAMES: ${{ inputs.games }}
+      PREVIOUS: ${{ needs.previous.outputs.tag }}
+    steps:
+      - uses: actions/checkout@v7
+        with:
+          fetch-depth: 0
+
+      - name: Cache the match tools
+        id: tools
+        uses: actions/cache@v6
+        with:
+          path: tools
+          key: match-tools-fastchess-1.8.2-alpha-8moves-v3
+
+      - name: Build the match tools
+        if: steps.tools.outputs.cache-hit != 'true'
+        run: |
+          mkdir -p tools
+          # every fastchess release is tagged -alpha, there is no plain v1.8.2
+          git clone --depth 1 --branch v1.8.2-alpha \
+            https://github.com/Disservin/fastchess.git /tmp/fastchess
+          make -C /tmp/fastchess -j"$(nproc)"
+          cp /tmp/fastchess/fastchess tools/
+          curl -sSLf -o /tmp/book.zip \
+            https://raw.githubusercontent.com/official-stockfish/books/master/8moves_v3.pgn.zip
+          unzip -qo /tmp/book.zip -d tools
+
+      - name: Build both versions
+        run: |
+          cargo build --release
+          cp target/release/arche tools/new
+          git checkout --detach "$PREVIOUS"
+          cargo build --release
+          cp target/release/arche tools/old
+          # back to the version under test, the summary script lives there
+          git checkout --detach "$GITHUB_SHA"
+
+      - name: Play the match
+        working-directory: tools
+        run: |
+          # the default startup timeout is too short for the magic bitboards to
+          # be generated when several engines start at once
+          ./fastchess \
+            -engine "name=$GITHUB_REF_NAME" cmd=./new \
+            -engine "name=$PREVIOUS" cmd=./old \
+            -each proto=uci "tc=$TIME_CONTROL" -startup-ms 60000 \
+            -openings file=8moves_v3.pgn format=pgn order=random \
+            -rounds "$((GAMES / 2))" -repeat 2 -concurrency 2 -recover \
+            | tee result.txt
+
+      - name: Summarise the result
+        id: summary
+        run: |
+          if grep -qiE 'disconnect|stalled|loses on time' tools/result.txt; then
+            echo "::warning::An engine crashed or lost on time, the estimate is unreliable"
+          fi
+          line="Performance compared to ${PREVIOUS} | $(python3 scripts/match_summary.py tools/result.txt)"
+          echo "::notice::$line"
+          echo "line=${line}" >> "$GITHUB_OUTPUT"
+          echo "$line" >> "$GITHUB_STEP_SUMMARY"
+
+      - name: Add the result to the release notes
+        if: inputs.publish
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          LINE: ${{ steps.summary.outputs.line }}
+        run: |
+          gh release view "$GITHUB_REF_NAME" --json body -q .body > notes.md
+          printf '\n%s\n' "$LINE" >> notes.md
+          gh release edit "$GITHUB_REF_NAME" --notes-file notes.md

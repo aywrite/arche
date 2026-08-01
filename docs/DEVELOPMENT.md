@@ -146,8 +146,13 @@ The error bar shrinks with the square root of the number of games. Fifty games
 only detects very large differences, a few hundred is needed before a result of
 twenty or thirty elo means anything.
 
-The release workflow runs a fifty game version of this automatically and appends
-the result to the release notes.
+The **Strength** workflow does the same thing on a runner. Run it from the
+actions tab against any branch or tag and give it a number of games, and it
+plays that version against the last full release, ignoring release candidates.
+The result goes to the run summary.
+
+The release workflow calls the same workflow with fifty games, and that run is
+the only one that appends its result to the release notes.
 
 ## Cutting a release
 
@@ -219,5 +224,5 @@ git push origin vX.Y.Z
 
 Pushing the tag is what triggers the release workflow, which runs the tests,
 creates the github release from the changelog, builds and uploads binaries for
-linux, macos and windows, and then plays the sanity check match. The docker
+linux, macos and windows, and then plays the strength match. The docker
 workflow publishes the lichess-bot image from the same tag.
