@@ -1,4 +1,5 @@
-# configuration file for git-cliff (0.1.0)
+# configuration file for git-cliff
+# https://git-cliff.org/docs/configuration
 
 [changelog]
 # changelog header
@@ -7,7 +8,7 @@ header = """
 All notable changes to this project will be documented in this file.\n
 """
 # template for the changelog body
-# https://tera.netlify.app/docs/#introduction
+# https://keats.github.io/tera/docs/
 body = """
 {% if version %}\
     ## [{{ version | trim_start_matches(pat="v") }}] - {{ timestamp | date(format="%Y-%m-%d") }}
@@ -15,9 +16,11 @@ body = """
     ## [unreleased]
 {% endif %}\
 {% for group, commits in commits | group_by(attribute="group") %}
-    ### {{ group | upper_first }}
+    ### {{ group | striptags | trim | upper_first }}
     {% for commit in commits %}
-        - {% if commit.breaking %}[**breaking**] {% endif %}{{ commit.message | upper_first }}\
+        - {% if commit.breaking %}[**breaking**] {% endif %}\
+{% if commit.scope %}*({{ commit.scope }})* {% endif %}\
+{{ commit.message | upper_first }}\
     {% endfor %}
 {% endfor %}\n
 """
@@ -37,20 +40,28 @@ filter_unconventional = true
 split_commits = false
 # regex for preprocessing the commit messages
 commit_preprocessors = [
-    { pattern = '\((\w+\s)?#([0-9]+)\)', replace = "([#${2}](https://github.com/orhun/git-cliff/issues/${2}))"},
+    { pattern = '\((\w+\s)?#([0-9]+)\)', replace = "([#${2}](https://github.com/aywrite/arche/pull/${2}))"},
 ]
-# regex for parsing and grouping commits
+# regex for parsing and grouping commits. The number in the comment orders the
+# sections, the template strips it before printing the name.
 commit_parsers = [
-    { message = "^feat", group = "Features"},
-    { message = "^fix", group = "Bug Fixes"},
-    { message = "^doc", group = "Documentation"},
-    { message = "^perf", group = "Performance"},
-    { message = "^refactor", group = "Refactor"},
-    { message = "^style", group = "Styling"},
-    { message = "^test", group = "Testing"},
-    { message = "^chore\\(release\\):", skip = true},
-    { message = "^chore", group = "Miscellaneous Tasks"},
-    { body = ".*security", group = "Security"},
+    # The version bump cargo-release makes for itself. Matched on the whole
+    # message so that other work on the release tooling is still listed.
+    { message = "^chore\\(release\\): prepare for ", skip = true},
+    # Scopes that name part of the build rather than part of the engine, matched
+    # ahead of the types so that a feat(docker) or a perf(bench) does not read
+    # as a change to how the engine plays.
+    { message = "^\\w+\\((bench|book|ci|deps(-dev)?|docker|lint|release)\\)!?:", group = "<!-- 6 -->Development"},
+    { message = "^feat", group = "<!-- 0 -->Features"},
+    { message = "^fix", group = "<!-- 1 -->Bug Fixes"},
+    { message = "^perf", group = "<!-- 2 -->Performance"},
+    { message = "^refactor", group = "<!-- 3 -->Refactor"},
+    { message = "^doc", group = "<!-- 4 -->Documentation"},
+    { body = ".*security", group = "<!-- 5 -->Security"},
+    { message = "^(build|chore|ci|style|test)", group = "<!-- 6 -->Development"},
+    # Nothing should reach this. It is here so that an unrecognised type shows
+    # up in the changelog rather than quietly becoming a section of its own.
+    { message = ".*", group = "<!-- 7 -->Other"},
 ]
 # filter out the commits that are not matched by commit parsers
 filter_commits = false

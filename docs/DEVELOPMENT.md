@@ -46,6 +46,56 @@ pip install pre-commit
 pre-commit install --install-hooks
 ```
 
+## Commit messages
+
+The changelog separates changes to the engine from changes to everything around
+it, which it works out from the type and the scope:
+
+```
+perf(search): Index the hash table without dividing
+perf(bench): Stop the search benchmark timing a 500MB memset
+```
+
+The first is the engine getting faster and belongs under **Performance**. The
+second is a benchmark getting faster, which says nothing about how the engine
+plays, and belongs under **Development**. Only the scope tells them apart.
+
+So the scope is required, and has to be one of these. The build ones put a
+commit under **Development** whatever its type is:
+
+| scope | covers |
+| --- | --- |
+| `bench` | the criterion benchmarks |
+| `book` | the opening book generator |
+| `ci` | github workflows and the pre-commit configuration |
+| `deps`, `deps-dev` | dependency bumps, what dependabot uses |
+| `docker` | the lichess-bot image |
+| `lint` | fmt and clippy fallout |
+| `release` | cargo-release, git-cliff and the release workflows |
+
+The engine ones are grouped by type instead:
+
+| scope | covers |
+| --- | --- |
+| `board` | the board representation and make/unmake |
+| `eval` | evaluation and the piece square tables |
+| `movegen` | move generation, magics and bitboards |
+| `search` | alpha beta, quiescence and the transposition table |
+| `uci` | the protocol and time management |
+| `zorbrist` | the hash keys, spelled as the module is |
+
+`feat`, `fix`, `perf`, `refactor` and `docs` get a section each, and `build`,
+`chore`, `ci`, `style` and `test` all go to **Development**.
+
+The commit-msg hook rejects a scope that is not on the list, which is the point:
+a mistyped `perf(benchmark)` would otherwise be published as if the engine had
+got faster. Adding a scope means adding it to the hook arguments in
+`.pre-commit-config.yaml`, and to `cliff.toml` as well if it is a build one.
+Merge commits are exempt.
+
+`git-cliff --unreleased` prints what the next release would say, which is the
+quickest way to check a scope landed where it should.
+
 ## Benchmarks
 
 ```

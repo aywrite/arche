@@ -35,5 +35,15 @@ repos:
   - repo: https://github.com/compilerla/conventional-pre-commit
     rev: v4.4.0
     hooks:
+      # The changelog groups by scope as well as by type, so a scope is required
+      # and has to be one it knows about. The lists are in docs/DEVELOPMENT.md,
+      # the build side of them is also in cliff.toml.
       - id: conventional-pre-commit
         stages: [commit-msg]
+        args:
+          # without --verbose a rejected scope only says the message is not a
+          # conventional commit, it does not say which scopes are allowed
+          - --verbose
+          - --force-scope
+          - --scopes
+          - bench,board,book,ci,deps,deps-dev,docker,eval,lint,movegen,release,search,uci,zorbrist

@@ -51,7 +51,8 @@ jobs:
 
       - uses: taiki-e/install-action@v2
         with:
-          tool: cargo-binstall,git-cliff
+          # cliff.toml is written against the version 2 template syntax
+          tool: cargo-binstall,git-cliff@2
 
       - name: Install cargo-release
         run: |
