@@ -3,6 +3,7 @@ use basic_engine::Color;
 use basic_engine::Engine;
 use basic_engine::SearchParameters;
 use regex::Regex;
+use std::io::BufRead;
 
 const START_FEN: &str = "rnbqkbnr/pppppppp/8/8/8/8/PPPPPPPP/RNBQKBNR w KQkq - 0 1";
 
@@ -24,6 +25,14 @@ lazy_static! {
 fn capture(re: &Regex, line: &str) -> Option<u64> {
     let digits = re.captures(line)?.get(1)?.as_str();
     Some(digits.parse().unwrap_or(u64::MAX))
+}
+
+/// Tells the interface about anything we could not act on. A bad line is the
+/// interface's problem to fix, so say so and carry on reading.
+fn report(result: Result<(), String>) {
+    if let Err(error) = result {
+        println!("info string {}", error);
+    }
 }
 
 fn time_control_from(line: &str, color: Color) -> TimeControl {
@@ -61,60 +70,84 @@ impl<T: Engine> UCI<T> {
     }
 
     pub fn read_loop(&mut self) {
-        loop {
-            if let Some(result) = std::io::stdin().lines().next() {
-                let line = result.unwrap();
-                if line.starts_with("quit") {
-                    return;
-                } else if line.starts_with("isready") {
-                    println!("readyok");
-                } else if line.starts_with("ucinewgame") {
-                    self.engine.new_game();
-                    self.parse_position("position startpos");
-                } else if line.starts_with("uci") {
-                    println!("id name {} {}", self.name, self.version);
-                    println!("id author {}", self.author);
-                    println!("uciok");
-                } else if line.starts_with("position") {
-                    self.parse_position(&line);
-                } else if line.starts_with("display") {
-                    self.engine.display_board();
-                } else if line.starts_with("go") {
-                    self.parse_go(&line);
-                } else if line.starts_with("perft") {
-                    self.engine.perft();
-                } else {
-                    println!("Failed to parse line: {}", line);
+        self.run(std::io::stdin().lock());
+    }
+
+    /// Handles input until it is exhausted or `quit` arrives. Separate from
+    /// read_loop so that it can be driven without stdin.
+    fn run<R: BufRead>(&mut self, input: R) {
+        for line in input.lines() {
+            match line {
+                Ok(line) => {
+                    if !self.handle(&line) {
+                        return;
+                    }
                 }
-            };
+                // there is nothing left to read and no one to tell, so stop
+                // rather than sitting in the loop asking again
+                Err(error) => {
+                    println!("info string could not read input: {}", error);
+                    return;
+                }
+            }
         }
     }
 
-    fn parse_position(&mut self, line: &str) {
-        let position_string = line.strip_prefix("position").unwrap().trim();
+    /// Returns false once the engine has been asked to quit.
+    fn handle(&mut self, line: &str) -> bool {
+        if line.starts_with("quit") {
+            return false;
+        }
+        if line.starts_with("isready") {
+            println!("readyok");
+        } else if line.starts_with("ucinewgame") {
+            self.engine.new_game();
+            let result = self.parse_position("position startpos");
+            report(result);
+        } else if line.starts_with("uci") {
+            println!("id name {} {}", self.name, self.version);
+            println!("id author {}", self.author);
+            println!("uciok");
+        } else if line.starts_with("position") {
+            let result = self.parse_position(line);
+            report(result);
+        } else if line.starts_with("display") {
+            self.engine.display_board();
+        } else if line.starts_with("go") {
+            self.parse_go(line);
+        } else if line.starts_with("perft") {
+            self.engine.perft();
+        } else {
+            println!("info string unrecognised command: {}", line);
+        }
+        true
+    }
+
+    /// A move that cannot be played leaves the position at the last one that
+    /// could be, since the interface is expected to send the whole line again
+    /// rather than to carry on from a position we rejected.
+    fn parse_position(&mut self, line: &str) -> Result<(), String> {
+        let position_string = line.strip_prefix("position").unwrap_or(line).trim();
         let (start, move_list) = match position_string.split_once("moves") {
             Some((s, m)) => (s.trim(), Some(m)),
             None => (position_string, None),
         };
         if start.starts_with("startpos") {
-            self.engine
-                .parse_fen(START_FEN)
-                .expect("parse of start fen should never fail");
+            self.engine.parse_fen(START_FEN)?;
         } else if let Some(fen) = start.strip_prefix("fen") {
-            self.engine.parse_fen(fen.trim()).unwrap();
+            self.engine.parse_fen(fen.trim())?;
         } else {
-            panic!("Unexpected position: {}", start);
+            return Err(format!("unrecognised position: {}", start));
         }
 
         if let Some(moves) = move_list {
             for m in moves.split_whitespace() {
-                assert!(
-                    self.engine.make_move_str(m.trim()),
-                    "Failed to parse/play {}",
-                    m
-                );
+                if !self.engine.make_move_str(m.trim()) {
+                    return Err(format!("could not play {}", m));
+                }
             }
         }
+        Ok(())
     }
 
     fn parse_go(&mut self, line: &str) {
@@ -135,6 +168,90 @@ impl<T: Engine> UCI<T> {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use basic_engine::{AlphaBeta, Board};
+    use std::io::Cursor;
+
+    /// A table small enough that a test can afford one per case.
+    fn uci() -> UCI<AlphaBeta> {
+        UCI::new_with_engine(AlphaBeta::with_table_bytes(Board::new(), 8 * 1024))
+    }
+
+    #[test]
+    fn a_position_can_be_set_from_the_start_or_from_a_fen() {
+        let mut uci = uci();
+        assert_eq!(uci.parse_position("position startpos"), Ok(()));
+        assert_eq!(uci.engine.active_color(), Color::White);
+
+        let fen = "r1b2rk1/ppp1qppp/4pn2/6N1/Qn1P4/2NBP3/PP3PPP/R3K2R b KQ - 9 12";
+        assert_eq!(uci.parse_position(&format!("position fen {}", fen)), Ok(()));
+        assert_eq!(uci.engine.active_color(), Color::Black);
+    }
+
+    #[test]
+    fn moves_after_a_position_are_played() {
+        let mut uci = uci();
+        assert_eq!(
+            uci.parse_position("position startpos moves e2e4 e7e5 g1f3"),
+            Ok(())
+        );
+        assert_eq!(uci.engine.active_color(), Color::Black);
+    }
+
+    #[test]
+    fn malformed_positions_are_reported_rather_than_fatal() {
+        // each of these used to panic, taking the engine down mid game
+        for line in [
+            "position",
+            "position wibble",
+            "position fen",
+            "position fen not a fen at all",
+            "position fen 8/8/8/8/8/8/8/8 w - - 0 1 moves e2e4",
+            "position startpos moves e2e4 zzzz",
+            "position startpos moves e2e4 e2e4",
+        ] {
+            let mut uci = uci();
+            assert!(
+                uci.parse_position(line).is_err(),
+                "expected an error: {}",
+                line
+            );
+        }
+    }
+
+    #[test]
+    fn unrecognised_and_empty_commands_are_survivable() {
+        let mut uci = uci();
+        for line in ["", "   ", "wibble", "positional", "isready"] {
+            assert!(uci.handle(line), "{} should not have quit", line);
+        }
+    }
+
+    #[test]
+    fn quit_stops_the_loop_and_leaves_the_rest_unread() {
+        let mut uci = uci();
+        uci.run(Cursor::new(
+            "position startpos moves e2e4\nquit\nposition startpos\n",
+        ));
+        // the reset after quit must not have been acted on
+        assert_eq!(uci.engine.active_color(), Color::Black);
+    }
+
+    #[test]
+    fn the_loop_ends_when_the_input_does() {
+        // without a quit the old loop asked a closed stdin for another line for
+        // ever, so reaching the end of this call is the assertion
+        let mut uci = uci();
+        uci.run(Cursor::new("uci\nisready\nposition startpos\ngo depth 1\n"));
+    }
+
+    #[test]
+    fn a_new_game_resets_the_position() {
+        let mut uci = uci();
+        uci.parse_position("position startpos moves e2e4").unwrap();
+        assert_eq!(uci.engine.active_color(), Color::Black);
+        assert!(uci.handle("ucinewgame"));
+        assert_eq!(uci.engine.active_color(), Color::White);
+    }
 
     #[test]
     fn each_colour_reads_its_own_clock() {
