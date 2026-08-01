@@ -87,9 +87,6 @@ docker/smoke_test.sh arche-lichess-bot
   - `ponderhit`, `debug` and `register` are not handled either
 - winboard
 - known issues
-  - `go movetime x` is divided by forty as though it were a clock, so a ten second move is
-    searched for about two hundred milliseconds
-  - `movestogo` is parsed and then never used, forty moves are always assumed to remain
   - `ucinewgame` resets the board but leaves the transposition table holding the previous game
   - malformed uci input panics rather than being reported and ignored
   - fail low (alpha) nodes are never stored in the transposition table, only exact and beta nodes

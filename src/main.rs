@@ -1,3 +1,4 @@
+mod time_control;
 mod uci;
 
 pub use uci::UCI;
