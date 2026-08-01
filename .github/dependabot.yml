@@ -21,6 +21,18 @@ updates:
       actions:
         patterns:
           - "*"
+    ignore:
+      # The workflows use floating major tags, which already point at the
+      # latest patch, so a patch or minor bump only turns v4 into v4.5.2 and
+      # stops it tracking anything. Only a new major is worth a pull request.
+      - dependency-name: "*"
+        update-types:
+          - "version-update:semver-patch"
+          - "version-update:semver-minor"
+      # This one is pinned on purpose, the tag names the rust toolchain to
+      # install rather than a version of the action, so bumping it would raise
+      # the version the msrv job is there to check against.
+      - dependency-name: "dtolnay/rust-toolchain"
   - package-ecosystem: "docker"
     directory: "/docker"
     schedule:
