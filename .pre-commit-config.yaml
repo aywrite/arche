@@ -50,4 +50,4 @@ repos:
           - --verbose
           - --force-scope
           - --scopes
-          - bench,board,book,ci,deps,deps-dev,docker,eval,lint,magic,release,search,uci,zorbrist
+          - bench,board,book,ci,deps,deps-dev,docker,docs,eval,lint,magic,release,search,uci,zorbrist
