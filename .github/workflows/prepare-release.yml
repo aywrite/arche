@@ -101,7 +101,7 @@ jobs:
 
           The version and the changelog are the whole diff. Merging this tags
           \`v${VERSION}\` and starts the release, which builds the binaries and
-          plays the sanity check match against the previous release.
+          plays the strength match against the previous release.
 
           Close it without merging to call the release off, nothing has been
           tagged or published yet.
