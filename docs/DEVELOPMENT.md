@@ -79,7 +79,7 @@ The engine ones are grouped by type instead:
 | --- | --- |
 | `board` | the board representation and make/unmake |
 | `eval` | evaluation and the piece square tables |
-| `movegen` | move generation, magics and bitboards |
+| `magic` | move generation, the magic bitboards and their tables |
 | `search` | alpha beta, quiescence and the transposition table |
 | `uci` | the protocol and time management |
 | `zorbrist` | the hash keys, spelled as the module is |
