@@ -1,58 +1,117 @@
 name: Strength
 
-# Plays the checked out version against the last full release and reports the
-# elo difference. Run it from the actions tab against any branch or tag, or let
-# the release workflow call it.
+# Plays one version of the engine against another and reports the elo
+# difference. By default it is whatever it was run against versus the last full
+# release, which is what the release workflow wants. Both sides can be named
+# instead, as a branch, a tag, a commit or a pull request number, so a change
+# can be measured before it is merged and against something other than a
+# release.
+#
+# Fifty games only separates versions that differ by a hundred elo or so. A
+# change worth a handful needs thousands, so raise the count and shorten the
+# time control when the answer matters.
 
 on:
   workflow_dispatch:
     inputs:
+      candidate:
+        description: What to test. A branch, tag, commit or pull request number. Defaults to the ref this is run against.
+        type: string
+      baseline:
+        description: What to measure it against. Same forms. Defaults to the last full release.
+        type: string
       games:
         description: Games to play, rounded down to an even number
         type: number
         default: 50
+      time_control:
+        description: Passed to fastchess as tc
+        type: string
+        default: 10+0.1
   workflow_call:
     inputs:
+      candidate:
+        type: string
+        required: false
+      baseline:
+        type: string
+        required: false
       games:
         type: number
         default: 50
+      time_control:
+        type: string
+        default: 10+0.1
       publish:
         description: Append the result to the release notes for this tag
         type: boolean
         default: false
 
-env:
-  TIME_CONTROL: 10+0.1
-
 jobs:
   # Split out so the match job can be skipped in one place rather than every
   # step having to ask whether there is anything to compare against.
-  previous:
+  resolve:
     runs-on: ubuntu-latest
     outputs:
-      tag: ${{ steps.find.outputs.tag }}
+      baseline_name: ${{ steps.find.outputs.baseline_name }}
+      baseline_sha: ${{ steps.find.outputs.baseline_sha }}
+      candidate_name: ${{ steps.find.outputs.candidate_name }}
+      candidate_sha: ${{ steps.find.outputs.candidate_sha }}
     steps:
       - uses: actions/checkout@v7
         with:
           fetch-depth: 0
 
-      # Release candidates are not a baseline worth measuring against, and a
-      # release is compared with the one before it rather than with itself.
-      - name: Find the last full release
+      - name: Work out what is playing what
         id: find
+        env:
+          CANDIDATE: ${{ inputs.candidate }}
+          BASELINE: ${{ inputs.baseline }}
         run: |
+          # a number is a pull request, whose head is not fetched by default;
+          # anything else is a branch, tag or commit
+          resolve() {
+            if [ "$1" -eq "$1" ] 2>/dev/null; then
+              git fetch -q origin "refs/pull/$1/head" || return 1
+              git rev-parse FETCH_HEAD
+              return 0
+            fi
+            git rev-parse --verify --quiet "$1^{commit}" && return 0
+            git fetch -q origin "$1" && git rev-parse FETCH_HEAD
+          }
+
+          if [ -n "$CANDIDATE" ]; then
+            sha=$(resolve "$CANDIDATE") || { echo "::error::cannot resolve candidate ${CANDIDATE}"; exit 1; }
+            echo "candidate_name=${CANDIDATE}" >> "$GITHUB_OUTPUT"
+            echo "candidate_sha=${sha}" >> "$GITHUB_OUTPUT"
+          else
+            echo "candidate_name=${GITHUB_REF_NAME}" >> "$GITHUB_OUTPUT"
+            echo "candidate_sha=${GITHUB_SHA}" >> "$GITHUB_OUTPUT"
+          fi
+
+          if [ -n "$BASELINE" ]; then
+            sha=$(resolve "$BASELINE") || { echo "::error::cannot resolve baseline ${BASELINE}"; exit 1; }
+            echo "baseline_name=${BASELINE}" >> "$GITHUB_OUTPUT"
+            echo "baseline_sha=${sha}" >> "$GITHUB_OUTPUT"
+            exit 0
+          fi
+
+          # Release candidates are not a baseline worth measuring against, and a
+          # release is compared with the one before it rather than with itself.
           tag=$(git tag --list 'v[0-9]*' --sort=-v:refname \
                 | grep -v -- '-' \
                 | grep -v -x "$GITHUB_REF_NAME" \
                 | head -1)
-          echo "tag=${tag}" >> "$GITHUB_OUTPUT"
+          echo "baseline_name=${tag}" >> "$GITHUB_OUTPUT"
           if [ -z "$tag" ]; then
             echo "::notice::No previous release to compare against, skipping"
+          else
+            echo "baseline_sha=$(git rev-parse "${tag}^{commit}")" >> "$GITHUB_OUTPUT"
           fi
 
   match:
-    needs: previous
-    if: needs.previous.outputs.tag != ''
+    needs: resolve
+    if: needs.resolve.outputs.baseline_sha != ''
     runs-on: ubuntu-latest
     outputs:
       line: ${{ steps.summary.outputs.line }}
@@ -61,7 +120,11 @@ jobs:
     timeout-minutes: 180
     env:
       GAMES: ${{ inputs.games }}
-      PREVIOUS: ${{ needs.previous.outputs.tag }}
+      TIME_CONTROL: ${{ inputs.time_control }}
+      CANDIDATE: ${{ needs.resolve.outputs.candidate_name }}
+      CANDIDATE_SHA: ${{ needs.resolve.outputs.candidate_sha }}
+      PREVIOUS: ${{ needs.resolve.outputs.baseline_name }}
+      BASELINE_SHA: ${{ needs.resolve.outputs.baseline_sha }}
     steps:
       - uses: actions/checkout@v7
         with:
@@ -89,12 +152,20 @@ jobs:
 
       - name: Build both versions
         run: |
+          # a pull request head is not fetched by default and the resolve job
+          # ran on a different machine, so fetch anything not already here
+          for sha in "$CANDIDATE_SHA" "$BASELINE_SHA"; do
+            git cat-file -e "${sha}^{commit}" 2>/dev/null \
+              || git fetch -q origin "$sha" \
+              || git fetch -q origin "+refs/pull/*/head:refs/remotes/pull/*"
+          done
+          git checkout --detach "$CANDIDATE_SHA"
           cargo build --release
           cp target/release/arche tools/new
-          git checkout --detach "$PREVIOUS"
+          git checkout --detach "$BASELINE_SHA"
           cargo build --release
           cp target/release/arche tools/old
-          # back to the version under test, the summary script lives there
+          # back to the ref this was run against, the summary script lives there
           git checkout --detach "$GITHUB_SHA"
 
       - name: Play the match
@@ -104,7 +175,7 @@ jobs:
           # uci, which four copies starting at once can take longer over than
           # the ten second default allows
           ./fastchess \
-            -engine "name=$GITHUB_REF_NAME" cmd=./new \
+            -engine "name=$CANDIDATE" cmd=./new \
             -engine "name=$PREVIOUS" cmd=./old \
             -each proto=uci "tc=$TIME_CONTROL" -startup-ms 20000 \
             -openings file=8moves_v3.pgn format=pgn order=random \
@@ -120,7 +191,13 @@ jobs:
           line="Performance compared to ${PREVIOUS} | $(python3 scripts/match_summary.py tools/result.txt)"
           echo "::notice::$line"
           echo "line=${line}" >> "$GITHUB_OUTPUT"
-          echo "$line" >> "$GITHUB_STEP_SUMMARY"
+          {
+            echo "${CANDIDATE} (\`${CANDIDATE_SHA:0:8}\`) against ${PREVIOUS} (\`${BASELINE_SHA:0:8}\`)"
+            echo
+            echo "$line"
+            echo
+            echo "At ${GAMES} games only a difference of about $(python3 -c "print(int(800/(${GAMES}**0.5)))") elo can be told from none."
+          } >> "$GITHUB_STEP_SUMMARY"
 
   # The docker workflow appends to the same release notes, and the edit is a
   # read and a write rather than an append, so the two have to take turns.
