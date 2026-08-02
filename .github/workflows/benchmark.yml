@@ -23,6 +23,7 @@ env:
 
 permissions:
   contents: read
+  pull-requests: write
 
 concurrency:
   group: ${{ github.workflow }}-${{ github.ref }}
@@ -73,14 +74,42 @@ jobs:
         shell: bash
         run: |
           {
+            # marks the comment as this job's, so the next run replaces it
+            echo "<!-- benchmark-summary -->"
             echo "## Benchmark against \`${BASE_SHA:0:8}\`"
             echo
             python3 scripts/benchmark_summary.py < benchmark-output.txt
-          } >> "$GITHUB_STEP_SUMMARY"
+          } > benchmark-summary.md
+          cat benchmark-summary.md >> "$GITHUB_STEP_SUMMARY"
+
+      # A summary nobody opens is barely better than none, so put it where the
+      # change is being read. Done with the api rather than an action so there
+      # is one less thing to keep off a deprecated node.
+      - name: Post the summary to the pull request
+        # a fork's pull request gets a read only token, so there is nothing to
+        # post with and failing the job over it would help no one
+        if: always() && !github.event.pull_request.head.repo.fork
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          PR: ${{ github.event.pull_request.number }}
+        shell: bash
+        run: |
+          jq -n --rawfile body benchmark-summary.md '{body: $body}' > comment.json
+          # edit the comment the last run left rather than adding one per push
+          existing=$(gh api --paginate "repos/${GITHUB_REPOSITORY}/issues/${PR}/comments" \
+            --jq '.[] | select(.body | startswith("<!-- benchmark-summary -->")) | .id' \
+            | tail -1)
+          if [ -n "$existing" ]; then
+            gh api --silent --method PATCH \
+              "repos/${GITHUB_REPOSITORY}/issues/comments/${existing}" --input comment.json
+          else
+            gh api --silent --method POST \
+              "repos/${GITHUB_REPOSITORY}/issues/${PR}/comments" --input comment.json
+          fi
 
       - name: Keep the measurements
         if: always()
-        uses: actions/upload-artifact@v4
+        uses: actions/upload-artifact@v7
         with:
           name: benchmark-output
           path: benchmark-output.txt
