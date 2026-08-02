@@ -260,7 +260,7 @@ impl AlphaBeta {
                     score: score_to_tt(alpha, self.board.line_ply),
                     depth: 0, // Never use a quiescence move instead of evaluating, only for move ordering
                     node: Node::Ordering,
-                    ply: self.board.ply,
+                    ply: self.board.ply as u16,
                 },
             );
         }
@@ -281,7 +281,7 @@ impl AlphaBeta {
     ) -> (Option<Play>, Option<i64>) {
         let pv = self.moves.get(key);
         if let Some(pv) = pv {
-            if pv.depth >= depth.into() {
+            if pv.depth >= depth {
                 let score = score_from_tt(pv.score, self.board.line_ply);
                 match pv.node {
                     Node::Exact => return (Some(pv.play), Some(score)),
@@ -371,10 +371,10 @@ impl AlphaBeta {
                             Pv {
                                 play: *m,
                                 next_key: move_key,
-                                depth: depth as usize,
+                                depth,
                                 score: score_to_tt(beta, self.board.line_ply),
                                 node: Node::Beta,
-                                ply: self.board.ply,
+                                ply: self.board.ply as u16,
                             },
                         );
                         return beta;
@@ -397,10 +397,10 @@ impl AlphaBeta {
                 Pv {
                     play: *best_move.unwrap(),
                     next_key: best_board.unwrap(),
-                    depth: depth as usize,
+                    depth,
                     score: score_to_tt(alpha, self.board.line_ply),
                     node: Node::Exact,
-                    ply: self.board.ply,
+                    ply: self.board.ply as u16,
                 },
             );
         }
@@ -413,9 +413,12 @@ struct Pv {
     next_key: u64,
     play: Play,
     score: i64,
-    depth: usize,
+    // a depth cannot exceed MAX_DEPTH and a ply is bounded by the history
+    // array, so neither needs a word. Both sit in the padding the eight byte
+    // fields leave behind, which is why widening ply to u16 costs nothing.
+    depth: u8,
     node: Node,
-    ply: usize,
+    ply: u16,
 }
 
 #[derive(Copy, Clone, Debug)]
@@ -429,9 +432,13 @@ enum Node {
     Ordering,
 }
 
+/// A slot in the table. The key is kept alongside the entry so that a probe can
+/// tell a real hit from another position landing on the same index.
+type Entry = Option<(Pv, u64)>;
+
 #[derive(Debug)]
 struct HashTable {
-    table: Vec<Option<(Pv, u64)>>,
+    table: Vec<Entry>,
     capacity: usize,
 }
 
@@ -448,8 +455,11 @@ impl HashTable {
     }
 
     fn with_capacity_bytes(bytes: usize) -> Self {
-        let entry_size = mem::size_of::<u64>() + mem::size_of::<Pv>();
-        Self::with_capacity(bytes / entry_size)
+        // ask for the size of what is actually stored. Adding up the fields
+        // gives the same answer today only because Pv happens to need no
+        // padding on the end of it, and would quietly over allocate if that
+        // stopped being true.
+        Self::with_capacity(bytes / mem::size_of::<Entry>())
     }
 
     #[inline]
@@ -731,7 +741,7 @@ mod test_hash_table {
     use super::{HashTable, Node, Play, Pv};
     use pretty_assertions::assert_eq;
 
-    fn new_pv(node: Node, depth: usize, ply: usize) -> Pv {
+    fn new_pv(node: Node, depth: u8, ply: u16) -> Pv {
         Pv {
             next_key: 0,
             play: Play::new(0, 1, None, None, false, false),
@@ -959,11 +969,11 @@ mod test_node_counts {
         assert_eq!(
             counted,
             vec![
-                ("opening", 178_740),
-                ("kiwipete", 219_347),
-                ("pawn endgame", 188_709),
-                ("promotions", 121_061),
-                ("middlegame", 207_606),
+                ("opening", 176_627),
+                ("kiwipete", 218_744),
+                ("pawn endgame", 183_965),
+                ("promotions", 120_799),
+                ("middlegame", 208_538),
             ]
         );
     }
