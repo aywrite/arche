@@ -1254,6 +1254,59 @@ mod evaluate {
         "r4rk1/1pp1qppp/p1np1n2/2b1p1B1/2B1P1b1/P1NP1N2/1PP1QPPP/R4RK1 w - - 0 10"
     );
     test_fen!(position_3, "8/2p5/3p4/KP5r/1R3p1k/8/4P1P1/8 w - - 0 1");
+
+    /// The assertions above hold whichever way up the piece square tables are,
+    /// because both colours read them the same way and the symmetry survives.
+    /// These say which way is up.
+    #[test]
+    fn test_a_pawn_is_worth_more_the_closer_it_is_to_promoting() {
+        let advanced = Board::from_fen("4k3/4P3/8/8/8/8/8/4K3 w - - 0 1").unwrap();
+        let home = Board::from_fen("4k3/8/8/8/8/8/4P3/4K3 w - - 0 1").unwrap();
+        assert!(
+            advanced.eval() > home.eval(),
+            "a pawn on e7 scored {} and one on e2 scored {}",
+            advanced.eval(),
+            home.eval()
+        );
+    }
+
+    #[test]
+    fn test_a_pawn_is_worth_more_the_closer_it_is_to_promoting_for_black_too() {
+        let advanced = Board::from_fen("4k3/8/8/8/8/8/4p3/4K3 b - - 0 1").unwrap();
+        let home = Board::from_fen("4k3/4p3/8/8/8/8/8/4K3 b - - 0 1").unwrap();
+        assert!(
+            advanced.eval() > home.eval(),
+            "a pawn on e2 scored {} and one on e7 scored {}",
+            advanced.eval(),
+            home.eval()
+        );
+    }
+
+    /// A position and its reflection, colours swapped, have to score the same
+    /// for whoever is to move. This does not catch the tables being upside down,
+    /// since that happens to both colours at once, but it does catch one colour
+    /// being changed without the other.
+    #[test]
+    fn test_a_mirrored_position_scores_the_same() {
+        for (white, black) in [
+            (
+                "4k3/4P3/8/8/8/8/8/4K3 w - - 0 1",
+                "4k3/8/8/8/8/8/4p3/4K3 b - - 0 1",
+            ),
+            (
+                "4k3/8/8/8/8/8/8/R3K3 w - - 0 1",
+                "r3k3/8/8/8/8/8/8/4K3 b - - 0 1",
+            ),
+            (
+                "rnbqkbnr/pppppppp/8/8/4P3/8/PPPP1PPP/RNBQKBNR b KQkq - 0 1",
+                "rnbqkbnr/pppp1ppp/8/4p3/8/8/PPPPPPPP/RNBQKBNR w KQkq - 0 1",
+            ),
+        ] {
+            let white = Board::from_fen(white).unwrap();
+            let black = Board::from_fen(black).unwrap();
+            assert_eq!(white.eval(), black.eval(), "{} against {}", white, black);
+        }
+    }
 }
 
 #[cfg(test)]
