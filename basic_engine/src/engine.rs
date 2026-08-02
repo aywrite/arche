@@ -877,3 +877,84 @@ impl Engine for AlphaBeta {
         PvLine { line }
     }
 }
+
+#[cfg(test)]
+mod test_node_counts {
+    use super::AlphaBeta;
+    use super::Board;
+    use super::Engine;
+    use super::Game;
+    use pretty_assertions::assert_eq;
+
+    /// Pinned, because how often the transposition table collides decides how
+    /// much of the tree is searched again.
+    const TABLE_BYTES: usize = 1 << 20;
+
+    /// Positions chosen to reach different parts of the search: a quiet
+    /// opening, a tactical middlegame, a pawn endgame, a position full of
+    /// captures, and one with castling and promotions available.
+    const POSITIONS: [(&str, &str, u8); 5] = [
+        (
+            "opening",
+            "rnbqkbnr/pppppppp/8/8/8/8/PPPPPPPP/RNBQKBNR w KQkq - 0 1",
+            6,
+        ),
+        (
+            "kiwipete",
+            "r3k2r/p1ppqpb1/bn2pnp1/3PN3/1p2P3/2N2Q1p/PPPBBPPP/R3K2R w KQkq - 0 1",
+            5,
+        ),
+        (
+            "pawn endgame",
+            "8/2p5/3p4/KP5r/1R3p1k/8/4P1P1/8 w - - 0 1",
+            7,
+        ),
+        (
+            "promotions",
+            "rnbq1k1r/pp1Pbppp/2p5/8/2B5/8/PPP1NnPP/RNBQK2R w KQ - 1 8",
+            5,
+        ),
+        (
+            "middlegame",
+            "r4rk1/1pp1qppp/p1np1n2/2b1p1B1/2B1P1b1/P1NP1N2/1PP1QPPP/R4RK1 w - - 0 10",
+            5,
+        ),
+    ];
+
+    /// Widens the way the engine does when it plays, so the table is warm from
+    /// the previous iteration the way it is in a real search, and totals what
+    /// each iteration visited.
+    fn nodes(fen: &str, depth: u8) -> u64 {
+        let mut engine = AlphaBeta::with_table_bytes(Board::from_fen(fen).unwrap(), TABLE_BYTES);
+        (1..=depth)
+            .map(|d| engine.search(d).map_or(0, |result| result.nodes))
+            .sum()
+    }
+
+    /// The search is deterministic, so how many nodes it visits is an exact
+    /// figure rather than a timing, and it says the same thing on any machine.
+    /// It moves whenever move ordering, quiescence, the transposition table or
+    /// any pruning changes, including the many such changes that leave the move
+    /// finally played untouched, which is what makes it worth pinning.
+    ///
+    /// A deliberate change to the search is expected to move these. Update them
+    /// in the same commit: the diff is then a statement of how much less, or
+    /// more, of the tree the engine now looks at.
+    #[test]
+    fn test_node_counts_have_not_moved() {
+        let counted: Vec<(&str, u64)> = POSITIONS
+            .iter()
+            .map(|(name, fen, depth)| (*name, nodes(fen, *depth)))
+            .collect();
+        assert_eq!(
+            counted,
+            vec![
+                ("opening", 142_845),
+                ("kiwipete", 218_114),
+                ("pawn endgame", 261_194),
+                ("promotions", 121_129),
+                ("middlegame", 207_819),
+            ]
+        );
+    }
+}
