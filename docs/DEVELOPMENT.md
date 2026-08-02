@@ -108,9 +108,17 @@ sequence is to benchmark master, apply a change, and benchmark again. Wall clock
 numbers move around on a loaded machine, so treat anything under about ten
 percent as noise.
 
-The benchmark workflow runs the same benchmarks on every pull request and
-compares them against the last run on master. It only reports, it will not fail
-a build, for the same reason.
+The benchmark workflow runs the same benchmarks on every pull request, once for
+the commit the pull request would land on and once for the pull request itself,
+both on the same runner. It writes the comparison to the job summary. It only
+reports and will not fail a build, for the same reason: even measured back to
+back on one machine, criterion calls single digit differences significant.
+
+What does hold search behaviour still is `test_node_counts_have_not_moved` in
+`basic_engine/src/engine.rs`. The number of nodes a search visits is exact
+rather than timed, so it says the same thing on any machine. A deliberate change
+to the search is expected to move it, and the numbers are updated in the same
+commit so the diff shows how much more, or less, of the tree is being looked at.
 
 ## Playing a match against a previous version
 
