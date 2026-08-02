@@ -539,13 +539,23 @@ mod test_search {
     use pretty_assertions::assert_eq;
     use std::time;
 
+    /// The default table is half a gigabyte, which is the right size to play
+    /// with and the wrong size to test with: one per test dominated both the
+    /// memory and the run time of the suite. This is still far larger than
+    /// anything here searches deeply enough to fill.
+    const TABLE_BYTES: usize = 16 * 1024 * 1024;
+
+    fn engine(board: Board) -> AlphaBeta {
+        AlphaBeta::with_table_bytes(board, TABLE_BYTES)
+    }
+
     #[test]
     fn test_regression_bad_cache() {
         // This is a losing position but running a search on a previous position then the losing
         // position seems to cause hash/cache collisions in some cases.
         let game =
             Board::from_fen("r4rk1/pppb1ppp/4pn2/6N1/3P4/2qBP3/P4PPP/3R1R1K w - - 2 16").unwrap();
-        let mut e = <AlphaBeta as Engine>::new(game);
+        let mut e = engine(game);
         let result = e.search(7).unwrap();
         assert!(
             result.score < -800,
@@ -556,7 +566,7 @@ mod test_search {
         let game =
             Board::from_fen("r1b2rk1/ppp1qppp/4pn2/6N1/Qn1P4/2NBP3/PP3PPP/R3K2R w KQ - 9 12")
                 .unwrap();
-        let mut e = <AlphaBeta as Engine>::new(game);
+        let mut e = engine(game);
         e.search(7).unwrap();
         let _ = e.parse_fen("r4rk1/pppb1ppp/4pn2/6N1/3P4/2qBP3/P4PPP/3R1R1K w - - 2 16");
         let result = e.search(7).unwrap();
@@ -567,7 +577,7 @@ mod test_search {
     fn test_checkmate_in_2_white() {
         let game =
             Board::from_fen("2rr3k/pp3pp1/1nnqbN1p/3pN3/2pP4/2P3Q1/PPB4P/R4RK1 w - - 0 0").unwrap();
-        let mut e = <AlphaBeta as Engine>::new(game);
+        let mut e = engine(game);
         let result = e.search(4).unwrap();
         assert_eq!(result.checkmate_in(), Some(2));
         assert_eq!(format!("{}", result.best_move), "g3g6");
@@ -577,7 +587,7 @@ mod test_search {
     fn test_checkmate_in_2_white_warm_cache() {
         let game =
             Board::from_fen("2rr3k/pp3pp1/1nnqbN1p/3pN3/2pP4/2P3Q1/PPB4P/R4RK1 w - - 0 0").unwrap();
-        let mut e = <AlphaBeta as Engine>::new(game);
+        let mut e = engine(game);
         let result = e.search(4).unwrap();
         assert_eq!(result.checkmate_in(), Some(2));
         // searching again deeper with a warm cache reuses mate scores stored
@@ -591,7 +601,7 @@ mod test_search {
     fn test_checkmate_in_1_black() {
         let game =
             Board::from_fen("2rr3k/pp3pp1/1nnqbNQp/3pN3/2pP4/2P5/PPB4P/R4RK1 b - - 1 1").unwrap();
-        let mut e = <AlphaBeta as Engine>::new(game);
+        let mut e = engine(game);
         let result = e.search(4).unwrap();
         assert_eq!(result.checkmate_in(), Some(-1));
     }
@@ -600,7 +610,7 @@ mod test_search {
     fn test_fifty_move_rule_play_for_draw() {
         // white is down material in this position so should play for fifty move draw
         let game = Board::from_fen("5k2/1p3p1p/p3pK1P/P1P1P3/4bP2/2B5/8/8 w - - 99 112").unwrap();
-        let mut e = <AlphaBeta as Engine>::new(game);
+        let mut e = engine(game);
         let result = e.search(3).unwrap();
         assert_eq!(result.score, 0);
     }
@@ -609,7 +619,7 @@ mod test_search {
     fn test_fifty_move_rule_no_legal_moves() {
         // The fifty move rules has been triggered - there should not be any legal moves
         let game = Board::from_fen("5k2/1p3p1p/p3pK1P/P1P1P3/4bP2/2B5/8/8 w - - 100 112").unwrap();
-        let mut e = <AlphaBeta as Engine>::new(game);
+        let mut e = engine(game);
         let result = e.search(3);
         assert!(result.is_none());
     }
@@ -623,14 +633,14 @@ mod test_search {
             "8/2p5/3p4/KP5r/1R3p1k/8/4P1P1/8 w - - 10 10",
             "r3k2r/Pppp1ppp/1b3nbN/nP6/BBP1P3/q4N2/Pp1P2PP/R2Q1RK1 w kq - 0 1",
         ];
-        let mut warm = <AlphaBeta as Engine>::new(Board::new());
+        let mut warm = engine(Board::new());
         for fen in fens {
             warm.parse_fen(fen).unwrap();
             warm.search(5).unwrap();
         }
         for fen in fens {
             let game = Board::from_fen(fen).unwrap();
-            let mut cold = <AlphaBeta as Engine>::new(game);
+            let mut cold = engine(game);
             let expected = cold.search(5).unwrap();
             warm.parse_fen(fen).unwrap();
             let result = warm.search(5).unwrap();
@@ -648,7 +658,7 @@ mod test_search {
     fn test_small_table_matches_large_table() {
         // a table small enough to force constant collisions must not change the result
         let fen = "r1b2rk1/ppp1qppp/4pn2/6N1/Qn1P4/2NBP3/PP3PPP/R3K2R w KQ - 9 12";
-        let mut big = <AlphaBeta as Engine>::new(Board::from_fen(fen).unwrap());
+        let mut big = engine(Board::from_fen(fen).unwrap());
         let expected = big.search(5).unwrap();
         let mut small = AlphaBeta::with_table_bytes(Board::from_fen(fen).unwrap(), 8 * 1024);
         let result = small.search(5).unwrap();
@@ -661,7 +671,7 @@ mod test_search {
             "r4rk1/1pp1qppp/p1np1n2/2b1p1B1/2B1P1b1/P1NP1N2/1PP1QPPP/R4RK1 b - - 3 19",
         )
         .unwrap();
-        let mut e = <AlphaBeta as Engine>::new(game);
+        let mut e = engine(game);
         for m in [
             "a8b8", "a1b1", "b8a8", "b1a1", "a8b8", "a1b1", "b8a8", "b1a1",
         ] {
@@ -674,7 +684,7 @@ mod test_search {
     #[test]
     fn test_new_game_forgets_the_previous_game() {
         let fen = "r1b2rk1/ppp1qppp/4pn2/6N1/Qn1P4/2NBP3/PP3PPP/R3K2R w KQ - 9 12";
-        let mut e = <AlphaBeta as Engine>::new(Board::from_fen(fen).unwrap());
+        let mut e = engine(Board::from_fen(fen).unwrap());
         e.search(4).unwrap();
         assert!(e.moves.get(e.board.key).is_some(), "nothing was stored");
         assert_ne!(format!("{}", e.pv_line()), "");
@@ -687,7 +697,7 @@ mod test_search {
     #[test]
     fn test_pv_line_without_cache_entry() {
         let game = Board::new();
-        let e = <AlphaBeta as Engine>::new(game);
+        let e = engine(game);
         assert_eq!(format!("{}", e.pv_line()), "");
     }
 
@@ -695,13 +705,13 @@ mod test_search {
     fn test_stopped_search_does_not_poison_cache() {
         let fen = "r1b2rk1/ppp1qppp/4pn2/6N1/Qn1P4/2NBP3/PP3PPP/R3K2R w KQ - 9 12";
         let game = Board::from_fen(fen).unwrap();
-        let mut cold = <AlphaBeta as Engine>::new(game);
+        let mut cold = engine(game);
         let expected = cold.search(6).unwrap();
 
         // a search with no time budget stops immediately, it must not leave partial results in
         // the hash table which change the outcome of the next search
         let game = Board::from_fen(fen).unwrap();
-        let mut e = <AlphaBeta as Engine>::new(game);
+        let mut e = engine(game);
         e.configure(time::Instant::now(), Some(time::Duration::ZERO));
         e.search(6);
         assert!(e.should_stop());
