@@ -214,7 +214,6 @@ impl AlphaBeta {
         }
 
         let mut best_move: Option<Play> = None;
-        let mut best_board: Option<u64> = None;
         let old_alpha = alpha;
         let mut score: i64;
         let pv_line = self.moves.get(self.board.key);
@@ -232,7 +231,6 @@ impl AlphaBeta {
         for m in &moves {
             if self.board.make_move(m) {
                 score = -self.quiescence(-beta, -alpha);
-                let move_key = self.board.key;
                 self.board.undo_move().unwrap();
                 if self.should_stop {
                     // The search was aborted somewhere below us, so the score
@@ -246,7 +244,6 @@ impl AlphaBeta {
                     }
                     alpha = score;
                     best_move = Some(*m);
-                    best_board = Some(move_key);
                 }
             }
         }
@@ -256,7 +253,6 @@ impl AlphaBeta {
                 self.board.key,
                 Pv {
                     play: best_move.unwrap(),
-                    next_key: best_board.unwrap(),
                     score: score_to_tt(alpha, self.board.line_ply),
                     depth: 0, // Never use a quiescence move instead of evaluating, only for move ordering
                     node: Node::Ordering,
@@ -333,7 +329,6 @@ impl AlphaBeta {
         let mut score: i64;
         let mut found_legal_move = false;
         let mut best_move: Option<&Play> = None;
-        let mut best_board: Option<u64> = None;
         let (pv_play, tt_score) = self.get_transposition(self.board.key, alpha, beta, depth);
         if let Some(tt_score) = tt_score {
             return tt_score;
@@ -354,7 +349,6 @@ impl AlphaBeta {
             if self.board.make_move(m) {
                 found_legal_move = true;
                 score = -self.alpha_beta(-beta, -alpha, depth - 1);
-                let move_key = self.board.key;
                 self.board.undo_move().unwrap();
                 if self.should_stop {
                     // The search was aborted somewhere below us, so the score
@@ -364,13 +358,11 @@ impl AlphaBeta {
                 }
                 if score > alpha {
                     best_move = Some(m);
-                    best_board = Some(move_key);
                     if score >= beta {
                         self.moves.set(
                             self.board.key,
                             Pv {
                                 play: *m,
-                                next_key: move_key,
                                 depth,
                                 score: score_to_tt(beta, self.board.line_ply),
                                 node: Node::Beta,
@@ -396,7 +388,6 @@ impl AlphaBeta {
                 self.board.key,
                 Pv {
                     play: *best_move.unwrap(),
-                    next_key: best_board.unwrap(),
                     depth,
                     score: score_to_tt(alpha, self.board.line_ply),
                     node: Node::Exact,
@@ -410,7 +401,6 @@ impl AlphaBeta {
 
 #[derive(Copy, Clone, Debug)]
 struct Pv {
-    next_key: u64,
     play: Play,
     score: i64,
     // a depth cannot exceed MAX_DEPTH and a ply is bounded by the history
@@ -546,6 +536,7 @@ mod test_search {
     use super::Board;
     use super::Engine;
     use super::Game;
+    use super::{Node, Play, Pv};
     use pretty_assertions::assert_eq;
     use std::time;
 
@@ -557,6 +548,27 @@ mod test_search {
 
     fn engine(board: Board) -> AlphaBeta {
         AlphaBeta::with_table_bytes(board, TABLE_BYTES)
+    }
+
+    /// The move of this name in this position, so that a test can name a line
+    /// the way the rest of the world does.
+    fn play_named(board: &Board, name: &str) -> Play {
+        *board
+            .generate_moves()
+            .iter()
+            .find(|m| format!("{}", m) == name)
+            .unwrap_or_else(|| panic!("{} is not a move here", name))
+    }
+
+    /// An entry of the kind a completed search leaves behind.
+    fn searched(play: Play, ply: usize) -> Pv {
+        Pv {
+            play,
+            score: 0,
+            depth: 5,
+            node: Node::Exact,
+            ply: ply as u16,
+        }
     }
 
     #[test]
@@ -712,6 +724,108 @@ mod test_search {
     }
 
     #[test]
+    fn test_pv_line_stops_at_a_repetition() {
+        // a shuffle both sides are content with leaves the table holding a line
+        // that goes round for ever. The game is over the third time the
+        // position comes up, so the line has to stop there rather than report a
+        // continuation nobody would be allowed to play.
+        let game = Board::from_fen(
+            "r4rk1/1pp1qppp/p1np1n2/2b1p1B1/2B1P1b1/P1NP1N2/1PP1QPPP/R4RK1 b - - 3 19",
+        )
+        .unwrap();
+        let mut e = engine(game);
+        let cycle = ["a8b8", "a1b1", "b8a8", "b1a1"];
+        let mut board = e.board;
+        for name in cycle.iter().cycle().take(16) {
+            let play = play_named(&board, name);
+            e.moves.set(board.key, searched(play, board.ply));
+            assert!(board.make_move(&play), "failed to play {}", name);
+        }
+
+        assert_eq!(
+            format!("{}", e.pv_line()),
+            "a8b8 a1b1 b8a8 b1a1 a8b8 a1b1 b8a8 b1a1"
+        );
+    }
+
+    #[test]
+    fn test_pv_line_stops_when_the_fifty_move_counter_runs_out() {
+        let game = Board::from_fen("5k2/1p3p1p/p3pK1P/P1P1P3/4bP2/2B5/8/8 w - - 99 112").unwrap();
+        let mut e = engine(game);
+        let mut board = e.board;
+        for name in ["c3d4", "f8g8"] {
+            let play = play_named(&board, name);
+            e.moves.set(board.key, searched(play, board.ply));
+            assert!(board.make_move(&play), "failed to play {}", name);
+        }
+        assert_eq!(board.fifty_move_rule, 101);
+
+        // the first move draws by the fifty move rule, so the reply the table
+        // holds is one the game never gets to
+        assert_eq!(format!("{}", e.pv_line()), "c3d4");
+    }
+
+    #[test]
+    fn test_pv_line_does_not_follow_a_move_which_is_illegal_here() {
+        // two positions which hash to the same key share an entry, so the move
+        // a probe comes back with is not always a move of the position asked
+        // about
+        let mut e = engine(Board::new());
+        let a2 = 8;
+        let a5 = 32;
+        let colliding = Play::new(a2, a5, None, None, false, false);
+        e.moves.set(e.board.key, searched(colliding, e.board.ply));
+
+        assert_eq!(format!("{}", e.pv_line()), "");
+    }
+
+    #[test]
+    fn test_pv_line_does_not_follow_a_quiescence_entry() {
+        // quiescence looks at captures alone, so its move is fit for ordering
+        // the next search and not for saying what the engine means to play
+        let mut e = engine(Board::new());
+        let play = play_named(&e.board, "e2e4");
+        e.moves.set(
+            e.board.key,
+            Pv {
+                play,
+                score: 0,
+                depth: 0,
+                node: Node::Ordering,
+                ply: 0,
+            },
+        );
+
+        assert_eq!(format!("{}", e.pv_line()), "");
+    }
+
+    #[test]
+    fn test_pv_line_is_bounded_by_the_search_depth() {
+        // pawns only, so no position comes up twice and the fifty move counter
+        // keeps being reset: nothing stops this line but the bound
+        let mut names = Vec::new();
+        for file in "abcdefgh".chars() {
+            names.push(format!("{file}2{file}3"));
+            names.push(format!("{file}7{file}6"));
+        }
+        for file in "abcdefgh".chars() {
+            names.push(format!("{file}3{file}4"));
+            names.push(format!("{file}6{file}5"));
+        }
+
+        let mut e = engine(Board::new());
+        let mut board = e.board;
+        for name in &names {
+            let play = play_named(&board, name);
+            e.moves.set(board.key, searched(play, board.ply));
+            assert!(board.make_move(&play), "failed to play {}", name);
+        }
+
+        assert!(names.len() > super::MAX_DEPTH as usize);
+        assert_eq!(e.pv_line().line.len(), super::MAX_DEPTH as usize);
+    }
+
+    #[test]
     fn test_stopped_search_does_not_poison_cache() {
         let fen = "r1b2rk1/ppp1qppp/4pn2/6N1/Qn1P4/2NBP3/PP3PPP/R3K2R w KQ - 9 12";
         let game = Board::from_fen(fen).unwrap();
@@ -743,7 +857,6 @@ mod test_hash_table {
 
     fn new_pv(node: Node, depth: u8, ply: u16) -> Pv {
         Pv {
-            next_key: 0,
             play: Play::new(0, 1, None, None, false, false),
             score: 0,
             depth,
@@ -884,14 +997,41 @@ impl Engine for AlphaBeta {
         println!("{}", self.board);
     }
 
+    /// Replay the line the table holds on a copy of the board, one stored move
+    /// at a time. Walking the positions rather than following a key from one
+    /// entry to the next is what lets the line be checked as it is built: the
+    /// board says whether a stored move is legal here, and whether the line has
+    /// reached a position it would be a draw to play on from.
     fn pv_line(&self) -> PvLine {
         let mut line = Vec::new();
-        let mut key = self.board.key;
-        while let Some(pv) = self.moves.get(key) {
-            line.push(pv.play);
-            key = pv.next_key;
-            if line.len() >= 16 {
-                break; // TODO resolve hash colisions to prevent errors here
+        // Board is Copy, so the search's own board is untouched by this.
+        let mut board = self.board;
+        while line.len() < MAX_DEPTH as usize {
+            let Some(pv) = self.moves.get(board.key) else {
+                break;
+            };
+            if matches!(pv.node, Node::Ordering) {
+                // written by quiescence, which looks at captures alone, so the
+                // move is fit for ordering the next search and not for telling
+                // anyone what the engine intends to play
+                break;
+            }
+            let play = pv.play;
+            // a probe compares the whole key, so what still gets through is
+            // another position which hashed to the same one. Its move belongs
+            // to that position, and playing it here would print a line the
+            // rules do not allow
+            if !board.generate_moves().contains(&play) {
+                break;
+            }
+            if !board.make_move(&play) {
+                break;
+            }
+            line.push(play);
+            // the line is a draw from here, so whatever the table says comes
+            // next is a continuation that would never be played
+            if board.fifty_move_rule >= 100 || board.is_repetition() {
+                break;
             }
         }
         PvLine { line }
@@ -969,11 +1109,11 @@ mod test_node_counts {
         assert_eq!(
             counted,
             vec![
-                ("opening", 176_627),
-                ("kiwipete", 218_744),
-                ("pawn endgame", 183_965),
-                ("promotions", 120_799),
-                ("middlegame", 208_538),
+                ("opening", 173_101),
+                ("kiwipete", 218_914),
+                ("pawn endgame", 183_004),
+                ("promotions", 120_636),
+                ("middlegame", 202_558),
             ]
         );
     }
