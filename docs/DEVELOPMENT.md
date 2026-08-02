@@ -153,17 +153,29 @@ Notes on the flags:
   Watch for `disconnect` in the output, a crashing engine scores zero for that
   game and the result is no longer a fair estimate of strength.
 
-The error bar shrinks with the square root of the number of games, so roughly
-`800 / sqrt(games)` elo is the smallest difference a match can tell from none.
-Fifty games settles nothing below about a hundred elo. A change worth ten needs
-thousands of games, which is worth knowing before spending an afternoon on one
-that cannot be measured:
+The error bar shrinks with the square root of the number of games, and how fast
+depends on how alike the two engines are. Two builds that differ by little draw
+far more often, the variance of a paired result falls, and the same number of
+games says more. Both of these are measured from real runs:
 
-| games | smallest difference worth believing |
+| | smallest difference worth believing |
 | --- | --- |
-| 50 | ~110 elo |
-| 500 | ~35 elo |
-| 5000 | ~11 elo |
+| a release against the one before it | `684 / sqrt(games)` |
+| two branches a few lines apart | `411 / sqrt(games)` |
+
+| games | release to release | branch to branch |
+| --- | --- | --- |
+| 50 | ~97 elo | ~58 elo |
+| 500 | ~31 elo | ~18 elo |
+| 5000 | ~10 elo | ~6 elo |
+
+So fifty games settles nothing below about a hundred elo, and a change worth
+ten needs thousands, which is worth knowing before spending an afternoon on one
+that cannot be measured at the size the match will be run at.
+
+Take the interval fastchess prints over either of these. It works from the
+pentanomial counts of the actual games, so it already knows how much the two
+drew; the figures above are only for deciding how many games to ask for.
 
 The **Strength** workflow does the same thing on a runner. Run it from the
 actions tab and it plays one version against another, reporting to the run

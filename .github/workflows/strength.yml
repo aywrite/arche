@@ -184,7 +184,13 @@ jobs:
 
       - name: Summarise the result
         id: summary
+        env:
+          # measured, not assumed: a release against the one before it came out
+          # at 684/sqrt(games), two branches a couple of lines apart at 411,
+          # because near identical builds draw far more and the variance falls
+          SENSITIVITY_CONSTANT: 684
         run: |
+          SENSITIVITY=$(python3 -c "print(int(${SENSITIVITY_CONSTANT}/(${GAMES}**0.5)))")
           if grep -qiE 'disconnect|stalled|loses on time' tools/result.txt; then
             echo "::warning::An engine crashed or lost on time, the estimate is unreliable"
           fi
@@ -196,7 +202,11 @@ jobs:
             echo
             echo "$line"
             echo
-            echo "At ${GAMES} games only a difference of about $(python3 -c "print(int(800/(${GAMES}**0.5)))") elo can be told from none."
+            # the interval fastchess prints is the one to trust; this is only
+            # to stop a null result being read as a finding. Two builds that
+            # differ by little draw a lot, which is what makes the interval
+            # narrower than a release to release comparison of the same length
+            echo "Roughly ${SENSITIVITY} elo is the smallest difference ${GAMES} games can tell from none, less if the two are close enough to draw often. The interval above is the real one."
           } >> "$GITHUB_STEP_SUMMARY"
 
   # The docker workflow appends to the same release notes, and the edit is a
