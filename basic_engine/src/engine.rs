@@ -8,7 +8,22 @@ use std::time;
 
 const CHECKMATE_SCORE: Score = 30_000;
 const MAX_DEPTH: u8 = 20;
-const DEFAULT_TABLE_BYTES: usize = 500 * 1024 * 1024;
+/// Advertised over UCI as the Hash option. The bounds are what the engine will
+/// act on rather than advice: a size outside them is brought back into range
+/// rather than refused, since an interface that asks for something impossible
+/// still needs an engine to play with.
+pub const DEFAULT_TABLE_MB: usize = 500;
+pub const MIN_TABLE_MB: usize = 1;
+pub const MAX_TABLE_MB: usize = 4096;
+
+const DEFAULT_TABLE_BYTES: usize = DEFAULT_TABLE_MB * 1024 * 1024;
+
+/// What a request for a table of this size will actually get, without going and
+/// allocating it. Separate from the resizing so that the decision can be
+/// checked without waiting for four gigabytes to be handed out.
+pub fn table_mb_for(megabytes: usize) -> usize {
+    megabytes.clamp(MIN_TABLE_MB, MAX_TABLE_MB)
+}
 // Any score this close to CHECKMATE_SCORE is a forced mate. Regular evals are
 // bounded by the material on the board, which cannot come near it.
 const CHECKMATE_THRESHOLD: Score = CHECKMATE_SCORE - 1000;
@@ -44,6 +59,13 @@ fn score_from_tt(score: Score, line_ply: usize) -> Score {
 /// deepening loop is required here rather than provided.
 pub trait Engine {
     fn parse_fen(&mut self, fen_string: &str) -> Result<(), String>;
+
+    /// Resize the transposition table, in megabytes, and report the size that
+    /// was actually used so an interface can be told when its request was out
+    /// of range. Everything the table held is discarded: which slot a position
+    /// lands in is derived from the capacity, so entries written against the
+    /// old size would be read back as other positions.
+    fn set_table_mb(&mut self, megabytes: usize) -> usize;
 
     /// Forget what was learned from the game just finished. Stored scores do not
     /// account for repetition or the fifty move counter, so a position that
@@ -399,6 +421,13 @@ impl HashTable {
         self.table.fill(None);
     }
 
+    /// Hands the memory back without replacing it, so that a resize is not
+    /// holding the old table and the new one at the same time.
+    fn release(&mut self) {
+        self.table = Vec::new();
+        self.capacity = 0;
+    }
+
     fn with_capacity_bytes(bytes: usize) -> Self {
         // ask for the size of what is actually stored. Adding up the fields
         // gives the same answer today only because Pv happens to need no
@@ -520,6 +549,7 @@ mod test_search {
     use super::Board;
     use super::Engine;
     use super::Game;
+    use super::{DEFAULT_TABLE_MB, MAX_TABLE_MB, MIN_TABLE_MB, table_mb_for};
     use super::{Node, Play, Pv, SearchOutcome, SearchResult};
     use pretty_assertions::assert_eq;
     use std::time;
@@ -788,6 +818,33 @@ mod test_search {
     }
 
     #[test]
+    fn test_resizing_the_table_forgets_what_it_held() {
+        let fen = "r1b2rk1/ppp1qppp/4pn2/6N1/Qn1P4/2NBP3/PP3PPP/R3K2R w KQ - 9 12";
+        let mut e = engine(Board::from_fen(fen).unwrap());
+        completed(e.search(4));
+        assert!(e.moves.get(e.board.key).is_some(), "nothing was stored");
+        let before = e.moves.capacity;
+
+        assert_eq!(e.set_table_mb(1), 1);
+        assert_ne!(e.moves.capacity, before, "the table was not resized");
+        // which slot a position lands in comes from the capacity, so anything
+        // written against the old size would be read back as another position
+        assert!(e.moves.get(e.board.key).is_none());
+        completed(e.search(4));
+        assert!(
+            e.moves.get(e.board.key).is_some(),
+            "the new table stored nothing"
+        );
+    }
+
+    #[test]
+    fn test_a_table_size_out_of_range_is_brought_back_into_it() {
+        assert_eq!(table_mb_for(0), MIN_TABLE_MB);
+        assert_eq!(table_mb_for(usize::MAX), MAX_TABLE_MB);
+        assert_eq!(table_mb_for(DEFAULT_TABLE_MB), DEFAULT_TABLE_MB);
+    }
+
+    #[test]
     fn test_pv_line_without_cache_entry() {
         let game = Board::new();
         let e = engine(game);
@@ -1022,6 +1079,13 @@ impl Engine for AlphaBeta {
 
     fn new_game(&mut self) {
         self.clear_cache();
+    }
+
+    fn set_table_mb(&mut self, megabytes: usize) -> usize {
+        let megabytes = table_mb_for(megabytes);
+        self.moves.release();
+        self.moves = HashTable::with_capacity_bytes(megabytes * 1024 * 1024);
+        megabytes
     }
 
     fn iterative_deepening_search(

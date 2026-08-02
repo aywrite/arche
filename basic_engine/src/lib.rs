@@ -11,7 +11,10 @@ mod pvt;
 mod zorbrist;
 
 pub use board::Board;
-pub use engine::{AlphaBeta, Engine, PvLine, SearchOutcome, SearchParameters, SearchResult};
+pub use engine::{
+    AlphaBeta, DEFAULT_TABLE_MB, Engine, MAX_TABLE_MB, MIN_TABLE_MB, PvLine, SearchOutcome,
+    SearchParameters, SearchResult, table_mb_for,
+};
 pub use misc::{Color, Score};
 pub use play::Play;
 use std::fmt;

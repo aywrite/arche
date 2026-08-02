@@ -23,8 +23,8 @@ Binaries for linux, macos and windows are attached to each
 cargo build --release
 ```
 
-The binary is written to `target/release/arche`. Note that the engine allocates a 500MB
-transposition table on startup and that the size is not yet configurable over UCI.
+The binary is written to `target/release/arche`. The engine allocates a 500MB transposition
+table on startup; set the `Hash` option, in megabytes, to change it.
 
 ## Strength
 
@@ -58,7 +58,8 @@ docker run -e LICHESS_BOT_TOKEN=<token> ghcr.io/aywrite/arche-lichess-bot:master
 ```
 
 The token is a lichess API token for a bot account with the `bot:play` scope. The engine
-allocates a 500MB transposition table, so give the container at least 1GB of memory. To change
+allocates a 500MB transposition table by default, so give the container at least 1GB of memory
+or set a smaller `Hash` in the lichess-bot config. To change
 any other setting, mount a replacement over `/lichess-bot/config.yml`; the defaults are in
 `docker/config.yml`.
 
@@ -85,8 +86,7 @@ docker/smoke_test.sh arche-lichess-bot
 - read an opening book in the engine, only the lichess-bot image has one at the moment and it is
   lichess-bot that reads it rather than the engine
 - the rest of the uci protocol
-  - `setoption` is not handled and no options are advertised, so the 500MB transposition table
-    can only be changed in code
+  - `Hash` is the only option advertised, `setoption` accepts nothing else
   - `stop` is not handled, which rules out pondering and `go infinite`
   - `ponderhit`, `debug` and `register` are not handled either
 - winboard

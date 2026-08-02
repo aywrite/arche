@@ -3,6 +3,7 @@ use basic_engine::Color;
 use basic_engine::Engine;
 use basic_engine::SearchOutcome;
 use basic_engine::SearchParameters;
+use basic_engine::{DEFAULT_TABLE_MB, MAX_TABLE_MB, MIN_TABLE_MB};
 use basic_engine::{PvLine, SearchResult};
 use regex::Regex;
 use std::io::BufRead;
@@ -20,6 +21,9 @@ lazy_static! {
     static ref DEPTH_RE: Regex = Regex::new(r"depth (\d+)").unwrap();
     static ref INFINITE_RE: Regex = Regex::new(r"infinite").unwrap();
     static ref PERFT_RE: Regex = Regex::new(r"perft (\d+)").unwrap();
+    // an option name may contain spaces, so take everything up to the value
+    static ref SETOPTION_RE: Regex =
+        Regex::new(r"(?i)^\s*setoption\s+name\s+(.+?)\s+value\s+(.*?)\s*$").unwrap();
 }
 
 /// Reads the value that follows a keyword. The value is matched as digits, so
@@ -108,9 +112,16 @@ impl<T: Engine> UCI<T> {
             self.engine.new_game();
             let result = self.parse_position("position startpos");
             report(result);
+        } else if line.starts_with("setoption") {
+            let result = self.parse_setoption(line);
+            report(result);
         } else if line.starts_with("uci") {
             println!("id name {} {}", self.name, self.version);
             println!("id author {}", self.author);
+            println!(
+                "option name Hash type spin default {} min {} max {}",
+                DEFAULT_TABLE_MB, MIN_TABLE_MB, MAX_TABLE_MB
+            );
             println!("uciok");
         } else if line.starts_with("position") {
             let result = self.parse_position(line);
@@ -152,6 +163,32 @@ impl<T: Engine> UCI<T> {
                     return Err(format!("could not play {}", m));
                 }
             }
+        }
+        Ok(())
+    }
+
+    /// An option we never advertised is said something about and otherwise left
+    /// alone, which is what the protocol asks for. There is nothing an engine
+    /// can usefully do about an interface offering it a setting it has not got.
+    fn parse_setoption(&mut self, line: &str) -> Result<(), String> {
+        let captures = SETOPTION_RE
+            .captures(line)
+            .ok_or_else(|| format!("could not read an option from: {}", line))?;
+        let name = captures.get(1).unwrap().as_str().trim();
+        let value = captures.get(2).unwrap().as_str().trim();
+
+        if !name.eq_ignore_ascii_case("hash") {
+            return Err(format!("no option named {}", name));
+        }
+        let requested: usize = value
+            .parse()
+            .map_err(|_| format!("Hash wants a whole number of megabytes, got {}", value))?;
+        let actual = self.engine.set_table_mb(requested);
+        if actual != requested {
+            println!(
+                "info string Hash {} is outside {} to {}, using {}",
+                requested, MIN_TABLE_MB, MAX_TABLE_MB, actual
+            );
         }
         Ok(())
     }
@@ -299,6 +336,64 @@ mod tests {
         assert_eq!(uci.engine.active_color(), Color::Black);
         assert!(uci.handle("ucinewgame"));
         assert_eq!(uci.engine.active_color(), Color::White);
+    }
+
+    #[test]
+    fn the_hash_option_is_advertised_and_accepted() {
+        let mut uci = uci();
+        assert_eq!(uci.parse_setoption("setoption name Hash value 16"), Ok(()));
+        // an interface echoes back what we advertised, but be forgiving anyway
+        assert_eq!(uci.parse_setoption("setoption name hash value 32"), Ok(()));
+        assert_eq!(uci.parse_setoption("SETOPTION NAME HASH VALUE 8"), Ok(()));
+    }
+
+    #[test]
+    fn the_hash_option_resizes_the_table() {
+        let mut uci = uci();
+        // small sizes only, a test has no business allocating the maximum
+        for mb in [1, 2, 4] {
+            assert!(
+                uci.parse_setoption(&format!("setoption name Hash value {}", mb))
+                    .is_ok()
+            );
+            assert!(uci.handle("go depth 3"), "still usable at {}MB", mb);
+        }
+    }
+
+    #[test]
+    fn a_hash_size_out_of_range_is_reported_rather_than_refused() {
+        // only the small end is asked for here, the other would allocate four
+        // gigabytes to show a clamp basic_engine already covers
+        let mut uci = uci();
+        assert_eq!(uci.parse_setoption("setoption name Hash value 0"), Ok(()));
+    }
+
+    #[test]
+    fn malformed_options_are_reported_rather_than_fatal() {
+        let mut uci = uci();
+        for line in [
+            "setoption",
+            "setoption name",
+            "setoption name Hash",
+            "setoption name Hash value",
+            "setoption name Hash value wibble",
+            "setoption name Hash value 16.5",
+            "setoption name Threads value 4",
+            "setoption value 16",
+        ] {
+            assert!(
+                uci.parse_setoption(line).is_err(),
+                "expected an error: {}",
+                line
+            );
+        }
+    }
+
+    #[test]
+    fn setoption_does_not_quit_the_loop() {
+        let mut uci = uci();
+        assert!(uci.handle("setoption name Hash value 4"));
+        assert!(uci.handle("setoption name Nonsense value 1"));
     }
 
     #[test]
