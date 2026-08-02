@@ -23,8 +23,9 @@ Binaries for linux, macos and windows are attached to each
 cargo build --release
 ```
 
-The binary is written to `target/release/arche`. The engine allocates a 500MB transposition
-table on startup; set the `Hash` option, in megabytes, to change it.
+The binary is written to `target/release/arche`. The engine allocates a 128MB transposition
+table on startup; set the `Hash` option, in megabytes, to change it. A longer time control
+gives a bigger table more to do, a faster one less.
 
 ## Strength
 
@@ -58,10 +59,9 @@ docker run -e LICHESS_BOT_TOKEN=<token> ghcr.io/aywrite/arche-lichess-bot:master
 ```
 
 The token is a lichess API token for a bot account with the `bot:play` scope. The engine
-allocates a 500MB transposition table by default, so give the container at least 1GB of memory
-or set a smaller `Hash` in the lichess-bot config. To change
-any other setting, mount a replacement over `/lichess-bot/config.yml`; the defaults are in
-`docker/config.yml`.
+allocates a 128MB transposition table by default, so give the container at least 512MB of
+memory, more if you raise `Hash` in the lichess-bot config. To change any other setting,
+mount a replacement over `/lichess-bot/config.yml`; the defaults are in `docker/config.yml`.
 
 The book is generated at build time by `docker/build_book.py` from
 [lichess-org/chess-openings](https://github.com/lichess-org/chess-openings) (CC0). Each move is

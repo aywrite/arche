@@ -12,7 +12,7 @@ const MAX_DEPTH: u8 = 20;
 /// act on rather than advice: a size outside them is brought back into range
 /// rather than refused, since an interface that asks for something impossible
 /// still needs an engine to play with.
-pub const DEFAULT_TABLE_MB: usize = 500;
+pub const DEFAULT_TABLE_MB: usize = 128;
 pub const MIN_TABLE_MB: usize = 1;
 pub const MAX_TABLE_MB: usize = 4096;
 
@@ -554,10 +554,10 @@ mod test_search {
     use pretty_assertions::assert_eq;
     use std::time;
 
-    /// The default table is half a gigabyte, which is the right size to play
-    /// with and the wrong size to test with: one per test dominated both the
-    /// memory and the run time of the suite. This is still far larger than
-    /// anything here searches deeply enough to fill.
+    /// The default table is 128MB, which is the right size to play with and the
+    /// wrong size to test with: one per test dominated both the memory and the
+    /// run time of the suite. This is still far larger than anything here
+    /// searches deeply enough to fill.
     const TABLE_BYTES: usize = 16 * 1024 * 1024;
 
     fn engine(board: Board) -> AlphaBeta {
