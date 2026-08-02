@@ -4,6 +4,7 @@ extern crate lazy_static;
 mod bitboard;
 mod board;
 mod engine;
+mod file_signature;
 mod magic;
 mod misc;
 mod play;

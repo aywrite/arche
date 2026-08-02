@@ -5,6 +5,7 @@ use super::misc::{
 };
 use super::play::Play;
 use crate::Game;
+use crate::file_signature;
 use crate::magic::Magic;
 use crate::pvt::PieceValueTables;
 use crate::zorbrist::Zorbrist;
@@ -53,6 +54,16 @@ const E1: u8 = 4;
 const F1: u8 = 5;
 const G1: u8 = 6;
 const H1: u8 = 7;
+
+const FILE_MASKS: [u64; 8] = {
+    let mut masks = [0u64; 8];
+    let mut file = 0;
+    while file < 8 {
+        masks[file] = 0x0101_0101_0101_0101 << file;
+        file += 1;
+    }
+    masks
+};
 
 const A8: u8 = 56;
 const B8: u8 = 57;
@@ -277,6 +288,9 @@ pub struct Board {
     // table entries it accumulates so that summing a boardful of them, and
     // adding the material difference on top, cannot overflow.
     psqt: i32,
+    // one bit per file holding a pawn, also kept up to date incrementally
+    white_pawn_files: u8,
+    black_pawn_files: u8,
 
     //history: Vec<PlayState>,
     history: [Option<PlayState>; MAX_GAME_SIZE],
@@ -579,7 +593,11 @@ impl Board {
         // TODO should this return white value & black value as separate numbers instead?
         let eval = self.white_value as i32 - self.black_value as i32;
 
-        let eval = (eval + self.psqt) as Score;
+        let eval = eval
+            + self.psqt
+            + file_signature::score(self.white_pawn_files, self.black_pawn_files) as i32;
+
+        let eval = eval as Score;
 
         match self.active_color {
             Color::White => eval,
@@ -599,6 +617,11 @@ impl Board {
             "material out of step"
         );
         debug_assert_eq!(self.key, self.recompute_key(), "key out of step");
+        debug_assert_eq!(
+            (self.white_pawn_files, self.black_pawn_files),
+            self.recompute_pawn_files(),
+            "pawn files out of step"
+        );
     }
 
     /// The position key computed from the board rather than maintained as moves
@@ -1009,10 +1032,16 @@ impl Board {
             Color::Black => {
                 self.black.set_bit(index);
                 self.black_value += piece.material_value();
+                if matches!(piece, Piece::Pawn) {
+                    self.black_pawn_files |= 1 << (index & 7);
+                }
             }
             Color::White => {
                 self.white.set_bit(index);
                 self.white_value += piece.material_value();
+                if matches!(piece, Piece::Pawn) {
+                    self.white_pawn_files |= 1 << (index & 7);
+                }
             }
         };
     }
@@ -1039,14 +1068,27 @@ impl Board {
             Piece::Queen => self.queens.clear_bit(index),
             Piece::King => self.kings.clear_bit(index),
         };
+        // The pawn bitboard was cleared above and the colour bitboard is cleared
+        // before the file is tested below, so the file has been emptied exactly
+        // when the intersection is empty, not when it holds only this pawn.
         match color {
             Color::Black => {
                 self.black.clear_bit(index);
                 self.black_value -= piece.material_value();
+                if matches!(piece, Piece::Pawn)
+                    && (self.pawns & self.black & FILE_MASKS[(index & 7) as usize]) == 0
+                {
+                    self.black_pawn_files &= !(1 << (index & 7));
+                }
             }
             Color::White => {
                 self.white.clear_bit(index);
                 self.white_value -= piece.material_value();
+                if matches!(piece, Piece::Pawn)
+                    && (self.pawns & self.white & FILE_MASKS[(index & 7) as usize]) == 0
+                {
+                    self.white_pawn_files &= !(1 << (index & 7));
+                }
             }
         };
     }
@@ -1152,6 +1194,22 @@ impl Board {
         (white_value, black_value)
     }
 
+    /// The file occupancy computed from the pawn bitboards rather than
+    /// maintained as pieces are set and cleared.
+    pub fn recompute_pawn_files(&self) -> (u8, u8) {
+        let mut white = 0u8;
+        let mut black = 0u8;
+        for (file, mask) in FILE_MASKS.iter().enumerate() {
+            if (self.pawns & self.white & mask) != 0 {
+                white |= 1 << file;
+            }
+            if (self.pawns & self.black & mask) != 0 {
+                black |= 1 << file;
+            }
+        }
+        (white, black)
+    }
+
     pub fn perft(&mut self, depth: u8) -> u64 {
         // Based on psedocode at https://www.chessprogramming.org/Perft
         let mut nodes = 0;
@@ -1234,6 +1292,8 @@ impl Game for Board {
             white_value: 0,
             black_value: 0,
             psqt: 0,
+            white_pawn_files: 0,
+            black_pawn_files: 0,
 
             history: EMPTY_HISTORY,
             key: INITIAL_KEY,
@@ -1349,6 +1409,7 @@ mod evaluate {
     use super::Board;
 
     use super::Game;
+    use crate::file_signature::{EXTRA_ISLAND, ISOLATED_FILE};
     use pretty_assertions::assert_eq;
 
     macro_rules! test_fen {
@@ -1413,6 +1474,31 @@ mod evaluate {
             advanced.eval(),
             home.eval()
         );
+    }
+
+    /// Both sides hold every file, so the pawn structure cancels along with the
+    /// material and the piece square tables.
+    #[test]
+    fn test_the_starting_position_scores_level() {
+        assert_eq!(Board::new().eval(), 0);
+    }
+
+    /// a2 and b2 are worth the same on the piece square table, so the two
+    /// positions differ by nothing but which files the pawns stand on.
+    #[test]
+    fn test_pawns_on_their_own_files_cost_isolation_and_an_island() {
+        let split = Board::from_fen("4k3/8/8/8/8/8/P1P5/4K3 w - - 0 1").unwrap();
+        let together = Board::from_fen("4k3/8/8/8/8/8/PP6/4K3 w - - 0 1").unwrap();
+        assert_eq!(
+            together.eval() - split.eval(),
+            2 * ISOLATED_FILE + EXTRA_ISLAND
+        );
+    }
+
+    #[test]
+    fn test_an_isolated_pawn_is_a_penalty_for_the_side_that_has_it() {
+        let board = Board::from_fen("4k3/1pp5/8/8/8/8/P1P5/4K3 w - - 0 1").unwrap();
+        assert!(board.eval() < 0, "scored {}", board.eval());
     }
 
     /// A position and its reflection, colours swapped, have to score the same
@@ -1801,6 +1887,57 @@ mod perft {
         assert_eq!(board.perft(2), 2079);
         assert_eq!(board.perft(3), 89890);
         assert_eq!(board.perft(4), 3894594);
+    }
+}
+
+#[cfg(test)]
+mod pawn_files {
+    use super::Board;
+    use super::Game;
+    use pretty_assertions::assert_eq;
+
+    fn walk(board: &mut Board, depth: u8) {
+        assert_eq!(
+            (board.white_pawn_files, board.black_pawn_files),
+            board.recompute_pawn_files(),
+            "{}",
+            board
+        );
+        if depth == 0 {
+            return;
+        }
+        for m in &board.generate_moves() {
+            if board.make_move(m) {
+                walk(board, depth - 1);
+                board.undo_move().unwrap();
+            }
+        }
+    }
+
+    /// The bytes are only maintained by set_piece_index and clear_piece_index,
+    /// so anything that pairs them up differently is worth walking over:
+    /// captures leaving a file, promotions leaving one for good, and en passant
+    /// clearing a square the move did not land on.
+    const CASES: [(&str, u8); 5] = [
+        (
+            "r3k2r/p1ppqpb1/bn2pnp1/3PN3/1p2P3/2N2Q1p/PPPBBPPP/R3K2R w KQkq - 0 1",
+            3,
+        ),
+        ("8/2p5/3p4/KP5r/1R3p1k/8/4P1P1/8 w - - 0 1", 4),
+        (
+            "r3k2r/Pppp1ppp/1b3nbN/nP6/BBP1P3/q4N2/Pp1P2PP/R2Q1RK1 w kq - 0 1",
+            3,
+        ),
+        ("n1n5/PPPk4/8/8/8/8/4Kppp/5N1N w - - 0 1", 3),
+        ("8/8/1k6/2b5/2pP4/8/5K2/8 b - d3 0 1", 4),
+    ];
+
+    #[test]
+    fn test_the_occupancy_bytes_survive_make_and_undo() {
+        for (fen, depth) in CASES {
+            let mut board = Board::from_fen(fen).unwrap();
+            walk(&mut board, depth);
+        }
     }
 }
 
