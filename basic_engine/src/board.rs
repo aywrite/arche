@@ -624,20 +624,35 @@ impl Board {
         false
     }
 
-    pub fn is_repetition(&self) -> bool {
+    /// How many times this position has already appeared, not counting the
+    /// position itself.
+    fn repetition_count(&self) -> usize {
         // a position parsed from fen can have a fifty move count higher than the number of plies
         // we hold history for, and a long enough game runs past the end of the history
         let start = self.ply.saturating_sub(self.fifty_move_rule);
         let end = self.ply.min(MAX_GAME_SIZE - 1);
         if start > end {
-            return false;
+            return 0;
         }
-        let matching = self.history[start..=end]
+        self.history[start..=end]
             .iter()
             .filter_map(|h| h.map(|hh| hh.position_key))
             .filter(|k| *k == self.key)
-            .count();
-        matching >= 2
+            .count()
+    }
+
+    /// True on the third occurrence, which is when a game is actually drawn.
+    pub fn is_repetition(&self) -> bool {
+        self.repetition_count() >= 2
+    }
+
+    /// True once this position has come up before. Inside a search that is
+    /// already enough to call it a draw: a position reached twice can be
+    /// reached a third time by whichever side wants it, so neither can be made
+    /// to avoid it, and waiting for the third costs four plies of depth to see
+    /// something that is available now.
+    pub fn has_repeated(&self) -> bool {
+        self.repetition_count() >= 1
     }
 
     pub fn make_move(&mut self, play: &Play) -> bool {
@@ -1404,6 +1419,34 @@ mod make_move {
         // the fifty move counter from the fen is larger than the history we hold
         let board = Board::from_fen("5k2/1p3p1p/p3pK1P/P1P1P3/4bP2/2B5/8/8 w - - 99 1").unwrap();
         assert_eq!(board.is_repetition(), false);
+    }
+
+    /// The search does not wait for the third occurrence. Once a position has
+    /// come back once, either side can take the draw, so there is nothing to be
+    /// gained by spending four more plies of depth confirming it.
+    #[test]
+    fn test_has_repeated_fires_a_cycle_before_is_repetition() {
+        let mut board = Board::from_fen(
+            "r4rk1/1pp1qppp/p1np1n2/2b1p1B1/2B1P1b1/P1NP1N2/1PP1QPPP/R4RK1 b - - 3 19",
+        )
+        .unwrap();
+        let cycle = [(A8, B8), (A1, B1), (B8, A8), (B1, A1)];
+        assert_eq!(board.has_repeated(), false);
+        assert_eq!(board.is_repetition(), false);
+
+        for (from, to) in cycle {
+            board.make_move(&Play::new(from, to, None, None, false, false));
+        }
+        // first repeat: a draw is available, so the search stops here
+        assert_eq!(board.has_repeated(), true);
+        assert_eq!(board.is_repetition(), false);
+
+        for (from, to) in cycle {
+            board.make_move(&Play::new(from, to, None, None, false, false));
+        }
+        // second repeat: the game is actually drawn
+        assert_eq!(board.has_repeated(), true);
+        assert_eq!(board.is_repetition(), true);
     }
 
     #[test]

@@ -309,7 +309,7 @@ impl AlphaBeta {
         // a repetition at the root is not a finished game, the engine still has to move, so only
         // score it as a draw further down the line
         if self.board.fifty_move_rule >= 100
-            || (self.board.line_ply > 0 && self.board.is_repetition())
+            || (self.board.line_ply > 0 && self.board.has_repeated())
         {
             return 0;
         }
@@ -726,9 +726,9 @@ mod test_search {
     #[test]
     fn test_pv_line_stops_at_a_repetition() {
         // a shuffle both sides are content with leaves the table holding a line
-        // that goes round for ever. The game is over the third time the
-        // position comes up, so the line has to stop there rather than report a
-        // continuation nobody would be allowed to play.
+        // that goes round for ever. The line stops once the position comes back,
+        // because from there it is a draw either side can take, rather than
+        // reporting a continuation nobody would go on to play.
         let game = Board::from_fen(
             "r4rk1/1pp1qppp/p1np1n2/2b1p1B1/2B1P1b1/P1NP1N2/1PP1QPPP/R4RK1 b - - 3 19",
         )
@@ -742,10 +742,7 @@ mod test_search {
             assert!(board.make_move(&play), "failed to play {}", name);
         }
 
-        assert_eq!(
-            format!("{}", e.pv_line()),
-            "a8b8 a1b1 b8a8 b1a1 a8b8 a1b1 b8a8 b1a1"
-        );
+        assert_eq!(format!("{}", e.pv_line()), "a8b8 a1b1 b8a8 b1a1");
     }
 
     #[test]
@@ -1044,7 +1041,7 @@ impl Engine for AlphaBeta {
             line.push(play);
             // the line is a draw from here, so whatever the table says comes
             // next is a continuation that would never be played
-            if board.fifty_move_rule >= 100 || board.is_repetition() {
+            if board.fifty_move_rule >= 100 || board.has_repeated() {
                 break;
             }
         }
@@ -1123,9 +1120,9 @@ mod test_node_counts {
         assert_eq!(
             counted,
             vec![
-                ("opening", 171_858),
+                ("opening", 171_844),
                 ("kiwipete", 218_290),
-                ("pawn endgame", 180_219),
+                ("pawn endgame", 180_127),
                 ("promotions", 120_717),
                 ("middlegame", 199_263),
             ]
