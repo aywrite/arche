@@ -153,14 +153,33 @@ Notes on the flags:
   Watch for `disconnect` in the output, a crashing engine scores zero for that
   game and the result is no longer a fair estimate of strength.
 
-The error bar shrinks with the square root of the number of games. Fifty games
-only detects very large differences, a few hundred is needed before a result of
-twenty or thirty elo means anything.
+The error bar shrinks with the square root of the number of games, so roughly
+`800 / sqrt(games)` elo is the smallest difference a match can tell from none.
+Fifty games settles nothing below about a hundred elo. A change worth ten needs
+thousands of games, which is worth knowing before spending an afternoon on one
+that cannot be measured:
+
+| games | smallest difference worth believing |
+| --- | --- |
+| 50 | ~110 elo |
+| 500 | ~35 elo |
+| 5000 | ~11 elo |
 
 The **Strength** workflow does the same thing on a runner. Run it from the
-actions tab against any branch or tag and give it a number of games, and it
-plays that version against the last full release, ignoring release candidates.
-The result goes to the run summary.
+actions tab and it plays one version against another, reporting to the run
+summary.
+
+Both sides can be named, as a branch, a tag, a commit or a pull request number:
+
+- `candidate` is what is being tested, and defaults to the ref the workflow was
+  run against
+- `baseline` is what it is measured against, and defaults to the last full
+  release, ignoring release candidates
+- `games` and `time_control` are the size and the speed of the match
+
+So a change can be measured before it is merged by running the workflow with
+`candidate` set to the pull request number and leaving the rest alone, or two
+arbitrary commits compared by naming both.
 
 The release workflow calls the same workflow with fifty games, and that run is
 the only one that appends its result to the release notes.
