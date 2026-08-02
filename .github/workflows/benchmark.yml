@@ -1,8 +1,20 @@
 name: Benchmark
 
+# Measures the pull request against the commit it would land on top of, both on
+# this runner, in this job, minutes apart.
+#
+# The previous version of this job compared against timings cached from a run on
+# master, which had been recorded on a different runner. Github's runners vary
+# enough that this reported changes which were not there, and the response at
+# the time was to raise the alert threshold to 150% and stop it failing the
+# build, which hid the false alarms rather than removing them. Measuring both
+# sides here costs twice the time and gives an answer worth reading.
+#
+# It still does not gate a merge. Even on one runner criterion calls single
+# digit differences significant, so this reports and the node count test in
+# basic_engine is what actually holds search behaviour still.
+
 on:
-  push:
-    branches: [ "master" ]
   pull_request:
     branches: [ "master" ]
 
@@ -11,57 +23,65 @@ env:
 
 permissions:
   contents: read
-  pull-requests: write
+
+concurrency:
+  group: ${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
 
 jobs:
   benchmark:
     runs-on: ubuntu-latest
-    timeout-minutes: 30
+    timeout-minutes: 45
     steps:
       - uses: actions/checkout@v7
+        with:
+          # both sides get built, so both need their history
+          fetch-depth: 0
+
       - uses: Swatinem/rust-cache@v2
 
-      # --output-format bencher prints the libtest format that
-      # github-action-benchmark parses.
-      - name: Run benchmarks
+      - name: Work out what to compare
+        shell: bash
+        run: |
+          # github checks out a merge of the pull request into its base, so the
+          # first parent is the base and the merge is what would land
+          {
+            echo "BASE_SHA=$(git rev-parse HEAD^1)"
+            echo "HEAD_SHA=$(git rev-parse HEAD)"
+          } >> "$GITHUB_ENV"
+
+      - name: Measure the base
+        shell: bash
+        run: |
+          git checkout --detach "$BASE_SHA"
+          cargo bench -p basic_engine --bench benchmark -- --noplot --save-baseline pr-base
+
+      - name: Measure the pull request
         # Naming the shell is what turns on pipefail, without it a failing
         # cargo bench is hidden by tee.
         shell: bash
         run: |
+          git checkout --detach "$HEAD_SHA"
+          # lenient, because a pull request that adds a benchmark has nothing to
+          # compare it against and the strict flag makes that a panic
           cargo bench -p basic_engine --bench benchmark -- \
-            --output-format bencher --noplot | tee benchmark-output.txt
+            --noplot --baseline-lenient pr-base --noise-threshold 0.1 \
+            | tee benchmark-output.txt
 
-      # Only master writes the baseline. Caches saved on the default branch are
-      # the ones pull requests are allowed to read.
-      - name: Restore the master baseline
-        uses: actions/cache/restore@v6
-        with:
-          path: ./cache
-          key: benchmark-master-${{ github.run_id }}
-          restore-keys: benchmark-master-
+      - name: Summarise
+        if: always()
+        shell: bash
+        run: |
+          {
+            echo "## Benchmark against \`${BASE_SHA:0:8}\`"
+            echo
+            python3 scripts/benchmark_summary.py < benchmark-output.txt
+          } >> "$GITHUB_STEP_SUMMARY"
 
-      - name: Compare against the baseline
-        uses: benchmark-action/github-action-benchmark@v1
+      - name: Keep the measurements
+        if: always()
+        uses: actions/upload-artifact@v4
         with:
-          name: basic_engine
-          tool: cargo
-          output-file-path: benchmark-output.txt
-          external-data-json-path: ./cache/benchmark-data.json
-          # These run on shared runners, so only report large changes and never
-          # fail the build on what is usually just a noisy neighbour.
-          alert-threshold: "150%"
-          fail-on-alert: false
-          # Only pull requests get comments. On a push the action falls back to
-          # commenting on the commit, which would need contents: write, and a
-          # fork's token is read only however this job is permissioned.
-          comment-always: ${{ github.event_name == 'pull_request' && !github.event.pull_request.head.repo.fork }}
-          comment-on-alert: ${{ github.event_name == 'pull_request' && !github.event.pull_request.head.repo.fork }}
-          summary-always: true
-          github-token: ${{ secrets.GITHUB_TOKEN }}
-
-      - name: Save the master baseline
-        if: github.event_name == 'push'
-        uses: actions/cache/save@v6
-        with:
-          path: ./cache
-          key: benchmark-master-${{ github.run_id }}
+          name: benchmark-output
+          path: benchmark-output.txt
+          if-no-files-found: warn
