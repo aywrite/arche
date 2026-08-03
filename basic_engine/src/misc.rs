@@ -1,6 +1,17 @@
 use std::fmt;
 use std::ops::Not;
 
+/// An evaluation, in centipawns.
+///
+/// Sixteen bits is what engines generally store a score in, and the reason is
+/// the transposition table: a narrower score makes for a smaller entry, so a
+/// table of a given size holds more positions and more of it fits in cache.
+///
+/// The range is far wider than anything a score needs. Mate is thirty thousand,
+/// and an evaluation is bounded by the material on the board, which even with
+/// every pawn promoted to a queen comes to a little over ten thousand.
+pub type Score = i16;
+
 #[derive(Debug, Copy, Clone, PartialEq, Eq, Hash)]
 pub struct Coordinate {
     rank: u8,

@@ -1,27 +1,27 @@
 use crate::Game;
 use crate::board::Board;
-use crate::misc::Color;
+use crate::misc::{Color, Score};
 use crate::play::Play;
 use std::fmt;
 use std::mem;
 use std::time;
 
-const CHECKMATE_SCORE: i64 = 800_000;
+const CHECKMATE_SCORE: Score = 30_000;
 const MAX_DEPTH: u8 = 20;
 const DEFAULT_TABLE_BYTES: usize = 500 * 1024 * 1024;
 // Any score this close to CHECKMATE_SCORE is a forced mate. Regular evals are
-// bounded by material values which are orders of magnitude smaller.
-const CHECKMATE_THRESHOLD: i64 = CHECKMATE_SCORE - 1000;
+// bounded by the material on the board, which cannot come near it.
+const CHECKMATE_THRESHOLD: Score = CHECKMATE_SCORE - 1000;
 
 /// Convert a score to its transposition table form. Mate scores are stored
 /// relative to the node they are stored at (plies-to-mate from this node)
 /// rather than relative to the root of the search, so that they remain correct
 /// when the entry is reused at a different distance from the root.
-fn score_to_tt(score: i64, line_ply: usize) -> i64 {
+fn score_to_tt(score: Score, line_ply: usize) -> Score {
     if score > CHECKMATE_THRESHOLD {
-        score + line_ply as i64
+        score + line_ply as Score
     } else if score < -CHECKMATE_THRESHOLD {
-        score - line_ply as i64
+        score - line_ply as Score
     } else {
         score
     }
@@ -29,11 +29,11 @@ fn score_to_tt(score: i64, line_ply: usize) -> i64 {
 
 /// The inverse of score_to_tt: convert a stored mate score back to being
 /// relative to the root of the current search.
-fn score_from_tt(score: i64, line_ply: usize) -> i64 {
+fn score_from_tt(score: Score, line_ply: usize) -> Score {
     if score > CHECKMATE_THRESHOLD {
-        score - line_ply as i64
+        score - line_ply as Score
     } else if score < -CHECKMATE_THRESHOLD {
-        score + line_ply as i64
+        score + line_ply as Score
     } else {
         score
     }
@@ -155,7 +155,7 @@ impl SearchParameters {
 pub struct AlphaBeta {
     pub board: Board,
     nodes: u64,
-    score: i64,
+    score: Score,
     moves: HashTable,
     selective_depth: u8,
     // search parameters
@@ -181,7 +181,7 @@ impl AlphaBeta {
         }
     }
 
-    fn eval(&self) -> i64 {
+    fn eval(&self) -> Score {
         self.board.eval()
     }
 
@@ -195,7 +195,7 @@ impl AlphaBeta {
         }
     }
 
-    fn quiescence(&mut self, mut alpha: i64, beta: i64) -> i64 {
+    fn quiescence(&mut self, mut alpha: Score, beta: Score) -> Score {
         self.selective_depth = self.selective_depth.max(self.board.line_ply as u8);
         if self.board.line_ply >= MAX_DEPTH.into() {
             return self.eval();
@@ -216,7 +216,7 @@ impl AlphaBeta {
         let mut best_move: Option<Play> = None;
         let mut best_board: Option<u64> = None;
         let old_alpha = alpha;
-        let mut score: i64;
+        let mut score: Score;
         let pv_line = self.moves.get(self.board.key);
         let mut moves = self.board.generate_captures();
         moves.sort_by_cached_key(|m| {
@@ -275,10 +275,10 @@ impl AlphaBeta {
     fn get_transposition(
         &self,
         key: u64,
-        alpha: i64,
-        beta: i64,
+        alpha: Score,
+        beta: Score,
         depth: u8,
-    ) -> (Option<Play>, Option<i64>) {
+    ) -> (Option<Play>, Option<Score>) {
         let pv = self.moves.get(key);
         if let Some(pv) = pv {
             if pv.depth >= depth {
@@ -303,7 +303,7 @@ impl AlphaBeta {
         (None, None)
     }
 
-    fn alpha_beta(&mut self, mut alpha: i64, beta: i64, mut depth: u8) -> i64 {
+    fn alpha_beta(&mut self, mut alpha: Score, beta: Score, mut depth: u8) -> Score {
         if self.nodes % 3000 == 0 {
             self.check_if_should_stop();
         }
@@ -330,7 +330,7 @@ impl AlphaBeta {
         }
 
         let old_alpha = alpha;
-        let mut score: i64;
+        let mut score: Score;
         let mut found_legal_move = false;
         let mut best_move: Option<&Play> = None;
         let mut best_board: Option<u64> = None;
@@ -386,7 +386,7 @@ impl AlphaBeta {
 
         if !found_legal_move {
             if in_check {
-                return -CHECKMATE_SCORE + (self.board.line_ply as i64);
+                return -CHECKMATE_SCORE + (self.board.line_ply as Score);
             }
             return 0;
         }
@@ -412,10 +412,10 @@ impl AlphaBeta {
 struct Pv {
     next_key: u64,
     play: Play,
-    score: i64,
+    score: Score,
     // a depth cannot exceed MAX_DEPTH and a ply is bounded by the history
-    // array, so neither needs a word. Both sit in the padding the eight byte
-    // fields leave behind, which is why widening ply to u16 costs nothing.
+    // array, so neither needs a word. Both sit in the padding the key leaves
+    // behind, which is why widening ply to u16 costs nothing.
     depth: u8,
     node: Node,
     ply: u16,
@@ -524,11 +524,11 @@ pub struct SearchResult {
     nodes: u64,          // The number of results examined as part of the search
     selective_depth: u8, // Selective search depth in plies
     best_move: Play,     // The best move found as part of the search
-    score: i64,          // The estimated score for the best move if played
+    score: Score,        // The estimated score for the best move if played
 }
 
 impl SearchResult {
-    fn checkmate_in(&self) -> Option<i64> {
+    fn checkmate_in(&self) -> Option<Score> {
         if (CHECKMATE_SCORE - self.score.abs()) < 300 {
             let mut mate = (CHECKMATE_SCORE - self.score.abs() + 1) / 2;
             if self.score < 0 {
@@ -851,7 +851,7 @@ impl Engine for AlphaBeta {
         self.search_depth = depth;
         self.selective_depth = depth;
         self.board.line_ply = 0;
-        self.score = self.alpha_beta(i64::MIN + 1, i64::MAX - 1, depth);
+        self.score = self.alpha_beta(Score::MIN + 1, Score::MAX - 1, depth);
         if let Some(best_move) = self.moves.get(self.board.key) {
             return Some(SearchResult {
                 nodes: self.nodes,
@@ -969,11 +969,11 @@ mod test_node_counts {
         assert_eq!(
             counted,
             vec![
-                ("opening", 176_627),
-                ("kiwipete", 218_744),
-                ("pawn endgame", 183_965),
-                ("promotions", 120_799),
-                ("middlegame", 208_538),
+                ("opening", 173_101),
+                ("kiwipete", 218_914),
+                ("pawn endgame", 183_004),
+                ("promotions", 120_636),
+                ("middlegame", 202_558),
             ]
         );
     }
