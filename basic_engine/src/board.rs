@@ -38,7 +38,11 @@ struct PlayState {
 // Plies of history the board can record. This has to cover the whole game as
 // replayed by the gui plus the depth of the current search, 375 was not enough
 // for games which reached move 175 or so.
+#[cfg(not(kani))]
 const MAX_GAME_SIZE: usize = 1024;
+// a proof only ever makes one move, and the array is compared field by field
+#[cfg(kani)]
+const MAX_GAME_SIZE: usize = 2;
 static EMPTY_HISTORY: [Option<PlayState>; MAX_GAME_SIZE] = [None; MAX_GAME_SIZE];
 
 const A1: u8 = 0;
@@ -1867,5 +1871,89 @@ mod perft_edge_cases {
                 depth
             );
         }
+    }
+}
+
+#[cfg(kani)]
+mod verify {
+    use super::*;
+
+    /// Replaces the real attack test, which would otherwise drag the magic
+    /// tables into the proof. Returning a nondeterministic answer covers both
+    /// the legal and the illegal outcome of a move.
+    fn any_attacked(_board: &Board, _index: u8, _color: Color) -> bool {
+        kani::any()
+    }
+
+    fn any_castle() -> CastlePermissions {
+        CastlePermissions {
+            white_king_side: kani::any(),
+            white_queen_side: kani::any(),
+            black_king_side: kani::any(),
+            black_queen_side: kani::any(),
+        }
+    }
+
+    /// Every position made of two kings on their home squares and any number of
+    /// knights anywhere else. Knights avoid every special case in make_move, so
+    /// this is the plain path through it.
+    fn any_knight_board() -> Board {
+        let white: u64 = kani::any();
+        let black: u64 = kani::any();
+        kani::assume(white & black == 0);
+        kani::assume(white & (1u64 << E1) != 0);
+        kani::assume(black & (1u64 << E8) != 0);
+        let kings = (1u64 << E1) | (1u64 << E8);
+        let knights = (white | black) & !kings;
+
+        Board {
+            pawns: 0,
+            knights,
+            bishops: 0,
+            rooks: 0,
+            queens: 0,
+            kings,
+            white,
+            black,
+            active_color: if kani::any() { Color::White } else { Color::Black },
+            castle: any_castle(),
+            en_passant: None,
+            ply: 0,
+            line_ply: 0,
+            move_number: 1,
+            fifty_move_rule: 0,
+            // large enough that the material counters cannot underflow, which
+            // is a property of the counters and not of make/unmake
+            white_value: 1_000_000,
+            black_value: 1_000_000,
+            psqt: 0,
+            history: EMPTY_HISTORY,
+            key: kani::any(),
+        }
+    }
+
+    #[kani::proof]
+    #[kani::stub(Board::square_attacked, any_attacked)]
+    fn make_then_undo_restores_the_board_exactly() {
+        let mut board = any_knight_board();
+        let (own, _theirs) = match board.active_color {
+            Color::White => (board.white, board.black),
+            Color::Black => (board.black, board.white),
+        };
+
+        let from: u8 = kani::any();
+        let to: u8 = kani::any();
+        kani::assume(from < 64 && to < 64 && from != to);
+        kani::assume(board.knights & own & (1u64 << from) != 0);
+        kani::assume(own & (1u64 << to) == 0);
+        let capture = board.get_piece_index(to);
+        kani::assume(capture != Some(Piece::King));
+
+        let play = Play::new(from, to, capture, None, false, false);
+        let before = board;
+        if board.make_move(&play) {
+            board.undo_move().unwrap();
+        }
+        assert!(board == before);
     }
 }

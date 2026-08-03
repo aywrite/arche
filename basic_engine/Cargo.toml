@@ -6,6 +6,11 @@ rust-version.workspace = true
 authors.workspace = true
 publish = false
 
+# cfg(kani) is set by the model checker rather than by cargo, so cargo has to be
+# told it is a name it should expect. See docs/VERIFICATION.md.
+[lints.rust]
+unexpected_cfgs = { level = "warn", check-cfg = ['cfg(kani)'] }
+
 [lib]
 bench = false #https://bheisler.github.io/criterion.rs/book/faq.html#cargo-bench-gives-unrecognized-option-errors-for-valid-command-line-options
 
