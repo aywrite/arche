@@ -1915,7 +1915,11 @@ mod verify {
             kings,
             white,
             black,
-            active_color: if kani::any() { Color::White } else { Color::Black },
+            active_color: if kani::any() {
+                Color::White
+            } else {
+                Color::Black
+            },
             castle: any_castle(),
             en_passant: None,
             ply: 0,
@@ -1930,6 +1934,83 @@ mod verify {
             history: EMPTY_HISTORY,
             key: kani::any(),
         }
+    }
+
+    /// The same thing at a scope a solver can actually finish: one knight a
+    /// side, at a symbolic square, rather than an arbitrary number of them.
+    /// Twelve symbolic bits of position instead of a hundred and twenty eight.
+    fn any_small_board() -> Board {
+        let w: u8 = kani::any();
+        let b: u8 = kani::any();
+        kani::assume(w < 64 && b < 64);
+        kani::assume(w != E1 && w != E8 && b != E1 && b != E8 && w != b);
+
+        let kings = (1u64 << E1) | (1u64 << E8);
+        let white = (1u64 << E1) | (1u64 << w);
+        let black = (1u64 << E8) | (1u64 << b);
+
+        Board {
+            pawns: 0,
+            knights: (1u64 << w) | (1u64 << b),
+            bishops: 0,
+            rooks: 0,
+            queens: 0,
+            kings,
+            white,
+            black,
+            active_color: if kani::any() {
+                Color::White
+            } else {
+                Color::Black
+            },
+            castle: any_castle(),
+            en_passant: None,
+            ply: 0,
+            line_ply: 0,
+            move_number: 1,
+            fifty_move_rule: 0,
+            white_value: 1_000_000,
+            black_value: 1_000_000,
+            psqt: 0,
+            history: EMPTY_HISTORY,
+            key: 0,
+        }
+    }
+
+    /// Play any pseudo legal knight move on `board` and put it back again.
+    fn make_then_undo(board: &mut Board) {
+        let own = match board.active_color {
+            Color::White => board.white,
+            Color::Black => board.black,
+        };
+
+        let from: u8 = kani::any();
+        let to: u8 = kani::any();
+        kani::assume(from < 64 && to < 64 && from != to);
+        kani::assume(board.knights & own & (1u64 << from) != 0);
+        kani::assume(own & (1u64 << to) == 0);
+        let capture = board.get_piece_index(to);
+        kani::assume(capture != Some(Piece::King));
+
+        // an assumption that contradicts another one would prove all of this
+        // without checking any of it, and would do so quickly. Both outcomes
+        // have to still be reachable for the result to mean anything.
+        kani::cover!(capture.is_some());
+        kani::cover!(capture.is_none());
+
+        let play = Play::new(from, to, capture, None, false, false);
+        let before = *board;
+        if board.make_move(&play) {
+            board.undo_move().unwrap();
+        }
+        assert!(*board == before);
+    }
+
+    #[kani::proof]
+    #[kani::stub(Board::square_attacked, any_attacked)]
+    fn make_then_undo_restores_a_small_board() {
+        let mut board = any_small_board();
+        make_then_undo(&mut board);
     }
 
     #[kani::proof]
