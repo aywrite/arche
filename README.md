@@ -99,8 +99,6 @@ docker/smoke_test.sh arche-lichess-bot
   - the history array is a fixed size and ply is initialised to twice the full move number, so a
     game of more than about five hundred moves runs past the end of it. A fen with a full move
     number that high panics on the first search rather than after five hundred moves
-  - en passant is hashed for every double pawn push, even when no capture is possible, which
-    slightly reduces transposition hits
 
 ## Acknowledgements
 
