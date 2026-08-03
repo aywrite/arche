@@ -66,15 +66,14 @@ const H8: u8 = 63;
 // lazy_static expands to a Once and an atomic, which a model checker has to
 // reason about before it reaches the first line that matters. These two are on
 // the make/unmake path, so a proof pays for them at every call.
+static PVT: PieceValueTables = PieceValueTables::TABLES;
+
 #[cfg(kani)]
 static ZORB: Zorbrist = Zorbrist::ZERO;
-#[cfg(kani)]
-static PVT: PieceValueTables = PieceValueTables::ZERO;
 
 #[cfg(not(kani))]
 lazy_static! {
     static ref ZORB: Zorbrist = Zorbrist::new();
-    static ref PVT: PieceValueTables = PieceValueTables::new();
 }
 
 lazy_static! {
@@ -594,6 +593,38 @@ impl Board {
             Color::White => eval,
             Color::Black => -eval,
         }
+    }
+
+    /// The piece square score of the position as it stands, computed from the
+    /// board rather than accumulated as pieces move. `psqt` is meant to equal
+    /// this at all times; nothing checked that until now, and perft never
+    /// would, since it counts nodes and never looks at an evaluation.
+    pub fn recompute_psqt(&self) -> isize {
+        let mut total = 0;
+        for index in 0..64u8 {
+            if let Some((piece, color)) = self.get_piece_and_color_index(index) {
+                total += match color {
+                    Color::White => PVT.get_value(index as usize, piece, Color::White),
+                    Color::Black => -PVT.get_value(index as usize, piece, Color::Black),
+                };
+            }
+        }
+        total
+    }
+
+    /// The material of each side, computed the same way and for the same reason.
+    pub fn recompute_material(&self) -> (u32, u32) {
+        let mut white = 0;
+        let mut black = 0;
+        for index in 0..64u8 {
+            if let Some((piece, color)) = self.get_piece_and_color_index(index) {
+                match color {
+                    Color::White => white += piece.material_value(),
+                    Color::Black => black += piece.material_value(),
+                }
+            }
+        }
+        (white, black)
     }
 
     pub fn square_attacked(&self, index: u8, color: Color) -> bool {
@@ -1918,7 +1949,7 @@ mod verify {
         let kings = (1u64 << E1) | (1u64 << E8);
         let knights = (white | black) & !kings;
 
-        Board {
+        let mut board = Board {
             pawns: 0,
             knights,
             bishops: 0,
@@ -1938,14 +1969,18 @@ mod verify {
             line_ply: 0,
             move_number: 1,
             fifty_move_rule: 0,
-            // large enough that the material counters cannot underflow, which
-            // is a property of the counters and not of make/unmake
-            white_value: 1_000_000,
-            black_value: 1_000_000,
+            // set below, once there is a board to compute them from
+            white_value: 0,
+            black_value: 0,
             psqt: 0,
             history: EMPTY_HISTORY,
             key: kani::any(),
-        }
+        };
+        let (white_value, black_value) = board.recompute_material();
+        board.white_value = white_value;
+        board.black_value = black_value;
+        board.psqt = board.recompute_psqt();
+        board
     }
 
     /// Play any pseudo legal knight move on `board` and put it back again.
@@ -1982,5 +2017,37 @@ mod verify {
     fn make_then_undo_restores_the_board_exactly() {
         let mut board = any_knight_board();
         make_then_undo(&mut board);
+    }
+
+    /// The property perft cannot see. `psqt` and the material counters are
+    /// updated a piece at a time as moves are made and unmade, and nothing else
+    /// ever compares them against the position they are supposed to describe.
+    #[kani::proof]
+    #[kani::stub(Board::square_attacked, any_attacked)]
+    fn making_a_move_keeps_the_incremental_eval_in_step() {
+        let mut board = any_knight_board();
+        let own = match board.active_color {
+            Color::White => board.white,
+            Color::Black => board.black,
+        };
+
+        let from: u8 = kani::any();
+        let to: u8 = kani::any();
+        kani::assume(from < 64 && to < 64 && from != to);
+        kani::assume(board.knights & own & (1u64 << from) != 0);
+        kani::assume(own & (1u64 << to) == 0);
+        let capture = board.get_piece_index(to);
+        kani::assume(capture != Some(Piece::King));
+        kani::cover!(capture.is_some());
+        kani::cover!(capture.is_none());
+
+        let play = Play::new(from, to, capture, None, false, false);
+        if board.make_move(&play) {
+            assert_eq!(board.psqt, board.recompute_psqt());
+            assert_eq!(
+                (board.white_value, board.black_value),
+                board.recompute_material()
+            );
+        }
     }
 }
