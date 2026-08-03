@@ -785,12 +785,18 @@ impl Board {
             // pawn moves reset the fifty move rule
             self.fifty_move_rule = 0;
             if (play.from as isize - play.to as isize).abs() == 16 {
-                // if a pawn moved two squares forward then we must update the en_passant square
-                self.en_passant = match self.active_color {
-                    Color::White => Some(Coordinate::from_index(play.to - 8)),
-                    Color::Black => Some(Coordinate::from_index(play.to + 8)),
+                // the square the pawn passed over only belongs in the key if
+                // something can be taken on it. Hashing it unconditionally
+                // makes one position hash two ways, which costs transposition
+                // hits and hides a repetition either side of a double push
+                let passed = match self.active_color {
+                    Color::White => play.to - 8,
+                    Color::Black => play.to + 8,
                 };
-                self.key ^= zorb.en_passant_key(play.to);
+                if self.pawn_can_capture_on(passed, opposing_color) {
+                    self.en_passant = Some(Coordinate::from_index(passed));
+                    self.key ^= zorb.en_passant_key(passed);
+                }
             }
             if play.en_passant {
                 let clear_index = match self.active_color {
@@ -933,6 +939,18 @@ impl Board {
         } else {
             self.set_piece_index(to, piece, color);
         }
+    }
+
+    /// Whether a pawn of this colour is placed to take on this square. A mask
+    /// holds the squares a pawn of that colour must stand on to attack the one
+    /// indexed, which is what is being asked here.
+    fn pawn_can_capture_on(&self, index: u8, capturer: Color) -> bool {
+        let attack_masks: &AttackMasks = &ATTACK_MASKS;
+        let (from, pawns) = match capturer {
+            Color::White => (attack_masks.white_pawns[index as usize], self.white),
+            Color::Black => (attack_masks.black_pawns[index as usize], self.black),
+        };
+        from & self.pawns & pawns != 0
     }
 
     pub fn is_king_attacked(&self) -> bool {
@@ -1256,8 +1274,14 @@ impl Game for Board {
             board.key ^= ZORB.side;
         }
         board.key ^= ZORB.castle_key(board.castle);
+        // the same rule as make_move, or a position parsed and the same one
+        // played would not hash alike, which is worse than what is being fixed
         if let Some(en_passant) = board.en_passant {
-            board.key ^= ZORB.en_passant_key(en_passant.as_index());
+            if board.pawn_can_capture_on(en_passant.as_index(), board.active_color) {
+                board.key ^= ZORB.en_passant_key(en_passant.as_index());
+            } else {
+                board.en_passant = None;
+            }
         }
         (board.white_value, board.black_value) = board.material_value();
         Ok(board)
@@ -1583,12 +1607,59 @@ mod position_key {
     }
 
     #[test]
-    fn en_passant_changes_key() {
+    fn en_passant_changes_key_when_a_pawn_can_take_there() {
+        // a black pawn on d4 takes on e3, so the square is real and belongs in
+        // the key
+        let without =
+            Board::from_fen("rnbqkbnr/ppp1pppp/8/8/3pP3/8/PPPP1PPP/RNBQKBNR b KQkq - 0 1").unwrap();
+        let with = Board::from_fen("rnbqkbnr/ppp1pppp/8/8/3pP3/8/PPPP1PPP/RNBQKBNR b KQkq e3 0 1")
+            .unwrap();
+        assert_ne!(without.key, with.key);
+        assert!(with.en_passant.is_some());
+    }
+
+    #[test]
+    fn en_passant_no_one_can_take_is_not_in_the_key() {
+        // every black pawn is still on the seventh, so nothing can take on e3.
+        // Interfaces leave the square out of the key in that case, and a key
+        // which disagrees makes one position hash two ways
         let without =
             Board::from_fen("rnbqkbnr/pppppppp/8/8/4P3/8/PPPP1PPP/RNBQKBNR b KQkq - 0 1").unwrap();
         let with =
             Board::from_fen("rnbqkbnr/pppppppp/8/8/4P3/8/PPPP1PPP/RNBQKBNR b KQkq e3 0 1").unwrap();
-        assert_ne!(without.key, with.key);
+        assert_eq!(without.key, with.key);
+        assert_eq!(with.en_passant, None);
+    }
+
+    #[test]
+    fn a_double_push_no_one_can_answer_hashes_like_the_position_without_it() {
+        // the same position played and parsed has to hash alike, which is the
+        // half of this that has to match make_move or the fix is worse than the
+        // problem
+        let mut played = Board::from_fen("4k3/7p/8/8/8/8/P7/4K3 w - - 0 1").unwrap();
+        let a2a4 = *played
+            .generate_moves()
+            .iter()
+            .find(|m| format!("{}", m) == "a2a4")
+            .expect("a2a4 is a move here");
+        assert!(played.make_move(&a2a4));
+        let parsed = Board::from_fen("4k3/7p/8/8/P7/8/8/4K3 b - - 0 1").unwrap();
+        assert_eq!(played.key, parsed.key);
+        assert_eq!(played.en_passant, None);
+    }
+
+    #[test]
+    fn a_double_push_which_can_be_answered_still_records_the_square() {
+        let mut played = Board::from_fen("4k3/8/8/8/1p6/8/P7/4K3 w - - 0 1").unwrap();
+        let a2a4 = *played
+            .generate_moves()
+            .iter()
+            .find(|m| format!("{}", m) == "a2a4")
+            .expect("a2a4 is a move here");
+        assert!(played.make_move(&a2a4));
+        let parsed = Board::from_fen("4k3/8/8/8/Pp6/8/8/4K3 b - a3 0 1").unwrap();
+        assert_eq!(played.key, parsed.key);
+        assert!(played.en_passant.is_some());
     }
 
     #[test]
