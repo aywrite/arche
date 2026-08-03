@@ -43,7 +43,7 @@ treat the numbers as orders of magnitude rather than as figures.
 | make/unmake, symbolic occupancy, lazy tables | killed at 30 minutes |
 | make/unmake, one knight a side, lazy tables | killed at 25 minutes |
 | make/unmake, one knight a side, constant tables | 108s |
-| make/unmake, symbolic occupancy, constant tables | 70s, 4134 checks |
+| make/unmake, symbolic occupancy, constant tables | 82s, 4170 checks |
 
 Narrowing the position from two symbolic occupancy words to one knight a side is
 a factor of ten fewer symbolic bits, and it did not help twice over. It did not
