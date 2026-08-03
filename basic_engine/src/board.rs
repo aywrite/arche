@@ -2019,13 +2019,54 @@ mod verify {
         make_then_undo(&mut board);
     }
 
+    /// Two knights on known squares, so that recomputing the score from the
+    /// board stays cheap enough to be worth asserting. `from` is pinned by the
+    /// position, `to` is every square on the board.
+    fn placed_knight_board() -> Board {
+        const WHITE_KNIGHT: u8 = 1; // b1
+        const BLACK_KNIGHT: u8 = 62; // g8
+
+        let kings = (1u64 << E1) | (1u64 << E8);
+        let mut board = Board {
+            pawns: 0,
+            knights: (1u64 << WHITE_KNIGHT) | (1u64 << BLACK_KNIGHT),
+            bishops: 0,
+            rooks: 0,
+            queens: 0,
+            kings,
+            white: (1u64 << E1) | (1u64 << WHITE_KNIGHT),
+            black: (1u64 << E8) | (1u64 << BLACK_KNIGHT),
+            active_color: if kani::any() {
+                Color::White
+            } else {
+                Color::Black
+            },
+            castle: any_castle(),
+            en_passant: None,
+            ply: 0,
+            line_ply: 0,
+            move_number: 1,
+            fifty_move_rule: 0,
+            white_value: 0,
+            black_value: 0,
+            psqt: 0,
+            history: EMPTY_HISTORY,
+            key: 0,
+        };
+        let (white_value, black_value) = board.recompute_material();
+        board.white_value = white_value;
+        board.black_value = black_value;
+        board.psqt = board.recompute_psqt();
+        board
+    }
+
     /// The property perft cannot see. `psqt` and the material counters are
-    /// updated a piece at a time as moves are made and unmade, and nothing else
-    /// ever compares them against the position they are supposed to describe.
+    /// updated a piece at a time as moves are made, and nothing else ever
+    /// compares them against the position they are supposed to describe.
     #[kani::proof]
     #[kani::stub(Board::square_attacked, any_attacked)]
     fn making_a_move_keeps_the_incremental_eval_in_step() {
-        let mut board = any_knight_board();
+        let mut board = placed_knight_board();
         let own = match board.active_color {
             Color::White => board.white,
             Color::Black => board.black,
