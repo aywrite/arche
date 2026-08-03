@@ -32,6 +32,28 @@ cargo kani -Z stubbing -p basic_engine --harness verify::<name>
 nondeterministic answer. Without that the magic tables are built inside the
 proof, which is not tractable.
 
+## What it costs
+
+Measured while working out whether any of this was practical, on one machine, so
+treat the numbers as orders of magnitude rather than as figures.
+
+| harness | result |
+| --- | --- |
+| `pop_lsb`, over every `u64` | 0.9s |
+| make/unmake, symbolic occupancy, lazy tables | killed at 30 minutes |
+| make/unmake, one knight a side, lazy tables | killed at 25 minutes |
+| make/unmake, one knight a side, constant tables | 108s, 4174 checks |
+
+The first two lines were the interesting ones. Narrowing the position from two
+symbolic occupancy words to one knight a side is a factor of ten fewer symbolic
+bits and it changed nothing: the solver still did not finish. Taking
+`lazy_static` off the path finished the same harness in under two minutes.
+
+So the cost of a proof here is dominated by what it has to reason about before
+it reaches the code under test, not by the size of the space it covers. That is
+worth knowing before writing any more harnesses, and it is why the tables being
+built at runtime is the first thing on the list below rather than the last.
+
 ## Properties
 
 Roughly in the order they are worth doing. Each one is a separate harness so
@@ -68,28 +90,51 @@ happens to be fashionable.
 ## What has to change to make this practical
 
 The obstacles are all in the shape of the code rather than in the properties,
-and each fix is worth having anyway.
+and each fix is worth having anyway. In the order the measurements say they
+matter.
 
-- **`Board` is 32,896 bytes, and it is `Copy`.** Almost all of that is
-  `history`, a `[Option<PlayState>; 1024]` stored inline. A proof that compares
-  a board before and after a move compares that array too. The harnesses cut
-  `MAX_GAME_SIZE` down under `cfg(kani)`, which works, but the real fix is to
-  take the history out of `Board` and give it to whoever is making the moves.
-  That also fixes the known issue where a long game runs off the end of it.
 - **The tables are built at runtime.** `MAGIC`, `ZORB`, `PVT`, `ATTACK_MASKS`
   and `BASE_CONVERSIONS` are all `lazy_static`, so a proof that touches
-  `set_piece_index` has to symbolically execute the zorbrist prng seeding 768
-  numbers before it gets to the first line that matters. Computing them at build
-  time instead would make them constants the checker can read straight off,
-  remove the `lazy_static` dependency, and cut the startup that
-  `-startup-ms 20000` in the development notes exists to accommodate.
+  `set_piece_index` has to reason about a `Once`, an atomic and a prng seeding
+  768 numbers before it gets to the first line that matters. This is the whole
+  difference between a harness that finishes and one that does not.
+
+  `ZORB` and `PVT` are constants under `cfg(kani)` as a stopgap, which is only
+  sound for harnesses that are not about the key. Computing them at build time
+  instead would make them constants for everyone, let the key harnesses have
+  the real numbers, remove the `lazy_static` dependency, and cut the startup
+  that `-startup-ms 20000` in the development notes exists to accommodate.
+- **`Board` is 32,896 bytes, and it is `Copy`.** Almost all of that is
+  `history`, a `[Option<PlayState>; 1024]` stored inline. A proof that compares
+  a board before and after a move compares that array too. `MAX_GAME_SIZE` is
+  cut down under `cfg(kani)` for now, but the real fix is to take the history
+  out of `Board` and give it to whoever is making the moves, which also fixes
+  the known issue where a long game runs off the end of it. `pv_line` copies a
+  whole board on purpose and relies on `Copy`, so it has to be part of that
+  change rather than an afterthought.
 - **`make_move` has no written precondition.** It cannot be given an arbitrary
   move: it assumes the from square is occupied by the side to move, that
   `capture` names whatever is actually on the to square, that `castle` is only
   set for a king going two squares. Those assumptions have to be written down as
   a predicate before anything can be proved, and the predicate is worth having
-  in its own right, being exactly the check a move recovered from the hash table
-  needs before it is trusted.
+  in its own right. `pv_line` already needs exactly it and gets it the expensive
+  way, by generating every move and asking whether the stored one is among them.
+
+## Next
+
+1. Widen the make/unmake harness one special case at a time, each as its own
+   harness: captures are covered, then promotions, then en passant, then
+   castling. A separate harness per case is what makes a failure say which case
+   broke.
+2. Write the precondition as `is_pseudo_legal`, use it as the single assumption
+   in place of the hand written ones, and call it from `pv_line`.
+3. Move the tables to build time and drop the `cfg(kani)` constants.
+4. Add `recompute_key` and prove property 2, which is the first proof that says
+   something the tests do not already sample.
+5. Only then consider ci. The tables and the toolchain download make this a
+   scheduled job rather than something a pull request waits for, and a proof
+   that takes two minutes today will not stay at two minutes as the harnesses
+   widen.
 
 ## Vacuity
 
