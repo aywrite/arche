@@ -98,6 +98,45 @@ docker/smoke_test.sh arche-lichess-bot
   - en passant is hashed for every double pawn push, even when no capture is possible, which
     slightly reduces transposition hits
 
+## Ideas
+
+The TODO list is the things every engine has that this one does not yet. This list is the
+opposite: things that would make it unlike other engines. They are speculative and none of
+them is worth much elo, which is rather the point, the engine is not going to compete on
+strength. Roughly in order of how well they fit what is already here.
+
+- **A machine-checked move generator.** Perft proves make/unmake works for the positions it
+  enumerates and says nothing about the rest. [Kani](https://github.com/model-checking/kani)
+  is a bounded model checker for rust and could prove properties over all inputs in a bounded
+  space instead: that make/unmake is an involution, that the zorbrist key is a pure function of
+  the position, that the magic index is always in range, that the bitboards stay consistent
+  with each other. The last of those is the "a fen without a king panics" bug in the known
+  issues. proptest already covers some of this by sampling, this is the same idea taken to
+  exhaustion. No engine appears to have done it.
+- **Search-tree diffing.** `test_node_counts_have_not_moved` says a change moved the tree from
+  218,290 nodes to some other number. It does not say where. Emitting a canonical transcript of
+  the search and diffing two of them structurally would, and the benchmark workflow already has
+  somewhere to post the answer. This is the one that pays for itself the moment there is any
+  pruning to debug.
+- **Elo attributed per commit.** The strength workflow already plays any ref against any other
+  and the commit scopes already say which commits touch the engine. Running it per engine commit
+  rather than per release would give a changelog where each entry carries what it measured, and
+  an honest record of how many changes measured as nothing.
+- **Conspiracy numbers for time management.** Time management here, and largely everywhere, is
+  proxies for one quantity: how many leaves would have to change their mind to change the move
+  at the root. That quantity is computable, was studied in the late eighties and is not used by
+  anything modern. `time_control.rs` computes a budget once before the search; letting the
+  search revise it is the structural change needed.
+- **Endgame tables computed on demand.** Rather than shipping syzygy, run retrograde analysis in
+  the background for the exact material left on the board once it is down to four or five men.
+  Four men is seconds and megabytes. It would help most where material plus untapered piece
+  square tables is at its worst.
+- **Calibrated weakness.** Playing at a target rating is normally done by cutting depth, which
+  produces an engine that plays well and then hangs a queen. Sampling the root move from the
+  distribution of root scores, at a temperature tuned so the error profile matches a rating
+  band, is measured by calibration against real games rather than by elo. It is a thing a weak
+  engine can be best at.
+
 ## Acknowledgements
 
 - https://stackoverflow.com/questions/30680559/how-to-find-magic-bitboards
