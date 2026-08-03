@@ -32,8 +32,12 @@ Each release plays a short match against its predecessor and the result is added
 release notes. The estimate is only as good as the number of games behind it, which is why
 the error bar is published alongside it.
 
-The engine has not been entered into any rating list, so there is no comparable rating
-against other engines.
+Each release also plays a gauntlet against old releases of
+[Stash](https://github.com/mhouppin/stash-bot), which are ranked on the
+[ccrl](https://computerchess.org.uk/) blitz list, and the rating that implies is added
+alongside. The engine has not been entered into any rating list itself, and the gauntlet
+is played faster and on different hardware than the list it borrows its opponents from,
+so read that figure as a placement to within about a hundred points rather than a rating.
 
 ## Development
 

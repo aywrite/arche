@@ -1,0 +1,212 @@
+name: Calibrate
+
+# Estimates what the engine would be rated on the ccrl scale by playing it
+# against engines that already have a rating there.
+#
+# This is not the same question as the Strength workflow answers. That one plays
+# a version against another version and says which is better, which is what a
+# change wants to know and says nothing about where either of them sits. This
+# one gives a number that can be compared with other engines, at the cost of
+# depending on ratings earned elsewhere, on other hardware, at a slower time
+# control. Treat it as a rough placement rather than a rating.
+#
+# The opponents are old releases of Stash, which are ranked on ccrl, build in a
+# second from a plain makefile, and are a few tens of kilobytes each. The rungs
+# are an input so they can be moved up as the engine improves: a pairing that
+# ends 25-0 says little beyond "stronger than that", so the useful opponents are
+# the ones close enough to take games off.
+
+on:
+  workflow_dispatch:
+    inputs:
+      candidate:
+        description: What to measure. A branch, tag, commit or pull request number. Defaults to the ref this is run against.
+        type: string
+      games:
+        description: Games against each opponent, rounded down to an even number
+        type: number
+        default: 26
+      time_control:
+        description: Passed to fastchess as tc
+        type: string
+        default: 20+0.2
+      ladder:
+        description: Opponents, as stash tag and ccrl blitz rating
+        type: string
+        default: v10:1620,v11:1690,v12:1886,v13:1972
+  workflow_call:
+    inputs:
+      candidate:
+        type: string
+        required: false
+      games:
+        type: number
+        default: 26
+      time_control:
+        type: string
+        default: 20+0.2
+      ladder:
+        type: string
+        default: v10:1620,v11:1690,v12:1886,v13:1972
+      publish:
+        description: Append the result to the release notes for this tag
+        type: boolean
+        default: false
+
+jobs:
+  match:
+    runs-on: ubuntu-latest
+    outputs:
+      line: ${{ steps.estimate.outputs.line }}
+    # the default ladder at the default time control takes about an hour, the
+    # rest is headroom for a slower runner or a longer control
+    timeout-minutes: 150
+    env:
+      GAMES: ${{ inputs.games }}
+      TIME_CONTROL: ${{ inputs.time_control }}
+      LADDER: ${{ inputs.ladder }}
+      CANDIDATE: ${{ inputs.candidate }}
+    steps:
+      - uses: actions/checkout@v7
+        with:
+          fetch-depth: 0
+
+      # shared with the Strength workflow, which builds the same two things the
+      # same way, so whichever runs first pays for both
+      - name: Cache the match tools
+        id: tools
+        uses: actions/cache@v6
+        with:
+          path: tools
+          key: match-tools-fastchess-1.8.2-alpha-8moves-v3
+
+      - name: Build the match tools
+        if: steps.tools.outputs.cache-hit != 'true'
+        run: |
+          mkdir -p tools
+          # every fastchess release is tagged -alpha, there is no plain v1.8.2
+          git clone --depth 1 --branch v1.8.2-alpha \
+            https://github.com/Disservin/fastchess.git /tmp/fastchess
+          make -C /tmp/fastchess -j"$(nproc)"
+          cp /tmp/fastchess/fastchess tools/
+          curl -sSLf -o /tmp/book.zip \
+            https://raw.githubusercontent.com/official-stockfish/books/master/8moves_v3.pgn.zip
+          unzip -qo /tmp/book.zip -d tools
+
+      - name: Build the engine
+        run: |
+          mkdir -p tools
+          # a pull request head is not fetched by default; anything else is a
+          # branch, tag or commit
+          if [ -n "$CANDIDATE" ]; then
+            if [ "$CANDIDATE" -eq "$CANDIDATE" ] 2>/dev/null; then
+              git fetch -q origin "refs/pull/${CANDIDATE}/head"
+              sha=$(git rev-parse FETCH_HEAD)
+            else
+              git rev-parse --verify --quiet "${CANDIDATE}^{commit}" >/dev/null \
+                || git fetch -q origin "$CANDIDATE"
+              sha=$(git rev-parse --verify --quiet "${CANDIDATE}^{commit}" || git rev-parse FETCH_HEAD)
+            fi
+            git checkout --detach "$sha"
+          else
+            sha=$GITHUB_SHA
+          fi
+          echo "CANDIDATE_SHA=${sha}" >> "$GITHUB_ENV"
+          cargo build --release
+          cp target/release/arche tools/arche
+          # back to the ref this was run against, the estimate script lives there
+          git checkout --detach "$GITHUB_SHA"
+
+      # Not cached. Each one is a second of compiling and eighty kilobytes, so
+      # fetching a cache costs more than building them does.
+      - name: Build the opponents
+        run: |
+          git clone -q https://github.com/mhouppin/stash-bot.git /tmp/stash
+          for rung in ${LADDER//,/ }; do
+            tag=${rung%%:*}
+            git -C /tmp/stash checkout -q "$tag"
+            # the makefile moved into src/ after v12
+            dir=/tmp/stash
+            [ -f /tmp/stash/src/Makefile ] && dir=/tmp/stash/src
+            make -C "$dir" -j"$(nproc)" > /dev/null
+            cp "$dir/stash-bot" "tools/stash-${tag}"
+            git -C /tmp/stash clean -qfdx
+          done
+          ls -l tools/stash-*
+
+      - name: Play the gauntlet
+        working-directory: tools
+        run: |
+          # the engine allocates a 500MB transposition table before it answers
+          # uci, which takes it several seconds and the ten second default does
+          # not always allow for
+          engines=(-engine name=arche cmd=./arche)
+          for rung in ${LADDER//,/ }; do
+            tag=${rung%%:*}
+            # ccrl plays every engine in a match on the same hash, so give the
+            # opponents a comparable table rather than their 16MB default
+            engines+=(-engine "name=stash-${tag}" "cmd=./stash-${tag}" option.Hash=256)
+          done
+          ./fastchess "${engines[@]}" \
+            -tournament gauntlet -seeds 1 \
+            -each proto=uci "tc=$TIME_CONTROL" -startup-ms 20000 \
+            -openings file=8moves_v3.pgn format=pgn order=random \
+            -rounds "$((GAMES / 2))" -games 2 -repeat -concurrency 2 -recover \
+            -pgnout file=gauntlet.pgn \
+            | tee result.txt
+
+      - name: Work out the rating
+        id: estimate
+        run: |
+          if grep -qiE 'disconnect|stalled|loses on time' tools/result.txt; then
+            echo "::warning::An engine crashed or lost on time, the estimate is unreliable"
+          fi
+          # the pgn names the opponents stash-<tag>, the ladder names them <tag>
+          spec=$(echo "$LADDER" | sed 's/\([^,]*\)/stash-\1/g')
+          python3 scripts/rating_estimate.py tools/gauntlet.pgn arche "$spec" > estimate.txt
+          cat estimate.txt
+          line=$(grep 'ccrl blitz scale' estimate.txt)
+          echo "line=Estimated rating | ${line}" >> "$GITHUB_OUTPUT"
+          echo "::notice::${line}"
+          {
+            echo "### Rating estimate"
+            echo
+            echo "\`${CANDIDATE_SHA:0:8}\` at ${TIME_CONTROL} against ranked releases of"
+            echo "[Stash](https://github.com/mhouppin/stash-bot)."
+            echo
+            echo "| opponent | ccrl | w-d-l | score | implies |"
+            echo "| --- | --- | --- | --- | --- |"
+            grep '^|' estimate.txt
+            echo
+            grep -v '^|' estimate.txt | grep -v '^$'
+            echo
+            echo "The opponents were rated at 2m+1s on other hardware, so the"
+            echo "placement carries a systematic error the game count does not"
+            echo "describe. It is worth about a hundred points, and no number of"
+            echo "games reduces it."
+          } >> "$GITHUB_STEP_SUMMARY"
+
+  # The docker and strength workflows append to the same release notes, and each
+  # edit is a read and a write rather than an append, so they have to take turns.
+  release-notes:
+    needs: match
+    if: inputs.publish
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+    concurrency:
+      group: release-notes-${{ github.ref }}
+    steps:
+      - name: Add the estimate to the release notes
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          GH_REPO: ${{ github.repository }}
+          LINE: ${{ needs.match.outputs.line }}
+        run: |
+          # the marker is an html comment, so it does not render but does let a
+          # rerun replace the line it wrote last time rather than add another
+          # cat -s closes up the blank line the deleted line leaves behind
+          body=$(gh release view "$GITHUB_REF_NAME" --json body -q .body \
+                 | sed '/<!-- arche:rating -->/d' | cat -s)
+          printf '%s\n\n%s <!-- arche:rating -->\n' "$body" "$LINE" > notes.md
+          gh release edit "$GITHUB_REF_NAME" --notes-file notes.md

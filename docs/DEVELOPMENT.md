@@ -184,6 +184,76 @@ arbitrary commits compared by naming both.
 The release workflow calls the same workflow with fifty games, and that run is
 the only one that appends its result to the release notes.
 
+## Placing the engine on the ccrl scale
+
+A match against the previous version says which of the two is better. It cannot
+say where either of them sits, because both sides of it are this engine. For a
+number that means something next to other engines, the opponents have to be
+engines that already have a rating.
+
+The **Calibrate** workflow plays a gauntlet against old releases of
+[Stash](https://github.com/mhouppin/stash-bot), which are ranked on the
+[ccrl](https://computerchess.org.uk/) blitz list, build in about a second from a
+plain makefile and are eighty kilobytes each. It holds each opponent at its
+published rating and fits the one number that is unknown, which is ours:
+
+```
+python3 scripts/rating_estimate.py gauntlet.pgn arche stash-v11:1690,stash-v12:1886
+```
+
+Locally the same thing is the fastchess command from the previous section with
+more `-engine` arguments and `-tournament gauntlet`, which plays the first
+engine against all the others.
+
+### Choosing the opponents
+
+`ladder` is a list of stash tags and the rating each one holds on ccrl blitz.
+The rungs that are worth playing are the ones close enough to trade games with:
+a pairing that ends 25-0 puts no upper bound on the winner, so it contributes
+almost nothing however many games it is given. The list is an input so it can be
+moved up as the engine improves.
+
+These are the versions around the range the engine is in, and whether ccrl
+ranked the version itself or the figure is a community estimate from the games
+around it:
+
+| tag | ccrl blitz | |
+| --- | --- | --- |
+| v9 | 1275 | ranked |
+| v10 | 1620 | estimated |
+| v11 | 1690 | ranked |
+| v12 | 1886 | ranked |
+| v13 | 1972 | ranked |
+| v14 | 2060 | ranked |
+| v17 | 2298 | ranked |
+
+### Reading the result
+
+Two error bars come out of the fit and the larger is the one reported. The first
+is how much a score of this size wobbles. The second is how far the opponents
+disagree with each other, which is the one that catches a fit being quietly
+wrong: a single rating cannot describe an engine that does better against one
+opponent than another predicts, and when that happens the first error bar is an
+understatement rather than an estimate.
+
+Neither of them covers the part that matters most. The opponents earned their
+ratings at 2m+1s on other hardware, and this runs at twenty seconds on a shared
+runner, so the placement carries a systematic error worth something like a
+hundred points. More games shrink the error bar printed next to the number and
+do nothing at all to that. It is a placement, not a rating.
+
+The time control is a compromise rather than a default worth keeping by
+accident. Ten seconds runs the hundred games in about twenty minutes but leaves
+so little headroom that a runner hiccup shows up as a loss on time, and one
+forfeit in a twenty-five game pairing is worth about thirty elo of noise. Two
+minutes would match the list it is calibrated against and takes most of a day.
+Twenty seconds costs about an hour and sits closer to the list than ten does.
+
+Games run long here, a little under two hundred plies on average, so most of the
+clock a game uses is increment rather than the base time. That is why doubling
+the base from ten to twenty costs closer to three times the wall clock than
+twice it, and worth remembering before raising it again.
+
 ## Cutting a release
 
 Releases are driven by [cargo-release](https://github.com/crate-ci/cargo-release)
