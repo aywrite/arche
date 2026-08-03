@@ -1071,6 +1071,8 @@ impl Board {
         // The pawn bitboard was cleared above and the colour bitboard is cleared
         // before the file is tested below, so the file has been emptied exactly
         // when the intersection is empty, not when it holds only this pawn.
+        // Either clear on its own is enough to keep this pawn out of the
+        // intersection, so moving the test past one of them stays correct.
         match color {
             Color::Black => {
                 self.black.clear_bit(index);
@@ -1483,7 +1485,7 @@ mod evaluate {
         assert_eq!(Board::new().eval(), 0);
     }
 
-    /// a2 and b2 are worth the same on the piece square table, so the two
+    /// b2 and c2 are worth the same on the piece square table, so the two
     /// positions differ by nothing but which files the pawns stand on.
     #[test]
     fn test_pawns_on_their_own_files_cost_isolation_and_an_island() {
@@ -1495,10 +1497,17 @@ mod evaluate {
         );
     }
 
+    /// The same two structures given to black instead, which has to move the
+    /// score the other way. Subtracting the two holds everything else still, an
+    /// assertion on the sign alone would pass on the piece square tables.
     #[test]
     fn test_an_isolated_pawn_is_a_penalty_for_the_side_that_has_it() {
-        let board = Board::from_fen("4k3/1pp5/8/8/8/8/P1P5/4K3 w - - 0 1").unwrap();
-        assert!(board.eval() < 0, "scored {}", board.eval());
+        let split = Board::from_fen("4k3/p1p5/8/8/8/8/8/4K3 w - - 0 1").unwrap();
+        let together = Board::from_fen("4k3/pp6/8/8/8/8/8/4K3 w - - 0 1").unwrap();
+        assert_eq!(
+            split.eval() - together.eval(),
+            2 * ISOLATED_FILE + EXTRA_ISLAND
+        );
     }
 
     /// A position and its reflection, colours swapped, have to score the same
@@ -1896,21 +1905,28 @@ mod pawn_files {
     use super::Game;
     use pretty_assertions::assert_eq;
 
-    fn walk(board: &mut Board, depth: u8) {
+    fn check(board: &Board) {
         assert_eq!(
             (board.white_pawn_files, board.black_pawn_files),
             board.recompute_pawn_files(),
             "{}",
             board
         );
+    }
+
+    fn walk(board: &mut Board, depth: u8) {
+        check(board);
         if depth == 0 {
             return;
         }
         for m in &board.generate_moves() {
+            // a move that leaves the king in check undoes itself, so the bytes
+            // are worth checking whether it was legal or not
             if board.make_move(m) {
                 walk(board, depth - 1);
                 board.undo_move().unwrap();
             }
+            check(board);
         }
     }
 

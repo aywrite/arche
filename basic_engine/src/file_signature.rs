@@ -19,6 +19,9 @@ const fn penalty(files: u8) -> i16 {
     (islands - 1) * EXTRA_ISLAND + isolated * ISOLATED_FILE
 }
 
+/// Sixty five thousand iterations is within what rustc will evaluate at compile
+/// time but not by a wide margin, and going over it is a hard error rather than
+/// a slow build. Anything much heavier than this belongs in a lazy static.
 const fn build() -> [i16; 65536] {
     let mut scores = [0i16; 65536];
     let mut white = 0usize;
