@@ -135,17 +135,26 @@ The obstacles are all in the shape of the code rather than in the properties,
 and each fix is worth having anyway. In the order the measurements say they
 matter.
 
-- **The tables are built at runtime.** `MAGIC`, `ZORB`, `PVT`, `ATTACK_MASKS`
-  and `BASE_CONVERSIONS` are all `lazy_static`, so a proof that touches
+- **The tables are built at runtime.** `MAGIC`, `ZORB`, `ATTACK_MASKS` and
+  `BASE_CONVERSIONS` are `lazy_static`, so a proof that touches
   `set_piece_index` has to reason about a `Once`, an atomic and a prng seeding
   768 numbers before it gets to the first line that matters. This is the whole
   difference between a harness that finishes and one that does not.
 
-  `ZORB` and `PVT` are constants under `cfg(kani)` as a stopgap, which is only
-  sound for harnesses that are not about the key. Computing them at build time
-  instead would make them constants for everyone, let the key harnesses have
-  the real numbers, remove the `lazy_static` dependency, and cut the startup
-  that `-startup-ms 20000` in the development notes exists to accommodate.
+  `PVT` is a constant now, for everyone rather than only for proofs, which is
+  what let the make/unmake harness run against real piece square values instead
+  of zeros. `ZORB` is still zeroed under `cfg(kani)`, which is a stopgap and is
+  only sound for harnesses that are not about the key. A `const fn` splitmix64
+  would finish the job, but it changes the numbers, and different numbers mean a
+  different pattern of hash collisions, so it will move the pinned node counts
+  in `test_node_counts_have_not_moved`. Worth doing on its own rather than
+  bundled with anything else.
+
+  The same treatment for the rest would remove the `lazy_static` dependency
+  outright, and cut the startup that `-startup-ms 20000` in the development
+  notes exists to accommodate. `MAGIC` is the hard one: it holds `Vec`s, which
+  cannot be built in a const at all, so it needs fixed size arrays first or a
+  build script that writes the tables out as literals.
 - **`Board` is 32,896 bytes, and it is `Copy`.** Almost all of that is
   `history`, a `[Option<PlayState>; 1024]` stored inline. A proof that compares
   a board before and after a move compares that array too. `MAX_GAME_SIZE` is
