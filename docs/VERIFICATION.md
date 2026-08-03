@@ -54,6 +54,9 @@ treat the numbers as orders of magnitude rather than as figures.
 | make/unmake, one knight a side, lazy tables | killed at 25 minutes |
 | make/unmake, one knight a side, constant tables | 108s |
 | make/unmake, symbolic occupancy, constant tables | 82s, 4170 checks |
+| the same, once the tables held real values | 283s, 4254 checks |
+| eval counters against a recompute, symbolic position | killed at 25 minutes |
+| eval counters against a recompute, placed pieces | 72s, 3821 checks |
 
 Narrowing the position from two symbolic occupancy words to one knight a side is
 a factor of ten fewer symbolic bits, and it did not help twice over. It did not
@@ -68,6 +71,30 @@ worth knowing before writing any more harnesses, and it is why the tables being
 built at runtime is the first thing on the list below rather than the last. The
 instinct to make a proof cheaper by shrinking the board is worth resisting until
 there is a measurement saying the board is what costs.
+
+## What the first three harnesses found
+
+Nothing. All three passed on the first run, which is the honest headline and was
+not the expectation going in.
+
+That is not quite a wasted afternoon, but the reason they passed is worth
+writing down, because it says where not to look next. Every update to `psqt` and
+to the material counters goes through `set_piece_index` and `clear_piece_index`,
+which are exact inverses of one another. Nothing that routes through those two
+can drift, whatever the move does, and every path in make and unmake routes
+through them. The counters are correct by construction rather than by luck, and
+a proof was an expensive way to find that out.
+
+What came out of it instead was `recompute_psqt`, `recompute_material`, and a
+`debug_assert` in `make_move` comparing one against the other. That assert is
+the wider net by a long way: it runs over every position perft reaches, so it
+covers pawns, promotions, castling and en passant, which no harness here gets
+near. It costs the debug test run about half as long again, 66s to 99s, and it
+also found nothing, over every position in the perft suite.
+
+It earns its place going forward rather than now. A null move flips the side to
+move without moving a piece, and is the next change due that could put the
+counters out of step.
 
 ## Properties
 
