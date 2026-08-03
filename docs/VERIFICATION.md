@@ -42,17 +42,22 @@ treat the numbers as orders of magnitude rather than as figures.
 | `pop_lsb`, over every `u64` | 0.9s |
 | make/unmake, symbolic occupancy, lazy tables | killed at 30 minutes |
 | make/unmake, one knight a side, lazy tables | killed at 25 minutes |
-| make/unmake, one knight a side, constant tables | 108s, 4174 checks |
+| make/unmake, one knight a side, constant tables | 108s |
+| make/unmake, symbolic occupancy, constant tables | 70s, 4134 checks |
 
-The first two lines were the interesting ones. Narrowing the position from two
-symbolic occupancy words to one knight a side is a factor of ten fewer symbolic
-bits and it changed nothing: the solver still did not finish. Taking
-`lazy_static` off the path finished the same harness in under two minutes.
+Narrowing the position from two symbolic occupancy words to one knight a side is
+a factor of ten fewer symbolic bits, and it did not help twice over. It did not
+rescue the harness while the tables were still lazy, and once they were not, the
+narrower harness was the slower of the two: the assumptions needed to pin the
+knights somewhere legal cost more than leaving both words free. The narrow
+harness has been deleted.
 
-So the cost of a proof here is dominated by what it has to reason about before
-it reaches the code under test, not by the size of the space it covers. That is
+The cost of a proof here is dominated by what it has to reason about before it
+reaches the code under test, not by the size of the space it covers. That is
 worth knowing before writing any more harnesses, and it is why the tables being
-built at runtime is the first thing on the list below rather than the last.
+built at runtime is the first thing on the list below rather than the last. The
+instinct to make a proof cheaper by shrinking the board is worth resisting until
+there is a measurement saying the board is what costs.
 
 ## Properties
 
