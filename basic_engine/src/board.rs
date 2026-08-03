@@ -63,6 +63,20 @@ const F8: u8 = 61;
 const G8: u8 = 62;
 const H8: u8 = 63;
 
+// lazy_static expands to a Once and an atomic, which a model checker has to
+// reason about before it reaches the first line that matters. These two are on
+// the make/unmake path, so a proof pays for them at every call.
+#[cfg(kani)]
+static ZORB: Zorbrist = Zorbrist::ZERO;
+#[cfg(kani)]
+static PVT: PieceValueTables = PieceValueTables::ZERO;
+
+#[cfg(not(kani))]
+lazy_static! {
+    static ref ZORB: Zorbrist = Zorbrist::new();
+    static ref PVT: PieceValueTables = PieceValueTables::new();
+}
+
 lazy_static! {
     static ref ATTACK_MASKS: AttackMasks = AttackMasks::new();
     pub static ref BASE_CONVERSIONS: BaseConversions = BaseConversions::new();
@@ -74,8 +88,6 @@ lazy_static! {
         coordinate_to_index(8, File::E),
         coordinate_to_index(8, File::H),
     ];
-    static ref ZORB: Zorbrist = Zorbrist::new();
-    static ref PVT: PieceValueTables = PieceValueTables::new();
     static ref MAGIC: Magic = Magic::new();
     static ref B1_C1_D1: u64 = {
         let mut mask = 0u64;

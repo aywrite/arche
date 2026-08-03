@@ -12,6 +12,16 @@ pub struct Zorbrist {
 }
 
 impl Zorbrist {
+    /// All zeros, for proofs that are about make/unmake rather than about the
+    /// key. Building the real table means seeding a prng inside the proof.
+    #[cfg(kani)]
+    pub const ZERO: Zorbrist = Zorbrist {
+        pieces: [[0; 64]; 12],
+        side: 0,
+        castling: [0; 4],
+        en_passant: [0; 8],
+    };
+
     pub fn new() -> Self {
         let mut rng: SmallRng = <SmallRng as SeedableRng>::seed_from_u64(0x38655440d1b63d78);
         let mut pieces = [[0u64; 64]; 12];

@@ -44,6 +44,21 @@ impl PieceValueTables {
         }
     }
 
+    /// All zeros, see Zorbrist::ZERO.
+    #[cfg(kani)]
+    pub const ZERO: PieceValueTables = PieceValueTables {
+        white_pawns: [0; 64],
+        black_pawns: [0; 64],
+        white_knights: [0; 64],
+        black_knights: [0; 64],
+        white_bishops: [0; 64],
+        black_bishops: [0; 64],
+        white_rooks: [0; 64],
+        black_rooks: [0; 64],
+        white_queens: [0; 64],
+        black_queens: [0; 64],
+    };
+
     pub fn new() -> Self {
         // From https://www.chessprogramming.org/Simplified_Evaluation_Function.
         //
