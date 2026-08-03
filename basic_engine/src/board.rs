@@ -1,6 +1,6 @@
 use super::bitboard::BitBoard;
 use super::misc::{
-    CastlePermissions, Color, Coordinate, File, Piece, PromotePiece, coordinate_to_index,
+    CastlePermissions, Color, Coordinate, File, Piece, PromotePiece, Score, coordinate_to_index,
     coordinate_to_large_index, index_to_coordinate,
 };
 use super::play::Play;
@@ -568,12 +568,11 @@ impl Board {
     }
 
     #[inline]
-    pub fn eval(&self) -> i64 {
+    pub fn eval(&self) -> Score {
         // TODO should this return white value & black value as separate numbers instead?
-        // TODO should this return i32 or isize instead
-        let eval = i64::from(self.white_value) - i64::from(self.black_value);
+        let eval = self.white_value as i32 - self.black_value as i32;
 
-        let eval = eval + self.psqt as i64;
+        let eval = (eval + self.psqt as i32) as Score;
 
         match self.active_color {
             Color::White => eval,
