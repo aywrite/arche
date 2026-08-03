@@ -10,12 +10,22 @@ than picking a value, `kani::any()` stands for every value at once, and
 can fail for any of them, kani says which. Where proptest samples the space,
 kani covers it.
 
-It is not a replacement for perft. Perft checks that the generator produces the
-right *set* of moves, which is the property kani is worst at, because the answer
-is a count over a tree rather than a fact about one function. Kani checks the
-properties perft cannot see: that make and unmake agree, that the key stays in
-step with the position, that the invariants the rest of the code assumes are
-actually maintained.
+It is not a replacement for perft, and it is worth being precise about where the
+line falls, because the obvious answer is wrong.
+
+Perft checks that the generator produces the right *set* of moves, which is the
+property kani is worst at: the answer is a count over a tree rather than a fact
+about one function. Perft is also a much better check on make and unmake than it
+looks. It makes and unmakes tens of millions of times and any corruption
+compounds into a wrong count, so a make/unmake proof is mostly confirming
+something already well covered. That is worth knowing before spending a week on
+one: the first harness here passed on the first run, and so did the second.
+
+What perft genuinely cannot see is the state it never inspects. It counts nodes,
+so it never looks at an evaluation and never looks at a key. `psqt`, the material
+counters and `key` are all maintained a piece at a time as moves are made, and a
+mistake in any of them leaves every perft count correct while the engine quietly
+plays worse. That, not make/unmake, is where a proof earns its keep.
 
 ## Running it
 
