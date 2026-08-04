@@ -412,7 +412,7 @@ impl Board {
             let mut __m = kmoves;
             while __m != 0 {
                 let to = pop_lsb(&mut __m);
-                let capture = self.get_piece_index(to);
+                let capture = self.capture_on(to, capture_mask);
                 moves.push(Play::new(from, to, capture, None, false, false));
             }
         }
@@ -424,7 +424,7 @@ impl Board {
             let mut __m = move_mask;
             while __m != 0 {
                 let to = pop_lsb(&mut __m);
-                let capture = self.get_piece_index(to);
+                let capture = self.capture_on(to, capture_mask);
                 moves.push(Play::new(from, to, capture, None, false, false));
             }
         }
@@ -436,7 +436,7 @@ impl Board {
             let mut __m = move_mask;
             while __m != 0 {
                 let to = pop_lsb(&mut __m);
-                let capture = self.get_piece_index(to);
+                let capture = self.capture_on(to, capture_mask);
                 moves.push(Play::new(from, to, capture, None, false, false));
             }
         }
@@ -449,7 +449,7 @@ impl Board {
             let mut __m = kmove;
             while __m != 0 {
                 let to = pop_lsb(&mut __m);
-                let capture = self.get_piece_index(to);
+                let capture = self.capture_on(to, capture_mask);
                 moves.push(Play::new(from, to, capture, None, false, false));
             }
             // 1. castle permission is available
@@ -1047,6 +1047,19 @@ impl Board {
                 self.white_value -= piece.material_value();
             }
         };
+    }
+
+    /// What is being taken on the to square, without asking when nothing can
+    /// be. `get_piece_index` only answers `None` after testing all six piece
+    /// bitboards, and most of the moves generated are quiet, so the mask of
+    /// squares a capture is even possible on is worth a look first.
+    #[inline(always)]
+    fn capture_on(&self, to: u8, capture_mask: u64) -> Option<Piece> {
+        if capture_mask.is_bit_set(to) {
+            self.get_piece_index(to)
+        } else {
+            None
+        }
     }
 
     #[inline]
