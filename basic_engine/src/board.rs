@@ -842,10 +842,7 @@ impl Board {
         }
 
         // return false if king in check
-        let king_index = match self.active_color {
-            Color::White => (self.kings & self.white).trailing_zeros() as u8,
-            Color::Black => (self.kings & self.black).trailing_zeros() as u8,
-        };
+        let king_index = self.king_index(self.active_color);
         self.active_color = opposing_color;
         self.key ^= zorb.side;
         self.debug_assert_state_in_step();
@@ -951,18 +948,19 @@ impl Board {
         from & self.pawns & pawns != 0
     }
 
-    pub fn is_king_attacked(&self) -> bool {
-        let (index, opposing_color) = match self.active_color {
-            Color::White => (
-                (self.kings & self.white).trailing_zeros() as u8,
-                Color::Black,
-            ),
-            Color::Black => (
-                (self.kings & self.black).trailing_zeros() as u8,
-                Color::White,
-            ),
+    /// Where this side's king stands. Every board has exactly one king a side,
+    /// which is what `from_fen` checks for: without a king this returns 64 and
+    /// the attack masks are indexed off the end.
+    fn king_index(&self, color: Color) -> u8 {
+        let mask = match color {
+            Color::White => self.white,
+            Color::Black => self.black,
         };
-        self.square_attacked(index, opposing_color)
+        (self.kings & mask).trailing_zeros() as u8
+    }
+
+    pub fn is_king_attacked(&self) -> bool {
+        self.square_attacked(self.king_index(self.active_color), !self.active_color)
     }
 
     pub fn attacked_print(&self, color: Color) {
@@ -1278,6 +1276,27 @@ impl Game for Board {
                 _ => return Err("unexpected character in fen".to_string()),
             };
         }
+        // Everything below assumes a position which could actually arise, and
+        // crashes rather than playing badly when it could not. A king a side is
+        // what lets king_index return a real square, and the side which just
+        // moved being out of check is what stops the search replying by taking
+        // the king and emptying that square again.
+        for color in [Color::White, Color::Black] {
+            let mask = match color {
+                Color::White => board.white,
+                Color::Black => board.black,
+            };
+            if (board.kings & mask).count_ones() != 1 {
+                return Err(format!(
+                    "Error parsing FEN: expected exactly one {:?} king",
+                    color
+                ));
+            }
+        }
+        if board.square_attacked(board.king_index(!board.active_color), board.active_color) {
+            return Err("Error parsing FEN: the side which is not to move is in check".to_string());
+        }
+
         // fold the non-piece state into the position key so that keys are
         // comparable between boards parsed from FEN and boards reached by
         // playing moves
@@ -1906,6 +1925,32 @@ mod test_fen {
             Board::from_fen("rnbqkbnar/pppppppp/8/8/4P3/8/PPPP1PPP/RNBQKBNR b KQkq e3 0 1")
                 .is_err()
         );
+    }
+
+    /// Each of these parsed happily and then took the engine down on the first
+    /// search, which is the worst place to find out: mid game, from a position
+    /// the interface sent us.
+    #[test]
+    fn a_position_which_could_not_arise_is_rejected_rather_than_searched() {
+        for (fen, why) in [
+            ("8/8/8/8/8/8/8/8 w - - 0 1", "no kings at all"),
+            ("4k3/8/8/8/8/8/8/8 w - - 0 1", "no white king"),
+            ("8/8/8/8/8/8/8/4K3 w - - 0 1", "no black king"),
+            ("4k2k/8/8/8/8/8/8/4K3 w - - 0 1", "two black kings"),
+            (
+                "4k3/8/8/8/8/8/8/4R1K1 w - - 0 1",
+                "black is in check with white to move, so white takes the king",
+            ),
+        ] {
+            assert!(Board::from_fen(fen).is_err(), "{}: {}", why, fen);
+        }
+    }
+
+    /// The side to move being in check is the ordinary case and has to stay
+    /// accepted, which is what stops the check above rejecting real positions.
+    #[test]
+    fn a_position_where_the_side_to_move_is_in_check_is_accepted() {
+        assert!(Board::from_fen("4k3/8/8/8/8/8/8/4R1K1 b - - 0 1").is_ok());
     }
 }
 

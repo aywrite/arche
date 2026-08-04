@@ -251,6 +251,9 @@ mod tests {
             "position fen",
             "position fen not a fen at all",
             "position fen 8/8/8/8/8/8/8/8 w - - 0 1 moves e2e4",
+            // both of these parsed, and then took the engine down on the search
+            "position fen 8/8/8/8/8/8/8/8 w - - 0 1",
+            "position fen 4k3/8/8/8/8/8/8/4R1K1 w - - 0 1",
             "position startpos moves e2e4 zzzz",
             "position startpos moves e2e4 e2e4",
         ] {
