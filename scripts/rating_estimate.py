@@ -169,8 +169,10 @@ def read_pairings(
     # estimate being drawn from a fraction of the games that were paid for, so
     # say how many rather than quietly fitting whatever finished.
     if unfinished:
+        plural = "" if unfinished == 1 else "s"
         print(
-            f"{unfinished} games have no result and are not in the fit", file=sys.stderr
+            f"{unfinished} game{plural} with no result, left out of the fit",
+            file=sys.stderr,
         )
     for name in ladder:
         if sum(tally[name]) == 0:
