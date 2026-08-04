@@ -99,8 +99,11 @@ mod test_zorbrist {
     use super::Zorbrist;
     use pretty_assertions::assert_eq;
 
+    /// The keys are constants rather than draws now, so this guards the seed and
+    /// the generator rather than a run of a prng: two equal keys would make two
+    /// different positions share a hash.
     #[test]
-    fn test_all_random_numbers_unique() {
+    fn every_key_is_distinct() {
         let z = Zorbrist::TABLE;
         let mut all = z.pieces.iter().flatten().copied().collect::<Vec<u64>>();
         all.push(z.side);
