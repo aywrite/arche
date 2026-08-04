@@ -179,9 +179,13 @@ jobs:
             echo "[Stash](https://github.com/mhouppin/stash-bot)."
             echo
             cat table.md
+            # one alert with every remark inside it, rather than one alert each,
+            # which renders as the first alert with the rest of the markup
+            # showing through as text
             if [ -s notes.txt ]; then
               echo
-              sed 's/^/> [!WARNING]\n> /' notes.txt
+              echo "> [!WARNING]"
+              sed 's/^/> /' notes.txt
             fi
             echo
             echo "The opponents were rated at 2m+1s on other hardware, so the"

@@ -19,14 +19,11 @@ on:
         description: The line to add, without the marker
         type: string
         required: true
-      tag:
-        description: The release to edit. Defaults to the ref this was called for.
-        type: string
-        required: false
 
-permissions:
-  contents: read
-
+# No workflow level permissions. There is one job, it declares what it needs,
+# and a reusable workflow cannot grant itself more than its caller allowed
+# anyway, so a second more restrictive declaration up here would only be one
+# more thing to reason about on the last step of a release.
 jobs:
   append:
     runs-on: ubuntu-latest
@@ -36,7 +33,7 @@ jobs:
     concurrency:
       # Cancelling would lose the line rather than delay it, and these take
       # seconds, so a caller that has waited its turn is left to finish.
-      group: release-notes-${{ inputs.tag || github.ref }}
+      group: release-notes-${{ github.ref_name }}
       cancel-in-progress: false
     steps:
       - name: Add the line to the release notes
@@ -46,7 +43,7 @@ jobs:
           GH_REPO: ${{ github.repository }}
           MARKER: ${{ inputs.marker }}
           LINE: ${{ inputs.line }}
-          TAG: ${{ inputs.tag || github.ref_name }}
+          TAG: ${{ github.ref_name }}
         run: |
           # the marker is an html comment, so it does not render but does let a
           # rerun replace the line it wrote last time rather than add another
