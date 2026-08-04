@@ -39,6 +39,10 @@ struct PlayState {
 // replayed by the gui plus the depth of the current search, 375 was not enough
 // for games which reached move 175 or so.
 const MAX_GAME_SIZE: usize = 1024;
+
+/// The value a position key starts from, before any piece or right is folded
+/// into it. Arbitrary, it only has to be the same everywhere.
+const INITIAL_KEY: u64 = 2_340_980_257_093;
 static EMPTY_HISTORY: [Option<PlayState>; MAX_GAME_SIZE] = [None; MAX_GAME_SIZE];
 
 const A1: u8 = 0;
@@ -581,17 +585,41 @@ impl Board {
         }
     }
 
-    /// Check the incrementally maintained counters against the position they
-    /// describe. Perft never looks at either, so without this a mistake in them
-    /// leaves every count correct and only shows up as the engine playing
-    /// slightly worse. Debug only: it walks the whole board.
-    fn debug_assert_eval_in_step(&self) {
+    /// Check everything maintained a piece at a time against the position it
+    /// describes. Perft looks at none of it, so without this a mistake leaves
+    /// every count correct and shows up only as the engine evaluating or
+    /// transposing wrongly. Debug only: it walks the whole board.
+    fn debug_assert_state_in_step(&self) {
         debug_assert_eq!(self.psqt, self.recompute_psqt(), "psqt out of step");
         debug_assert_eq!(
             (self.white_value, self.black_value),
             self.recompute_material(),
             "material out of step"
         );
+        debug_assert_eq!(self.key, self.recompute_key(), "key out of step");
+    }
+
+    /// The position key computed from the board rather than maintained as moves
+    /// are made, built the way `from_fen` builds it. `key` is meant to equal
+    /// this at all times, and until now nothing compared the two except a
+    /// handful of tests naming specific positions.
+    pub fn recompute_key(&self) -> u64 {
+        let mut key = INITIAL_KEY;
+        let mut occupied = self.white | self.black;
+        while occupied != 0 {
+            let index = pop_lsb(&mut occupied);
+            if let Some((piece, color)) = self.get_piece_and_color_index(index) {
+                key ^= ZORB.get_piece_key(index, piece, color);
+            }
+        }
+        if matches!(self.active_color, Color::Black) {
+            key ^= ZORB.side;
+        }
+        key ^= ZORB.castle_key(self.castle);
+        if let Some(en_passant) = self.en_passant {
+            key ^= ZORB.en_passant_key(en_passant.as_index());
+        }
+        key
     }
 
     /// The piece square score of the position as it stands, computed from the
@@ -817,7 +845,7 @@ impl Board {
         };
         self.active_color = opposing_color;
         self.key ^= zorb.side;
-        self.debug_assert_eval_in_step();
+        self.debug_assert_state_in_step();
         if self.square_attacked(king_index, opposing_color) {
             self.undo_move().unwrap();
             false
@@ -1175,7 +1203,7 @@ impl Game for Board {
             psqt: 0,
 
             history: EMPTY_HISTORY,
-            key: 2340980257093, // TODO start with random number?
+            key: INITIAL_KEY,
         };
         if matches!(board.active_color, Color::Black) {
             board.ply += 1;
