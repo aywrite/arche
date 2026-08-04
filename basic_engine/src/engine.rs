@@ -50,11 +50,9 @@ pub trait Engine {
     /// no longer applies to it.
     fn new_game(&mut self);
 
-    fn should_stop(&self) -> bool;
-
     fn perft(&mut self);
 
-    fn search(&mut self, depth: u8) -> Option<SearchResult>;
+    fn search(&mut self, depth: u8) -> SearchOutcome;
 
     //fn make_move(&mut self, play: &Play);
 
@@ -69,42 +67,46 @@ pub trait Engine {
         self.configure(search_options.start_time, search_options.search_duration);
 
         for depth in 1..=max_depth {
-            let search_result = self.search(depth);
-            if self.should_stop() {
-                // Fall back to the interrupted iteration's move if we ran out
-                // of time before the first iteration completed
-                return match (best_move, search_result) {
-                    (Some(play), _) => Some(play),
-                    (None, result) => result.map(|r| r.best_move),
-                };
-            }
-            if let Some(m) = &search_result {
-                best_move = Some(m.best_move);
-                if search_options.print_info {
-                    if let Some(mate_in) = m.checkmate_in() {
-                        println!(
-                            "info depth {} seldepth {} nodes {} score mate {} pv {}",
-                            depth,
-                            m.selective_depth,
-                            m.nodes,
-                            mate_in,
-                            self.pv_line(),
-                        );
-                    } else {
-                        println!(
-                            "info depth {} seldepth {} nodes {} score cp {} pv {}",
-                            depth,
-                            m.selective_depth,
-                            m.nodes,
-                            m.score,
-                            self.pv_line(),
-                            // TODO add search time to this
-                            // TODO add nodes per second
-                        );
+            match self.search(depth) {
+                SearchOutcome::Aborted(partial) => {
+                    // A completed shallower iteration outranks the interrupted
+                    // one's best-so-far, which may be a fail high that never
+                    // got re-searched. The partial only fills in when depth 1
+                    // itself ran out of time.
+                    return best_move.or_else(|| partial.map(|r| r.best_move));
+                }
+                SearchOutcome::GameOver => {
+                    // checkmate, stalemate or a rule draw: deeper searches
+                    // cannot change it, so don't run them
+                    println!("info string no legal moves identified");
+                    return None;
+                }
+                SearchOutcome::Complete(m) => {
+                    best_move = Some(m.best_move);
+                    if search_options.print_info {
+                        if let Some(mate_in) = m.checkmate_in() {
+                            println!(
+                                "info depth {} seldepth {} nodes {} score mate {} pv {}",
+                                depth,
+                                m.selective_depth,
+                                m.nodes,
+                                mate_in,
+                                self.pv_line(),
+                            );
+                        } else {
+                            println!(
+                                "info depth {} seldepth {} nodes {} score cp {} pv {}",
+                                depth,
+                                m.selective_depth,
+                                m.nodes,
+                                m.score,
+                                self.pv_line(),
+                                // TODO add search time to this
+                                // TODO add nodes per second
+                            );
+                        }
                     }
                 }
-            } else {
-                println!("info string no legal moves identified");
             }
         }
         best_move
@@ -155,7 +157,6 @@ impl SearchParameters {
 pub struct AlphaBeta {
     pub board: Board,
     nodes: u64,
-    score: Score,
     moves: HashTable,
     selective_depth: u8,
     // search parameters
@@ -163,7 +164,6 @@ pub struct AlphaBeta {
     // search state
     start_time: time::Instant,
     search_duration: Option<time::Duration>,
-    should_stop: bool,
 }
 
 impl AlphaBeta {
@@ -171,13 +171,11 @@ impl AlphaBeta {
         Self {
             board,
             nodes: 0,
-            score: 0,
             moves: HashTable::with_capacity_bytes(bytes),
             search_depth: 0,
             selective_depth: 0,
             start_time: time::Instant::now(),
             search_duration: None,
-            should_stop: false,
         }
     }
 
@@ -189,26 +187,40 @@ impl AlphaBeta {
         self.moves.clear();
     }
 
-    fn check_if_should_stop(&mut self) {
-        if let Some(search_time) = self.search_duration {
-            self.should_stop = self.start_time.elapsed() >= search_time;
+    /// Cooperative deadline check, polled every few thousand nodes so the
+    /// clock is not read on every one of them.
+    fn poll_deadline(&self) -> Result<(), Aborted> {
+        if self.nodes % 3000 == 0 {
+            if let Some(search_time) = self.search_duration {
+                if self.start_time.elapsed() >= search_time {
+                    return Err(Aborted);
+                }
+            }
+        }
+        Ok(())
+    }
+
+    fn result_for(&self, best_move: Play, score: Score) -> SearchResult {
+        SearchResult {
+            nodes: self.nodes,
+            score,
+            selective_depth: self.selective_depth,
+            best_move,
         }
     }
 
-    fn quiescence(&mut self, mut alpha: Score, beta: Score) -> Score {
+    fn quiescence(&mut self, mut alpha: Score, beta: Score) -> Result<Score, Aborted> {
         self.selective_depth = self.selective_depth.max(self.board.line_ply as u8);
         if self.board.line_ply >= MAX_DEPTH.into() {
-            return self.eval();
+            return Ok(self.eval());
         }
 
-        if self.nodes % 3000 == 0 {
-            self.check_if_should_stop();
-        }
+        self.poll_deadline()?;
         self.nodes += 1;
 
         let score = self.eval();
         if score >= beta {
-            return beta;
+            return Ok(beta);
         } else if score >= alpha {
             alpha = score;
         }
@@ -230,17 +242,14 @@ impl AlphaBeta {
 
         for m in &moves {
             if self.board.make_move(m) {
-                score = -self.quiescence(-beta, -alpha);
+                // undo before an abort can propagate, or the board would keep
+                // the aborted line
+                let result = self.quiescence(-beta, -alpha);
                 self.board.undo_move().unwrap();
-                if self.should_stop {
-                    // The search was aborted somewhere below us, so the score
-                    // is meaningless and must not be stored or used.
-                    // TODO return an error instead
-                    return 0;
-                }
+                score = -result?;
                 if score > alpha {
                     if score >= beta {
-                        return beta;
+                        return Ok(beta);
                     }
                     alpha = score;
                     best_move = Some(*m);
@@ -260,7 +269,7 @@ impl AlphaBeta {
                 },
             );
         }
-        alpha
+        Ok(alpha)
     }
 
     /// Look up the current position in the transposition table.
@@ -299,19 +308,21 @@ impl AlphaBeta {
         (None, None)
     }
 
-    fn alpha_beta(&mut self, mut alpha: Score, beta: Score, mut depth: u8) -> Score {
-        if self.nodes % 3000 == 0 {
-            self.check_if_should_stop();
-        }
+    fn alpha_beta(
+        &mut self,
+        mut alpha: Score,
+        beta: Score,
+        mut depth: u8,
+    ) -> Result<Score, Aborted> {
+        self.poll_deadline()?;
         self.selective_depth = self.selective_depth.max(self.board.line_ply as u8);
         self.nodes += 1;
 
-        // a repetition at the root is not a finished game, the engine still has to move, so only
-        // score it as a draw further down the line
-        if self.board.fifty_move_rule >= 100
-            || (self.board.line_ply > 0 && self.board.has_repeated())
-        {
-            return 0;
+        // every node here sits below the root, which search() owns: a
+        // repetition there is not a finished game because the engine still has
+        // to move, but from here on it is a draw either side can take
+        if self.board.fifty_move_rule >= 100 || self.board.has_repeated() {
+            return Ok(0);
         }
         let in_check = self.board.is_king_attacked();
         if in_check {
@@ -322,7 +333,7 @@ impl AlphaBeta {
             if self.search_depth >= 4 {
                 return self.quiescence(alpha, beta);
             }
-            return self.eval();
+            return Ok(self.eval());
         }
 
         let old_alpha = alpha;
@@ -331,7 +342,7 @@ impl AlphaBeta {
         let mut best_move: Option<&Play> = None;
         let (pv_play, tt_score) = self.get_transposition(self.board.key, alpha, beta, depth);
         if let Some(tt_score) = tt_score {
-            return tt_score;
+            return Ok(tt_score);
         }
 
         let mut moves = self.board.generate_moves();
@@ -348,14 +359,12 @@ impl AlphaBeta {
         for m in &moves {
             if self.board.make_move(m) {
                 found_legal_move = true;
-                score = -self.alpha_beta(-beta, -alpha, depth - 1);
+                // undo before an abort can propagate, or the board would keep
+                // the aborted line. Propagating also keeps the meaningless
+                // score of an aborted frame away from the stores below.
+                let result = self.alpha_beta(-beta, -alpha, depth - 1);
                 self.board.undo_move().unwrap();
-                if self.should_stop {
-                    // The search was aborted somewhere below us, so the score
-                    // is meaningless and must not be stored or used.
-                    // TODO return an error instead
-                    return 0;
-                }
+                score = -result?;
                 if score > alpha {
                     best_move = Some(m);
                     if score >= beta {
@@ -369,7 +378,7 @@ impl AlphaBeta {
                                 ply: self.board.ply as u16,
                             },
                         );
-                        return beta;
+                        return Ok(beta);
                     }
                     alpha = score;
                 }
@@ -378,9 +387,9 @@ impl AlphaBeta {
 
         if !found_legal_move {
             if in_check {
-                return -CHECKMATE_SCORE + (self.board.line_ply as Score);
+                return Ok(-CHECKMATE_SCORE + (self.board.line_ply as Score));
             }
-            return 0;
+            return Ok(0);
         }
 
         if alpha != old_alpha {
@@ -395,7 +404,7 @@ impl AlphaBeta {
                 },
             );
         }
-        alpha
+        Ok(alpha)
     }
 }
 
@@ -509,6 +518,27 @@ impl fmt::Display for PvLine {
     }
 }
 
+/// The verdict of one fixed-depth search of the root.
+#[derive(Debug)]
+pub enum SearchOutcome {
+    /// The search finished the requested depth; its result can be trusted
+    /// without checking anything else.
+    Complete(SearchResult),
+    /// The root has no play to make: checkmate, stalemate, or a rule draw.
+    /// Searching deeper cannot change it.
+    GameOver,
+    /// The deadline arrived partway through, carrying a best-so-far when the
+    /// root got far enough to have one. Weaker than any Complete result: the
+    /// play may be a fail high that never got re-searched.
+    Aborted(Option<SearchResult>),
+}
+
+/// The search hit its deadline and unwound without finishing. The score of an
+/// aborted frame is meaningless, and returning this instead of a score is what
+/// keeps it out of the transposition table: propagation with `?` never reaches
+/// the stores.
+struct Aborted;
+
 #[derive(Debug)]
 pub struct SearchResult {
     nodes: u64,          // The number of results examined as part of the search
@@ -536,7 +566,7 @@ mod test_search {
     use super::Board;
     use super::Engine;
     use super::Game;
-    use super::{Node, Play, Pv};
+    use super::{Node, Play, Pv, SearchOutcome, SearchResult};
     use pretty_assertions::assert_eq;
     use std::time;
 
@@ -548,6 +578,15 @@ mod test_search {
 
     fn engine(board: Board) -> AlphaBeta {
         AlphaBeta::with_table_bytes(board, TABLE_BYTES)
+    }
+
+    /// Unwrap the outcome these tests expect: a search that ran to the depth
+    /// asked of it.
+    fn completed(outcome: SearchOutcome) -> SearchResult {
+        match outcome {
+            SearchOutcome::Complete(result) => result,
+            other => panic!("expected a completed search, got {:?}", other),
+        }
     }
 
     /// The move of this name in this position, so that a test can name a line
@@ -578,7 +617,7 @@ mod test_search {
         let game =
             Board::from_fen("r4rk1/pppb1ppp/4pn2/6N1/3P4/2qBP3/P4PPP/3R1R1K w - - 2 16").unwrap();
         let mut e = engine(game);
-        let result = e.search(7).unwrap();
+        let result = completed(e.search(7));
         assert!(
             result.score < -800,
             "expect bad score (first) got {}",
@@ -589,9 +628,9 @@ mod test_search {
             Board::from_fen("r1b2rk1/ppp1qppp/4pn2/6N1/Qn1P4/2NBP3/PP3PPP/R3K2R w KQ - 9 12")
                 .unwrap();
         let mut e = engine(game);
-        e.search(7).unwrap();
+        completed(e.search(7));
         let _ = e.parse_fen("r4rk1/pppb1ppp/4pn2/6N1/3P4/2qBP3/P4PPP/3R1R1K w - - 2 16");
-        let result = e.search(7).unwrap();
+        let result = completed(e.search(7));
         assert!(result.score < -800, "expect bad score got {}", result.score);
     }
 
@@ -600,7 +639,7 @@ mod test_search {
         let game =
             Board::from_fen("2rr3k/pp3pp1/1nnqbN1p/3pN3/2pP4/2P3Q1/PPB4P/R4RK1 w - - 0 0").unwrap();
         let mut e = engine(game);
-        let result = e.search(4).unwrap();
+        let result = completed(e.search(4));
         assert_eq!(result.checkmate_in(), Some(2));
         assert_eq!(format!("{}", result.best_move), "g3g6");
     }
@@ -610,11 +649,11 @@ mod test_search {
         let game =
             Board::from_fen("2rr3k/pp3pp1/1nnqbN1p/3pN3/2pP4/2P3Q1/PPB4P/R4RK1 w - - 0 0").unwrap();
         let mut e = engine(game);
-        let result = e.search(4).unwrap();
+        let result = completed(e.search(4));
         assert_eq!(result.checkmate_in(), Some(2));
         // searching again deeper with a warm cache reuses mate scores stored
         // at different plies, the reported mate distance must not change
-        let result = e.search(6).unwrap();
+        let result = completed(e.search(6));
         assert_eq!(result.checkmate_in(), Some(2));
         assert_eq!(format!("{}", result.best_move), "g3g6");
     }
@@ -624,7 +663,7 @@ mod test_search {
         let game =
             Board::from_fen("2rr3k/pp3pp1/1nnqbNQp/3pN3/2pP4/2P5/PPB4P/R4RK1 b - - 1 1").unwrap();
         let mut e = engine(game);
-        let result = e.search(4).unwrap();
+        let result = completed(e.search(4));
         assert_eq!(result.checkmate_in(), Some(-1));
     }
 
@@ -633,17 +672,56 @@ mod test_search {
         // white is down material in this position so should play for fifty move draw
         let game = Board::from_fen("5k2/1p3p1p/p3pK1P/P1P1P3/4bP2/2B5/8/8 w - - 99 112").unwrap();
         let mut e = engine(game);
-        let result = e.search(3).unwrap();
+        let result = completed(e.search(3));
         assert_eq!(result.score, 0);
     }
 
     #[test]
-    fn test_fifty_move_rule_no_legal_moves() {
-        // The fifty move rules has been triggered - there should not be any legal moves
+    fn test_fifty_move_rule_game_over() {
+        // The fifty move rule has been triggered - the game is already drawn,
+        // there is no move to look for
         let game = Board::from_fen("5k2/1p3p1p/p3pK1P/P1P1P3/4bP2/2B5/8/8 w - - 100 112").unwrap();
         let mut e = engine(game);
-        let result = e.search(3);
-        assert!(result.is_none());
+        assert!(matches!(e.search(3), SearchOutcome::GameOver));
+    }
+
+    #[test]
+    fn test_checkmated_root_is_game_over() {
+        // fool's mate: white to move with no reply
+        let game = Board::from_fen("rnb1kbnr/pppp1ppp/8/4p3/6Pq/5P2/PPPPP2P/RNBQKBNR w KQkq - 1 3")
+            .unwrap();
+        let mut e = engine(game);
+        assert!(matches!(e.search(3), SearchOutcome::GameOver));
+    }
+
+    #[test]
+    fn test_stalemated_root_is_game_over() {
+        let game = Board::from_fen("k7/8/1Q6/8/8/8/8/7K b - - 0 1").unwrap();
+        let mut e = engine(game);
+        assert!(matches!(e.search(3), SearchOutcome::GameOver));
+    }
+
+    #[test]
+    fn test_search_with_no_time_budget_aborts_without_a_move() {
+        let mut e = engine(Board::new());
+        e.configure(time::Instant::now(), Some(time::Duration::ZERO));
+        assert!(matches!(e.search(5), SearchOutcome::Aborted(None)));
+    }
+
+    #[test]
+    fn test_timed_out_deepening_still_returns_a_move() {
+        // The budget runs out long before MAX_DEPTH can complete, so the
+        // deepening loop ends on an Aborted outcome and must fall back to a
+        // completed iteration's move
+        use super::SearchParameters;
+        let mut e = engine(Board::new());
+        let params = SearchParameters {
+            depth: None,
+            search_duration: Some(time::Duration::from_millis(50)),
+            start_time: time::Instant::now(),
+            print_info: false,
+        };
+        assert!(e.iterative_deepening_search(params).is_some());
     }
 
     #[test]
@@ -658,14 +736,14 @@ mod test_search {
         let mut warm = engine(Board::new());
         for fen in fens {
             warm.parse_fen(fen).unwrap();
-            warm.search(5).unwrap();
+            completed(warm.search(5));
         }
         for fen in fens {
             let game = Board::from_fen(fen).unwrap();
             let mut cold = engine(game);
-            let expected = cold.search(5).unwrap();
+            let expected = completed(cold.search(5));
             warm.parse_fen(fen).unwrap();
-            let result = warm.search(5).unwrap();
+            let result = completed(warm.search(5));
             assert_eq!(result.score, expected.score, "score differs for {}", fen);
             assert_eq!(
                 format!("{}", result.best_move),
@@ -681,9 +759,9 @@ mod test_search {
         // a table small enough to force constant collisions must not change the result
         let fen = "r1b2rk1/ppp1qppp/4pn2/6N1/Qn1P4/2NBP3/PP3PPP/R3K2R w KQ - 9 12";
         let mut big = engine(Board::from_fen(fen).unwrap());
-        let expected = big.search(5).unwrap();
+        let expected = completed(big.search(5));
         let mut small = AlphaBeta::with_table_bytes(Board::from_fen(fen).unwrap(), 8 * 1024);
-        let result = small.search(5).unwrap();
+        let result = completed(small.search(5));
         assert_eq!(result.score, expected.score);
     }
 
@@ -700,14 +778,14 @@ mod test_search {
             assert!(e.make_move_str(m), "failed to play {}", m);
         }
         assert!(e.board.is_repetition());
-        assert!(e.search(3).is_some());
+        assert!(matches!(e.search(3), SearchOutcome::Complete(_)));
     }
 
     #[test]
     fn test_new_game_forgets_the_previous_game() {
         let fen = "r1b2rk1/ppp1qppp/4pn2/6N1/Qn1P4/2NBP3/PP3PPP/R3K2R w KQ - 9 12";
         let mut e = engine(Board::from_fen(fen).unwrap());
-        e.search(4).unwrap();
+        completed(e.search(4));
         assert!(e.moves.get(e.board.key).is_some(), "nothing was stored");
         assert_ne!(format!("{}", e.pv_line()), "");
 
@@ -841,18 +919,17 @@ mod test_search {
         let fen = "r1b2rk1/ppp1qppp/4pn2/6N1/Qn1P4/2NBP3/PP3PPP/R3K2R w KQ - 9 12";
         let game = Board::from_fen(fen).unwrap();
         let mut cold = engine(game);
-        let expected = cold.search(6).unwrap();
+        let expected = completed(cold.search(6));
 
         // a search with no time budget stops immediately, it must not leave partial results in
         // the hash table which change the outcome of the next search
         let game = Board::from_fen(fen).unwrap();
         let mut e = engine(game);
         e.configure(time::Instant::now(), Some(time::Duration::ZERO));
-        e.search(6);
-        assert!(e.should_stop());
+        assert!(matches!(e.search(6), SearchOutcome::Aborted(_)));
 
         e.configure(time::Instant::now(), None);
-        let result = e.search(6).unwrap();
+        let result = completed(e.search(6));
         assert_eq!(result.score, expected.score);
         assert_eq!(
             format!("{}", result.best_move),
@@ -948,20 +1025,14 @@ impl Engine for AlphaBeta {
     fn configure(&mut self, start_time: time::Instant, search_duration: Option<time::Duration>) {
         self.start_time = start_time;
         self.search_duration = search_duration;
-        self.should_stop = false;
     }
 
     fn active_color(&self) -> Color {
         self.board.active_color
     }
 
-    fn should_stop(&self) -> bool {
-        self.should_stop
-    }
-
     fn parse_fen(&mut self, fen_string: &str) -> Result<(), String> {
         self.nodes = 0;
-        self.score = 0;
         self.board = Board::from_fen(fen_string)?;
         Ok(())
     }
@@ -970,21 +1041,89 @@ impl Engine for AlphaBeta {
         self.clear_cache();
     }
 
-    fn search(&mut self, depth: u8) -> Option<SearchResult> {
+    /// The root loop: the one node whose answer must include a play, which is
+    /// why it runs here rather than in alpha_beta. The root probes the
+    /// transposition table to order moves and stores its entry when done, but
+    /// never takes a stored score in place of searching: a stored score can
+    /// come from a line whose repetition and fifty move context differ from
+    /// the game being played, and the answer must not depend on one.
+    fn search(&mut self, depth: u8) -> SearchOutcome {
         self.nodes = 0;
         self.search_depth = depth;
         self.selective_depth = depth;
         self.board.line_ply = 0;
-        self.score = self.alpha_beta(Score::MIN + 1, Score::MAX - 1, depth);
-        if let Some(best_move) = self.moves.get(self.board.key) {
-            return Some(SearchResult {
-                nodes: self.nodes,
-                score: self.score,
-                selective_depth: self.selective_depth,
-                best_move: best_move.play,
-            });
+
+        // the game is already drawn, there is no move to look for
+        if self.board.fifty_move_rule >= 100 {
+            return SearchOutcome::GameOver;
         }
-        None
+
+        if self.poll_deadline().is_err() {
+            return SearchOutcome::Aborted(None);
+        }
+        self.nodes += 1;
+
+        let mut depth = depth;
+        if self.board.is_king_attacked() {
+            depth += 1;
+        }
+
+        let mut alpha = Score::MIN + 1;
+        let beta = Score::MAX - 1;
+        let mut best: Option<Play> = None;
+        let mut found_legal_move = false;
+
+        let pv_play = self.moves.get(self.board.key).map(|pv| pv.play);
+        let mut moves = self.board.generate_moves();
+        moves.sort_by_cached_key(|m| {
+            let mut score = m.mmv_lva(&self.board);
+            if pv_play == Some(*m) {
+                score += 100_000;
+            }
+            -score
+        });
+
+        for m in &moves {
+            if self.board.make_move(m) {
+                found_legal_move = true;
+                // undo before an abort can propagate, or the board would keep
+                // the aborted line
+                let result = self.alpha_beta(-beta, -alpha, depth - 1);
+                self.board.undo_move().unwrap();
+                match result {
+                    Err(Aborted) => {
+                        return SearchOutcome::Aborted(
+                            best.map(|play| self.result_for(play, alpha)),
+                        );
+                    }
+                    Ok(s) => {
+                        let score = -s;
+                        if score > alpha {
+                            alpha = score;
+                            best = Some(*m);
+                        }
+                    }
+                }
+            }
+        }
+
+        if !found_legal_move {
+            // checkmate or stalemate: either way there is nothing to play
+            return SearchOutcome::GameOver;
+        }
+
+        let play = best.expect("any legal move's score beats the opening alpha of Score::MIN + 1");
+        self.moves.set(
+            self.board.key,
+            Pv {
+                play,
+                depth,
+                score: score_to_tt(alpha, self.board.line_ply),
+                node: Node::Exact,
+                ply: self.board.ply as u16,
+            },
+        );
+        SearchOutcome::Complete(self.result_for(play, alpha))
     }
 
     //fn make_move(&mut self, play: &Play) {
@@ -1098,7 +1237,10 @@ mod test_node_counts {
     fn nodes(fen: &str, depth: u8) -> u64 {
         let mut engine = AlphaBeta::with_table_bytes(Board::from_fen(fen).unwrap(), TABLE_BYTES);
         (1..=depth)
-            .map(|d| engine.search(d).map_or(0, |result| result.nodes))
+            .map(|d| match engine.search(d) {
+                super::SearchOutcome::Complete(result) => result.nodes,
+                other => panic!("search did not complete: {:?}", other),
+            })
             .sum()
     }
 
