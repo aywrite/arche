@@ -273,8 +273,10 @@ pub struct Board {
 
     pub white_value: u32,
     pub black_value: u32,
-    // piece square table score, kept up to date incrementally
-    psqt: isize,
+    // piece square table score, kept up to date incrementally. Wider than the
+    // table entries it accumulates so that summing a boardful of them, and
+    // adding the material difference on top, cannot overflow.
+    psqt: i32,
 
     //history: Vec<PlayState>,
     history: [Option<PlayState>; MAX_GAME_SIZE],
@@ -577,7 +579,7 @@ impl Board {
         // TODO should this return white value & black value as separate numbers instead?
         let eval = self.white_value as i32 - self.black_value as i32;
 
-        let eval = (eval + self.psqt as i32) as Score;
+        let eval = (eval + self.psqt) as Score;
 
         match self.active_color {
             Color::White => eval,
@@ -625,18 +627,18 @@ impl Board {
     /// The piece square score of the position as it stands, computed from the
     /// board rather than accumulated as pieces move. `psqt` is meant to equal
     /// this at all times, and nothing checked that until now.
-    pub fn recompute_psqt(&self) -> isize {
-        let mut total = 0;
+    pub fn recompute_psqt(&self) -> i32 {
+        let mut total: i32 = 0;
         // walking the occupied squares rather than all sixty four, an empty
         // board is then free rather than sixty four misses
         let mut occupied = self.white | self.black;
         while occupied != 0 {
             let index = pop_lsb(&mut occupied);
             if let Some((piece, color)) = self.get_piece_and_color_index(index) {
-                total += match color {
+                total += i32::from(match color {
                     Color::White => PVT.get_value(index as usize, piece, Color::White),
                     Color::Black => -PVT.get_value(index as usize, piece, Color::Black),
-                };
+                });
             }
         }
         total
@@ -991,10 +993,10 @@ impl Board {
         debug_assert!(!self.white.is_bit_set(index));
         let zorb: &Zorbrist = &ZORB;
         self.key ^= zorb.get_piece_key(index, piece, color);
-        self.psqt += match color {
+        self.psqt += i32::from(match color {
             Color::White => PVT.get_value(index as usize, piece, Color::White),
             Color::Black => -PVT.get_value(index as usize, piece, Color::Black),
-        };
+        });
         match piece {
             Piece::Pawn => self.pawns.set_bit(index),
             Piece::Knight => self.knights.set_bit(index),
@@ -1025,10 +1027,10 @@ impl Board {
         debug_assert!((self.black | self.white).is_bit_set(index));
         let zorb: &Zorbrist = &ZORB;
         self.key ^= zorb.get_piece_key(index, piece, color);
-        self.psqt -= match color {
+        self.psqt -= i32::from(match color {
             Color::White => PVT.get_value(index as usize, piece, Color::White),
             Color::Black => -PVT.get_value(index as usize, piece, Color::Black),
-        };
+        });
         match piece {
             Piece::Pawn => self.pawns.clear_bit(index),
             Piece::Knight => self.knights.clear_bit(index),
