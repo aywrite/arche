@@ -2,7 +2,7 @@
 
 All notable changes to this project will be documented in this file.
 
-## [0.3.9-rc.2] - 2026-08-04
+## [0.3.9] - 2026-08-04
 
 ### Features
 
@@ -28,10 +28,13 @@ All notable changes to this project will be documented in this file.
 - *(search)* Score in sixteen bits so more of the table fits
 - *(eval)* Build the piece square tables at compile time
 - *(zorbrist)* Build the keys at compile time
+- *(eval)* Store the piece square tables in sixteen bits
+- *(magic)* Only look for a capture where there can be one
 
 ### Refactor
 
 - *(magic)* Draw magic candidates from the same splitmix as the keys
+- *(search)* Return the outcome from the root instead of probing the table
 
 ### Documentation
 
