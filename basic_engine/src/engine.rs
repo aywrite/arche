@@ -413,8 +413,10 @@ struct Pv {
     play: Play,
     score: Score,
     // a depth cannot exceed MAX_DEPTH and a ply is bounded by the history
-    // array, so neither needs a word. Both sit in the padding the key leaves
-    // behind, which is why widening ply to u16 costs nothing.
+    // array, so neither needs a word. These used to sit in padding the full
+    // key left behind; the fragment leaves none, so they are now paid for.
+    // Narrowing ply back to u8 would not help: at eleven bytes the struct
+    // still rounds up to twelve.
     depth: u8,
     node: Node,
     ply: u16,
@@ -431,9 +433,22 @@ enum Node {
     Ordering,
 }
 
-/// A slot in the table. The key is kept alongside the entry so that a probe can
-/// tell a real hit from another position landing on the same index.
-type Entry = Option<(Pv, u64)>;
+/// The part of a position key kept in the slot, so that a probe can tell a real
+/// hit from another position landing on the same index.
+///
+/// The index is drawn from the top of the key, so the bottom of it is what
+/// carries information the index does not already have. Sixteen bits of it
+/// leaves a one in sixty five thousand chance of taking another position's
+/// entry for this one, against the eight bytes a whole key costs in every slot.
+type KeyFragment = u16;
+
+#[inline]
+fn key_fragment(key: u64) -> KeyFragment {
+    key as KeyFragment
+}
+
+/// A slot in the table.
+type Entry = Option<(Pv, KeyFragment)>;
 
 #[derive(Debug)]
 struct HashTable {
@@ -471,7 +486,7 @@ impl HashTable {
     fn get(&self, key: u64) -> Option<&Pv> {
         let index = self.index_for(key);
         if let Some((pv, k)) = &self.table[index] {
-            if *k == key {
+            if *k == key_fragment(key) {
                 return Some(pv);
             }
         }
@@ -493,7 +508,7 @@ impl HashTable {
                     return;
                 }
                 if pv.depth == old_pv.depth
-                    && old_key == key
+                    && old_key == key_fragment(key)
                     && matches!(old_pv.node, Node::Exact)
                     && !matches!(pv.node, Node::Exact)
                 {
@@ -501,7 +516,7 @@ impl HashTable {
                 }
             }
         }
-        self.table[index] = Some((pv, key));
+        self.table[index] = Some((pv, key_fragment(key)));
     }
 }
 
@@ -1262,11 +1277,11 @@ mod test_node_counts {
         assert_eq!(
             counted,
             vec![
-                ("opening", 149_810),
-                ("kiwipete", 217_026),
-                ("pawn endgame", 173_223),
-                ("promotions", 110_643),
-                ("middlegame", 191_607),
+                ("opening", 147_307),
+                ("kiwipete", 216_583),
+                ("pawn endgame", 170_848),
+                ("promotions", 110_551),
+                ("middlegame", 188_555),
             ]
         );
     }
