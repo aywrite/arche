@@ -1,18 +1,5 @@
 use crate::Color;
-use crate::misc::{CastlePermissions, Piece};
-
-/// One step of splitmix64, which is the usual way to turn a seed into a stream
-/// of well spread numbers and is simple enough to run at compile time.
-///
-/// Returns the value alongside the next state rather than taking a `&mut`, so
-/// that it needs nothing newer than const arithmetic.
-const fn split_mix(state: u64) -> (u64, u64) {
-    let state = state.wrapping_add(0x9E37_79B9_7F4A_7C15);
-    let mut z = state;
-    z = (z ^ (z >> 30)).wrapping_mul(0xBF58_476D_1CE4_E5B9);
-    z = (z ^ (z >> 27)).wrapping_mul(0x94D0_49BB_1331_11EB);
-    (z ^ (z >> 31), state)
-}
+use crate::misc::{CastlePermissions, Piece, split_mix};
 
 pub struct Zorbrist {
     pieces: [[u64; 64]; 12],
