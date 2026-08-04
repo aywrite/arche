@@ -35,10 +35,17 @@ struct PlayState {
     position_key: u64,
 }
 
-// Plies of history the board can record. This has to cover the whole game as
-// replayed by the gui plus the depth of the current search, 375 was not enough
-// for games which reached move 175 or so.
+// Plies of history the board can record, as a ring. Only the fifty move window
+// is ever read back, so this has to cover that plus the depth of the current
+// search rather than the whole game.
 const MAX_GAME_SIZE: usize = 1024;
+
+/// Where a ply is recorded. The history is a ring, so a game played past
+/// MAX_GAME_SIZE plies, or a position parsed at a move number past it, wraps
+/// rather than running off the end.
+fn history_index(ply: usize) -> usize {
+    ply % MAX_GAME_SIZE
+}
 
 /// The value a position key starts from, before any piece or right is folded
 /// into it. Arbitrary, it only has to be the same everywhere.
@@ -708,17 +715,13 @@ impl Board {
     /// How many times this position has already appeared, not counting the
     /// position itself.
     fn repetition_count(&self) -> usize {
-        // a position parsed from fen can have a fifty move count higher than the number of plies
-        // we hold history for, and a long enough game runs past the end of the history
-        let start = self.ply.saturating_sub(self.fifty_move_rule);
-        let end = self.ply.min(MAX_GAME_SIZE - 1);
-        if start > end {
-            return 0;
-        }
-        self.history[start..=end]
-            .iter()
-            .filter_map(|h| h.map(|hh| hh.position_key))
-            .filter(|k| *k == self.key)
+        // only the fifty move window can hold a repetition, since a pawn move or
+        // a capture in between puts the position out of reach for good. A fen
+        // can claim a fifty move count longer than the history or the game
+        let window = self.fifty_move_rule.min(self.ply).min(MAX_GAME_SIZE - 1);
+        (self.ply - window..self.ply)
+            .filter_map(|ply| self.history[history_index(ply)])
+            .filter(|state| state.position_key == self.key)
             .count()
     }
 
@@ -737,7 +740,7 @@ impl Board {
     }
 
     pub fn make_move(&mut self, play: &Play) -> bool {
-        self.history[self.ply] = Some(PlayState {
+        self.history[history_index(self.ply)] = Some(PlayState {
             play: *play,
             en_passant: self.en_passant,
             castle: self.castle,
@@ -863,8 +866,9 @@ impl Board {
     }
 
     pub fn undo_move(&mut self) -> Result<(), &str> {
-        let history = self.history[self.ply - 1].unwrap();
-        self.history[self.ply - 1] = None;
+        let previous = history_index(self.ply - 1);
+        let history = self.history[previous].unwrap();
+        self.history[previous] = None;
         let play = history.play;
 
         let opposing_color = !self.active_color;
@@ -1447,7 +1451,7 @@ mod make_move {
     use super::Board;
     use super::Game;
     use super::Play;
-    use super::{A1, A8, B1, B8};
+    use super::{A1, A8, B1, B8, MAX_GAME_SIZE};
     use pretty_assertions::{assert_eq, assert_ne};
 
     macro_rules! test_fen_reversible {
@@ -1531,6 +1535,51 @@ mod make_move {
             assert!(board.make_move(&m));
             board.is_repetition();
         }
+    }
+
+    /// The history is a ring, so a game long enough to run past the end of it
+    /// wraps instead. This position starts at ply 1023, one short of the wrap,
+    /// so the cycle below is recorded either side of it.
+    #[test]
+    fn a_repetition_is_still_seen_when_the_history_wraps() {
+        let mut board = Board::from_fen(
+            "r4rk1/1pp1qppp/p1np1n2/2b1p1B1/2B1P1b1/P1NP1N2/1PP1QPPP/R4RK1 b - - 3 511",
+        )
+        .unwrap();
+        assert_eq!(
+            board.ply,
+            MAX_GAME_SIZE - 1,
+            "the cycle must cross the wrap"
+        );
+
+        let cycle = [(A8, B8), (A1, B1), (B8, A8), (B1, A1)];
+        for (from, to) in cycle {
+            assert!(board.make_move(&Play::new(from, to, None, None, false, false)));
+        }
+        assert!(board.has_repeated());
+        for (from, to) in cycle {
+            assert!(board.make_move(&Play::new(from, to, None, None, false, false)));
+        }
+        assert!(board.is_repetition());
+    }
+
+    /// Unmaking reads back the entry making wrote, so it has to agree about
+    /// where the wrap put it.
+    #[test]
+    fn moves_can_be_unmade_across_the_wrap() {
+        let start = Board::from_fen(
+            "r4rk1/1pp1qppp/p1np1n2/2b1p1B1/2B1P1b1/P1NP1N2/1PP1QPPP/R4RK1 b - - 3 511",
+        )
+        .unwrap();
+        let mut board = start;
+        let cycle = [(A8, B8), (A1, B1), (B8, A8), (B1, A1)];
+        for (from, to) in cycle {
+            assert!(board.make_move(&Play::new(from, to, None, None, false, false)));
+        }
+        for _ in cycle {
+            board.undo_move().unwrap();
+        }
+        assert_eq!(board, start);
     }
 
     #[test]

@@ -96,9 +96,6 @@ docker/smoke_test.sh arche-lichess-bot
     clears the key for played moves as a workaround
   - a fen is barely validated, so one without a king is accepted and then panics as soon as the
     position is searched
-  - the history array is a fixed size and ply is initialised to twice the full move number, so a
-    game of more than about five hundred moves runs past the end of it. A fen with a full move
-    number that high panics on the first search rather than after five hundred moves
 
 ## Acknowledgements
 
