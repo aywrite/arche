@@ -7,8 +7,8 @@ use crate::misc::Piece;
 /// Written as a `while` rather than with iterators so that it can run at compile
 /// time: the tables are then constants in the binary rather than something built
 /// on startup.
-const fn mirror(array: &[isize; 64]) -> [isize; 64] {
-    let mut mirrored: [isize; 64] = [0; 64];
+const fn mirror(array: &[i16; 64]) -> [i16; 64] {
+    let mut mirrored: [i16; 64] = [0; 64];
     let mut rank = 0;
     while rank < 8 {
         let mut file = 0;
@@ -29,7 +29,7 @@ const fn mirror(array: &[isize; 64]) -> [isize; 64] {
 // written and white takes them mirrored.
 
 #[rustfmt::skip]
-const PAWNS: [isize; 64] = [
+const PAWNS: [i16; 64] = [
     0,  0,  0,  0,  0,  0,  0,  0,
     50, 50, 50, 50, 50, 50, 50, 50,
     10, 10, 20, 30, 30, 20, 10, 10,
@@ -41,7 +41,7 @@ const PAWNS: [isize; 64] = [
 ];
 
 #[rustfmt::skip]
-const KNIGHTS: [isize; 64] = [
+const KNIGHTS: [i16; 64] = [
     -50,-40,-30,-30,-30,-30,-40,-50,
     -40,-20,  0,  0,  0,  0,-20,-40,
     -30,  0, 10, 15, 15, 10,  0,-30,
@@ -53,7 +53,7 @@ const KNIGHTS: [isize; 64] = [
 ];
 
 #[rustfmt::skip]
-const BISHOPS: [isize; 64] = [
+const BISHOPS: [i16; 64] = [
     -20,-10,-10,-10,-10,-10,-10,-20,
     -10,  0,  0,  0,  0,  0,  0,-10,
     -10,  0,  5, 10, 10,  5,  0,-10,
@@ -65,7 +65,7 @@ const BISHOPS: [isize; 64] = [
 ];
 
 #[rustfmt::skip]
-const ROOKS: [isize; 64] = [
+const ROOKS: [i16; 64] = [
     0,  0,  0,  0,  0,  0,  0,  0,
     5, 10, 10, 10, 10, 10, 10,  5,
     -5,  0,  0,  0,  0,  0,  0, -5,
@@ -77,7 +77,7 @@ const ROOKS: [isize; 64] = [
 ];
 
 #[rustfmt::skip]
-const QUEENS: [isize; 64] = [
+const QUEENS: [i16; 64] = [
     -20,-10,-10, -5, -5,-10,-10,-20,
     -10,  0,  0,  0,  0,  0,  0,-10,
     -10,  0,  5,  5,  5,  5,  0,-10,
@@ -88,26 +88,31 @@ const QUEENS: [isize; 64] = [
     -20,-10,-10, -5, -5,-10,-10,-20
 ];
 
+/// The entries are `i16` rather than a machine word because every piece that is
+/// set or cleared reads one, which is several times per move made or unmade, and
+/// the ten tables are then 1280 bytes rather than 5120 and stay in L1 alongside
+/// everything else the search is touching. The values run from -50 to 50, so the
+/// narrower type costs nothing.
 pub struct PieceValueTables {
-    white_pawns: [isize; 64],
-    black_pawns: [isize; 64],
+    white_pawns: [i16; 64],
+    black_pawns: [i16; 64],
 
-    white_knights: [isize; 64],
-    black_knights: [isize; 64],
+    white_knights: [i16; 64],
+    black_knights: [i16; 64],
 
-    white_bishops: [isize; 64],
-    black_bishops: [isize; 64],
+    white_bishops: [i16; 64],
+    black_bishops: [i16; 64],
 
-    white_rooks: [isize; 64],
-    black_rooks: [isize; 64],
+    white_rooks: [i16; 64],
+    black_rooks: [i16; 64],
 
-    white_queens: [isize; 64],
-    black_queens: [isize; 64],
+    white_queens: [i16; 64],
+    black_queens: [i16; 64],
 }
 
 impl PieceValueTables {
     #[inline]
-    pub fn get_value(&self, index: usize, piece: Piece, color: Color) -> isize {
+    pub fn get_value(&self, index: usize, piece: Piece, color: Color) -> i16 {
         match (piece, color) {
             (Piece::Pawn, Color::White) => self.white_pawns[index],
             (Piece::Knight, Color::White) => self.white_knights[index],
@@ -145,7 +150,7 @@ mod tests {
     use crate::misc::File;
     use crate::misc::coordinate_to_index;
 
-    fn value(piece: Piece, color: Color, file: File, rank: u8) -> isize {
+    fn value(piece: Piece, color: Color, file: File, rank: u8) -> i16 {
         let index = coordinate_to_index(rank, file) as usize;
         PieceValueTables::TABLES.get_value(index, piece, color)
     }
