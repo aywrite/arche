@@ -2,6 +2,65 @@
 
 All notable changes to this project will be documented in this file.
 
+## [0.3.9-rc.2] - 2026-08-04
+
+### Features
+
+- *(search)* Take a draw on the first repetition rather than the third
+
+### Bug Fixes
+
+- *(uci)* Honour movetime and budget the increment safely
+- *(uci)* Clear the transposition table on ucinewgame
+- *(uci)* Report bad input instead of dying on it
+- *(eval)* Turn the piece square tables the right way up
+- *(search)* Rebuild the principal variation by replaying it
+- *(zorbrist)* Only hash en passant when a pawn can take there
+
+### Performance
+
+- Let the piece square and zorbrist lookups inline
+- *(board)* Iterate bitboards in place instead of collecting them
+- *(search)* Index the hash table without dividing
+- *(eval)* Keep the piece square sum incrementally
+- *(magic)* Use precomputed magic numbers instead of searching for them
+- *(search)* Narrow the depth and ply kept in the hash table
+- *(search)* Score in sixteen bits so more of the table fits
+- *(eval)* Build the piece square tables at compile time
+- *(zorbrist)* Build the keys at compile time
+
+### Refactor
+
+- *(magic)* Draw magic candidates from the same splitmix as the keys
+
+### Documentation
+
+- *(docs)* Bring the readme todo list up to date
+- *(magic)* Correct what the magic search costs and why
+
+### Development
+
+- *(bench)* Stop timing the transposition table clear
+- *(release)* Separate engine changes from development in the changelog
+- *(release)* Run the strength match on demand with a game count
+- *(docker)* Publish the image from the release and quote it in the notes
+- *(lint)* Check the shell scripts with shellcheck
+- *(release)* Stop a rerun adding a second copy of each notes line
+- *(deps)* Update clap and stop dependabot proposing bad action bumps
+- *(board)* Add the perft positions that catch the awkward cases
+- *(search)* Pin how many nodes the search visits
+- *(search)* Stop every test allocating half a gigabyte
+- *(bench)* Measure both sides of a pull request on one runner
+- *(bench)* Post the comparison to the pull request again
+- *(release)* Let the strength match name both sides
+- *(board)* Assert the eval counters against a recompute in debug
+- *(bench)* Place the engine on the ccrl scale at each release
+- *(bench)* Share what the two match workflows have in common
+- *(bench)* Let the rating estimate outlive a failed strength match
+- *(bench)* Count one unfinished game as one rather than as 1 games
+- *(board)* Check the position key against a recomputed one
+- *(release)* Give a candidate a changelog section it can be released from
+
 ## [0.3.8] - 2026-08-01
 
 ### Bug Fixes
