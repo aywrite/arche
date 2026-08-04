@@ -435,8 +435,10 @@ mod magic_generation {
     }
 
     /// Prints a fresh set of constants to paste into this file. Ignored because
-    /// it takes about half a second and is only needed if the blocker masks or
-    /// the table layout change.
+    /// it is only needed if the blocker masks or the table layout change, and
+    /// because the search is slow enough unoptimised to be worth not running by
+    /// accident: about fourteen seconds as invoked below, against under a
+    /// second with `--release`.
     ///
     ///     cargo test -p basic_engine regenerate_magics -- --ignored --nocapture
     #[test]

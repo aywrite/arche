@@ -17,8 +17,9 @@ pub type Score = i16;
 /// keys need, and good enough for the magic search, which only wants candidates
 /// that are well spread rather than unpredictable.
 ///
-/// Returns the value alongside the next state rather than taking a `&mut`, so
-/// that it needs nothing beyond const arithmetic.
+/// Returns the value alongside the next state rather than taking a `&mut` so
+/// that draws chain, which is what the magic search wants when it needs three
+/// of them for one candidate.
 pub const fn split_mix(state: u64) -> (u64, u64) {
     let state = state.wrapping_add(0x9E37_79B9_7F4A_7C15);
     let mut z = state;
