@@ -11,10 +11,12 @@ bench = false #https://bheisler.github.io/criterion.rs/book/faq.html#cargo-bench
 
 [dependencies]
 lazy_static = "1.5.0"
-rand = { version = "0.9.2", features = ["small_rng"]}
 smallvec = "1.15.1"
 
 [dev-dependencies]
+# only the magic number search and the tests need it now that the zorbrist keys
+# are built at compile time
+rand = { version = "0.9.2", features = ["small_rng"]}
 proptest = "1.7"
 criterion = "0.7"
 pretty_assertions = "1.4"
