@@ -268,48 +268,6 @@ impl BlockerMasks {
     }
 }
 
-#[cfg(test)]
-pub fn test() {
-    let bm = BlockerMasks::new();
-    let bb = BlockerBoards::new(&bm);
-    let mv = MoveBoards::new(&bb);
-    let magic = Magic::new();
-    //let mut res = bb.straight[27].clone();
-    //res.sort();
-    //res.dedup();
-
-    //for board in &bb.straight[27] {
-    //    board.debug_print();
-    //}
-    //println!("length {}", bb.straight[27].len());
-    //println!("unique {}", res.len()); // TODO turn this into a test
-
-    println!("bm");
-    bm.straight[0].debug_print();
-    println!("bb");
-    bb.straight[0][3].debug_print();
-    println!("mb");
-    mv.straight[0][3].debug_print();
-
-    println!("bm");
-    bm.diagonal[55].debug_print();
-    println!("bb");
-    bb.diagonal[55][3].debug_print();
-    println!("mb");
-    mv.diagonal[55][3].debug_print();
-
-    let mask = 10000982834900933;
-    let moves = magic.get_straight_move(27, mask);
-    let moves_d = magic.get_diagonal_move(27, mask);
-    println!("FINALLY");
-    println!("MASK");
-    mask.debug_print();
-    println!("MOVES D");
-    moves_d.debug_print();
-    println!("MOVES");
-    moves.debug_print();
-}
-
 #[rustfmt::skip]
 pub const STRAIGHT_MAGICS: [u64; 64] = [
     0x0080052033400282, 0x0240009004402000, 0x03000c4010200100, 0x8200104020060008,
@@ -478,16 +436,5 @@ mod magic_generation {
             }
             println!("];");
         }
-    }
-}
-
-#[cfg(test)]
-mod magic_test {
-    use super::test;
-    //use pretty_assertions::assert_eq;
-
-    #[test]
-    fn test_perft_starting() {
-        test();
     }
 }

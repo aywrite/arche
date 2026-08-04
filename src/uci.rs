@@ -19,6 +19,7 @@ lazy_static! {
     static ref MOVE_TIME: Regex = Regex::new(r"movetime (\d+)").unwrap();
     static ref DEPTH_RE: Regex = Regex::new(r"depth (\d+)").unwrap();
     static ref INFINITE_RE: Regex = Regex::new(r"infinite").unwrap();
+    static ref PERFT_RE: Regex = Regex::new(r"perft (\d+)").unwrap();
 }
 
 /// Reads the value that follows a keyword. The value is matched as digits, so
@@ -119,7 +120,9 @@ impl<T: Engine> UCI<T> {
         } else if line.starts_with("go") {
             self.parse_go(line);
         } else if line.starts_with("perft") {
-            self.engine.perft();
+            let depth = perft_depth(line);
+            let nodes = self.engine.perft(depth);
+            println!("info string perft depth {} nodes {}", depth, nodes);
         } else {
             println!("info string unrecognised command: {}", line);
         }
@@ -177,6 +180,14 @@ impl<T: Engine> UCI<T> {
             SearchOutcome::Aborted(None) => println!("bestmove 0000"),
         }
     }
+}
+
+/// The depth asked of a perft command. A bare `perft` counts to depth one,
+/// which is what the command did before it took a depth at all.
+fn perft_depth(line: &str) -> u8 {
+    capture(&PERFT_RE, line)
+        .map(|depth| depth.try_into().unwrap_or(u8::MAX))
+        .unwrap_or(1)
 }
 
 /// One completed depth as a UCI info line. The elapsed time arrives as a
@@ -342,6 +353,22 @@ mod tests {
     #[test]
     fn an_oversized_depth_does_not_panic() {
         assert_eq!(capture(&DEPTH_RE, "go depth 999"), Some(999));
+    }
+
+    #[test]
+    fn a_perft_command_reads_its_depth() {
+        assert_eq!(perft_depth("perft 3"), 3);
+        assert_eq!(perft_depth("perft"), 1, "a bare perft counts to depth one");
+        assert_eq!(perft_depth("perft 999"), u8::MAX);
+    }
+
+    #[test]
+    fn a_perft_command_counts_without_disturbing_the_position() {
+        let mut uci = uci();
+        uci.parse_position("position startpos").unwrap();
+        assert_eq!(uci.engine.perft(2), 400);
+        // counting is make/undo all the way down, the position must survive it
+        assert_eq!(uci.engine.active_color(), Color::White);
     }
 
     use basic_engine::Play;
