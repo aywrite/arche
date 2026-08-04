@@ -1,0 +1,57 @@
+name: Release note
+
+# Adds one line to the notes of a release, for the workflows that finish after
+# the release exists and have something to say about it.
+#
+# Editing release notes is a read and a write rather than an append, so every
+# workflow that adds a line has to take its turn. Keeping the turn taking here
+# means there is one queue rather than one per caller, and one place to look at
+# when a line goes missing.
+
+on:
+  workflow_call:
+    inputs:
+      marker:
+        description: Identifies this workflow's line so a rerun replaces it rather than adding another
+        type: string
+        required: true
+      line:
+        description: The line to add, without the marker
+        type: string
+        required: true
+      tag:
+        description: The release to edit. Defaults to the ref this was called for.
+        type: string
+        required: false
+
+permissions:
+  contents: read
+
+jobs:
+  append:
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    permissions:
+      contents: write
+    concurrency:
+      # Cancelling would lose the line rather than delay it, and these take
+      # seconds, so a caller that has waited its turn is left to finish.
+      group: release-notes-${{ inputs.tag || github.ref }}
+      cancel-in-progress: false
+    steps:
+      - name: Add the line to the release notes
+        shell: bash
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          GH_REPO: ${{ github.repository }}
+          MARKER: ${{ inputs.marker }}
+          LINE: ${{ inputs.line }}
+          TAG: ${{ inputs.tag || github.ref_name }}
+        run: |
+          # the marker is an html comment, so it does not render but does let a
+          # rerun replace the line it wrote last time rather than add another
+          # cat -s closes up the blank line the deleted line leaves behind
+          body=$(gh release view "$TAG" --json body -q .body \
+                 | sed "/<!-- ${MARKER} -->/d" | cat -s)
+          printf '%s\n\n%s <!-- %s -->\n' "$body" "$LINE" "$MARKER" > notes.md
+          gh release edit "$TAG" --notes-file notes.md

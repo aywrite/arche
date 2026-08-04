@@ -137,7 +137,7 @@ fastchess \
   -engine name=old cmd=/tmp/old \
   -each proto=uci tc=10+0.1 -startup-ms 20000 \
   -openings file=8moves_v3.pgn format=pgn order=random \
-  -rounds 200 -repeat 2 -concurrency 2 -recover
+  -rounds 200 -repeat -concurrency 2 -recover
 ```
 
 Notes on the flags:
@@ -147,8 +147,9 @@ Notes on the flags:
   once can take longer over than the ten second default allows. Generating the
   magic bitboards used to dominate this and no longer does, they are constants
   now, so the allowance does not need to be anywhere near as generous as it was.
-- `-repeat 2` plays each opening twice with the colours reversed, which removes
-  most of the advantage of drawing a good opening.
+- `-repeat` plays each opening twice with the colours reversed, which removes most
+  of the advantage of drawing a good opening. It takes no argument, it is a spelling
+  of `-games 2`.
 - `-recover` keeps the match going if an engine crashes rather than aborting.
   Watch for `disconnect` in the output, a crashing engine scores zero for that
   game and the result is no longer a fair estimate of strength.
@@ -229,18 +230,30 @@ around it:
 
 ### Reading the result
 
-Two error bars come out of the fit and the larger is the one reported. The first
-is how much a score of this size wobbles. The second is how far the opponents
-disagree with each other, which is the one that catches a fit being quietly
-wrong: a single rating cannot describe an engine that does better against one
-opponent than another predicts, and when that happens the first error bar is an
-understatement rather than an estimate.
+The margin printed with the figure is how much a score of that size wobbles, and
+it describes the games and nothing else.
 
-Neither of them covers the part that matters most. The opponents earned their
-ratings at 2m+1s on other hardware, and this runs at twenty seconds on a shared
-runner, so the placement carries a systematic error worth something like a
-hundred points. More games shrink the error bar printed next to the number and
-do nothing at all to that. It is a placement, not a rating.
+Whether one rating describes the results at all is a different question, and it
+is asked separately rather than folded into the margin. A single number cannot
+describe an engine that does better against one opponent than another predicts,
+so each pairing's score is compared with the one the fit expects of it, and when
+they disagree by more than chance allows the run says so and the margin should
+be read as an understatement. It is a test rather than a second opinion on
+purpose: reporting whichever of the two was larger sounded careful and was not,
+because both of them estimate the same thing when the fit is sound, so taking
+the larger inflated the margin by about a fifth and cried wolf on around two
+runs in five of perfectly ordinary data.
+
+Neither covers the part that matters most. The opponents earned their ratings at
+2m+1s on other hardware, and this runs at twenty seconds on a shared runner, so
+the placement carries a systematic error worth something like a hundred points.
+More games shrink the margin printed next to the number and do nothing at all to
+that. It is a placement, not a rating.
+
+The ladder is held as exact, too. A rung whose rating is a community estimate
+rather than a ccrl ranking, which is what v10 in the default ladder is, hands
+whatever it is wrong by straight to the answer, and no error bar here covers
+that either.
 
 The time control is a compromise rather than a default worth keeping by
 accident. Ten seconds runs the hundred games in about twenty minutes but leaves

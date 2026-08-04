@@ -1,0 +1,41 @@
+name: Match tools
+description: Build fastchess and fetch the opening book, into tools/, cached between runs.
+
+inputs:
+  fastchess:
+    description: The fastchess release to build
+    # every fastchess release is tagged -alpha, there is no plain v1.8.2
+    default: v1.8.2-alpha
+
+runs:
+  using: composite
+  steps:
+    - name: Cache the match tools
+      id: cache
+      uses: actions/cache@v6
+      with:
+        # Named one by one rather than as the whole of tools/, because a match
+        # writes its games, its results and the engines it played into the same
+        # directory, and caching those would mean a later run restoring an
+        # earlier run's games and being able to read them as its own.
+        path: |
+          tools/fastchess
+          tools/8moves_v3.pgn
+        # the version belongs to the input rather than to the key, so that
+        # bumping it cannot leave the key naming a build it no longer describes
+        key: match-tools-${{ inputs.fastchess }}-8moves-v3
+
+    - name: Build the match tools
+      if: steps.cache.outputs.cache-hit != 'true'
+      shell: bash
+      env:
+        FASTCHESS: ${{ inputs.fastchess }}
+      run: |
+        mkdir -p tools
+        git clone --depth 1 --branch "$FASTCHESS" \
+          https://github.com/Disservin/fastchess.git /tmp/fastchess
+        make -C /tmp/fastchess -j"$(nproc)"
+        cp /tmp/fastchess/fastchess tools/
+        curl -sSLf -o /tmp/book.zip \
+          https://raw.githubusercontent.com/official-stockfish/books/master/8moves_v3.pgn.zip
+        unzip -qo /tmp/book.zip -d tools
