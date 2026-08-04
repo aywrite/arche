@@ -581,6 +581,56 @@ impl Board {
         }
     }
 
+    /// Check the incrementally maintained counters against the position they
+    /// describe. Perft never looks at either, so without this a mistake in them
+    /// leaves every count correct and only shows up as the engine playing
+    /// slightly worse. Debug only: it walks the whole board.
+    fn debug_assert_eval_in_step(&self) {
+        debug_assert_eq!(self.psqt, self.recompute_psqt(), "psqt out of step");
+        debug_assert_eq!(
+            (self.white_value, self.black_value),
+            self.recompute_material(),
+            "material out of step"
+        );
+    }
+
+    /// The piece square score of the position as it stands, computed from the
+    /// board rather than accumulated as pieces move. `psqt` is meant to equal
+    /// this at all times, and nothing checked that until now.
+    pub fn recompute_psqt(&self) -> isize {
+        let mut total = 0;
+        // walking the occupied squares rather than all sixty four, an empty
+        // board is then free rather than sixty four misses
+        let mut occupied = self.white | self.black;
+        while occupied != 0 {
+            let index = pop_lsb(&mut occupied);
+            if let Some((piece, color)) = self.get_piece_and_color_index(index) {
+                total += match color {
+                    Color::White => PVT.get_value(index as usize, piece, Color::White),
+                    Color::Black => -PVT.get_value(index as usize, piece, Color::Black),
+                };
+            }
+        }
+        total
+    }
+
+    /// The material of each side, computed the same way and for the same reason.
+    pub fn recompute_material(&self) -> (u32, u32) {
+        let mut white = 0;
+        let mut black = 0;
+        let mut occupied = self.white | self.black;
+        while occupied != 0 {
+            let index = pop_lsb(&mut occupied);
+            if let Some((piece, color)) = self.get_piece_and_color_index(index) {
+                match color {
+                    Color::White => white += piece.material_value(),
+                    Color::Black => black += piece.material_value(),
+                }
+            }
+        }
+        (white, black)
+    }
+
     pub fn square_attacked(&self, index: u8, color: Color) -> bool {
         let all = self.black | self.white;
         let attack_masks: &AttackMasks = &ATTACK_MASKS;
@@ -767,6 +817,7 @@ impl Board {
         };
         self.active_color = opposing_color;
         self.key ^= zorb.side;
+        self.debug_assert_eval_in_step();
         if self.square_attacked(king_index, opposing_color) {
             self.undo_move().unwrap();
             false
