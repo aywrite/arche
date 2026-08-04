@@ -90,10 +90,16 @@ jobs:
   # Places the release on the ccrl scale by playing rated opponents, which says
   # something the match against the previous release cannot: that one says which
   # of the two is better, this one says roughly where both of them sit.
+  #
+  # After strength rather than alongside it, which costs an hour of release wall
+  # clock and buys two things: the two of them do not race to build and save the
+  # same fastchess cache from cold, and only two jobs are ever queued to edit
+  # the release notes, which is the most that queue holds without dropping one.
   calibrate:
-    needs: create-release
+    needs: [create-release, strength]
     permissions:
       contents: write
     uses: ./.github/workflows/calibrate.yml
     with:
+      games: 26
       publish: true

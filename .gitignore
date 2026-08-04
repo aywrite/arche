@@ -3,6 +3,9 @@
 .cargo
 .rustup
 
+# the scripts the workflows call leave these behind when imported
+__pycache__/
+
 # profiling
 perf.data*
 callgrind.out*

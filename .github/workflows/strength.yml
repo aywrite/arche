@@ -47,11 +47,18 @@ on:
         type: boolean
         default: false
 
+permissions:
+  contents: read
+
 jobs:
   # Split out so the match job can be skipped in one place rather than every
   # step having to ask whether there is anything to compare against.
   resolve:
     runs-on: ubuntu-latest
+    timeout-minutes: 10
+    defaults:
+      run:
+        shell: bash
     outputs:
       baseline_name: ${{ steps.find.outputs.baseline_name }}
       baseline_sha: ${{ steps.find.outputs.baseline_sha }}
@@ -68,20 +75,9 @@ jobs:
           CANDIDATE: ${{ inputs.candidate }}
           BASELINE: ${{ inputs.baseline }}
         run: |
-          # a number is a pull request, whose head is not fetched by default;
-          # anything else is a branch, tag or commit
-          resolve() {
-            if [ "$1" -eq "$1" ] 2>/dev/null; then
-              git fetch -q origin "refs/pull/$1/head" || return 1
-              git rev-parse FETCH_HEAD
-              return 0
-            fi
-            git rev-parse --verify --quiet "$1^{commit}" && return 0
-            git fetch -q origin "$1" && git rev-parse FETCH_HEAD
-          }
-
           if [ -n "$CANDIDATE" ]; then
-            sha=$(resolve "$CANDIDATE") || { echo "::error::cannot resolve candidate ${CANDIDATE}"; exit 1; }
+            sha=$(scripts/resolve_ref.sh "$CANDIDATE") \
+              || { echo "::error::cannot resolve candidate ${CANDIDATE}"; exit 1; }
             echo "candidate_name=${CANDIDATE}" >> "$GITHUB_OUTPUT"
             echo "candidate_sha=${sha}" >> "$GITHUB_OUTPUT"
           else
@@ -90,7 +86,8 @@ jobs:
           fi
 
           if [ -n "$BASELINE" ]; then
-            sha=$(resolve "$BASELINE") || { echo "::error::cannot resolve baseline ${BASELINE}"; exit 1; }
+            sha=$(scripts/resolve_ref.sh "$BASELINE") \
+              || { echo "::error::cannot resolve baseline ${BASELINE}"; exit 1; }
             echo "baseline_name=${BASELINE}" >> "$GITHUB_OUTPUT"
             echo "baseline_sha=${sha}" >> "$GITHUB_OUTPUT"
             exit 0
@@ -118,6 +115,11 @@ jobs:
     # enough for about five hundred games at the time control above, a run that
     # wants more is better split up
     timeout-minutes: 180
+    defaults:
+      run:
+        # naming the shell is what turns on pipefail, without it a fastchess
+        # that died is hidden by the tee it is piped into
+        shell: bash
     env:
       GAMES: ${{ inputs.games }}
       TIME_CONTROL: ${{ inputs.time_control }}
@@ -130,28 +132,15 @@ jobs:
         with:
           fetch-depth: 0
 
-      - name: Cache the match tools
-        id: tools
-        uses: actions/cache@v6
-        with:
-          path: tools
-          key: match-tools-fastchess-1.8.2-alpha-8moves-v3
+      - uses: ./.github/actions/match-tools
 
-      - name: Build the match tools
-        if: steps.tools.outputs.cache-hit != 'true'
-        run: |
-          mkdir -p tools
-          # every fastchess release is tagged -alpha, there is no plain v1.8.2
-          git clone --depth 1 --branch v1.8.2-alpha \
-            https://github.com/Disservin/fastchess.git /tmp/fastchess
-          make -C /tmp/fastchess -j"$(nproc)"
-          cp /tmp/fastchess/fastchess tools/
-          curl -sSLf -o /tmp/book.zip \
-            https://raw.githubusercontent.com/official-stockfish/books/master/8moves_v3.pgn.zip
-          unzip -qo /tmp/book.zip -d tools
-
+      # Deliberately not Swatinem/rust-cache, which the workflows that build one
+      # commit do use. This builds two arbitrary commits into the same target
+      # directory, so a cache keyed on the ref would be poisoned by whichever
+      # pair it was last asked to compare.
       - name: Build both versions
         run: |
+          mkdir -p tools
           # a pull request head is not fetched by default and the resolve job
           # ran on a different machine, so fetch anything not already here
           for sha in "$CANDIDATE_SHA" "$BASELINE_SHA"; do
@@ -171,6 +160,9 @@ jobs:
       - name: Play the match
         working-directory: tools
         run: |
+          # only fastchess and the book are cached, but a rerun on the same
+          # runner would still find the last attempt's results lying here
+          rm -f result.txt config.json
           # the engine allocates a 500MB transposition table before it answers
           # uci, which four copies starting at once can take longer over than
           # the ten second default allows
@@ -179,7 +171,7 @@ jobs:
             -engine "name=$PREVIOUS" cmd=./old \
             -each proto=uci "tc=$TIME_CONTROL" -startup-ms 20000 \
             -openings file=8moves_v3.pgn format=pgn order=random \
-            -rounds "$((GAMES / 2))" -repeat 2 -concurrency 2 -recover \
+            -rounds "$((GAMES / 2))" -repeat -concurrency 2 -recover \
             | tee result.txt
 
       - name: Summarise the result
@@ -199,27 +191,12 @@ jobs:
             echo "At ${GAMES} games only a difference of about $(python3 -c "print(int(800/(${GAMES}**0.5)))") elo can be told from none."
           } >> "$GITHUB_STEP_SUMMARY"
 
-  # The docker workflow appends to the same release notes, and the edit is a
-  # read and a write rather than an append, so the two have to take turns.
   release-notes:
     needs: match
     if: inputs.publish
-    runs-on: ubuntu-latest
     permissions:
       contents: write
-    concurrency:
-      group: release-notes-${{ github.ref }}
-    steps:
-      - name: Add the result to the release notes
-        env:
-          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
-          GH_REPO: ${{ github.repository }}
-          LINE: ${{ needs.match.outputs.line }}
-        run: |
-          # the marker is an html comment, so it does not render but does let a
-          # rerun replace the line it wrote last time rather than add another
-          # cat -s closes up the blank line the deleted line leaves behind
-          body=$(gh release view "$GITHUB_REF_NAME" --json body -q .body \
-                 | sed '/<!-- arche:strength -->/d' | cat -s)
-          printf '%s\n\n%s <!-- arche:strength -->\n' "$body" "$LINE" > notes.md
-          gh release edit "$GITHUB_REF_NAME" --notes-file notes.md
+    uses: ./.github/workflows/release-note.yml
+    with:
+      marker: arche:strength
+      line: ${{ needs.match.outputs.line }}
