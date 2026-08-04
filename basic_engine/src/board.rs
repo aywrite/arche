@@ -69,14 +69,6 @@ static ZORB: Zorbrist = Zorbrist::TABLE;
 lazy_static! {
     static ref ATTACK_MASKS: AttackMasks = AttackMasks::new();
     pub static ref BASE_CONVERSIONS: BaseConversions = BaseConversions::new();
-    static ref CASTLE_PERMISSION_SQUARES: [u8; 6] = [
-        coordinate_to_index(1, File::A),
-        coordinate_to_index(1, File::E),
-        coordinate_to_index(1, File::H),
-        coordinate_to_index(8, File::A),
-        coordinate_to_index(8, File::E),
-        coordinate_to_index(8, File::H),
-    ];
     static ref MAGIC: Magic = Magic::new();
     static ref B1_C1_D1: u64 = {
         let mut mask = 0u64;

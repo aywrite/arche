@@ -39,9 +39,10 @@ fn score_from_tt(score: Score, line_ply: usize) -> Score {
     }
 }
 
+/// What the protocol interface asks of an engine: positions in, answers out.
+/// How an implementation searches is its own business, which is why the
+/// deepening loop is required here rather than provided.
 pub trait Engine {
-    fn new(board: Board) -> Self;
-
     fn parse_fen(&mut self, fen_string: &str) -> Result<(), String>;
 
     /// Forget what was learned from the game just finished. Stored scores do not
@@ -50,13 +51,13 @@ pub trait Engine {
     /// no longer applies to it.
     fn new_game(&mut self);
 
-    fn perft(&mut self);
-
-    fn search(&mut self, depth: u8) -> SearchOutcome;
-
-    //fn make_move(&mut self, play: &Play);
-
     fn make_move_str(&mut self, play: &str) -> bool;
+
+    fn display_board(&self);
+
+    fn perft(&mut self, depth: u8) -> u64;
+
+    fn active_color(&self) -> Color;
 
     /// Search each depth in turn until one is the last to finish. The caller
     /// hears about every completed iteration through on_depth, which is where
@@ -65,50 +66,8 @@ pub trait Engine {
     fn iterative_deepening_search(
         &mut self,
         search_options: SearchParameters,
-        mut on_depth: impl FnMut(u8, &SearchResult, PvLine),
-    ) -> SearchOutcome {
-        let mut best: Option<SearchResult> = None;
-        let max_depth = match search_options.depth {
-            Some(depth) => depth,
-            None => MAX_DEPTH,
-        };
-        self.configure(search_options.start_time, search_options.search_duration);
-
-        for depth in 1..=max_depth {
-            match self.search(depth) {
-                SearchOutcome::Aborted(partial) => {
-                    // A completed shallower iteration outranks the interrupted
-                    // one's best-so-far, which may be a fail high that never
-                    // got re-searched. The partial only fills in when depth 1
-                    // itself ran out of time.
-                    return SearchOutcome::Aborted(best.or(partial));
-                }
-                SearchOutcome::GameOver => {
-                    // checkmate, stalemate or a rule draw: deeper searches
-                    // cannot change it, so don't run them
-                    return SearchOutcome::GameOver;
-                }
-                SearchOutcome::Complete(result) => {
-                    on_depth(depth, &result, self.pv_line());
-                    best = Some(result);
-                }
-            }
-        }
-        match best {
-            Some(result) => SearchOutcome::Complete(result),
-            // a depth of zero runs no iterations, so there is nothing to
-            // report beyond that no move was looked for
-            None => SearchOutcome::Aborted(None),
-        }
-    }
-
-    fn configure(&mut self, start_time: time::Instant, search_duration: Option<time::Duration>);
-
-    fn display_board(&self);
-
-    fn pv_line(&self) -> PvLine;
-
-    fn active_color(&self) -> Color;
+        on_depth: impl FnMut(u8, &SearchResult, PvLine),
+    ) -> SearchOutcome;
 }
 
 pub struct SearchParameters {
@@ -1047,18 +1006,8 @@ mod test_hash_table {
 }
 
 impl Engine for AlphaBeta {
-    fn new(board: Board) -> Self {
-        AlphaBeta::with_table_bytes(board, DEFAULT_TABLE_BYTES)
-    }
-
-    fn perft(&mut self) {
-        // TODO add a param
-        self.board.perft(1);
-    }
-
-    fn configure(&mut self, start_time: time::Instant, search_duration: Option<time::Duration>) {
-        self.start_time = start_time;
-        self.search_duration = search_duration;
+    fn perft(&mut self, depth: u8) -> u64 {
+        self.board.perft(depth)
     }
 
     fn active_color(&self) -> Color {
@@ -1075,13 +1024,85 @@ impl Engine for AlphaBeta {
         self.clear_cache();
     }
 
+    fn iterative_deepening_search(
+        &mut self,
+        search_options: SearchParameters,
+        mut on_depth: impl FnMut(u8, &SearchResult, PvLine),
+    ) -> SearchOutcome {
+        let mut best: Option<SearchResult> = None;
+        let max_depth = match search_options.depth {
+            Some(depth) => depth,
+            None => MAX_DEPTH,
+        };
+        self.configure(search_options.start_time, search_options.search_duration);
+
+        for depth in 1..=max_depth {
+            match self.search(depth) {
+                SearchOutcome::Aborted(partial) => {
+                    // A completed shallower iteration outranks the interrupted
+                    // one's best-so-far, which may be a fail high that never
+                    // got re-searched. The partial only fills in when depth 1
+                    // itself ran out of time.
+                    return SearchOutcome::Aborted(best.or(partial));
+                }
+                SearchOutcome::GameOver => {
+                    // checkmate, stalemate or a rule draw: deeper searches
+                    // cannot change it, so don't run them
+                    return SearchOutcome::GameOver;
+                }
+                SearchOutcome::Complete(result) => {
+                    on_depth(depth, &result, self.pv_line());
+                    best = Some(result);
+                }
+            }
+        }
+        match best {
+            Some(result) => SearchOutcome::Complete(result),
+            // a depth of zero runs no iterations, so there is nothing to
+            // report beyond that no move was looked for
+            None => SearchOutcome::Aborted(None),
+        }
+    }
+
+    fn make_move_str(&mut self, play: &str) -> bool {
+        for p in self.board.generate_moves() {
+            let play_str = format!("{}", p).to_lowercase();
+            if play == play_str {
+                let result = self.board.make_move(&p);
+                self.moves.clear_key(self.board.key); // TODO this is a hack to try to fix bad
+                // cache hits, particularly for draws
+                return result; // TODO change this to return Result
+            };
+        }
+        false
+    }
+
+    fn display_board(&self) {
+        println!("{}", self.board);
+    }
+}
+
+impl AlphaBeta {
+    pub fn new(board: Board) -> Self {
+        AlphaBeta::with_table_bytes(board, DEFAULT_TABLE_BYTES)
+    }
+
+    pub fn configure(
+        &mut self,
+        start_time: time::Instant,
+        search_duration: Option<time::Duration>,
+    ) {
+        self.start_time = start_time;
+        self.search_duration = search_duration;
+    }
+
     /// The root loop: the one node whose answer must include a play, which is
     /// why it runs here rather than in alpha_beta. The root probes the
     /// transposition table to order moves and stores its entry when done, but
     /// never takes a stored score in place of searching: a stored score can
     /// come from a line whose repetition and fifty move context differ from
     /// the game being played, and the answer must not depend on one.
-    fn search(&mut self, depth: u8) -> SearchOutcome {
+    pub fn search(&mut self, depth: u8) -> SearchOutcome {
         self.nodes = 0;
         self.search_depth = depth;
         self.selective_depth = depth;
@@ -1160,33 +1181,12 @@ impl Engine for AlphaBeta {
         SearchOutcome::Complete(self.result_for(play, alpha))
     }
 
-    //fn make_move(&mut self, play: &Play) {
-    //    self.board.make_move(play);
-    //}
-
-    fn make_move_str(&mut self, play: &str) -> bool {
-        for p in self.board.generate_moves() {
-            let play_str = format!("{}", p).to_lowercase();
-            if play == play_str {
-                let result = self.board.make_move(&p);
-                self.moves.clear_key(self.board.key); // TODO this is a hack to try to fix bad
-                // cache hits, particularly for draws
-                return result; // TODO change this to return Result
-            };
-        }
-        false
-    }
-
-    fn display_board(&self) {
-        println!("{}", self.board);
-    }
-
     /// Replay the line the table holds on a copy of the board, one stored move
     /// at a time. Walking the positions rather than following a key from one
     /// entry to the next is what lets the line be checked as it is built: the
     /// board says whether a stored move is legal here, and whether the line has
     /// reached a position it would be a draw to play on from.
-    fn pv_line(&self) -> PvLine {
+    pub fn pv_line(&self) -> PvLine {
         let mut line = Vec::new();
         // Board is Copy, so the search's own board is untouched by this.
         let mut board = self.board;
@@ -1226,7 +1226,6 @@ impl Engine for AlphaBeta {
 mod test_node_counts {
     use super::AlphaBeta;
     use super::Board;
-    use super::Engine;
     use super::Game;
     use pretty_assertions::assert_eq;
 

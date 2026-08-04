@@ -1,26 +1,15 @@
 use crate::misc::{File, coordinate_to_index};
-use smallvec::SmallVec;
 
-// some of these are only used by tests and debugging helpers
-#[allow(dead_code)]
 pub trait BitBoard {
     fn set_bit(&mut self, index: u8);
     fn clear_bit(&mut self, index: u8);
-    fn count(&self) -> u8;
-    fn debug_print(&self);
     fn is_bit_set(&self, index: u8) -> bool;
-    fn get_set_bits(&self) -> SmallVec<[u8; 32]>;
-    fn pop_bit(&mut self) -> Option<u8>;
 
-    // TODO Remove these?
-    #[inline(always)]
-    fn set_bit_from_coordinate(&mut self, rank: u8, file: File) {
-        self.set_bit(coordinate_to_index(rank, file));
-    }
-    #[inline(always)]
-    fn clear_bit_from_coordinate(&mut self, rank: u8, file: File) {
-        self.clear_bit(coordinate_to_index(rank, file));
-    }
+    /// Print the board as a rank and file grid. Nothing calls it: it is a
+    /// debugging aid kept to be reached for when bitboard code misbehaves,
+    /// and nothing else prints a raw bitboard.
+    #[allow(dead_code)]
+    fn debug_print(&self);
 }
 
 impl BitBoard for u64 {
@@ -37,31 +26,6 @@ impl BitBoard for u64 {
     #[inline(always)]
     fn is_bit_set(&self, index: u8) -> bool {
         (self & (1u64 << index)) > 0
-    }
-    #[inline(always)]
-    fn count(&self) -> u8 {
-        self.count_ones() as u8
-    }
-
-    #[inline(always)]
-    fn get_set_bits(&self) -> SmallVec<[u8; 32]> {
-        let mut v = SmallVec::<[u8; 32]>::new();
-        let mut value = *self;
-        while value != 0 {
-            let index = value.trailing_zeros();
-            value ^= 1 << index;
-            v.push(index as u8);
-        }
-        v
-    }
-
-    fn pop_bit(&mut self) -> Option<u8> {
-        if *self == 0 {
-            return None;
-        }
-        let index = self.trailing_zeros();
-        *self ^= 1 << index;
-        Some(index as u8)
     }
 
     fn debug_print(&self) {
