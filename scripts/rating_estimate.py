@@ -145,23 +145,33 @@ def read_pairings(
     pgn: Path, engine: str, ladder: dict[str, float]
 ) -> list[tuple[str, float, int, int, int]]:
     tally: dict[str, list[int]] = {name: [0, 0, 0] for name in ladder}
+    unfinished = 0
     text = pgn.read_text()
     for record in RECORD.split(text)[1:]:
         tags = dict(TAG.findall(record))
         white, black, result = tags.get("White"), tags.get("Black"), tags.get("Result")
         # a game still in progress when the match was interrupted has no result
         # to count, and no business borrowing the next one's
-        if not (white and black and result) or engine not in (white, black):
+        if not (white and black) or engine not in (white, black):
             continue
         opponent = black if white == engine else white
         if opponent not in tally:
             continue
         if result == "1/2-1/2":
             tally[opponent][1] += 1
-        elif (result == "1-0") == (white == engine):
-            tally[opponent][0] += 1
-        elif result in ("1-0", "0-1"):
-            tally[opponent][2] += 1
+        elif result == "1-0":
+            tally[opponent][0 if white == engine else 2] += 1
+        elif result == "0-1":
+            tally[opponent][2 if white == engine else 0] += 1
+        else:
+            unfinished += 1
+    # A handful of these is a match that was interrupted. A lot of them is the
+    # estimate being drawn from a fraction of the games that were paid for, so
+    # say how many rather than quietly fitting whatever finished.
+    if unfinished:
+        print(
+            f"{unfinished} games have no result and are not in the fit", file=sys.stderr
+        )
     for name in ladder:
         if sum(tally[name]) == 0:
             print(f"{name} played no games and is not in the fit", file=sys.stderr)

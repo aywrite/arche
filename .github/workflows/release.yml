@@ -95,8 +95,16 @@ jobs:
   # clock and buys two things: the two of them do not race to build and save the
   # same fastchess cache from cold, and only two jobs are ever queued to edit
   # the release notes, which is the most that queue holds without dropping one.
+  #
+  # The condition is what makes that sequencing rather than dependency. Needing
+  # a job means needing it to have succeeded, and this needs nothing strength
+  # produces, so without the condition a strength match that failed or that had
+  # no previous release to measure against would take the rating estimate down
+  # with it. Cancelled is excluded so that calling off a release does not still
+  # spend an hour of runner on it.
   calibrate:
     needs: [create-release, strength]
+    if: ${{ !cancelled() && needs.create-release.result == 'success' }}
     permissions:
       contents: write
     uses: ./.github/workflows/calibrate.yml
