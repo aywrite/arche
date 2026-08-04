@@ -1,13 +1,92 @@
 use crate::misc::Color;
 use crate::misc::Piece;
 
-fn mirror(array: &[isize; 64]) -> [isize; 64] {
+/// Flip a table top to bottom, so that a table written with the eighth rank
+/// first reads correctly for a board that indexes a1 as zero.
+///
+/// Written as a `while` rather than with iterators so that it can run at compile
+/// time: the tables are then constants in the binary rather than something built
+/// on startup.
+const fn mirror(array: &[isize; 64]) -> [isize; 64] {
     let mut mirrored: [isize; 64] = [0; 64];
-    for (i, a) in array.rchunks_exact(8).flatten().enumerate() {
-        mirrored[i] = *a;
+    let mut rank = 0;
+    while rank < 8 {
+        let mut file = 0;
+        while file < 8 {
+            mirrored[rank * 8 + file] = array[(7 - rank) * 8 + file];
+            file += 1;
+        }
+        rank += 1;
     }
     mirrored
 }
+
+// From https://www.chessprogramming.org/Simplified_Evaluation_Function.
+//
+// These are written the way the page prints them, with the eighth rank in the
+// top row, so the first entry is a8 and the last is h1. The board counts the
+// other way, a1 being index zero, which is why black takes the tables as
+// written and white takes them mirrored.
+
+#[rustfmt::skip]
+const PAWNS: [isize; 64] = [
+    0,  0,  0,  0,  0,  0,  0,  0,
+    50, 50, 50, 50, 50, 50, 50, 50,
+    10, 10, 20, 30, 30, 20, 10, 10,
+    5,  5, 10, 25, 25, 10,  5,  5,
+    1,  1,  1, 20, 20,  1,  1,  1,
+    5, -5,-10,  0,  0,-10, -5,  5,
+    5, 10, 10,-20,-20, 10, 10,  5,
+    0,  0,  0,  0,  0,  0,  0,  0
+];
+
+#[rustfmt::skip]
+const KNIGHTS: [isize; 64] = [
+    -50,-40,-30,-30,-30,-30,-40,-50,
+    -40,-20,  0,  0,  0,  0,-20,-40,
+    -30,  0, 10, 15, 15, 10,  0,-30,
+    -30,  5, 15, 20, 20, 15,  5,-30,
+    -30,  0, 15, 20, 20, 15,  0,-30,
+    -30,  5, 10, 15, 15, 10,  5,-30,
+    -40,-20,  0,  5,  5,  0,-20,-40,
+    -50,-40,-30,-30,-30,-30,-40,-50,
+];
+
+#[rustfmt::skip]
+const BISHOPS: [isize; 64] = [
+    -20,-10,-10,-10,-10,-10,-10,-20,
+    -10,  0,  0,  0,  0,  0,  0,-10,
+    -10,  0,  5, 10, 10,  5,  0,-10,
+    -10,  5,  5, 10, 10,  5,  5,-10,
+    -10,  0, 10, 10, 10, 10,  0,-10,
+    -10, 10, 10, 10, 10, 10, 10,-10,
+    -10,  5,  0,  0,  0,  0,  5,-10,
+    -20,-10,-10,-10,-10,-10,-10,-20,
+];
+
+#[rustfmt::skip]
+const ROOKS: [isize; 64] = [
+    0,  0,  0,  0,  0,  0,  0,  0,
+    5, 10, 10, 10, 10, 10, 10,  5,
+    -5,  0,  0,  0,  0,  0,  0, -5,
+    -5,  0,  0,  0,  0,  0,  0, -5,
+    -5,  0,  0,  0,  0,  0,  0, -5,
+    -5,  0,  0,  0,  0,  0,  0, -5,
+    -5,  0,  0,  0,  0,  0,  0, -5,
+    0,  0,  0,  5,  5,  0,  0,  0
+];
+
+#[rustfmt::skip]
+const QUEENS: [isize; 64] = [
+    -20,-10,-10, -5, -5,-10,-10,-20,
+    -10,  0,  0,  0,  0,  0,  0,-10,
+    -10,  0,  5,  5,  5,  5,  0,-10,
+    -5,  0,  5,  5,  5,  5,  0, -5,
+    0,  0,  5,  5,  5,  5,  0, -5,
+    -10,  5,  5,  5,  5,  5,  0,-10,
+    -10,  0,  5,  0,  0,  0,  0,-10,
+    -20,-10,-10, -5, -5,-10,-10,-20
+];
 
 pub struct PieceValueTables {
     white_pawns: [isize; 64],
@@ -44,92 +123,20 @@ impl PieceValueTables {
         }
     }
 
-    pub fn new() -> Self {
-        // From https://www.chessprogramming.org/Simplified_Evaluation_Function.
-        //
-        // These are written the way the page prints them, with the eighth rank
-        // in the top row, so the first entry is a8 and the last is h1. The
-        // board counts the other way, a1 being index zero, which is why black
-        // takes the tables as written and white takes them mirrored.
-        #[rustfmt::skip]
-        let pawns = [
-            0,  0,  0,  0,  0,  0,  0,  0,
-            50, 50, 50, 50, 50, 50, 50, 50,
-            10, 10, 20, 30, 30, 20, 10, 10,
-             5,  5, 10, 25, 25, 10,  5,  5,
-             1,  1,  1, 20, 20,  1,  1,  1,
-             5, -5,-10,  0,  0,-10, -5,  5,
-             5, 10, 10,-20,-20, 10, 10,  5,
-             0,  0,  0,  0,  0,  0,  0,  0
-        ];
-        #[rustfmt::skip]
-        let knights = [
-            -50,-40,-30,-30,-30,-30,-40,-50,
-            -40,-20,  0,  0,  0,  0,-20,-40,
-            -30,  0, 10, 15, 15, 10,  0,-30,
-            -30,  5, 15, 20, 20, 15,  5,-30,
-            -30,  0, 15, 20, 20, 15,  0,-30,
-            -30,  5, 10, 15, 15, 10,  5,-30,
-            -40,-20,  0,  5,  5,  0,-20,-40,
-            -50,-40,-30,-30,-30,-30,-40,-50,
-        ];
-        #[rustfmt::skip]
-        let bishops = [
-            -20,-10,-10,-10,-10,-10,-10,-20,
-            -10,  0,  0,  0,  0,  0,  0,-10,
-            -10,  0,  5, 10, 10,  5,  0,-10,
-            -10,  5,  5, 10, 10,  5,  5,-10,
-            -10,  0, 10, 10, 10, 10,  0,-10,
-            -10, 10, 10, 10, 10, 10, 10,-10,
-            -10,  5,  0,  0,  0,  0,  5,-10,
-            -20,-10,-10,-10,-10,-10,-10,-20,
-        ];
-        #[rustfmt::skip]
-        let rooks = [
-             0,  0,  0,  0,  0,  0,  0,  0,
-             5, 10, 10, 10, 10, 10, 10,  5,
-            -5,  0,  0,  0,  0,  0,  0, -5,
-            -5,  0,  0,  0,  0,  0,  0, -5,
-            -5,  0,  0,  0,  0,  0,  0, -5,
-            -5,  0,  0,  0,  0,  0,  0, -5,
-            -5,  0,  0,  0,  0,  0,  0, -5,
-             0,  0,  0,  5,  5,  0,  0,  0
-        ];
-        #[rustfmt::skip]
-        let queens = [
-            -20,-10,-10, -5, -5,-10,-10,-20,
-            -10,  0,  0,  0,  0,  0,  0,-10,
-            -10,  0,  5,  5,  5,  5,  0,-10,
-             -5,  0,  5,  5,  5,  5,  0, -5,
-              0,  0,  5,  5,  5,  5,  0, -5,
-            -10,  5,  5,  5,  5,  5,  0,-10,
-            -10,  0,  5,  0,  0,  0,  0,-10,
-            -20,-10,-10, -5, -5,-10,-10,-20
-        ];
-        //#[rustfmt::skip]
-        //let kings = [
-        //   -30,-40,-40,-50,-50,-40,-40,-30,
-        //   -30,-40,-40,-50,-50,-40,-40,-30,
-        //   -30,-40,-40,-50,-50,-40,-40,-30,
-        //   -30,-40,-40,-50,-50,-40,-40,-30,
-        //   -20,-30,-30,-40,-40,-30,-30,-20,
-        //   -10,-20,-20,-20,-20,-20,-20,-10,
-        //    20, 20,  0,  0,  0,  0, 20, 20,
-        //    20, 30, 10,  0,  0, 10, 30, 20
-        //];
-        Self {
-            white_pawns: mirror(&pawns),
-            black_pawns: pawns,
-            white_knights: mirror(&knights),
-            black_knights: knights,
-            white_bishops: mirror(&bishops),
-            black_bishops: bishops,
-            white_rooks: mirror(&rooks),
-            black_rooks: rooks,
-            white_queens: mirror(&queens),
-            black_queens: queens,
-        }
-    }
+    /// Built at compile time, so there is nothing to construct on startup and
+    /// nothing to synchronise on when reading it.
+    pub const TABLES: PieceValueTables = PieceValueTables {
+        white_pawns: mirror(&PAWNS),
+        black_pawns: PAWNS,
+        white_knights: mirror(&KNIGHTS),
+        black_knights: KNIGHTS,
+        white_bishops: mirror(&BISHOPS),
+        black_bishops: BISHOPS,
+        white_rooks: mirror(&ROOKS),
+        black_rooks: ROOKS,
+        white_queens: mirror(&QUEENS),
+        black_queens: QUEENS,
+    };
 }
 
 #[cfg(test)]
@@ -140,7 +147,7 @@ mod tests {
 
     fn value(piece: Piece, color: Color, file: File, rank: u8) -> isize {
         let index = coordinate_to_index(rank, file) as usize;
-        PieceValueTables::new().get_value(index, piece, color)
+        PieceValueTables::TABLES.get_value(index, piece, color)
     }
 
     /// The tables are written with the eighth rank first and the board indexes
