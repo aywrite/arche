@@ -29,7 +29,6 @@ version = "0.3.8"
 dependencies = [
  "basic_engine",
  "lazy_static",
- "rand",
  "regex",
 ]
 
@@ -47,7 +46,6 @@ dependencies = [
  "lazy_static",
  "pretty_assertions",
  "proptest",
- "rand",
  "smallvec",
 ]
 

@@ -12,6 +12,21 @@ use std::ops::Not;
 /// every pawn promoted to a queen comes to a little over ten thousand.
 pub type Score = i16;
 
+/// One step of splitmix64, which turns a seed into a stream of well spread
+/// numbers. Small enough to run at compile time, which is what the zorbrist
+/// keys need, and good enough for the magic search, which only wants candidates
+/// that are well spread rather than unpredictable.
+///
+/// Returns the value alongside the next state rather than taking a `&mut`, so
+/// that it needs nothing beyond const arithmetic.
+pub const fn split_mix(state: u64) -> (u64, u64) {
+    let state = state.wrapping_add(0x9E37_79B9_7F4A_7C15);
+    let mut z = state;
+    z = (z ^ (z >> 30)).wrapping_mul(0xBF58_476D_1CE4_E5B9);
+    z = (z ^ (z >> 27)).wrapping_mul(0x94D0_49BB_1331_11EB);
+    (z ^ (z >> 31), state)
+}
+
 #[derive(Debug, Copy, Clone, PartialEq, Eq, Hash)]
 pub struct Coordinate {
     rank: u8,
