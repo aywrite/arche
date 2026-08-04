@@ -58,8 +58,16 @@ pub trait Engine {
 
     fn make_move_str(&mut self, play: &str) -> bool;
 
-    fn iterative_deepening_search(&mut self, search_options: SearchParameters) -> Option<Play> {
-        let mut best_move: Option<Play> = None;
+    /// Search each depth in turn until one is the last to finish. The caller
+    /// hears about every completed iteration through on_depth, which is where
+    /// a protocol adapter reports progress from; the library itself never
+    /// prints.
+    fn iterative_deepening_search(
+        &mut self,
+        search_options: SearchParameters,
+        mut on_depth: impl FnMut(u8, &SearchResult, PvLine),
+    ) -> SearchOutcome {
+        let mut best: Option<SearchResult> = None;
         let max_depth = match search_options.depth {
             Some(depth) => depth,
             None => MAX_DEPTH,
@@ -73,43 +81,25 @@ pub trait Engine {
                     // one's best-so-far, which may be a fail high that never
                     // got re-searched. The partial only fills in when depth 1
                     // itself ran out of time.
-                    return best_move.or_else(|| partial.map(|r| r.best_move));
+                    return SearchOutcome::Aborted(best.or(partial));
                 }
                 SearchOutcome::GameOver => {
                     // checkmate, stalemate or a rule draw: deeper searches
                     // cannot change it, so don't run them
-                    println!("info string no legal moves identified");
-                    return None;
+                    return SearchOutcome::GameOver;
                 }
-                SearchOutcome::Complete(m) => {
-                    best_move = Some(m.best_move);
-                    if search_options.print_info {
-                        if let Some(mate_in) = m.checkmate_in() {
-                            println!(
-                                "info depth {} seldepth {} nodes {} score mate {} pv {}",
-                                depth,
-                                m.selective_depth,
-                                m.nodes,
-                                mate_in,
-                                self.pv_line(),
-                            );
-                        } else {
-                            println!(
-                                "info depth {} seldepth {} nodes {} score cp {} pv {}",
-                                depth,
-                                m.selective_depth,
-                                m.nodes,
-                                m.score,
-                                self.pv_line(),
-                                // TODO add search time to this
-                                // TODO add nodes per second
-                            );
-                        }
-                    }
+                SearchOutcome::Complete(result) => {
+                    on_depth(depth, &result, self.pv_line());
+                    best = Some(result);
                 }
             }
         }
-        best_move
+        match best {
+            Some(result) => SearchOutcome::Complete(result),
+            // a depth of zero runs no iterations, so there is nothing to
+            // report beyond that no move was looked for
+            None => SearchOutcome::Aborted(None),
+        }
     }
 
     fn configure(&mut self, start_time: time::Instant, search_duration: Option<time::Duration>);
@@ -125,7 +115,6 @@ pub struct SearchParameters {
     pub depth: Option<u8>,
     pub search_duration: Option<time::Duration>,
     pub start_time: time::Instant,
-    pub print_info: bool,
 }
 
 impl Default for SearchParameters {
@@ -140,7 +129,6 @@ impl SearchParameters {
             depth: None,
             search_duration: None,
             start_time: time::Instant::now(),
-            print_info: false,
         }
     }
 
@@ -149,7 +137,6 @@ impl SearchParameters {
             depth: Some(depth),
             search_duration: None,
             start_time: time::Instant::now(),
-            print_info: false,
         }
     }
 }
@@ -509,6 +496,14 @@ pub struct PvLine {
     line: Vec<Play>,
 }
 
+impl PvLine {
+    /// A line built by hand, which is how a protocol adapter's tests pin the
+    /// format of a reported line without running a search.
+    pub fn new(line: Vec<Play>) -> Self {
+        Self { line }
+    }
+}
+
 impl fmt::Display for PvLine {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         let out: Vec<String> = self.line.iter().map(|p| format!("{}", p)).collect();
@@ -541,14 +536,14 @@ struct Aborted;
 
 #[derive(Debug)]
 pub struct SearchResult {
-    nodes: u64,          // The number of results examined as part of the search
-    selective_depth: u8, // Selective search depth in plies
-    best_move: Play,     // The best move found as part of the search
-    score: Score,        // The estimated score for the best move if played
+    pub nodes: u64,          // The number of results examined as part of the search
+    pub selective_depth: u8, // Selective search depth in plies
+    pub best_move: Play,     // The best move found as part of the search
+    pub score: Score,        // The estimated score for the best move if played
 }
 
 impl SearchResult {
-    fn checkmate_in(&self) -> Option<Score> {
+    pub fn checkmate_in(&self) -> Option<Score> {
         if (CHECKMATE_SCORE - self.score.abs()) < 300 {
             let mut mate = (CHECKMATE_SCORE - self.score.abs() + 1) / 2;
             if self.score < 0 {
@@ -719,9 +714,48 @@ mod test_search {
             depth: None,
             search_duration: Some(time::Duration::from_millis(50)),
             start_time: time::Instant::now(),
-            print_info: false,
         };
-        assert!(e.iterative_deepening_search(params).is_some());
+        let outcome = e.iterative_deepening_search(params, |_, _, _| {});
+        assert!(matches!(outcome, SearchOutcome::Aborted(Some(_))));
+    }
+
+    #[test]
+    fn test_deepening_reports_each_completed_depth() {
+        use super::SearchParameters;
+        let mut e = engine(Board::new());
+        let mut depths = Vec::new();
+        let outcome = e.iterative_deepening_search(
+            SearchParameters::new_with_depth(3),
+            |depth, result, _| {
+                assert!(result.nodes > 0);
+                depths.push(depth);
+            },
+        );
+        assert_eq!(depths, vec![1, 2, 3]);
+        assert!(matches!(outcome, SearchOutcome::Complete(_)));
+    }
+
+    #[test]
+    fn test_deepening_stops_reporting_at_game_over() {
+        use super::SearchParameters;
+        // fool's mate again: there is nothing to report and nothing to play
+        let game = Board::from_fen("rnb1kbnr/pppp1ppp/8/4p3/6Pq/5P2/PPPPP2P/RNBQKBNR w KQkq - 1 3")
+            .unwrap();
+        let mut e = engine(game);
+        let outcome = e
+            .iterative_deepening_search(SearchParameters::new_with_depth(3), |_, _, _| {
+                panic!("a finished game has no depths to report")
+            });
+        assert!(matches!(outcome, SearchOutcome::GameOver));
+    }
+
+    #[test]
+    fn test_deepening_to_depth_zero_finds_nothing() {
+        use super::SearchParameters;
+        let mut e = engine(Board::new());
+        let outcome =
+            e.iterative_deepening_search(SearchParameters::new_with_depth(0), |_, _, _| {});
+        assert!(matches!(outcome, SearchOutcome::Aborted(None)));
     }
 
     #[test]

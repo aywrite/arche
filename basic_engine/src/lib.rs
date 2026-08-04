@@ -11,8 +11,9 @@ mod pvt;
 mod zorbrist;
 
 pub use board::Board;
-pub use engine::{AlphaBeta, Engine, SearchParameters};
-pub use misc::Color;
+pub use engine::{AlphaBeta, Engine, PvLine, SearchOutcome, SearchParameters, SearchResult};
+pub use misc::{Color, Score};
+pub use play::Play;
 use std::fmt;
 
 pub trait Game: fmt::Display {
