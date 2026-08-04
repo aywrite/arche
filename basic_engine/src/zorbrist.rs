@@ -1,8 +1,18 @@
 use crate::Color;
 use crate::misc::{CastlePermissions, Piece};
 
-use rand::rngs::SmallRng;
-use rand::{Rng, SeedableRng};
+/// One step of splitmix64, which is the usual way to turn a seed into a stream
+/// of well spread numbers and is simple enough to run at compile time.
+///
+/// Returns the value alongside the next state rather than taking a `&mut`, so
+/// that it needs nothing newer than const arithmetic.
+const fn split_mix(state: u64) -> (u64, u64) {
+    let state = state.wrapping_add(0x9E37_79B9_7F4A_7C15);
+    let mut z = state;
+    z = (z ^ (z >> 30)).wrapping_mul(0xBF58_476D_1CE4_E5B9);
+    z = (z ^ (z >> 27)).wrapping_mul(0x94D0_49BB_1331_11EB);
+    (z ^ (z >> 31), state)
+}
 
 pub struct Zorbrist {
     pieces: [[u64; 64]; 12],
@@ -12,20 +22,53 @@ pub struct Zorbrist {
 }
 
 impl Zorbrist {
-    pub fn new() -> Self {
-        let mut rng: SmallRng = <SmallRng as SeedableRng>::seed_from_u64(0x38655440d1b63d78);
+    /// The keys, built at compile time. They only have to be well spread and
+    /// the same on both sides of a game, so there is nothing to be gained from
+    /// drawing them at startup.
+    pub const TABLE: Zorbrist = Self::build(0x3865_5440_d1b6_3d78);
+
+    const fn build(seed: u64) -> Self {
+        let mut state = seed;
+
         let mut pieces = [[0u64; 64]; 12];
-        for b in &mut pieces {
-            let mut array = [0u64; 64];
-            rng.fill(&mut array);
-            *b = array;
+        let mut piece = 0;
+        while piece < 12 {
+            let mut square = 0;
+            while square < 64 {
+                let (value, next) = split_mix(state);
+                state = next;
+                pieces[piece][square] = value;
+                square += 1;
+            }
+            piece += 1;
+        }
+
+        let (side, next) = split_mix(state);
+        state = next;
+
+        let mut castling = [0u64; 4];
+        let mut i = 0;
+        while i < 4 {
+            let (value, next) = split_mix(state);
+            state = next;
+            castling[i] = value;
+            i += 1;
+        }
+
+        let mut en_passant = [0u64; 8];
+        let mut i = 0;
+        while i < 8 {
+            let (value, next) = split_mix(state);
+            state = next;
+            en_passant[i] = value;
+            i += 1;
         }
 
         Self {
             pieces,
-            side: rng.random(),
-            castling: rng.random(),
-            en_passant: rng.random(),
+            side,
+            castling,
+            en_passant,
         }
     }
 
@@ -71,7 +114,7 @@ mod test_zorbrist {
 
     #[test]
     fn test_all_random_numbers_unique() {
-        let z = Zorbrist::new();
+        let z = Zorbrist::TABLE;
         let mut all = z.pieces.iter().flatten().copied().collect::<Vec<u64>>();
         all.push(z.side);
         all.extend(z.castling);

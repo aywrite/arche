@@ -1120,11 +1120,11 @@ mod test_node_counts {
         assert_eq!(
             counted,
             vec![
-                ("opening", 171_844),
-                ("kiwipete", 218_290),
-                ("pawn endgame", 180_127),
-                ("promotions", 120_717),
-                ("middlegame", 199_263),
+                ("opening", 172_270),
+                ("kiwipete", 218_778),
+                ("pawn endgame", 174_703),
+                ("promotions", 120_523),
+                ("middlegame", 196_650),
             ]
         );
     }

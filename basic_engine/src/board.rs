@@ -60,6 +60,7 @@ const G8: u8 = 62;
 const H8: u8 = 63;
 
 static PVT: PieceValueTables = PieceValueTables::TABLES;
+static ZORB: Zorbrist = Zorbrist::TABLE;
 
 lazy_static! {
     static ref ATTACK_MASKS: AttackMasks = AttackMasks::new();
@@ -72,7 +73,6 @@ lazy_static! {
         coordinate_to_index(8, File::E),
         coordinate_to_index(8, File::H),
     ];
-    static ref ZORB: Zorbrist = Zorbrist::new();
     static ref MAGIC: Magic = Magic::new();
     static ref B1_C1_D1: u64 = {
         let mut mask = 0u64;
