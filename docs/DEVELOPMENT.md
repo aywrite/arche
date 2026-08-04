@@ -285,6 +285,14 @@ Merging that pull request tags the release and starts the build. Closing it
 without merging calls the release off, nothing is tagged or published until it
 lands.
 
+A candidate gets a changelog section like any other release, because the github
+release is created from the section matching the tag and cannot be created
+without one. The section is a preview rather than a record: it covers everything
+since the last full release, which is the same range the release itself will
+cover, so the next thing written replaces it rather than being added alongside
+it. A release at the end of a run of candidates ends up with the changelog it
+would have had if none of them had happened.
+
 Two things are worth knowing about why it is shaped this way:
 
 - `master` only takes changes through a pull request, so a workflow cannot push
