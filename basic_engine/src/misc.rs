@@ -335,11 +335,6 @@ impl File {
         File::G,
         File::H,
     ];
-
-    pub fn add(self, value: u32) -> File {
-        let new_value = ((self as usize) + value as usize) % 8;
-        File::VARIANTS[new_value]
-    }
 }
 
 impl fmt::Display for File {

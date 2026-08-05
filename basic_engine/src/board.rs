@@ -1238,10 +1238,25 @@ impl Game for Board {
 
         // parse out the pieces on the board
         let mut rank = 8;
-        let mut file = File::A;
+        // counted as a number rather than held as a File, because a complete
+        // rank ends one square past the h file, which is not a File a square
+        // can have
+        let mut file = 0u8;
         for c in position.chars() {
             if rank < 1 {
                 return Err("Too many ranks found".to_string());
+            }
+            if c == '/' {
+                rank -= 1;
+                file = 0;
+                continue;
+            }
+            let step = match c {
+                '1'..='8' => c.to_digit(10).unwrap() as u8,
+                _ => 1,
+            };
+            if file + step > 8 {
+                return Err("Too many files found in rank".to_string());
             }
             // TODO change piece to PieceType and implement a Piece with from char and to char
             // methods
@@ -1252,7 +1267,6 @@ impl Game for Board {
                 'r' | 'R' => Some(Piece::Rook),
                 'q' | 'Q' => Some(Piece::Queen),
                 'k' | 'K' => Some(Piece::King),
-                '/' => None,
                 '1'..='8' => None,
                 _ => return Err("unexpected character in fen".to_string()),
             };
@@ -1262,19 +1276,9 @@ impl Game for Board {
                 } else {
                     Color::Black
                 };
-                board.set_piece(p, color, rank, file);
+                board.set_piece(p, color, rank, File::try_from(file)?);
             }
-
-            file = match c {
-                '1'..='8' => file.add(c.to_digit(10).unwrap()),
-                'r' | 'b' | 'n' | 'k' | 'q' | 'p' => file.add(1),
-                'R' | 'B' | 'N' | 'K' | 'Q' | 'P' => file.add(1),
-                '/' => {
-                    rank -= 1;
-                    File::A
-                }
-                _ => return Err("unexpected character in fen".to_string()),
-            };
+            file += step;
         }
         // Everything below assumes a position which could actually arise, and
         // crashes rather than playing badly when it could not. A king a side is
@@ -1911,14 +1915,20 @@ mod test_fen {
                 .is_err()
         );
     }
-    // TODO uncomment this test and fix
-    //#[test]
-    //fn test_invalid_extra_file() {
-    //    assert!(Board::from_fen(
-    //        "rnbqkbnr/ppppppppp/8/8/4P3/8/PPPP1PPP/RNBQKBNR b KQkq e3 0 1".to_string()
-    //    )
-    //    .is_err());
-    //}
+    /// A ninth file used to wrap back onto the a file and corrupt the square
+    /// it landed on, rather than fail to parse.
+    #[test]
+    fn test_invalid_extra_file() {
+        assert!(
+            Board::from_fen("rnbqkbnr/ppppppppp/8/8/4P3/8/PPPP1PPP/RNBQKBNR b KQkq e3 0 1")
+                .is_err()
+        );
+        assert!(
+            Board::from_fen("rnbqkbnr/pppppppp/45/8/4P3/8/PPPP1PPP/RNBQKBNR b KQkq e3 0 1")
+                .is_err(),
+            "digits which sum past the h file are the same mistake"
+        );
+    }
     #[test]
     fn test_invalid_bad_piece() {
         assert!(
