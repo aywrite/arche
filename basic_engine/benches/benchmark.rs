@@ -41,7 +41,7 @@ bench_board_fen!(perft_3, b, {
     b.perft(3);
 });
 
-// The engine defaults to a 500MB transposition table, which is far more than a
+// The engine defaults to a 256MB transposition table, which is still far more than a
 // depth 5 search needs and makes clearing it between iterations cost more than
 // the search itself.
 const BENCH_TABLE_BYTES: usize = 16 * 1024 * 1024;
