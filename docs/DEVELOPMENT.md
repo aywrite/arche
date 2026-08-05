@@ -197,6 +197,35 @@ arbitrary commits compared by naming both.
 The release workflow calls the same workflow with fifty games, and that run is
 the only one that appends its result to the release notes.
 
+### Asking whether instead of how much
+
+A fixed count answers "how big is the difference", and the table above says how
+badly. The question a change usually poses is the narrower "is there one", and
+that is what the `sprt` input asks. With it enabled, fastchess runs a
+[sequential probability ratio test](https://en.wikipedia.org/wiki/Sequential_probability_ratio_test):
+after every game it weighs the score so far as evidence between two hypotheses,
+and stops the moment either is accepted. A change worth well more than `elo1`
+settles in tens of games, one worth nothing settles almost as fast, and only a
+difference near the bounds needs the games a fixed match would have spent
+anyway. The verdicts are wrong at the accepted error rates, five percent each
+way.
+
+- `elo0` and `elo1` are the hypotheses, in the same elo the summary reports.
+  The defaults ask "is this worth ten elo, or nothing" — about the size of
+  change worth an afternoon at this engine's strength. Bounds closer together
+  resolve smaller differences and pay for it in games.
+- `games` stops sizing the match and becomes its cap, so set it in the
+  hundreds or thousands: the test stops itself long before a cap it can settle
+  inside of. Play is also capped at 150 minutes of wall clock, inside the
+  job's own three hour timeout, so a test that would not have finished still
+  reports the games it played.
+- A match stopped by either cap says `inconclusive` next to its estimate,
+  which is the honest reading: the games played did not settle the question.
+
+The same test can be run locally by adding
+`-sprt elo0=0 elo1=10 alpha=0.05 beta=0.05 model=logistic` to the fastchess
+command above, with `-rounds` raised to serve as the cap.
+
 ## Placing the engine on the ccrl scale
 
 A match against the previous version says which of the two is better. It cannot

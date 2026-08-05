@@ -66,3 +66,66 @@ def test_a_losing_result_keeps_its_sign(tmp_path):
 def test_output_without_a_result_block_fails_rather_than_invents(tmp_path):
     result = run(tmp_path, "fastchess crashed before printing anything\n")
     assert result.returncode != 0
+
+
+# the tail of a real run under -sprt: the LLR line is only printed then, and
+# the verdict line only once the log likelihood ratio crosses a bound
+SPRT_H0 = """\
+--------------------------------------------------
+Results of new vs old (1+0.01 - 5 plies, NULL, NULL):
+Elo: -inf +/- -nan, nElo: -inf +/- -nan
+LOS: 0.00 %, DrawRatio: 0.00 %, PairsRatio: 0.00
+Games: 142, Wins: 0, Losses: 142, Draws: 0, Points: 0.0 (0.00 %)
+Ptnml(0-2): [71, 0, 0, 0, 0], WL/DD Ratio: -nan
+LLR: -2.95 (-100.1%) (-2.94, 2.94) [0.00, 10.00]
+--------------------------------------------------
+SPRT ([0.00, 10.00]) completed - H0 was accepted
+"""
+
+# the same run stopped by a cap instead: fastchess reports the games played
+# and exits without a verdict line
+SPRT_CAPPED = """\
+--------------------------------------------------
+Results of new vs old (1+0.01, NULL, NULL):
+Elo: 58.45 +/- 81.32, nElo: 65.66 +/- 87.91
+LOS: 92.84 %, DrawRatio: 53.33 %, PairsRatio: 2.50
+Games: 60, Wins: 34, Losses: 24, Draws: 2, Points: 35.0 (58.33 %)
+Ptnml(0-2): [4, 0, 16, 2, 8], WL/DD Ratio: inf
+LLR: 0.31 (10.6%) (-2.94, 2.94) [0.00, 10.00]
+--------------------------------------------------
+Tournament was interrupted. To resume the tournament, run: ./fastchess -config file=config.json
+"""
+
+
+def test_an_accepted_h1_reads_as_stronger(tmp_path):
+    accepted = SPRT_CAPPED.replace(
+        "Tournament was interrupted. To resume the tournament, run: ./fastchess -config file=config.json",
+        "SPRT ([0.00, 10.00]) completed - H1 was accepted",
+    )
+    result = run(tmp_path, accepted)
+    assert result.stdout == (
+        "+58 ±81 Elo (60 games), SPRT [0.00, 10.00] accepted H1: stronger\n"
+    )
+
+
+def test_an_accepted_h0_reads_as_not_stronger(tmp_path):
+    # a sweep as well as a verdict: every game pair went the same way, so
+    # fastchess prints the elo as inf and only the score can be reported
+    result = run(tmp_path, SPRT_H0)
+    assert result.stdout == (
+        "0.00% score (142 games), SPRT [0.00, 10.00] accepted H0: not stronger\n"
+    )
+
+
+def test_a_capped_sprt_match_is_inconclusive(tmp_path):
+    result = run(tmp_path, SPRT_CAPPED)
+    assert result.stdout == (
+        "+58 ±81 Elo (60 games), SPRT [0.00, 10.00] inconclusive\n"
+    )
+
+
+def test_a_fixed_match_gets_no_sprt_annotation(tmp_path):
+    # the LLR line is the marker of an sprt run, a plain match must not grow
+    # a verdict
+    result = run(tmp_path, RESULT)
+    assert "SPRT" not in result.stdout
