@@ -108,6 +108,11 @@ pub struct AlphaBeta {
     // search parameters
     search_depth: u8,
     // search state
+    /// Whether the value the last search call returned was draw tainted. The
+    /// search is depth first and single threaded, so one flag threads the taint
+    /// up without changing every return type.
+    tainted: bool,
+    pub ghi: GhiCounters,
     start_time: time::Instant,
     search_duration: Option<time::Duration>,
 }
@@ -120,6 +125,8 @@ impl AlphaBeta {
             moves: HashTable::with_capacity_bytes(bytes),
             search_depth: 0,
             selective_depth: 0,
+            tainted: false,
+            ghi: GhiCounters::default(),
             start_time: time::Instant::now(),
             search_duration: None,
         }
@@ -156,6 +163,9 @@ impl AlphaBeta {
     }
 
     fn quiescence(&mut self, mut alpha: Score, beta: Score) -> Result<Score, Aborted> {
+        // quiescence looks at captures alone and never checks for a repetition,
+        // so nothing it returns is path dependent
+        self.tainted = false;
         self.selective_depth = self.selective_depth.max(self.board.line_ply as u8);
         if self.board.line_ply >= MAX_DEPTH.into() {
             return Ok(self.eval());
@@ -211,6 +221,7 @@ impl AlphaBeta {
                     score: score_to_tt(alpha, self.board.line_ply),
                     depth: 0, // Never use a quiescence move instead of evaluating, only for move ordering
                     node: Node::Ordering,
+                    tainted: false,
                     ply: self.board.ply as u16,
                 },
             );
@@ -224,34 +235,40 @@ impl AlphaBeta {
     /// move ordering, and a score when the stored entry is deep enough and its
     /// bound allows a cutoff at the current alpha/beta window.
     fn get_transposition(
-        &self,
+        &mut self,
         key: u64,
         alpha: Score,
         beta: Score,
         depth: u8,
     ) -> (Option<Play>, Option<Score>) {
-        let pv = self.moves.get(key);
-        if let Some(pv) = pv {
-            if pv.depth >= depth {
-                let score = score_from_tt(pv.score, self.board.line_ply);
-                match pv.node {
-                    Node::Exact => return (Some(pv.play), Some(score)),
-                    Node::Alpha => {
-                        if score <= alpha {
-                            return (Some(pv.play), Some(score));
-                        }
-                    }
-                    Node::Beta => {
-                        if score >= beta {
-                            return (Some(pv.play), Some(score));
-                        }
-                    }
-                    Node::Ordering => (),
-                }
+        // copied out so the counters below are not borrowing the table
+        let Some(pv) = self.moves.get(key).copied() else {
+            return (None, None);
+        };
+        if pv.depth >= depth {
+            let score = score_from_tt(pv.score, self.board.line_ply);
+            let cuts = match pv.node {
+                Node::Exact => true,
+                Node::Alpha => score <= alpha,
+                Node::Beta => score >= beta,
+                Node::Ordering => false,
+            };
+            if cuts && REFUSE_TAINTED_CUTOFFS && pv.tainted {
+                // the stored draw was reachable by the path that stored it and
+                // may not be reachable by this one, so the move is still worth
+                // ordering by but the score is not worth trusting
+                return (Some(pv.play), None);
             }
-            return (Some(pv.play), None);
+            if cuts {
+                self.ghi.score_cutoffs += 1;
+                self.ghi.tainted_score_cutoffs += u64::from(pv.tainted);
+                // whatever the stored score depended on, this frame now depends
+                // on too
+                self.tainted = pv.tainted;
+                return (Some(pv.play), Some(score));
+            }
         }
-        (None, None)
+        (Some(pv.play), None)
     }
 
     fn alpha_beta(
@@ -268,8 +285,12 @@ impl AlphaBeta {
         // repetition there is not a finished game because the engine still has
         // to move, but from here on it is a draw either side can take
         if self.board.fifty_move_rule >= 100 || self.board.has_repeated() {
+            // the source. This score is true of the path that reached this
+            // position, not of the position
+            self.tainted = true;
             return Ok(0);
         }
+        let mut node_tainted = false;
         let in_check = self.board.is_king_attacked();
         if in_check {
             depth += 1;
@@ -279,6 +300,7 @@ impl AlphaBeta {
             if self.search_depth >= 4 {
                 return self.quiescence(alpha, beta);
             }
+            self.tainted = false;
             return Ok(self.eval());
         }
 
@@ -310,6 +332,9 @@ impl AlphaBeta {
                 // score of an aborted frame away from the stores below.
                 let result = self.alpha_beta(-beta, -alpha, depth - 1);
                 self.board.undo_move().unwrap();
+                // a value built from a tainted child is tainted, whether or not
+                // it turns out to be the best one here
+                node_tainted |= self.tainted;
                 score = -result?;
                 if score > alpha {
                     best_move = Some(m);
@@ -322,8 +347,12 @@ impl AlphaBeta {
                                 score: score_to_tt(beta, self.board.line_ply),
                                 node: Node::Beta,
                                 ply: self.board.ply as u16,
+                                tainted: node_tainted,
                             },
                         );
+                        self.ghi.stores += 1;
+                        self.ghi.tainted_stores += u64::from(node_tainted);
+                        self.tainted = node_tainted;
                         return Ok(beta);
                     }
                     alpha = score;
@@ -332,6 +361,9 @@ impl AlphaBeta {
         }
 
         if !found_legal_move {
+            // mate and stalemate are properties of the position, not of the
+            // path that reached it
+            self.tainted = false;
             if in_check {
                 return Ok(-CHECKMATE_SCORE + (self.board.line_ply as Score));
             }
@@ -347,17 +379,50 @@ impl AlphaBeta {
                     score: score_to_tt(alpha, self.board.line_ply),
                     node: Node::Exact,
                     ply: self.board.ply as u16,
+                    tainted: node_tainted,
                 },
             );
+            self.ghi.stores += 1;
+            self.ghi.tainted_stores += u64::from(node_tainted);
         }
+        self.tainted = node_tainted;
         Ok(alpha)
     }
+}
+
+/// Whether to refuse a score from a draw tainted entry, trusting only its move.
+/// Sound but slower. Left off so that this branch only measures and the pinned
+/// node counts still describe what master does. Turning it on cost, over the
+/// pinned positions at their pinned depths: nothing at all in kiwipete,
+/// promotions and the middlegame, which have no tainted cutoffs to refuse,
+/// +0.037% in the opening, and +2.970% in the pawn endgame. +0.617% overall.
+const REFUSE_TAINTED_CUTOFFS: bool = false;
+
+/// How often the transposition table hands back a score that depended on the
+/// path taken rather than on the position, which is the graph history
+/// interaction error every engine carries and none of them measure.
+#[derive(Copy, Clone, Debug, Default)]
+pub struct GhiCounters {
+    /// Entries stored carrying a draw tainted score.
+    pub tainted_stores: u64,
+    /// Entries stored in total.
+    pub stores: u64,
+    /// Probes that returned a score, cutting the search off.
+    pub score_cutoffs: u64,
+    /// Probes that returned a tainted score, which is the error itself: the
+    /// stored draw was reachable by the path that stored it and may not be
+    /// reachable by this one.
+    pub tainted_score_cutoffs: u64,
 }
 
 #[derive(Copy, Clone, Debug)]
 struct Pv {
     play: Play,
     score: Score,
+    /// True if the score flowed from a repetition or fifty move draw somewhere
+    /// below it, so it describes the path taken to this position and not the
+    /// position itself. See docs on graph history interaction.
+    tainted: bool,
     // a depth cannot exceed MAX_DEPTH and a ply is bounded by the history
     // array, so neither needs a word. Both sit in the padding the key leaves
     // behind, which is why widening ply to u16 costs nothing.
@@ -561,6 +626,7 @@ mod test_search {
             depth: 5,
             node: Node::Exact,
             ply: ply as u16,
+            tainted: false,
         }
     }
 
@@ -861,6 +927,7 @@ mod test_search {
                 depth: 0,
                 node: Node::Ordering,
                 ply: 0,
+                tainted: false,
             },
         );
 
@@ -943,6 +1010,7 @@ mod test_hash_table {
             depth,
             node,
             ply,
+            tainted: false,
         }
     }
 
@@ -1127,6 +1195,7 @@ impl AlphaBeta {
         let beta = Score::MAX - 1;
         let mut best: Option<Play> = None;
         let mut found_legal_move = false;
+        let mut root_tainted = false;
 
         let pv_play = self.moves.get(self.board.key).map(|pv| pv.play);
         let mut moves = self.board.generate_moves();
@@ -1152,6 +1221,7 @@ impl AlphaBeta {
                         );
                     }
                     Ok(s) => {
+                        root_tainted |= self.tainted;
                         let score = -s;
                         if score > alpha {
                             alpha = score;
@@ -1176,8 +1246,11 @@ impl AlphaBeta {
                 score: score_to_tt(alpha, self.board.line_ply),
                 node: Node::Exact,
                 ply: self.board.ply as u16,
+                tainted: root_tainted,
             },
         );
+        self.ghi.stores += 1;
+        self.ghi.tainted_stores += u64::from(root_tainted);
         SearchOutcome::Complete(self.result_for(play, alpha))
     }
 
@@ -1275,6 +1348,70 @@ mod test_node_counts {
                 other => panic!("search did not complete: {:?}", other),
             })
             .sum()
+    }
+
+    /// Reports how much of the search's use of the transposition table depends
+    /// on the path taken rather than on the position. Not an assertion, it
+    /// prints, which is why it is ignored.
+    ///
+    ///     cargo test -p basic_engine --release ghi_report -- --ignored --nocapture
+    #[test]
+    #[ignore = "prints a measurement, see the doc comment"]
+    fn ghi_report() {
+        println!(
+            "{:<14} {:>10} {:>10} {:>8} {:>10} {:>10} {:>8}",
+            "position", "stores", "tainted", "%", "cutoffs", "tainted", "%"
+        );
+        let mut totals = (0u64, 0u64, 0u64, 0u64);
+        for (name, fen, depth) in POSITIONS {
+            let mut engine =
+                AlphaBeta::with_table_bytes(Board::from_fen(fen).unwrap(), TABLE_BYTES);
+            for d in 1..=depth {
+                match engine.search(d) {
+                    super::SearchOutcome::Complete(_) => (),
+                    other => panic!("search did not complete: {:?}", other),
+                }
+            }
+            let g = engine.ghi;
+            let pct = |a: u64, b: u64| {
+                if b == 0 {
+                    0.0
+                } else {
+                    100.0 * a as f64 / b as f64
+                }
+            };
+            println!(
+                "{:<14} {:>10} {:>10} {:>7.3}% {:>10} {:>10} {:>7.3}%",
+                name,
+                g.stores,
+                g.tainted_stores,
+                pct(g.tainted_stores, g.stores),
+                g.score_cutoffs,
+                g.tainted_score_cutoffs,
+                pct(g.tainted_score_cutoffs, g.score_cutoffs)
+            );
+            totals.0 += g.stores;
+            totals.1 += g.tainted_stores;
+            totals.2 += g.score_cutoffs;
+            totals.3 += g.tainted_score_cutoffs;
+        }
+        let pct = |a: u64, b: u64| {
+            if b == 0 {
+                0.0
+            } else {
+                100.0 * a as f64 / b as f64
+            }
+        };
+        println!(
+            "{:<14} {:>10} {:>10} {:>7.3}% {:>10} {:>10} {:>7.3}%",
+            "TOTAL",
+            totals.0,
+            totals.1,
+            pct(totals.1, totals.0),
+            totals.2,
+            totals.3,
+            pct(totals.3, totals.2)
+        );
     }
 
     /// The search is deterministic, so how many nodes it visits is an exact
