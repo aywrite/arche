@@ -642,12 +642,14 @@ impl Engine for AlphaBeta {
 }
 
 /// Whether to refuse a score from a draw tainted entry, trusting only its move.
-/// Sound but slower. Left off so that this branch only measures and the pinned
-/// node counts still describe what master does. Turning it on cost, over the
-/// pinned positions at their pinned depths: nothing at all in kiwipete,
-/// promotions and the middlegame, which have no tainted cutoffs to refuse,
-/// +0.037% in the opening, and +2.970% in the pawn endgame. +0.617% overall.
-const REFUSE_TAINTED_CUTOFFS: bool = false;
+///
+/// On. A tainted score describes the path that stored it rather than the
+/// position, so a search arriving another way can read a draw it cannot
+/// actually reach. Refusing costs, over the pinned positions at their pinned
+/// depths, nothing at all in kiwipete, promotions and the middlegame, which
+/// have no tainted cutoffs to refuse, +0.037% in the opening and +2.970% in the
+/// pawn endgame, for +0.617% overall.
+const REFUSE_TAINTED_CUTOFFS: bool = true;
 
 /// How often the transposition table hands back a score that depended on the
 /// path taken rather than on the position, which is the graph history
@@ -1459,9 +1461,9 @@ mod test_node_counts {
         assert_eq!(
             counted,
             vec![
-                ("opening", 149_810),
+                ("opening", 149_866),
                 ("kiwipete", 217_026),
-                ("pawn endgame", 173_223),
+                ("pawn endgame", 178_367),
                 ("promotions", 110_643),
                 ("middlegame", 191_607),
             ]
