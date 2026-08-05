@@ -132,17 +132,16 @@ jobs:
           # only fastchess and the book are cached, but a rerun on the same
           # runner would still find the last attempt's games lying here
           rm -f gauntlet.pgn result.txt config.json
-          engines=(-engine name=arche cmd=./arche)
+          # 256MB is what ccrl gives an engine, and both sides take it now that
+          # the engine has a Hash option, so neither is handed an advantage the
+          # rating this estimates was not played with.
+          engines=(-engine name=arche cmd=./arche option.Hash=256)
           for rung in ${LADDER//,/ }; do
             tag=${rung%%:*}
-            # The engine's own table is 500MB and is not settable over uci, so
-            # the sides cannot be matched. 256MB is what ccrl gives an engine
-            # and the closest the opponents get, which leaves the engine a small
-            # advantage in exactly the direction that flatters the estimate.
             engines+=(-engine "name=stash-${tag}" "cmd=./stash-${tag}" option.Hash=256)
           done
-          # the engine allocates its table before it answers uci, which takes it
-          # several seconds and the ten second default does not always allow for
+          # generous: the engine allocates its table before it answers uci, and
+          # that used to take longer than the ten second default allows
           ./fastchess "${engines[@]}" \
             -tournament gauntlet -seeds 1 \
             -each proto=uci "tc=$TIME_CONTROL" -startup-ms 20000 \

@@ -208,6 +208,10 @@ Locally the same thing is the fastchess command from the previous section with
 more `-engine` arguments and `-tournament gauntlet`, which plays the first
 engine against all the others.
 
+Every engine in it is given `option.Hash=256`, the size ccrl plays these
+opponents at. Ours was fixed at 500MB until it had a Hash option, so the match
+used to hand us a memory advantage the published ratings were not played with.
+
 ### Choosing the opponents
 
 `ladder` is a list of stash tags and the rating each one holds on ccrl blitz.
