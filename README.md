@@ -94,9 +94,9 @@ docker/smoke_test.sh arche-lichess-bot
   - fail low nodes (upper bounds) are never stored in the transposition table, only exact
     scores and fail highs
   - a transposition score that came from a repetition or fifty move draw is refused rather than
-    trusted, so the search cannot read a draw down a path that could not reach it. The table
-    still knows nothing of how the game reached the root though, which is why make_move_str
-    clears the key for played moves as a workaround
+    trusted, so the search cannot read a draw down a path that could not reach it. The reverse
+    direction is still open: a score stored with the draw out of reach can be read by a path
+    with the draw in reach, say a fifty move counter about to run out, and be trusted
   - a fen is only validated as far as what the search cannot survive, a king a side and the side
     not to move being out of check. A position which is illegal in other ways, such as one with
     nine pawns or castling rights without a rook, is accepted and played from
