@@ -100,15 +100,6 @@ pub struct CastlePermissions {
 }
 
 impl CastlePermissions {
-    #[allow(dead_code)]
-    pub fn new() -> Self {
-        CastlePermissions {
-            black_king_side: true,
-            black_queen_side: true,
-            white_king_side: true,
-            white_queen_side: true,
-        }
-    }
     pub fn from_fen(s: &str) -> Result<CastlePermissions, String> {
         let mut perms = CastlePermissions {
             black_king_side: false,
@@ -216,7 +207,7 @@ mod test_index_coordinate_conversion {
 
     proptest! {
         #[test]
-        fn round_trip(i in 1u8..=64) {
+        fn round_trip(i in 0u8..64) {
             let (rank, file) = index_to_coordinate(i);
             assert_eq!(i, coordinate_to_index(rank, file));
         }
@@ -270,6 +261,37 @@ impl Piece {
             Piece::Rook => 500,
             Piece::Queen => 900,
             Piece::King => 10000,
+        }
+    }
+}
+
+/// The piece's letter as fen and the board display write it, in lowercase.
+/// Case carries the colour, which is not the piece's to know.
+impl From<Piece> for char {
+    fn from(piece: Piece) -> Self {
+        match piece {
+            Piece::Pawn => 'p',
+            Piece::Knight => 'n',
+            Piece::Bishop => 'b',
+            Piece::Rook => 'r',
+            Piece::Queen => 'q',
+            Piece::King => 'k',
+        }
+    }
+}
+
+impl TryFrom<char> for Piece {
+    type Error = String;
+
+    fn try_from(c: char) -> Result<Self, Self::Error> {
+        match c.to_ascii_lowercase() {
+            'p' => Ok(Piece::Pawn),
+            'n' => Ok(Piece::Knight),
+            'b' => Ok(Piece::Bishop),
+            'r' => Ok(Piece::Rook),
+            'q' => Ok(Piece::Queen),
+            'k' => Ok(Piece::King),
+            _ => Err(format!("{} is not a piece", c)),
         }
     }
 }

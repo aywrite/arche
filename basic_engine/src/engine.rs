@@ -177,7 +177,7 @@ impl AlphaBeta {
         let pv_line = self.moves.get(self.board.key);
         let mut moves = self.board.generate_captures();
         moves.sort_by_cached_key(|m| {
-            let mut score = m.mmv_lva(&self.board);
+            let mut score = m.mvv_lva(&self.board);
             if let Some(pv) = pv_line {
                 if pv.play == *m {
                     score += 100000;
@@ -191,7 +191,7 @@ impl AlphaBeta {
                 // undo before an abort can propagate, or the board would keep
                 // the aborted line
                 let result = self.quiescence(-beta, -alpha);
-                self.board.undo_move().unwrap();
+                self.board.undo_move();
                 score = -result?;
                 if score > alpha {
                     if score >= beta {
@@ -293,7 +293,7 @@ impl AlphaBeta {
 
         let mut moves = self.board.generate_moves();
         moves.sort_by_cached_key(|m| {
-            let mut score = m.mmv_lva(&self.board);
+            let mut score = m.mvv_lva(&self.board);
             if let Some(pv) = pv_play {
                 if pv == *m {
                     score += 100_000;
@@ -309,7 +309,7 @@ impl AlphaBeta {
                 // the aborted line. Propagating also keeps the meaningless
                 // score of an aborted frame away from the stores below.
                 let result = self.alpha_beta(-beta, -alpha, depth - 1);
-                self.board.undo_move().unwrap();
+                self.board.undo_move();
                 score = -result?;
                 if score > alpha {
                     best_move = Some(m);
@@ -1131,7 +1131,7 @@ impl AlphaBeta {
         let pv_play = self.moves.get(self.board.key).map(|pv| pv.play);
         let mut moves = self.board.generate_moves();
         moves.sort_by_cached_key(|m| {
-            let mut score = m.mmv_lva(&self.board);
+            let mut score = m.mvv_lva(&self.board);
             if pv_play == Some(*m) {
                 score += 100_000;
             }
@@ -1144,7 +1144,7 @@ impl AlphaBeta {
                 // undo before an abort can propagate, or the board would keep
                 // the aborted line
                 let result = self.alpha_beta(-beta, -alpha, depth - 1);
-                self.board.undo_move().unwrap();
+                self.board.undo_move();
                 match result {
                     Err(Aborted) => {
                         return SearchOutcome::Aborted(
