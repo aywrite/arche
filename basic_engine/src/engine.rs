@@ -333,6 +333,10 @@ impl AlphaBeta {
                     found_legal_move = true;
                     let result = self.alpha_beta(-beta, -alpha, depth - 1);
                     self.board.undo_move();
+                    // the table's move is searched before the rest are even
+                    // generated, so it taints this node the same way any other
+                    // child would
+                    node_tainted |= self.tainted;
                     let tt_score = -result?;
                     if tt_score > alpha {
                         best_move = Some(tt);
@@ -345,8 +349,12 @@ impl AlphaBeta {
                                     score: score_to_tt(beta, self.board.line_ply),
                                     bound: Bound::Lower,
                                     ply: self.board.ply as u16,
+                                    tainted: node_tainted,
                                 },
                             );
+                            self.ghi.stores += 1;
+                            self.ghi.tainted_stores += u64::from(node_tainted);
+                            self.tainted = node_tainted;
                             return Ok(beta);
                         }
                         alpha = tt_score;
@@ -627,10 +635,7 @@ impl Engine for AlphaBeta {
         for p in self.board.generate_moves() {
             let play_str = format!("{}", p).to_lowercase();
             if play == play_str {
-                let result = self.board.make_move(&p);
-                self.moves.clear_key(self.board.key); // TODO this is a hack to try to fix bad
-                // cache hits, particularly for draws
-                return result; // TODO change this to return Result
+                return self.board.make_move(&p); // TODO change this to return Result
             };
         }
         false
@@ -740,11 +745,6 @@ impl HashTable {
             }
         }
         None
-    }
-
-    fn clear_key(&mut self, key: u64) {
-        let index = self.index_for(key);
-        self.table[index] = None;
     }
 
     fn set(&mut self, key: u64, pv: Pv) {
