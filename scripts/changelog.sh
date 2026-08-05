@@ -8,7 +8,11 @@ version="${1:?usage: changelog.sh <version>}"
 # Everything since the last full release rather than since the last tag, so that
 # a release preceded by candidates still lists all of its changes. git-cliff has
 # --ignore-tags, but it does not affect the range --unreleased picks.
-previous=$(git tag --list 'v[0-9]*' --sort=-v:refname | grep -v -- '-' | head -1)
+#
+# The || true is what keeps pipefail from killing the script when there is no
+# full release yet: grep exits 1 on finding nothing, and the empty answer is
+# the answer.
+previous=$(git tag --list 'v[0-9]*' --sort=-v:refname | grep -v -- '-' | head -1 || true)
 
 # A candidate does get a section, because the github release is created from the
 # section matching the tag and there is nothing to create it from otherwise. It
