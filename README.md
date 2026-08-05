@@ -92,7 +92,9 @@ docker/smoke_test.sh arche-lichess-bot
 - winboard
 - known issues
   - fail low (alpha) nodes are never stored in the transposition table, only exact and beta nodes
-  - transposition table scores don't account for repetition or fifty move history, make_move_str
+  - a transposition score that came from a repetition or fifty move draw is refused rather than
+    trusted, so the search cannot read a draw down a path that could not reach it. The table
+    still knows nothing of how the game reached the root though, which is why make_move_str
     clears the key for played moves as a workaround
   - a fen is only validated as far as what the search cannot survive, a king a side and the side
     not to move being out of check. A position which is illegal in other ways, such as one with
