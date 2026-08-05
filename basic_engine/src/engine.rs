@@ -491,11 +491,6 @@ impl HashTable {
         None
     }
 
-    fn clear_key(&mut self, key: u64) {
-        let index = self.index_for(key);
-        self.table[index] = None;
-    }
-
     fn set(&mut self, key: u64, pv: Pv) {
         let index = self.index_for(key);
         if let Some((old_pv, old_key)) = self.table[index] {
@@ -1138,10 +1133,7 @@ impl Engine for AlphaBeta {
         for p in self.board.generate_moves() {
             let play_str = format!("{}", p).to_lowercase();
             if play == play_str {
-                let result = self.board.make_move(&p);
-                self.moves.clear_key(self.board.key); // TODO this is a hack to try to fix bad
-                // cache hits, particularly for draws
-                return result; // TODO change this to return Result
+                return self.board.make_move(&p); // TODO change this to return Result
             };
         }
         false
