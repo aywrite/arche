@@ -598,6 +598,15 @@ impl Board {
             "material out of step"
         );
         debug_assert_eq!(self.key, self.recompute_key(), "key out of step");
+        // the recompute reads the en passant field as it stands, so the check
+        // above cannot tell a field set against the rule: assert the rule
+        // itself, that a recorded square is one the side to move can take on
+        if let Some(en_passant) = self.en_passant {
+            debug_assert!(
+                self.pawn_can_capture_on(en_passant.as_index(), self.active_color),
+                "en passant square no pawn can take"
+            );
+        }
     }
 
     /// The position key computed from the board rather than maintained as moves
@@ -1314,6 +1323,9 @@ impl Game for Board {
             }
         }
         (board.white_value, board.black_value) = board.material_value();
+        // a parsed position must satisfy the same invariants a played one
+        // does, or the two ways of reaching a position drift apart
+        board.debug_assert_state_in_step();
         Ok(board)
     }
 }
@@ -1661,6 +1673,21 @@ mod position_key {
     use super::Board;
     use super::Game;
     use pretty_assertions::{assert_eq, assert_ne};
+
+    #[test]
+    #[cfg(debug_assertions)]
+    #[should_panic(expected = "en passant square no pawn can take")]
+    fn an_en_passant_square_no_pawn_can_take_fails_the_state_check() {
+        use super::{Coordinate, ZORB};
+        let mut board = Board::new();
+        // e6 is out of reach of every white pawn at the start. Hash the bogus
+        // square into the key as well as the field, so the key still matches
+        // its recompute and only the rule itself can object: this is exactly
+        // the corruption the recompute comparison is blind to.
+        board.en_passant = Coordinate::from_string("e6").unwrap();
+        board.key ^= ZORB.en_passant_key(board.en_passant.unwrap().as_index());
+        board.debug_assert_state_in_step();
+    }
 
     fn play_move(board: &mut Board, mv: &str) {
         let m = *board
