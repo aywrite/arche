@@ -157,6 +157,11 @@ impl AlphaBeta {
 
     /// MVV-LVA order, with the table's move for this position, if there is
     /// one, ahead of everything else.
+    ///
+    /// The search may already have played that move without generating, in
+    /// which case it skips it here. The bonus still earns its keep: a table
+    /// move it declined to play early was never searched, so it is still in
+    /// this list and still has to be the first one tried.
     fn order_moves(&self, moves: &mut MoveList, pv_play: Option<Play>) {
         moves.sort_by_cached_key(|m| {
             let mut score = m.mvv_lva(&self.board);
@@ -287,16 +292,54 @@ impl AlphaBeta {
 
         let old_alpha = alpha;
         let mut found_legal_move = false;
-        let mut best_move: Option<&Play> = None;
+        let mut best_move: Option<Play> = None;
         let (pv_play, tt_score) = self.get_transposition(self.board.key, alpha, beta, depth);
         if let Some(tt_score) = tt_score {
             return Ok(tt_score);
+        }
+
+        // The table's move sorts ahead of everything else below, and when there
+        // is one it takes the cutoff nine times in ten. Searching it before
+        // generating means the nodes it cuts never generate or sort at all.
+        // The order is the one the sort would have produced either way, so the
+        // tree searched is unchanged.
+        let mut tt_tried: Option<Play> = None;
+        if let Some(tt) = pv_play {
+            if self.board.is_pseudo_legal(&tt) {
+                tt_tried = Some(tt);
+                if self.board.make_move(&tt) {
+                    found_legal_move = true;
+                    let result = self.alpha_beta(-beta, -alpha, depth - 1);
+                    self.board.undo_move();
+                    let tt_score = -result?;
+                    if tt_score > alpha {
+                        best_move = Some(tt);
+                        if tt_score >= beta {
+                            self.moves.set(
+                                self.board.key,
+                                Pv {
+                                    play: tt,
+                                    depth,
+                                    score: score_to_tt(beta, self.board.line_ply),
+                                    bound: Bound::Lower,
+                                    ply: self.board.ply as u16,
+                                },
+                            );
+                            return Ok(beta);
+                        }
+                        alpha = tt_score;
+                    }
+                }
+            }
         }
 
         let mut moves = self.board.generate_moves();
         self.order_moves(&mut moves, pv_play);
 
         for m in &moves {
+            if tt_tried == Some(*m) {
+                continue;
+            }
             if self.board.make_move(m) {
                 found_legal_move = true;
                 // undo before an abort can propagate, or the board would keep
@@ -306,7 +349,7 @@ impl AlphaBeta {
                 self.board.undo_move();
                 let score = -result?;
                 if score > alpha {
-                    best_move = Some(m);
+                    best_move = Some(*m);
                     if score >= beta {
                         self.moves.set(
                             self.board.key,
@@ -336,7 +379,7 @@ impl AlphaBeta {
             self.moves.set(
                 self.board.key,
                 Pv {
-                    play: *best_move.unwrap(),
+                    play: best_move.unwrap(),
                     depth,
                     score: score_to_tt(alpha, self.board.line_ply),
                     bound: Bound::Exact,
