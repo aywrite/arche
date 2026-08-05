@@ -163,7 +163,7 @@ jobs:
           # only fastchess and the book are cached, but a rerun on the same
           # runner would still find the last attempt's results lying here
           rm -f result.txt config.json
-          # the engine allocates a 500MB transposition table before it answers
+          # the engine allocates a 256MB transposition table before it answers
           # uci, which four copies starting at once can take longer over than
           # the ten second default allows
           ./fastchess \

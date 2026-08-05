@@ -144,11 +144,12 @@ fastchess \
 
 Notes on the flags:
 
-- `-startup-ms 20000` is needed because the engine allocates its 500MB
+- `-startup-ms 20000` is needed because the engine allocates its 256MB
   transposition table before it answers `uci`, which four copies starting at
   once can take longer over than the ten second default allows. Generating the
   magic bitboards used to dominate this and no longer does, they are constants
-  now, so the allowance does not need to be anywhere near as generous as it was.
+  now, and the table is half what it once was, so the allowance is far more
+  generous than it still needs to be.
 - `-repeat` plays each opening twice with the colours reversed, which removes most
   of the advantage of drawing a good opening. It takes no argument, it is a spelling
   of `-games 2`.

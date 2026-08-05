@@ -8,7 +8,7 @@ use std::time;
 
 const CHECKMATE_SCORE: Score = 30_000;
 const MAX_DEPTH: u8 = 20;
-const DEFAULT_TABLE_BYTES: usize = 500 * 1024 * 1024;
+const DEFAULT_TABLE_BYTES: usize = 256 * 1024 * 1024;
 // Any score this close to CHECKMATE_SCORE is a forced mate. Regular evals are
 // bounded by the material on the board, which cannot come near it.
 const CHECKMATE_THRESHOLD: Score = CHECKMATE_SCORE - 1000;

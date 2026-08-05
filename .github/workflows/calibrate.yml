@@ -135,10 +135,10 @@ jobs:
           engines=(-engine name=arche cmd=./arche)
           for rung in ${LADDER//,/ }; do
             tag=${rung%%:*}
-            # The engine's own table is 500MB and is not settable over uci, so
-            # the sides cannot be matched. 256MB is what ccrl gives an engine
-            # and the closest the opponents get, which leaves the engine a small
-            # advantage in exactly the direction that flatters the estimate.
+            # 256MB is what ccrl gives an engine, and now what this one
+            # gives itself, so both sides of the gauntlet hold the same number
+            # of positions. The engine's table is still not settable over uci,
+            # so that match is by coincidence rather than by configuration.
             engines+=(-engine "name=stash-${tag}" "cmd=./stash-${tag}" option.Hash=256)
           done
           # the engine allocates its table before it answers uci, which takes it

@@ -31,7 +31,7 @@ engine:
     offer_draw_enabled: false
 
 challenge:
-  # Each engine process allocates a 500MB transposition table, so playing several
+  # Each engine process allocates a 256MB transposition table, so playing several
   # games at once needs a correspondingly larger memory limit on the container.
   concurrency: 1
   sort_by: "best"
