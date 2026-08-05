@@ -10,6 +10,7 @@ use crate::pvt::PieceValueTables;
 use crate::zorbrist::Zorbrist;
 use smallvec::SmallVec;
 use std::fmt;
+use std::sync::LazyLock;
 
 pub type MoveList = SmallVec<[Play; 64]>;
 
@@ -73,11 +74,9 @@ const H8: u8 = 63;
 static PVT: PieceValueTables = PieceValueTables::TABLES;
 static ZORB: Zorbrist = Zorbrist::TABLE;
 
-lazy_static! {
-    static ref ATTACK_MASKS: AttackMasks = AttackMasks::new();
-    pub static ref BASE_CONVERSIONS: BaseConversions = BaseConversions::new();
-    static ref MAGIC: Magic = Magic::new();
-}
+static ATTACK_MASKS: LazyLock<AttackMasks> = LazyLock::new(AttackMasks::new);
+pub static BASE_CONVERSIONS: LazyLock<BaseConversions> = LazyLock::new(BaseConversions::new);
+static MAGIC: LazyLock<Magic> = LazyLock::new(Magic::new);
 
 // the squares that have to be empty for each castle
 const B1_C1_D1: u64 = 1 << B1 | 1 << C1 | 1 << D1;
@@ -270,7 +269,7 @@ impl Default for Board {
 impl Board {
     pub fn new() -> Board {
         // pay for the magic tables at startup rather than on the first search
-        lazy_static::initialize(&MAGIC);
+        LazyLock::force(&MAGIC);
         Board::from_fen("rnbqkbnr/pppppppp/8/8/8/8/PPPPPPPP/RNBQKBNR w KQkq - 0 1").unwrap()
     }
 

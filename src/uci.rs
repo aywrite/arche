@@ -6,21 +6,19 @@ use basic_engine::SearchParameters;
 use basic_engine::{PvLine, SearchResult};
 use regex::Regex;
 use std::io::BufRead;
+use std::sync::LazyLock;
 use std::time::Duration;
 
 const START_FEN: &str = "rnbqkbnr/pppppppp/8/8/8/8/PPPPPPPP/RNBQKBNR w KQkq - 0 1";
 
-lazy_static! {
-    static ref WTIME_RE: Regex = Regex::new(r"wtime (\d+)").unwrap();
-    static ref BTIME_RE: Regex = Regex::new(r"btime (\d+)").unwrap();
-    static ref WINC_RE: Regex = Regex::new(r"winc (\d+)").unwrap();
-    static ref BINC_RE: Regex = Regex::new(r"binc (\d+)").unwrap();
-    static ref MOVES_TO_GO_RE: Regex = Regex::new(r"movestogo (\d+)").unwrap();
-    static ref MOVE_TIME: Regex = Regex::new(r"movetime (\d+)").unwrap();
-    static ref DEPTH_RE: Regex = Regex::new(r"depth (\d+)").unwrap();
-    static ref INFINITE_RE: Regex = Regex::new(r"infinite").unwrap();
-    static ref PERFT_RE: Regex = Regex::new(r"perft (\d+)").unwrap();
-}
+static WTIME_RE: LazyLock<Regex> = LazyLock::new(|| Regex::new(r"wtime (\d+)").unwrap());
+static BTIME_RE: LazyLock<Regex> = LazyLock::new(|| Regex::new(r"btime (\d+)").unwrap());
+static WINC_RE: LazyLock<Regex> = LazyLock::new(|| Regex::new(r"winc (\d+)").unwrap());
+static BINC_RE: LazyLock<Regex> = LazyLock::new(|| Regex::new(r"binc (\d+)").unwrap());
+static MOVES_TO_GO_RE: LazyLock<Regex> = LazyLock::new(|| Regex::new(r"movestogo (\d+)").unwrap());
+static MOVE_TIME: LazyLock<Regex> = LazyLock::new(|| Regex::new(r"movetime (\d+)").unwrap());
+static DEPTH_RE: LazyLock<Regex> = LazyLock::new(|| Regex::new(r"depth (\d+)").unwrap());
+static PERFT_RE: LazyLock<Regex> = LazyLock::new(|| Regex::new(r"perft (\d+)").unwrap());
 
 /// Reads the value that follows a keyword. The value is matched as digits, so
 /// the only way it can fail to parse is by being too large to hold, in which
@@ -51,7 +49,7 @@ fn time_control_from(line: &str, color: Color) -> TimeControl {
         },
         moves_to_go: capture(&MOVES_TO_GO_RE, line),
         move_time: capture(&MOVE_TIME, line),
-        infinite: INFINITE_RE.is_match(line),
+        infinite: line.contains("infinite"),
     }
 }
 
@@ -67,7 +65,7 @@ impl<T: Engine> UCI<T> {
     pub fn new_with_engine(engine: T) -> Self {
         Self {
             author: env!("CARGO_PKG_AUTHORS").to_string(),
-            name: env!("CARGO_PKG_NAME").to_string(), // TODO change based on engine?
+            name: env!("CARGO_PKG_NAME").to_string(),
             version: env!("CARGO_PKG_VERSION").to_string(),
             engine,
         }

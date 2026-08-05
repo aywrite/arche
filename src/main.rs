@@ -3,9 +3,6 @@ mod uci;
 
 pub use uci::UCI;
 
-#[macro_use]
-extern crate lazy_static;
-
 use basic_engine::AlphaBeta;
 use basic_engine::Board;
 
