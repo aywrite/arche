@@ -20,10 +20,12 @@ cargo test --workspace --release
 ```
 
 The perft tests dominate the runtime, which is why the release profile is the
-usual choice. Run them at least once without `--release` before changing
-anything that indexes into the history or does arithmetic on ply counts, the
-debug profile keeps the overflow checks and debug assertions that catch that
-class of bug:
+usual choice for a quick pass. The debug run is the one that checks the most,
+so run it before landing a change: the debug profile keeps the overflow checks
+and the board's state-in-step assertions, which verify the position key, the
+eval accumulators and the en passant rule against a recompute on every move
+made. Release compiles all of that out, so a green release run alone says
+nothing about them.
 
 ```
 cargo test --workspace
