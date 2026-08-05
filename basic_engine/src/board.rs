@@ -273,6 +273,102 @@ impl Board {
         Board::from_fen("rnbqkbnr/pppppppp/8/8/8/8/PPPPPPPP/RNBQKBNR w KQkq - 0 1").unwrap()
     }
 
+    /// Whether this move is one `generate_moves` would produce here.
+    ///
+    /// A probe checks the key a slot was stored under, so a hit is this
+    /// position and its move is one generated for it. Almost: a key is sixty
+    /// four bits, and a long search sees enough positions for two of them to
+    /// land on the same one. Anything that narrowed what a slot keeps of the
+    /// key would make an entry from elsewhere ordinary rather than rare.
+    ///
+    /// Ordering never had to care, because a move from another position
+    /// matches nothing in the generated list and is passed over. Playing one
+    /// does: `make_move` reads the capture, promotion and castling fields as a
+    /// description of this board, so a move belonging to a different one
+    /// corrupts the position rather than merely wasting a node.
+    ///
+    /// Answering no when the truth is yes is free: the caller falls back to
+    /// generating, which is what it would have done anyway. So the fiddly cases
+    /// are simply refused rather than checked, which keeps this cheap enough to
+    /// be worth asking on the way past.
+    pub fn is_pseudo_legal(&self, m: &Play) -> bool {
+        // castling, en passant and promotion each carry conditions of their own
+        // that this would have to restate. They are rare, so let them generate.
+        if m.castle || m.en_passant || m.promote.is_some() {
+            return false;
+        }
+
+        let color_mask = match self.active_color {
+            Color::Black => self.black,
+            Color::White => self.white,
+        };
+        // the piece has to be ours, and cannot land on top of another of ours
+        if !color_mask.is_bit_set(m.from) || color_mask.is_bit_set(m.to) {
+            return false;
+        }
+        let Some(piece) = self.get_piece_index(m.from) else {
+            return false;
+        };
+        // make_move clears exactly the piece the move names, so the move has to
+        // name what is actually standing there
+        if m.capture != self.get_piece_index(m.to) {
+            return false;
+        }
+
+        let all_pieces = self.black | self.white;
+        let attack_masks: &AttackMasks = &ATTACK_MASKS;
+        let magic: &Magic = &MAGIC;
+        match piece {
+            Piece::Knight => attack_masks.knights[m.from as usize].is_bit_set(m.to),
+            Piece::King => attack_masks.kings[m.from as usize].is_bit_set(m.to),
+            Piece::Rook => magic.get_straight_move(m.from, all_pieces).is_bit_set(m.to),
+            Piece::Bishop => magic.get_diagonal_move(m.from, all_pieces).is_bit_set(m.to),
+            Piece::Queen => {
+                magic.get_straight_move(m.from, all_pieces).is_bit_set(m.to)
+                    || magic.get_diagonal_move(m.from, all_pieces).is_bit_set(m.to)
+            }
+            Piece::Pawn => {
+                let (rank, _) = index_to_coordinate(m.from);
+                // a pawn one step from the far rank only ever promotes, and
+                // promotions were refused above
+                if match self.active_color {
+                    Color::White => rank == 7,
+                    Color::Black => rank == 2,
+                } {
+                    return false;
+                }
+                if m.capture.is_some() {
+                    // capture_mask was already established by the checks above
+                    return match self.active_color {
+                        Color::White => attack_masks.black_pawns[m.from as usize].is_bit_set(m.to),
+                        Color::Black => attack_masks.white_pawns[m.from as usize].is_bit_set(m.to),
+                    };
+                }
+                let one = match self.active_color {
+                    Color::White => m.from as isize + 8,
+                    Color::Black => m.from as isize - 8,
+                };
+                if !(0..64).contains(&one) || all_pieces.is_bit_set(one as u8) {
+                    return false;
+                }
+                if m.to as isize == one {
+                    return true;
+                }
+                // the double push, only from the rank it is allowed from and
+                // only when the square beyond is empty too
+                let from_start = match self.active_color {
+                    Color::White => rank == 2,
+                    Color::Black => rank == 7,
+                };
+                let two = match self.active_color {
+                    Color::White => one + 8,
+                    Color::Black => one - 8,
+                };
+                from_start && m.to as isize == two && !all_pieces.is_bit_set(two as u8)
+            }
+        }
+    }
+
     /// The subset of generate_moves with a capture, in the same order, made
     /// without generating the quiet moves only to filter them out.
     pub fn generate_captures(&self) -> MoveList {
@@ -2011,5 +2107,103 @@ mod perft_edge_cases {
                 depth
             );
         }
+    }
+}
+
+#[cfg(test)]
+mod pseudo_legal {
+    use super::Board;
+    use super::Game;
+    use super::Play;
+    use crate::misc::Piece;
+
+    /// "d4" to the index the board uses, so the cases below read as squares
+    /// rather than as arithmetic.
+    fn sq(name: &str) -> u8 {
+        let mut c = name.chars();
+        let file = c.next().unwrap() as u8 - b'a';
+        let rank = c.next().unwrap() as u8 - b'1';
+        rank * 8 + file
+    }
+
+    fn quiet(from: &str, to: &str) -> Play {
+        Play::new(sq(from), sq(to), None, None, false, false)
+    }
+
+    fn takes(from: &str, to: &str, piece: Piece) -> Play {
+        Play::new(sq(from), sq(to), Some(piece), None, false, false)
+    }
+
+    const POSITIONS: [&str; 5] = [
+        "rnbqkbnr/pppppppp/8/8/8/8/PPPPPPPP/RNBQKBNR w KQkq - 0 1",
+        "r3k2r/p1ppqpb1/bn2pnp1/3PN3/1p2P3/2N2Q1p/PPPBBPPP/R3K2R w KQkq - 0 1",
+        "8/2p5/3p4/KP5r/1R3p1k/8/4P1P1/8 w - - 0 1",
+        "rnbq1k1r/pp1Pbppp/2p5/8/2B5/8/PPP1NnPP/RNBQK2R w KQ - 1 8",
+        "r2q1rk1/1b1nbppp/p2ppn2/1p6/3NPP2/1BN1B3/PPPQ2PP/2KR3R w - - 0 13",
+    ];
+
+    /// The point of the check is to accept what the generator produces: a move
+    /// refused here is one the search declines to play early and has to find
+    /// again the slow way. Castling, en passant and promotions are refused on
+    /// purpose, and this pins that they are the only ones.
+    #[test]
+    fn accepts_every_generated_move_but_the_refused_kinds() {
+        for fen in POSITIONS {
+            let board = Board::from_fen(fen).unwrap();
+            for m in &board.generate_moves() {
+                let refused_kind = m.castle || m.en_passant || m.promote.is_some();
+                assert_eq!(board.is_pseudo_legal(m), !refused_kind, "{} in {}", m, fen);
+            }
+        }
+    }
+
+    /// A move handed back for another position can say anything at all, and
+    /// make_move acts on what it says. These are the shapes that would corrupt
+    /// the board if they were played.
+    #[test]
+    fn refuses_a_move_that_does_not_belong_to_this_position() {
+        let board =
+            Board::from_fen("r2q1rk1/1b1nbppp/p2ppn2/1p6/3NPP2/1BN1B3/PPPQ2PP/2KR3R w - - 0 13")
+                .unwrap();
+
+        // d3 is empty, so there is nothing there to move
+        assert!(!board.is_pseudo_legal(&quiet("d3", "d5")));
+        // a6 is a black pawn and it is white to move
+        assert!(!board.is_pseudo_legal(&quiet("a6", "a5")));
+        // c1 is our king and d1 is our own rook
+        assert!(!board.is_pseudo_legal(&quiet("c1", "d1")));
+        // a knight on d4 does not reach d5
+        assert!(!board.is_pseudo_legal(&quiet("d4", "d5")));
+        // the rook on d1 cannot pass through the queen on d2
+        assert!(!board.is_pseudo_legal(&quiet("d1", "d5")));
+        // claiming a capture on an empty square
+        assert!(!board.is_pseudo_legal(&takes("d4", "f5", Piece::Queen)));
+        // and naming the wrong piece on an occupied one: e6 holds a pawn
+        assert!(!board.is_pseudo_legal(&takes("d4", "e6", Piece::Queen)));
+        // a capture that forgets to say it is one
+        assert!(!board.is_pseudo_legal(&quiet("d4", "e6")));
+
+        // and the moves those are variations of, so none of it passes vacuously
+        assert!(board.is_pseudo_legal(&quiet("d4", "f5")));
+        assert!(board.is_pseudo_legal(&takes("d4", "e6", Piece::Pawn)));
+    }
+
+    /// A pawn push is the one move whose legality turns on squares the move
+    /// itself never names.
+    #[test]
+    fn refuses_a_push_the_position_does_not_allow() {
+        let board =
+            Board::from_fen("rnbqkbnr/pppppppp/8/8/8/5N2/PPPPPPPP/RNBQKB1R w KQkq - 0 1").unwrap();
+        // the knight on f3 blocks both the single and the double push
+        assert!(!board.is_pseudo_legal(&quiet("f2", "f3")));
+        assert!(!board.is_pseudo_legal(&quiet("f2", "f4")));
+        // its neighbour is clear
+        assert!(board.is_pseudo_legal(&quiet("e2", "e4")));
+
+        // a pawn that has already moved cannot double push again
+        let moved =
+            Board::from_fen("rnbqkbnr/pppppppp/8/8/8/4P3/PPPP1PPP/RNBQKBNR w KQkq - 0 2").unwrap();
+        assert!(!moved.is_pseudo_legal(&quiet("e3", "e5")));
+        assert!(moved.is_pseudo_legal(&quiet("e3", "e4")));
     }
 }
