@@ -273,103 +273,22 @@ impl Board {
         Board::from_fen("rnbqkbnr/pppppppp/8/8/8/8/PPPPPPPP/RNBQKBNR w KQkq - 0 1").unwrap()
     }
 
+    /// The subset of generate_moves with a capture, in the same order, made
+    /// without generating the quiet moves only to filter them out.
     pub fn generate_captures(&self) -> MoveList {
-        let mut moves = MoveList::new();
-        let (color_mask, capture_mask) = match self.active_color {
-            Color::Black => (self.black, self.white),
-            Color::White => (self.white, self.black),
-        };
-        let all_pieces = self.black | self.white;
-        let attack_masks: &AttackMasks = &ATTACK_MASKS;
-        let magic: &Magic = &MAGIC;
-        // masking with the opponent's pieces keeps only the captures, so every
-        // to square here holds something to take
-        // knights
-        let mut knights = self.knights & color_mask;
-        while knights != 0 {
-            let from = pop_lsb(&mut knights);
-            let mut targets = attack_masks.knights[from as usize] & capture_mask;
-            while targets != 0 {
-                let to = pop_lsb(&mut targets);
-                let capture = self.get_piece_index(to);
-                moves.push(Play::new(from, to, capture, None, false, false));
-            }
-        }
-        // queens and rooks
-        let mut queens_and_rooks = (self.queens | self.rooks) & color_mask;
-        while queens_and_rooks != 0 {
-            let from = pop_lsb(&mut queens_and_rooks);
-            let mut targets = magic.get_straight_move(from, all_pieces) & capture_mask;
-            while targets != 0 {
-                let to = pop_lsb(&mut targets);
-                let capture = self.get_piece_index(to);
-                moves.push(Play::new(from, to, capture, None, false, false));
-            }
-        }
-        // queens and bishops
-        let mut queens_and_bishops = (self.queens | self.bishops) & color_mask;
-        while queens_and_bishops != 0 {
-            let from = pop_lsb(&mut queens_and_bishops);
-            let mut targets = magic.get_diagonal_move(from, all_pieces) & capture_mask;
-            while targets != 0 {
-                let to = pop_lsb(&mut targets);
-                let capture = self.get_piece_index(to);
-                moves.push(Play::new(from, to, capture, None, false, false));
-            }
-        }
-        // kings
-        let mut kings = self.kings & color_mask;
-        while kings != 0 {
-            let from = pop_lsb(&mut kings);
-            let mut targets = attack_masks.kings[from as usize] & capture_mask;
-            while targets != 0 {
-                let to = pop_lsb(&mut targets);
-                let capture = self.get_piece_index(to);
-                moves.push(Play::new(from, to, capture, None, false, false));
-            }
-        }
-        //pawns
-        let mut pawns = self.pawns & color_mask;
-        while pawns != 0 {
-            let from = pop_lsb(&mut pawns);
-            let (rank, _) = index_to_coordinate(from);
-            let can_promote = match self.active_color {
-                Color::White => rank == 7,
-                Color::Black => rank == 2,
-            };
-            // move diagonally and capture
-            let pmoves: u64 = match self.active_color {
-                Color::White => attack_masks.black_pawns[from as usize] & capture_mask,
-                Color::Black => attack_masks.white_pawns[from as usize] & capture_mask,
-            };
-            let mut targets = pmoves;
-            while targets != 0 {
-                let to = pop_lsb(&mut targets);
-                let capture = self.get_piece_index(to);
-                if can_promote {
-                    for p in PromotePiece::VARIANTS {
-                        moves.push(Play::new(from, to, capture, Some(p), false, false));
-                    }
-                } else {
-                    moves.push(Play::new(from, to, capture, None, false, false));
-                }
-            }
-            // en passant
-            if let Some(en_passant) = &self.en_passant {
-                let i = en_passant.as_index();
-                let can_en_passant = match self.active_color {
-                    Color::White => attack_masks.black_pawns[from as usize].is_bit_set(i),
-                    Color::Black => attack_masks.white_pawns[from as usize].is_bit_set(i),
-                };
-                if can_en_passant {
-                    moves.push(Play::new(from, i, Some(Piece::Pawn), None, true, false));
-                }
-            }
-        }
-        moves
+        self.generate::<true>()
     }
 
     pub fn generate_moves(&self) -> MoveList {
+        self.generate::<false>()
+    }
+
+    /// The one generator behind generate_moves and generate_captures. The
+    /// const parameter is settled at compile time, so each wrapper
+    /// monomorphises into what used to be its own hand-written copy: the
+    /// captures one masks every piece's targets with the opponent's pieces
+    /// and drops the quiet-only sections, with nothing tested per move.
+    fn generate<const CAPTURES_ONLY: bool>(&self) -> MoveList {
         let mut moves = MoveList::new();
         let (color_mask, capture_mask) = match self.active_color {
             Color::Black => (self.black, self.white),
@@ -378,50 +297,62 @@ impl Board {
         let all_pieces = self.black | self.white;
         let attack_masks: &AttackMasks = &ATTACK_MASKS;
         let magic: &Magic = &MAGIC;
-        // masking out our own pieces leaves quiet moves and captures both, and
-        // capture_on tells the two apart
+        // the captures list keeps only the squares the opponent stands on,
+        // the full list keeps every square our own pieces do not
+        let target_filter = if CAPTURES_ONLY {
+            capture_mask
+        } else {
+            !color_mask
+        };
+        // when every target is a capture there is nothing to ask per move
+        let capture_at = |to: u8| {
+            if CAPTURES_ONLY {
+                self.get_piece_index(to)
+            } else {
+                self.capture_on(to, capture_mask)
+            }
+        };
         // knights
         let mut knights = self.knights & color_mask;
         while knights != 0 {
             let from = pop_lsb(&mut knights);
-            let mut targets = attack_masks.knights[from as usize] & !color_mask;
+            let mut targets = attack_masks.knights[from as usize] & target_filter;
             while targets != 0 {
                 let to = pop_lsb(&mut targets);
-                let capture = self.capture_on(to, capture_mask);
-                moves.push(Play::new(from, to, capture, None, false, false));
+                moves.push(Play::new(from, to, capture_at(to), None, false, false));
             }
         }
         // queens and rooks
         let mut queens_and_rooks = (self.queens | self.rooks) & color_mask;
         while queens_and_rooks != 0 {
             let from = pop_lsb(&mut queens_and_rooks);
-            let mut targets = magic.get_straight_move(from, all_pieces) & !color_mask;
+            let mut targets = magic.get_straight_move(from, all_pieces) & target_filter;
             while targets != 0 {
                 let to = pop_lsb(&mut targets);
-                let capture = self.capture_on(to, capture_mask);
-                moves.push(Play::new(from, to, capture, None, false, false));
+                moves.push(Play::new(from, to, capture_at(to), None, false, false));
             }
         }
         // queens and bishops
         let mut queens_and_bishops = (self.queens | self.bishops) & color_mask;
         while queens_and_bishops != 0 {
             let from = pop_lsb(&mut queens_and_bishops);
-            let mut targets = magic.get_diagonal_move(from, all_pieces) & !color_mask;
+            let mut targets = magic.get_diagonal_move(from, all_pieces) & target_filter;
             while targets != 0 {
                 let to = pop_lsb(&mut targets);
-                let capture = self.capture_on(to, capture_mask);
-                moves.push(Play::new(from, to, capture, None, false, false));
+                moves.push(Play::new(from, to, capture_at(to), None, false, false));
             }
         }
         // kings
         let mut kings = self.kings & color_mask;
         while kings != 0 {
             let from = pop_lsb(&mut kings);
-            let mut targets = attack_masks.kings[from as usize] & !color_mask;
+            let mut targets = attack_masks.kings[from as usize] & target_filter;
             while targets != 0 {
                 let to = pop_lsb(&mut targets);
-                let capture = self.capture_on(to, capture_mask);
-                moves.push(Play::new(from, to, capture, None, false, false));
+                moves.push(Play::new(from, to, capture_at(to), None, false, false));
+            }
+            if CAPTURES_ONLY {
+                continue;
             }
             // 1. castle permission is available
             // 2. king is not in check
@@ -499,31 +430,33 @@ impl Board {
                     moves.push(Play::new(from, to, capture, None, false, false));
                 }
             }
-            // move forward
-            let to = match self.active_color {
-                Color::White => from as isize + 8,
-                Color::Black => from as isize - 8,
-            };
-            // can't make a forward move if the square is occupied
-            if (0..64).contains(&to) && !all_pieces.is_bit_set(to as u8) {
-                let to = to as u8;
-                if can_promote {
-                    for p in PromotePiece::VARIANTS {
-                        moves.push(Play::new(from, to, None, Some(p), false, false));
-                    }
-                } else {
-                    moves.push(Play::new(from, to, None, None, false, false));
-                    if match self.active_color {
-                        Color::White => rank == 2,
-                        Color::Black => rank == 7,
-                    } {
-                        let to = match self.active_color {
-                            Color::White => to as isize + 8,
-                            Color::Black => to as isize - 8,
-                        };
-                        // can't make a double forward move if the to square is occupied
-                        if !all_pieces.is_bit_set(to as u8) {
-                            moves.push(Play::new(from, to as u8, None, None, false, false));
+            if !CAPTURES_ONLY {
+                // move forward
+                let to = match self.active_color {
+                    Color::White => from as isize + 8,
+                    Color::Black => from as isize - 8,
+                };
+                // can't make a forward move if the square is occupied
+                if (0..64).contains(&to) && !all_pieces.is_bit_set(to as u8) {
+                    let to = to as u8;
+                    if can_promote {
+                        for p in PromotePiece::VARIANTS {
+                            moves.push(Play::new(from, to, None, Some(p), false, false));
+                        }
+                    } else {
+                        moves.push(Play::new(from, to, None, None, false, false));
+                        if match self.active_color {
+                            Color::White => rank == 2,
+                            Color::Black => rank == 7,
+                        } {
+                            let to = match self.active_color {
+                                Color::White => to as isize + 8,
+                                Color::Black => to as isize - 8,
+                            };
+                            // can't make a double forward move if the to square is occupied
+                            if !all_pieces.is_bit_set(to as u8) {
+                                moves.push(Play::new(from, to as u8, None, None, false, false));
+                            }
                         }
                     }
                 }
