@@ -1,5 +1,5 @@
 use crate::Game;
-use crate::board::Board;
+use crate::board::{Board, MoveList};
 use crate::misc::{Color, Score};
 use crate::play::Play;
 use std::fmt;
@@ -155,6 +155,18 @@ impl AlphaBeta {
         }
     }
 
+    /// MVV-LVA order, with the table's move for this position, if there is
+    /// one, ahead of everything else.
+    fn order_moves(&self, moves: &mut MoveList, pv_play: Option<Play>) {
+        moves.sort_by_cached_key(|m| {
+            let mut score = m.mvv_lva(&self.board);
+            if pv_play == Some(*m) {
+                score += 100_000;
+            }
+            -score
+        });
+    }
+
     fn quiescence(&mut self, mut alpha: Score, beta: Score) -> Result<Score, Aborted> {
         self.selective_depth = self.selective_depth.max(self.board.line_ply as u8);
         if self.board.line_ply >= MAX_DEPTH.into() {
@@ -173,18 +185,9 @@ impl AlphaBeta {
 
         let mut best_move: Option<Play> = None;
         let old_alpha = alpha;
-        let mut score: Score;
-        let pv_line = self.moves.get(self.board.key);
+        let pv_play = self.moves.get(self.board.key).map(|pv| pv.play);
         let mut moves = self.board.generate_captures();
-        moves.sort_by_cached_key(|m| {
-            let mut score = m.mvv_lva(&self.board);
-            if let Some(pv) = pv_line {
-                if pv.play == *m {
-                    score += 100000;
-                }
-            };
-            -score
-        });
+        self.order_moves(&mut moves, pv_play);
 
         for m in &moves {
             if self.board.make_move(m) {
@@ -192,7 +195,7 @@ impl AlphaBeta {
                 // the aborted line
                 let result = self.quiescence(-beta, -alpha);
                 self.board.undo_move();
-                score = -result?;
+                let score = -result?;
                 if score > alpha {
                     if score >= beta {
                         return Ok(beta);
@@ -210,7 +213,7 @@ impl AlphaBeta {
                     play: best_move.unwrap(),
                     score: score_to_tt(alpha, self.board.line_ply),
                     depth: 0, // Never use a quiescence move instead of evaluating, only for move ordering
-                    node: Node::Ordering,
+                    bound: Bound::Ordering,
                     ply: self.board.ply as u16,
                 },
             );
@@ -234,19 +237,19 @@ impl AlphaBeta {
         if let Some(pv) = pv {
             if pv.depth >= depth {
                 let score = score_from_tt(pv.score, self.board.line_ply);
-                match pv.node {
-                    Node::Exact => return (Some(pv.play), Some(score)),
-                    Node::Alpha => {
+                match pv.bound {
+                    Bound::Exact => return (Some(pv.play), Some(score)),
+                    Bound::Upper => {
                         if score <= alpha {
                             return (Some(pv.play), Some(score));
                         }
                     }
-                    Node::Beta => {
+                    Bound::Lower => {
                         if score >= beta {
                             return (Some(pv.play), Some(score));
                         }
                     }
-                    Node::Ordering => (),
+                    Bound::Ordering => (),
                 }
             }
             return (Some(pv.play), None);
@@ -283,7 +286,6 @@ impl AlphaBeta {
         }
 
         let old_alpha = alpha;
-        let mut score: Score;
         let mut found_legal_move = false;
         let mut best_move: Option<&Play> = None;
         let (pv_play, tt_score) = self.get_transposition(self.board.key, alpha, beta, depth);
@@ -292,15 +294,7 @@ impl AlphaBeta {
         }
 
         let mut moves = self.board.generate_moves();
-        moves.sort_by_cached_key(|m| {
-            let mut score = m.mvv_lva(&self.board);
-            if let Some(pv) = pv_play {
-                if pv == *m {
-                    score += 100_000;
-                }
-            };
-            -score
-        });
+        self.order_moves(&mut moves, pv_play);
 
         for m in &moves {
             if self.board.make_move(m) {
@@ -310,7 +304,7 @@ impl AlphaBeta {
                 // score of an aborted frame away from the stores below.
                 let result = self.alpha_beta(-beta, -alpha, depth - 1);
                 self.board.undo_move();
-                score = -result?;
+                let score = -result?;
                 if score > alpha {
                     best_move = Some(m);
                     if score >= beta {
@@ -320,7 +314,7 @@ impl AlphaBeta {
                                 play: *m,
                                 depth,
                                 score: score_to_tt(beta, self.board.line_ply),
-                                node: Node::Beta,
+                                bound: Bound::Lower,
                                 ply: self.board.ply as u16,
                             },
                         );
@@ -345,12 +339,221 @@ impl AlphaBeta {
                     play: *best_move.unwrap(),
                     depth,
                     score: score_to_tt(alpha, self.board.line_ply),
-                    node: Node::Exact,
+                    bound: Bound::Exact,
                     ply: self.board.ply as u16,
                 },
             );
         }
         Ok(alpha)
+    }
+
+    pub fn new(board: Board) -> Self {
+        AlphaBeta::with_table_bytes(board, DEFAULT_TABLE_BYTES)
+    }
+
+    pub fn configure(
+        &mut self,
+        start_time: time::Instant,
+        search_duration: Option<time::Duration>,
+    ) {
+        self.start_time = start_time;
+        self.search_duration = search_duration;
+    }
+
+    /// The root loop: the one node whose answer must include a play, which is
+    /// why it runs here rather than in alpha_beta. The root probes the
+    /// transposition table to order moves and stores its entry when done, but
+    /// never takes a stored score in place of searching: a stored score can
+    /// come from a line whose repetition and fifty move context differ from
+    /// the game being played, and the answer must not depend on one.
+    pub fn search(&mut self, depth: u8) -> SearchOutcome {
+        self.nodes = 0;
+        self.search_depth = depth;
+        self.selective_depth = depth;
+        self.board.line_ply = 0;
+
+        // the game is already drawn, there is no move to look for
+        if self.board.fifty_move_rule >= 100 {
+            return SearchOutcome::GameOver;
+        }
+
+        if self.poll_deadline().is_err() {
+            return SearchOutcome::Aborted(None);
+        }
+        self.nodes += 1;
+
+        let mut depth = depth;
+        if self.board.is_king_attacked() {
+            depth += 1;
+        }
+
+        let mut alpha = Score::MIN + 1;
+        let beta = Score::MAX - 1;
+        let mut best: Option<Play> = None;
+        let mut found_legal_move = false;
+
+        let pv_play = self.moves.get(self.board.key).map(|pv| pv.play);
+        let mut moves = self.board.generate_moves();
+        self.order_moves(&mut moves, pv_play);
+
+        for m in &moves {
+            if self.board.make_move(m) {
+                found_legal_move = true;
+                // undo before an abort can propagate, or the board would keep
+                // the aborted line
+                let result = self.alpha_beta(-beta, -alpha, depth - 1);
+                self.board.undo_move();
+                match result {
+                    Err(Aborted) => {
+                        return SearchOutcome::Aborted(
+                            best.map(|play| self.result_for(play, alpha)),
+                        );
+                    }
+                    Ok(s) => {
+                        let score = -s;
+                        if score > alpha {
+                            alpha = score;
+                            best = Some(*m);
+                        }
+                    }
+                }
+            }
+        }
+
+        if !found_legal_move {
+            // checkmate or stalemate: either way there is nothing to play
+            return SearchOutcome::GameOver;
+        }
+
+        let play = best.expect("any legal move's score beats the opening alpha of Score::MIN + 1");
+        self.moves.set(
+            self.board.key,
+            Pv {
+                play,
+                depth,
+                score: score_to_tt(alpha, self.board.line_ply),
+                bound: Bound::Exact,
+                ply: self.board.ply as u16,
+            },
+        );
+        SearchOutcome::Complete(self.result_for(play, alpha))
+    }
+
+    /// Replay the line the table holds on a copy of the board, one stored move
+    /// at a time. Walking the positions rather than following a key from one
+    /// entry to the next is what lets the line be checked as it is built: the
+    /// board says whether a stored move is legal here, and whether the line has
+    /// reached a position it would be a draw to play on from.
+    pub fn pv_line(&self) -> PvLine {
+        let mut line = Vec::new();
+        // Board is Copy, so the search's own board is untouched by this.
+        let mut board = self.board;
+        while line.len() < MAX_DEPTH as usize {
+            let Some(pv) = self.moves.get(board.key) else {
+                break;
+            };
+            if matches!(pv.bound, Bound::Ordering) {
+                // written by quiescence, which looks at captures alone, so the
+                // move is fit for ordering the next search and not for telling
+                // anyone what the engine intends to play
+                break;
+            }
+            let play = pv.play;
+            // a probe compares the whole key, so what still gets through is
+            // another position which hashed to the same one. Its move belongs
+            // to that position, and playing it here would print a line the
+            // rules do not allow
+            if !board.generate_moves().contains(&play) {
+                break;
+            }
+            if !board.make_move(&play) {
+                break;
+            }
+            line.push(play);
+            // the line is a draw from here, so whatever the table says comes
+            // next is a continuation that would never be played
+            if board.fifty_move_rule >= 100 || board.has_repeated() {
+                break;
+            }
+        }
+        PvLine { line }
+    }
+}
+
+impl Engine for AlphaBeta {
+    fn perft(&mut self, depth: u8) -> u64 {
+        self.board.perft(depth)
+    }
+
+    fn active_color(&self) -> Color {
+        self.board.active_color
+    }
+
+    fn parse_fen(&mut self, fen_string: &str) -> Result<(), String> {
+        self.nodes = 0;
+        self.board = Board::from_fen(fen_string)?;
+        Ok(())
+    }
+
+    fn new_game(&mut self) {
+        self.clear_cache();
+    }
+
+    fn iterative_deepening_search(
+        &mut self,
+        search_options: SearchParameters,
+        mut on_depth: impl FnMut(u8, &SearchResult, PvLine),
+    ) -> SearchOutcome {
+        let mut best: Option<SearchResult> = None;
+        let max_depth = match search_options.depth {
+            Some(depth) => depth,
+            None => MAX_DEPTH,
+        };
+        self.configure(search_options.start_time, search_options.search_duration);
+
+        for depth in 1..=max_depth {
+            match self.search(depth) {
+                SearchOutcome::Aborted(partial) => {
+                    // A completed shallower iteration outranks the interrupted
+                    // one's best-so-far, which may be a fail high that never
+                    // got re-searched. The partial only fills in when depth 1
+                    // itself ran out of time.
+                    return SearchOutcome::Aborted(best.or(partial));
+                }
+                SearchOutcome::GameOver => {
+                    // checkmate, stalemate or a rule draw: deeper searches
+                    // cannot change it, so don't run them
+                    return SearchOutcome::GameOver;
+                }
+                SearchOutcome::Complete(result) => {
+                    on_depth(depth, &result, self.pv_line());
+                    best = Some(result);
+                }
+            }
+        }
+        match best {
+            Some(result) => SearchOutcome::Complete(result),
+            // a depth of zero runs no iterations, so there is nothing to
+            // report beyond that no move was looked for
+            None => SearchOutcome::Aborted(None),
+        }
+    }
+
+    fn make_move_str(&mut self, play: &str) -> bool {
+        for p in self.board.generate_moves() {
+            let play_str = format!("{}", p).to_lowercase();
+            if play == play_str {
+                let result = self.board.make_move(&p);
+                self.moves.clear_key(self.board.key); // TODO this is a hack to try to fix bad
+                // cache hits, particularly for draws
+                return result; // TODO change this to return Result
+            };
+        }
+        false
+    }
+
+    fn display_board(&self) {
+        println!("{}", self.board);
     }
 }
 
@@ -362,18 +565,20 @@ struct Pv {
     // array, so neither needs a word. Both sit in the padding the key leaves
     // behind, which is why widening ply to u16 costs nothing.
     depth: u8,
-    node: Node,
+    bound: Bound,
     ply: u16,
 }
 
+/// What the stored score means: the searched window decides whether a score
+/// is the truth, a ceiling or a floor, and a reader can only use it for a
+/// cutoff its kind allows.
 #[derive(Copy, Clone, Debug)]
-// TODO better name for this
-enum Node {
+enum Bound {
     Exact,
     // fail low nodes are not stored yet, see the known issues in the readme
     #[allow(dead_code)]
-    Alpha,
-    Beta,
+    Upper,
+    Lower,
     Ordering,
 }
 
@@ -384,14 +589,12 @@ type Entry = Option<(Pv, u64)>;
 #[derive(Debug)]
 struct HashTable {
     table: Vec<Entry>,
-    capacity: usize,
 }
 
 impl HashTable {
     fn with_capacity(capacity: usize) -> Self {
         Self {
             table: vec![None; capacity],
-            capacity,
         }
     }
 
@@ -409,9 +612,9 @@ impl HashTable {
 
     #[inline]
     fn index_for(&self, key: u64) -> usize {
-        // multiply-shift: maps key uniformly onto 0..capacity without a 64 bit
+        // multiply-shift: maps key uniformly onto 0..len without a 64 bit
         // division on every probe
-        (((key as u128) * (self.capacity as u128)) >> 64) as usize
+        (((key as u128) * (self.table.len() as u128)) >> 64) as usize
     }
 
     fn get(&self, key: u64) -> Option<&Pv> {
@@ -440,8 +643,8 @@ impl HashTable {
                 }
                 if pv.depth == old_pv.depth
                     && old_key == key
-                    && matches!(old_pv.node, Node::Exact)
-                    && !matches!(pv.node, Node::Exact)
+                    && matches!(old_pv.bound, Bound::Exact)
+                    && !matches!(pv.bound, Bound::Exact)
                 {
                     return;
                 }
@@ -465,10 +668,8 @@ impl PvLine {
 
 impl fmt::Display for PvLine {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
-        let out: Vec<String> = self.line.iter().map(|p| format!("{}", p)).collect();
-        let new = out.join(" ");
-        write!(f, "{}", new)?;
-        Ok(())
+        let moves: Vec<String> = self.line.iter().map(|p| p.to_string()).collect();
+        write!(f, "{}", moves.join(" "))
     }
 }
 
@@ -495,7 +696,7 @@ struct Aborted;
 
 #[derive(Debug)]
 pub struct SearchResult {
-    pub nodes: u64,          // The number of results examined as part of the search
+    pub nodes: u64,          // The number of positions visited during the search
     pub selective_depth: u8, // Selective search depth in plies
     pub best_move: Play,     // The best move found as part of the search
     pub score: Score,        // The estimated score for the best move if played
@@ -503,7 +704,7 @@ pub struct SearchResult {
 
 impl SearchResult {
     pub fn checkmate_in(&self) -> Option<Score> {
-        if (CHECKMATE_SCORE - self.score.abs()) < 300 {
+        if self.score.abs() > CHECKMATE_THRESHOLD {
             let mut mate = (CHECKMATE_SCORE - self.score.abs() + 1) / 2;
             if self.score < 0 {
                 mate = -mate;
@@ -520,7 +721,7 @@ mod test_search {
     use super::Board;
     use super::Engine;
     use super::Game;
-    use super::{Node, Play, Pv, SearchOutcome, SearchResult};
+    use super::{Bound, Play, Pv, SearchOutcome, SearchResult};
     use pretty_assertions::assert_eq;
     use std::time;
 
@@ -559,7 +760,7 @@ mod test_search {
             play,
             score: 0,
             depth: 5,
-            node: Node::Exact,
+            bound: Bound::Exact,
             ply: ply as u16,
         }
     }
@@ -859,7 +1060,7 @@ mod test_search {
                 play,
                 score: 0,
                 depth: 0,
-                node: Node::Ordering,
+                bound: Bound::Ordering,
                 ply: 0,
             },
         );
@@ -933,15 +1134,15 @@ mod test_search {
 
 #[cfg(test)]
 mod test_hash_table {
-    use super::{HashTable, Node, Play, Pv};
+    use super::{Bound, HashTable, Play, Pv};
     use pretty_assertions::assert_eq;
 
-    fn new_pv(node: Node, depth: u8, ply: u16) -> Pv {
+    fn new_pv(bound: Bound, depth: u8, ply: u16) -> Pv {
         Pv {
             play: Play::new(0, 1, None, None, false, false),
             score: 0,
             depth,
-            node,
+            bound,
             ply,
         }
     }
@@ -950,7 +1151,7 @@ mod test_hash_table {
     fn test_get_compares_key_not_just_slot() {
         // two different keys which map to the same slot must not be confused for each other
         let mut table = HashTable::with_capacity(1);
-        table.set(1, new_pv(Node::Exact, 1, 1));
+        table.set(1, new_pv(Bound::Exact, 1, 1));
         assert!(table.get(1).is_some());
         assert!(table.get(2).is_none());
     }
@@ -958,24 +1159,24 @@ mod test_hash_table {
     #[test]
     fn test_exact_entry_replaces_non_exact_entry() {
         let mut table = HashTable::with_capacity(1);
-        table.set(1, new_pv(Node::Beta, 1, 1));
-        table.set(1, new_pv(Node::Exact, 1, 1));
-        assert!(matches!(table.get(1).unwrap().node, Node::Exact));
+        table.set(1, new_pv(Bound::Lower, 1, 1));
+        table.set(1, new_pv(Bound::Exact, 1, 1));
+        assert!(matches!(table.get(1).unwrap().bound, Bound::Exact));
     }
 
     #[test]
     fn test_deeper_exact_entry_survives_shallower_exact_entry() {
         let mut table = HashTable::with_capacity(1);
-        table.set(1, new_pv(Node::Exact, 8, 1));
-        table.set(1, new_pv(Node::Exact, 2, 1));
+        table.set(1, new_pv(Bound::Exact, 8, 1));
+        table.set(1, new_pv(Bound::Exact, 2, 1));
         assert_eq!(table.get(1).unwrap().depth, 8);
     }
 
     #[test]
     fn test_deeper_entry_replaces_exact_entry_for_another_position() {
         let mut table = HashTable::with_capacity(1);
-        table.set(1, new_pv(Node::Exact, 1, 1));
-        table.set(2, new_pv(Node::Beta, 8, 1));
+        table.set(1, new_pv(Bound::Exact, 1, 1));
+        table.set(2, new_pv(Bound::Lower, 8, 1));
         assert!(table.get(2).is_some());
         assert!(table.get(1).is_none());
     }
@@ -983,242 +1184,25 @@ mod test_hash_table {
     #[test]
     fn test_shallower_entry_does_not_evict_deeper_entry_for_another_position() {
         let mut table = HashTable::with_capacity(1);
-        table.set(1, new_pv(Node::Beta, 8, 1));
-        table.set(2, new_pv(Node::Exact, 1, 1));
+        table.set(1, new_pv(Bound::Lower, 8, 1));
+        table.set(2, new_pv(Bound::Exact, 1, 1));
         assert_eq!(table.get(1).unwrap().depth, 8);
     }
 
     #[test]
     fn test_quiescence_entry_does_not_evict_searched_entry() {
         let mut table = HashTable::with_capacity(1);
-        table.set(1, new_pv(Node::Exact, 5, 1));
-        table.set(2, new_pv(Node::Ordering, 0, 1));
+        table.set(1, new_pv(Bound::Exact, 5, 1));
+        table.set(2, new_pv(Bound::Ordering, 0, 1));
         assert_eq!(table.get(1).unwrap().depth, 5);
     }
 
     #[test]
     fn test_stale_entry_is_replaced_regardless_of_depth() {
         let mut table = HashTable::with_capacity(1);
-        table.set(1, new_pv(Node::Exact, 8, 1));
-        table.set(2, new_pv(Node::Beta, 1, 100));
+        table.set(1, new_pv(Bound::Exact, 8, 1));
+        table.set(2, new_pv(Bound::Lower, 1, 100));
         assert!(table.get(2).is_some());
-    }
-}
-
-impl Engine for AlphaBeta {
-    fn perft(&mut self, depth: u8) -> u64 {
-        self.board.perft(depth)
-    }
-
-    fn active_color(&self) -> Color {
-        self.board.active_color
-    }
-
-    fn parse_fen(&mut self, fen_string: &str) -> Result<(), String> {
-        self.nodes = 0;
-        self.board = Board::from_fen(fen_string)?;
-        Ok(())
-    }
-
-    fn new_game(&mut self) {
-        self.clear_cache();
-    }
-
-    fn iterative_deepening_search(
-        &mut self,
-        search_options: SearchParameters,
-        mut on_depth: impl FnMut(u8, &SearchResult, PvLine),
-    ) -> SearchOutcome {
-        let mut best: Option<SearchResult> = None;
-        let max_depth = match search_options.depth {
-            Some(depth) => depth,
-            None => MAX_DEPTH,
-        };
-        self.configure(search_options.start_time, search_options.search_duration);
-
-        for depth in 1..=max_depth {
-            match self.search(depth) {
-                SearchOutcome::Aborted(partial) => {
-                    // A completed shallower iteration outranks the interrupted
-                    // one's best-so-far, which may be a fail high that never
-                    // got re-searched. The partial only fills in when depth 1
-                    // itself ran out of time.
-                    return SearchOutcome::Aborted(best.or(partial));
-                }
-                SearchOutcome::GameOver => {
-                    // checkmate, stalemate or a rule draw: deeper searches
-                    // cannot change it, so don't run them
-                    return SearchOutcome::GameOver;
-                }
-                SearchOutcome::Complete(result) => {
-                    on_depth(depth, &result, self.pv_line());
-                    best = Some(result);
-                }
-            }
-        }
-        match best {
-            Some(result) => SearchOutcome::Complete(result),
-            // a depth of zero runs no iterations, so there is nothing to
-            // report beyond that no move was looked for
-            None => SearchOutcome::Aborted(None),
-        }
-    }
-
-    fn make_move_str(&mut self, play: &str) -> bool {
-        for p in self.board.generate_moves() {
-            let play_str = format!("{}", p).to_lowercase();
-            if play == play_str {
-                let result = self.board.make_move(&p);
-                self.moves.clear_key(self.board.key); // TODO this is a hack to try to fix bad
-                // cache hits, particularly for draws
-                return result; // TODO change this to return Result
-            };
-        }
-        false
-    }
-
-    fn display_board(&self) {
-        println!("{}", self.board);
-    }
-}
-
-impl AlphaBeta {
-    pub fn new(board: Board) -> Self {
-        AlphaBeta::with_table_bytes(board, DEFAULT_TABLE_BYTES)
-    }
-
-    pub fn configure(
-        &mut self,
-        start_time: time::Instant,
-        search_duration: Option<time::Duration>,
-    ) {
-        self.start_time = start_time;
-        self.search_duration = search_duration;
-    }
-
-    /// The root loop: the one node whose answer must include a play, which is
-    /// why it runs here rather than in alpha_beta. The root probes the
-    /// transposition table to order moves and stores its entry when done, but
-    /// never takes a stored score in place of searching: a stored score can
-    /// come from a line whose repetition and fifty move context differ from
-    /// the game being played, and the answer must not depend on one.
-    pub fn search(&mut self, depth: u8) -> SearchOutcome {
-        self.nodes = 0;
-        self.search_depth = depth;
-        self.selective_depth = depth;
-        self.board.line_ply = 0;
-
-        // the game is already drawn, there is no move to look for
-        if self.board.fifty_move_rule >= 100 {
-            return SearchOutcome::GameOver;
-        }
-
-        if self.poll_deadline().is_err() {
-            return SearchOutcome::Aborted(None);
-        }
-        self.nodes += 1;
-
-        let mut depth = depth;
-        if self.board.is_king_attacked() {
-            depth += 1;
-        }
-
-        let mut alpha = Score::MIN + 1;
-        let beta = Score::MAX - 1;
-        let mut best: Option<Play> = None;
-        let mut found_legal_move = false;
-
-        let pv_play = self.moves.get(self.board.key).map(|pv| pv.play);
-        let mut moves = self.board.generate_moves();
-        moves.sort_by_cached_key(|m| {
-            let mut score = m.mvv_lva(&self.board);
-            if pv_play == Some(*m) {
-                score += 100_000;
-            }
-            -score
-        });
-
-        for m in &moves {
-            if self.board.make_move(m) {
-                found_legal_move = true;
-                // undo before an abort can propagate, or the board would keep
-                // the aborted line
-                let result = self.alpha_beta(-beta, -alpha, depth - 1);
-                self.board.undo_move();
-                match result {
-                    Err(Aborted) => {
-                        return SearchOutcome::Aborted(
-                            best.map(|play| self.result_for(play, alpha)),
-                        );
-                    }
-                    Ok(s) => {
-                        let score = -s;
-                        if score > alpha {
-                            alpha = score;
-                            best = Some(*m);
-                        }
-                    }
-                }
-            }
-        }
-
-        if !found_legal_move {
-            // checkmate or stalemate: either way there is nothing to play
-            return SearchOutcome::GameOver;
-        }
-
-        let play = best.expect("any legal move's score beats the opening alpha of Score::MIN + 1");
-        self.moves.set(
-            self.board.key,
-            Pv {
-                play,
-                depth,
-                score: score_to_tt(alpha, self.board.line_ply),
-                node: Node::Exact,
-                ply: self.board.ply as u16,
-            },
-        );
-        SearchOutcome::Complete(self.result_for(play, alpha))
-    }
-
-    /// Replay the line the table holds on a copy of the board, one stored move
-    /// at a time. Walking the positions rather than following a key from one
-    /// entry to the next is what lets the line be checked as it is built: the
-    /// board says whether a stored move is legal here, and whether the line has
-    /// reached a position it would be a draw to play on from.
-    pub fn pv_line(&self) -> PvLine {
-        let mut line = Vec::new();
-        // Board is Copy, so the search's own board is untouched by this.
-        let mut board = self.board;
-        while line.len() < MAX_DEPTH as usize {
-            let Some(pv) = self.moves.get(board.key) else {
-                break;
-            };
-            if matches!(pv.node, Node::Ordering) {
-                // written by quiescence, which looks at captures alone, so the
-                // move is fit for ordering the next search and not for telling
-                // anyone what the engine intends to play
-                break;
-            }
-            let play = pv.play;
-            // a probe compares the whole key, so what still gets through is
-            // another position which hashed to the same one. Its move belongs
-            // to that position, and playing it here would print a line the
-            // rules do not allow
-            if !board.generate_moves().contains(&play) {
-                break;
-            }
-            if !board.make_move(&play) {
-                break;
-            }
-            line.push(play);
-            // the line is a draw from here, so whatever the table says comes
-            // next is a continuation that would never be played
-            if board.fifty_move_rule >= 100 || board.has_repeated() {
-                break;
-            }
-        }
-        PvLine { line }
     }
 }
 

@@ -91,7 +91,8 @@ docker/smoke_test.sh arche-lichess-bot
   - `ponderhit`, `debug` and `register` are not handled either
 - winboard
 - known issues
-  - fail low (alpha) nodes are never stored in the transposition table, only exact and beta nodes
+  - fail low nodes (upper bounds) are never stored in the transposition table, only exact
+    scores and fail highs
   - transposition table scores don't account for repetition or fifty move history, make_move_str
     clears the key for played moves as a workaround
   - a fen is only validated as far as what the search cannot survive, a king a side and the side
