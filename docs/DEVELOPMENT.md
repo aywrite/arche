@@ -31,6 +31,15 @@ nothing about them.
 cargo test --workspace
 ```
 
+The helper scripts have tests of their own, run with pytest and gated in ci by
+the Scripts workflow. They pin the output formats the scripts parse — a
+fastchess result, a criterion comparison, a pgn — so an upstream that changes
+shape fails a test instead of quietly publishing the wrong number:
+
+```
+python3 -m pytest scripts/tests
+```
+
 ## Lints
 
 Both of these are gated in ci:

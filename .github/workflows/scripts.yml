@@ -1,0 +1,31 @@
+name: Scripts
+
+# The helper scripts parse other tools' output — fastchess results, criterion
+# comparisons, pgn files — so they rot silently when a format shifts. These
+# tests are the only thing standing between that and a release note quoting
+# the wrong number.
+
+on:
+  push:
+    branches: [ "master" ]
+  pull_request:
+    branches: [ "master" ]
+
+permissions:
+  contents: read
+
+# a new push to a pull request makes the run in progress redundant
+concurrency:
+  group: ${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  test:
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@v7
+      - name: Run the script tests
+        run: |
+          python3 -m pip install --quiet pytest
+          python3 -m pytest scripts/tests -q
