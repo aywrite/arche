@@ -1035,6 +1035,54 @@ mod test_search {
     }
 
     #[test]
+    fn test_draw_taint_is_still_recorded_and_never_trusted() {
+        // The pawn endgame carries the most draw traffic of the pinned
+        // positions, so it is the one that exercises both halves of the graph
+        // history work. tainted_stores going to zero means taint propagation
+        // broke, and then the refusal in get_transposition is refusing nothing
+        // while the hole silently reopens. tainted_score_cutoffs is zero by
+        // construction while the refusal holds, so it moving means a probe
+        // path that consumes scores without the refusal guard was added.
+        let fen = "8/2p5/3p4/KP5r/1R3p1k/8/4P1P1/8 w - - 0 1";
+        let mut e = engine(Board::from_fen(fen).unwrap());
+        for depth in 1..=7 {
+            completed(e.search(depth));
+        }
+        assert!(e.ghi.stores > 0, "the search stored nothing");
+        assert!(
+            e.ghi.tainted_stores > 0,
+            "no draw taint was recorded: propagation is broken"
+        );
+        assert_eq!(
+            e.ghi.tainted_score_cutoffs, 0,
+            "a path dependent score was trusted"
+        );
+    }
+
+    #[test]
+    fn test_warm_cache_matches_cold_across_draw_context() {
+        // The same pieces hash to the same key whatever the fifty move counter
+        // says, so a search made a few plies from the draw fills the table
+        // with scores that are true of that path only. A fresh game reaching
+        // the same position must not read them: its search has the whole
+        // clock ahead of it.
+        let near_draw = "5k2/1p3p1p/p3pK1P/P1P1P3/4bP2/2B5/8/8 w - - 96 112";
+        let fresh = "5k2/1p3p1p/p3pK1P/P1P1P3/4bP2/2B5/8/8 w - - 0 1";
+        let mut warm = engine(Board::from_fen(near_draw).unwrap());
+        completed(warm.search(6));
+        warm.parse_fen(fresh).unwrap();
+        let result = completed(warm.search(6));
+
+        let mut cold = engine(Board::from_fen(fresh).unwrap());
+        let expected = completed(cold.search(6));
+        assert_eq!(result.score, expected.score);
+        assert_eq!(
+            format!("{}", result.best_move),
+            format!("{}", expected.best_move),
+        );
+    }
+
+    #[test]
     fn test_warm_cache_matches_cold_search() {
         // Searching a position with a cache warmed by unrelated positions must give the same
         // result as searching it with an empty cache
