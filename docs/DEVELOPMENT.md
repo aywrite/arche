@@ -347,10 +347,11 @@ git push origin vX.Y.Z
 
 Pushing the tag is what triggers the release workflow, which runs the tests,
 creates the github release from the changelog, and then builds and uploads
-binaries for linux, macos and windows. It goes on to call two workflows that
+binaries for linux, macos and windows. It goes on to call three workflows that
 add to the release once it exists: **Docker** publishes the lichess-bot image
-and quotes it in the notes with its digest, and **Strength** plays the match
-and adds the elo estimate.
+and quotes it in the notes with its digest, **Strength** plays the match and
+adds the elo estimate, and **Calibrate** plays the gauntlet and adds the ccrl
+placement.
 
-Both edit the notes by reading them and writing them back, so they share a
-concurrency group and take turns rather than one landing on top of the other.
+All of them edit the notes by reading them and writing them back, so they share
+a concurrency group and take turns rather than one landing on top of the other.

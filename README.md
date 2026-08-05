@@ -3,7 +3,7 @@ Andrew's Rust Chess Engine
 
 ## About
 
-This project is mostly indented for self-edification. The engine is not intended to be particularly novel or powerful.
+This project is mostly intended for self-edification. The engine is not intended to be particularly novel or powerful.
 
 The board is currently represented using only bitboards (with magic bitboards for move generation of sliding pieces).
 

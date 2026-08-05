@@ -33,7 +33,9 @@ impl Play {
         }
     }
 
-    pub fn mmv_lva(&self, board: &Board) -> i64 {
+    /// Most valuable victim, least valuable attacker: take the biggest piece
+    /// with the smallest one first.
+    pub fn mvv_lva(&self, board: &Board) -> i64 {
         let victim_score = match self.capture {
             None => return 0,
             Some(Piece::Pawn) => 100,
@@ -53,6 +55,8 @@ impl Play {
             Some(Piece::King) => 1,
         };
         let score = victim_score + attacker_score;
+        // a queen taking a defended piece is usually just losing the queen, so
+        // push it below the other captures rather than trying it first
         if attacker_score == 2 && board.square_attacked(self.to, !board.active_color) {
             return score - 300;
         }

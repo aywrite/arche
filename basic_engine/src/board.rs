@@ -77,33 +77,13 @@ lazy_static! {
     static ref ATTACK_MASKS: AttackMasks = AttackMasks::new();
     pub static ref BASE_CONVERSIONS: BaseConversions = BaseConversions::new();
     static ref MAGIC: Magic = Magic::new();
-    static ref B1_C1_D1: u64 = {
-        let mut mask = 0u64;
-        mask.set_bit(B1);
-        mask.set_bit(C1);
-        mask.set_bit(D1);
-        mask
-    };
-    static ref F1_G1: u64 = {
-        let mut mask = 0u64;
-        mask.set_bit(F1);
-        mask.set_bit(G1);
-        mask
-    };
-    static ref B8_C8_D8: u64 = {
-        let mut mask = 0u64;
-        mask.set_bit(B8);
-        mask.set_bit(C8);
-        mask.set_bit(D8);
-        mask
-    };
-    static ref F8_G8: u64 = {
-        let mut mask = 0u64;
-        mask.set_bit(F8);
-        mask.set_bit(G8);
-        mask
-    };
 }
+
+// the squares that have to be empty for each castle
+const B1_C1_D1: u64 = 1 << B1 | 1 << C1 | 1 << D1;
+const F1_G1: u64 = 1 << F1 | 1 << G1;
+const B8_C8_D8: u64 = 1 << B8 | 1 << C8 | 1 << D8;
+const F8_G8: u64 = 1 << F8 | 1 << G8;
 
 pub struct BaseConversions {
     pub base_64_to_100: [u8; 64],
@@ -277,21 +257,20 @@ pub struct Board {
     // adding the material difference on top, cannot overflow.
     psqt: i32,
 
-    //history: Vec<PlayState>,
     history: [Option<PlayState>; MAX_GAME_SIZE],
     pub key: u64,
 }
 
 impl Default for Board {
     fn default() -> Self {
-        lazy_static::initialize(&MAGIC); // TODO move this to engine/parse fen?
-        Board::from_fen("rnbqkbnr/pppppppp/8/8/8/8/PPPPPPPP/RNBQKBNR w KQkq - 0 1").unwrap()
+        Board::new()
     }
 }
 
 impl Board {
     pub fn new() -> Board {
-        lazy_static::initialize(&MAGIC); // TODO move this to engine/parse fen?
+        // pay for the magic tables at startup rather than on the first search
+        lazy_static::initialize(&MAGIC);
         Board::from_fen("rnbqkbnr/pppppppp/8/8/8/8/PPPPPPPP/RNBQKBNR w KQkq - 0 1").unwrap()
     }
 
@@ -304,15 +283,15 @@ impl Board {
         let all_pieces = self.black | self.white;
         let attack_masks: &AttackMasks = &ATTACK_MASKS;
         let magic: &Magic = &MAGIC;
+        // masking with the opponent's pieces keeps only the captures, so every
+        // to square here holds something to take
         // knights
         let mut knights = self.knights & color_mask;
         while knights != 0 {
             let from = pop_lsb(&mut knights);
-            // Only include moves which don't have another piece of our color at the to square
-            let kmoves = attack_masks.knights[from as usize] & (capture_mask);
-            let mut __m = kmoves;
-            while __m != 0 {
-                let to = pop_lsb(&mut __m);
+            let mut targets = attack_masks.knights[from as usize] & capture_mask;
+            while targets != 0 {
+                let to = pop_lsb(&mut targets);
                 let capture = self.get_piece_index(to);
                 moves.push(Play::new(from, to, capture, None, false, false));
             }
@@ -321,10 +300,9 @@ impl Board {
         let mut queens_and_rooks = (self.queens | self.rooks) & color_mask;
         while queens_and_rooks != 0 {
             let from = pop_lsb(&mut queens_and_rooks);
-            let move_mask = magic.get_straight_move(from, all_pieces) & capture_mask;
-            let mut __m = move_mask;
-            while __m != 0 {
-                let to = pop_lsb(&mut __m);
+            let mut targets = magic.get_straight_move(from, all_pieces) & capture_mask;
+            while targets != 0 {
+                let to = pop_lsb(&mut targets);
                 let capture = self.get_piece_index(to);
                 moves.push(Play::new(from, to, capture, None, false, false));
             }
@@ -333,10 +311,9 @@ impl Board {
         let mut queens_and_bishops = (self.queens | self.bishops) & color_mask;
         while queens_and_bishops != 0 {
             let from = pop_lsb(&mut queens_and_bishops);
-            let move_mask = magic.get_diagonal_move(from, all_pieces) & capture_mask;
-            let mut __m = move_mask;
-            while __m != 0 {
-                let to = pop_lsb(&mut __m);
+            let mut targets = magic.get_diagonal_move(from, all_pieces) & capture_mask;
+            while targets != 0 {
+                let to = pop_lsb(&mut targets);
                 let capture = self.get_piece_index(to);
                 moves.push(Play::new(from, to, capture, None, false, false));
             }
@@ -345,11 +322,9 @@ impl Board {
         let mut kings = self.kings & color_mask;
         while kings != 0 {
             let from = pop_lsb(&mut kings);
-            // Only include moves which don't have another piece of our color at the to square
-            let kmove = attack_masks.kings[from as usize] & capture_mask;
-            let mut __m = kmove;
-            while __m != 0 {
-                let to = pop_lsb(&mut __m);
+            let mut targets = attack_masks.kings[from as usize] & capture_mask;
+            while targets != 0 {
+                let to = pop_lsb(&mut targets);
                 let capture = self.get_piece_index(to);
                 moves.push(Play::new(from, to, capture, None, false, false));
             }
@@ -368,9 +343,9 @@ impl Board {
                 Color::White => attack_masks.black_pawns[from as usize] & capture_mask,
                 Color::Black => attack_masks.white_pawns[from as usize] & capture_mask,
             };
-            let mut __m = pmoves;
-            while __m != 0 {
-                let to = pop_lsb(&mut __m);
+            let mut targets = pmoves;
+            while targets != 0 {
+                let to = pop_lsb(&mut targets);
                 let capture = self.get_piece_index(to);
                 if can_promote {
                     for p in PromotePiece::VARIANTS {
@@ -404,15 +379,15 @@ impl Board {
         let all_pieces = self.black | self.white;
         let attack_masks: &AttackMasks = &ATTACK_MASKS;
         let magic: &Magic = &MAGIC;
+        // masking out our own pieces leaves quiet moves and captures both, and
+        // capture_on tells the two apart
         // knights
         let mut knights = self.knights & color_mask;
         while knights != 0 {
             let from = pop_lsb(&mut knights);
-            // Only include moves which don't have another piece of our color at the to square
-            let kmoves = attack_masks.knights[from as usize] & (!color_mask);
-            let mut __m = kmoves;
-            while __m != 0 {
-                let to = pop_lsb(&mut __m);
+            let mut targets = attack_masks.knights[from as usize] & !color_mask;
+            while targets != 0 {
+                let to = pop_lsb(&mut targets);
                 let capture = self.capture_on(to, capture_mask);
                 moves.push(Play::new(from, to, capture, None, false, false));
             }
@@ -421,10 +396,9 @@ impl Board {
         let mut queens_and_rooks = (self.queens | self.rooks) & color_mask;
         while queens_and_rooks != 0 {
             let from = pop_lsb(&mut queens_and_rooks);
-            let move_mask = magic.get_straight_move(from, all_pieces) & !color_mask;
-            let mut __m = move_mask;
-            while __m != 0 {
-                let to = pop_lsb(&mut __m);
+            let mut targets = magic.get_straight_move(from, all_pieces) & !color_mask;
+            while targets != 0 {
+                let to = pop_lsb(&mut targets);
                 let capture = self.capture_on(to, capture_mask);
                 moves.push(Play::new(from, to, capture, None, false, false));
             }
@@ -433,10 +407,9 @@ impl Board {
         let mut queens_and_bishops = (self.queens | self.bishops) & color_mask;
         while queens_and_bishops != 0 {
             let from = pop_lsb(&mut queens_and_bishops);
-            let move_mask = magic.get_diagonal_move(from, all_pieces) & !color_mask;
-            let mut __m = move_mask;
-            while __m != 0 {
-                let to = pop_lsb(&mut __m);
+            let mut targets = magic.get_diagonal_move(from, all_pieces) & !color_mask;
+            while targets != 0 {
+                let to = pop_lsb(&mut targets);
                 let capture = self.capture_on(to, capture_mask);
                 moves.push(Play::new(from, to, capture, None, false, false));
             }
@@ -445,11 +418,9 @@ impl Board {
         let mut kings = self.kings & color_mask;
         while kings != 0 {
             let from = pop_lsb(&mut kings);
-            // Only include moves which don't have another piece of our color at the to square
-            let kmove = attack_masks.kings[from as usize] & (!color_mask);
-            let mut __m = kmove;
-            while __m != 0 {
-                let to = pop_lsb(&mut __m);
+            let mut targets = attack_masks.kings[from as usize] & !color_mask;
+            while targets != 0 {
+                let to = pop_lsb(&mut targets);
                 let capture = self.capture_on(to, capture_mask);
                 moves.push(Play::new(from, to, capture, None, false, false));
             }
@@ -463,7 +434,7 @@ impl Board {
                 let check = self.square_attacked(E1, Color::Black);
                 if !check {
                     if self.castle.white_queen_side
-                        && (*B1_C1_D1 & all_pieces) == 0
+                        && (B1_C1_D1 & all_pieces) == 0
                         && [C1, D1]
                             .iter()
                             .all(|i| !self.square_attacked(*i, Color::Black))
@@ -471,7 +442,7 @@ impl Board {
                         moves.push(Play::new(from, C1, None, None, false, true));
                     }
                     if self.castle.white_king_side
-                        && (*F1_G1 & all_pieces) == 0
+                        && (F1_G1 & all_pieces) == 0
                         && [F1, G1]
                             .iter()
                             .all(|i| !self.square_attacked(*i, Color::Black))
@@ -485,7 +456,7 @@ impl Board {
                 let check = self.square_attacked(E8, Color::White);
                 if !check {
                     if self.castle.black_queen_side
-                        && (*B8_C8_D8 & all_pieces) == 0
+                        && (B8_C8_D8 & all_pieces) == 0
                         && [C8, D8]
                             .iter()
                             .all(|i| !self.square_attacked(*i, Color::White))
@@ -493,7 +464,7 @@ impl Board {
                         moves.push(Play::new(from, C8, None, None, false, true));
                     }
                     if self.castle.black_king_side
-                        && (*F8_G8 & all_pieces) == 0
+                        && (F8_G8 & all_pieces) == 0
                         && [F8, G8]
                             .iter()
                             .all(|i| !self.square_attacked(*i, Color::White))
@@ -517,9 +488,9 @@ impl Board {
                 Color::White => attack_masks.black_pawns[from as usize] & capture_mask,
                 Color::Black => attack_masks.white_pawns[from as usize] & capture_mask,
             };
-            let mut __m = pmoves;
-            while __m != 0 {
-                let to = pop_lsb(&mut __m);
+            let mut targets = pmoves;
+            while targets != 0 {
+                let to = pop_lsb(&mut targets);
                 let capture = self.get_piece_index(to);
                 if can_promote {
                     for p in PromotePiece::VARIANTS {
@@ -575,7 +546,6 @@ impl Board {
 
     #[inline]
     pub fn eval(&self) -> Score {
-        // TODO should this return white value & black value as separate numbers instead?
         let eval = self.white_value as i32 - self.black_value as i32;
 
         let eval = (eval + self.psqt) as Score;
@@ -856,21 +826,22 @@ impl Board {
         self.key ^= zorb.side;
         self.debug_assert_state_in_step();
         if self.square_attacked(king_index, opposing_color) {
-            self.undo_move().unwrap();
+            self.undo_move();
             false
         } else {
             true
         }
     }
 
-    pub fn undo_move(&mut self) -> Result<(), &str> {
+    pub fn undo_move(&mut self) {
         let previous = history_index(self.ply - 1);
         let history = self.history[previous].unwrap();
         self.history[previous] = None;
         let play = history.play;
 
         let opposing_color = !self.active_color;
-        // update castling permissions
+        // castle rights, en passant and the fifty move counter cannot be
+        // recomputed from the move alone, they come back from the history
         self.castle = history.castle;
         self.en_passant = history.en_passant;
         self.fifty_move_rule = history.fifty_move_rule;
@@ -880,15 +851,13 @@ impl Board {
             self.move_number -= 1;
         }
 
-        if self.pawns.is_bit_set(play.to) {
-            // pawn moves reset the fifty move rule
-            if play.en_passant {
-                let en_passant_index = match opposing_color {
-                    Color::White => play.to - 8,
-                    Color::Black => play.to + 8,
-                };
-                self.set_piece_index(en_passant_index, Piece::Pawn, self.active_color);
-            }
+        if play.en_passant {
+            // the captured pawn stood behind the to square, not on it
+            let en_passant_index = match opposing_color {
+                Color::White => play.to - 8,
+                Color::Black => play.to + 8,
+            };
+            self.set_piece_index(en_passant_index, Piece::Pawn, self.active_color);
         }
 
         // move piece
@@ -923,7 +892,6 @@ impl Board {
         // restore the position key exactly as it was before the move was made,
         // this guarantees make/undo can never let the key drift out of sync
         self.key = history.position_key;
-        Ok(())
     }
 
     #[inline]
@@ -972,6 +940,9 @@ impl Board {
         self.square_attacked(self.king_index(self.active_color), !self.active_color)
     }
 
+    /// Print every square this colour attacks as a grid. Nothing calls it: it
+    /// is a debugging aid kept to be reached for when square_attacked
+    /// misbehaves, the same standing debug_print has for bitboards.
     pub fn attacked_print(&self, color: Color) {
         println!("   a|b|c|d|e|f|g|h|");
         println!("  ----------------");
@@ -1069,7 +1040,6 @@ impl Board {
 
     #[inline]
     pub fn get_piece_index(&self, index: u8) -> Option<Piece> {
-        // TODO this should also return color
         let mask = 1u64 << index;
         if (self.pawns & mask) > 0 {
             Some(Piece::Pawn)
@@ -1116,18 +1086,8 @@ impl Board {
         Some((piece, color))
     }
 
-    fn get_piece(&self, rank: u8, file: File) -> (Option<Piece>, Option<Color>) {
-        let index = coordinate_to_index(rank, file);
-        let mask = 1u64 << index;
-        let color = if (self.black & mask) > 0 {
-            Some(Color::Black)
-        } else if (self.white & mask) > 0 {
-            Some(Color::White)
-        } else {
-            None
-        };
-        let piece = self.get_piece_index(index);
-        (piece, color)
+    fn get_piece(&self, rank: u8, file: File) -> Option<(Piece, Color)> {
+        self.get_piece_and_color_index(coordinate_to_index(rank, file))
     }
 
     fn material_value(&self) -> (u32, u32) {
@@ -1156,7 +1116,7 @@ impl Board {
     }
 
     pub fn perft(&mut self, depth: u8) -> u64 {
-        // Based on psedocode at https://www.chessprogramming.org/Perft
+        // Based on pseudocode at https://www.chessprogramming.org/Perft
         let mut nodes = 0;
 
         if depth == 0 {
@@ -1165,14 +1125,8 @@ impl Board {
 
         for m in &self.generate_moves() {
             if self.make_move(m) {
-                let branch = self.perft(depth - 1);
-                nodes += branch;
-                //println!("{}", m);
-                self.undo_move().unwrap();
-                // TODO remove this debug
-                //if depth == 2 {
-                //    println!("m {} => {}", m, branch); // perft divide
-                //};
+                nodes += self.perft(depth - 1);
+                self.undo_move();
             }
         }
         nodes
@@ -1267,25 +1221,15 @@ impl Game for Board {
             if file + step > 8 {
                 return Err("Too many files found in rank".to_string());
             }
-            // TODO change piece to PieceType and implement a Piece with from char and to char
-            // methods
-            let piece = match c {
-                'p' | 'P' => Some(Piece::Pawn),
-                'n' | 'N' => Some(Piece::Knight),
-                'b' | 'B' => Some(Piece::Bishop),
-                'r' | 'R' => Some(Piece::Rook),
-                'q' | 'Q' => Some(Piece::Queen),
-                'k' | 'K' => Some(Piece::King),
-                '1'..='8' => None,
-                _ => return Err("unexpected character in fen".to_string()),
-            };
-            if let Some(p) = piece {
+            if !('1'..='8').contains(&c) {
+                let piece = Piece::try_from(c)
+                    .map_err(|e| format!("unexpected character in fen: {}", e))?;
                 let color = if c.is_uppercase() {
                     Color::White
                 } else {
                     Color::Black
                 };
-                board.set_piece(p, color, rank, File::try_from(file)?);
+                board.set_piece(piece, color, rank, File::try_from(file)?);
             }
             file += step;
         }
@@ -1341,19 +1285,12 @@ impl fmt::Display for Board {
         for rank in (1..=8).rev() {
             write!(f, "{} |", rank)?;
             for file in File::VARIANTS {
-                let (piece, color) = self.get_piece(rank, file);
-                let c = match piece {
-                    Some(Piece::Pawn) => 'p',
-                    Some(Piece::Knight) => 'n',
-                    Some(Piece::Bishop) => 'b',
-                    Some(Piece::Rook) => 'r',
-                    Some(Piece::Queen) => 'q',
-                    Some(Piece::King) => 'k',
-                    None => '.',
-                };
-                match color {
-                    Some(Color::White) => write!(f, " {}", c.to_uppercase())?,
-                    _ => write!(f, " {}", c)?,
+                match self.get_piece(rank, file) {
+                    Some((piece, Color::White)) => {
+                        write!(f, " {}", char::from(piece).to_ascii_uppercase())?
+                    }
+                    Some((piece, Color::Black)) => write!(f, " {}", char::from(piece))?,
+                    None => write!(f, " .")?,
                 };
             }
             writeln!(f)?;
@@ -1398,7 +1335,7 @@ mod evaluate {
                         let opp_score = board.eval();
                         assert_eq!(score, -opp_score);
                         board.active_color = !board.active_color;
-                        board.undo_move().unwrap();
+                        board.undo_move();
                     }
                 }
             }
@@ -1491,7 +1428,7 @@ mod make_move {
                     let mut new = board.clone();
                     if new.make_move(m) {
                         assert_ne!(old, new);
-                        new.undo_move().unwrap();
+                        new.undo_move();
                         assert_eq!(old, new);
                     }
                 }
@@ -1604,7 +1541,7 @@ mod make_move {
             assert!(board.make_move(&Play::new(from, to, None, None, false, false)));
         }
         for _ in cycle {
-            board.undo_move().unwrap();
+            board.undo_move();
         }
         assert_eq!(board, start);
     }
@@ -1826,72 +1763,58 @@ mod perft {
     use super::Board;
     use super::Game;
     use pretty_assertions::assert_eq;
-    // TODO convert these tests to use macros
-    // Positions and perft results taken from https://www.chessprogramming.org/Perft_Results
 
-    #[test]
-    fn test_perft_starting() {
-        let mut board =
-            Board::from_fen("rnbqkbnr/pppppppp/8/8/8/8/PPPPPPPP/RNBQKBNR w KQkq - 0 1").unwrap();
-        assert_eq!(board.perft(1), 20);
-        assert_eq!(board.perft(2), 400);
-        assert_eq!(board.perft(3), 8902);
-    }
-
-    #[test]
-    fn test_perft_position_2() {
-        let mut board =
-            Board::from_fen("r3k2r/p1ppqpb1/bn2pnp1/3PN3/1p2P3/2N2Q1p/PPPBBPPP/R3K2R w KQkq - 0 1")
-                .unwrap();
-        assert_eq!(board.perft(1), 48);
-        assert_eq!(board.perft(2), 2039);
-        assert_eq!(board.perft(3), 97862);
-        assert_eq!(board.perft(4), 4085603);
-    }
-
-    #[test]
-    fn test_perft_position_3() {
-        let mut board = Board::from_fen("8/2p5/3p4/KP5r/1R3p1k/8/4P1P1/8 w - - 0 1").unwrap();
-        assert_eq!(board.perft(1), 14);
-        assert_eq!(board.perft(2), 191);
-        assert_eq!(board.perft(3), 2812);
-        assert_eq!(board.perft(4), 43238);
-        assert_eq!(board.perft(5), 674624);
-        assert_eq!(board.perft(6), 11030083);
-    }
-
-    #[test]
-    fn test_perft_position_4() {
-        let mut board =
-            Board::from_fen("r3k2r/Pppp1ppp/1b3nbN/nP6/BBP1P3/q4N2/Pp1P2PP/R2Q1RK1 w kq - 0 1")
-                .unwrap();
-        assert_eq!(board.perft(1), 6);
-        assert_eq!(board.perft(2), 264);
-        assert_eq!(board.perft(3), 9467);
-        assert_eq!(board.perft(4), 422333);
-        assert_eq!(board.perft(5), 15833292);
-    }
-
-    #[test]
-    fn test_perft_position_5() {
-        let mut board =
-            Board::from_fen("rnbq1k1r/pp1Pbppp/2p5/8/2B5/8/PPP1NnPP/RNBQK2R w KQ - 1 8").unwrap();
-        assert_eq!(board.perft(1), 44);
-        assert_eq!(board.perft(2), 1486);
-        assert_eq!(board.perft(3), 62379);
-        assert_eq!(board.perft(4), 2103487);
-    }
-
-    #[test]
-    fn test_perft_position_6() {
-        let mut board = Board::from_fen(
+    /// The six standard positions, with their counts from depth one up to the
+    /// depth the suite can afford. Positions and results taken from
+    /// https://www.chessprogramming.org/Perft_Results
+    const CASES: [(&str, &str, &[u64]); 6] = [
+        (
+            "the starting position",
+            "rnbqkbnr/pppppppp/8/8/8/8/PPPPPPPP/RNBQKBNR w KQkq - 0 1",
+            &[20, 400, 8902],
+        ),
+        (
+            "position 2, kiwipete",
+            "r3k2r/p1ppqpb1/bn2pnp1/3PN3/1p2P3/2N2Q1p/PPPBBPPP/R3K2R w KQkq - 0 1",
+            &[48, 2039, 97_862, 4_085_603],
+        ),
+        (
+            "position 3",
+            "8/2p5/3p4/KP5r/1R3p1k/8/4P1P1/8 w - - 0 1",
+            &[14, 191, 2812, 43_238, 674_624, 11_030_083],
+        ),
+        (
+            "position 4",
+            "r3k2r/Pppp1ppp/1b3nbN/nP6/BBP1P3/q4N2/Pp1P2PP/R2Q1RK1 w kq - 0 1",
+            &[6, 264, 9467, 422_333, 15_833_292],
+        ),
+        (
+            "position 5",
+            "rnbq1k1r/pp1Pbppp/2p5/8/2B5/8/PPP1NnPP/RNBQK2R w KQ - 1 8",
+            &[44, 1486, 62_379, 2_103_487],
+        ),
+        (
+            "position 6",
             "r4rk1/1pp1qppp/p1np1n2/2b1p1B1/2B1P1b1/P1NP1N2/1PP1QPPP/R4RK1 w - - 0 10",
-        )
-        .unwrap();
-        assert_eq!(board.perft(1), 46);
-        assert_eq!(board.perft(2), 2079);
-        assert_eq!(board.perft(3), 89890);
-        assert_eq!(board.perft(4), 3894594);
+            &[46, 2079, 89_890, 3_894_594],
+        ),
+    ];
+
+    #[test]
+    fn test_perft_standard_positions() {
+        for (description, fen, counts) in CASES {
+            let mut board = Board::from_fen(fen).unwrap();
+            for (i, &expected) in counts.iter().enumerate() {
+                let depth = i as u8 + 1;
+                assert_eq!(
+                    board.perft(depth),
+                    expected,
+                    "{} at depth {}",
+                    description,
+                    depth
+                );
+            }
+        }
     }
 }
 
