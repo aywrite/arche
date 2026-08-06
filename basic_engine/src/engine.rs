@@ -105,8 +105,6 @@ pub struct AlphaBeta {
     nodes: u64,
     moves: HashTable,
     selective_depth: u8,
-    // search parameters
-    search_depth: u8,
     // search state
     /// Whether the value the last search call returned was draw tainted. The
     /// search is depth first and single threaded, so one flag threads the taint
@@ -123,7 +121,6 @@ impl AlphaBeta {
             board,
             nodes: 0,
             moves: HashTable::with_capacity_bytes(bytes),
-            search_depth: 0,
             selective_depth: 0,
             tainted: false,
             ghi: GhiCounters::default(),
@@ -305,11 +302,7 @@ impl AlphaBeta {
         }
 
         if depth == 0 {
-            if self.search_depth >= 4 {
-                return self.quiescence(alpha, beta);
-            }
-            self.tainted = false;
-            return Ok(self.eval());
+            return self.quiescence(alpha, beta);
         }
 
         let old_alpha = alpha;
@@ -455,7 +448,6 @@ impl AlphaBeta {
     /// the game being played, and the answer must not depend on one.
     pub fn search(&mut self, depth: u8) -> SearchOutcome {
         self.nodes = 0;
-        self.search_depth = depth;
         self.selective_depth = depth;
         self.board.line_ply = 0;
 
@@ -936,6 +928,51 @@ mod test_search {
         let mut e = engine(game);
         let result = completed(e.search(4));
         assert_eq!(result.checkmate_in(), Some(-1));
+    }
+
+    #[test]
+    fn test_a_shallow_search_still_sees_the_recapture() {
+        // the queen can take a pawn which another pawn defends. A depth one
+        // search ends on the capture, so only quiescence sees the recapture
+        // that loses the queen for it. Shallow searches used to skip
+        // quiescence and walk into it.
+        let game = Board::from_fen("4k3/8/3p4/2p5/8/2Q5/8/4K3 w - - 0 1").unwrap();
+        let mut e = engine(game);
+        let result = completed(e.search(1));
+        assert_ne!(format!("{}", result.best_move), "c3c5");
+    }
+
+    #[test]
+    fn test_deepening_through_shallow_depths_matches_a_cold_search() {
+        // iterations shallower than four used to store scores whose leaves
+        // were never quiesced, and deeper iterations then read those entries
+        // back as if they had been: the same depth then answered differently
+        // warm than cold. On the promotions position the difference was
+        // visible at the root, deepening promoted to a queen where a cold
+        // search of the same depth chose the rook.
+        // test_warm_cache_matches_cold_search cannot see any of this because
+        // it searches each depth directly rather than deepening to it.
+        let fens = [
+            "r3k2r/p1ppqpb1/bn2pnp1/3PN3/1p2P3/2N2Q1p/PPPBBPPP/R3K2R w KQkq - 0 1",
+            "8/2p5/3p4/KP5r/1R3p1k/8/4P1P1/8 w - - 10 10",
+            "rnbq1k1r/pp1Pbppp/2p5/8/2B5/8/PPP1NnPP/RNBQK2R w KQ - 1 8",
+        ];
+        for fen in fens {
+            let mut cold = engine(Board::from_fen(fen).unwrap());
+            let expected = completed(cold.search(5));
+            let mut warm = engine(Board::from_fen(fen).unwrap());
+            let result = (1..=5)
+                .map(|depth| completed(warm.search(depth)))
+                .next_back()
+                .unwrap();
+            assert_eq!(result.score, expected.score, "score differs for {}", fen);
+            assert_eq!(
+                format!("{}", result.best_move),
+                format!("{}", expected.best_move),
+                "best move differs for {}",
+                fen
+            );
+        }
     }
 
     #[test]
@@ -1509,11 +1546,11 @@ mod test_node_counts {
         assert_eq!(
             counted,
             vec![
-                ("opening", 149_866),
-                ("kiwipete", 217_026),
-                ("pawn endgame", 178_367),
-                ("promotions", 110_643),
-                ("middlegame", 191_607),
+                ("opening", 150_344),
+                ("kiwipete", 222_186),
+                ("pawn endgame", 175_279),
+                ("promotions", 109_349),
+                ("middlegame", 188_234),
             ]
         );
     }
