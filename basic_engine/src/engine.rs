@@ -177,8 +177,8 @@ impl AlphaBeta {
     }
 
     fn quiescence(&mut self, mut alpha: Score, beta: Score) -> Result<Score, Aborted> {
-        // quiescence looks at captures alone and never checks for a repetition,
-        // so nothing it returns is path dependent
+        // quiescence looks at captures and promotions alone and never checks
+        // for a repetition, so nothing it returns is path dependent
         self.tainted = false;
         self.selective_depth = self.selective_depth.max(self.board.line_ply as u8);
         if self.board.line_ply >= MAX_DEPTH.into() {
@@ -537,7 +537,8 @@ impl AlphaBeta {
                 break;
             };
             if matches!(pv.bound, Bound::Ordering) {
-                // written by quiescence, which looks at captures alone, so the
+                // written by quiescence, which looks at captures and
+                // promotions alone, so the
                 // move is fit for ordering the next search and not for telling
                 // anyone what the engine intends to play
                 break;
@@ -931,6 +932,19 @@ mod test_search {
     }
 
     #[test]
+    fn test_the_horizon_sees_a_promotion_coming() {
+        // the rook can win the knight across the board or take the pawn one
+        // step from promoting. The pawn's push captures nothing, so
+        // quiescence used not to generate it: the knight looked free to take
+        // and the queen appeared only after the horizon. Taking the pawn is
+        // the move.
+        let game = Board::from_fen("4k3/8/8/R5n1/8/8/p5K1/8 w - - 0 1").unwrap();
+        let mut e = engine(game);
+        let result = completed(e.search(1));
+        assert_eq!(format!("{}", result.best_move), "a5a2");
+    }
+
+    #[test]
     fn test_a_shallow_search_still_sees_the_recapture() {
         // the queen can take a pawn which another pawn defends. A depth one
         // search ends on the capture, so only quiescence sees the recapture
@@ -1251,7 +1265,8 @@ mod test_search {
 
     #[test]
     fn test_pv_line_does_not_follow_a_quiescence_entry() {
-        // quiescence looks at captures alone, so its move is fit for ordering
+        // quiescence looks at captures and promotions alone, so its move is
+        // fit for ordering
         // the next search and not for saying what the engine means to play
         let mut e = engine(Board::new());
         let play = play_named(&e.board, "e2e4");
@@ -1547,9 +1562,9 @@ mod test_node_counts {
             counted,
             vec![
                 ("opening", 150_344),
-                ("kiwipete", 222_186),
-                ("pawn endgame", 175_279),
-                ("promotions", 109_349),
+                ("kiwipete", 230_576),
+                ("pawn endgame", 175_329),
+                ("promotions", 109_409),
                 ("middlegame", 188_234),
             ]
         );
