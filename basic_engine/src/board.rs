@@ -2229,3 +2229,87 @@ mod pseudo_legal {
         assert!(moved.is_pseudo_legal(&quiet("e3", "e4")));
     }
 }
+
+#[cfg(test)]
+mod random_games {
+    use super::Board;
+    use super::Game;
+    use proptest::prelude::*;
+
+    /// Walks start from positions with different machinery in reach: the
+    /// opening with castling ahead of it, a tactical middlegame, a bare
+    /// endgame, and a position full of promotions.
+    const STARTS: [&str; 4] = [
+        "rnbqkbnr/pppppppp/8/8/8/8/PPPPPPPP/RNBQKBNR w KQkq - 0 1",
+        "r3k2r/p1ppqpb1/bn2pnp1/3PN3/1p2P3/2N2Q1p/PPPBBPPP/R3K2R w KQkq - 0 1",
+        "8/2p5/3p4/KP5r/1R3p1k/8/4P1P1/8 w - - 0 1",
+        "rnbq1k1r/pp1Pbppp/2p5/8/2B5/8/PPP1NnPP/RNBQK2R w KQ - 1 8",
+    ];
+
+    proptest! {
+        /// Play a random line of moves, checking on every ply that the
+        /// incrementally maintained state agrees with a recompute, then unmake
+        /// the whole line and check that every position comes back exactly.
+        ///
+        /// The fixed-position reversible tests do this one ply deep from
+        /// positions somebody thought to write down; this walks lines nobody
+        /// did, and a failure arrives already shrunk to a short one. The same
+        /// walk sweeps is_pseudo_legal, whose fixed tests also only see
+        /// positions somebody chose.
+        #[test]
+        fn a_random_line_stays_in_step_and_unmakes_exactly(
+            start in prop::sample::select(&STARTS[..]),
+            picks in prop::collection::vec(any::<prop::sample::Index>(), 0..120),
+        ) {
+            let mut board = Board::from_fen(start).unwrap();
+            let mut line = Vec::new();
+            for pick in picks {
+                let moves = board.generate_moves();
+                if moves.is_empty() {
+                    // checkmate or stalemate: the line is over
+                    break;
+                }
+                for m in &moves {
+                    let refused_kind = m.castle || m.en_passant || m.promote.is_some();
+                    prop_assert_eq!(
+                        board.is_pseudo_legal(m),
+                        !refused_kind,
+                        "is_pseudo_legal disagrees about {}",
+                        m
+                    );
+                }
+                let before = board;
+                let play = moves[pick.index(moves.len())];
+                if board.make_move(&play) {
+                    prop_assert_eq!(
+                        board.key,
+                        board.recompute_key(),
+                        "key out of step after {}",
+                        play
+                    );
+                    prop_assert_eq!(
+                        board.psqt,
+                        board.recompute_psqt(),
+                        "psqt out of step after {}",
+                        play
+                    );
+                    prop_assert_eq!(
+                        (board.white_value, board.black_value),
+                        board.recompute_material(),
+                        "material out of step after {}",
+                        play
+                    );
+                    line.push(before);
+                } else {
+                    // a move refused for leaving the king attacked has to
+                    // leave the board exactly as it found it
+                    prop_assert_eq!(&board, &before, "a refused {} left a trace", play);
+                }
+            }
+            for before in line.iter().rev() {
+                board.undo_move();
+                prop_assert_eq!(&board, before, "unmaking did not restore the position");
+            }
+        }
+    }
+}
