@@ -824,12 +824,13 @@ impl SearchResult {
 }
 
 #[cfg(test)]
-mod test_search {
+mod search {
     use super::AlphaBeta;
     use super::Board;
     use super::Engine;
     use super::Game;
     use super::{Bound, Play, Pv, SearchOutcome, SearchResult};
+    use crate::board::{fens, play_named};
     use pretty_assertions::assert_eq;
     use std::time;
 
@@ -843,6 +844,10 @@ mod test_search {
         AlphaBeta::with_table_bytes(board, TABLE_BYTES)
     }
 
+    /// A tactical middlegame the cache tests search over and over: sharp
+    /// enough that a wrongly reused score would move the verdict.
+    const SHARP_MIDDLEGAME: &str = "r1b2rk1/ppp1qppp/4pn2/6N1/Qn1P4/2NBP3/PP3PPP/R3K2R w KQ - 9 12";
+
     /// Unwrap the outcome these tests expect: a search that ran to the depth
     /// asked of it.
     fn completed(outcome: SearchOutcome) -> SearchResult {
@@ -850,16 +855,6 @@ mod test_search {
             SearchOutcome::Complete(result) => result,
             other => panic!("expected a completed search, got {:?}", other),
         }
-    }
-
-    /// The move of this name in this position, so that a test can name a line
-    /// the way the rest of the world does.
-    fn play_named(board: &Board, name: &str) -> Play {
-        *board
-            .generate_moves()
-            .iter()
-            .find(|m| format!("{}", m) == name)
-            .unwrap_or_else(|| panic!("{} is not a move here", name))
     }
 
     /// An entry of the kind a completed search leaves behind.
@@ -875,7 +870,7 @@ mod test_search {
     }
 
     #[test]
-    fn test_regression_bad_cache() {
+    fn a_losing_position_is_still_losing_with_a_warm_table() {
         // This is a losing position but running a search on a previous position then the losing
         // position seems to cause hash/cache collisions in some cases.
         let game =
@@ -888,9 +883,7 @@ mod test_search {
             result.score
         );
 
-        let game =
-            Board::from_fen("r1b2rk1/ppp1qppp/4pn2/6N1/Qn1P4/2NBP3/PP3PPP/R3K2R w KQ - 9 12")
-                .unwrap();
+        let game = Board::from_fen(SHARP_MIDDLEGAME).unwrap();
         let mut e = engine(game);
         completed(e.search(7));
         let _ = e.parse_fen("r4rk1/pppb1ppp/4pn2/6N1/3P4/2qBP3/P4PPP/3R1R1K w - - 2 16");
@@ -899,7 +892,7 @@ mod test_search {
     }
 
     #[test]
-    fn test_checkmate_in_2_white() {
+    fn checkmate_in_two_is_found_for_white() {
         let game =
             Board::from_fen("2rr3k/pp3pp1/1nnqbN1p/3pN3/2pP4/2P3Q1/PPB4P/R4RK1 w - - 0 0").unwrap();
         let mut e = engine(game);
@@ -909,7 +902,7 @@ mod test_search {
     }
 
     #[test]
-    fn test_checkmate_in_2_white_warm_cache() {
+    fn the_mate_distance_survives_a_deeper_warm_search() {
         let game =
             Board::from_fen("2rr3k/pp3pp1/1nnqbN1p/3pN3/2pP4/2P3Q1/PPB4P/R4RK1 w - - 0 0").unwrap();
         let mut e = engine(game);
@@ -923,7 +916,7 @@ mod test_search {
     }
 
     #[test]
-    fn test_checkmate_in_1_black() {
+    fn checkmate_in_one_is_found_for_black() {
         let game =
             Board::from_fen("2rr3k/pp3pp1/1nnqbNQp/3pN3/2pP4/2P5/PPB4P/R4RK1 b - - 1 1").unwrap();
         let mut e = engine(game);
@@ -932,7 +925,7 @@ mod test_search {
     }
 
     #[test]
-    fn test_the_horizon_sees_a_promotion_coming() {
+    fn the_horizon_sees_a_promotion_coming() {
         // the rook can win the knight across the board or take the pawn one
         // step from promoting. The pawn's push captures nothing, so
         // quiescence used not to generate it: the knight looked free to take
@@ -945,7 +938,7 @@ mod test_search {
     }
 
     #[test]
-    fn test_a_shallow_search_still_sees_the_recapture() {
+    fn a_shallow_search_still_sees_the_recapture() {
         // the queen can take a pawn which another pawn defends. A depth one
         // search ends on the capture, so only quiescence sees the recapture
         // that loses the queen for it. Shallow searches used to skip
@@ -957,7 +950,7 @@ mod test_search {
     }
 
     #[test]
-    fn test_deepening_through_shallow_depths_matches_a_cold_search() {
+    fn deepening_through_shallow_depths_matches_a_cold_search() {
         // iterations shallower than four used to store scores whose leaves
         // were never quiesced, and deeper iterations then read those entries
         // back as if they had been: the same depth then answered differently
@@ -990,7 +983,7 @@ mod test_search {
     }
 
     #[test]
-    fn test_fifty_move_rule_play_for_draw() {
+    fn a_losing_side_plays_for_the_fifty_move_draw() {
         // white is down material in this position so should play for fifty move draw
         let game = Board::from_fen("5k2/1p3p1p/p3pK1P/P1P1P3/4bP2/2B5/8/8 w - - 99 112").unwrap();
         let mut e = engine(game);
@@ -999,7 +992,7 @@ mod test_search {
     }
 
     #[test]
-    fn test_fifty_move_rule_game_over() {
+    fn a_triggered_fifty_move_rule_is_game_over() {
         // The fifty move rule has been triggered - the game is already drawn,
         // there is no move to look for
         let game = Board::from_fen("5k2/1p3p1p/p3pK1P/P1P1P3/4bP2/2B5/8/8 w - - 100 112").unwrap();
@@ -1008,7 +1001,7 @@ mod test_search {
     }
 
     #[test]
-    fn test_checkmated_root_is_game_over() {
+    fn a_checkmated_root_is_game_over() {
         // fool's mate: white to move with no reply
         let game = Board::from_fen("rnb1kbnr/pppp1ppp/8/4p3/6Pq/5P2/PPPPP2P/RNBQKBNR w KQkq - 1 3")
             .unwrap();
@@ -1017,21 +1010,21 @@ mod test_search {
     }
 
     #[test]
-    fn test_stalemated_root_is_game_over() {
+    fn a_stalemated_root_is_game_over() {
         let game = Board::from_fen("k7/8/1Q6/8/8/8/8/7K b - - 0 1").unwrap();
         let mut e = engine(game);
         assert!(matches!(e.search(3), SearchOutcome::GameOver));
     }
 
     #[test]
-    fn test_search_with_no_time_budget_aborts_without_a_move() {
+    fn a_search_with_no_time_budget_aborts_without_a_move() {
         let mut e = engine(Board::new());
         e.configure(time::Instant::now(), Some(time::Duration::ZERO));
         assert!(matches!(e.search(5), SearchOutcome::Aborted(None)));
     }
 
     #[test]
-    fn test_timed_out_deepening_still_returns_a_move() {
+    fn timed_out_deepening_still_returns_a_move() {
         // The budget runs out long before MAX_DEPTH can complete, so the
         // deepening loop ends on an Aborted outcome and must fall back to a
         // completed iteration's move
@@ -1047,7 +1040,7 @@ mod test_search {
     }
 
     #[test]
-    fn test_deepening_reports_each_completed_depth() {
+    fn deepening_reports_each_completed_depth() {
         use super::SearchParameters;
         let mut e = engine(Board::new());
         let mut depths = Vec::new();
@@ -1063,7 +1056,7 @@ mod test_search {
     }
 
     #[test]
-    fn test_deepening_stops_reporting_at_game_over() {
+    fn deepening_stops_reporting_at_game_over() {
         use super::SearchParameters;
         // fool's mate again: there is nothing to report and nothing to play
         let game = Board::from_fen("rnb1kbnr/pppp1ppp/8/4p3/6Pq/5P2/PPPPP2P/RNBQKBNR w KQkq - 1 3")
@@ -1077,7 +1070,7 @@ mod test_search {
     }
 
     #[test]
-    fn test_deepening_to_depth_zero_finds_nothing() {
+    fn deepening_to_depth_zero_finds_nothing() {
         use super::SearchParameters;
         let mut e = engine(Board::new());
         let outcome =
@@ -1086,7 +1079,7 @@ mod test_search {
     }
 
     #[test]
-    fn test_draw_taint_is_still_recorded_and_never_trusted() {
+    fn draw_taint_is_still_recorded_and_never_trusted() {
         // The pawn endgame carries the most draw traffic of the pinned
         // positions, so it is the one that exercises both halves of the graph
         // history work. tainted_stores going to zero means taint propagation
@@ -1111,7 +1104,7 @@ mod test_search {
     }
 
     #[test]
-    fn test_warm_cache_matches_cold_across_draw_context() {
+    fn a_warm_cache_matches_cold_across_draw_context() {
         // The same pieces hash to the same key whatever the fifty move counter
         // says, so a search made a few plies from the draw fills the table
         // with scores that are true of that path only. A fresh game reaching
@@ -1134,7 +1127,7 @@ mod test_search {
     }
 
     #[test]
-    fn test_warm_cache_matches_cold_search() {
+    fn a_warm_cache_matches_a_cold_search() {
         // Searching a position with a cache warmed by unrelated positions must give the same
         // result as searching it with an empty cache
         let fens = [
@@ -1164,9 +1157,9 @@ mod test_search {
     }
 
     #[test]
-    fn test_small_table_matches_large_table() {
+    fn a_small_table_matches_a_large_table() {
         // a table small enough to force constant collisions must not change the result
-        let fen = "r1b2rk1/ppp1qppp/4pn2/6N1/Qn1P4/2NBP3/PP3PPP/R3K2R w KQ - 9 12";
+        let fen = SHARP_MIDDLEGAME;
         let mut big = engine(Board::from_fen(fen).unwrap());
         let expected = completed(big.search(5));
         let mut small = AlphaBeta::with_table_bytes(Board::from_fen(fen).unwrap(), 8 * 1024);
@@ -1175,11 +1168,8 @@ mod test_search {
     }
 
     #[test]
-    fn test_search_at_repetition_returns_a_move() {
-        let game = Board::from_fen(
-            "r4rk1/1pp1qppp/p1np1n2/2b1p1B1/2B1P1b1/P1NP1N2/1PP1QPPP/R4RK1 b - - 3 19",
-        )
-        .unwrap();
+    fn a_search_at_a_repetition_still_returns_a_move() {
+        let game = Board::from_fen(fens::SHUFFLE).unwrap();
         let mut e = engine(game);
         for m in [
             "a8b8", "a1b1", "b8a8", "b1a1", "a8b8", "a1b1", "b8a8", "b1a1",
@@ -1191,8 +1181,8 @@ mod test_search {
     }
 
     #[test]
-    fn test_new_game_forgets_the_previous_game() {
-        let fen = "r1b2rk1/ppp1qppp/4pn2/6N1/Qn1P4/2NBP3/PP3PPP/R3K2R w KQ - 9 12";
+    fn a_new_game_forgets_the_previous_game() {
+        let fen = SHARP_MIDDLEGAME;
         let mut e = engine(Board::from_fen(fen).unwrap());
         completed(e.search(4));
         assert!(e.moves.get(e.board.key).is_some(), "nothing was stored");
@@ -1204,22 +1194,19 @@ mod test_search {
     }
 
     #[test]
-    fn test_pv_line_without_cache_entry() {
+    fn the_pv_line_is_empty_without_a_cache_entry() {
         let game = Board::new();
         let e = engine(game);
         assert_eq!(format!("{}", e.pv_line()), "");
     }
 
     #[test]
-    fn test_pv_line_stops_at_a_repetition() {
+    fn the_pv_line_stops_at_a_repetition() {
         // a shuffle both sides are content with leaves the table holding a line
         // that goes round for ever. The line stops once the position comes back,
         // because from there it is a draw either side can take, rather than
         // reporting a continuation nobody would go on to play.
-        let game = Board::from_fen(
-            "r4rk1/1pp1qppp/p1np1n2/2b1p1B1/2B1P1b1/P1NP1N2/1PP1QPPP/R4RK1 b - - 3 19",
-        )
-        .unwrap();
+        let game = Board::from_fen(fens::SHUFFLE).unwrap();
         let mut e = engine(game);
         let cycle = ["a8b8", "a1b1", "b8a8", "b1a1"];
         let mut board = e.board;
@@ -1233,7 +1220,7 @@ mod test_search {
     }
 
     #[test]
-    fn test_pv_line_stops_when_the_fifty_move_counter_runs_out() {
+    fn the_pv_line_stops_when_the_fifty_move_counter_runs_out() {
         let game = Board::from_fen("5k2/1p3p1p/p3pK1P/P1P1P3/4bP2/2B5/8/8 w - - 99 112").unwrap();
         let mut e = engine(game);
         let mut board = e.board;
@@ -1250,7 +1237,7 @@ mod test_search {
     }
 
     #[test]
-    fn test_pv_line_does_not_follow_a_move_which_is_illegal_here() {
+    fn the_pv_line_does_not_follow_a_move_which_is_illegal_here() {
         // two positions which hash to the same key share an entry, so the move
         // a probe comes back with is not always a move of the position asked
         // about
@@ -1264,7 +1251,7 @@ mod test_search {
     }
 
     #[test]
-    fn test_pv_line_does_not_follow_a_quiescence_entry() {
+    fn the_pv_line_does_not_follow_a_quiescence_entry() {
         // quiescence looks at captures and promotions alone, so its move is
         // fit for ordering
         // the next search and not for saying what the engine means to play
@@ -1286,7 +1273,7 @@ mod test_search {
     }
 
     #[test]
-    fn test_pv_line_does_not_follow_a_move_which_leaves_the_king_in_check() {
+    fn the_pv_line_does_not_follow_a_move_which_leaves_the_king_in_check() {
         // moves are generated pseudo legally, so a pinned piece's move is in
         // the list for this position and still cannot be played. Asking whether
         // the move belongs to this position is not enough on its own, which is
@@ -1300,7 +1287,7 @@ mod test_search {
     }
 
     #[test]
-    fn test_pv_line_is_bounded_by_the_search_depth() {
+    fn the_pv_line_is_bounded_by_the_search_depth() {
         // pawns only, so no position comes up twice and the fifty move counter
         // keeps being reset: nothing stops this line but the bound
         let mut names = Vec::new();
@@ -1326,8 +1313,8 @@ mod test_search {
     }
 
     #[test]
-    fn test_stopped_search_does_not_poison_cache() {
-        let fen = "r1b2rk1/ppp1qppp/4pn2/6N1/Qn1P4/2NBP3/PP3PPP/R3K2R w KQ - 9 12";
+    fn a_stopped_search_does_not_poison_the_cache() {
+        let fen = SHARP_MIDDLEGAME;
         let game = Board::from_fen(fen).unwrap();
         let mut cold = engine(game);
         let expected = completed(cold.search(6));
@@ -1350,7 +1337,7 @@ mod test_search {
 }
 
 #[cfg(test)]
-mod test_hash_table {
+mod hash_table {
     use super::{Bound, HashTable, Play, Pv};
     use pretty_assertions::assert_eq;
 
@@ -1366,7 +1353,7 @@ mod test_hash_table {
     }
 
     #[test]
-    fn test_get_compares_key_not_just_slot() {
+    fn get_compares_the_key_not_just_the_slot() {
         // two different keys which map to the same slot must not be confused for each other
         let mut table = HashTable::with_capacity(1);
         table.set(1, new_pv(Bound::Exact, 1, 1));
@@ -1375,7 +1362,7 @@ mod test_hash_table {
     }
 
     #[test]
-    fn test_exact_entry_replaces_non_exact_entry() {
+    fn an_exact_entry_replaces_a_non_exact_entry() {
         let mut table = HashTable::with_capacity(1);
         table.set(1, new_pv(Bound::Lower, 1, 1));
         table.set(1, new_pv(Bound::Exact, 1, 1));
@@ -1383,7 +1370,7 @@ mod test_hash_table {
     }
 
     #[test]
-    fn test_deeper_exact_entry_survives_shallower_exact_entry() {
+    fn a_deeper_exact_entry_survives_a_shallower_one() {
         let mut table = HashTable::with_capacity(1);
         table.set(1, new_pv(Bound::Exact, 8, 1));
         table.set(1, new_pv(Bound::Exact, 2, 1));
@@ -1391,7 +1378,7 @@ mod test_hash_table {
     }
 
     #[test]
-    fn test_deeper_entry_replaces_exact_entry_for_another_position() {
+    fn a_deeper_entry_replaces_an_exact_entry_for_another_position() {
         let mut table = HashTable::with_capacity(1);
         table.set(1, new_pv(Bound::Exact, 1, 1));
         table.set(2, new_pv(Bound::Lower, 8, 1));
@@ -1400,7 +1387,7 @@ mod test_hash_table {
     }
 
     #[test]
-    fn test_shallower_entry_does_not_evict_deeper_entry_for_another_position() {
+    fn a_shallower_entry_does_not_evict_a_deeper_one_for_another_position() {
         let mut table = HashTable::with_capacity(1);
         table.set(1, new_pv(Bound::Lower, 8, 1));
         table.set(2, new_pv(Bound::Exact, 1, 1));
@@ -1408,7 +1395,7 @@ mod test_hash_table {
     }
 
     #[test]
-    fn test_quiescence_entry_does_not_evict_searched_entry() {
+    fn a_quiescence_entry_does_not_evict_a_searched_entry() {
         let mut table = HashTable::with_capacity(1);
         table.set(1, new_pv(Bound::Exact, 5, 1));
         table.set(2, new_pv(Bound::Ordering, 0, 1));
@@ -1416,7 +1403,7 @@ mod test_hash_table {
     }
 
     #[test]
-    fn test_stale_entry_is_replaced_regardless_of_depth() {
+    fn a_stale_entry_is_replaced_regardless_of_depth() {
         let mut table = HashTable::with_capacity(1);
         table.set(1, new_pv(Bound::Exact, 8, 1));
         table.set(2, new_pv(Bound::Lower, 1, 100));
@@ -1425,10 +1412,11 @@ mod test_hash_table {
 }
 
 #[cfg(test)]
-mod test_node_counts {
+mod node_counts {
     use super::AlphaBeta;
     use super::Board;
     use super::Game;
+    use crate::board::fens;
     use pretty_assertions::assert_eq;
 
     /// Pinned, because how often the transposition table collides decides how
@@ -1439,31 +1427,11 @@ mod test_node_counts {
     /// opening, a tactical middlegame, a pawn endgame, a position full of
     /// captures, and one with castling and promotions available.
     const POSITIONS: [(&str, &str, u8); 5] = [
-        (
-            "opening",
-            "rnbqkbnr/pppppppp/8/8/8/8/PPPPPPPP/RNBQKBNR w KQkq - 0 1",
-            6,
-        ),
-        (
-            "kiwipete",
-            "r3k2r/p1ppqpb1/bn2pnp1/3PN3/1p2P3/2N2Q1p/PPPBBPPP/R3K2R w KQkq - 0 1",
-            5,
-        ),
-        (
-            "pawn endgame",
-            "8/2p5/3p4/KP5r/1R3p1k/8/4P1P1/8 w - - 0 1",
-            7,
-        ),
-        (
-            "promotions",
-            "rnbq1k1r/pp1Pbppp/2p5/8/2B5/8/PPP1NnPP/RNBQK2R w KQ - 1 8",
-            5,
-        ),
-        (
-            "middlegame",
-            "r4rk1/1pp1qppp/p1np1n2/2b1p1B1/2B1P1b1/P1NP1N2/1PP1QPPP/R4RK1 w - - 0 10",
-            5,
-        ),
+        ("opening", fens::START, 6),
+        ("kiwipete", fens::KIWIPETE, 5),
+        ("pawn endgame", fens::PAWN_ENDGAME, 7),
+        ("promotions", fens::PROMOTIONS, 5),
+        ("middlegame", fens::MIDDLEGAME, 5),
     ];
 
     /// Widens the way the engine does when it plays, so the table is warm from
@@ -1553,7 +1521,7 @@ mod test_node_counts {
     /// in the same commit: the diff is then a statement of how much less, or
     /// more, of the tree the engine now looks at.
     #[test]
-    fn test_node_counts_have_not_moved() {
+    fn node_counts_have_not_moved() {
         let counted: Vec<(&str, u64)> = POSITIONS
             .iter()
             .map(|(name, fen, depth)| (*name, nodes(fen, *depth)))
