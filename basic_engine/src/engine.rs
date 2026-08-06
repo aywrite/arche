@@ -194,7 +194,7 @@ impl AlphaBeta {
         // of check and may have no quiet way to. The full search never enters
         // here in check, the check extension searches those nodes full width,
         // so a check seen here was delivered by a capture searched here.
-        let in_check = self.board.is_king_attacked();
+        let in_check = self.board.in_check();
         if !in_check {
             let score = self.eval();
             if score >= beta {
@@ -208,9 +208,13 @@ impl AlphaBeta {
         let old_alpha = alpha;
         let pv_play = self.moves.get(self.board.key).map(|pv| pv.play);
         // in check the position is not quiet whatever the material says, so
-        // every evasion is searched, quiet or not
+        // every evasion is searched, quiet or not. Most of what full width
+        // generation returns cannot answer a check and would only be refused
+        // by make_move, so it is dropped before it is even sorted
         let mut moves = if in_check {
-            self.board.generate_moves()
+            let mut moves = self.board.generate_moves();
+            moves.retain(|m| self.board.might_evade_check(m));
+            moves
         } else {
             self.board.generate_captures()
         };
@@ -319,7 +323,7 @@ impl AlphaBeta {
             return Ok(0);
         }
         let mut node_tainted = false;
-        let in_check = self.board.is_king_attacked();
+        let in_check = self.board.in_check();
         if in_check {
             depth += 1;
         }
@@ -380,6 +384,11 @@ impl AlphaBeta {
         }
 
         let mut moves = self.board.generate_moves();
+        if in_check {
+            // most of the list cannot answer the check and would only be
+            // refused by make_move; drop it before it is even sorted
+            moves.retain(|m| self.board.might_evade_check(m));
+        }
         self.order_moves(&mut moves, pv_play);
 
         for m in &moves {
@@ -485,7 +494,7 @@ impl AlphaBeta {
         self.nodes += 1;
 
         let mut depth = depth;
-        if self.board.is_king_attacked() {
+        if self.board.in_check() {
             depth += 1;
         }
 
