@@ -125,7 +125,7 @@ both on the same runner. It writes the comparison to the job summary. It only
 reports and will not fail a build, for the same reason: even measured back to
 back on one machine, criterion calls single digit differences significant.
 
-What does hold search behaviour still is `test_node_counts_have_not_moved` in
+What does hold search behaviour still is `node_counts_have_not_moved` in
 `basic_engine/src/engine.rs`. The number of nodes a search visits is exact
 rather than timed, so it says the same thing on any machine. A deliberate change
 to the search is expected to move it, and the numbers are updated in the same

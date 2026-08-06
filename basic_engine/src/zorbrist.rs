@@ -95,7 +95,7 @@ impl Zorbrist {
 }
 
 #[cfg(test)]
-mod test_zorbrist {
+mod keys {
     use super::Zorbrist;
     use pretty_assertions::assert_eq;
 
