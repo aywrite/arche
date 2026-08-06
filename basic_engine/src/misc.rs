@@ -67,7 +67,7 @@ impl Coordinate {
 }
 
 #[cfg(test)]
-mod test_coordinate {
+mod coordinate {
     use super::Coordinate;
 
     #[test]
@@ -148,7 +148,7 @@ impl CastlePermissions {
 }
 
 #[cfg(test)]
-mod test_castle_permissions {
+mod castle_permissions {
     use super::CastlePermissions;
 
     #[test]
@@ -200,7 +200,7 @@ pub fn index_to_coordinate(index: u8) -> (u8, File) {
 }
 
 #[cfg(test)]
-mod test_index_coordinate_conversion {
+mod index_conversion {
     use super::coordinate_to_index;
     use super::index_to_coordinate;
     use proptest::prelude::*;

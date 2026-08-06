@@ -1344,55 +1344,88 @@ impl fmt::Display for Board {
     }
 }
 
+/// Positions the test modules share, named for what they bring within reach.
+/// Kept here so a fen appears once, and so a suite that wants, say, a position
+/// with promotions available does not grow another copy with a different move
+/// counter.
+#[cfg(test)]
+pub(crate) mod fens {
+    /// The starting position.
+    pub const START: &str = "rnbqkbnr/pppppppp/8/8/8/8/PPPPPPPP/RNBQKBNR w KQkq - 0 1";
+    /// Kiwipete, the standard tactical middlegame: checks, pins, castling and
+    /// an en passant square all within a move or two.
+    pub const KIWIPETE: &str =
+        "r3k2r/p1ppqpb1/bn2pnp1/3PN3/1p2P3/2N2Q1p/PPPBBPPP/R3K2R w KQkq - 0 1";
+    /// A rook and pawn endgame, position 3 of the standard perft suite.
+    pub const PAWN_ENDGAME: &str = "8/2p5/3p4/KP5r/1R3p1k/8/4P1P1/8 w - - 0 1";
+    /// Promotions for both sides on the next move, position 5 of the standard
+    /// perft suite.
+    pub const PROMOTIONS: &str = "rnbq1k1r/pp1Pbppp/2p5/8/2B5/8/PPP1NnPP/RNBQK2R w KQ - 1 8";
+    /// A black pawn one push from promoting, with an en passant square set.
+    pub const EN_PASSANT_PROMOTION: &str =
+        "rnbqkbnr/pp1ppppp/8/2p5/3Pp3/8/PPPP1PpP/RNBQKB1R b KQkq e5 0 2";
+    /// A symmetric middlegame where both sides have castled, white to move.
+    /// Position 6 of the standard perft suite.
+    pub const MIDDLEGAME: &str =
+        "r4rk1/1pp1qppp/p1np1n2/2b1p1B1/2B1P1b1/P1NP1N2/1PP1QPPP/R4RK1 w - - 0 10";
+    /// The same position with black to move, which the repetition tests
+    /// shuffle rooks in: a8b8 a1b1 b8a8 b1a1 comes straight back to it.
+    pub const SHUFFLE: &str =
+        "r4rk1/1pp1qppp/p1np1n2/2b1p1B1/2B1P1b1/P1NP1N2/1PP1QPPP/R4RK1 b - - 3 19";
+    /// The four positions the accumulator and reversibility suites iterate:
+    /// between them promotions, castling, en passant and a bare endgame are
+    /// all in reach.
+    pub const CORE: [&str; 4] = [START, EN_PASSANT_PROMOTION, MIDDLEGAME, PAWN_ENDGAME];
+}
+
+/// The move of this name in this position, so a test can name a line the way
+/// the rest of the world writes it.
+#[cfg(test)]
+pub(crate) fn play_named(board: &Board, name: &str) -> Play {
+    *board
+        .generate_moves()
+        .iter()
+        .find(|m| format!("{}", m) == name)
+        .unwrap_or_else(|| panic!("{} is not a move here", name))
+}
+
 #[cfg(test)]
 mod evaluate {
-    use super::Board;
-
-    use super::Game;
+    use super::fens;
+    use super::{Board, Game};
     use pretty_assertions::assert_eq;
 
-    macro_rules! test_fen {
-        ($func:ident, $f:expr) => {
-            #[test]
-            fn $func() {
-                let mut board = Board::from_fen($f).unwrap();
-                for m in &board.generate_moves() {
-                    if board.make_move(m) {
-                        assert_eq!(
-                            (board.white_value, board.black_value),
-                            board.material_value()
-                        );
-                        let score = board.eval();
-                        board.active_color = !board.active_color;
-                        let opp_score = board.eval();
-                        assert_eq!(score, -opp_score);
-                        board.active_color = !board.active_color;
-                        board.undo_move();
-                    }
+    /// After every legal move in the shared positions, the material
+    /// accumulators must equal a recount, and the score must be the exact
+    /// negative of the opponent's view of it.
+    #[test]
+    fn material_stays_counted_and_the_eval_stays_antisymmetric() {
+        for fen in fens::CORE {
+            let mut board = Board::from_fen(fen).unwrap();
+            for m in &board.generate_moves() {
+                if board.make_move(m) {
+                    assert_eq!(
+                        (board.white_value, board.black_value),
+                        board.material_value(),
+                        "{} in {}",
+                        m,
+                        fen
+                    );
+                    let score = board.eval();
+                    board.active_color = !board.active_color;
+                    assert_eq!(score, -board.eval(), "{} in {}", m, fen);
+                    board.active_color = !board.active_color;
+                    board.undo_move();
                 }
             }
-        };
+        }
     }
-
-    test_fen!(
-        initial_position,
-        "rnbqkbnr/pppppppp/8/8/8/8/PPPPPPPP/RNBQKBNR w KQkq - 0 1"
-    );
-    test_fen!(
-        promotion,
-        "rnbqkbnr/pp1ppppp/8/2p5/3Pp3/8/PPPP1PpP/RNBQKB1R b KQkq e5 0 2"
-    );
-    test_fen!(
-        castling,
-        "r4rk1/1pp1qppp/p1np1n2/2b1p1B1/2B1P1b1/P1NP1N2/1PP1QPPP/R4RK1 w - - 0 10"
-    );
-    test_fen!(position_3, "8/2p5/3p4/KP5r/1R3p1k/8/4P1P1/8 w - - 0 1");
 
     /// The assertions above hold whichever way up the piece square tables are,
     /// because both colours read them the same way and the symmetry survives.
     /// These say which way is up.
     #[test]
-    fn test_a_pawn_is_worth_more_the_closer_it_is_to_promoting() {
+    fn a_pawn_is_worth_more_the_closer_it_is_to_promoting() {
         let advanced = Board::from_fen("4k3/4P3/8/8/8/8/8/4K3 w - - 0 1").unwrap();
         let home = Board::from_fen("4k3/8/8/8/8/8/4P3/4K3 w - - 0 1").unwrap();
         assert!(
@@ -1404,7 +1437,7 @@ mod evaluate {
     }
 
     #[test]
-    fn test_a_pawn_is_worth_more_the_closer_it_is_to_promoting_for_black_too() {
+    fn a_pawn_is_worth_more_the_closer_it_is_to_promoting_for_black_too() {
         let advanced = Board::from_fen("4k3/8/8/8/8/8/4p3/4K3 b - - 0 1").unwrap();
         let home = Board::from_fen("4k3/4p3/8/8/8/8/8/4K3 b - - 0 1").unwrap();
         assert!(
@@ -1420,7 +1453,7 @@ mod evaluate {
     /// since that happens to both colours at once, but it does catch one colour
     /// being changed without the other.
     #[test]
-    fn test_a_mirrored_position_scores_the_same() {
+    fn a_mirrored_position_scores_the_same() {
         for (white, black) in [
             (
                 "4k3/4P3/8/8/8/8/8/4K3 w - - 0 1",
@@ -1444,80 +1477,43 @@ mod evaluate {
 
 #[cfg(test)]
 mod make_move {
-    use super::Board;
-    use super::Game;
-    use super::Play;
+    use super::fens;
     use super::{A1, A8, B1, B8, MAX_GAME_SIZE};
+    use super::{Board, Game, Play};
     use pretty_assertions::{assert_eq, assert_ne};
 
-    macro_rules! test_fen_reversible {
-        ($func:ident, $f:expr) => {
-            #[test]
-            fn $func() {
-                let board = Board::from_fen($f).unwrap();
-                for m in &board.generate_moves() {
-                    let old = board.clone();
-                    let mut new = board.clone();
-                    if new.make_move(m) {
-                        assert_ne!(old, new);
-                        new.undo_move();
-                        assert_eq!(old, new);
-                    }
+    /// Every legal move must change the position, and unmaking it must give
+    /// back a board equal in every field.
+    #[test]
+    fn every_move_unmakes_back_to_the_position_it_left() {
+        for fen in fens::CORE {
+            let board = Board::from_fen(fen).unwrap();
+            for m in &board.generate_moves() {
+                let mut played = board;
+                if played.make_move(m) {
+                    assert_ne!(board, played, "{} in {}", m, fen);
+                    played.undo_move();
+                    assert_eq!(board, played, "{} in {}", m, fen);
                 }
             }
-        };
+        }
     }
 
-    test_fen_reversible!(
-        initial_position_reversible,
-        "rnbqkbnr/pppppppp/8/8/8/8/PPPPPPPP/RNBQKBNR w KQkq - 0 1"
-    );
-    test_fen_reversible!(
-        promotion_reversible,
-        "rnbqkbnr/pp1ppppp/8/2p5/3Pp3/8/PPPP1PpP/RNBQKB1R b KQkq e5 0 2"
-    );
-    test_fen_reversible!(
-        castling_reversible,
-        "r4rk1/1pp1qppp/p1np1n2/2b1p1B1/2B1P1b1/P1NP1N2/1PP1QPPP/R4RK1 w - - 0 10"
-    );
-    test_fen_reversible!(
-        position_3_reversible,
-        "8/2p5/3p4/KP5r/1R3p1k/8/4P1P1/8 w - - 0 1"
-    );
-
-    macro_rules! test_fen_captures {
-        ($func:ident, $f:expr) => {
-            #[test]
-            fn $func() {
-                // the captures list is the material changing subset of the
-                // full list: the captures and the promoting pushes, in the
-                // same order
-                let board = Board::from_fen($f).unwrap();
-                let filtered_captures: super::MoveList = board
-                    .generate_moves()
-                    .iter()
-                    .filter(|c| c.capture.is_some() || c.promote.is_some())
-                    .map(|c| c.clone())
-                    .collect();
-                let captures = board.generate_captures();
-                assert_eq!(captures, filtered_captures);
-            }
-        };
+    /// The captures list is the material changing subset of the full list:
+    /// the captures and the promoting pushes, in the same order.
+    #[test]
+    fn the_captures_list_is_the_material_changing_subset() {
+        for fen in fens::CORE {
+            let board = Board::from_fen(fen).unwrap();
+            let filtered: super::MoveList = board
+                .generate_moves()
+                .iter()
+                .filter(|c| c.capture.is_some() || c.promote.is_some())
+                .copied()
+                .collect();
+            assert_eq!(board.generate_captures(), filtered, "in {}", fen);
+        }
     }
-
-    test_fen_captures!(
-        initial_position,
-        "rnbqkbnr/pppppppp/8/8/8/8/PPPPPPPP/RNBQKBNR w KQkq - 0 1"
-    );
-    test_fen_captures!(
-        promotion,
-        "rnbqkbnr/pp1ppppp/8/2p5/3Pp3/8/PPPP1PpP/RNBQKB1R b KQkq e5 0 2"
-    );
-    test_fen_captures!(
-        castling,
-        "r4rk1/1pp1qppp/p1np1n2/2b1p1B1/2B1P1b1/P1NP1N2/1PP1QPPP/R4RK1 w - - 0 10"
-    );
-    test_fen_captures!(position_3, "8/2p5/3p4/KP5r/1R3p1k/8/4P1P1/8 w - - 0 1");
 
     #[test]
     fn a_quiet_promotion_is_in_the_captures_list() {
@@ -1535,18 +1531,13 @@ mod make_move {
     }
 
     #[test]
-    fn test_long_game_does_not_run_off_the_history() {
+    fn a_long_game_does_not_run_off_the_history() {
         // games which reached about move 175 used to panic in is_repetition
         let mut board = Board::new();
         let cycle = ["g1f3", "b8c6", "f3g1", "c6b8"];
         for i in 0..400 {
-            let name = cycle[i % 4];
-            let m = *board
-                .generate_moves()
-                .iter()
-                .find(|m| format!("{}", m) == name)
-                .unwrap_or_else(|| panic!("move {} not found at ply {}", name, i));
-            assert!(board.make_move(&m));
+            let play = super::play_named(&board, cycle[i % 4]);
+            assert!(board.make_move(&play), "failed at ply {}", i);
             board.is_repetition();
         }
     }
@@ -1597,7 +1588,7 @@ mod make_move {
     }
 
     #[test]
-    fn test_is_repetition_with_fifty_move_count_beyond_history() {
+    fn a_fifty_move_count_beyond_the_history_is_not_a_repetition() {
         // the fifty move counter from the fen is larger than the history we hold
         let board = Board::from_fen("5k2/1p3p1p/p3pK1P/P1P1P3/4bP2/2B5/8/8 w - - 99 1").unwrap();
         assert_eq!(board.is_repetition(), false);
@@ -1607,16 +1598,14 @@ mod make_move {
     /// come back once, either side can take the draw, so there is nothing to be
     /// gained by spending four more plies of depth confirming it.
     #[test]
-    fn test_has_repeated_fires_a_cycle_before_is_repetition() {
-        let mut board = Board::from_fen(
-            "r4rk1/1pp1qppp/p1np1n2/2b1p1B1/2B1P1b1/P1NP1N2/1PP1QPPP/R4RK1 b - - 3 19",
-        )
-        .unwrap();
+    fn has_repeated_fires_a_cycle_before_is_repetition() {
+        let mut board = Board::from_fen(fens::SHUFFLE).unwrap();
         let cycle = [(A8, B8), (A1, B1), (B8, A8), (B1, A1)];
         assert_eq!(board.has_repeated(), false);
-        assert_eq!(board.is_repetition(), false);
 
         for (from, to) in cycle {
+            // and no false positives anywhere on the way round
+            assert_eq!(board.is_repetition(), false);
             board.make_move(&Play::new(from, to, None, None, false, false));
         }
         // first repeat: a draw is available, so the search stops here
@@ -1624,37 +1613,11 @@ mod make_move {
         assert_eq!(board.is_repetition(), false);
 
         for (from, to) in cycle {
+            assert_eq!(board.is_repetition(), false);
             board.make_move(&Play::new(from, to, None, None, false, false));
         }
         // second repeat: the game is actually drawn
         assert_eq!(board.has_repeated(), true);
-        assert_eq!(board.is_repetition(), true);
-    }
-
-    #[test]
-    fn test_is_repetition() {
-        let mut board = Board::from_fen(
-            "r4rk1/1pp1qppp/p1np1n2/2b1p1B1/2B1P1b1/P1NP1N2/1PP1QPPP/R4RK1 b - - 3 19",
-        )
-        .unwrap();
-        // Position 1
-        assert_eq!(board.is_repetition(), false);
-        board.make_move(&Play::new(A8, B8, None, None, false, false));
-        board.make_move(&Play::new(A1, B1, None, None, false, false));
-        assert_eq!(board.is_repetition(), false);
-        board.make_move(&Play::new(B8, A8, None, None, false, false));
-        assert_eq!(board.is_repetition(), false);
-        board.make_move(&Play::new(B1, A1, None, None, false, false));
-        assert_eq!(board.is_repetition(), false);
-        // Position 1 - (first repeat)
-        board.make_move(&Play::new(A8, B8, None, None, false, false));
-        assert_eq!(board.is_repetition(), false);
-        board.make_move(&Play::new(A1, B1, None, None, false, false));
-        assert_eq!(board.is_repetition(), false);
-        board.make_move(&Play::new(B8, A8, None, None, false, false));
-        assert_eq!(board.is_repetition(), false);
-        board.make_move(&Play::new(B1, A1, None, None, false, false));
-        // Position 1 - (second repeat)
         assert_eq!(board.is_repetition(), true);
     }
 }
@@ -1680,13 +1643,9 @@ mod position_key {
         board.debug_assert_state_in_step();
     }
 
-    fn play_move(board: &mut Board, mv: &str) {
-        let m = *board
-            .generate_moves()
-            .iter()
-            .find(|m| format!("{}", m) == mv)
-            .unwrap_or_else(|| panic!("move {} not found", mv));
-        assert!(board.make_move(&m));
+    fn play_move(board: &mut Board, name: &str) {
+        let play = super::play_named(board, name);
+        assert!(board.make_move(&play), "failed to play {}", name);
     }
 
     #[test]
@@ -1730,11 +1689,7 @@ mod position_key {
         // half of this that has to match make_move or the fix is worse than the
         // problem
         let mut played = Board::from_fen("4k3/7p/8/8/8/8/P7/4K3 w - - 0 1").unwrap();
-        let a2a4 = *played
-            .generate_moves()
-            .iter()
-            .find(|m| format!("{}", m) == "a2a4")
-            .expect("a2a4 is a move here");
+        let a2a4 = super::play_named(&played, "a2a4");
         assert!(played.make_move(&a2a4));
         let parsed = Board::from_fen("4k3/7p/8/8/P7/8/8/4K3 b - - 0 1").unwrap();
         assert_eq!(played.key, parsed.key);
@@ -1744,11 +1699,7 @@ mod position_key {
     #[test]
     fn a_double_push_which_can_be_answered_still_records_the_square() {
         let mut played = Board::from_fen("4k3/8/8/8/1p6/8/P7/4K3 w - - 0 1").unwrap();
-        let a2a4 = *played
-            .generate_moves()
-            .iter()
-            .find(|m| format!("{}", m) == "a2a4")
-            .expect("a2a4 is a move here");
+        let a2a4 = super::play_named(&played, "a2a4");
         assert!(played.make_move(&a2a4));
         let parsed = Board::from_fen("4k3/8/8/8/Pp6/8/8/4K3 b - a3 0 1").unwrap();
         assert_eq!(played.key, parsed.key);
@@ -1810,27 +1761,23 @@ mod position_key {
 
 #[cfg(test)]
 mod perft {
-    use super::Board;
-    use super::Game;
+    use super::fens;
+    use super::{Board, Game};
     use pretty_assertions::assert_eq;
 
     /// The six standard positions, with their counts from depth one up to the
     /// depth the suite can afford. Positions and results taken from
     /// https://www.chessprogramming.org/Perft_Results
     const CASES: [(&str, &str, &[u64]); 6] = [
-        (
-            "the starting position",
-            "rnbqkbnr/pppppppp/8/8/8/8/PPPPPPPP/RNBQKBNR w KQkq - 0 1",
-            &[20, 400, 8902],
-        ),
+        ("the starting position", fens::START, &[20, 400, 8902]),
         (
             "position 2, kiwipete",
-            "r3k2r/p1ppqpb1/bn2pnp1/3PN3/1p2P3/2N2Q1p/PPPBBPPP/R3K2R w KQkq - 0 1",
+            fens::KIWIPETE,
             &[48, 2039, 97_862, 4_085_603],
         ),
         (
             "position 3",
-            "8/2p5/3p4/KP5r/1R3p1k/8/4P1P1/8 w - - 0 1",
+            fens::PAWN_ENDGAME,
             &[14, 191, 2812, 43_238, 674_624, 11_030_083],
         ),
         (
@@ -1840,18 +1787,18 @@ mod perft {
         ),
         (
             "position 5",
-            "rnbq1k1r/pp1Pbppp/2p5/8/2B5/8/PPP1NnPP/RNBQK2R w KQ - 1 8",
+            fens::PROMOTIONS,
             &[44, 1486, 62_379, 2_103_487],
         ),
         (
             "position 6",
-            "r4rk1/1pp1qppp/p1np1n2/2b1p1B1/2B1P1b1/P1NP1N2/1PP1QPPP/R4RK1 w - - 0 10",
+            fens::MIDDLEGAME,
             &[46, 2079, 89_890, 3_894_594],
         ),
     ];
 
     #[test]
-    fn test_perft_standard_positions() {
+    fn the_standard_positions_count_exactly() {
         for (description, fen, counts) in CASES {
             let mut board = Board::from_fen(fen).unwrap();
             for (i, &expected) in counts.iter().enumerate() {
@@ -1869,9 +1816,9 @@ mod perft {
 }
 
 #[cfg(test)]
-mod test_fen {
-    use super::Board;
-    use super::Game;
+mod fen_parsing {
+    use super::fens;
+    use super::{Board, Game};
     use proptest::prelude::*;
 
     proptest! {
@@ -1887,14 +1834,12 @@ mod test_fen {
     }
 
     #[test]
-    fn test_starting() {
-        assert!(
-            Board::from_fen("rnbqkbnr/pppppppp/8/8/8/8/PPPPPPPP/RNBQKBNR w KQkq - 0 1").is_ok()
-        );
+    fn the_starting_position_parses() {
+        assert!(Board::from_fen(fens::START).is_ok());
     }
 
     #[test]
-    fn test_from_wikipedia() -> Result<(), String> {
+    fn the_wikipedia_examples_parse() -> Result<(), String> {
         Board::from_fen("rnbqkbnr/pppppppp/8/8/4P3/8/PPPP1PPP/RNBQKBNR b KQkq e3 0 1")?;
         Board::from_fen("rnbqkbnr/pp1ppppp/8/2p5/4P3/8/PPPP1PPP/RNBQKBNR w KQkq c6 0 2")?;
         Board::from_fen("rnbqkbnr/pp1ppppp/8/2p5/4P3/5N2/PPPP1PPP/RNBQKB1R b KQkq - 1 2")?;
@@ -1902,14 +1847,14 @@ mod test_fen {
     }
 
     #[test]
-    fn test_invalid_extra_ranks() {
+    fn too_many_ranks_are_rejected() {
         assert!(
             Board::from_fen("rnbqkbnr/pppppppp/8/8/8/8/8/4P3/8/PPPP1PPP/RNBQKBNR b KQkq e3 0 1")
                 .is_err()
         );
     }
     #[test]
-    fn test_invalid_extra_slash() {
+    fn a_doubled_slash_is_rejected() {
         assert!(
             Board::from_fen("rnbqkbnr/pppppppp/8/8//4P3/8/PPPP1PPP/RNBQKBNR b KQkq e3 0 1")
                 .is_err()
@@ -1918,7 +1863,7 @@ mod test_fen {
     /// A ninth file used to wrap back onto the a file and corrupt the square
     /// it landed on, rather than fail to parse.
     #[test]
-    fn test_invalid_extra_file() {
+    fn a_ninth_file_is_rejected() {
         assert!(
             Board::from_fen("rnbqkbnr/ppppppppp/8/8/4P3/8/PPPP1PPP/RNBQKBNR b KQkq e3 0 1")
                 .is_err()
@@ -1930,7 +1875,7 @@ mod test_fen {
         );
     }
     #[test]
-    fn test_invalid_bad_piece() {
+    fn an_unknown_piece_letter_is_rejected() {
         assert!(
             Board::from_fen("rnbqkbnar/pppppppp/8/8/4P3/8/PPPP1PPP/RNBQKBNR b KQkq e3 0 1")
                 .is_err()
@@ -1966,8 +1911,8 @@ mod test_fen {
 
 #[cfg(test)]
 mod perft_edge_cases {
-    use super::Board;
-    use super::Game;
+    use super::fens;
+    use super::{Board, Game};
     use pretty_assertions::assert_eq;
 
     /// Positions that the six standard perft positions do not reach: the two
@@ -2061,7 +2006,7 @@ mod perft_edge_cases {
             "stalemate and checkmate again",
         ),
         (
-            "rnbqkbnr/pppppppp/8/8/8/8/PPPPPPPP/RNBQKBNR w KQkq - 0 1",
+            fens::START,
             5,
             4_865_609,
             "the start, deeper than the other suite goes",
@@ -2117,7 +2062,7 @@ mod perft_edge_cases {
     ];
 
     #[test]
-    fn test_perft_edge_cases() {
+    fn every_edge_case_counts_exactly() {
         for (fen, depth, expected, description) in CASES {
             let mut board = Board::from_fen(fen).unwrap();
             assert_eq!(
@@ -2134,9 +2079,8 @@ mod perft_edge_cases {
 
 #[cfg(test)]
 mod pseudo_legal {
-    use super::Board;
-    use super::Game;
-    use super::Play;
+    use super::fens;
+    use super::{Board, Game, Play};
     use crate::misc::Piece;
 
     /// "d4" to the index the board uses, so the cases below read as squares
@@ -2157,10 +2101,10 @@ mod pseudo_legal {
     }
 
     const POSITIONS: [&str; 5] = [
-        "rnbqkbnr/pppppppp/8/8/8/8/PPPPPPPP/RNBQKBNR w KQkq - 0 1",
-        "r3k2r/p1ppqpb1/bn2pnp1/3PN3/1p2P3/2N2Q1p/PPPBBPPP/R3K2R w KQkq - 0 1",
-        "8/2p5/3p4/KP5r/1R3p1k/8/4P1P1/8 w - - 0 1",
-        "rnbq1k1r/pp1Pbppp/2p5/8/2B5/8/PPP1NnPP/RNBQK2R w KQ - 1 8",
+        fens::START,
+        fens::KIWIPETE,
+        fens::PAWN_ENDGAME,
+        fens::PROMOTIONS,
         "r2q1rk1/1b1nbppp/p2ppn2/1p6/3NPP2/1BN1B3/PPPQ2PP/2KR3R w - - 0 13",
     ];
 
@@ -2232,18 +2176,18 @@ mod pseudo_legal {
 
 #[cfg(test)]
 mod random_games {
-    use super::Board;
-    use super::Game;
+    use super::fens;
+    use super::{Board, Game};
     use proptest::prelude::*;
 
     /// Walks start from positions with different machinery in reach: the
     /// opening with castling ahead of it, a tactical middlegame, a bare
     /// endgame, and a position full of promotions.
     const STARTS: [&str; 4] = [
-        "rnbqkbnr/pppppppp/8/8/8/8/PPPPPPPP/RNBQKBNR w KQkq - 0 1",
-        "r3k2r/p1ppqpb1/bn2pnp1/3PN3/1p2P3/2N2Q1p/PPPBBPPP/R3K2R w KQkq - 0 1",
-        "8/2p5/3p4/KP5r/1R3p1k/8/4P1P1/8 w - - 0 1",
-        "rnbq1k1r/pp1Pbppp/2p5/8/2B5/8/PPP1NnPP/RNBQK2R w KQ - 1 8",
+        fens::START,
+        fens::KIWIPETE,
+        fens::PAWN_ENDGAME,
+        fens::PROMOTIONS,
     ];
 
     proptest! {
