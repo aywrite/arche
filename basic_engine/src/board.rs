@@ -369,8 +369,9 @@ impl Board {
         }
     }
 
-    /// The subset of generate_moves with a capture, in the same order, made
-    /// without generating the quiet moves only to filter them out.
+    /// The subset of generate_moves that changes material, the captures and
+    /// the promoting pushes, in the same order, made without generating the
+    /// quiet moves only to filter them out.
     pub fn generate_captures(&self) -> MoveList {
         self.generate::<true>()
     }
@@ -526,8 +527,11 @@ impl Board {
                     moves.push(Play::new(from, to, capture, None, false, false));
                 }
             }
-            if !CAPTURES_ONLY {
-                // move forward
+            // move forward. A promotion changes the material on the board the
+            // way a capture does, so the captures list keeps the promoting
+            // pushes and drops only the quiet ones: quiescence would otherwise
+            // stand a pawn on the seventh and score it as a pawn
+            if !CAPTURES_ONLY || can_promote {
                 let to = match self.active_color {
                     Color::White => from as isize + 8,
                     Color::Black => from as isize - 8,
@@ -1485,11 +1489,14 @@ mod make_move {
         ($func:ident, $f:expr) => {
             #[test]
             fn $func() {
+                // the captures list is the material changing subset of the
+                // full list: the captures and the promoting pushes, in the
+                // same order
                 let board = Board::from_fen($f).unwrap();
                 let filtered_captures: super::MoveList = board
                     .generate_moves()
                     .iter()
-                    .filter(|c| c.capture.is_some())
+                    .filter(|c| c.capture.is_some() || c.promote.is_some())
                     .map(|c| c.clone())
                     .collect();
                 let captures = board.generate_captures();
@@ -1511,6 +1518,21 @@ mod make_move {
         "r4rk1/1pp1qppp/p1np1n2/2b1p1B1/2B1P1b1/P1NP1N2/1PP1QPPP/R4RK1 w - - 0 10"
     );
     test_fen_captures!(position_3, "8/2p5/3p4/KP5r/1R3p1k/8/4P1P1/8 w - - 0 1");
+
+    #[test]
+    fn a_quiet_promotion_is_in_the_captures_list() {
+        // a pawn on the seventh with an empty square ahead: the push captures
+        // nothing but changes material like a capture does, and it is the
+        // only material changing move here
+        let board = Board::from_fen("4k3/P7/8/8/8/8/8/4K3 w - - 0 1").unwrap();
+        let captures = board.generate_captures();
+        assert_eq!(captures.len(), 4, "one push for each promotion piece");
+        for m in &captures {
+            assert_eq!(format!("{}", m)[..4].to_string(), "a7a8");
+            assert!(m.promote.is_some());
+            assert!(m.capture.is_none());
+        }
+    }
 
     #[test]
     fn test_long_game_does_not_run_off_the_history() {
