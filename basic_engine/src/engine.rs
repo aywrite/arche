@@ -177,8 +177,11 @@ impl AlphaBeta {
     }
 
     fn quiescence(&mut self, mut alpha: Score, beta: Score) -> Result<Score, Aborted> {
-        // quiescence looks at captures and promotions alone and never checks
-        // for a repetition, so nothing it returns is path dependent
+        // quiescence looks at captures and promotions, and evasions when in
+        // check, and never checks for a repetition: a capture cannot repeat a
+        // position, and the quiet moves here are evasions, so a cycle needs a
+        // line of nothing but mutual quiet checks, which MAX_DEPTH bounds and
+        // real positions do not sustain
         self.tainted = false;
         self.selective_depth = self.selective_depth.max(self.board.line_ply as u8);
         if self.board.line_ply >= MAX_DEPTH.into() {
@@ -188,21 +191,41 @@ impl AlphaBeta {
         self.poll_deadline()?;
         self.nodes += 1;
 
-        let score = self.eval();
-        if score >= beta {
-            return Ok(beta);
-        } else if score >= alpha {
-            alpha = score;
+        // Standing pat is declining to move, which only the side not in check
+        // may do: the static eval is no floor for a side that has to get out
+        // of check and may have no quiet way to. The full search never enters
+        // here in check, the check extension searches those nodes full width,
+        // so a check seen here was delivered by a capture searched here.
+        let in_check = self.board.in_check();
+        if !in_check {
+            let score = self.eval();
+            if score >= beta {
+                return Ok(beta);
+            } else if score >= alpha {
+                alpha = score;
+            }
         }
 
         let mut best_move: Option<Play> = None;
         let old_alpha = alpha;
         let pv_play = self.moves.get(self.board.key).map(|pv| pv.play);
-        let mut moves = self.board.generate_captures();
+        // in check the position is not quiet whatever the material says, so
+        // every evasion is searched, quiet or not. Most of what full width
+        // generation returns cannot answer a check and would only be refused
+        // by make_move, so it is dropped before it is even sorted
+        let mut moves = if in_check {
+            let mut moves = self.board.generate_moves();
+            self.board.retain_evasions(&mut moves);
+            moves
+        } else {
+            self.board.generate_captures()
+        };
         self.order_moves(&mut moves, pv_play);
 
+        let mut found_legal_move = false;
         for m in &moves {
             if self.board.make_move(m) {
+                found_legal_move = true;
                 // undo before an abort can propagate, or the board would keep
                 // the aborted line
                 let result = self.quiescence(-beta, -alpha);
@@ -216,6 +239,12 @@ impl AlphaBeta {
                     best_move = Some(*m);
                 }
             }
+        }
+
+        if in_check && !found_legal_move {
+            // checkmate, at the end of a capture sequence: report it as the
+            // search does, so the line that forces it reads as the mate it is
+            return Ok(-CHECKMATE_SCORE + (self.board.line_ply as Score));
         }
 
         if alpha != old_alpha {
@@ -296,7 +325,7 @@ impl AlphaBeta {
             return Ok(0);
         }
         let mut node_tainted = false;
-        let in_check = self.board.is_king_attacked();
+        let in_check = self.board.in_check();
         if in_check {
             depth += 1;
         }
@@ -357,6 +386,11 @@ impl AlphaBeta {
         }
 
         let mut moves = self.board.generate_moves();
+        if in_check {
+            // most of the list cannot answer the check and would only be
+            // refused by make_move; drop it before it is even sorted
+            self.board.retain_evasions(&mut moves);
+        }
         self.order_moves(&mut moves, pv_play);
 
         for m in &moves {
@@ -462,7 +496,7 @@ impl AlphaBeta {
         self.nodes += 1;
 
         let mut depth = depth;
-        if self.board.is_king_attacked() {
+        if self.board.in_check() {
             depth += 1;
         }
 
@@ -929,6 +963,20 @@ mod test_search {
         let mut e = engine(game);
         let result = completed(e.search(4));
         assert_eq!(result.checkmate_in(), Some(-1));
+    }
+
+    #[test]
+    fn test_quiescence_does_not_stand_pat_out_of_a_mate() {
+        // the queen on a8 hangs, and taking it is losing: Rxa8 Nxf2 is mate,
+        // the knight covered by nothing and capturable by nothing, the king
+        // shut in by its own rook and pawns. The mate arrives by a capture
+        // two plies into quiescence, where the mated node used to stand pat
+        // as though it could decline to move: the capture only cost a pawn,
+        // so taking the queen read as winning it, and the search took it.
+        let game = Board::from_fen("q7/7k/8/8/6n1/8/5PPP/R5RK w - - 0 1").unwrap();
+        let mut e = engine(game);
+        let result = completed(e.search(1));
+        assert_ne!(format!("{}", result.best_move), "a1a8");
     }
 
     #[test]
@@ -1561,11 +1609,11 @@ mod test_node_counts {
         assert_eq!(
             counted,
             vec![
-                ("opening", 150_344),
-                ("kiwipete", 230_576),
-                ("pawn endgame", 175_329),
-                ("promotions", 109_409),
-                ("middlegame", 188_234),
+                ("opening", 151_429),
+                ("kiwipete", 297_693),
+                ("pawn endgame", 184_523),
+                ("promotions", 119_840),
+                ("middlegame", 220_237),
             ]
         );
     }

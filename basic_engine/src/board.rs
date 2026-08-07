@@ -34,6 +34,7 @@ struct PlayState {
     castle: CastlePermissions,
     fifty_move_rule: usize,
     position_key: u64,
+    checkers: u64,
 }
 
 // Plies of history the board can record, as a ring. Only the fifty move window
@@ -77,6 +78,36 @@ static ZORB: Zorbrist = Zorbrist::TABLE;
 static ATTACK_MASKS: LazyLock<AttackMasks> = LazyLock::new(AttackMasks::new);
 pub static BASE_CONVERSIONS: LazyLock<BaseConversions> = LazyLock::new(BaseConversions::new);
 static MAGIC: LazyLock<Magic> = LazyLock::new(Magic::new);
+// the squares strictly between two aligned squares, and empty for a pair
+// that shares no line. What a piece must land on to block a slider on one
+// square checking a king on the other.
+static BETWEEN: LazyLock<[[u64; 64]; 64]> = LazyLock::new(between_masks);
+
+fn between_masks() -> [[u64; 64]; 64] {
+    let attack_masks: &AttackMasks = &ATTACK_MASKS;
+    let magic: &Magic = &MAGIC;
+    let mut between = [[0u64; 64]; 64];
+    for a in 0..64u8 {
+        for b in 0..64u8 {
+            if a == b {
+                continue;
+            }
+            // with only the endpoints occupied, each one's rays stop at the
+            // other, so the rays they see in common are the squares between
+            // them. Asked only for aligned pairs: unaligned rays also cross,
+            // but off the line the answer is meant to be empty.
+            let ends = (1u64 << a) | (1u64 << b);
+            if attack_masks.straight[a as usize].is_bit_set(b) {
+                between[a as usize][b as usize] =
+                    magic.get_straight_move(a, ends) & magic.get_straight_move(b, ends);
+            } else if attack_masks.diagonal[a as usize].is_bit_set(b) {
+                between[a as usize][b as usize] =
+                    magic.get_diagonal_move(a, ends) & magic.get_diagonal_move(b, ends);
+            }
+        }
+    }
+    between
+}
 
 // the squares that have to be empty for each castle
 const B1_C1_D1: u64 = 1 << B1 | 1 << C1 | 1 << D1;
@@ -243,6 +274,12 @@ pub struct Board {
     pub active_color: Color,
     castle: CastlePermissions,
     en_passant: Option<Coordinate>,
+    // the pieces giving check to the side to move, maintained by make_move
+    // from the move itself rather than recomputed by attack probes at every
+    // node. Empty when the side to move is not in check; holding the checkers
+    // rather than that fact is what lets the search refuse moves that cannot
+    // answer a check without playing them
+    checkers: u64,
 
     pub ply: usize,
     pub line_ply: usize,
@@ -743,12 +780,22 @@ impl Board {
     }
 
     pub fn make_move(&mut self, play: &Play) -> bool {
+        self.make_move_impl::<true>(play)
+    }
+
+    /// The one caller that never reads `checkers` is perft, which plays its
+    /// moves through the impl with MAINTAIN_CHECKERS off: the legality probe
+    /// runs unconditionally, since the stale checkers cannot be consulted,
+    /// and `checkers_given` is skipped. History still saves and restores the
+    /// field, so the board's checkers are intact once the walk unwinds.
+    fn make_move_impl<const MAINTAIN_CHECKERS: bool>(&mut self, play: &Play) -> bool {
         self.history[history_index(self.ply)] = Some(PlayState {
             play: *play,
             en_passant: self.en_passant,
             castle: self.castle,
             fifty_move_rule: self.fifty_move_rule,
             position_key: self.key,
+            checkers: self.checkers,
         });
 
         let opposing_color = !self.active_color;
@@ -854,13 +901,47 @@ impl Board {
 
         // return false if king in check
         let king_index = self.king_index(self.active_color);
+        // A move only exposes its own king when there was a check to walk
+        // back into, the king itself moved, a square on a line through the
+        // king was vacated, or en passant emptied a second square. Anything
+        // else keeps the king exactly as attacked as it was, which was not
+        // at all, so the probe has nothing to find. `checkers` still holds
+        // the mover's own checkers here: it is only replaced below, once the
+        // move has been allowed to stand.
+        let attack_masks: &AttackMasks = &ATTACK_MASKS;
+        let could_expose_king = !MAINTAIN_CHECKERS
+            || self.checkers != 0
+            || from_piece == Piece::King
+            || play.en_passant
+            || attack_masks.straight[king_index as usize].is_bit_set(play.from)
+            || attack_masks.diagonal[king_index as usize].is_bit_set(play.from);
         self.active_color = opposing_color;
         self.key ^= zorb.side;
         self.debug_assert_state_in_step();
-        if self.square_attacked(king_index, opposing_color) {
+        debug_assert!(
+            could_expose_king || !self.square_attacked(king_index, opposing_color),
+            "a move the filter cleared left the king attacked: {}",
+            play
+        );
+        if could_expose_king && self.square_attacked(king_index, opposing_color) {
             self.undo_move();
             false
         } else {
+            if MAINTAIN_CHECKERS {
+                // the piece that landed on the to square, once promotion has
+                // had its say
+                let landed = match play.promote {
+                    Some(promote) => (&promote).into(),
+                    None => from_piece,
+                };
+                self.checkers = self.checkers_given(play, landed);
+                debug_assert_eq!(
+                    self.checkers,
+                    self.recompute_checkers(),
+                    "checkers out of step after {}",
+                    play
+                );
+            }
             true
         }
     }
@@ -924,6 +1005,7 @@ impl Board {
         // restore the position key exactly as it was before the move was made,
         // this guarantees make/undo can never let the key drift out of sync
         self.key = history.position_key;
+        self.checkers = history.checkers;
     }
 
     #[inline]
@@ -970,6 +1052,134 @@ impl Board {
 
     pub fn is_king_attacked(&self) -> bool {
         self.square_attacked(self.king_index(self.active_color), !self.active_color)
+    }
+
+    /// Whether the side to move stands in check, read from the checkers
+    /// `make_move` maintains instead of running the attack probe
+    /// `is_king_attacked` runs. The two always agree; this one is for the
+    /// search, which asks at every node.
+    pub fn in_check(&self) -> bool {
+        self.checkers != 0
+    }
+
+    /// The pieces checking the new side to move after the move just made,
+    /// asked of the board after the move. Answered from the move rather than
+    /// by probing the king square from scratch: only the piece that landed
+    /// can check directly, which a pawn or knight settles with a mask, and a
+    /// slider check needs the move to have touched a line through the king,
+    /// by landing a slider on one or vacating a square that sat on one. Any
+    /// slider a probe then finds is a check this move opened, because the
+    /// king stood unattacked before it. Castling and en passant displace a
+    /// second piece each and are rare, so they take the full probe instead
+    /// of restating its cases.
+    ///
+    /// The direct and slider findings accumulate rather than short circuit:
+    /// a move can uncover a slider while checking on its own, and a double
+    /// check is answered differently to a single one.
+    fn checkers_given(&self, play: &Play, landed: Piece) -> u64 {
+        let defender = self.active_color;
+        let king = self.king_index(defender);
+        if play.castle || play.en_passant {
+            return self.recompute_checkers();
+        }
+        let attack_masks: &AttackMasks = &ATTACK_MASKS;
+        let magic: &Magic = &MAGIC;
+        let to = play.to;
+        let from = play.from;
+        let mut checkers = 0u64;
+
+        match landed {
+            Piece::Pawn => {
+                let masks = match !defender {
+                    Color::White => &attack_masks.white_pawns,
+                    Color::Black => &attack_masks.black_pawns,
+                };
+                if masks[king as usize].is_bit_set(to) {
+                    checkers.set_bit(to);
+                }
+            }
+            Piece::Knight if attack_masks.knights[king as usize].is_bit_set(to) => {
+                checkers.set_bit(to);
+            }
+            _ => {}
+        }
+
+        let attacker_mask = match defender {
+            Color::White => self.black,
+            Color::Black => self.white,
+        };
+        let all = self.black | self.white;
+        let diagonal = attack_masks.diagonal[king as usize];
+        if (matches!(landed, Piece::Bishop | Piece::Queen) && diagonal.is_bit_set(to))
+            || diagonal.is_bit_set(from)
+        {
+            let attackers = (self.bishops | self.queens) & attacker_mask;
+            if attackers != 0 {
+                checkers |= magic.get_diagonal_move(king, all) & attackers;
+            }
+        }
+        let straight = attack_masks.straight[king as usize];
+        if (matches!(landed, Piece::Rook | Piece::Queen) && straight.is_bit_set(to))
+            || straight.is_bit_set(from)
+        {
+            let attackers = (self.rooks | self.queens) & attacker_mask;
+            if attackers != 0 {
+                checkers |= magic.get_straight_move(king, all) & attackers;
+            }
+        }
+        checkers
+    }
+
+    /// The pieces checking the side to move, computed from the board rather
+    /// than maintained as moves are made, the way `square_attacked` asks its
+    /// question but keeping the attackers instead of stopping at the first.
+    /// `checkers` is meant to equal this at all times.
+    pub fn recompute_checkers(&self) -> u64 {
+        let king = self.king_index(self.active_color);
+        let all = self.black | self.white;
+        let attack_masks: &AttackMasks = &ATTACK_MASKS;
+        let magic: &Magic = &MAGIC;
+        let (attacker_mask, pawn_masks) = match !self.active_color {
+            Color::Black => (self.black, &attack_masks.black_pawns),
+            Color::White => (self.white, &attack_masks.white_pawns),
+        };
+        let mut checkers = pawn_masks[king as usize] & self.pawns & attacker_mask;
+        checkers |= attack_masks.knights[king as usize] & self.knights & attacker_mask;
+        let bishop_or_queen = (self.bishops | self.queens) & attacker_mask;
+        if attack_masks.diagonal[king as usize] & bishop_or_queen != 0 {
+            checkers |= magic.get_diagonal_move(king, all) & bishop_or_queen;
+        }
+        let rook_or_queen = (self.rooks | self.queens) & attacker_mask;
+        if attack_masks.straight[king as usize] & rook_or_queen != 0 {
+            checkers |= magic.get_straight_move(king, all) & rook_or_queen;
+        }
+        // a king cannot give check, so unlike square_attacked there is no
+        // king term
+        checkers
+    }
+
+    /// Drop the moves that cannot answer the check the side to move stands
+    /// in. The legal answers to a check are moving the king, capturing the
+    /// sole checker, or blocking the sole checker's line, so a move doing
+    /// none of them can be refused without being played; the checker, its
+    /// line and the king are found once for the whole list rather than once
+    /// per move. The moves kept still go through `make_move`, which settles
+    /// pins and squares the king may not step to — refusing here only spares
+    /// that work for moves it would certainly refuse. En passant is kept
+    /// unexamined: the captured pawn does not stand on the to square, so the
+    /// capture and block masks misread it, and it is rare.
+    pub fn retain_evasions(&self, moves: &mut MoveList) {
+        debug_assert!(self.checkers != 0, "asked of a position not in check");
+        let targets = if self.checkers.count_ones() > 1 {
+            // only the king can answer a double check
+            0
+        } else {
+            let checker = self.checkers.trailing_zeros() as usize;
+            let king = self.king_index(self.active_color) as usize;
+            self.checkers | BETWEEN[king][checker]
+        };
+        let kings = self.kings;
+        moves.retain(|m| kings.is_bit_set(m.from) || m.en_passant || targets.is_bit_set(m.to));
     }
 
     /// Print every square this colour attacks as a grid. Nothing calls it: it
@@ -1156,7 +1366,7 @@ impl Board {
         }
 
         for m in &self.generate_moves() {
-            if self.make_move(m) {
+            if self.make_move_impl::<false>(m) {
                 nodes += self.perft(depth - 1);
                 self.undo_move();
             }
@@ -1217,6 +1427,8 @@ impl Game for Board {
                 .parse::<usize>()
                 .map_err(|e| e.to_string())?,
             en_passant: Coordinate::from_string(en_passant)?,
+            // filled in below, once the pieces are on the board
+            checkers: 0,
             fifty_move_rule: half_move_clock
                 .parse::<usize>()
                 .map_err(|e| e.to_string())?,
@@ -1303,6 +1515,7 @@ impl Game for Board {
             }
         }
         (board.white_value, board.black_value) = board.material_value();
+        board.checkers = board.recompute_checkers();
         // a parsed position must satisfy the same invariants a played one
         // does, or the two ways of reaching a position drift apart
         board.debug_assert_state_in_step();
@@ -2278,6 +2491,22 @@ mod random_games {
                         m
                     );
                 }
+                // every move the evasion filter drops has to be one
+                // make_move refuses: a legal evasion dropped would read as a
+                // mate to the search that trusts the filter
+                if board.in_check() {
+                    let mut kept = moves.clone();
+                    board.retain_evasions(&mut kept);
+                    for m in &moves {
+                        if !kept.contains(m) {
+                            prop_assert!(
+                                !board.make_move(m),
+                                "the filter dropped a legal evasion {}",
+                                m
+                            );
+                        }
+                    }
+                }
                 let before = board;
                 let play = moves[pick.index(moves.len())];
                 if board.make_move(&play) {
@@ -2297,6 +2526,12 @@ mod random_games {
                         (board.white_value, board.black_value),
                         board.recompute_material(),
                         "material out of step after {}",
+                        play
+                    );
+                    prop_assert_eq!(
+                        board.checkers,
+                        board.recompute_checkers(),
+                        "checkers out of step after {}",
                         play
                     );
                     line.push(before);
