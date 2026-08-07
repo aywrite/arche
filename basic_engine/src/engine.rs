@@ -179,7 +179,9 @@ impl AlphaBeta {
     fn quiescence(&mut self, mut alpha: Score, beta: Score) -> Result<Score, Aborted> {
         // quiescence looks at captures and promotions, and evasions when in
         // check, and never checks for a repetition: a capture cannot repeat a
-        // position, so nothing it returns is path dependent
+        // position, and the quiet moves here are evasions, so a cycle needs a
+        // line of nothing but mutual quiet checks, which MAX_DEPTH bounds and
+        // real positions do not sustain
         self.tainted = false;
         self.selective_depth = self.selective_depth.max(self.board.line_ply as u8);
         if self.board.line_ply >= MAX_DEPTH.into() {
@@ -213,7 +215,7 @@ impl AlphaBeta {
         // by make_move, so it is dropped before it is even sorted
         let mut moves = if in_check {
             let mut moves = self.board.generate_moves();
-            moves.retain(|m| self.board.might_evade_check(m));
+            self.board.retain_evasions(&mut moves);
             moves
         } else {
             self.board.generate_captures()
@@ -387,7 +389,7 @@ impl AlphaBeta {
         if in_check {
             // most of the list cannot answer the check and would only be
             // refused by make_move; drop it before it is even sorted
-            moves.retain(|m| self.board.might_evade_check(m));
+            self.board.retain_evasions(&mut moves);
         }
         self.order_moves(&mut moves, pv_play);
 

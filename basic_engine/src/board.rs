@@ -780,6 +780,15 @@ impl Board {
     }
 
     pub fn make_move(&mut self, play: &Play) -> bool {
+        self.make_move_impl::<true>(play)
+    }
+
+    /// The one caller that never reads `checkers` is perft, which plays its
+    /// moves through the impl with MAINTAIN_CHECKERS off: the legality probe
+    /// runs unconditionally, since the stale checkers cannot be consulted,
+    /// and `checkers_given` is skipped. History still saves and restores the
+    /// field, so the board's checkers are intact once the walk unwinds.
+    fn make_move_impl<const MAINTAIN_CHECKERS: bool>(&mut self, play: &Play) -> bool {
         self.history[history_index(self.ply)] = Some(PlayState {
             play: *play,
             en_passant: self.en_passant,
@@ -900,7 +909,8 @@ impl Board {
         // the mover's own checkers here: it is only replaced below, once the
         // move has been allowed to stand.
         let attack_masks: &AttackMasks = &ATTACK_MASKS;
-        let could_expose_king = self.checkers != 0
+        let could_expose_king = !MAINTAIN_CHECKERS
+            || self.checkers != 0
             || from_piece == Piece::King
             || play.en_passant
             || attack_masks.straight[king_index as usize].is_bit_set(play.from)
@@ -917,19 +927,21 @@ impl Board {
             self.undo_move();
             false
         } else {
-            // the piece that landed on the to square, once promotion has had
-            // its say
-            let landed = match play.promote {
-                Some(promote) => (&promote).into(),
-                None => from_piece,
-            };
-            self.checkers = self.checkers_given(play, landed);
-            debug_assert_eq!(
-                self.checkers,
-                self.recompute_checkers(),
-                "checkers out of step after {}",
-                play
-            );
+            if MAINTAIN_CHECKERS {
+                // the piece that landed on the to square, once promotion has
+                // had its say
+                let landed = match play.promote {
+                    Some(promote) => (&promote).into(),
+                    None => from_piece,
+                };
+                self.checkers = self.checkers_given(play, landed);
+                debug_assert_eq!(
+                    self.checkers,
+                    self.recompute_checkers(),
+                    "checkers out of step after {}",
+                    play
+                );
+            }
             true
         }
     }
@@ -1146,33 +1158,28 @@ impl Board {
         checkers
     }
 
-    /// Whether this move might answer the check the side to move stands in.
-    /// The legal answers to a check are moving the king, capturing the sole
-    /// checker, or blocking the sole checker's line, so a move doing none of
-    /// them can be refused without being played. The ones this passes still
-    /// go through `make_move`, which settles pins and squares the king may
-    /// not step to; refusing here only spares that work for moves it would
-    /// certainly refuse.
-    pub fn might_evade_check(&self, play: &Play) -> bool {
+    /// Drop the moves that cannot answer the check the side to move stands
+    /// in. The legal answers to a check are moving the king, capturing the
+    /// sole checker, or blocking the sole checker's line, so a move doing
+    /// none of them can be refused without being played; the checker, its
+    /// line and the king are found once for the whole list rather than once
+    /// per move. The moves kept still go through `make_move`, which settles
+    /// pins and squares the king may not step to — refusing here only spares
+    /// that work for moves it would certainly refuse. En passant is kept
+    /// unexamined: the captured pawn does not stand on the to square, so the
+    /// capture and block masks misread it, and it is rare.
+    pub fn retain_evasions(&self, moves: &mut MoveList) {
         debug_assert!(self.checkers != 0, "asked of a position not in check");
-        if self.kings.is_bit_set(play.from) {
-            return true;
-        }
-        // the captured pawn does not stand on the to square, so the capture
-        // and block tests below misread it; it is rare, let make_move decide
-        if play.en_passant {
-            return true;
-        }
-        if self.checkers.count_ones() > 1 {
+        let targets = if self.checkers.count_ones() > 1 {
             // only the king can answer a double check
-            return false;
-        }
-        let checker = self.checkers.trailing_zeros() as u8;
-        if play.to == checker {
-            return true;
-        }
-        let king = self.king_index(self.active_color);
-        BETWEEN[king as usize][checker as usize].is_bit_set(play.to)
+            0
+        } else {
+            let checker = self.checkers.trailing_zeros() as usize;
+            let king = self.king_index(self.active_color) as usize;
+            self.checkers | BETWEEN[king][checker]
+        };
+        let kings = self.kings;
+        moves.retain(|m| kings.is_bit_set(m.from) || m.en_passant || targets.is_bit_set(m.to));
     }
 
     /// Print every square this colour attacks as a grid. Nothing calls it: it
@@ -1359,7 +1366,7 @@ impl Board {
         }
 
         for m in &self.generate_moves() {
-            if self.make_move(m) {
+            if self.make_move_impl::<false>(m) {
                 nodes += self.perft(depth - 1);
                 self.undo_move();
             }
@@ -2483,6 +2490,22 @@ mod random_games {
                         "is_pseudo_legal disagrees about {}",
                         m
                     );
+                }
+                // every move the evasion filter drops has to be one
+                // make_move refuses: a legal evasion dropped would read as a
+                // mate to the search that trusts the filter
+                if board.in_check() {
+                    let mut kept = moves.clone();
+                    board.retain_evasions(&mut kept);
+                    for m in &moves {
+                        if !kept.contains(m) {
+                            prop_assert!(
+                                !board.make_move(m),
+                                "the filter dropped a legal evasion {}",
+                                m
+                            );
+                        }
+                    }
                 }
                 let before = board;
                 let play = moves[pick.index(moves.len())];
