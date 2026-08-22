@@ -2,6 +2,55 @@
 
 All notable changes to this project will be documented in this file.
 
+## [0.3.10-rc.1] - 2026-08-22
+
+### Bug Fixes
+
+- *(board)* Record the move history in a ring
+- *(board)* Reject a position the search cannot survive
+- *(board)* Reject a fen with more than eight files on a rank
+- *(search)* Refuse a transposition score that came from a draw
+- *(search)* Quiesce the leaves of shallow searches too
+- *(search)* Show quiescence the promotions that capture nothing
+- *(search)* Evade checks in quiescence instead of standing pat
+- *(board)* Tighten the bitboard index asserts to reject 64
+- *(search)* Store the root entry past the depth contest
+
+### Performance
+
+- *(search)* Try the table's move before generating any
+- *(search)* Halve the default transposition table to 256MB
+- *(search)* Answer checks from make_move instead of probing for them
+- *(search)* Find the evasion targets once per node, spare perft the checkers
+
+### Refactor
+
+- *(uci)* Move protocol printing out of the library
+- *(engine)* Shape the Engine trait around its caller and delete the fossils
+- *(board)* Tidy the board, misc and play modules
+- *(search)* Tidy the search module
+- *(magic)* Generate moves and captures from one function
+- *(engine)* Delete the cleared key workaround the refusal retires
+- *(uci)* Route output through a writer so the protocol is testable
+
+### Documentation
+
+- *(docs)* Say what the debug test run checks that release cannot
+
+### Development
+
+- *(board)* Assert the en passant square is one a pawn can take
+- *(deps)* Replace lazy_static with the standard library
+- *(search)* Measure how much the table depends on the path taken
+- *(search)* Pin that draw taint is recorded and never trusted
+- *(release)* Survive a repository with no release tag yet
+- *(ci)* Cover the helper scripts and gate them in ci
+- *(ci)* Stop a strength match as soon as the answer is in
+- *(board)* Walk random lines checking state and unmake
+- *(board)* Share the fens and the move lookup, table the macros
+- *(search)* Adopt the shared fens and drop the test_ prefixes
+- *(uci)* Assert the replies the interface actually sees
+
 ## [0.3.9] - 2026-08-04
 
 ### Features
