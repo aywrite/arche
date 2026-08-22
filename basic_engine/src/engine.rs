@@ -122,6 +122,10 @@ pub struct AlphaBeta {
     pub ghi: GhiCounters,
     start_time: time::Instant,
     search_duration: Option<time::Duration>,
+    /// The clock limit of the search call under way. search() takes it
+    /// from search_duration, which configure() set; the deepening loop
+    /// chooses it per iteration, and neither disturbs the other
+    deadline: Option<time::Duration>,
     /// The nodes this search call may visit, u64::MAX for no limit.
     node_budget: u64,
     /// The node count at which the limits are looked at next: every
@@ -140,6 +144,7 @@ impl AlphaBeta {
             ghi: GhiCounters::default(),
             start_time: time::Instant::now(),
             search_duration: None,
+            deadline: None,
             node_budget: u64::MAX,
             next_check: 0,
         }
@@ -165,7 +170,7 @@ impl AlphaBeta {
         if self.nodes >= self.node_budget {
             return Err(Aborted);
         }
-        if let Some(search_time) = self.search_duration {
+        if let Some(search_time) = self.deadline {
             if self.start_time.elapsed() >= search_time {
                 return Err(Aborted);
             }
@@ -534,7 +539,7 @@ impl AlphaBeta {
         node_budget: u64,
         deadline: Option<time::Duration>,
     ) -> SearchOutcome {
-        self.search_duration = deadline;
+        self.deadline = deadline;
         self.node_budget = node_budget;
         self.next_check = 0;
         self.nodes = 0;
@@ -708,15 +713,11 @@ impl Engine for AlphaBeta {
                 (u64::MAX, None)
             };
             match self.search_within(depth, node_budget, deadline) {
-                SearchOutcome::Aborted(partial) => {
-                    // A completed shallower iteration outranks the interrupted
-                    // one's best-so-far, which may be a fail high that never
-                    // got re-searched. The partial only fills in when depth 1
-                    // itself ran out of time.
-                    return SearchOutcome::Aborted(best.or(partial.map(|mut result| {
-                        result.nodes += total_nodes;
-                        result
-                    })));
+                SearchOutcome::Aborted(_) => {
+                    // the interrupted iteration's best-so-far is discarded: a
+                    // completed shallower iteration outranks it, and depth one
+                    // runs without limits so there always is one
+                    return SearchOutcome::Aborted(best);
                 }
                 SearchOutcome::GameOver => {
                     // checkmate, stalemate or a rule draw: deeper searches
@@ -926,13 +927,13 @@ pub enum SearchOutcome {
     /// The root has no play to make: checkmate, stalemate, or a rule draw.
     /// Searching deeper cannot change it.
     GameOver,
-    /// The deadline arrived partway through, carrying a best-so-far when the
+    /// A limit ran out partway through, carrying a best-so-far when the
     /// root got far enough to have one. Weaker than any Complete result: the
     /// play may be a fail high that never got re-searched.
     Aborted(Option<SearchResult>),
 }
 
-/// The search hit its deadline and unwound without finishing. The score of an
+/// The search hit a limit and unwound without finishing. The score of an
 /// aborted frame is meaningless, and returning this instead of a score is what
 /// keeps it out of the transposition table: propagation with `?` never reaches
 /// the stores.
@@ -1237,6 +1238,22 @@ mod search {
             outcome
         );
         assert_eq!(depths, vec![1]);
+    }
+
+    #[test]
+    fn deepening_leaves_the_configured_deadline_alone() {
+        // the deadline a deepening was given stays configured for a direct
+        // search() afterwards: the iterations choose their own limits, and
+        // the last one's exemption must not be what is left behind
+        let mut e = engine(Board::new());
+        let mut options = SearchParameters::new_with_depth(1);
+        options.search_duration = Some(time::Duration::ZERO);
+        let outcome = e.iterative_deepening_search(options, |_, _, _| {});
+        assert!(matches!(outcome, SearchOutcome::Complete(_)));
+        assert!(
+            matches!(e.search(5), SearchOutcome::Aborted(None)),
+            "the configured deadline no longer applies"
+        );
     }
 
     #[test]
