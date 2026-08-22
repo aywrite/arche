@@ -499,6 +499,14 @@ impl AlphaBeta {
     /// come from a line whose repetition and fifty move context differ from
     /// the game being played, and the answer must not depend on one.
     pub fn search(&mut self, depth: u8) -> SearchOutcome {
+        self.search_within(depth, self.search_duration)
+    }
+
+    /// One fixed depth search under the limits given for it. `search` passes
+    /// the configured deadline through; the deepening loop decides per
+    /// iteration, which is how depth one runs with none.
+    fn search_within(&mut self, depth: u8, deadline: Option<time::Duration>) -> SearchOutcome {
+        self.search_duration = deadline;
         self.nodes = 0;
         self.selective_depth = depth;
         self.board.line_ply = 0;
@@ -655,7 +663,15 @@ impl Engine for AlphaBeta {
         self.configure(search_options.start_time, search_options.search_duration);
 
         for depth in 1..=max_depth {
-            match self.search(depth) {
+            // a limit is only armed once a completed iteration is in hand:
+            // whatever the clock says the answer has to be a legal move, and
+            // depth one is the few dozen nodes that make sure there is one
+            let deadline = if best.is_some() {
+                search_options.search_duration
+            } else {
+                None
+            };
+            match self.search_within(depth, deadline) {
                 SearchOutcome::Aborted(partial) => {
                     // A completed shallower iteration outranks the interrupted
                     // one's best-so-far, which may be a fail high that never
@@ -913,7 +929,7 @@ mod search {
     use super::Board;
     use super::Engine;
     use super::Game;
-    use super::{Bound, Play, Pv, SearchOutcome, SearchResult};
+    use super::{Bound, Play, Pv, SearchOutcome, SearchParameters, SearchResult};
     use crate::board::{fens, play_named};
     use pretty_assertions::assert_eq;
     use std::time;
@@ -1167,6 +1183,24 @@ mod search {
         let mut e = engine(Board::new());
         e.configure(time::Instant::now(), Some(time::Duration::ZERO));
         assert!(matches!(e.search(5), SearchOutcome::Aborted(None)));
+    }
+
+    #[test]
+    fn deepening_with_no_time_budget_still_answers_depth_one() {
+        // a clock that has already run out must still get a legal move back:
+        // depth one is a few dozen nodes, so it runs whatever the clock says,
+        // and only then is the budget allowed to stop anything
+        let mut e = engine(Board::new());
+        let mut options = SearchParameters::new();
+        options.search_duration = Some(time::Duration::ZERO);
+        let mut depths = Vec::new();
+        let outcome = e.iterative_deepening_search(options, |depth, _, _| depths.push(depth));
+        assert!(
+            matches!(outcome, SearchOutcome::Aborted(Some(_))),
+            "expected a move from depth one, got {:?}",
+            outcome
+        );
+        assert_eq!(depths, vec![1]);
     }
 
     #[test]
