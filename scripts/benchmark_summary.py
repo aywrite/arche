@@ -68,6 +68,11 @@ def percent(change):
 
 
 def main():
+    # criterion writes utf-8, a minus sign and a micro sign among it, whatever
+    # the console's own encoding is. Read and write the same way, so a windows
+    # clone parses the sign rather than a mangled one and prints the table
+    sys.stdin.reconfigure(encoding="utf-8")
+    sys.stdout.reconfigure(encoding="utf-8")
     results = list(parse(sys.stdin))
     if not results:
         print("No benchmark comparison was produced.")

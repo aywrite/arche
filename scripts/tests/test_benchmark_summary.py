@@ -57,7 +57,9 @@ def run(text):
         input=text,
         check=False,
         capture_output=True,
-        text=True,
+        # the fixture carries criterion's minus sign, which the console
+        # encoding of a windows clone cannot hold
+        encoding="utf-8",
     )
 
 
