@@ -6,7 +6,7 @@ use super::misc::{
 use super::play::Play;
 use crate::Game;
 use crate::magic::Magic;
-use crate::pvt::PieceValueTables;
+use crate::psqt::PieceSquareTables;
 use crate::zobrist::Zobrist;
 use smallvec::SmallVec;
 use std::fmt;
@@ -71,7 +71,7 @@ const F8: u8 = 61;
 const G8: u8 = 62;
 const H8: u8 = 63;
 
-static PVT: PieceValueTables = PieceValueTables::TABLES;
+static PIECE_SQUARE_TABLES: PieceSquareTables = PieceSquareTables::TABLES;
 static ZOBRIST: Zobrist = Zobrist::TABLE;
 
 static ATTACK_MASKS: LazyLock<AttackMasks> = LazyLock::new(AttackMasks::new);
@@ -704,8 +704,12 @@ impl Board {
             let index = pop_lsb(&mut occupied);
             if let Some((piece, color)) = self.get_piece_and_color_index(index) {
                 total += i32::from(match color {
-                    Color::White => PVT.get_value(index as usize, piece, Color::White),
-                    Color::Black => -PVT.get_value(index as usize, piece, Color::Black),
+                    Color::White => {
+                        PIECE_SQUARE_TABLES.get_value(index as usize, piece, Color::White)
+                    }
+                    Color::Black => {
+                        -PIECE_SQUARE_TABLES.get_value(index as usize, piece, Color::Black)
+                    }
                 });
             }
         }
@@ -1248,8 +1252,8 @@ impl Board {
         let zobrist: &Zobrist = &ZOBRIST;
         self.key ^= zobrist.get_piece_key(index, piece, color);
         self.psqt += i32::from(match color {
-            Color::White => PVT.get_value(index as usize, piece, Color::White),
-            Color::Black => -PVT.get_value(index as usize, piece, Color::Black),
+            Color::White => PIECE_SQUARE_TABLES.get_value(index as usize, piece, Color::White),
+            Color::Black => -PIECE_SQUARE_TABLES.get_value(index as usize, piece, Color::Black),
         });
         match piece {
             Piece::Pawn => self.pawns.set_bit(index),
@@ -1282,8 +1286,8 @@ impl Board {
         let zobrist: &Zobrist = &ZOBRIST;
         self.key ^= zobrist.get_piece_key(index, piece, color);
         self.psqt -= i32::from(match color {
-            Color::White => PVT.get_value(index as usize, piece, Color::White),
-            Color::Black => -PVT.get_value(index as usize, piece, Color::Black),
+            Color::White => PIECE_SQUARE_TABLES.get_value(index as usize, piece, Color::White),
+            Color::Black => -PIECE_SQUARE_TABLES.get_value(index as usize, piece, Color::Black),
         });
         match piece {
             Piece::Pawn => self.pawns.clear_bit(index),

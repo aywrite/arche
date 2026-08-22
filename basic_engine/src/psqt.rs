@@ -96,7 +96,7 @@ const QUEENS: [i16; 64] = [
 /// the ten tables are then 1280 bytes rather than 5120 and stay in L1 alongside
 /// everything else the search is touching. The values run from -50 to 50, so the
 /// narrower type costs nothing.
-pub struct PieceValueTables {
+pub struct PieceSquareTables {
     white_pawns: [i16; 64],
     black_pawns: [i16; 64],
 
@@ -113,7 +113,7 @@ pub struct PieceValueTables {
     black_queens: [i16; 64],
 }
 
-impl PieceValueTables {
+impl PieceSquareTables {
     #[inline]
     pub fn get_value(&self, index: usize, piece: Piece, color: Color) -> i16 {
         match (piece, color) {
@@ -133,7 +133,7 @@ impl PieceValueTables {
 
     /// Built at compile time, so there is nothing to construct on startup and
     /// nothing to synchronise on when reading it.
-    pub const TABLES: PieceValueTables = PieceValueTables {
+    pub const TABLES: PieceSquareTables = PieceSquareTables {
         white_pawns: mirror(&PAWNS),
         black_pawns: PAWNS,
         white_knights: mirror(&KNIGHTS),
@@ -155,7 +155,7 @@ mod tests {
 
     fn value(piece: Piece, color: Color, file: File, rank: u8) -> i16 {
         let index = coordinate_to_index(rank, file) as usize;
-        PieceValueTables::TABLES.get_value(index, piece, color)
+        PieceSquareTables::TABLES.get_value(index, piece, color)
     }
 
     /// The tables are written with the eighth rank first and the board indexes

@@ -4,7 +4,7 @@ mod engine;
 mod magic;
 mod misc;
 mod play;
-mod pvt;
+mod psqt;
 mod zobrist;
 
 pub use board::Board;
