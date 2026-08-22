@@ -2,7 +2,7 @@
 
 All notable changes to this project will be documented in this file.
 
-## [0.3.10-rc.1] - 2026-08-22
+## [0.3.10] - 2026-08-22
 
 ### Bug Fixes
 
@@ -15,6 +15,7 @@ All notable changes to this project will be documented in this file.
 - *(search)* Evade checks in quiescence instead of standing pat
 - *(board)* Tighten the bitboard index asserts to reject 64
 - *(search)* Store the root entry past the depth contest
+- *(uci)* Report nodes for the whole search rather than one iteration
 
 ### Performance
 
