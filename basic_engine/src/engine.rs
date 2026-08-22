@@ -8,6 +8,8 @@ use std::time;
 
 const CHECKMATE_SCORE: Score = 30_000;
 const MAX_DEPTH: u8 = 20;
+/// How many nodes pass between reads of the clock.
+const POLL_INTERVAL: u64 = 3000;
 const DEFAULT_TABLE_BYTES: usize = 256 * 1024 * 1024;
 // Any score this close to CHECKMATE_SCORE is a forced mate. Regular evals are
 // bounded by the material on the board, which cannot come near it.
@@ -75,6 +77,9 @@ pub trait Engine {
 pub struct SearchParameters {
     pub depth: Option<u8>,
     pub search_duration: Option<time::Duration>,
+    /// The most nodes the whole search may visit, or none. Depth one runs
+    /// regardless, so an answer always exists.
+    pub nodes: Option<u64>,
     pub start_time: time::Instant,
 }
 
@@ -89,6 +94,7 @@ impl SearchParameters {
         Self {
             depth: None,
             search_duration: None,
+            nodes: None,
             start_time: time::Instant::now(),
         }
     }
@@ -97,6 +103,7 @@ impl SearchParameters {
         Self {
             depth: Some(depth),
             search_duration: None,
+            nodes: None,
             start_time: time::Instant::now(),
         }
     }
@@ -115,6 +122,11 @@ pub struct AlphaBeta {
     pub ghi: GhiCounters,
     start_time: time::Instant,
     search_duration: Option<time::Duration>,
+    /// The nodes this search call may visit, u64::MAX for no limit.
+    node_budget: u64,
+    /// The node count at which the limits are looked at next: every
+    /// POLL_INTERVAL nodes for the clock, and the budget itself, exactly.
+    next_check: u64,
 }
 
 impl AlphaBeta {
@@ -128,6 +140,8 @@ impl AlphaBeta {
             ghi: GhiCounters::default(),
             start_time: time::Instant::now(),
             search_duration: None,
+            node_budget: u64::MAX,
+            next_check: 0,
         }
     }
 
@@ -139,16 +153,24 @@ impl AlphaBeta {
         self.moves.clear();
     }
 
-    /// Cooperative deadline check, polled every few thousand nodes so the
-    /// clock is not read on every one of them.
-    fn poll_deadline(&self) -> Result<(), Aborted> {
-        if self.nodes % 3000 == 0 {
-            if let Some(search_time) = self.search_duration {
-                if self.start_time.elapsed() >= search_time {
-                    return Err(Aborted);
-                }
+    /// Cooperative limit check. The clock is read every POLL_INTERVAL nodes
+    /// rather than on every one, and the node budget is checked on the node
+    /// it names, which is what lets a fixed node search stop on that node.
+    /// The count is incremented after this is asked, so a budget of n is n
+    /// nodes visited.
+    fn poll_deadline(&mut self) -> Result<(), Aborted> {
+        if self.nodes < self.next_check {
+            return Ok(());
+        }
+        if self.nodes >= self.node_budget {
+            return Err(Aborted);
+        }
+        if let Some(search_time) = self.search_duration {
+            if self.start_time.elapsed() >= search_time {
+                return Err(Aborted);
             }
         }
+        self.next_check = (self.nodes + POLL_INTERVAL).min(self.node_budget);
         Ok(())
     }
 
@@ -499,14 +521,22 @@ impl AlphaBeta {
     /// come from a line whose repetition and fifty move context differ from
     /// the game being played, and the answer must not depend on one.
     pub fn search(&mut self, depth: u8) -> SearchOutcome {
-        self.search_within(depth, self.search_duration)
+        self.search_within(depth, u64::MAX, self.search_duration)
     }
 
     /// One fixed depth search under the limits given for it. `search` passes
-    /// the configured deadline through; the deepening loop decides per
-    /// iteration, which is how depth one runs with none.
-    fn search_within(&mut self, depth: u8, deadline: Option<time::Duration>) -> SearchOutcome {
+    /// the configured deadline through with no node budget; the deepening
+    /// loop decides both per iteration, which is how depth one runs with
+    /// neither.
+    fn search_within(
+        &mut self,
+        depth: u8,
+        node_budget: u64,
+        deadline: Option<time::Duration>,
+    ) -> SearchOutcome {
         self.search_duration = deadline;
+        self.node_budget = node_budget;
+        self.next_check = 0;
         self.nodes = 0;
         self.selective_depth = depth;
         self.board.line_ply = 0;
@@ -666,12 +696,18 @@ impl Engine for AlphaBeta {
             // a limit is only armed once a completed iteration is in hand:
             // whatever the clock says the answer has to be a legal move, and
             // depth one is the few dozen nodes that make sure there is one
-            let deadline = if best.is_some() {
-                search_options.search_duration
+            let (node_budget, deadline) = if best.is_some() {
+                (
+                    search_options
+                        .nodes
+                        .map(|limit| limit.saturating_sub(total_nodes))
+                        .unwrap_or(u64::MAX),
+                    search_options.search_duration,
+                )
             } else {
-                None
+                (u64::MAX, None)
             };
-            match self.search_within(depth, deadline) {
+            match self.search_within(depth, node_budget, deadline) {
                 SearchOutcome::Aborted(partial) => {
                     // A completed shallower iteration outranks the interrupted
                     // one's best-so-far, which may be a fail high that never
@@ -1204,6 +1240,52 @@ mod search {
     }
 
     #[test]
+    fn a_node_budget_stops_the_search_on_exactly_that_node() {
+        let mut e = engine(Board::new());
+        let limit = 5_000;
+        let mut options = SearchParameters::new();
+        options.nodes = Some(limit);
+        let mut completed: u64 = 0;
+        let outcome =
+            e.iterative_deepening_search(options, |_, result, _| completed = result.nodes);
+        assert!(matches!(outcome, SearchOutcome::Aborted(Some(_))));
+        // the reported total is the last completed depth's, and the aborted
+        // iteration's own count is still on the engine: together they are
+        // every node visited, and that has to be the budget to the node
+        assert_eq!(completed + e.nodes, limit);
+    }
+
+    #[test]
+    fn a_node_budget_too_small_for_depth_one_still_answers_a_move() {
+        let mut e = engine(Board::new());
+        let mut options = SearchParameters::new();
+        options.nodes = Some(0);
+        let mut depths = Vec::new();
+        let outcome = e.iterative_deepening_search(options, |depth, _, _| depths.push(depth));
+        assert!(matches!(outcome, SearchOutcome::Aborted(Some(_))));
+        assert_eq!(depths, vec![1]);
+    }
+
+    #[test]
+    fn a_node_budget_and_a_depth_stop_at_whichever_comes_first() {
+        let mut e = engine(Board::new());
+        let mut options = SearchParameters::new_with_depth(2);
+        options.nodes = Some(1_000_000);
+        assert!(matches!(
+            e.iterative_deepening_search(options, |_, _, _| {}),
+            SearchOutcome::Complete(_)
+        ));
+
+        let mut e = engine(Board::new());
+        let mut options = SearchParameters::new_with_depth(super::MAX_DEPTH);
+        options.nodes = Some(1_000);
+        let mut last_depth = 0;
+        let outcome = e.iterative_deepening_search(options, |depth, _, _| last_depth = depth);
+        assert!(matches!(outcome, SearchOutcome::Aborted(Some(_))));
+        assert!(last_depth < super::MAX_DEPTH);
+    }
+
+    #[test]
     fn timed_out_deepening_still_returns_a_move() {
         // The budget runs out long before MAX_DEPTH can complete, so the
         // deepening loop ends on an Aborted outcome and must fall back to a
@@ -1213,6 +1295,7 @@ mod search {
         let params = SearchParameters {
             depth: None,
             search_duration: Some(time::Duration::from_millis(50)),
+            nodes: None,
             start_time: time::Instant::now(),
         };
         let outcome = e.iterative_deepening_search(params, |_, _, _| {});
