@@ -167,6 +167,15 @@ impl AlphaBeta {
         if self.nodes < self.next_check {
             return Ok(());
         }
+        self.check_limits()
+    }
+
+    /// The slow half of poll_deadline, kept out of the search's own code:
+    /// reading the clock and arming the next check happen once in thousands
+    /// of nodes, and inlined at every poll they only made the hot loop larger.
+    #[cold]
+    #[inline(never)]
+    fn check_limits(&mut self) -> Result<(), Aborted> {
         if self.nodes >= self.node_budget {
             return Err(Aborted);
         }
@@ -175,7 +184,10 @@ impl AlphaBeta {
                 return Err(Aborted);
             }
         }
-        self.next_check = (self.nodes + POLL_INTERVAL).min(self.node_budget);
+        self.next_check = self
+            .nodes
+            .saturating_add(POLL_INTERVAL)
+            .min(self.node_budget);
         Ok(())
     }
 
@@ -1258,17 +1270,53 @@ mod search {
 
     #[test]
     fn a_node_budget_stops_the_search_on_exactly_that_node() {
+        // a spread of budgets, so the last node falls in the full search and
+        // in quiescence by turns, and now and then exactly on the end of an
+        // iteration, which leaves the next one nothing and aborts it at once
+        for limit in (50..6_000).step_by(97) {
+            let mut e = engine(Board::new());
+            let mut options = SearchParameters::new();
+            options.nodes = Some(limit);
+            let mut completed: u64 = 0;
+            let outcome =
+                e.iterative_deepening_search(options, |_, result, _| completed = result.nodes);
+            assert!(
+                matches!(outcome, SearchOutcome::Aborted(Some(_))),
+                "{}",
+                limit
+            );
+            // the reported total is the last completed depth's, and the
+            // aborted iteration's own count is still on the engine: together
+            // they are every node visited, and that has to be the budget to
+            // the node
+            assert_eq!(completed + e.nodes, limit, "budget {}", limit);
+        }
+    }
+
+    #[test]
+    fn a_node_budget_and_a_clock_stop_at_whichever_comes_first() {
+        // the clock wins: a spent clock and a generous budget end after
+        // depth one, which runs whatever either says
         let mut e = engine(Board::new());
-        let limit = 5_000;
+        let mut options = SearchParameters::new();
+        options.nodes = Some(1_000_000);
+        options.search_duration = Some(time::Duration::ZERO);
+        let mut depths = Vec::new();
+        let outcome = e.iterative_deepening_search(options, |depth, _, _| depths.push(depth));
+        assert!(matches!(outcome, SearchOutcome::Aborted(Some(_))));
+        assert_eq!(depths, vec![1]);
+
+        // the budget wins: a clock with time to spare and a small budget stop
+        // on the budget's node
+        let mut e = engine(Board::new());
+        let limit = 1_000;
         let mut options = SearchParameters::new();
         options.nodes = Some(limit);
+        options.search_duration = Some(time::Duration::from_secs(10));
         let mut completed: u64 = 0;
         let outcome =
             e.iterative_deepening_search(options, |_, result, _| completed = result.nodes);
         assert!(matches!(outcome, SearchOutcome::Aborted(Some(_))));
-        // the reported total is the last completed depth's, and the aborted
-        // iteration's own count is still on the engine: together they are
-        // every node visited, and that has to be the budget to the node
         assert_eq!(completed + e.nodes, limit);
     }
 
