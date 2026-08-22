@@ -7,7 +7,7 @@ use super::play::Play;
 use crate::Game;
 use crate::magic::Magic;
 use crate::pvt::PieceValueTables;
-use crate::zorbrist::Zorbrist;
+use crate::zobrist::Zobrist;
 use smallvec::SmallVec;
 use std::fmt;
 use std::sync::LazyLock;
@@ -72,7 +72,7 @@ const G8: u8 = 62;
 const H8: u8 = 63;
 
 static PVT: PieceValueTables = PieceValueTables::TABLES;
-static ZORB: Zorbrist = Zorbrist::TABLE;
+static ZOBRIST: Zobrist = Zobrist::TABLE;
 
 static ATTACK_MASKS: LazyLock<AttackMasks> = LazyLock::new(AttackMasks::new);
 pub static BASE_CONVERSIONS: LazyLock<BaseConversions> = LazyLock::new(BaseConversions::new);
@@ -678,15 +678,15 @@ impl Board {
         while occupied != 0 {
             let index = pop_lsb(&mut occupied);
             if let Some((piece, color)) = self.get_piece_and_color_index(index) {
-                key ^= ZORB.get_piece_key(index, piece, color);
+                key ^= ZOBRIST.get_piece_key(index, piece, color);
             }
         }
         if matches!(self.active_color, Color::Black) {
-            key ^= ZORB.side;
+            key ^= ZOBRIST.side;
         }
-        key ^= ZORB.castle_key(self.castle);
+        key ^= ZOBRIST.castle_key(self.castle);
         if let Some(en_passant) = self.en_passant {
-            key ^= ZORB.en_passant_key(en_passant.as_index());
+            key ^= ZOBRIST.en_passant_key(en_passant.as_index());
         }
         key
     }
@@ -837,7 +837,7 @@ impl Board {
         });
 
         let opposing_color = !self.active_color;
-        let zorb: &Zorbrist = &ZORB;
+        let zobrist: &Zobrist = &ZOBRIST;
         // update castling permissions
         let old_castle = self.castle;
         match play.from {
@@ -866,10 +866,10 @@ impl Board {
         }
         // XORing both the old and new castle keys removes the old permissions
         // from the position key and adds the new ones (a no-op when unchanged)
-        self.key ^= zorb.castle_key(old_castle) ^ zorb.castle_key(self.castle);
+        self.key ^= zobrist.castle_key(old_castle) ^ zobrist.castle_key(self.castle);
         if let Some(en_passant) = self.en_passant {
             // the en passant rights of the previous position have expired
-            self.key ^= zorb.en_passant_key(en_passant.as_index());
+            self.key ^= zobrist.en_passant_key(en_passant.as_index());
         }
         self.en_passant = None;
         self.fifty_move_rule += 1;
@@ -888,7 +888,7 @@ impl Board {
                 };
                 if self.pawn_can_capture_on(passed, opposing_color) {
                     self.en_passant = Some(Coordinate::from_index(passed));
-                    self.key ^= zorb.en_passant_key(passed);
+                    self.key ^= zobrist.en_passant_key(passed);
                 }
             }
             if play.en_passant {
@@ -954,7 +954,7 @@ impl Board {
             || attack_masks.straight[king_index as usize].is_bit_set(play.from)
             || attack_masks.diagonal[king_index as usize].is_bit_set(play.from);
         self.active_color = opposing_color;
-        self.key ^= zorb.side;
+        self.key ^= zobrist.side;
         self.debug_assert_state_in_step();
         debug_assert!(
             could_expose_king || !self.square_attacked(king_index, opposing_color),
@@ -1245,8 +1245,8 @@ impl Board {
     fn set_piece_index(&mut self, index: u8, piece: Piece, color: Color) {
         debug_assert!(!self.black.is_bit_set(index));
         debug_assert!(!self.white.is_bit_set(index));
-        let zorb: &Zorbrist = &ZORB;
-        self.key ^= zorb.get_piece_key(index, piece, color);
+        let zobrist: &Zobrist = &ZOBRIST;
+        self.key ^= zobrist.get_piece_key(index, piece, color);
         self.psqt += i32::from(match color {
             Color::White => PVT.get_value(index as usize, piece, Color::White),
             Color::Black => -PVT.get_value(index as usize, piece, Color::Black),
@@ -1279,8 +1279,8 @@ impl Board {
     #[inline]
     fn clear_piece_index(&mut self, index: u8, piece: Piece, color: Color) {
         debug_assert!((self.black | self.white).is_bit_set(index));
-        let zorb: &Zorbrist = &ZORB;
-        self.key ^= zorb.get_piece_key(index, piece, color);
+        let zobrist: &Zobrist = &ZOBRIST;
+        self.key ^= zobrist.get_piece_key(index, piece, color);
         self.psqt -= i32::from(match color {
             Color::White => PVT.get_value(index as usize, piece, Color::White),
             Color::Black => -PVT.get_value(index as usize, piece, Color::Black),
@@ -1540,14 +1540,14 @@ impl Game for Board {
         // comparable between boards parsed from FEN and boards reached by
         // playing moves
         if matches!(board.active_color, Color::Black) {
-            board.key ^= ZORB.side;
+            board.key ^= ZOBRIST.side;
         }
-        board.key ^= ZORB.castle_key(board.castle);
+        board.key ^= ZOBRIST.castle_key(board.castle);
         // the same rule as make_move, or a position parsed and the same one
         // played would not hash alike, which is worse than what is being fixed
         if let Some(en_passant) = board.en_passant {
             if board.pawn_can_capture_on(en_passant.as_index(), board.active_color) {
-                board.key ^= ZORB.en_passant_key(en_passant.as_index());
+                board.key ^= ZOBRIST.en_passant_key(en_passant.as_index());
             } else {
                 board.en_passant = None;
             }
@@ -1883,14 +1883,14 @@ mod position_key {
     #[cfg(debug_assertions)]
     #[should_panic(expected = "en passant square no pawn can take")]
     fn an_en_passant_square_no_pawn_can_take_fails_the_state_check() {
-        use super::{Coordinate, ZORB};
+        use super::{Coordinate, ZOBRIST};
         let mut board = Board::new();
         // e6 is out of reach of every white pawn at the start. Hash the bogus
         // square into the key as well as the field, so the key still matches
         // its recompute and only the rule itself can object: this is exactly
         // the corruption the recompute comparison is blind to.
         board.en_passant = Coordinate::from_string("e6").unwrap();
-        board.key ^= ZORB.en_passant_key(board.en_passant.unwrap().as_index());
+        board.key ^= ZOBRIST.en_passant_key(board.en_passant.unwrap().as_index());
         board.debug_assert_state_in_step();
     }
 

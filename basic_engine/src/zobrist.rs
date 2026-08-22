@@ -1,18 +1,18 @@
 use crate::Color;
 use crate::misc::{CastlePermissions, Piece, split_mix};
 
-pub struct Zorbrist {
+pub struct Zobrist {
     pieces: [[u64; 64]; 12],
     pub side: u64,
     castling: [u64; 4],
     en_passant: [u64; 8],
 }
 
-impl Zorbrist {
+impl Zobrist {
     /// The keys, built at compile time. They only have to be well spread and
     /// the same on both sides of a game, so there is nothing to be gained from
     /// drawing them at startup.
-    pub const TABLE: Zorbrist = Self::build(0x3865_5440_d1b6_3d78);
+    pub const TABLE: Zobrist = Self::build(0x3865_5440_d1b6_3d78);
 
     const fn build(seed: u64) -> Self {
         let mut state = seed;
@@ -96,7 +96,7 @@ impl Zorbrist {
 
 #[cfg(test)]
 mod keys {
-    use super::Zorbrist;
+    use super::Zobrist;
     use pretty_assertions::assert_eq;
 
     /// The keys are constants rather than draws now, so this guards the seed and
@@ -104,7 +104,7 @@ mod keys {
     /// different positions share a hash.
     #[test]
     fn every_key_is_distinct() {
-        let z = Zorbrist::TABLE;
+        let z = Zobrist::TABLE;
         let mut all = z.pieces.iter().flatten().copied().collect::<Vec<u64>>();
         all.push(z.side);
         all.extend(z.castling);
