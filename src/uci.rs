@@ -137,7 +137,10 @@ impl<T: Engine, W: Write> UCI<T, W> {
         } else if line.starts_with("perft") {
             let depth = perft_depth(line);
             let nodes = self.engine.perft(depth);
-            self.say(format_args!("info string perft depth {} nodes {}", depth, nodes));
+            self.say(format_args!(
+                "info string perft depth {} nodes {}",
+                depth, nodes
+            ));
         } else {
             self.say(format_args!("info string unrecognised command: {}", line));
         }
@@ -317,6 +320,76 @@ mod tests {
         // ever, so reaching the end of this call is the assertion
         let mut uci = uci();
         uci.run(Cursor::new("uci\nisready\nposition startpos\ngo depth 1\n"));
+    }
+
+    #[test]
+    fn the_handshake_identifies_the_engine_and_ends_with_uciok() {
+        let mut uci = uci();
+        uci.handle("uci");
+        let said = said(&uci);
+        let lines: Vec<&str> = said.lines().collect();
+        assert_eq!(lines.len(), 3);
+        assert!(lines[0].starts_with("id name arche "));
+        assert!(lines[1].starts_with("id author "));
+        assert_eq!(lines[2], "uciok");
+    }
+
+    #[test]
+    fn isready_is_answered_with_readyok_alone() {
+        let mut uci = uci();
+        uci.handle("isready");
+        assert_eq!(said(&uci), "readyok\n");
+    }
+
+    #[test]
+    fn a_search_reports_each_depth_and_then_its_move() {
+        let mut uci = uci();
+        uci.run(Cursor::new("position startpos\ngo depth 3\n"));
+        let said = said(&uci);
+        let lines: Vec<&str> = said.lines().collect();
+        assert_eq!(lines.len(), 4, "a depth three search speaks four lines");
+        for line in &lines[..3] {
+            assert!(
+                line.starts_with("info depth "),
+                "not an info line: {}",
+                line
+            );
+        }
+        assert!(lines[3].starts_with("bestmove "));
+    }
+
+    #[test]
+    fn a_position_with_no_legal_moves_reports_the_null_move() {
+        for fen in [
+            "7k/6Q1/6K1/8/8/8/8/8 b - - 0 1", // checkmate
+            "7k/5Q2/6K1/8/8/8/8/8 b - - 0 1", // stalemate
+        ] {
+            let mut uci = uci();
+            uci.run(Cursor::new(format!("position fen {}\ngo depth 1\n", fen)));
+            let said = said(&uci);
+            assert!(
+                said.contains("info string no legal moves identified"),
+                "{}",
+                fen
+            );
+            assert!(said.ends_with("bestmove 0000\n"), "{}: {}", fen, said);
+        }
+    }
+
+    #[test]
+    fn what_could_not_be_acted_on_is_reported_as_an_info_string() {
+        let mut uci = uci();
+        uci.run(Cursor::new("position wibble\nwobble\n"));
+        let said = said(&uci);
+        assert!(said.contains("info string unrecognised position: wibble"));
+        assert!(said.contains("info string unrecognised command: wobble"));
+    }
+
+    #[test]
+    fn a_perft_command_reports_its_count() {
+        let mut uci = uci();
+        uci.run(Cursor::new("position startpos\nperft 2\n"));
+        assert_eq!(said(&uci), "info string perft depth 2 nodes 400\n");
     }
 
     #[test]
