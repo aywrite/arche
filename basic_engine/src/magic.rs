@@ -234,7 +234,7 @@ impl BlockerBoards {
 
 impl BlockerMasks {
     fn new() -> Self {
-        let mut am = BlockerMasks {
+        let mut blocker_masks = BlockerMasks {
             straight: [0; 64], // rooks and queens
             diagonal: [0; 64], // bishops and queens
         };
@@ -242,8 +242,8 @@ impl BlockerMasks {
             for j in 1..7 {
                 let horizontal_index = (i / 8 * 8) + j;
                 let vertical_index = (i % 8) + (j * 8);
-                am.straight[i].set_bit(horizontal_index as u8);
-                am.straight[i].set_bit(vertical_index as u8);
+                blocker_masks.straight[i].set_bit(horizontal_index as u8);
+                blocker_masks.straight[i].set_bit(vertical_index as u8);
             }
 
             let directions = [9isize, -9, 11, -11];
@@ -258,13 +258,13 @@ impl BlockerMasks {
                         break; // if the next one is offboard then break now before setting the bit
                         // since a piece on the edge in direction of movement can't block
                     };
-                    am.diagonal[i].set_bit(check_index);
+                    blocker_masks.diagonal[i].set_bit(check_index);
                 }
             }
-            am.diagonal[i].clear_bit(i as u8); // can't be blocked by self
-            am.straight[i].clear_bit(i as u8); // can't be blocked by self
+            blocker_masks.diagonal[i].clear_bit(i as u8); // can't be blocked by self
+            blocker_masks.straight[i].clear_bit(i as u8); // can't be blocked by self
         }
-        am
+        blocker_masks
     }
 }
 
