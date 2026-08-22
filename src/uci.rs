@@ -5,7 +5,7 @@ use basic_engine::SearchOutcome;
 use basic_engine::SearchParameters;
 use basic_engine::{PvLine, SearchResult};
 use regex::Regex;
-use std::io::BufRead;
+use std::io::{BufRead, Stdout, Write};
 use std::sync::LazyLock;
 use std::time::Duration;
 
@@ -29,14 +29,6 @@ fn capture(re: &Regex, line: &str) -> Option<u64> {
     Some(digits.parse().unwrap_or(u64::MAX))
 }
 
-/// Tells the interface about anything we could not act on. A bad line is the
-/// interface's problem to fix, so say so and carry on reading.
-fn report(result: Result<(), String>) {
-    if let Err(error) = result {
-        println!("info string {}", error);
-    }
-}
-
 fn time_control_from(line: &str, color: Color) -> TimeControl {
     TimeControl {
         time: match color {
@@ -53,26 +45,49 @@ fn time_control_from(line: &str, color: Color) -> TimeControl {
     }
 }
 
-pub struct UCI<T: Engine> {
+pub struct UCI<T: Engine, W: Write> {
     author: String,
     name: String,
     version: String,
 
     engine: T,
+    out: W,
 }
 
-impl<T: Engine> UCI<T> {
+impl<T: Engine> UCI<T, Stdout> {
     pub fn new_with_engine(engine: T) -> Self {
+        Self::with_output(engine, std::io::stdout())
+    }
+}
+
+impl<T: Engine, W: Write> UCI<T, W> {
+    /// Separate from new_with_engine so that what is said can be captured.
+    fn with_output(engine: T, out: W) -> Self {
         Self {
             author: env!("CARGO_PKG_AUTHORS").to_string(),
             name: env!("CARGO_PKG_NAME").to_string(),
             version: env!("CARGO_PKG_VERSION").to_string(),
             engine,
+            out,
         }
     }
 
     pub fn read_loop(&mut self) {
         self.run(std::io::stdin().lock());
+    }
+
+    /// Writes one line to the interface. A failed write means the interface
+    /// itself is gone, which leaves no one to tell, so the error is dropped.
+    fn say(&mut self, line: std::fmt::Arguments) {
+        let _ = writeln!(self.out, "{}", line);
+    }
+
+    /// Tells the interface about anything we could not act on. A bad line is
+    /// the interface's problem to fix, so say so and carry on reading.
+    fn report(&mut self, result: Result<(), String>) {
+        if let Err(error) = result {
+            self.say(format_args!("info string {}", error));
+        }
     }
 
     /// Handles input until it is exhausted or `quit` arrives. Separate from
@@ -88,7 +103,7 @@ impl<T: Engine> UCI<T> {
                 // there is nothing left to read and no one to tell, so stop
                 // rather than sitting in the loop asking again
                 Err(error) => {
-                    println!("info string could not read input: {}", error);
+                    self.say(format_args!("info string could not read input: {}", error));
                     return;
                 }
             }
@@ -101,18 +116,20 @@ impl<T: Engine> UCI<T> {
             return false;
         }
         if line.starts_with("isready") {
-            println!("readyok");
+            self.say(format_args!("readyok"));
         } else if line.starts_with("ucinewgame") {
             self.engine.new_game();
             let result = self.parse_position("position startpos");
-            report(result);
+            self.report(result);
         } else if line.starts_with("uci") {
-            println!("id name {} {}", self.name, self.version);
-            println!("id author {}", self.author);
-            println!("uciok");
+            // written to the field directly: say borrows all of self, and
+            // these lines also read from it
+            let _ = writeln!(self.out, "id name {} {}", self.name, self.version);
+            let _ = writeln!(self.out, "id author {}", self.author);
+            self.say(format_args!("uciok"));
         } else if line.starts_with("position") {
             let result = self.parse_position(line);
-            report(result);
+            self.report(result);
         } else if line.starts_with("display") {
             self.engine.display_board();
         } else if line.starts_with("go") {
@@ -120,9 +137,9 @@ impl<T: Engine> UCI<T> {
         } else if line.starts_with("perft") {
             let depth = perft_depth(line);
             let nodes = self.engine.perft(depth);
-            println!("info string perft depth {} nodes {}", depth, nodes);
+            self.say(format_args!("info string perft depth {} nodes {}", depth, nodes));
         } else {
-            println!("info string unrecognised command: {}", line);
+            self.say(format_args!("info string unrecognised command: {}", line));
         }
         true
     }
@@ -160,22 +177,25 @@ impl<T: Engine> UCI<T> {
         sp.depth = capture(&DEPTH_RE, line).map(|depth| depth.try_into().unwrap_or(u8::MAX));
 
         let start = sp.start_time;
+        // the closure writes while the engine is borrowed for the search, so
+        // it goes to the writer directly rather than through say
+        let out = &mut self.out;
         let outcome = self
             .engine
             .iterative_deepening_search(sp, |depth, result, pv| {
-                println!("{}", format_info(depth, result, &pv, start.elapsed()));
+                let _ = writeln!(out, "{}", format_info(depth, result, &pv, start.elapsed()));
             });
         match outcome {
             SearchOutcome::Complete(result) | SearchOutcome::Aborted(Some(result)) => {
-                println!("bestmove {}", result.best_move);
+                self.say(format_args!("bestmove {}", result.best_move));
             }
             SearchOutcome::GameOver => {
-                println!("info string no legal moves identified");
+                self.say(format_args!("info string no legal moves identified"));
                 // 0000 is the null move, used to report that there is no move
                 // to make
-                println!("bestmove 0000");
+                self.say(format_args!("bestmove 0000"));
             }
-            SearchOutcome::Aborted(None) => println!("bestmove 0000"),
+            SearchOutcome::Aborted(None) => self.say(format_args!("bestmove 0000")),
         }
     }
 }
@@ -214,9 +234,18 @@ mod tests {
     use basic_engine::{AlphaBeta, Board};
     use std::io::Cursor;
 
-    /// A table small enough that a test can afford one per case.
-    fn uci() -> UCI<AlphaBeta> {
-        UCI::new_with_engine(AlphaBeta::with_table_bytes(Board::new(), 8 * 1024))
+    /// A table small enough that a test can afford one per case, speaking
+    /// into a buffer so that what the interface would see can be asserted.
+    fn uci() -> UCI<AlphaBeta, Vec<u8>> {
+        UCI::with_output(
+            AlphaBeta::with_table_bytes(Board::new(), 8 * 1024),
+            Vec::new(),
+        )
+    }
+
+    /// Everything said so far, as one string.
+    fn said(uci: &UCI<AlphaBeta, Vec<u8>>) -> String {
+        String::from_utf8(uci.out.clone()).unwrap()
     }
 
     #[test]
