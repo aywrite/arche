@@ -184,7 +184,7 @@ struct AttackMasks {
 
 impl AttackMasks {
     fn new() -> Self {
-        let mut am = AttackMasks {
+        let mut attack_masks = AttackMasks {
             black_pawns: [0; 64],
             white_pawns: [0; 64],
             knights: [0; 64],
@@ -224,16 +224,16 @@ impl AttackMasks {
 
             for j in &kings {
                 let index = i + j;
-                am.kings[i as usize].set_bit(index as u8);
+                attack_masks.kings[i as usize].set_bit(index as u8);
             }
 
             for j in &white_pawns {
                 let index = i + j;
-                am.white_pawns[i as usize].set_bit(index as u8);
+                attack_masks.white_pawns[i as usize].set_bit(index as u8);
             }
             for j in &black_pawns {
                 let index = i + j;
-                am.black_pawns[i as usize].set_bit(index as u8);
+                attack_masks.black_pawns[i as usize].set_bit(index as u8);
             }
 
             for j in &knights {
@@ -244,7 +244,7 @@ impl AttackMasks {
                     let file_diff = file as isize - new_file as isize;
 
                     if (rank_diff).abs() <= 2 && (file_diff).abs() <= 2 {
-                        am.knights[i as usize].set_bit(index as u8);
+                        attack_masks.knights[i as usize].set_bit(index as u8);
                     };
                 }
             }
@@ -252,8 +252,8 @@ impl AttackMasks {
             for j in 0..8 {
                 let horizontal_index = (i / 8 * 8) + j;
                 let vertical_index = (i % 8) + (j * 8);
-                am.straight[i as usize].set_bit(horizontal_index as u8);
-                am.straight[i as usize].set_bit(vertical_index as u8);
+                attack_masks.straight[i as usize].set_bit(horizontal_index as u8);
+                attack_masks.straight[i as usize].set_bit(vertical_index as u8);
             }
 
             let directions = [9isize, -9, 11, -11];
@@ -267,11 +267,11 @@ impl AttackMasks {
                     };
                     let check_index = BASE_CONVERSIONS.base_100_to_64[check_100_index as usize];
                     j += 1;
-                    am.diagonal[i as usize].set_bit(check_index);
+                    attack_masks.diagonal[i as usize].set_bit(check_index);
                 }
             }
         }
-        am
+        attack_masks
     }
 }
 
