@@ -541,7 +541,9 @@ impl AlphaBeta {
         }
 
         let play = best.expect("any legal move's score beats the opening alpha of Score::MIN + 1");
-        self.moves.set(
+        // stored past the depth contest: this is the move about to be
+        // answered, and the line reported for it is read back from this slot
+        self.moves.set_always(
             self.board.key,
             Pv {
                 play,
@@ -645,7 +647,15 @@ impl Engine for AlphaBeta {
                     return SearchOutcome::GameOver;
                 }
                 SearchOutcome::Complete(result) => {
-                    on_depth(depth, &result, self.pv_line());
+                    let pv = self.pv_line();
+                    // the root's entry was just stored past any leftover, so
+                    // the line the table tells opens with the move answered
+                    debug_assert_eq!(
+                        pv.line.first(),
+                        Some(&result.best_move),
+                        "the reported line disagrees with the best move"
+                    );
+                    on_depth(depth, &result, pv);
                     best = Some(result);
                 }
             }
@@ -794,6 +804,19 @@ impl HashTable {
         }
         self.table[index] = Some((pv, key));
     }
+
+    /// Store without the depth contest above. The root's end-of-iteration
+    /// entry is for this: it names the move the search is about to answer
+    /// with, and the reported line is read back from its slot, so an entry a
+    /// deeper search left there earlier in the game must not outrank it.
+    /// When one did, the engine answered one move while its line opened with
+    /// another, which is a lie the match tools flag. The leftover's extra
+    /// depth is no loss: its score describes repetition and fifty move
+    /// context the game has since moved past.
+    fn set_always(&mut self, key: u64, pv: Pv) {
+        let index = self.index_for(key);
+        self.table[index] = Some((pv, key));
+    }
 }
 
 pub struct PvLine {
@@ -923,6 +946,31 @@ mod search {
         let _ = e.parse_fen("r4rk1/pppb1ppp/4pn2/6N1/3P4/2qBP3/P4PPP/3R1R1K w - - 2 16");
         let result = completed(e.search(7));
         assert!(result.score < -800, "expect bad score got {}", result.score);
+    }
+
+    #[test]
+    fn the_reported_line_opens_with_the_move_actually_answered() {
+        // A deeper entry for the root position, left by an earlier search of
+        // it, used to win the depth contest against the root's own store:
+        // the table then told a line opening with the leftover's move while
+        // bestmove answered the fresh one, and the two disagreed in front of
+        // whatever was relaying the search. Here the queen hangs, so a fresh
+        // search must answer with the capture, while the planted leftover
+        // claims a quiet king move from a depth no shallow search can beat.
+        let game = Board::from_fen("k7/8/8/3q4/8/8/3R4/K7 w - - 0 1").unwrap();
+        let mut e = engine(game);
+        let quiet = play_named(&e.board, "a1b1");
+        e.moves.set(
+            e.board.key,
+            Pv {
+                depth: 14,
+                ..searched(quiet, e.board.ply)
+            },
+        );
+        let result = completed(e.search(2));
+        let takes = play_named(&e.board, "d2d5");
+        assert_eq!(result.best_move, takes);
+        assert_eq!(e.pv_line().line.first(), Some(&takes));
     }
 
     #[test]
