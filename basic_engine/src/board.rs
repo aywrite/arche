@@ -22,10 +22,9 @@ fn pop_lsb(bb: &mut u64) -> u8 {
     i
 }
 
-/// Play State is used to store the history of moves (plays)
-///
-/// Although the move/play object already contains most of the information we need, in order to
-/// undo a move we need some additional state.
+/// One ply of history: everything `undo_move` needs that the move itself does
+/// not carry, being the rights and counters the move cleared and the key and
+/// checkers it replaced.
 #[derive(Debug, Copy, Clone, PartialEq, Eq, Hash)]
 struct PlayState {
     play: Play,
@@ -115,6 +114,13 @@ const F1_G1: u64 = 1 << F1 | 1 << G1;
 const B8_C8_D8: u64 = 1 << B8 | 1 << C8 | 1 << D8;
 const F8_G8: u64 = 1 << F8 | 1 << G8;
 
+/// The sixty four squares laid out inside a ten by ten grid whose border rows
+/// and columns are sentinels, so that a step off the side of the board lands on
+/// one instead of wrapping onto the far file.
+///
+/// One row of border is enough because every walk tests a square before
+/// stepping again, so an index can never be more than one step out and always
+/// stays inside the array.
 pub struct BaseConversions {
     pub base_64_to_100: [u8; 64],
     pub base_100_to_64: [u8; 100],
@@ -144,6 +150,9 @@ impl BaseConversions {
     }
 }
 
+/// Print the mailbox as a grid, the sentinels included. Nothing calls it: it
+/// is a debugging aid kept for when a walk comes out wrong, the same standing
+/// `debug_print` has for bitboards.
 impl fmt::Display for BaseConversions {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         for rank in 0..10 {
@@ -157,6 +166,13 @@ impl fmt::Display for BaseConversions {
     }
 }
 
+/// What a piece on each square attacks with nothing in the way.
+///
+/// The two slider entries are not that. They are the whole rank and file, and
+/// the whole diagonals, edges and the square itself included, because what the
+/// search asks of them is only whether two squares share a line: that rules a
+/// slider out before the blocker-aware probe in `magic` is worth running.
+/// Nothing asks whether a square shares a line with itself.
 struct AttackMasks {
     black_pawns: [u64; 64],
     white_pawns: [u64; 64],
@@ -259,6 +275,10 @@ impl AttackMasks {
     }
 }
 
+/// The whole position with its history, which makes a board a little over
+/// forty kilobytes and `Copy`. Copying one is nothing next to a search and a
+/// great deal next to a node, so the search makes and unmakes moves on the one
+/// board; only `pv_line` and the tests take copies.
 #[derive(Debug, PartialEq, Copy, Clone, Eq, Hash)]
 pub struct Board {
     pawns: u64,
@@ -419,9 +439,9 @@ impl Board {
 
     /// The one generator behind generate_moves and generate_captures. The
     /// const parameter is settled at compile time, so each wrapper
-    /// monomorphises into what used to be its own hand-written copy: the
-    /// captures one masks every piece's targets with the opponent's pieces
-    /// and drops the quiet-only sections, with nothing tested per move.
+    /// monomorphises into the equivalent of a hand-written copy: the captures
+    /// one masks every piece's targets with the opponent's pieces and drops
+    /// the quiet-only sections, with nothing tested per move.
     fn generate<const CAPTURES_ONLY: bool>(&self) -> MoveList {
         let mut moves = MoveList::new();
         let (color_mask, capture_mask) = match self.active_color {
@@ -650,8 +670,8 @@ impl Board {
 
     /// The position key computed from the board rather than maintained as moves
     /// are made, built the way `from_fen` builds it. `key` is meant to equal
-    /// this at all times, and until now nothing compared the two except a
-    /// handful of tests naming specific positions.
+    /// this at all times, which `debug_assert_state_in_step` checks on every
+    /// move made.
     pub fn recompute_key(&self) -> u64 {
         let mut key = INITIAL_KEY;
         let mut occupied = self.white | self.black;
@@ -673,7 +693,8 @@ impl Board {
 
     /// The piece square score of the position as it stands, computed from the
     /// board rather than accumulated as pieces move. `psqt` is meant to equal
-    /// this at all times, and nothing checked that until now.
+    /// this at all times, which `debug_assert_state_in_step` checks on every
+    /// move made.
     pub fn recompute_psqt(&self) -> i32 {
         let mut total: i32 = 0;
         // walking the occupied squares rather than all sixty four, an empty

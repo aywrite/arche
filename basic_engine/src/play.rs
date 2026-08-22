@@ -3,6 +3,10 @@ use crate::misc::index_to_coordinate;
 use crate::misc::{Piece, PromotePiece};
 use std::fmt;
 
+/// A move. Six bytes, which is what the fields happen to come to and what the
+/// search is tuned around: a move is copied into a move list, out of it, into
+/// the history and into the transposition table, several times per node.
+/// Widening it has been measured twice and was slower both times.
 #[derive(Debug, Copy, Clone, PartialEq, Eq, Hash)]
 pub struct Play {
     pub from: u8,

@@ -27,6 +27,9 @@ const fn mirror(array: &[i16; 64]) -> [i16; 64] {
 // top row, so the first entry is a8 and the last is h1. The board counts the
 // other way, a1 being index zero, which is why black takes the tables as
 // written and white takes them mirrored.
+//
+// The one change from the page is the fourth rank of the pawn table, where the
+// squares outside the two centre files score 1 rather than 0.
 
 #[rustfmt::skip]
 const PAWNS: [i16; 64] = [
