@@ -9,12 +9,19 @@ running the hook twice leaves the same bytes as running it once.
 import os
 import stat
 import subprocess
+import sys
 import textwrap
 from pathlib import Path
 
 import pytest
 
 SCRIPT = Path(__file__).resolve().parent.parent / "changelog.sh"
+
+# the script is run through its shebang, which only a posix shell can do:
+# from a windows clone run these under wsl
+pytestmark = pytest.mark.skipif(
+    sys.platform == "win32", reason="runs a shell script, which windows cannot"
+)
 
 CHANGELOG = textwrap.dedent(
     """\

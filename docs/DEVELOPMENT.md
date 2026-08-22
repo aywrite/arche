@@ -40,6 +40,11 @@ shape fails a test instead of quietly publishing the wrong number:
 python3 -m pytest scripts/tests
 ```
 
+The tests that run a shell script are skipped on windows, which cannot run
+one through its shebang; from a windows clone run them under wsl. The scripts
+are checked out with unix line endings whatever `core.autocrlf` says, so that
+works on the same checkout.
+
 ## Lints
 
 Both of these are gated in ci:
