@@ -15,16 +15,17 @@ pub trait BitBoard {
 impl BitBoard for u64 {
     #[inline(always)]
     fn set_bit(&mut self, index: u8) {
-        debug_assert!(index <= 64);
+        debug_assert!(index < 64);
         *self |= 1u64 << index;
     }
     #[inline(always)]
     fn clear_bit(&mut self, index: u8) {
-        debug_assert!(index <= 64);
+        debug_assert!(index < 64);
         *self &= !(1u64 << index);
     }
     #[inline(always)]
     fn is_bit_set(&self, index: u8) -> bool {
+        debug_assert!(index < 64);
         (self & (1u64 << index)) > 0
     }
 
