@@ -18,6 +18,7 @@ static BINC_RE: LazyLock<Regex> = LazyLock::new(|| Regex::new(r"binc (-?\d+)").u
 static MOVES_TO_GO_RE: LazyLock<Regex> = LazyLock::new(|| Regex::new(r"movestogo (\d+)").unwrap());
 static MOVE_TIME: LazyLock<Regex> = LazyLock::new(|| Regex::new(r"movetime (\d+)").unwrap());
 static DEPTH_RE: LazyLock<Regex> = LazyLock::new(|| Regex::new(r"depth (\d+)").unwrap());
+static NODES_RE: LazyLock<Regex> = LazyLock::new(|| Regex::new(r"nodes (\d+)").unwrap());
 static PERFT_RE: LazyLock<Regex> = LazyLock::new(|| Regex::new(r"perft (\d+)").unwrap());
 
 /// Reads the value that follows a keyword. A clock below zero, which the match
@@ -183,6 +184,7 @@ impl<T: Engine, W: Write> UCI<T, W> {
         let mut sp = SearchParameters::new();
         sp.search_duration = time_control_from(line, self.engine.active_color()).budget();
         sp.depth = capture(&DEPTH_RE, line).map(|depth| depth.try_into().unwrap_or(u8::MAX));
+        sp.nodes = capture(&NODES_RE, line);
 
         let start = sp.start_time;
         // the closure writes while the engine is borrowed for the search, so
@@ -479,6 +481,29 @@ mod tests {
         let control = time_control_from("go wtime -5 btime -5 winc -1 binc -1", Color::Black);
         assert_eq!(control.time, Some(0));
         assert_eq!(control.increment, Some(0));
+    }
+
+    #[test]
+    fn a_node_limit_is_read() {
+        assert_eq!(capture(&NODES_RE, "go nodes 1234"), Some(1234));
+        assert_eq!(capture(&NODES_RE, "go depth 3"), None);
+    }
+
+    #[test]
+    fn a_node_limit_is_honoured_end_to_end() {
+        let mut uci = uci();
+        uci.run(Cursor::new("position startpos\ngo nodes 5000\n"));
+        let said = said(&uci);
+        let lines: Vec<&str> = said.lines().collect();
+        assert!(lines.last().unwrap().starts_with("bestmove "), "{}", said);
+        let info = lines[lines.len() - 2];
+        let nodes: u64 = info
+            .split_whitespace()
+            .skip_while(|word| *word != "nodes")
+            .nth(1)
+            .and_then(|n| n.parse().ok())
+            .unwrap_or_else(|| panic!("no node count in {}", info));
+        assert!(nodes <= 5000, "{}", said);
     }
 
     #[test]
