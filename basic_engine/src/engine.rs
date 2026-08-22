@@ -250,12 +250,14 @@ impl AlphaBeta {
         }
 
         if alpha != old_alpha {
+            // depth zero and an Ordering bound: never read back in place of
+            // evaluating a position, only to sort its moves
             self.moves.set(
                 self.board.key,
                 Pv {
                     play: best_move.unwrap(),
                     score: score_to_tt(alpha, self.board.line_ply),
-                    depth: 0, // Never use a quiescence move instead of evaluating, only for move ordering
+                    depth: 0,
                     bound: Bound::Ordering,
                     tainted: false,
                     ply: self.board.ply as u16,
@@ -321,8 +323,8 @@ impl AlphaBeta {
         // repetition there is not a finished game because the engine still has
         // to move, but from here on it is a draw either side can take
         if self.board.fifty_move_rule >= 100 || self.board.has_repeated() {
-            // the source. This score is true of the path that reached this
-            // position, not of the position
+            // where the taint starts: the draw is true of the path that
+            // reached this position, not of the position itself
             self.tainted = true;
             return Ok(0);
         }
@@ -576,9 +578,9 @@ impl AlphaBeta {
             };
             if matches!(pv.bound, Bound::Ordering) {
                 // written by quiescence, which looks at captures and
-                // promotions alone, so the
-                // move is fit for ordering the next search and not for telling
-                // anyone what the engine intends to play
+                // promotions alone, so the move is fit for ordering the next
+                // search and not for telling anyone what the engine intends
+                // to play
                 break;
             }
             let play = pv.play;
@@ -902,10 +904,10 @@ mod search {
     use pretty_assertions::assert_eq;
     use std::time;
 
-    /// The default table is half a gigabyte, which is the right size to play
-    /// with and the wrong size to test with: one per test dominated both the
-    /// memory and the run time of the suite. This is still far larger than
-    /// anything here searches deeply enough to fill.
+    /// The default table is 256MB, which is the right size to play with and
+    /// the wrong size to test with: one per test dominated both the memory and
+    /// the run time of the suite. This is still far larger than anything here
+    /// searches deeply enough to fill.
     const TABLE_BYTES: usize = 16 * 1024 * 1024;
 
     fn engine(board: Board) -> AlphaBeta {
@@ -1064,7 +1066,7 @@ mod search {
         // warm than cold. On the promotions position the difference was
         // visible at the root, deepening promoted to a queen where a cold
         // search of the same depth chose the rook.
-        // test_warm_cache_matches_cold_search cannot see any of this because
+        // a_warm_cache_matches_a_cold_search cannot see any of this because
         // it searches each depth directly rather than deepening to it.
         let fens = [
             "r3k2r/p1ppqpb1/bn2pnp1/3PN3/1p2P3/2N2Q1p/PPPBBPPP/R3K2R w KQkq - 0 1",
@@ -1377,8 +1379,8 @@ mod search {
     #[test]
     fn the_pv_line_does_not_follow_a_quiescence_entry() {
         // quiescence looks at captures and promotions alone, so its move is
-        // fit for ordering
-        // the next search and not for saying what the engine means to play
+        // fit for ordering the next search and not for saying what the engine
+        // means to play
         let mut e = engine(Board::new());
         let play = play_named(&e.board, "e2e4");
         e.moves.set(
