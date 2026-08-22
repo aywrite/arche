@@ -11,21 +11,26 @@ use std::time::Duration;
 
 const START_FEN: &str = "rnbqkbnr/pppppppp/8/8/8/8/PPPPPPPP/RNBQKBNR w KQkq - 0 1";
 
-static WTIME_RE: LazyLock<Regex> = LazyLock::new(|| Regex::new(r"wtime (\d+)").unwrap());
-static BTIME_RE: LazyLock<Regex> = LazyLock::new(|| Regex::new(r"btime (\d+)").unwrap());
-static WINC_RE: LazyLock<Regex> = LazyLock::new(|| Regex::new(r"winc (\d+)").unwrap());
-static BINC_RE: LazyLock<Regex> = LazyLock::new(|| Regex::new(r"binc (\d+)").unwrap());
+static WTIME_RE: LazyLock<Regex> = LazyLock::new(|| Regex::new(r"wtime (-?\d+)").unwrap());
+static BTIME_RE: LazyLock<Regex> = LazyLock::new(|| Regex::new(r"btime (-?\d+)").unwrap());
+static WINC_RE: LazyLock<Regex> = LazyLock::new(|| Regex::new(r"winc (-?\d+)").unwrap());
+static BINC_RE: LazyLock<Regex> = LazyLock::new(|| Regex::new(r"binc (-?\d+)").unwrap());
 static MOVES_TO_GO_RE: LazyLock<Regex> = LazyLock::new(|| Regex::new(r"movestogo (\d+)").unwrap());
 static MOVE_TIME: LazyLock<Regex> = LazyLock::new(|| Regex::new(r"movetime (\d+)").unwrap());
 static DEPTH_RE: LazyLock<Regex> = LazyLock::new(|| Regex::new(r"depth (\d+)").unwrap());
 static PERFT_RE: LazyLock<Regex> = LazyLock::new(|| Regex::new(r"perft (\d+)").unwrap());
 
-/// Reads the value that follows a keyword. The value is matched as digits, so
-/// the only way it can fail to parse is by being too large to hold, in which
-/// case use the largest value we can. Discarding it would read as the keyword
-/// having been absent, which for a clock means searching without a limit.
+/// Reads the value that follows a keyword. A clock below zero, which the match
+/// tools send once their time margin has been eaten into, reads as an empty
+/// one. Otherwise the value is digits, so the only way it can fail to parse is
+/// by being too large to hold, in which case use the largest value we can.
+/// Discarding either would read as the keyword having been absent, which for
+/// a clock means searching without a limit.
 fn capture(re: &Regex, line: &str) -> Option<u64> {
     let digits = re.captures(line)?.get(1)?.as_str();
+    if digits.starts_with('-') {
+        return Some(0);
+    }
     Some(digits.parse().unwrap_or(u64::MAX))
 }
 
@@ -359,6 +364,16 @@ mod tests {
     }
 
     #[test]
+    fn a_search_on_a_negative_clock_still_answers_with_a_move() {
+        let mut uci = uci();
+        uci.run(Cursor::new("position startpos\ngo wtime -5 btime -5\n"));
+        let said = said(&uci);
+        let last = said.lines().last().unwrap_or("");
+        assert!(last.starts_with("bestmove "), "{}", said);
+        assert_ne!(last, "bestmove 0000", "{}", said);
+    }
+
+    #[test]
     fn a_position_with_no_legal_moves_reports_the_null_move() {
         for fen in [
             "7k/6Q1/6K1/8/8/8/8/8 b - - 0 1", // checkmate
@@ -451,6 +466,19 @@ mod tests {
             Some(u64::MAX),
             "an unreadable clock must not turn into an unlimited search"
         );
+    }
+
+    #[test]
+    fn a_negative_clock_is_read_as_empty() {
+        // cutechess and fastchess send a clock below zero once their time
+        // margin has been eaten into. Not reading it would leave the budget
+        // unset and search without a limit, at the moment there is the least
+        // time to spare
+        let control = time_control_from("go wtime -5 btime -5", Color::White);
+        assert_eq!(control.time, Some(0));
+        let control = time_control_from("go wtime -5 btime -5 winc -1 binc -1", Color::Black);
+        assert_eq!(control.time, Some(0));
+        assert_eq!(control.increment, Some(0));
     }
 
     #[test]
