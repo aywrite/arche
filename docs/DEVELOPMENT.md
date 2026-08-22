@@ -166,6 +166,17 @@ Notes on the flags:
   Watch for `disconnect` in the output, a crashing engine scores zero for that
   game and the result is no longer a fair estimate of strength.
 
+A match can be played by node count instead of by the clock, with `nodes=N`
+in place of `tc=` in the `-each` arguments, which fastchess passes on as
+`go nodes N`. The search is deterministic, so a game played that way is
+reproducible move for move on any machine, which a clock on a shared runner
+cannot offer. The count does not see how long a node takes, though: a change
+that makes nodes faster or slower is invisible to it. Use nodes to compare
+what a search does and the clock to compare what it costs. The tree also
+moves with the size of the transposition table, so a replay needs the same
+table on both sides; the default is the same for every build, so the command
+as written is reproducible.
+
 The error bar shrinks with the square root of the number of games, so roughly
 `800 / sqrt(games)` elo is the smallest difference a match can tell from none.
 Fifty games settles nothing below about a hundred elo. A change worth ten needs
