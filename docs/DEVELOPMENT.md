@@ -94,7 +94,7 @@ The engine ones are grouped by type instead:
 | `magic` | move generation, the magic bitboards and their tables |
 | `search` | alpha beta, quiescence and the transposition table |
 | `uci` | the protocol and time management |
-| `zorbrist` | the hash keys, spelled as the module is |
+| `zobrist` | the hash keys |
 
 `feat`, `fix`, `perf`, `refactor` and `docs` get a section each, and `build`,
 `chore`, `ci`, `style` and `test` all go to **Development**.

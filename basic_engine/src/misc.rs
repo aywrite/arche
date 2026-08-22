@@ -13,7 +13,7 @@ use std::ops::Not;
 pub type Score = i16;
 
 /// One step of splitmix64, which turns a seed into a stream of well spread
-/// numbers. Small enough to run at compile time, which is what the zorbrist
+/// numbers. Small enough to run at compile time, which is what the zobrist
 /// keys need, and good enough for the magic search, which only wants candidates
 /// that are well spread rather than unpredictable.
 ///
