@@ -322,14 +322,28 @@ impl AlphaBeta {
         // every node here sits below the root, which search() owns: a
         // repetition there is not a finished game because the engine still has
         // to move, but from here on it is a draw either side can take
-        if self.board.fifty_move_rule >= 100 || self.board.has_repeated() {
+        let in_check = self.board.in_check();
+        if self.board.fifty_move_rule >= 100 {
+            // a mate delivered by the hundredth half move is a mate: the game
+            // ends on it, before the side mated has a move on which to claim
+            // the draw. Only asked here and not of a repetition, which cannot
+            // be a mate since the position would have ended the game the
+            // first time it came up, so the cost stays off the lines that
+            // repeat
+            if in_check && !self.board.has_legal_move() {
+                self.tainted = false;
+                return Ok(-CHECKMATE_SCORE + (self.board.line_ply as Score));
+            }
             // where the taint starts: the draw is true of the path that
             // reached this position, not of the position itself
             self.tainted = true;
             return Ok(0);
         }
+        if self.board.has_repeated() {
+            self.tainted = true;
+            return Ok(0);
+        }
         let mut node_tainted = false;
-        let in_check = self.board.in_check();
         if in_check {
             depth += 1;
         }
@@ -1107,6 +1121,29 @@ mod search {
         let game = Board::from_fen("5k2/1p3p1p/p3pK1P/P1P1P3/4bP2/2B5/8/8 w - - 100 112").unwrap();
         let mut e = engine(game);
         assert!(matches!(e.search(3), SearchOutcome::GameOver));
+    }
+
+    #[test]
+    fn a_mate_on_the_hundredth_half_move_is_a_mate_not_a_draw() {
+        // Rh8 mates, and it is the hundredth half move since anything
+        // irreversible. Checkmate ends the game on the spot, before the mated
+        // side has a move on which to claim the draw, so the mate outranks
+        // the fifty move rule rather than the other way round
+        let game = Board::from_fen("k7/8/1K6/8/8/8/8/7R w - - 99 100").unwrap();
+        let mut e = engine(game);
+        let result = completed(e.search(2));
+        assert_eq!(result.checkmate_in(), Some(1));
+        assert_eq!(format!("{}", result.best_move), "h1h8");
+    }
+
+    #[test]
+    fn a_check_that_does_not_mate_on_the_hundredth_half_move_is_still_a_draw() {
+        // the same rook gives check on h8 but the king slips out to a7, so
+        // the hundredth half move ends the game as a draw after all
+        let game = Board::from_fen("k7/8/2K5/8/8/8/8/7R w - - 99 100").unwrap();
+        let mut e = engine(game);
+        let result = completed(e.search(3));
+        assert_eq!(result.score, 0);
     }
 
     #[test]

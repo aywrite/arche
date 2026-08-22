@@ -800,6 +800,23 @@ impl Board {
         self.repetition_count() >= 1
     }
 
+    /// Whether the side to move has a legal move at all. Asked only where a
+    /// draw rule and a mate could coincide, which is rare, so it plays the
+    /// moves rather than keeping anything incremental.
+    pub fn has_legal_move(&mut self) -> bool {
+        let mut moves = self.generate_moves();
+        if self.in_check() {
+            self.retain_evasions(&mut moves);
+        }
+        for m in &moves {
+            if self.make_move(m) {
+                self.undo_move();
+                return true;
+            }
+        }
+        false
+    }
+
     pub fn make_move(&mut self, play: &Play) -> bool {
         self.make_move_impl::<true>(play)
     }
