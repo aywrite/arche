@@ -36,6 +36,7 @@ LABEL org.opencontainers.image.title="arche-lichess-bot"
 LABEL org.opencontainers.image.description="The arche chess engine bundled with lichess-bot and an opening book"
 LABEL org.opencontainers.image.source="https://github.com/aywrite/arche"
 LABEL org.opencontainers.image.version="${ARCHE_VERSION}"
+LABEL org.opencontainers.image.licenses="GPL-3.0-or-later AND AGPL-3.0-or-later"
 
 ENV PYTHONDONTWRITEBYTECODE=1
 ENV PYTHONUNBUFFERED=1
@@ -45,6 +46,7 @@ COPY --from=lichess-bot-source /lichess-bot/ ./
 RUN pip install --no-cache-dir -r requirements.txt
 
 COPY --from=engine /src/target/release/arche engines/arche
+COPY LICENSE engines/arche-LICENSE
 COPY --from=book /book/arche-book.bin engines/arche-book.bin
 COPY docker/config.yml config.yml
 

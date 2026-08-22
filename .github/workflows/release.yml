@@ -60,6 +60,7 @@ jobs:
           zip: windows
           checksum: "sha256"
           archive: $bin-$tag-$target
+          include: LICENSE,README.md
           # (required) GitHub token for uploading assets to GitHub Releases.
           token: ${{ secrets.GITHUB_TOKEN }}
 

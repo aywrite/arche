@@ -106,4 +106,23 @@ docker/smoke_test.sh arche-lichess-bot
 - https://stackoverflow.com/questions/30680559/how-to-find-magic-bitboards
 - https://stackoverflow.com/questions/16925204/sliding-move-generation-using-magic-bitboard
 - https://www.youtube.com/playlist?list=PLZ1QII7yudbc-Ky058TEaOstZHVbT-2hg
-- https://github.com/bluefeversoft/Vice_Chess_Engine
+- https://github.com/bluefeversoft/vice (MIT)
+
+## License
+
+Arche is free software: you can redistribute it and/or modify it under the terms of the GNU
+General Public License as published by the Free Software Foundation, either version 3 of the
+License, or (at your option) any later version. It is distributed in the hope that it will be
+useful, but WITHOUT ANY WARRANTY; without even the implied warranty of MERCHANTABILITY or
+FITNESS FOR A PARTICULAR PURPOSE. See [LICENSE](LICENSE) for the full text.
+
+Copyright (C) 2022-2026 Andrew Wright
+
+The source corresponding to a release binary is the tag it was built from, which GitHub attaches
+to the same release page as the binary itself.
+
+The lichess-bot image is an aggregate rather than a combined work. It bundles
+[lichess-bot](https://github.com/lichess-bot-devs/lichess-bot), which is AGPL-3.0 and which runs
+the engine as a separate process over UCI, and a book built from
+[lichess-org/chess-openings](https://github.com/lichess-org/chess-openings), which is CC0. Each
+keeps its own terms; only the engine is covered by the license here.

@@ -4,6 +4,7 @@ version.workspace = true
 edition.workspace = true
 rust-version.workspace = true
 authors.workspace = true
+license.workspace = true
 publish = false
 
 [workspace]
@@ -19,6 +20,7 @@ rust-version = "1.85"
 authors = [
   "Andrew Wright"
 ]
+license = "GPL-3.0-or-later"
 
 [dependencies]
 regex = "1"
