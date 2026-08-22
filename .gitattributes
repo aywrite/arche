@@ -1,0 +1,10 @@
+# Normalise text to unix line endings in the repository whatever the clone's
+# core.autocrlf says. A windows checkout may still convert most files on the
+# way out, which the compilers and the python interpreter do not mind.
+* text=auto
+
+# The shell scripts are run through their shebang, which a carriage return
+# turns into a program called "bash\r" that does not exist. They are checked
+# out with unix line endings everywhere, so the script tests and the docker
+# smoke test work from a windows clone too.
+*.sh text eol=lf
