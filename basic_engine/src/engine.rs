@@ -62,7 +62,9 @@ pub trait Engine {
     /// Search each depth in turn until one is the last to finish. The caller
     /// hears about every completed iteration through on_depth, which is where
     /// a protocol adapter reports progress from; the library itself never
-    /// prints.
+    /// prints. A result's node count covers the whole deepening so far, not
+    /// the one iteration, which is what the uci info convention expects and
+    /// what makes it divisible by the time since the search began.
     fn iterative_deepening_search(
         &mut self,
         search_options: SearchParameters,
@@ -626,6 +628,10 @@ impl Engine for AlphaBeta {
         mut on_depth: impl FnMut(u8, &SearchResult, PvLine),
     ) -> SearchOutcome {
         let mut best: Option<SearchResult> = None;
+        // each search() counts its own nodes, so the deepening totals them:
+        // what leaves here describes the whole search so far, which is the
+        // count the time elapsed so far can honestly divide
+        let mut total_nodes: u64 = 0;
         let max_depth = match search_options.depth {
             Some(depth) => depth,
             None => MAX_DEPTH,
@@ -639,14 +645,19 @@ impl Engine for AlphaBeta {
                     // one's best-so-far, which may be a fail high that never
                     // got re-searched. The partial only fills in when depth 1
                     // itself ran out of time.
-                    return SearchOutcome::Aborted(best.or(partial));
+                    return SearchOutcome::Aborted(best.or(partial.map(|mut result| {
+                        result.nodes += total_nodes;
+                        result
+                    })));
                 }
                 SearchOutcome::GameOver => {
                     // checkmate, stalemate or a rule draw: deeper searches
                     // cannot change it, so don't run them
                     return SearchOutcome::GameOver;
                 }
-                SearchOutcome::Complete(result) => {
+                SearchOutcome::Complete(mut result) => {
+                    total_nodes += result.nodes;
+                    result.nodes = total_nodes;
                     let pv = self.pv_line();
                     // the root's entry was just stored past any leftover, so
                     // the line the table tells opens with the move answered
@@ -1140,15 +1151,32 @@ mod search {
         use super::SearchParameters;
         let mut e = engine(Board::new());
         let mut depths = Vec::new();
+        let mut node_counts = Vec::new();
         let outcome = e.iterative_deepening_search(
             SearchParameters::new_with_depth(3),
             |depth, result, _| {
                 assert!(result.nodes > 0);
                 depths.push(depth);
+                node_counts.push(result.nodes);
             },
         );
         assert_eq!(depths, vec![1, 2, 3]);
-        assert!(matches!(outcome, SearchOutcome::Complete(_)));
+        // the count covers the whole deepening so far, so each report says
+        // more than the one before: reporting one iteration's count against
+        // the whole search's clock is the bug this pins shut
+        assert!(
+            node_counts.windows(2).all(|w| w[0] < w[1]),
+            "node counts must grow with each depth: {:?}",
+            node_counts
+        );
+        let SearchOutcome::Complete(result) = outcome else {
+            panic!("expected a completed search, got {:?}", outcome);
+        };
+        assert_eq!(
+            Some(result.nodes),
+            node_counts.last().copied(),
+            "the returned result must carry the same total the last report did"
+        );
     }
 
     #[test]
