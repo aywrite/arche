@@ -16,6 +16,7 @@ pub use engine::{
 pub use misc::{Color, Score};
 pub use play::Play;
 use std::fmt;
+pub use transposition::DEFAULT_TABLE_BYTES;
 
 /// The starting position, so that nothing setting a board up from scratch has
 /// to carry its own copy of the fen.

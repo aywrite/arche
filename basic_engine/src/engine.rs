@@ -34,6 +34,25 @@ pub trait Engine {
 
     fn make_move_str(&mut self, play: &str) -> bool;
 
+    /// Give the engine a transposition table of `bytes` bytes, discarding
+    /// whatever the old one held. Reallocating rather than resizing in place
+    /// is what the protocol expects of a size change, since a bucket is
+    /// chosen from the number of buckets there are and every entry moves
+    /// when that number does.
+    ///
+    /// False if the buckets could not be reserved, in which case the engine
+    /// keeps the table it had: the size arrives from an interface, which is
+    /// free to ask for more than the machine running us has, and a game is
+    /// better carried on with the old table than lost with no engine.
+    ///
+    /// The answer is the allocator's, so it catches a size larger than the
+    /// machine can address or than it will hand out. It is not a promise that
+    /// the memory is there to use: where the kernel overcommits, a size that
+    /// fits in ram and swap is granted here and the process killed later as
+    /// the entries are written.
+    #[must_use]
+    fn set_table_bytes(&mut self, bytes: usize) -> bool;
+
     fn display_board(&self);
 
     fn perft(&mut self, depth: u8) -> u64;
@@ -246,7 +265,7 @@ impl AlphaBeta {
             board,
             config,
             nodes: 0,
-            transpositions: TranspositionTable::with_capacity_bytes(bytes),
+            transpositions: TranspositionTable::of_bytes(bytes),
             selective_depth: 0,
             tainted: false,
             start_time: time::Instant::now(),
@@ -264,6 +283,12 @@ impl AlphaBeta {
 
     pub fn clear_transpositions(&mut self) {
         self.transpositions.clear();
+    }
+
+    /// The bytes the transposition table occupies. Whole buckets, so a size
+    /// that does not divide by one reads back as the next size up.
+    pub fn table_bytes(&self) -> usize {
+        self.transpositions.bytes()
     }
 
     /// How much of the search's use of the transposition table depended on
@@ -745,6 +770,16 @@ impl Engine for AlphaBeta {
         self.clear_transpositions();
     }
 
+    fn set_table_bytes(&mut self, bytes: usize) -> bool {
+        match TranspositionTable::with_capacity_bytes(bytes) {
+            Some(table) => {
+                self.transpositions = table;
+                true
+            }
+            None => false,
+        }
+    }
+
     fn iterative_deepening_search(
         &mut self,
         search_options: SearchParameters,
@@ -910,6 +945,49 @@ mod search {
 
     fn engine(board: Board) -> AlphaBeta {
         AlphaBeta::with_table_bytes(board, TABLE_BYTES)
+    }
+
+    #[test]
+    fn a_resized_table_is_the_size_asked_for_and_still_searched_on() {
+        let mut e = engine(Board::new());
+        assert!(e.set_table_bytes(1024 * 1024));
+
+        // the table a new engine asked for a megabyte would have been given,
+        // which is the whole buckets that fit in one rather than the megabyte
+        assert_eq!(
+            e.table_bytes(),
+            AlphaBeta::with_table_bytes(Board::new(), 1024 * 1024).table_bytes()
+        );
+        assert!(e.table_bytes() <= 1024 * 1024);
+        assert!(matches!(e.search(4), SearchOutcome::Complete(_)));
+    }
+
+    #[test]
+    fn a_table_there_is_no_memory_for_leaves_the_old_one_in_place() {
+        // the size arrives from an interface, which may ask for more than the
+        // machine has. Losing the engine mid game over it would be worse than
+        // playing on with the table we already had.
+        //
+        // both ways of failing: usize::MAX asks for more bytes than an
+        // allocation may describe and is refused before the allocator is
+        // reached, while isize::MAX asks for a number it may describe and no
+        // machine can meet, which is the refusal a real oversized Hash hits
+        for bytes in [usize::MAX, isize::MAX as usize] {
+            let mut e = engine(Board::new());
+            assert!(!e.set_table_bytes(bytes), "{}", bytes);
+            assert_eq!(e.table_bytes(), engine(Board::new()).table_bytes());
+            assert!(matches!(e.search(3), SearchOutcome::Complete(_)));
+        }
+    }
+
+    #[test]
+    fn a_table_too_small_to_hold_an_entry_is_still_a_table() {
+        // the size arrives from the protocol, so a nonsense one has to be
+        // survivable rather than a panic in the middle of a game
+        let mut e = engine(Board::new());
+        assert!(e.set_table_bytes(0));
+        assert!(e.table_bytes() > 0);
+        assert!(matches!(e.search(3), SearchOutcome::Complete(_)));
     }
 
     /// The reference search, for the tests that hold it to answering the

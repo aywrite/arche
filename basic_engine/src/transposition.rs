@@ -255,13 +255,21 @@ pub struct TranspositionTable {
 }
 
 impl TranspositionTable {
-    /// A table of at least this many entries, rounded up to whole buckets.
-    fn with_capacity(capacity: usize) -> Self {
-        Self {
-            table: vec![Bucket::EMPTY; capacity.div_ceil(BUCKET).max(1)],
+    /// A table of at least this many entries, rounded up to whole buckets, or
+    /// None if there was not the memory for them. The buckets are asked for
+    /// rather than taken, since a size too large for the machine now arrives
+    /// over the protocol, and the allocator's answer to a request it cannot
+    /// meet is to abort.
+    fn with_capacity(capacity: usize) -> Option<Self> {
+        let buckets = capacity.div_ceil(BUCKET).max(1);
+        let mut table = Vec::new();
+        table.try_reserve_exact(buckets).ok()?;
+        table.resize(buckets, Bucket::EMPTY);
+        Some(Self {
+            table,
             ghi: GhiCounters::default(),
             generation: 1,
-        }
+        })
     }
 
     pub fn clear(&mut self) {
@@ -269,8 +277,22 @@ impl TranspositionTable {
         self.generation = 1;
     }
 
-    pub fn with_capacity_bytes(bytes: usize) -> Self {
+    pub fn with_capacity_bytes(bytes: usize) -> Option<Self> {
         Self::with_capacity(bytes / mem::size_of::<Entry>())
+    }
+
+    /// The table an engine is built with, which is fatal to be unable to
+    /// allocate: there is no older table to fall back to and no game under
+    /// way to protect.
+    pub fn of_bytes(bytes: usize) -> Self {
+        Self::with_capacity_bytes(bytes)
+            .unwrap_or_else(|| panic!("no memory for a {bytes} byte transposition table"))
+    }
+
+    /// The bytes the buckets occupy, which is what was asked for rounded up to
+    /// whole ones.
+    pub fn bytes(&self) -> usize {
+        self.table.len() * mem::size_of::<Bucket>()
     }
 
     /// A search is beginning: what it stores is marked as its own, and what
@@ -554,7 +576,7 @@ mod tests {
 
     #[test]
     fn four_positions_share_a_bucket_and_all_are_kept() {
-        let mut table = TranspositionTable::with_capacity(4);
+        let mut table = TranspositionTable::with_capacity(4).expect("a table of a few buckets");
         for key in 1..=4 {
             table.set(key, new_pv(Bound::Exact, key as u8));
         }
@@ -565,7 +587,7 @@ mod tests {
 
     #[test]
     fn a_fifth_position_evicts_the_shallowest_of_the_bucket() {
-        let mut table = TranspositionTable::with_capacity(4);
+        let mut table = TranspositionTable::with_capacity(4).expect("a table of a few buckets");
         for (key, depth) in [(1, 8), (2, 3), (3, 5), (4, 7)] {
             table.set(key, new_pv(Bound::Exact, depth));
         }
@@ -584,7 +606,7 @@ mod tests {
     fn every_field_survives_the_round_trip() {
         // the entry packs what it stores; each field has to come back as it
         // went in, at the edges of its range, for every kind of bound
-        let mut table = TranspositionTable::with_capacity(4);
+        let mut table = TranspositionTable::with_capacity(4).expect("a table of a few buckets");
         for (key, bound) in [
             (1u64, Bound::Exact),
             (2, Bound::Upper),
@@ -622,7 +644,7 @@ mod tests {
     #[test]
     fn get_compares_the_key_not_just_the_slot() {
         // two different keys which map to the same slot must not be confused for each other
-        let mut table = TranspositionTable::with_capacity(1);
+        let mut table = TranspositionTable::with_capacity(1).expect("a table of a few buckets");
         table.set(1, new_pv(Bound::Exact, 1));
         assert!(table.get(1).is_some());
         assert!(table.get(2).is_none());
@@ -630,7 +652,7 @@ mod tests {
 
     #[test]
     fn an_exact_entry_replaces_a_non_exact_entry() {
-        let mut table = TranspositionTable::with_capacity(1);
+        let mut table = TranspositionTable::with_capacity(1).expect("a table of a few buckets");
         table.set(1, new_pv(Bound::Lower, 1));
         table.set(1, new_pv(Bound::Exact, 1));
         assert!(matches!(table.get(1).unwrap().bound, Bound::Exact));
@@ -638,7 +660,7 @@ mod tests {
 
     #[test]
     fn a_deeper_exact_entry_survives_a_shallower_one() {
-        let mut table = TranspositionTable::with_capacity(1);
+        let mut table = TranspositionTable::with_capacity(1).expect("a table of a few buckets");
         table.set(1, new_pv(Bound::Exact, 8));
         table.set(1, new_pv(Bound::Exact, 2));
         assert_eq!(table.get(1).unwrap().depth, 8);
@@ -646,7 +668,7 @@ mod tests {
 
     /// A bucket with no room left: four positions at the depth given.
     fn full_bucket(depth: u8) -> TranspositionTable {
-        let mut table = TranspositionTable::with_capacity(4);
+        let mut table = TranspositionTable::with_capacity(4).expect("a table of a few buckets");
         for key in 1..=4 {
             table.set(key, new_pv(Bound::Exact, depth));
         }
@@ -736,7 +758,7 @@ mod tests {
         // five bits of generation: a bucket filled in the last generation
         // before the wrap is one search old in the first after it, not
         // thirty, and is stale twelve searches on as any other would be
-        let mut table = TranspositionTable::with_capacity(4);
+        let mut table = TranspositionTable::with_capacity(4).expect("a table of a few buckets");
         for _ in 0..30 {
             table.new_search();
         }
@@ -756,7 +778,7 @@ mod tests {
 
     #[test]
     fn the_root_store_overwrites_the_positions_own_entry_not_the_shallowest() {
-        let mut table = TranspositionTable::with_capacity(4);
+        let mut table = TranspositionTable::with_capacity(4).expect("a table of a few buckets");
         for (key, depth) in [(1, 9), (2, 1), (3, 9), (4, 9)] {
             table.set(key, new_pv(Bound::Exact, depth));
         }
@@ -774,7 +796,7 @@ mod tests {
     fn a_key_agreeing_on_the_slice_and_the_index_is_taken_for_the_same_position() {
         // the accepted imprecision, stated: in a one bucket table every key
         // shares the index, so one differing only above the slice is a hit
-        let mut table = TranspositionTable::with_capacity(4);
+        let mut table = TranspositionTable::with_capacity(4).expect("a table of a few buckets");
         table.set(1, new_pv(Bound::Exact, 8));
         assert_eq!(table.get(1 + (1 << 32)).unwrap().depth, 8);
         assert!(table.get(2).is_none());
@@ -782,7 +804,7 @@ mod tests {
 
     #[test]
     fn clearing_forgets_everything() {
-        let mut table = TranspositionTable::with_capacity(2);
+        let mut table = TranspositionTable::with_capacity(2).expect("a table of a few buckets");
         table.set(1, new_pv(Bound::Exact, 8));
         table.clear();
         assert!(table.get(1).is_none());
