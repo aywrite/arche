@@ -3,6 +3,7 @@ use basic_engine::Color;
 use basic_engine::Engine;
 use basic_engine::SearchOutcome;
 use basic_engine::SearchParameters;
+use basic_engine::bench;
 use basic_engine::{PvLine, SearchResult};
 use regex::Regex;
 use std::io::{BufRead, Stdout, Write};
@@ -140,6 +141,20 @@ impl<T: Engine, W: Write> UCI<T, W> {
             self.engine.display_board();
         } else if line.starts_with("go") {
             self.parse_go(line);
+        } else if line.starts_with("bench") {
+            // `bench [depth]`, the same as the command line argument: the
+            // depth is for trying the command cheaply, the number that means
+            // anything is the one at the default
+            match bench_depth(line) {
+                Ok(depth) => {
+                    let report = bench::run_suite(&bench::positions(), depth, bench::TABLE_BYTES);
+                    self.say(format_args!("{}", report));
+                }
+                Err(word) => self.say(format_args!(
+                    "info string unrecognised bench depth: {}",
+                    word
+                )),
+            }
         } else if line.starts_with("perft") {
             let depth = perft_depth(line);
             let nodes = self.engine.perft(depth);
@@ -207,6 +222,17 @@ impl<T: Engine, W: Write> UCI<T, W> {
             }
             SearchOutcome::Aborted(None) => self.say(format_args!("bestmove 0000")),
         }
+    }
+}
+
+/// The depth asked of a bench command or argument: the word after `bench`,
+/// or the bench's own depth when there is none. A word that is not a depth
+/// comes back as the error, for the caller to say so; running the default in
+/// its place would take seconds and explain nothing.
+pub(crate) fn bench_depth(line: &str) -> Result<u8, String> {
+    match line.split_whitespace().nth(1) {
+        None => Ok(bench::DEPTH),
+        Some(word) => word.parse().map_err(|_| word.to_string()),
     }
 }
 
@@ -509,6 +535,36 @@ mod tests {
     #[test]
     fn an_oversized_depth_does_not_panic() {
         assert_eq!(capture(&DEPTH_RE, "go depth 999"), Some(999));
+    }
+
+    #[test]
+    fn a_bench_command_ends_with_the_line_the_match_tools_read() {
+        let mut uci = uci();
+        uci.run(Cursor::new("bench 1\n"));
+        let said = said(&uci);
+        assert!(
+            said.starts_with("bench depth 1 hash 16MB positions "),
+            "{}",
+            said
+        );
+        let last = said.lines().last().unwrap();
+        let words: Vec<&str> = last.split(' ').collect();
+        assert_eq!(words.len(), 4, "{}", last);
+        assert_eq!((words[1], words[3]), ("nodes", "nps"), "{}", last);
+        assert!(words[0].parse::<u64>().unwrap() > 0, "{}", last);
+    }
+
+    #[test]
+    fn an_unreadable_bench_depth_is_reported_rather_than_searched() {
+        // running the default in its place would take seconds and say
+        // nothing about why, which is the wrong answer to a typo
+        let mut uci = uci();
+        uci.run(Cursor::new("bench abc\nbench 300\n"));
+        assert_eq!(
+            said(&uci),
+            "info string unrecognised bench depth: abc\n\
+             info string unrecognised bench depth: 300\n"
+        );
     }
 
     #[test]

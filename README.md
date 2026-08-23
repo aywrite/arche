@@ -14,7 +14,9 @@ MVV-LVA move ordering. Evaluation is material plus piece square tables.
 
 The engine does not ship with any GUI. It currently implements a subset of the UCI protocol, you can use it with an open source GUI such as [Arena](http://www.playwitharena.de/).
 
-The program does not accept posix style arguments it will immediately start in UCI mode.
+The program starts in UCI mode immediately. The one argument it takes is `bench`, which
+searches a fixed set of positions and prints what each search counted, for measuring a
+change to the search or the speed of a machine.
 
 Binaries for linux, macos and windows are attached to each
 [release](https://github.com/aywrite/arche/releases). To build from source:
