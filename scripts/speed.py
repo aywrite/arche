@@ -61,16 +61,19 @@ def measure(base: str, candidate: str, rounds: int, depth: int | None) -> Measur
     measured = Measured()
     for round_ in range(rounds):
         # which side runs first alternates, so a machine warming up or
-        # cooling down through the rounds leans on neither
-        order = [(base, measured.base_nps), (candidate, measured.candidate_nps)]
+        # cooling down through the rounds leans on neither. The side is
+        # carried along rather than read back from the path, which the two
+        # sides may share when an engine is measured against itself
+        order = [(True, base), (False, candidate)]
         if round_ % 2:
             order.reverse()
-        for binary, rates in order:
+        for is_base, binary in order:
             nodes, nps = bench(binary, depth)
-            rates.append(nps)
-            if binary == base:
+            if is_base:
+                measured.base_nps.append(nps)
                 measured.base_nodes = nodes
             else:
+                measured.candidate_nps.append(nps)
                 measured.candidate_nodes = nodes
     return measured
 
