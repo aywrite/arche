@@ -39,9 +39,14 @@ def test_every_engine_scope_and_type_is_covered():
         assert problems(f"{kind}(search): Do a thing\n") == []
 
 
-def test_a_bench_must_be_digits():
-    found = problems(f"{ENGINE}\n\nBench: 42,847,751\n")
-    assert found == ["Bench: must be a plain number, got 42,847,751"]
+def test_a_bench_must_be_exactly_digits():
+    # the ci check reads the line with git's trailer parser and compares the
+    # value as printed, so the hook refuses what that would not match:
+    # commas, and whitespace on either side
+    for value in ["42,847,751", "5 ", " 5", "5\t"]:
+        assert problems(f"{ENGINE}\n\nBench: {value}\n") == [
+            f"Bench: must be a plain number, got {value}"
+        ], repr(value)
 
 
 def test_the_bench_trailer_must_be_the_last_bench_number_in_the_message():
@@ -88,6 +93,7 @@ def test_the_speed_format_is_fixed():
 def test_the_elo_format_is_fixed_when_present():
     for value in [
         "+12 ±8 (sprt [0, 10], 1240 games, 10+0.1, vs v0.3.10)",
+        "+12 ±8 (sprt [-1.5, 2.5], 100 games, 10+0.1, vs master)",
         "-3 ±11 (500 games, 10+0.1, vs master)",
         "not measured",
     ]:
@@ -115,20 +121,6 @@ def test_only_the_final_paragraph_holds_trailers_as_git_reads_it():
     # and other trailers in the same final paragraph are fine
     message = f"{ENGINE}\n\nA body.\n\nBench: 5\nCo-Authored-By: Someone <s@x>\n"
     assert problems(message) == []
-
-
-def test_the_bench_value_is_exactly_digits_with_no_stray_whitespace():
-    # the ci check reads the line with git's trailer parser and compares the
-    # value as printed, so the hook refuses what that would not match
-    for value in ["5 ", " 5", "5\t"]:
-        assert problems(f"{ENGINE}\n\nBench: {value}\n") == [
-            f"Bench: must be a plain number, got {value}"
-        ], repr(value)
-
-
-def test_sprt_bounds_may_carry_decimals():
-    line = "Elo: +12 ±8 (sprt [-1.5, 2.5], 100 games, 10+0.1, vs master)"
-    assert problems(f"{ENGINE}\n\nBench: 1\n{line}\n") == []
 
 
 def test_a_speed_of_one_round_is_not_a_measurement():

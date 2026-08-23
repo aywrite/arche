@@ -255,14 +255,21 @@ mod tests {
 
     #[test]
     fn an_epd_line_yields_its_fen_and_id() {
-        let parsed = parse_epd("4k3/8/8/8/8/8/8/4K3 w - - id \"bare kings\";");
-        assert_eq!(
-            parsed,
-            vec![Position {
-                id: "bare kings".to_string(),
-                fen: "4k3/8/8/8/8/8/8/4K3 w - - 0 1".to_string(),
-            }]
-        );
+        // the fields may be separated by any whitespace and the id need not
+        // be the first operation
+        for line in [
+            "4k3/8/8/8/8/8/8/4K3 w - - id \"bare kings\";",
+            "4k3/8/8/8/8/8/8/4K3\tw  - -  c0 \"a note\"; id \"bare kings\";",
+        ] {
+            assert_eq!(
+                parse_epd(line),
+                vec![Position {
+                    id: "bare kings".to_string(),
+                    fen: "4k3/8/8/8/8/8/8/4K3 w - - 0 1".to_string(),
+                }],
+                "{line:?}"
+            );
+        }
     }
 
     #[test]
@@ -315,13 +322,6 @@ mod tests {
             report.nodes(),
             report.positions.iter().map(|p| p.nodes).sum::<u64>()
         );
-    }
-
-    #[test]
-    fn fields_may_be_separated_by_any_whitespace_and_the_id_need_not_come_first() {
-        let parsed = parse_epd("4k3/8/8/8/8/8/8/4K3\tw  - -  c0 \"a note\"; id \"bare kings\";");
-        assert_eq!(parsed[0].id, "bare kings");
-        assert_eq!(parsed[0].fen, "4k3/8/8/8/8/8/8/4K3 w - - 0 1");
     }
 
     #[test]
