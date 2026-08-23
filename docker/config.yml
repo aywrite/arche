@@ -16,6 +16,13 @@ engine:
   # "stop", so it can neither ponder nor be interrupted during a search.
   ponder: false
 
+  # Options sent as "setoption" once the engine has started. Arche advertises
+  # Hash, in megabytes, and a Threads fixed at one. Left commented out so that
+  # the engine keeps its own 256MB default; raising it here means raising the
+  # container's memory limit to match.
+  # uci_options:
+  #   Hash: 256
+
   polyglot:
     enabled: true
     book:
@@ -31,8 +38,9 @@ engine:
     offer_draw_enabled: false
 
 challenge:
-  # Each engine process allocates a 256MB transposition table, so playing several
-  # games at once needs a correspondingly larger memory limit on the container.
+  # Each engine process allocates a transposition table of its own, 256MB unless
+  # the Hash option above says otherwise, so playing several games at once needs
+  # a correspondingly larger memory limit on the container.
   concurrency: 1
   sort_by: "best"
   accept_bot: true

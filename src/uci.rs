@@ -35,6 +35,42 @@ fn time_control_from(params: &Params, color: Color) -> TimeControl {
     }
 }
 
+/// The `Hash` option's range, in megabytes, as the handshake advertises it.
+///
+/// The top is sixteen gibibytes, more than any machine here has, and is also
+/// what a `bench hash` may ask for, since a bench is a search like any other.
+/// It is held to what this machine can address besides, since the megabytes
+/// become bytes in a usize: on the sixty four bit targets the engine is built
+/// for that costs nothing, and on a narrower one it advertises a range that
+/// can actually be asked for rather than one that would overflow.
+const HASH_MIN_MB: u64 = 1;
+const HASH_MAX_MB: u64 = {
+    let addressable = (usize::MAX / (1024 * 1024)) as u64;
+    if addressable < 16 * 1024 {
+        addressable
+    } else {
+        16 * 1024
+    }
+};
+
+/// The size the handshake advertises as the default, taken from the engine's
+/// own so that an interface which never sends a `setoption` is told the table
+/// it is actually going to get.
+const HASH_DEFAULT_MB: u64 = (basic_engine::DEFAULT_TABLE_BYTES / (1024 * 1024)) as u64;
+
+// a default outside the range advertised beside it would be a handshake no
+// interface could honour, so moving the engine's default out of range fails
+// the build rather than the game
+const _: () = assert!(HASH_DEFAULT_MB >= HASH_MIN_MB && HASH_DEFAULT_MB <= HASH_MAX_MB);
+
+/// A `Hash` value held to the range the handshake advertises. An interface is
+/// not supposed to send one outside it, and one that does is asking for more
+/// table than we offer rather than making a mistake worth refusing, so the
+/// nearest size we do offer is what it gets.
+fn clamp_hash(megabytes: u64) -> u64 {
+    megabytes.clamp(HASH_MIN_MB, HASH_MAX_MB)
+}
+
 pub struct UCI<T: Engine, W: Write> {
     author: String,
     name: String,
@@ -116,7 +152,20 @@ impl<T: Engine, W: Write> UCI<T, W> {
             // these lines also read from it
             let _ = writeln!(self.out, "id name {} {}", self.name, self.version);
             let _ = writeln!(self.out, "id author {}", self.author);
+            self.say(format_args!(
+                "option name Hash type spin default {} min {} max {}",
+                HASH_DEFAULT_MB, HASH_MIN_MB, HASH_MAX_MB
+            ));
+            // advertised with a range of one so that an interface configuring
+            // a match reads the engine as single threaded rather than being
+            // left to find out by playing one
+            self.say(format_args!(
+                "option name Threads type spin default 1 min 1 max 1"
+            ));
             self.say(format_args!("uciok"));
+        } else if line.starts_with("setoption") {
+            let result = self.set_option(line);
+            self.report(result);
         } else if line.starts_with("position") {
             let result = self.parse_position(line);
             self.report(result);
@@ -152,6 +201,74 @@ impl<T: Engine, W: Write> UCI<T, W> {
             self.say(format_args!("info string unrecognised command: {}", line));
         }
         true
+    }
+
+    /// `setoption name <option> value <value>`. The two options the handshake
+    /// advertises are the only ones answered to; anything else is said back
+    /// rather than acted on, so that an interface sending an option meant for
+    /// another engine is told it did.
+    ///
+    /// Both names here are a single word, which is what lets the name be read
+    /// as the word after `name`. An option named with two would need the words
+    /// between `name` and `value` gathered instead.
+    fn set_option(&mut self, line: &str) -> Result<(), String> {
+        let params = Params::of(line);
+        let Some(name) = params.value("name") else {
+            return Err(format!("setoption without an option name: {}", line));
+        };
+        match name {
+            "Hash" => self.set_hash(&params),
+            "Threads" => self.set_threads(&params),
+            other => Err(format!("unrecognised option: {}", other)),
+        }
+    }
+
+    /// Give the engine a table of the megabytes asked for. The table is
+    /// emptied by being rebuilt, which is what the protocol expects of a size
+    /// change and why an interface sends one between games rather than during
+    /// one.
+    fn set_hash(&mut self, params: &Params) -> Result<(), String> {
+        // the word as well as the count, so that what is said back is what was
+        // sent: the count is read the way a clock is, and a negative size
+        // reaching us as a zero would otherwise be reported as a zero
+        let (word, megabytes) = match (params.value("value"), params.count("value")) {
+            (Some(word), Param::Read(megabytes)) => (word, megabytes),
+            (_, Param::Unreadable(word)) => {
+                return Err(format!("unrecognised Hash value: {}", word));
+            }
+            _ => return Err("Hash was sent without a value".to_string()),
+        };
+        let held = clamp_hash(megabytes);
+        if held != megabytes {
+            self.say(format_args!(
+                "info string Hash {} is outside {} to {}, using {}",
+                word, HASH_MIN_MB, HASH_MAX_MB, held
+            ));
+        }
+        if !self.engine.set_table_bytes(held as usize * 1024 * 1024) {
+            return Err(format!(
+                "no memory for a {}MB table, keeping the one we have",
+                held
+            ));
+        }
+        Ok(())
+    }
+
+    /// There is no parallel search, so the only count that can be honoured is
+    /// one. Any other is said back and then ignored: refusing to play because
+    /// a match was configured for four threads would be worse than playing on
+    /// one, and the interface has already been told the maximum is one.
+    fn set_threads(&mut self, params: &Params) -> Result<(), String> {
+        // the word rather than the count, for the reason set_hash reads one
+        match (params.value("value"), params.count("value")) {
+            (_, Param::Read(1)) => Ok(()),
+            (Some(word), Param::Read(_)) => Err(format!(
+                "Threads {} was asked for; the engine searches on one",
+                word
+            )),
+            (_, Param::Unreadable(word)) => Err(format!("unrecognised Threads value: {}", word)),
+            _ => Err("Threads was sent without a value".to_string()),
+        }
     }
 
     /// A move that cannot be played leaves the position at the last one that
@@ -235,11 +352,6 @@ pub(crate) struct BenchSettings {
     pub config: SearchConfig,
 }
 
-/// The largest table a bench may ask for, in mebibytes: sixteen gibibytes,
-/// more than any machine here has, and the ceiling the uci `Hash` option
-/// will have, since a bench is a search like any other.
-const BENCH_HASH_MAX_MB: usize = 16384;
-
 /// The words a bench takes after its depth. One of them standing where
 /// the depth would be means the depth was left out, not mistyped.
 const BENCH_KEYWORDS: [&str; 2] = ["hash", "taint"];
@@ -254,9 +366,11 @@ pub(crate) fn bench_settings(params: &Params) -> Result<BenchSettings, String> {
         Param::Unreadable(word) if BENCH_KEYWORDS.contains(&word) => bench::DEPTH,
         Param::Unreadable(word) => return Err(format!("depth: {word}")),
     };
-    let table_bytes = match params.parse::<usize>("hash") {
+    let table_bytes = match params.parse::<u64>("hash") {
         Param::Absent => bench::TABLE_BYTES,
-        Param::Read(mb) if (1..=BENCH_HASH_MAX_MB).contains(&mb) => mb * 1024 * 1024,
+        // the range the uci Hash option advertises, so that a size the engine
+        // would play with is a size the bench can be run at
+        Param::Read(mb) if (HASH_MIN_MB..=HASH_MAX_MB).contains(&mb) => mb as usize * 1024 * 1024,
         Param::Read(mb) => return Err(format!("hash: {mb}")),
         Param::Unreadable(word) => return Err(format!("hash: {word}")),
     };
@@ -400,10 +514,20 @@ mod tests {
         uci.handle("uci");
         let said = said(&uci);
         let lines: Vec<&str> = said.lines().collect();
-        assert_eq!(lines.len(), 3);
+        assert_eq!(lines.len(), 5);
         assert!(lines[0].starts_with("id name arche "));
         assert!(lines[1].starts_with("id author "));
-        assert_eq!(lines[2], "uciok");
+        // the default is the engine's own, so an interface that sends no
+        // setoption is told the size it is going to get
+        assert_eq!(
+            lines[2],
+            "option name Hash type spin default 256 min 1 max 16384"
+        );
+        assert_eq!(
+            lines[3],
+            "option name Threads type spin default 1 min 1 max 1"
+        );
+        assert_eq!(lines[4], "uciok");
     }
 
     #[test]
@@ -481,6 +605,179 @@ mod tests {
         assert_eq!(uci.engine.active_color(), Color::Black);
         assert!(uci.handle("ucinewgame"));
         assert_eq!(uci.engine.active_color(), Color::White);
+    }
+
+    /// The table a request for `megabytes` builds, which is the whole entries
+    /// that fit in them rather than the megabytes themselves.
+    fn megabytes(megabytes: usize) -> usize {
+        AlphaBeta::with_table_bytes(Board::new(), megabytes * 1024 * 1024).table_bytes()
+    }
+
+    #[test]
+    fn the_hash_option_takes_the_table_size_it_is_given() {
+        // no uci first: an option may be set before the handshake, and every
+        // case below relies on that
+        let mut uci = uci();
+        assert!(uci.handle("setoption name Hash value 1"));
+        assert_eq!(uci.engine.table_bytes(), megabytes(1));
+        assert_eq!(
+            said(&uci),
+            "",
+            "a size we can honour is acted on in silence"
+        );
+    }
+
+    #[test]
+    fn a_search_runs_on_a_table_the_hash_option_resized() {
+        let mut uci = uci();
+        uci.run(Cursor::new(
+            "setoption name Hash value 1\nposition startpos\ngo depth 3\n",
+        ));
+        let said = said(&uci);
+        assert!(
+            said.lines().last().unwrap_or("").starts_with("bestmove "),
+            "{}",
+            said
+        );
+    }
+
+    #[test]
+    fn a_hash_size_below_the_smallest_offered_is_clamped_up_to_it() {
+        let mut uci = uci();
+        assert!(uci.handle("setoption name Hash value 0"));
+        assert_eq!(uci.engine.table_bytes(), megabytes(1));
+        assert!(said(&uci).contains("info string Hash 0 is outside 1 to 16384, using 1"));
+    }
+
+    #[test]
+    fn a_hash_size_outside_the_range_offered_is_clamped_to_its_nearest_end() {
+        // asked of the clamp rather than of the command, since honouring a
+        // size at the top of the range would mean allocating sixteen
+        // gigabytes to assert it
+        assert_eq!(clamp_hash(99999), 16384);
+        assert_eq!(clamp_hash(0), 1);
+        assert_eq!(clamp_hash(u64::MAX), 16384);
+        assert_eq!(clamp_hash(256), 256);
+    }
+
+    #[test]
+    fn a_hash_value_that_cannot_be_read_leaves_the_table_alone() {
+        for line in [
+            "setoption name Hash value",
+            "setoption name Hash value many",
+        ] {
+            let mut uci = uci();
+            // resized first, so that what is kept is the size in force rather
+            // than the one the engine happened to be built with
+            uci.handle("setoption name Hash value 1");
+            assert!(uci.handle(line));
+            assert_eq!(uci.engine.table_bytes(), megabytes(1), "{}", line);
+            assert!(
+                said(&uci).starts_with("info string "),
+                "{}: {}",
+                line,
+                said(&uci)
+            );
+        }
+    }
+
+    #[test]
+    fn a_size_is_said_back_as_the_word_that_was_sent() {
+        // a count is read the way a clock is, so a negative one reaches us as
+        // a zero. What is said back has to be what the interface typed, or the
+        // line describes a size nobody asked for
+        let mut hash = uci();
+        assert!(hash.handle("setoption name Hash value -5"));
+        assert!(
+            said(&hash).contains("info string Hash -5 is outside 1 to 16384, using 1"),
+            "{}",
+            said(&hash)
+        );
+
+        let mut threads = uci();
+        assert!(threads.handle("setoption name Threads value -1"));
+        assert!(
+            said(&threads).contains("info string Threads -1 was asked for"),
+            "{}",
+            said(&threads)
+        );
+    }
+
+    #[test]
+    fn the_table_can_be_resized_between_two_searches_and_after_a_new_game() {
+        // the three moments the protocol allows one, the third being before
+        // any uci at all, which every case here already relies on
+        let mut uci = uci();
+        uci.run(Cursor::new(
+            "position startpos
+go depth 3
+setoption name Hash value 1
+             position startpos
+go depth 3
+ucinewgame
+setoption name Hash value 2
+             position startpos
+go depth 3
+",
+        ));
+        assert_eq!(uci.engine.table_bytes(), megabytes(2));
+        let said = said(&uci);
+        assert_eq!(
+            said.lines()
+                .filter(|line| line.starts_with("bestmove "))
+                .count(),
+            3,
+            "{}",
+            said
+        );
+    }
+
+    #[test]
+    fn the_threads_option_takes_one_in_silence() {
+        let mut uci = uci();
+        assert!(uci.handle("setoption name Threads value 1"));
+        assert_eq!(said(&uci), "", "the one count we can honour is silent");
+    }
+
+    #[test]
+    fn any_other_thread_count_is_said_back_and_then_played_on_anyway() {
+        let mut uci = uci();
+        uci.run(Cursor::new(
+            "setoption name Threads value 4\nposition startpos\ngo depth 2\n",
+        ));
+        let said = said(&uci);
+        assert!(
+            said.contains("info string Threads 4 was asked for"),
+            "{}",
+            said
+        );
+        assert!(
+            said.lines().last().unwrap_or("").starts_with("bestmove "),
+            "{}",
+            said
+        );
+    }
+
+    #[test]
+    fn an_option_we_do_not_have_is_reported_by_name() {
+        let mut uci = uci();
+        assert!(uci.handle("setoption name Nonsense value 1"));
+        assert_eq!(said(&uci), "info string unrecognised option: Nonsense\n");
+    }
+
+    #[test]
+    fn a_setoption_without_a_name_is_reported_rather_than_fatal() {
+        let mut uci = uci();
+        assert!(uci.handle("setoption"));
+        assert!(said(&uci).starts_with("info string setoption without an option name"));
+    }
+
+    #[test]
+    fn a_new_game_keeps_the_table_size_it_was_given() {
+        let mut uci = uci();
+        uci.handle("setoption name Hash value 1");
+        assert!(uci.handle("ucinewgame"));
+        assert_eq!(uci.engine.table_bytes(), megabytes(1));
     }
 
     #[test]

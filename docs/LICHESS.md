@@ -9,9 +9,10 @@ docker run -e LICHESS_BOT_TOKEN=<token> ghcr.io/aywrite/arche-lichess-bot:latest
 ```
 
 The token is a lichess API token for a bot account with the `bot:play` scope. The engine
-allocates a 256MB transposition table, so give the container at least 512MB of memory. To change
-any other setting, mount a replacement over `/lichess-bot/config.yml`; the defaults are in
-`docker/config.yml`.
+allocates a 256MB transposition table, so give the container at least 512MB of memory. A
+different size is asked for through lichess-bot's `uci_options` map, which is commented out in
+`docker/config.yml` at the default. To change that or any other setting, mount a replacement
+over `/lichess-bot/config.yml`; the defaults are in `docker/config.yml`.
 
 ## Tags
 
