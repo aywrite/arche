@@ -189,4 +189,6 @@ def test_the_wrapper_builds_the_base_commit_and_measures_against_it(tmp_path):
     assert result.stdout.strip().endswith(
         f"Speed: +0.0% (bench nps, 2 interleaved rounds vs {base}, spread 0.0%)"
     )
-    assert (repo / "target" / "speed" / base / "release" / "arche").exists()
+    # the base binary is kept, so measuring against the same commit again
+    # costs only the rounds
+    assert (repo / "target" / "speed" / base / "arche").exists()

@@ -44,15 +44,21 @@ def repo(tmp_path):
     shims = tmp_path / "shims"
     shims.mkdir()
     cargo = shims / "cargo"
-    # the fake engine counts whatever the commit's file says, and an engine
-    # told to crash does, the way a broken commit's would
+    # the fake engine counts whatever the file of the tree it was built from
+    # says, and an engine told to crash does, the way a broken commit's
+    # would. Built wherever --target-dir says, or target/
     cargo.write_text(
         "#!/usr/bin/env bash\n"
-        "mkdir -p target/release\n"
-        "printf '#!/usr/bin/env bash\\nn=$(cat bench.txt)\\n"
-        '[ "$n" = crash ] && exit 1\\necho "$n nodes 1 nps"\\n\''
-        " > target/release/arche\n"
-        "chmod +x target/release/arche\n"
+        "dir=target\n"
+        "while [ $# -gt 0 ]; do\n"
+        '  if [ "$1" = --target-dir ]; then dir=$2; shift; fi\n'
+        "  shift\n"
+        "done\n"
+        'mkdir -p "$dir/release"\n'
+        "printf '#!/usr/bin/env bash\\nn=$(cat %s/bench.txt)\\n"
+        '[ "$n" = crash ] && exit 1\\necho "$n nodes 1 nps"\\n\' "$PWD"'
+        ' > "$dir/release/arche"\n'
+        'chmod +x "$dir/release/arche"\n'
     )
     cargo.chmod(0o755)
     return repo, git, commit, shims
@@ -123,12 +129,18 @@ def test_a_bench_line_that_git_does_not_read_as_a_trailer_is_not_one(repo):
     assert "fix(search): One: no bench stated" in result.stdout
 
 
-def test_the_checkout_is_left_where_it_was(repo):
+def test_the_working_tree_is_never_touched(repo):
+    # the commits are built from exports, not checkouts: a developer's
+    # branch, index and half written files are exactly as they were after
     repo, git, commit, shims = repo
     base = commit(1, "docs(docs): Start")
     commit(100, "fix(search): One\n\nBench: 100")
     head = commit(200, "fix(search): Two\n\nBench: 200")
     branch = git("symbolic-ref", "--short", "HEAD")
-    verify(repo, shims, base, head)
+    (repo / "bench.txt").write_text("half written\n")
+    result = verify(repo, shims, base, head)
+    assert result.returncode == 0, result.stderr
     assert git("rev-parse", "HEAD") == head
     assert git("symbolic-ref", "--short", "HEAD") == branch
+    assert (repo / "bench.txt").read_text() == "half written\n"
+    assert "checkout" not in git("reflog")

@@ -3,20 +3,19 @@
 #
 #     verify_bench.sh <base> <head>
 #
-# Each commit in base..head with a Bench trailer is checked out and built,
+# Each commit in base..head with a Bench trailer is built by build_at.sh,
+# from an export rather than a checkout, so the working tree is left alone;
 # its bench run, and the count compared with the one stated. The trailer is
 # read the way git reads it, so a line the changelog would not take is not
-# one here either. Every commit is reported, a build or a bench that fails
-# counts as a mismatch and the walk goes on, and the checkout is put back
-# where it started. The count is exact and the same on any machine, which is
-# what lets this gate where a timing could not.
+# one here either. Every commit is reported, and a build or a bench that
+# fails counts as a mismatch and the walk goes on. The count is exact and
+# the same on any machine, which is what lets this gate where a timing
+# could not.
 set -euo pipefail
 
 base=${1:?usage: verify_bench.sh <base> <head>}
 head=${2:?usage: verify_bench.sh <base> <head>}
-bin="${CARGO_TARGET_DIR:-target}/release/arche"
-# a branch to come back to, or the commit when there is none
-start=$(git symbolic-ref -q --short HEAD || git rev-parse HEAD)
+bin="${CARGO_TARGET_DIR:-target}/at/arche"
 
 failed=0
 for sha in $(git rev-list --reverse "${base}..${head}"); do
@@ -28,8 +27,7 @@ for sha in $(git rev-list --reverse "${base}..${head}"); do
         echo "${sha:0:7} ${subject}: no bench stated"
         continue
     fi
-    git checkout -q --detach "$sha"
-    if ! cargo build --release --quiet --locked; then
+    if ! "$(dirname "$0")/build_at.sh" "$sha" "$bin"; then
         echo "${sha:0:7} ${subject}: bench stated ${stated}, build failed"
         failed=1
         continue
@@ -44,5 +42,4 @@ for sha in $(git rev-list --reverse "${base}..${head}"); do
         failed=1
     fi
 done
-git checkout -q "$start"
 exit "$failed"
