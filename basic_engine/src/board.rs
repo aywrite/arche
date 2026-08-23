@@ -122,12 +122,17 @@ const F8_G8: u64 = 1 << F8 | 1 << G8;
 /// stepping again, so an index can never be more than one step out and always
 /// stays inside the array.
 pub struct BaseConversions {
-    pub base_64_to_100: [u8; 64],
-    pub base_100_to_64: [u8; 100],
+    base_64_to_100: [u8; 64],
+    base_100_to_64: [u8; 100],
 }
 
 impl BaseConversions {
     const OFF_BOARD: u8 = 101;
+
+    /// One step in each direction, in this indexing.
+    pub const STRAIGHT_STEPS: [isize; 4] = [10, -10, 1, -1]; // rooks and queens
+    pub const DIAGONAL_STEPS: [isize; 4] = [9, -9, 11, -11]; // bishops and queens
+
     fn new() -> Self {
         let mut base = BaseConversions {
             base_100_to_64: [Self::OFF_BOARD; 100],
@@ -144,9 +149,16 @@ impl BaseConversions {
         base
     }
 
-    #[inline(always)]
-    pub fn is_offboard(&self, index_100: usize) -> bool {
-        self.base_100_to_64[index_100] == Self::OFF_BOARD
+    /// The square one `step` away, or `None` if the step leaves the board.
+    #[inline]
+    pub fn step(&self, from: u8, step: isize) -> Option<u8> {
+        let index_100 = self.base_64_to_100[from as usize] as isize + step;
+        debug_assert!(
+            (0..100).contains(&index_100),
+            "one step cannot leave the mailbox"
+        );
+        let square = self.base_100_to_64[index_100 as usize];
+        (square != Self::OFF_BOARD).then_some(square)
     }
 }
 
@@ -256,18 +268,15 @@ impl AttackMasks {
                 attack_masks.straight[i as usize].set_bit(vertical_index as u8);
             }
 
-            let directions = [9isize, -9, 11, -11];
-            for k in directions {
-                let mut j = 0;
-                loop {
-                    let check_100_index =
-                        BASE_CONVERSIONS.base_64_to_100[i as usize] as isize + (k * j);
-                    if BASE_CONVERSIONS.is_offboard(check_100_index as usize) {
-                        break;
-                    };
-                    let check_index = BASE_CONVERSIONS.base_100_to_64[check_100_index as usize];
-                    j += 1;
-                    attack_masks.diagonal[i as usize].set_bit(check_index);
+            // the whole diagonals, the square itself included: these say only
+            // whether two squares are aligned, and nothing asks that of a
+            // square and itself
+            attack_masks.diagonal[i as usize].set_bit(i as u8);
+            for step in BaseConversions::DIAGONAL_STEPS {
+                let mut square = i as u8;
+                while let Some(next) = BASE_CONVERSIONS.step(square, step) {
+                    attack_masks.diagonal[i as usize].set_bit(next);
+                    square = next;
                 }
             }
         }

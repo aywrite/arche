@@ -1,270 +1,160 @@
+//! Magic bitboards: a slider's moves in one multiply, shift and lookup.
+//!
+//! For a square, the blockers that can matter are a fixed handful of bits. A
+//! magic is a multiplier that scatters those bits into the top of the word so
+//! that a shift leaves each configuration on its own index, and the attack set
+//! is read straight out of a table at that index. The multipliers are searched
+//! for rather than derived, which is what the ignored test at the bottom of
+//! this file does.
+
 use crate::bitboard::BitBoard;
-use crate::board::BASE_CONVERSIONS;
+use crate::board::{BASE_CONVERSIONS, BaseConversions};
 
-// Mask for locations of possible blockers
-// for a given slider movement type and board square
-struct BlockerMasks {
-    straight: [u64; 64], // rooks and queens
-    diagonal: [u64; 64], // bishops and queens
+/// The squares a slider on `from` could be blocked on: its rays, less the last
+/// square of each, since a piece there blocks nothing behind it, and less the
+/// square the slider stands on.
+///
+/// Trimming the ends is what keeps the mask small, and the mask is what sizes
+/// the table. A rook in a corner is blocked on twelve squares rather than
+/// fourteen, and every bit dropped halves what its square needs.
+fn blocker_mask(from: u8, directions: [isize; 4]) -> u64 {
+    let mut mask = 0u64;
+    for step in directions {
+        let mut square = from;
+        // stop before the edge: a blocker on the last square of a ray has
+        // nothing behind it to block
+        while let Some(next) = BASE_CONVERSIONS.step(square, step) {
+            mask.set_bit(square);
+            square = next;
+        }
+    }
+    mask.clear_bit(from);
+    mask
 }
 
-struct BlockerBoards {
-    straight: Vec<Vec<u64>>,
-    diagonal: Vec<Vec<u64>>,
-    straight_bits: [u8; 64],
-    diagonal_bits: [u8; 64],
+/// Where a slider on `from` can move with `blockers` occupied, found by walking
+/// the rays outwards. Each ray runs until it meets a blocker, which it stops on
+/// because it may capture there.
+///
+/// This is what the tables are built from, and it is also the answer a lookup
+/// has to agree with. A free function of the position alone so that it can be
+/// asked directly, rather than only being reachable while a table is filled in:
+/// `the_tables_answer_what_a_ray_walk_would` compares the two.
+pub(crate) fn attacks_from(from: u8, blockers: u64, directions: [isize; 4]) -> u64 {
+    let mut moves = 0u64;
+    for step in directions {
+        let mut square = from;
+        while let Some(next) = BASE_CONVERSIONS.step(square, step) {
+            moves.set_bit(next);
+            if blockers.is_bit_set(next) {
+                break;
+            }
+            square = next;
+        }
+    }
+    moves
 }
 
-struct MoveBoards {
-    straight: Vec<Vec<u64>>,
-    diagonal: Vec<Vec<u64>>,
+/// Every subset of the mask's set bits, one per value of `index`: bit `n` of
+/// the index says whether the mask's `n`th set bit is occupied.
+fn blocker_configurations(mask: u64) -> Vec<u64> {
+    let bits = mask.count_ones();
+    (0..1u64 << bits)
+        .map(|index| {
+            let mut board = mask;
+            let mut remaining = mask;
+            for bit in 0..bits {
+                let square = remaining.trailing_zeros() as u8;
+                remaining &= remaining - 1;
+                if !index.is_bit_set(bit as u8) {
+                    board.clear_bit(square);
+                }
+            }
+            board
+        })
+        .collect()
+}
+
+/// One slider kind's lookup tables. Every square's attack sets sit end to end
+/// in a single allocation, with `offsets` saying where each square's block
+/// starts, so a probe is one indirection rather than two.
+struct SliderTables {
+    blocker_masks: [u64; 64],
+    magics: [u64; 64],
+    /// `64 - bits` for each square, so a probe shifts without subtracting
+    /// first. A shift, not a count of bits, which is what the same number was
+    /// called when it lived in two places.
+    shifts: [u8; 64],
+    offsets: [u32; 64],
+    attacks: Vec<u64>,
+}
+
+impl SliderTables {
+    fn new(directions: [isize; 4], magics: [u64; 64]) -> Self {
+        let mut blocker_masks = [0u64; 64];
+        let mut shifts = [0u8; 64];
+        let mut offsets = [0u32; 64];
+        let mut attacks: Vec<u64> = Vec::new();
+
+        for square in 0..64u8 {
+            let i = square as usize;
+            let mask = blocker_mask(square, directions);
+            let bits = mask.count_ones();
+            blocker_masks[i] = mask;
+            shifts[i] = 64 - bits as u8;
+            offsets[i] = attacks.len() as u32;
+
+            let start = attacks.len();
+            attacks.resize(start + (1usize << bits), 0);
+            for blockers in blocker_configurations(mask) {
+                let index = (blockers.wrapping_mul(magics[i]) >> shifts[i]) as usize;
+                let moves = attacks_from(square, blockers, directions);
+                // two configurations may share an index only when they admit
+                // the same moves, which is what makes the magic a valid one
+                debug_assert!(attacks[start + index] == 0 || attacks[start + index] == moves);
+                attacks[start + index] = moves;
+            }
+        }
+
+        Self {
+            blocker_masks,
+            magics,
+            shifts,
+            offsets,
+            attacks,
+        }
+    }
+
+    #[inline]
+    fn attacks(&self, square: u8, occupied: u64) -> u64 {
+        let i = square as usize;
+        let blockers = occupied & self.blocker_masks[i];
+        let index = blockers.wrapping_mul(self.magics[i]) >> self.shifts[i];
+        self.attacks[self.offsets[i] as usize + index as usize]
+    }
 }
 
 pub struct Magic {
-    blocker_masks: BlockerMasks,
-    straight: [u64; 64],
-    straight_moves: Vec<u64>,
-    straight_offsets: [u32; 64],
-    straight_bits: [u8; 64],
-    diagonal: [u64; 64],
-    diagonal_moves: Vec<u64>,
-    diagonal_offsets: [u32; 64],
-    diagonal_bits: [u8; 64],
+    straight: SliderTables,
+    diagonal: SliderTables,
 }
 
 impl Magic {
     pub fn new() -> Self {
-        let bm = BlockerMasks::new();
-        let bb = BlockerBoards::new(&bm);
-        let mb = MoveBoards::new(&bb);
-        let mut straight_moves_magic: Vec<u64> = Vec::new();
-        let mut diagonal_moves_magic: Vec<u64> = Vec::new();
-        let mut straight_offsets = [0u32; 64];
-        let mut diagonal_offsets = [0u32; 64];
-
-        for index in 0..64 {
-            straight_offsets[index] = straight_moves_magic.len() as u32;
-            straight_moves_magic.extend(Magic::build_table(
-                &bb.straight[index],
-                &mb.straight[index],
-                bb.straight_bits[index],
-                STRAIGHT_MAGICS[index],
-            ));
-            diagonal_offsets[index] = diagonal_moves_magic.len() as u32;
-            diagonal_moves_magic.extend(Magic::build_table(
-                &bb.diagonal[index],
-                &mb.diagonal[index],
-                bb.diagonal_bits[index],
-                DIAGONAL_MAGICS[index],
-            ));
-        }
-
         Self {
-            blocker_masks: bm,
-            straight: STRAIGHT_MAGICS,
-            straight_moves: straight_moves_magic,
-            straight_offsets,
-            straight_bits: bb
-                .straight_bits
-                .iter()
-                .map(|i| 64 - i)
-                .collect::<Vec<u8>>()
-                .try_into()
-                .unwrap(),
-            diagonal: DIAGONAL_MAGICS,
-            diagonal_moves: diagonal_moves_magic,
-            diagonal_offsets,
-            diagonal_bits: bb
-                .diagonal_bits
-                .iter()
-                .map(|i| 64 - i)
-                .collect::<Vec<u8>>()
-                .try_into()
-                .unwrap(),
+            straight: SliderTables::new(BaseConversions::STRAIGHT_STEPS, STRAIGHT_MAGICS),
+            diagonal: SliderTables::new(BaseConversions::DIAGONAL_STEPS, DIAGONAL_MAGICS),
         }
-    }
-
-    fn build_table(blockers: &[u64], move_boards: &[u64], bits: u8, magic: u64) -> Vec<u64> {
-        let mut result = vec![0u64; 1usize << bits];
-        let shift = 64 - bits;
-        for (blocker, &move_b) in blockers.iter().zip(move_boards) {
-            let magic_index = (blocker.wrapping_mul(magic) >> shift) as usize;
-            debug_assert!(result[magic_index] == 0 || result[magic_index] == move_b);
-            result[magic_index] = move_b;
-        }
-        result
     }
 
     #[inline]
     pub fn get_straight_move(&self, square: u8, mask: u64) -> u64 {
-        let blockers = mask & self.blocker_masks.straight[square as usize];
-        let index = (blockers.wrapping_mul(self.straight[square as usize]))
-            >> self.straight_bits[square as usize];
-        self.straight_moves[self.straight_offsets[square as usize] as usize + index as usize]
+        self.straight.attacks(square, mask)
     }
 
     #[inline]
     pub fn get_diagonal_move(&self, square: u8, mask: u64) -> u64 {
-        let blockers = mask & self.blocker_masks.diagonal[square as usize];
-        let index = (blockers.wrapping_mul(self.diagonal[square as usize]))
-            >> self.diagonal_bits[square as usize];
-        self.diagonal_moves[self.diagonal_offsets[square as usize] as usize + index as usize]
-    }
-}
-
-impl MoveBoards {
-    fn new(bb: &BlockerBoards) -> Self {
-        let mut straight_moves = Vec::with_capacity(64);
-        for i in 0u8..64 {
-            let mut v: Vec<u64> = Vec::new();
-            for &mask in &bb.straight[i as usize] {
-                v.push(Self::gen_straight_moves(i, mask));
-            }
-            straight_moves.push(v);
-        }
-
-        let mut diagonal_moves = Vec::with_capacity(64);
-        for i in 0u8..64 {
-            let mut v: Vec<u64> = Vec::new();
-            for &mask in &bb.diagonal[i as usize] {
-                v.push(Self::gen_diagonal_moves(i, mask));
-            }
-            diagonal_moves.push(v);
-        }
-
-        Self {
-            straight: straight_moves,
-            diagonal: diagonal_moves,
-        }
-    }
-
-    fn gen_straight_moves(from: u8, blocker_board: u64) -> u64 {
-        let mut moves = 0u64;
-        let directions = [10isize, -10, 1, -1];
-        for i in directions {
-            let mut j = 1;
-            loop {
-                let check_100_index =
-                    BASE_CONVERSIONS.base_64_to_100[from as usize] as isize + (i * j);
-                if BASE_CONVERSIONS.is_offboard(check_100_index as usize) {
-                    break;
-                };
-                let to = BASE_CONVERSIONS.base_100_to_64[check_100_index as usize];
-                if blocker_board.is_bit_set(to) {
-                    moves.set_bit(to);
-                    break;
-                }
-                moves.set_bit(to);
-                j += 1;
-            }
-        }
-        moves
-    }
-
-    fn gen_diagonal_moves(from: u8, blocker_board: u64) -> u64 {
-        let mut moves = 0u64;
-        let directions = [9isize, -9, 11, -11];
-        for i in directions {
-            let mut j = 1;
-            loop {
-                let check_100_index =
-                    BASE_CONVERSIONS.base_64_to_100[from as usize] as isize + (i * j);
-                if BASE_CONVERSIONS.is_offboard(check_100_index as usize) {
-                    break;
-                };
-                let to = BASE_CONVERSIONS.base_100_to_64[check_100_index as usize];
-                if blocker_board.is_bit_set(to) {
-                    moves.set_bit(to);
-                    break;
-                }
-                moves.set_bit(to);
-                j += 1;
-            }
-        }
-        moves
-    }
-}
-
-impl BlockerBoards {
-    fn new(bm: &BlockerMasks) -> Self {
-        let mut straight_blockers = Vec::with_capacity(64);
-        let mut straight_bits = Vec::with_capacity(64);
-        for i in 0..64 {
-            let mut v: Vec<u64> = Vec::new();
-            for bits in 0..(1 << bm.straight[i].count_ones()) {
-                v.push(Self::generate_blocker_board(bits as u64, bm.straight[i]));
-            }
-            straight_blockers.push(v);
-            straight_bits.push(bm.straight[i].count_ones() as u8);
-        }
-
-        let mut diagonal_blockers = Vec::with_capacity(64);
-        let mut diagonal_bits = Vec::with_capacity(64);
-        for i in 0..64 {
-            let mut v: Vec<u64> = Vec::new();
-            for bits in 0..(1 << bm.diagonal[i].count_ones()) {
-                v.push(Self::generate_blocker_board(bits as u64, bm.diagonal[i]));
-            }
-            diagonal_blockers.push(v);
-            diagonal_bits.push(bm.diagonal[i].count_ones() as u8);
-        }
-
-        Self {
-            straight: straight_blockers,
-            diagonal: diagonal_blockers,
-            straight_bits: straight_bits.try_into().unwrap(),
-            diagonal_bits: diagonal_bits.try_into().unwrap(),
-        }
-    }
-
-    fn generate_blocker_board(index: u64, mask: u64) -> u64 {
-        let mut board = mask;
-        let mut bit_index = 0u8;
-        for i in 0u8..64 {
-            if mask.is_bit_set(i) {
-                if !index.is_bit_set(bit_index) {
-                    board.clear_bit(i);
-                }
-                bit_index += 1;
-            }
-        }
-        board
-    }
-}
-
-impl BlockerMasks {
-    fn new() -> Self {
-        let mut blocker_masks = BlockerMasks {
-            straight: [0; 64], // rooks and queens
-            diagonal: [0; 64], // bishops and queens
-        };
-        for i in 0usize..64 {
-            for j in 1..7 {
-                let horizontal_index = (i / 8 * 8) + j;
-                let vertical_index = (i % 8) + (j * 8);
-                blocker_masks.straight[i].set_bit(horizontal_index as u8);
-                blocker_masks.straight[i].set_bit(vertical_index as u8);
-            }
-
-            let directions = [9isize, -9, 11, -11];
-            for k in directions {
-                let mut j = 0;
-                loop {
-                    let check_100_index = BASE_CONVERSIONS.base_64_to_100[i] as isize + (k * j);
-                    let check_index = BASE_CONVERSIONS.base_100_to_64[check_100_index as usize];
-                    j += 1;
-                    let check_100_index = BASE_CONVERSIONS.base_64_to_100[i] as isize + (k * j);
-                    if BASE_CONVERSIONS.is_offboard(check_100_index as usize) {
-                        break; // if the next one is offboard then break now before setting the bit
-                        // since a piece on the edge in direction of movement can't block
-                    };
-                    blocker_masks.diagonal[i].set_bit(check_index);
-                }
-            }
-            blocker_masks.diagonal[i].clear_bit(i as u8); // can't be blocked by self
-            blocker_masks.straight[i].clear_bit(i as u8); // can't be blocked by self
-        }
-        blocker_masks
+        self.diagonal.attacks(square, mask)
     }
 }
 
@@ -310,8 +200,36 @@ pub const DIAGONAL_MAGICS: [u64; 64] = [
 
 #[cfg(test)]
 mod magic_generation {
-    use super::{BlockerBoards, BlockerMasks, DIAGONAL_MAGICS, MoveBoards, STRAIGHT_MAGICS};
+    use super::{
+        DIAGONAL_MAGICS, Magic, STRAIGHT_MAGICS, attacks_from, blocker_configurations, blocker_mask,
+    };
+    use crate::board::BaseConversions;
     use crate::misc::split_mix;
+
+    const STRAIGHT: [isize; 4] = BaseConversions::STRAIGHT_STEPS;
+    const DIAGONAL: [isize; 4] = BaseConversions::DIAGONAL_STEPS;
+
+    /// Everything a magic for one square has to map: each blocker
+    /// configuration, the attacks it admits, and how wide the index is.
+    struct Cases {
+        blockers: Vec<u64>,
+        attacks: Vec<u64>,
+        bits: u8,
+    }
+
+    fn cases(square: u8, directions: [isize; 4]) -> Cases {
+        let mask = blocker_mask(square, directions);
+        let blockers = blocker_configurations(mask);
+        let attacks = blockers
+            .iter()
+            .map(|&b| attacks_from(square, b, directions))
+            .collect();
+        Cases {
+            blockers,
+            attacks,
+            bits: mask.count_ones() as u8,
+        }
+    }
 
     /// Three draws anded together, which leaves each bit set with probability
     /// one in eight. A magic needs few enough bits set that the multiply and
@@ -325,70 +243,81 @@ mod magic_generation {
         a & b & c
     }
 
-    /// The search that produced the committed magics. Kept here so they can be
-    /// regenerated, and compiled with the tests so it cannot rot.
-    fn find_magic(state: &mut u64, blockers: &[u64], move_boards: &[u64], bits: u8) -> u64 {
-        let mut table = vec![0u64; 1usize << bits];
-        let shift = 64 - bits;
-        'outer: loop {
-            let candidate = sparse_candidate(state);
-            table.fill(0);
-            for (blocker, &move_b) in blockers.iter().zip(move_boards) {
-                let index = (blocker.wrapping_mul(candidate) >> shift) as usize;
-                if table[index] == 0 {
-                    table[index] = move_b;
-                } else if table[index] != move_b {
-                    continue 'outer;
-                }
-            }
-            return candidate;
-        }
-    }
-
-    /// True if this magic maps every blocker configuration for the square onto a
-    /// collision free index. Two configurations may share an index only when they
-    /// have the same attack set, which is harmless.
-    fn is_valid(magic: u64, blockers: &[u64], move_boards: &[u64], bits: u8) -> bool {
-        let mut table = vec![0u64; 1usize << bits];
-        let shift = 64 - bits;
-        for (blocker, &move_b) in blockers.iter().zip(move_boards) {
+    /// True if this magic maps every blocker configuration for the square onto
+    /// a collision free index. Two configurations may share an index only when
+    /// they have the same attack set, which is harmless.
+    fn is_valid(magic: u64, cases: &Cases) -> bool {
+        let mut table = vec![0u64; 1usize << cases.bits];
+        let shift = 64 - cases.bits;
+        for (blocker, &attacks) in cases.blockers.iter().zip(&cases.attacks) {
             let index = (blocker.wrapping_mul(magic) >> shift) as usize;
-            if table[index] != 0 && table[index] != move_b {
+            if table[index] != 0 && table[index] != attacks {
                 return false;
             }
-            table[index] = move_b;
+            table[index] = attacks;
         }
         true
+    }
+
+    /// The search that produced the committed magics. Kept here so they can be
+    /// regenerated, and compiled with the tests so it cannot rot.
+    fn find_magic(state: &mut u64, cases: &Cases) -> u64 {
+        loop {
+            let candidate = sparse_candidate(state);
+            if is_valid(candidate, cases) {
+                return candidate;
+            }
+        }
     }
 
     /// The committed constants have to be valid, not identical to whatever the
     /// search last happened to return. Many magics work for a given square.
     #[test]
     fn committed_magics_are_valid() {
-        let bm = BlockerMasks::new();
-        let bb = BlockerBoards::new(&bm);
-        let mb = MoveBoards::new(&bb);
-        for square in 0..64 {
+        for square in 0..64u8 {
+            let i = square as usize;
             assert!(
-                is_valid(
-                    STRAIGHT_MAGICS[square],
-                    &bb.straight[square],
-                    &mb.straight[square],
-                    bb.straight_bits[square]
-                ),
+                is_valid(STRAIGHT_MAGICS[i], &cases(square, STRAIGHT)),
                 "straight magic for square {} does not work",
                 square
             );
             assert!(
-                is_valid(
-                    DIAGONAL_MAGICS[square],
-                    &bb.diagonal[square],
-                    &mb.diagonal[square],
-                    bb.diagonal_bits[square]
-                ),
+                is_valid(DIAGONAL_MAGICS[i], &cases(square, DIAGONAL)),
                 "diagonal magic for square {} does not work",
                 square
             );
+        }
+    }
+
+    /// A valid magic indexes without collisions, which says nothing about the
+    /// table being filled in or read back the right way round. This walks the
+    /// rays instead and asks the lookup to agree, over every square and every
+    /// blocker configuration its mask admits.
+    ///
+    /// Exhaustive rather than sampled: a mask never has more than twelve bits,
+    /// so the whole space is a hundred thousand or so lookups.
+    #[test]
+    fn the_tables_answer_what_a_ray_walk_would() {
+        let magic = Magic::new();
+        for square in 0..64u8 {
+            for blockers in blocker_configurations(blocker_mask(square, STRAIGHT)) {
+                assert_eq!(
+                    magic.get_straight_move(square, blockers),
+                    attacks_from(square, blockers, STRAIGHT),
+                    "straight, square {} with blockers {:#018x}",
+                    square,
+                    blockers
+                );
+            }
+            for blockers in blocker_configurations(blocker_mask(square, DIAGONAL)) {
+                assert_eq!(
+                    magic.get_diagonal_move(square, blockers),
+                    attacks_from(square, blockers, DIAGONAL),
+                    "diagonal, square {} with blockers {:#018x}",
+                    square,
+                    blockers
+                );
+            }
         }
     }
 
@@ -402,9 +331,6 @@ mod magic_generation {
     #[test]
     #[ignore = "prints replacement constants, see the doc comment"]
     fn regenerate_magics() {
-        let bm = BlockerMasks::new();
-        let bb = BlockerBoards::new(&bm);
-        let mb = MoveBoards::new(&bb);
         let mut state: u64 = 102938423890384;
 
         // the searches are interleaved per square, the same order the original
@@ -412,19 +338,9 @@ mod magic_generation {
         // values
         let mut straight = Vec::with_capacity(64);
         let mut diagonal = Vec::with_capacity(64);
-        for i in 0..64 {
-            straight.push(find_magic(
-                &mut state,
-                &bb.straight[i],
-                &mb.straight[i],
-                bb.straight_bits[i],
-            ));
-            diagonal.push(find_magic(
-                &mut state,
-                &bb.diagonal[i],
-                &mb.diagonal[i],
-                bb.diagonal_bits[i],
-            ));
+        for square in 0..64u8 {
+            straight.push(find_magic(&mut state, &cases(square, STRAIGHT)));
+            diagonal.push(find_magic(&mut state, &cases(square, DIAGONAL)));
         }
 
         for (name, magics) in [("STRAIGHT_MAGICS", straight), ("DIAGONAL_MAGICS", diagonal)] {
