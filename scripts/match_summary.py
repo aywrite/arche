@@ -1,8 +1,8 @@
 #!/usr/bin/env python3
 """Print the elo estimate, and any sprt verdict, from a fastchess result file."""
 
+import argparse
 import re
-import sys
 from pathlib import Path
 
 # the lookbehind keeps this from matching the nElo figure on the same line
@@ -42,9 +42,41 @@ def verdict(text: str) -> str:
     return f", SPRT {bounds[-1]} accepted {hypothesis}: {reading}"
 
 
+def trailer(text: str, tc: str, baseline: str) -> str:
+    """The result as the Elo trailer a commit carries, in the one shape the
+    commit-msg hook accepts: the estimate, the sprt bounds when there were
+    any, the games, the time control and what was played. A sweep has no
+    estimate, fastchess prints inf, and a trailer claiming a number it never
+    gave would be a lie the hook could not catch."""
+    found = ELO.findall(text)
+    if not found:
+        return "Elo: not measured"
+    elo, margin = found[-1]
+    games = GAMES.findall(text)[-1]
+    sprt = ""
+    if bounds := LLR.findall(text):
+        low, high = (float(bound) for bound in bounds[-1].strip("[]").split(","))
+        sprt = f"sprt [{low:g}, {high:g}], "
+    estimate = f"{round(float(elo)):+d} ±{round(float(margin))}"
+    return f"Elo: {estimate} ({sprt}{games} games, {tc}, vs {baseline})"
+
+
 def main() -> None:
-    text = Path(sys.argv[1]).read_text()
-    print(f"{estimate(text)}{verdict(text)}")
+    parser = argparse.ArgumentParser(description=__doc__)
+    parser.add_argument("result", help="a fastchess result file")
+    parser.add_argument(
+        "--trailer",
+        action="store_true",
+        help="print the Elo trailer for a commit instead of the summary line",
+    )
+    parser.add_argument("--tc", default="", help="the time control played")
+    parser.add_argument("--baseline", default="", help="what was played against")
+    args = parser.parse_args()
+    text = Path(args.result).read_text()
+    if args.trailer:
+        print(trailer(text, args.tc, args.baseline))
+    else:
+        print(f"{estimate(text)}{verdict(text)}")
 
 
 if __name__ == "__main__":

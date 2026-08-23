@@ -21,6 +21,12 @@ body = """
         - {% if commit.breaking %}[**breaking**] {% endif %}\
 {% if commit.scope %}*({{ commit.scope }})* {% endif %}\
 {{ commit.message | upper_first }}\
+{% for footer in commit.footers %}\
+{% if footer.token == "Bench" %} [bench {{ footer.value }}]\
+{% elif footer.token == "Speed" %} [speed {{ footer.value | split(pat=" ") | first }}]\
+{% elif footer.token == "Elo" %} [elo {{ footer.value }}]\
+{% endif %}\
+{% endfor %}\
     {% endfor %}
 {% endfor %}\n
 """

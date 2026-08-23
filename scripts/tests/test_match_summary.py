@@ -124,6 +124,54 @@ def test_a_capped_sprt_match_is_inconclusive(tmp_path):
     )
 
 
+def trailer(tmp_path, text, tc="10+0.1", baseline="v0.3.10"):
+    result_file = tmp_path / "result.txt"
+    result_file.write_text(text)
+    return subprocess.run(
+        [
+            sys.executable,
+            str(SCRIPT),
+            str(result_file),
+            "--trailer",
+            "--tc",
+            tc,
+            "--baseline",
+            baseline,
+        ],
+        check=False,
+        capture_output=True,
+        text=True,
+    )
+
+
+def test_a_fixed_match_gives_the_elo_trailer(tmp_path):
+    result = trailer(tmp_path, RESULT)
+    assert result.stdout == "Elo: +7 ±45 (50 games, 10+0.1, vs v0.3.10)\n"
+
+
+def test_an_sprt_match_names_its_bounds_in_the_trailer(tmp_path):
+    result = trailer(tmp_path, SPRT_CAPPED, tc="1+0.01", baseline="master")
+    assert result.stdout == "Elo: +58 ±81 (sprt [0, 10], 60 games, 1+0.01, vs master)\n"
+
+
+def test_a_sweep_has_no_elo_to_state(tmp_path):
+    # fastchess prints inf, and a trailer claiming a number it never gave
+    # would be a lie the hook could not catch
+    result = trailer(tmp_path, SPRT_H0)
+    assert result.stdout == "Elo: not measured\n"
+
+
+def test_the_trailer_passes_the_hook(tmp_path):
+    import check_trailers
+
+    # the bounds are workflow inputs and need not be whole
+    decimals = SPRT_CAPPED.replace("[0.00, 10.00]", "[-1.50, 2.50]")
+    for text in [RESULT, SPRT_CAPPED, SPRT_H0, decimals]:
+        line = trailer(tmp_path, text).stdout
+        message = f"perf(search): Sort less\n\nBench: 1\nSpeed: +1.0% (bench nps, 5 interleaved rounds vs a1b2c3d, spread 1.0%)\n{line}"
+        assert check_trailers.problems(message) == [], line
+
+
 def test_a_fixed_match_gets_no_sprt_annotation(tmp_path):
     # the LLR line is the marker of an sprt run, a plain match must not grow
     # a verdict

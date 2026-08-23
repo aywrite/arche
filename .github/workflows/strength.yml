@@ -238,10 +238,19 @@ jobs:
           line="Performance compared to ${PREVIOUS} | $(python3 scripts/match_summary.py tools/result.txt)"
           echo "::notice::$line"
           echo "line=${line}" >> "$GITHUB_OUTPUT"
+          # the same result as the trailer a commit carries, ready to paste
+          trailer=$(python3 scripts/match_summary.py tools/result.txt \
+            --trailer --tc "$TIME_CONTROL" --baseline "$PREVIOUS")
           {
             echo "${CANDIDATE} (\`${CANDIDATE_SHA:0:8}\`) against ${PREVIOUS} (\`${BASELINE_SHA:0:8}\`)"
             echo
             echo "$line"
+            echo
+            echo "As the trailer for the commit that made the difference:"
+            echo
+            echo '```'
+            echo "$trailer"
+            echo '```'
             echo
             if [ "$SPRT" = "true" ]; then
               echo "SPRT stops when the games settle the question at a five percent error rate each way: H1 accepted means stronger by about ${ELO1} elo or more, H0 accepted means not, and inconclusive means the cap of ${GAMES} games or ${MAX_MATCH_MINUTES} minutes arrived first."
