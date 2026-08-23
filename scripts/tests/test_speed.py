@@ -74,6 +74,14 @@ def test_the_rounds_alternate_which_side_runs_first(tmp_path):
     assert calls == ["base", "candidate", "candidate", "base", "base", "candidate"]
 
 
+def test_the_sides_are_told_apart_even_when_they_are_one_binary(tmp_path):
+    # an engine measured against itself is the first thing anyone tries the
+    # tooling on, and its node count belongs to both sides, not to one
+    engine = fake_engine(tmp_path, "engine", [100] * 4, nodes=100)
+    measured = speed.measure(str(engine), str(engine), rounds=2, depth=1)
+    assert (measured.base_nodes, measured.candidate_nodes) == (100, 100)
+
+
 def test_the_report_names_differing_node_counts(tmp_path, capsys):
     base = fake_engine(tmp_path, "base", [100] * 2, nodes=100)
     candidate = fake_engine(tmp_path, "candidate", [100] * 2, nodes=90)
