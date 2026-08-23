@@ -5,7 +5,10 @@ See [DEVELOPMENT.md](DEVELOPMENT.md) for how to measure whether one of these hel
 
 ## Not implemented yet
 
-Roughly in the order they look worth doing.
+The measurement spine — the bench, the commit trailers, a reference search to
+compare against — lands before the first change to the search, so that every
+later commit carries its numbers and the series has no gap in it. Roughly in
+the order they look worth doing after that.
 
 - null move pruning
 - killer moves
@@ -31,3 +34,25 @@ Roughly in the order they look worth doing.
 - a fen is only validated as far as what the search cannot survive, a king a side and the side
   not to move being out of check. A position which is illegal in other ways, such as one with
   nine pawns or castling rights without a rook, is accepted and played from
+
+## Measured and rejected
+
+Ideas that look right on paper and have already been tried. Do not propose one
+of these again without saying what is different this time.
+
+- Carrying the moving piece in `Play`, to save the `get_piece_index` walks in
+  make, unmake and MVV-LVA. Implemented correctly, node counts identical, and
+  4-6% slower: the struct grows from six bytes to seven, which takes the inline
+  `MoveList` from 384 bytes to 448. It would only pay bit-packed into the spare
+  bits of `from` and `to`, which is a different change to measure.
+- A `MoveList` inline capacity other than 64. Thirty-two and forty-eight are
+  4.2% and 3.4% slower, ninety-six and 128 marginally slower. The list is a
+  stack local at every recursion frame, so inline bytes multiply by depth and
+  trade against a 48KB L1D. Spilling is already negligible; there is nothing
+  there to fix.
+- Prefetching a child's transposition slot straight after `make_move`, 6.7%
+  slower over six interleaved rounds. The prefetch sits immediately before the
+  recursive call and the child probes the table almost first, so there is no
+  latency to hide and all that is added is an index multiply on every made
+  move. Inside `make_move`, after the key is finalised, is the only placement
+  that could pay, and it needs the key folded up front first.

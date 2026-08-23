@@ -10,3 +10,7 @@ perf.data*
 callgrind.out*
 dhat.out*
 flamegraph.svg*
+
+# agent instructions for one machine, kept out of the repository
+/AGENTS.local.md
+/CLAUDE.local.md
