@@ -935,8 +935,10 @@ impl Bound {
 /// The key is kept only in part. The index is drawn from the top of the key
 /// by multiply-shift, so the bottom of it is what carries anything the index
 /// does not already say, and thirty two bits of that leaves one chance in
-/// four thousand million of taking another position's entry for this one.
-/// The whole key cost eight bytes a slot and made the slot twenty four.
+/// four thousand million per entry compared of taking another position's
+/// entry for this one: a probe compares with the four of its bucket, so
+/// one probe in about a thousand million. The whole key cost eight bytes
+/// a slot and made the slot twenty four.
 ///
 /// The flags byte holds the bound in its low two bits, the taint in the
 /// third and the search the entry was stored in, the generation, in the top
@@ -1033,23 +1035,42 @@ impl Entry {
     }
 }
 
+/// Four entries in one cache line. A position is looked for in every entry
+/// of its bucket and stored in whichever of them is worth the least, so a
+/// table keeps four positions that hash alike where a slot kept one, and a
+/// probe still touches one line.
+#[derive(Copy, Clone, Debug)]
+#[repr(C, align(64))]
+struct Bucket {
+    entries: [Entry; 4],
+}
+
+const BUCKET: usize = 4;
+
+impl Bucket {
+    const EMPTY: Bucket = Bucket {
+        entries: [Entry::EMPTY; BUCKET],
+    };
+}
+
 #[derive(Debug)]
 struct HashTable {
-    table: Vec<Entry>,
+    table: Vec<Bucket>,
     /// The search under way, as the entries it stores are marked.
     generation: u8,
 }
 
 impl HashTable {
+    /// A table of at least this many entries, rounded up to whole buckets.
     fn with_capacity(capacity: usize) -> Self {
         Self {
-            table: vec![Entry::EMPTY; capacity],
+            table: vec![Bucket::EMPTY; capacity.div_ceil(BUCKET).max(1)],
             generation: 1,
         }
     }
 
     fn clear(&mut self) {
-        self.table.fill(Entry::EMPTY);
+        self.table.fill(Bucket::EMPTY);
         self.generation = 1;
     }
 
@@ -1077,16 +1098,49 @@ impl HashTable {
     }
 
     fn get(&self, key: u64) -> Option<Pv> {
-        let entry = self.table[self.index_for(key)];
-        if entry.generation() != 0 && entry.key == Entry::slice(key) {
-            return Some(entry.unpack());
+        let slice = Entry::slice(key);
+        self.table[self.index_for(key)]
+            .entries
+            .iter()
+            // the key first: in a warm table nearly every entry has a
+            // generation, and the key is what rejects three of the four
+            .find(|entry| entry.key == slice && entry.generation() != 0)
+            .map(|entry| entry.unpack())
+    }
+
+    /// Where in its bucket a position goes: its own entry if it has one,
+    /// else an empty one, else one from a search long enough ago to be
+    /// stale, else the shallowest. Which of the four comes back is the whole
+    /// of the replacement policy, and the depth contest in `set` is the
+    /// rest.
+    #[inline]
+    fn slot_for(&self, key: u64) -> (usize, usize) {
+        let index = self.index_for(key);
+        let slice = Entry::slice(key);
+        let bucket = &self.table[index].entries;
+        // its own entry first, wherever it sits, so a position is never in
+        // a bucket twice
+        if let Some(i) = bucket
+            .iter()
+            .position(|entry| entry.key == slice && entry.generation() != 0)
+        {
+            return (index, i);
         }
-        None
+        let mut victim = 0;
+        for (i, entry) in bucket.iter().enumerate() {
+            if entry.generation() == 0 || self.age(*entry) >= STALE_AFTER_SEARCHES {
+                return (index, i);
+            }
+            if entry.depth < bucket[victim].depth {
+                victim = i;
+            }
+        }
+        (index, victim)
     }
 
     fn set(&mut self, key: u64, pv: Pv) {
-        let index = self.index_for(key);
-        let old = self.table[index];
+        let (index, i) = self.slot_for(key);
+        let old = self.table[index].entries[i];
         if old.generation() != 0 && self.age(old) < STALE_AFTER_SEARCHES {
             if pv.depth < old.depth {
                 return;
@@ -1099,7 +1153,7 @@ impl HashTable {
                 return;
             }
         }
-        self.table[index] = Entry::pack(key, pv, self.generation);
+        self.table[index].entries[i] = Entry::pack(key, pv, self.generation);
     }
 
     /// Store without the depth contest above. The root's end-of-iteration
@@ -1111,8 +1165,8 @@ impl HashTable {
     /// depth is no loss: its score describes repetition and fifty move
     /// context the game has since moved past.
     fn set_always(&mut self, key: u64, pv: Pv) {
-        let index = self.index_for(key);
-        self.table[index] = Entry::pack(key, pv, self.generation);
+        let (index, i) = self.slot_for(key);
+        self.table[index].entries[i] = Entry::pack(key, pv, self.generation);
     }
 }
 
@@ -1909,7 +1963,7 @@ mod search {
 
 #[cfg(test)]
 mod hash_table {
-    use super::{Bound, Entry, HashTable, Play, Pv, STALE_AFTER_SEARCHES};
+    use super::{Bound, Bucket, Entry, HashTable, Play, Pv, STALE_AFTER_SEARCHES};
     use crate::misc::{Piece, PromotePiece};
     use pretty_assertions::assert_eq;
     use std::mem;
@@ -1929,6 +1983,41 @@ mod hash_table {
         // four to a cache line, and the bench's node counts depend on how
         // many a table of a given size holds
         assert_eq!(mem::size_of::<Entry>(), 16);
+    }
+
+    #[test]
+    fn a_bucket_is_one_cache_line() {
+        // a probe reads the line once and sees all four entries in it
+        assert_eq!(mem::size_of::<Bucket>(), 64);
+        assert_eq!(mem::align_of::<Bucket>(), 64);
+    }
+
+    #[test]
+    fn four_positions_share_a_bucket_and_all_are_kept() {
+        let mut table = HashTable::with_capacity(4);
+        for key in 1..=4 {
+            table.set(key, new_pv(Bound::Exact, key as u8));
+        }
+        for key in 1..=4 {
+            assert_eq!(table.get(key).unwrap().depth, key as u8, "key {key}");
+        }
+    }
+
+    #[test]
+    fn a_fifth_position_evicts_the_shallowest_of_the_bucket() {
+        let mut table = HashTable::with_capacity(4);
+        for (key, depth) in [(1, 8), (2, 3), (3, 5), (4, 7)] {
+            table.set(key, new_pv(Bound::Exact, depth));
+        }
+        table.set(5, new_pv(Bound::Lower, 4));
+        assert!(
+            table.get(2).is_none(),
+            "the depth three entry should have gone"
+        );
+        assert_eq!(table.get(5).unwrap().depth, 4);
+        for key in [1, 3, 4] {
+            assert!(table.get(key).is_some(), "key {key} should have stayed");
+        }
     }
 
     #[test]
@@ -1995,29 +2084,41 @@ mod hash_table {
         assert_eq!(table.get(1).unwrap().depth, 8);
     }
 
+    /// A bucket with no room left: four positions at the depth given.
+    fn full_bucket(depth: u8) -> HashTable {
+        let mut table = HashTable::with_capacity(4);
+        for key in 1..=4 {
+            table.set(key, new_pv(Bound::Exact, depth));
+        }
+        table
+    }
+
+    fn kept(table: &HashTable, keys: std::ops::RangeInclusive<u64>) -> usize {
+        keys.filter(|key| table.get(*key).is_some()).count()
+    }
+
     #[test]
     fn a_deeper_entry_replaces_an_exact_entry_for_another_position() {
-        let mut table = HashTable::with_capacity(1);
-        table.set(1, new_pv(Bound::Exact, 1));
-        table.set(2, new_pv(Bound::Lower, 8));
-        assert!(table.get(2).is_some());
-        assert!(table.get(1).is_none());
+        let mut table = full_bucket(1);
+        table.set(5, new_pv(Bound::Lower, 8));
+        assert!(table.get(5).is_some());
+        assert_eq!(kept(&table, 1..=4), 3);
     }
 
     #[test]
     fn a_shallower_entry_does_not_evict_a_deeper_one_for_another_position() {
-        let mut table = HashTable::with_capacity(1);
-        table.set(1, new_pv(Bound::Lower, 8));
-        table.set(2, new_pv(Bound::Exact, 1));
-        assert_eq!(table.get(1).unwrap().depth, 8);
+        let mut table = full_bucket(8);
+        table.set(5, new_pv(Bound::Exact, 1));
+        assert!(table.get(5).is_none());
+        assert_eq!(kept(&table, 1..=4), 4);
     }
 
     #[test]
     fn a_quiescence_entry_does_not_evict_a_searched_entry() {
-        let mut table = HashTable::with_capacity(1);
-        table.set(1, new_pv(Bound::Exact, 5));
-        table.set(2, new_pv(Bound::Ordering, 0));
-        assert_eq!(table.get(1).unwrap().depth, 5);
+        let mut table = full_bucket(5);
+        table.set(5, new_pv(Bound::Ordering, 0));
+        assert!(table.get(5).is_none());
+        assert_eq!(kept(&table, 1..=4), 4);
     }
 
     #[test]
@@ -2025,34 +2126,73 @@ mod hash_table {
         // the table remembers which search stored an entry, and one from
         // long enough ago loses to anything: its depth is no longer worth
         // the slot, and its score describes a game the clock has moved past
-        let mut table = HashTable::with_capacity(1);
-        table.set(1, new_pv(Bound::Exact, 8));
+        let mut table = full_bucket(8);
         for _ in 0..STALE_AFTER_SEARCHES - 1 {
             table.new_search();
         }
-        table.set(2, new_pv(Bound::Lower, 1));
-        assert_eq!(
-            table.get(1).unwrap().depth,
-            8,
-            "still recent enough to keep"
-        );
+        table.set(5, new_pv(Bound::Lower, 1));
+        assert!(table.get(5).is_none(), "still recent enough to keep");
         table.new_search();
-        table.set(2, new_pv(Bound::Lower, 1));
-        assert!(table.get(2).is_some());
-        assert!(table.get(1).is_none());
+        table.set(5, new_pv(Bound::Lower, 1));
+        assert!(table.get(5).is_some());
+        assert_eq!(kept(&table, 1..=4), 3);
     }
 
     #[test]
-    fn the_search_counter_wraps_without_making_the_newest_entry_stale() {
-        // five bits of generation: after it wraps, an entry from this search
-        // must still read as this search's
-        let mut table = HashTable::with_capacity(1);
-        for _ in 0..40 {
+    fn the_root_store_takes_a_slot_whatever_the_bucket_holds() {
+        let mut table = full_bucket(20);
+        table.set_always(5, new_pv(Bound::Exact, 1));
+        assert_eq!(table.get(5).unwrap().depth, 1);
+        assert_eq!(kept(&table, 1..=4), 3);
+    }
+
+    #[test]
+    fn the_search_counter_wraps_and_ages_are_taken_round_it() {
+        // five bits of generation: a bucket filled in the last generation
+        // before the wrap is one search old in the first after it, not
+        // thirty, and is stale twelve searches on as any other would be
+        let mut table = HashTable::with_capacity(4);
+        for _ in 0..30 {
             table.new_search();
         }
+        for key in 1..=4 {
+            table.set(key, new_pv(Bound::Exact, 8));
+        }
+        table.new_search();
+        table.set(5, new_pv(Bound::Lower, 1));
+        assert!(table.get(5).is_none(), "one search old, kept by depth");
+        for _ in 0..STALE_AFTER_SEARCHES - 1 {
+            table.new_search();
+        }
+        table.set(5, new_pv(Bound::Lower, 1));
+        assert!(table.get(5).is_some(), "twelve searches old, replaced");
+        assert_eq!(kept(&table, 1..=4), 3);
+    }
+
+    #[test]
+    fn the_root_store_overwrites_the_positions_own_entry_not_the_shallowest() {
+        let mut table = HashTable::with_capacity(4);
+        for (key, depth) in [(1, 9), (2, 1), (3, 9), (4, 9)] {
+            table.set(key, new_pv(Bound::Exact, depth));
+        }
+        table.set_always(3, new_pv(Bound::Exact, 2));
+        assert_eq!(table.get(3).unwrap().depth, 2);
+        assert_eq!(
+            table.get(2).unwrap().depth,
+            1,
+            "the shallowest was left alone"
+        );
+        assert_eq!(kept(&table, 1..=4), 4);
+    }
+
+    #[test]
+    fn a_key_agreeing_on_the_slice_and_the_index_is_taken_for_the_same_position() {
+        // the accepted imprecision, stated: in a one bucket table every key
+        // shares the index, so one differing only above the slice is a hit
+        let mut table = HashTable::with_capacity(4);
         table.set(1, new_pv(Bound::Exact, 8));
-        table.set(2, new_pv(Bound::Lower, 1));
-        assert_eq!(table.get(1).unwrap().depth, 8);
+        assert_eq!(table.get(1 + (1 << 32)).unwrap().depth, 8);
+        assert!(table.get(2).is_none());
     }
 
     #[test]
