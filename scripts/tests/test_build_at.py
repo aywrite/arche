@@ -7,6 +7,8 @@ tree is never touched to get it, and that the build lands where cargo is
 told to put things.
 """
 
+import os
+import shutil
 import subprocess
 import sys
 from pathlib import Path
@@ -104,8 +106,70 @@ def test_the_build_lands_where_cargo_is_told_to_put_it(repo, tmp_path):
     )
     assert result.returncode == 0, result.stderr
     assert prints(tmp_path / "new") == "second\n"
-    assert (elsewhere / "release" / "arche").exists()
+    assert (elsewhere / "at" / "release" / "arche").exists()
     assert not (repo / "target").exists()
+
+
+@pytest.mark.skipif(shutil.which("cargo") is None, reason="needs cargo")
+def test_a_commit_that_changed_the_source_is_built_afresh(tmp_path):
+    # the one test through real cargo, because the failure it guards
+    # against is cargo's: an export stamped with the commit's time looks
+    # older than the last build and is handed that binary back, and an
+    # export sharing the tree's target directory is taken for the tree.
+    # Two commits of a crate that prints which one it is, then the tree
+    # changed again: each build has to say what its own source says
+    repo = tmp_path / "repo"
+    (repo / "src").mkdir(parents=True)
+
+    def git(*args):
+        return subprocess.run(
+            ["git", "-c", "user.name=t", "-c", "user.email=t@t", *args],
+            cwd=repo,
+            check=True,
+            capture_output=True,
+            text=True,
+        ).stdout.strip()
+
+    def says(word):
+        (repo / "src" / "main.rs").write_text(f'fn main() {{ println!("{word}"); }}\n')
+
+    git("init", "-q")
+    (repo / "Cargo.toml").write_text(
+        '[package]\nname = "arche"\nversion = "0.0.0"\nedition = "2021"\n'
+    )
+    says("first")
+    git("add", ".")
+    git("commit", "-qm", "first")
+    says("second")
+    git("commit", "-aqm", "second")
+    says("tree")
+
+    # cargo's own configuration comes through, rustup's home among it; the
+    # target directory does not, or the build would land in the caller's
+    env = {
+        k: v
+        for k, v in os.environ.items()
+        if k not in ("CARGO_TARGET_DIR", "CARGO_BUILD_TARGET")
+    }
+    env.setdefault("HOME", str(tmp_path))
+    for ref, word in [("HEAD~1", "first"), ("HEAD", "second")]:
+        result = subprocess.run(
+            [str(SCRIPT), ref, str(tmp_path / word)],
+            cwd=repo,
+            env=env,
+            check=False,
+            capture_output=True,
+            text=True,
+        )
+        assert result.returncode == 0, result.stderr
+        assert prints(tmp_path / word) == f"{word}\n"
+    subprocess.run(
+        ["cargo", "build", "--release", "--quiet"],
+        cwd=repo,
+        env=env,
+        check=True,
+    )
+    assert prints(repo / "target" / "release" / "arche") == "tree\n"
 
 
 def test_a_ref_that_is_not_a_commit_fails(repo, tmp_path):
