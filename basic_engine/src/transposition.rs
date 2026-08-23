@@ -41,9 +41,11 @@ fn score_from_tt(score: Score, line_ply: usize) -> Score {
 /// interaction error every engine carries and none of them measure.
 #[derive(Copy, Clone, Debug, Default)]
 pub struct GhiCounters {
-    /// Entries stored carrying a draw tainted score.
+    /// Entries which landed carrying a draw tainted score.
     pub tainted_stores: u64,
-    /// Entries stored in total.
+    /// Entries which landed and whose score a probe could later cut on. A
+    /// store which loses the replacement contest is not one, and neither is
+    /// a quiescence entry: that is kept for the move alone.
     pub stores: u64,
     /// Probes that returned a score, cutting the search off.
     pub score_cutoffs: u64,
@@ -315,22 +317,26 @@ impl TranspositionTable {
         (index, victim)
     }
 
-    fn set(&mut self, key: u64, pv: Pv) {
+    /// Store unless the slot holds something worth more. Reports whether the
+    /// entry landed: a caller counting what the table knows must not count a
+    /// store the contest below turned away.
+    fn set(&mut self, key: u64, pv: Pv) -> bool {
         let (index, i) = self.slot_for(key);
         let old = self.table[index].entries[i];
         if old.generation() != 0 && self.age(old) < STALE_AFTER_SEARCHES {
             if pv.depth < old.depth {
-                return;
+                return false;
             }
             if pv.depth == old.depth
                 && old.key == Entry::slice(key)
                 && matches!(old.bound(), Bound::Exact)
                 && !matches!(pv.bound, Bound::Exact)
             {
-                return;
+                return false;
             }
         }
         self.table[index].entries[i] = Entry::pack(key, pv, self.generation);
+        true
     }
 
     /// Store without the depth contest above. The root's end-of-iteration
@@ -370,11 +376,12 @@ impl TranspositionTable {
         depth: u8,
         tainted: bool,
     ) {
-        self.set(
+        if self.set(
             board.key,
             entry(board, play, beta, depth, Bound::Lower, tainted),
-        );
-        self.count_store(tainted);
+        ) {
+            self.count_store(tainted);
+        }
     }
 
     /// The best move found by searching all of them here, with the score it
@@ -387,11 +394,12 @@ impl TranspositionTable {
         depth: u8,
         tainted: bool,
     ) {
-        self.set(
+        if self.set(
             board.key,
             entry(board, play, score, depth, Bound::Exact, tainted),
-        );
-        self.count_store(tainted);
+        ) {
+            self.count_store(tainted);
+        }
     }
 
     /// The move the engine is about to answer with. Stored past the depth
