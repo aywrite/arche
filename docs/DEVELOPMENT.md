@@ -111,7 +111,9 @@ The engine ones are grouped by type instead:
 The commit-msg hook rejects a scope that is not on the list, which is the point:
 a mistyped `perf(benchmark)` would otherwise be published as if the engine had
 got faster. Adding a scope means adding it to the hook arguments in
-`.pre-commit-config.yaml`, and to `cliff.toml` as well if it is a build one.
+`.pre-commit-config.yaml`, to the table above it belongs in, and to
+`cliff.toml` if it is a build one or to `scripts/check_trailers.py` if it is
+an engine one; `scripts/tests/test_scopes.py` fails until the four agree.
 Merge commits are exempt.
 
 `git-cliff --unreleased` prints what the next release would say, which is the

@@ -17,7 +17,7 @@ permissions:
 # a new push to a pull request makes the run in progress redundant
 concurrency:
   group: ${{ github.workflow }}-${{ github.ref }}
-  cancel-in-progress: true
+  cancel-in-progress: ${{ github.event_name == 'pull_request' }}
 
 jobs:
   test:
@@ -27,5 +27,5 @@ jobs:
       - uses: actions/checkout@v7
       - name: Run the script tests
         run: |
-          python3 -m pip install --quiet pytest
+          python3 -m pip install --quiet pytest pyyaml
           python3 -m pytest scripts/tests -q
