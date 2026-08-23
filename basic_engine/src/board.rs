@@ -336,7 +336,7 @@ impl Board {
     pub fn new() -> Board {
         // pay for the magic tables at startup rather than on the first search
         LazyLock::force(&MAGIC);
-        Board::from_fen("rnbqkbnr/pppppppp/8/8/8/8/PPPPPPPP/RNBQKBNR w KQkq - 0 1").unwrap()
+        Board::from_fen(crate::STARTING_FEN).unwrap()
     }
 
     /// Whether this move is one `generate_moves` would produce here.
@@ -1476,6 +1476,9 @@ impl Game for Board {
         let full_move_clock = fen_iter
             .next()
             .ok_or("Error parsing FEN: Could not find full move clock")?;
+        let move_number = full_move_clock
+            .parse::<usize>()
+            .map_err(|e| e.to_string())?;
 
         let mut board = Board {
             pawns: 0,
@@ -1491,14 +1494,9 @@ impl Game for Board {
                 .ok_or("Failed to parse active color from token")?,
             castle: CastlePermissions::from_fen(castle)?,
 
-            ply: (full_move_clock
-                .parse::<usize>()
-                .map_err(|e| e.to_string())?)
-                * 2,
+            ply: move_number * 2,
             line_ply: 0,
-            move_number: full_move_clock
-                .parse::<usize>()
-                .map_err(|e| e.to_string())?,
+            move_number,
             en_passant: Coordinate::from_string(en_passant)?,
             // filled in below, once the pieces are on the board
             checkers: 0,
@@ -1637,7 +1635,7 @@ impl fmt::Display for Board {
 #[cfg(test)]
 pub(crate) mod fens {
     /// The starting position.
-    pub const START: &str = "rnbqkbnr/pppppppp/8/8/8/8/PPPPPPPP/RNBQKBNR w KQkq - 0 1";
+    pub const START: &str = crate::STARTING_FEN;
     /// Kiwipete, the standard tactical middlegame: checks, pins, castling and
     /// an en passant square all within a move or two.
     pub const KIWIPETE: &str =
@@ -2112,11 +2110,6 @@ mod fen_parsing {
         fn random_str_doesnt_crash(s in ".*") {
             _ = Board::from_fen(&s);
         }
-
-        //#[test]
-        //fn random_fen_doesnt_crash(s in ("([NBRPKQnbrpkq1-9]{9}/){7}[NBRPKQnbrpkq1-9]{4,} [bw]{1} [kqKQ-]{1,4} [a-hA-H][1-9] [1-9]{1,} [1-9]{1,}").prop_filter("", |v| {println!("{}", v); true})) {
-        //    _ = Board::from_fen(s);
-        //}
     }
 
     #[test]
