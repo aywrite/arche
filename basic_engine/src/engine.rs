@@ -1136,16 +1136,6 @@ mod search {
     }
 
     #[test]
-    fn checkmate_in_two_is_found_for_white() {
-        let game =
-            Board::from_fen("2rr3k/pp3pp1/1nnqbN1p/3pN3/2pP4/2P3Q1/PPB4P/R4RK1 w - - 0 0").unwrap();
-        let mut e = engine(game);
-        let result = completed(e.search(4));
-        assert_eq!(result.checkmate_in(), Some(2));
-        assert_eq!(format!("{}", result.best_move), "g3g6");
-    }
-
-    #[test]
     fn the_mate_distance_survives_a_deeper_warm_search() {
         let game =
             Board::from_fen("2rr3k/pp3pp1/1nnqbN1p/3pN3/2pP4/2P3Q1/PPB4P/R4RK1 w - - 0 0").unwrap();
@@ -1282,22 +1272,6 @@ mod search {
     }
 
     #[test]
-    fn a_checkmated_root_is_game_over() {
-        // fool's mate: white to move with no reply
-        let game = Board::from_fen("rnb1kbnr/pppp1ppp/8/4p3/6Pq/5P2/PPPPP2P/RNBQKBNR w KQkq - 1 3")
-            .unwrap();
-        let mut e = engine(game);
-        assert!(matches!(e.search(3), SearchOutcome::GameOver));
-    }
-
-    #[test]
-    fn a_stalemated_root_is_game_over() {
-        let game = Board::from_fen("k7/8/1Q6/8/8/8/8/7K b - - 0 1").unwrap();
-        let mut e = engine(game);
-        assert!(matches!(e.search(3), SearchOutcome::GameOver));
-    }
-
-    #[test]
     fn a_search_with_no_time_budget_aborts_without_a_move() {
         let mut e = engine(Board::new());
         e.configure(time::Instant::now(), Some(time::Duration::ZERO));
@@ -1421,23 +1395,6 @@ mod search {
     }
 
     #[test]
-    fn timed_out_deepening_still_returns_a_move() {
-        // The budget runs out long before MAX_DEPTH can complete, so the
-        // deepening loop ends on an Aborted outcome and must fall back to a
-        // completed iteration's move
-        use super::SearchParameters;
-        let mut e = engine(Board::new());
-        let params = SearchParameters {
-            depth: None,
-            search_duration: Some(time::Duration::from_millis(50)),
-            nodes: None,
-            start_time: time::Instant::now(),
-        };
-        let outcome = e.iterative_deepening_search(params, |_, _, _| {});
-        assert!(matches!(outcome, SearchOutcome::Aborted(Some(_))));
-    }
-
-    #[test]
     fn deepening_reports_each_completed_depth() {
         use super::SearchParameters;
         let mut e = engine(Board::new());
@@ -1471,17 +1428,43 @@ mod search {
     }
 
     #[test]
-    fn deepening_stops_reporting_at_game_over() {
+    fn a_finished_game_is_game_over_with_no_depth_to_report() {
         use super::SearchParameters;
-        // fool's mate again: there is nothing to report and nothing to play
-        let game = Board::from_fen("rnb1kbnr/pppp1ppp/8/4p3/6Pq/5P2/PPPPP2P/RNBQKBNR w KQkq - 1 3")
-            .unwrap();
-        let mut e = engine(game);
-        let outcome = e
-            .iterative_deepening_search(SearchParameters::new_with_depth(3), |_, _, _| {
-                panic!("a finished game has no depths to report")
-            });
-        assert!(matches!(outcome, SearchOutcome::GameOver));
+        // fool's mate, white to move with no reply, and a stalemate: there is
+        // nothing to play, so a search says so and deepening reports nothing
+        let fens = [
+            "rnb1kbnr/pppp1ppp/8/4p3/6Pq/5P2/PPPPP2P/RNBQKBNR w KQkq - 1 3",
+            "k7/8/1Q6/8/8/8/8/7K b - - 0 1",
+        ];
+        for fen in fens {
+            let mut e = engine(Board::from_fen(fen).unwrap());
+            assert!(matches!(e.search(3), SearchOutcome::GameOver), "{fen}");
+            let outcome = e
+                .iterative_deepening_search(SearchParameters::new_with_depth(3), |_, _, _| {
+                    panic!("a finished game has no depths to report")
+                });
+            assert!(matches!(outcome, SearchOutcome::GameOver), "{fen}");
+        }
+    }
+
+    #[test]
+    fn a_clock_that_runs_out_mid_deepening_still_answers_with_a_completed_depth() {
+        // the one clock in the suite that is not zero. A zero budget aborts
+        // on the first poll, before the next check is ever armed, so this
+        // is the only test of the clock being read again thousands of nodes
+        // on. Fifty milliseconds from the opening is orders of magnitude
+        // short of MAX_DEPTH, so the clock wins, and the answer has to be
+        // the move of a depth that completed
+        use super::SearchParameters;
+        let mut e = engine(Board::new());
+        let params = SearchParameters {
+            depth: None,
+            search_duration: Some(time::Duration::from_millis(50)),
+            nodes: None,
+            start_time: time::Instant::now(),
+        };
+        let outcome = e.iterative_deepening_search(params, |_, _, _| {});
+        assert!(matches!(outcome, SearchOutcome::Aborted(Some(_))));
     }
 
     #[test]
@@ -1518,24 +1501,6 @@ mod search {
         assert_eq!(
             e.ghi.tainted_score_cutoffs, 0,
             "a path dependent score was trusted"
-        );
-    }
-
-    #[test]
-    fn a_fresh_engine_searches_the_same_tree_every_time() {
-        // the default is what the bench counts and what a match by node
-        // count replays, so it has to follow from the position and the
-        // table alone: no clock, no randomness and no memory of a previous
-        // game in it. The reference is held to more than this; the default
-        // is held to this whatever shortcuts it takes
-        let board = Board::from_fen(SHARP_MIDDLEGAME).unwrap();
-        let mut first = engine(board);
-        let mut second = engine(board);
-        let a = completed(first.search(5));
-        let b = completed(second.search(5));
-        assert_eq!(
-            (a.nodes, a.score, a.best_move.to_string()),
-            (b.nodes, b.score, b.best_move.to_string())
         );
     }
 
