@@ -7,8 +7,8 @@ cargo build --release
 ```
 
 The binary is written to `target/release/arche` (`arche.exe` on windows). It starts
-in uci mode immediately. The one argument it takes is `bench`, which prints the
-bench described below and exits.
+in uci mode immediately. The one argument it takes is `bench [depth]`, which
+prints the bench described below and exits.
 
 The release profile uses link time optimisation and a single codegen unit, so a
 release build is noticeably slower to compile than a debug one but is several
@@ -55,9 +55,10 @@ cargo fmt --all --check
 cargo clippy --workspace --all-targets -- -D warnings
 ```
 
-The pre-commit configuration runs them too, along with a check that the commit
-message is a conventional commit, which is what the changelog is generated from,
-and carries the trailers its kind requires, which are described below:
+The pre-commit configuration runs the formatter, and `cargo check` in place of
+clippy, along with a check that the commit message is a conventional commit,
+which is what the changelog is generated from, and carries the trailers its
+kind requires, which are described below:
 
 ```
 pip install pre-commit
@@ -88,7 +89,7 @@ commit under **Development** whatever its type is:
 | `ci` | github workflows and the pre-commit configuration |
 | `deps`, `deps-dev` | dependency bumps, what dependabot uses |
 | `docker` | the lichess-bot image |
-| `docs` | the readme and this file, when the change spans more than one area |
+| `docs` | the readme and the files in `docs/`, when the change spans more than one area |
 | `lint` | fmt and clippy fallout |
 | `release` | cargo-release, git-cliff and the release workflows |
 

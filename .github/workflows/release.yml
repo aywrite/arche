@@ -60,7 +60,9 @@ jobs:
           zip: windows
           checksum: "sha256"
           archive: $bin-$tag-$target
-          include: LICENSE,README.md
+          # The readme links to the changelog and to docs/, so they travel
+          # with it; a relative link in the archive is dead otherwise.
+          include: LICENSE,README.md,CHANGELOG.md,docs
           # (required) GitHub token for uploading assets to GitHub Releases.
           token: ${{ secrets.GITHUB_TOKEN }}
 
