@@ -42,7 +42,6 @@ jobs:
       - uses: actions/checkout@v7
         with:
           fetch-depth: 0
-      - uses: Swatinem/rust-cache@v2
       - uses: actions/cache@v6
         with:
           path: ~/.cache/pre-commit
@@ -50,6 +49,10 @@ jobs:
       - name: Install pre-commit
         run: python3 -m pip install --quiet pre-commit
       - name: Run the hooks over the tree
+        # fmt and cargo check are what the Rust workflow gates, on three
+        # platforms; run here as well they would only build the tree again
+        env:
+          SKIP: fmt,cargo-check
         run: pre-commit run --all-files --show-diff-on-failure
       - name: Run the commit-msg hooks over every commit
         # reported even when the tree failed, so a pull request with both
