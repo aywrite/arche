@@ -7,7 +7,8 @@ cargo build --release
 ```
 
 The binary is written to `target/release/arche` (`arche.exe` on windows). It starts
-in uci mode immediately, it does not take any arguments.
+in uci mode immediately. The one argument it takes is `bench`, which prints the
+bench described below and exits.
 
 The release profile uses link time optimisation and a single codegen unit, so a
 release build is noticeably slower to compile than a debug one but is several
@@ -81,7 +82,7 @@ commit under **Development** whatever its type is:
 
 | scope | covers |
 | --- | --- |
-| `bench` | the criterion benchmarks |
+| `bench` | the criterion benchmarks and the bench |
 | `book` | the opening book generator |
 | `ci` | github workflows and the pre-commit configuration |
 | `deps`, `deps-dev` | dependency bumps, what dependabot uses |
@@ -130,11 +131,27 @@ both on the same runner. It writes the comparison to the job summary. It only
 reports and will not fail a build, for the same reason: even measured back to
 back on one machine, criterion calls single digit differences significant.
 
-What does hold search behaviour still is `node_counts_have_not_moved` in
-`basic_engine/src/engine.rs`. The number of nodes a search visits is exact
-rather than timed, so it says the same thing on any machine. A deliberate change
+What does hold search behaviour still is the bench:
+
+```
+target/release/arche bench
+```
+
+It searches the positions in `basic_engine/bench.epd` to a fixed depth with a
+fixed table and prints what each search counted: nodes, the share of them
+quiescence visited, transposition cutoffs, draw tainted stores, and the speed.
+The number of nodes a search visits is exact rather than timed, so it says the
+same thing on any machine, and `node_counts_have_not_moved` in
+`basic_engine/src/bench.rs` pins it position by position. A deliberate change
 to the search is expected to move it, and the numbers are updated in the same
-commit so the diff shows how much more, or less, of the tree is being looked at.
+commit so the diff shows how much more, or less, of each tree is being looked
+at. The last line, `<nodes> nodes <nps> nps`, is the one the match tools read,
+and `bench` is also a uci command. Both take a depth after the word, as in
+`arche bench 3`, for trying the command cheaply; the number that means
+anything is the one at the default. The suite, depth and table are chosen once:
+changing any of them changes every number the bench has ever printed, which is
+why the depth is expected to be raised exactly once, after the search has
+learned to prune, rather than adjusted as it goes.
 
 ## Playing a match against a previous version
 
