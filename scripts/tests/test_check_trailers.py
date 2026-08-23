@@ -92,15 +92,21 @@ def test_the_speed_format_is_fixed():
 
 def test_the_elo_format_is_fixed_when_present():
     for value in [
-        "+12 ±8 (sprt [0, 10], 1240 games, 10+0.1, vs v0.3.10)",
-        "+12 ±8 (sprt [-1.5, 2.5], 100 games, 10+0.1, vs master)",
+        "+12 ±8 (sprt [0, 10] passed, 1240 games, 10+0.1, vs v0.3.10)",
+        "-2 ±9 (sprt [0, 10] failed, 1240 games, 10+0.1, vs v0.3.10)",
+        "+12 ±8 (sprt [-1.5, 2.5] inconclusive, 100 games, 10+0.1, vs master)",
         "-3 ±11 (500 games, 10+0.1, vs master)",
         "not measured",
     ]:
         assert problems(f"{ENGINE}\n\nBench: 1\nElo: {value}\n") == [], value
-    assert problems(f"{ENGINE}\n\nBench: 1\nElo: about ten\n") == [
-        "Elo: is not in the shape the strength workflow prints, got about ten"
-    ]
+    for value in [
+        "about ten",
+        # sprt bounds with no verdict: the estimate alone is not the result
+        "+12 ±8 (sprt [0, 10], 1240 games, 10+0.1, vs v0.3.10)",
+    ]:
+        assert problems(f"{ENGINE}\n\nBench: 1\nElo: {value}\n") == [
+            f"Elo: is not in the shape the strength workflow prints, got {value}"
+        ], value
 
 
 def test_merges_fixups_and_the_release_bump_are_exempt():

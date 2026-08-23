@@ -44,10 +44,13 @@ def verdict(text: str) -> str:
 
 def trailer(text: str, tc: str, baseline: str) -> str:
     """The result as the Elo trailer a commit carries, in the one shape the
-    commit-msg hook accepts: the estimate, the sprt bounds when there were
-    any, the games, the time control and what was played. A sweep has no
-    estimate, fastchess prints inf, and a trailer claiming a number it never
-    gave would be a lie the hook could not catch."""
+    commit-msg hook accepts: the estimate, the sprt bounds and verdict when
+    there were any, the games, the time control and what was played. The
+    verdict is the point of an sprt, an estimate of +58 with the test
+    failed and one with it passed are not the same claim, so it is named,
+    and a match a cap stopped is inconclusive. A sweep has no estimate,
+    fastchess prints inf, and a trailer claiming a number it never gave
+    would be a lie the hook could not catch."""
     found = ELO.findall(text)
     if not found:
         return "Elo: not measured"
@@ -56,7 +59,13 @@ def trailer(text: str, tc: str, baseline: str) -> str:
     sprt = ""
     if bounds := LLR.findall(text):
         low, high = (float(bound) for bound in bounds[-1].strip("[]").split(","))
-        sprt = f"sprt [{low:g}, {high:g}], "
+        accepted = VERDICT.findall(text)
+        verdict = (
+            "inconclusive"
+            if not accepted
+            else ("passed" if accepted[-1] == "H1" else "failed")
+        )
+        sprt = f"sprt [{low:g}, {high:g}] {verdict}, "
     estimate = f"{round(float(elo)):+d} ±{round(float(margin))}"
     return f"Elo: {estimate} ({sprt}{games} games, {tc}, vs {baseline})"
 
