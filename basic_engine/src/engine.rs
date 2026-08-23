@@ -131,6 +131,11 @@ pub struct AlphaBeta {
     /// The node count at which the limits are looked at next: every
     /// POLL_INTERVAL nodes for the clock, and the budget itself, exactly.
     next_check: u64,
+    /// The nodes quiescence visited, a part of nodes. Counted for the bench,
+    /// which reports what share of the tree the captures are. Never reset,
+    /// like the ghi counters: it runs over the engine's whole life, and the
+    /// bench reads it from an engine made for the one search
+    quiescence_nodes: u64,
 }
 
 impl AlphaBeta {
@@ -147,6 +152,7 @@ impl AlphaBeta {
             deadline: None,
             node_budget: u64::MAX,
             next_check: 0,
+            quiescence_nodes: 0,
         }
     }
 
@@ -156,6 +162,12 @@ impl AlphaBeta {
 
     pub fn clear_cache(&mut self) {
         self.moves.clear();
+    }
+
+    /// How many of the nodes visited so far were quiescence's, over every
+    /// search this engine has run.
+    pub fn quiescence_nodes(&self) -> u64 {
+        self.quiescence_nodes
     }
 
     /// Cooperative limit check. The clock is read every POLL_INTERVAL nodes
@@ -231,6 +243,7 @@ impl AlphaBeta {
 
         self.poll_deadline()?;
         self.nodes += 1;
+        self.quiescence_nodes += 1;
 
         // Standing pat is declining to move, which only the side not in check
         // may do: the static eval is no floor for a side that has to get out
@@ -779,10 +792,10 @@ impl Engine for AlphaBeta {
 ///
 /// On. A tainted score describes the path that stored it rather than the
 /// position, so a search arriving another way can read a draw it cannot
-/// actually reach. Refusing costs, over the pinned positions at their pinned
-/// depths, nothing at all in kiwipete, promotions and the middlegame, which
-/// have no tainted cutoffs to refuse, +0.037% in the opening and +2.970% in the
-/// pawn endgame, for +0.617% overall.
+/// actually reach. Refusing costs, over the five positions the node counts
+/// pinned then at their depths, nothing at all in kiwipete, promotions and
+/// the middlegame, which have no tainted cutoffs to refuse, +0.037% in the
+/// opening and +2.970% in the pawn endgame, for +0.617% overall.
 const REFUSE_TAINTED_CUTOFFS: bool = true;
 
 /// How often the transposition table hands back a score that depended on the
@@ -834,6 +847,11 @@ enum Bound {
 /// A slot in the table. The key is kept alongside the entry so that a probe can
 /// tell a real hit from another position landing on the same index.
 type Entry = Option<(Pv, u64)>;
+
+// the bench's node counts depend on how many slots a table of a given size
+// holds, so a compiler that laid the entry out differently would move every
+// one of them: this says why, the moment it happens
+const _: () = assert!(mem::size_of::<Entry>() == 24);
 
 #[derive(Debug)]
 struct HashTable {
@@ -1425,7 +1443,7 @@ mod search {
 
     #[test]
     fn draw_taint_is_still_recorded_and_never_trusted() {
-        // The pawn endgame carries the most draw traffic of the pinned
+        // The pawn endgame carries the most draw traffic of the bench
         // positions, so it is the one that exercises both halves of the graph
         // history work. tainted_stores going to zero means taint propagation
         // broke, and then the refusal in get_transposition is refusing nothing
@@ -1753,133 +1771,5 @@ mod hash_table {
         table.set(1, new_pv(Bound::Exact, 8, 1));
         table.set(2, new_pv(Bound::Lower, 1, 100));
         assert!(table.get(2).is_some());
-    }
-}
-
-#[cfg(test)]
-mod node_counts {
-    use super::AlphaBeta;
-    use super::Board;
-    use super::Game;
-    use crate::board::fens;
-    use pretty_assertions::assert_eq;
-
-    /// Pinned, because how often the transposition table collides decides how
-    /// much of the tree is searched again.
-    const TABLE_BYTES: usize = 1 << 20;
-
-    /// Positions chosen to reach different parts of the search: a quiet
-    /// opening, a tactical middlegame, a pawn endgame, a position full of
-    /// captures, and one with castling and promotions available.
-    const POSITIONS: [(&str, &str, u8); 5] = [
-        ("opening", fens::START, 6),
-        ("kiwipete", fens::KIWIPETE, 5),
-        ("pawn endgame", fens::PAWN_ENDGAME, 7),
-        ("promotions", fens::PROMOTIONS, 5),
-        ("middlegame", fens::MIDDLEGAME, 5),
-    ];
-
-    /// Widens the way the engine does when it plays, so the table is warm from
-    /// the previous iteration the way it is in a real search, and totals what
-    /// each iteration visited.
-    fn nodes(fen: &str, depth: u8) -> u64 {
-        let mut engine = AlphaBeta::with_table_bytes(Board::from_fen(fen).unwrap(), TABLE_BYTES);
-        (1..=depth)
-            .map(|d| match engine.search(d) {
-                super::SearchOutcome::Complete(result) => result.nodes,
-                other => panic!("search did not complete: {:?}", other),
-            })
-            .sum()
-    }
-
-    /// Reports how much of the search's use of the transposition table depends
-    /// on the path taken rather than on the position. Not an assertion, it
-    /// prints, which is why it is ignored.
-    ///
-    ///     cargo test -p basic_engine --release ghi_report -- --ignored --nocapture
-    #[test]
-    #[ignore = "prints a measurement, see the doc comment"]
-    fn ghi_report() {
-        println!(
-            "{:<14} {:>10} {:>10} {:>8} {:>10} {:>10} {:>8}",
-            "position", "stores", "tainted", "%", "cutoffs", "tainted", "%"
-        );
-        let mut totals = (0u64, 0u64, 0u64, 0u64);
-        for (name, fen, depth) in POSITIONS {
-            let mut engine =
-                AlphaBeta::with_table_bytes(Board::from_fen(fen).unwrap(), TABLE_BYTES);
-            for d in 1..=depth {
-                match engine.search(d) {
-                    super::SearchOutcome::Complete(_) => (),
-                    other => panic!("search did not complete: {:?}", other),
-                }
-            }
-            let g = engine.ghi;
-            let pct = |a: u64, b: u64| {
-                if b == 0 {
-                    0.0
-                } else {
-                    100.0 * a as f64 / b as f64
-                }
-            };
-            println!(
-                "{:<14} {:>10} {:>10} {:>7.3}% {:>10} {:>10} {:>7.3}%",
-                name,
-                g.stores,
-                g.tainted_stores,
-                pct(g.tainted_stores, g.stores),
-                g.score_cutoffs,
-                g.tainted_score_cutoffs,
-                pct(g.tainted_score_cutoffs, g.score_cutoffs)
-            );
-            totals.0 += g.stores;
-            totals.1 += g.tainted_stores;
-            totals.2 += g.score_cutoffs;
-            totals.3 += g.tainted_score_cutoffs;
-        }
-        let pct = |a: u64, b: u64| {
-            if b == 0 {
-                0.0
-            } else {
-                100.0 * a as f64 / b as f64
-            }
-        };
-        println!(
-            "{:<14} {:>10} {:>10} {:>7.3}% {:>10} {:>10} {:>7.3}%",
-            "TOTAL",
-            totals.0,
-            totals.1,
-            pct(totals.1, totals.0),
-            totals.2,
-            totals.3,
-            pct(totals.3, totals.2)
-        );
-    }
-
-    /// The search is deterministic, so how many nodes it visits is an exact
-    /// figure rather than a timing, and it says the same thing on any machine.
-    /// It moves whenever move ordering, quiescence, the transposition table or
-    /// any pruning changes, including the many such changes that leave the move
-    /// finally played untouched, which is what makes it worth pinning.
-    ///
-    /// A deliberate change to the search is expected to move these. Update them
-    /// in the same commit: the diff is then a statement of how much less, or
-    /// more, of the tree the engine now looks at.
-    #[test]
-    fn node_counts_have_not_moved() {
-        let counted: Vec<(&str, u64)> = POSITIONS
-            .iter()
-            .map(|(name, fen, depth)| (*name, nodes(fen, *depth)))
-            .collect();
-        assert_eq!(
-            counted,
-            vec![
-                ("opening", 151_429),
-                ("kiwipete", 297_693),
-                ("pawn endgame", 184_523),
-                ("promotions", 119_840),
-                ("middlegame", 220_237),
-            ]
-        );
     }
 }

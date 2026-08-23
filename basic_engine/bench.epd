@@ -1,0 +1,27 @@
+# The bench suite. One position a line as a four field fen followed by an id
+# operation, which is the epd form. The clocks are not part of it: every
+# position is searched as if it had just arisen.
+#
+# Chosen once, for coverage rather than difficulty: the standard perft
+# positions the tests already lean on, two openings, a sharp and a quiet
+# middlegame, two tactical positions, and the endgames where a search with no
+# knowledge has the most to learn. Changing a line changes every number the
+# bench has ever printed, so add to the end rather than edit.
+rnbqkbnr/pppppppp/8/8/8/8/PPPPPPPP/RNBQKBNR w KQkq - id "start";
+r1bqk2r/pppp1ppp/2n2n2/2b1p3/2B1P3/5N2/PPPP1PPP/RNBQK2R w KQkq - id "italian";
+r1bq1rk1/2p1bppp/p1np1n2/1p2p3/4P3/1B3N2/PPPP1PPP/RNBQR1K1 w - - id "ruy lopez";
+r3k2r/p1ppqpb1/bn2pnp1/3PN3/1p2P3/2N2Q1p/PPPBBPPP/R3K2R w KQkq - id "kiwipete";
+r3k2r/Pppp1ppp/1b3nbN/nP6/BBP1P3/q4N2/Pp1P2PP/R2Q1RK1 w kq - id "perft 4";
+rnbq1k1r/pp1Pbppp/2p5/8/2B5/8/PPP1NnPP/RNBQK2R w KQ - id "promotions";
+r4rk1/1pp1qppp/p1np1n2/2b1p1B1/2B1P1b1/P1NP1N2/1PP1QPPP/R4RK1 w - - id "middlegame";
+r1b2rk1/ppp1qppp/4pn2/6N1/Qn1P4/2NBP3/PP3PPP/R3K2R w KQ - id "sharp middlegame";
+1k1r4/pp1b1R2/3q2pp/4p3/2B5/4Q3/PPP2B2/2K5 b - - id "bratko kopec 1";
+r1bq2rk/pp3pbp/2p1p1pQ/7P/3P4/2PB1N2/PP3PPR/2KR4 w - - id "wac 4";
+8/2p5/3p4/KP5r/1R3p1k/8/4P1P1/8 w - - id "rook and pawns";
+r5k1/5ppp/P7/8/8/8/5PPP/3R1K2 w - - id "tarrasch";
+1K6/1P1k4/8/8/8/8/r7/2R5 w - - id "lucena";
+4k3/8/r7/8/4PK2/8/8/4R3 b - - id "philidor";
+6k1/5pp1/7p/3n4/8/3B3P/5PP1/6K1 w - - id "minor endgame";
+8/5k2/8/8/3Q4/8/6q1/2K5 w - - id "queen endgame";
+8/8/8/3k4/8/3K4/3P4/8 b - - id "king and pawn";
+8/8/8/4p3/4Pk2/3K4/8/8 w - - id "trebuchet";

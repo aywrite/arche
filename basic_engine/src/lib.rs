@@ -1,3 +1,4 @@
+pub mod bench;
 mod bitboard;
 mod board;
 mod engine;
