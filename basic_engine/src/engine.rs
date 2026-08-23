@@ -374,7 +374,6 @@ impl AlphaBeta {
             depth,
             score: score_to_tt(score, self.board.line_ply),
             bound,
-            ply: self.board.ply as u16,
             tainted,
         }
     }
@@ -418,7 +417,7 @@ impl AlphaBeta {
         depth: u8,
     ) -> (Option<Play>, Option<Score>) {
         // copied out so the counters below are not borrowing the table
-        let Some(pv) = self.moves.get(key).copied() else {
+        let Some(pv) = self.moves.get(key) else {
             return (None, None);
         };
         if pv.depth >= depth {
@@ -602,6 +601,7 @@ impl AlphaBeta {
     /// come from a line whose repetition and fifty move context differ from
     /// the game being played, and the answer must not depend on one.
     pub fn search(&mut self, depth: u8) -> SearchOutcome {
+        self.moves.new_search();
         self.search_within(depth, u64::MAX, self.search_duration)
     }
 
@@ -760,6 +760,9 @@ impl Engine for AlphaBeta {
             None => MAX_DEPTH,
         };
         self.configure(search_options.start_time, search_options.search_duration);
+        // one search, however many iterations: what the iterations store is
+        // one generation's, and ages together from the next go
+        self.moves.new_search();
 
         for depth in 1..=max_depth {
             // a limit is only armed once a completed iteration is in hand:
@@ -844,6 +847,8 @@ pub struct GhiCounters {
     pub tainted_score_cutoffs: u64,
 }
 
+/// What the search stores about a position and reads back: the entry as the
+/// search sees it. The table packs it into an `Entry` of its own.
 #[derive(Copy, Clone, Debug)]
 struct Pv {
     play: Play,
@@ -852,58 +857,171 @@ struct Pv {
     /// below it, so it describes the path taken to this position and not the
     /// position itself. See docs on graph history interaction.
     tainted: bool,
-    // a depth cannot exceed MAX_DEPTH and a ply is bounded by the history
-    // array, so neither needs a word. Both sit in the padding the key leaves
-    // behind, which is why widening ply to u16 costs nothing.
     depth: u8,
     bound: Bound,
-    ply: u16,
 }
 
 /// What the stored score means: the searched window decides whether a score
 /// is the truth, a ceiling or a floor, and a reader can only use it for a
-/// cutoff its kind allows.
+/// cutoff its kind allows. Two bits of an entry, which the values are.
 #[derive(Copy, Clone, Debug)]
+#[repr(u8)]
 enum Bound {
-    Exact,
+    Exact = 0,
     // fail low nodes are not stored yet, see the known issues in the readme
-    #[allow(dead_code)]
-    Upper,
-    Lower,
-    Ordering,
+    Upper = 1,
+    Lower = 2,
+    Ordering = 3,
 }
 
-/// A slot in the table. The key is kept alongside the entry so that a probe can
-/// tell a real hit from another position landing on the same index.
-type Entry = Option<(Pv, u64)>;
+impl Bound {
+    fn from_bits(bits: u8) -> Self {
+        match bits & 0b11 {
+            0 => Bound::Exact,
+            1 => Bound::Upper,
+            2 => Bound::Lower,
+            _ => Bound::Ordering,
+        }
+    }
+}
+
+/// A slot in the table: sixteen bytes, four to a cache line.
+///
+/// The key is kept only in part. The index is drawn from the top of the key
+/// by multiply-shift, so the bottom of it is what carries anything the index
+/// does not already say, and thirty two bits of that leaves one chance in
+/// four thousand million of taking another position's entry for this one.
+/// The whole key cost eight bytes a slot and made the slot twenty four.
+///
+/// The flags byte holds the bound in its low two bits, the taint in the
+/// third and the search the entry was stored in, the generation, in the top
+/// five; a generation of zero is a slot never written, which is what a
+/// cleared table is full of. Two bytes are set aside for the static
+/// evaluation, which correction history will want stored beside the score;
+/// reserving them now means the layout, and with it every node count,
+/// changes once rather than twice.
+#[derive(Copy, Clone, Debug)]
+#[repr(C)]
+struct Entry {
+    key: u32,
+    play: Play,
+    score: Score,
+    depth: u8,
+    flags: u8,
+    #[allow(dead_code)]
+    static_eval: i16,
+}
 
 // the bench's node counts depend on how many slots a table of a given size
 // holds, so a compiler that laid the entry out differently would move every
 // one of them: this says why, the moment it happens
-const _: () = assert!(mem::size_of::<Entry>() == 24);
+const _: () = assert!(mem::size_of::<Entry>() == 16);
+
+/// An entry stored this many searches ago or more is replaced whatever its
+/// depth: its score describes repetition and fifty move context the game
+/// has moved past, and a slot is worth more to the search under way. The
+/// window the ply rule gave before, MAX_DEPTH plus three plies with a side
+/// searching every other ply, came to about the same.
+const STALE_AFTER_SEARCHES: u8 = 12;
+
+/// The generations run from one to this and round again; zero is never one,
+/// so an entry of generation zero reads as empty. Ages are taken modulo
+/// this, so an entry from thirty one searches ago or more reads as recent
+/// again and holds its slot by depth until it is twelve searches old by
+/// that reckoning, or is hit. A hit is keyed, so nothing wrong is read; a
+/// slot is held a while longer than it should be, once in forty moves.
+const GENERATIONS: u8 = 31;
+
+impl Entry {
+    const EMPTY: Entry = Entry {
+        key: 0,
+        play: Play {
+            from: 0,
+            to: 0,
+            capture: None,
+            promote: None,
+            en_passant: false,
+            castle: false,
+        },
+        score: 0,
+        depth: 0,
+        flags: 0,
+        static_eval: 0,
+    };
+
+    #[inline]
+    fn slice(key: u64) -> u32 {
+        key as u32
+    }
+
+    #[inline]
+    fn pack(key: u64, pv: Pv, generation: u8) -> Entry {
+        Entry {
+            key: Entry::slice(key),
+            play: pv.play,
+            score: pv.score,
+            depth: pv.depth,
+            flags: (pv.bound as u8) | (u8::from(pv.tainted) << 2) | (generation << 3),
+            static_eval: 0,
+        }
+    }
+
+    #[inline]
+    fn unpack(self) -> Pv {
+        Pv {
+            play: self.play,
+            score: self.score,
+            depth: self.depth,
+            bound: Bound::from_bits(self.flags),
+            tainted: self.flags & 0b100 != 0,
+        }
+    }
+
+    #[inline]
+    fn generation(self) -> u8 {
+        self.flags >> 3
+    }
+
+    #[inline]
+    fn bound(self) -> Bound {
+        Bound::from_bits(self.flags)
+    }
+}
 
 #[derive(Debug)]
 struct HashTable {
     table: Vec<Entry>,
+    /// The search under way, as the entries it stores are marked.
+    generation: u8,
 }
 
 impl HashTable {
     fn with_capacity(capacity: usize) -> Self {
         Self {
-            table: vec![None; capacity],
+            table: vec![Entry::EMPTY; capacity],
+            generation: 1,
         }
     }
 
     fn clear(&mut self) {
-        self.table.fill(None);
+        self.table.fill(Entry::EMPTY);
+        self.generation = 1;
     }
 
     fn with_capacity_bytes(bytes: usize) -> Self {
-        // ask for the size of what is actually stored. Adding up the fields
-        // gives the same answer today only because Pv happens to need no
-        // padding on the end of it, and would quietly over allocate if that
-        // stopped being true.
         Self::with_capacity(bytes / mem::size_of::<Entry>())
+    }
+
+    /// A search is beginning: what it stores is marked as its own, and what
+    /// earlier searches stored ages by one.
+    fn new_search(&mut self) {
+        self.generation = self.generation % GENERATIONS + 1;
+    }
+
+    /// How many searches ago an entry was stored.
+    #[inline]
+    fn age(&self, entry: Entry) -> u8 {
+        (self.generation + GENERATIONS - entry.generation()) % GENERATIONS
     }
 
     #[inline]
@@ -913,35 +1031,30 @@ impl HashTable {
         (((key as u128) * (self.table.len() as u128)) >> 64) as usize
     }
 
-    fn get(&self, key: u64) -> Option<&Pv> {
-        let index = self.index_for(key);
-        if let Some((pv, k)) = &self.table[index] {
-            if *k == key {
-                return Some(pv);
-            }
+    fn get(&self, key: u64) -> Option<Pv> {
+        let entry = self.table[self.index_for(key)];
+        if entry.generation() != 0 && entry.key == Entry::slice(key) {
+            return Some(entry.unpack());
         }
         None
     }
 
     fn set(&mut self, key: u64, pv: Pv) {
         let index = self.index_for(key);
-        if let Some((old_pv, old_key)) = self.table[index] {
-            // entries left over from an earlier point in the game are always replaced
-            let stale = (pv.ply as isize - old_pv.ply as isize) > (MAX_DEPTH as isize + 3);
-            if !stale {
-                if pv.depth < old_pv.depth {
-                    return;
-                }
-                if pv.depth == old_pv.depth
-                    && old_key == key
-                    && matches!(old_pv.bound, Bound::Exact)
-                    && !matches!(pv.bound, Bound::Exact)
-                {
-                    return;
-                }
+        let old = self.table[index];
+        if old.generation() != 0 && self.age(old) < STALE_AFTER_SEARCHES {
+            if pv.depth < old.depth {
+                return;
+            }
+            if pv.depth == old.depth
+                && old.key == Entry::slice(key)
+                && matches!(old.bound(), Bound::Exact)
+                && !matches!(pv.bound, Bound::Exact)
+            {
+                return;
             }
         }
-        self.table[index] = Some((pv, key));
+        self.table[index] = Entry::pack(key, pv, self.generation);
     }
 
     /// Store without the depth contest above. The root's end-of-iteration
@@ -954,7 +1067,7 @@ impl HashTable {
     /// context the game has since moved past.
     fn set_always(&mut self, key: u64, pv: Pv) {
         let index = self.index_for(key);
-        self.table[index] = Some((pv, key));
+        self.table[index] = Entry::pack(key, pv, self.generation);
     }
 }
 
@@ -1062,13 +1175,12 @@ mod search {
     }
 
     /// An entry of the kind a completed search leaves behind.
-    fn searched(play: Play, ply: usize) -> Pv {
+    fn searched(play: Play) -> Pv {
         Pv {
             play,
             score: 0,
             depth: 5,
             bound: Bound::Exact,
-            ply: ply as u16,
             tainted: false,
         }
     }
@@ -1111,7 +1223,7 @@ mod search {
             e.board.key,
             Pv {
                 depth: 14,
-                ..searched(quiet, e.board.ply)
+                ..searched(quiet)
             },
         );
         let result = completed(e.search(2));
@@ -1627,7 +1739,7 @@ mod search {
         let mut board = e.board;
         for name in cycle.iter().cycle().take(16) {
             let play = play_named(&board, name);
-            e.moves.set(board.key, searched(play, board.ply));
+            e.moves.set(board.key, searched(play));
             assert!(board.make_move(&play), "failed to play {}", name);
         }
 
@@ -1641,7 +1753,7 @@ mod search {
         let mut board = e.board;
         for name in ["c3d4", "f8g8"] {
             let play = play_named(&board, name);
-            e.moves.set(board.key, searched(play, board.ply));
+            e.moves.set(board.key, searched(play));
             assert!(board.make_move(&play), "failed to play {}", name);
         }
         assert_eq!(board.fifty_move_rule, 101);
@@ -1660,7 +1772,7 @@ mod search {
         let a2 = 8;
         let a5 = 32;
         let colliding = Play::new(a2, a5, None, None, false, false);
-        e.moves.set(e.board.key, searched(colliding, e.board.ply));
+        e.moves.set(e.board.key, searched(colliding));
 
         assert_eq!(format!("{}", e.pv_line()), "");
     }
@@ -1679,7 +1791,6 @@ mod search {
                 score: 0,
                 depth: 0,
                 bound: Bound::Ordering,
-                ply: 0,
                 tainted: false,
             },
         );
@@ -1696,7 +1807,7 @@ mod search {
         let board = Board::from_fen("4r2k/8/8/8/8/8/4N3/4K3 w - - 0 1").unwrap();
         let mut e = engine(board);
         let pinned = play_named(&e.board, "e2d4");
-        e.moves.set(e.board.key, searched(pinned, e.board.ply));
+        e.moves.set(e.board.key, searched(pinned));
 
         assert_eq!(format!("{}", e.pv_line()), "");
     }
@@ -1719,7 +1830,7 @@ mod search {
         let mut board = e.board;
         for name in &names {
             let play = play_named(&board, name);
-            e.moves.set(board.key, searched(play, board.ply));
+            e.moves.set(board.key, searched(play));
             assert!(board.make_move(&play), "failed to play {}", name);
         }
 
@@ -1753,17 +1864,64 @@ mod search {
 
 #[cfg(test)]
 mod hash_table {
-    use super::{Bound, HashTable, Play, Pv};
+    use super::{Bound, Entry, HashTable, Play, Pv, STALE_AFTER_SEARCHES};
+    use crate::misc::{Piece, PromotePiece};
     use pretty_assertions::assert_eq;
+    use std::mem;
 
-    fn new_pv(bound: Bound, depth: u8, ply: u16) -> Pv {
+    fn new_pv(bound: Bound, depth: u8) -> Pv {
         Pv {
             play: Play::new(0, 1, None, None, false, false),
             score: 0,
             depth,
             bound,
-            ply,
             tainted: false,
+        }
+    }
+
+    #[test]
+    fn an_entry_is_sixteen_bytes() {
+        // four to a cache line, and the bench's node counts depend on how
+        // many a table of a given size holds
+        assert_eq!(mem::size_of::<Entry>(), 16);
+    }
+
+    #[test]
+    fn every_field_survives_the_round_trip() {
+        // the entry packs what it stores; each field has to come back as it
+        // went in, at the edges of its range, for every kind of bound
+        let mut table = HashTable::with_capacity(4);
+        for (key, bound) in [
+            (1u64, Bound::Exact),
+            (2, Bound::Upper),
+            (3, Bound::Lower),
+            (4, Bound::Ordering),
+        ] {
+            let pv = Pv {
+                play: Play::new(
+                    63,
+                    7,
+                    Some(Piece::Queen),
+                    Some(PromotePiece::Knight),
+                    false,
+                    false,
+                ),
+                score: -29_999,
+                depth: super::MAX_DEPTH,
+                bound,
+                tainted: true,
+            };
+            table.set(key, pv);
+            let read = table.get(key).expect("stored");
+            assert_eq!(read.play, pv.play);
+            assert_eq!(read.score, pv.score);
+            assert_eq!(read.depth, pv.depth);
+            assert!(read.tainted);
+            assert!(
+                mem::discriminant(&read.bound) == mem::discriminant(&bound),
+                "{bound:?} came back as {:?}",
+                read.bound
+            );
         }
     }
 
@@ -1771,7 +1929,7 @@ mod hash_table {
     fn get_compares_the_key_not_just_the_slot() {
         // two different keys which map to the same slot must not be confused for each other
         let mut table = HashTable::with_capacity(1);
-        table.set(1, new_pv(Bound::Exact, 1, 1));
+        table.set(1, new_pv(Bound::Exact, 1));
         assert!(table.get(1).is_some());
         assert!(table.get(2).is_none());
     }
@@ -1779,24 +1937,24 @@ mod hash_table {
     #[test]
     fn an_exact_entry_replaces_a_non_exact_entry() {
         let mut table = HashTable::with_capacity(1);
-        table.set(1, new_pv(Bound::Lower, 1, 1));
-        table.set(1, new_pv(Bound::Exact, 1, 1));
+        table.set(1, new_pv(Bound::Lower, 1));
+        table.set(1, new_pv(Bound::Exact, 1));
         assert!(matches!(table.get(1).unwrap().bound, Bound::Exact));
     }
 
     #[test]
     fn a_deeper_exact_entry_survives_a_shallower_one() {
         let mut table = HashTable::with_capacity(1);
-        table.set(1, new_pv(Bound::Exact, 8, 1));
-        table.set(1, new_pv(Bound::Exact, 2, 1));
+        table.set(1, new_pv(Bound::Exact, 8));
+        table.set(1, new_pv(Bound::Exact, 2));
         assert_eq!(table.get(1).unwrap().depth, 8);
     }
 
     #[test]
     fn a_deeper_entry_replaces_an_exact_entry_for_another_position() {
         let mut table = HashTable::with_capacity(1);
-        table.set(1, new_pv(Bound::Exact, 1, 1));
-        table.set(2, new_pv(Bound::Lower, 8, 1));
+        table.set(1, new_pv(Bound::Exact, 1));
+        table.set(2, new_pv(Bound::Lower, 8));
         assert!(table.get(2).is_some());
         assert!(table.get(1).is_none());
     }
@@ -1804,24 +1962,59 @@ mod hash_table {
     #[test]
     fn a_shallower_entry_does_not_evict_a_deeper_one_for_another_position() {
         let mut table = HashTable::with_capacity(1);
-        table.set(1, new_pv(Bound::Lower, 8, 1));
-        table.set(2, new_pv(Bound::Exact, 1, 1));
+        table.set(1, new_pv(Bound::Lower, 8));
+        table.set(2, new_pv(Bound::Exact, 1));
         assert_eq!(table.get(1).unwrap().depth, 8);
     }
 
     #[test]
     fn a_quiescence_entry_does_not_evict_a_searched_entry() {
         let mut table = HashTable::with_capacity(1);
-        table.set(1, new_pv(Bound::Exact, 5, 1));
-        table.set(2, new_pv(Bound::Ordering, 0, 1));
+        table.set(1, new_pv(Bound::Exact, 5));
+        table.set(2, new_pv(Bound::Ordering, 0));
         assert_eq!(table.get(1).unwrap().depth, 5);
     }
 
     #[test]
-    fn a_stale_entry_is_replaced_regardless_of_depth() {
+    fn an_entry_from_searches_ago_is_replaced_regardless_of_depth() {
+        // the table remembers which search stored an entry, and one from
+        // long enough ago loses to anything: its depth is no longer worth
+        // the slot, and its score describes a game the clock has moved past
         let mut table = HashTable::with_capacity(1);
-        table.set(1, new_pv(Bound::Exact, 8, 1));
-        table.set(2, new_pv(Bound::Lower, 1, 100));
+        table.set(1, new_pv(Bound::Exact, 8));
+        for _ in 0..STALE_AFTER_SEARCHES - 1 {
+            table.new_search();
+        }
+        table.set(2, new_pv(Bound::Lower, 1));
+        assert_eq!(
+            table.get(1).unwrap().depth,
+            8,
+            "still recent enough to keep"
+        );
+        table.new_search();
+        table.set(2, new_pv(Bound::Lower, 1));
         assert!(table.get(2).is_some());
+        assert!(table.get(1).is_none());
+    }
+
+    #[test]
+    fn the_search_counter_wraps_without_making_the_newest_entry_stale() {
+        // five bits of generation: after it wraps, an entry from this search
+        // must still read as this search's
+        let mut table = HashTable::with_capacity(1);
+        for _ in 0..40 {
+            table.new_search();
+        }
+        table.set(1, new_pv(Bound::Exact, 8));
+        table.set(2, new_pv(Bound::Lower, 1));
+        assert_eq!(table.get(1).unwrap().depth, 8);
+    }
+
+    #[test]
+    fn clearing_forgets_everything() {
+        let mut table = HashTable::with_capacity(2);
+        table.set(1, new_pv(Bound::Exact, 8));
+        table.clear();
+        assert!(table.get(1).is_none());
     }
 }

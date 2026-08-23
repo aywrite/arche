@@ -342,10 +342,11 @@ impl Board {
     /// Whether this move is one `generate_moves` would produce here.
     ///
     /// A probe checks the key a slot was stored under, so a hit is this
-    /// position and its move is one generated for it. Almost: a key is sixty
-    /// four bits, and a long search sees enough positions for two of them to
-    /// land on the same one. Anything that narrowed what a slot keeps of the
-    /// key would make an entry from elsewhere ordinary rather than rare.
+    /// position and its move is one generated for it. Almost: a slot keeps
+    /// thirty two bits of the key and its index says another twenty or so,
+    /// and a long search sees enough positions for two of them to agree on
+    /// all of that. Rare, one probe in thousands of millions, and this is
+    /// what keeps rare from being ruinous.
     ///
     /// Ordering never had to care, because a move from another position
     /// matches nothing in the generated list and is passed over. Playing one
