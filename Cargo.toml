@@ -25,6 +25,10 @@ license = "GPL-3.0-or-later"
 [dependencies]
 basic_engine = { path = "./basic_engine" }
 
+[dev-dependencies]
+# already the engine's, so this adds an edge rather than a package
+proptest = "1.7"
+
 [profile.release]
 lto = true
 codegen-units = 1

@@ -237,3 +237,137 @@ mod tests {
         assert!(params.flag("infinite"));
     }
 }
+
+#[cfg(test)]
+mod properties {
+    use super::{Param, Params};
+    use proptest::prelude::*;
+
+    /// A keyword, in the shape the protocol's are: lower case letters, never a
+    /// number, so it can never be mistaken for a value.
+    fn keyword() -> impl Strategy<Value = String> {
+        "[a-z]{1,10}".prop_map(String::from)
+    }
+
+    /// One word, whatever it is made of, as long as it survives being split on
+    /// whitespace as a single one.
+    fn word() -> impl Strategy<Value = String> {
+        r"[^\s]{1,16}".prop_map(String::from)
+    }
+
+    proptest! {
+        /// The parser is fed whatever an interface sends, which on a bad day is
+        /// anything at all. Nothing it can be given may panic, and this asks
+        /// every accessor with an arbitrary keyword against an arbitrary line.
+        #[test]
+        fn nothing_read_out_of_anything_panics(line in any::<String>(), keyword in any::<String>()) {
+            let params = Params::of(&line);
+            let _ = params.flag(&keyword);
+            let _ = params.value(&keyword);
+            let _ = params.count(&keyword);
+            let _ = params.parse::<u8>(&keyword);
+            let _ = params.parse::<u64>(&keyword);
+            let _ = params.parse::<usize>(&keyword);
+        }
+
+        /// Any count the protocol could send reads back as itself.
+        #[test]
+        fn a_count_reads_back_as_itself(keyword in keyword(), value in any::<u64>()) {
+            let line = format!("{} {}", keyword, value);
+            prop_assert_eq!(Params::of(&line).count(&keyword), Param::Read(value));
+        }
+
+        /// However far below zero, a clock reads as spent rather than as
+        /// something that could not be read.
+        #[test]
+        fn any_negative_count_is_a_spent_one(keyword in keyword(), digits in "[0-9]{1,40}") {
+            let line = format!("{} -{}", keyword, digits);
+            prop_assert_eq!(Params::of(&line).count(&keyword), Param::Read(0));
+        }
+
+        /// However far above what a word holds, a count reads as the largest
+        /// one rather than as unreadable: it is a request for everything there
+        /// is, and discarding it would read as the keyword having been absent.
+        #[test]
+        fn any_count_too_large_is_the_largest_one(keyword in keyword(), digits in "[1-9][0-9]{20,40}") {
+            let line = format!("{} {}", keyword, digits);
+            prop_assert_eq!(Params::of(&line).count(&keyword), Param::Read(u64::MAX));
+        }
+
+        /// Every keyword of a line reads its own value and none of its
+        /// neighbours', which is what a walk one word at a time has to get
+        /// right and an index off by one would not.
+        #[test]
+        fn every_keyword_reads_its_own_value(
+            pairs in prop::collection::vec((keyword(), any::<u32>()), 1..8),
+        ) {
+            let line = pairs
+                .iter()
+                .map(|(keyword, value)| format!("{} {}", keyword, value))
+                .collect::<Vec<_>>()
+                .join(" ");
+            let params = Params::of(&line);
+            // a keyword sent twice reads the first of them, so ask each only
+            // about the first time it appears
+            let mut asked: Vec<&str> = Vec::new();
+            for (keyword, value) in &pairs {
+                if asked.contains(&keyword.as_str()) {
+                    continue;
+                }
+                asked.push(keyword);
+                prop_assert_eq!(params.count(keyword), Param::Read(u64::from(*value)));
+            }
+        }
+
+        /// How much space stands between two words does not change which is
+        /// the value of which.
+        #[test]
+        fn spacing_does_not_change_what_is_read(
+            keyword in keyword(),
+            value in any::<u64>(),
+            before in "[ 	]{1,4}",
+            between in "[ 	]{1,4}",
+            after in "[ 	]{0,4}",
+        ) {
+            let line = format!("{}{}{}{}{}", before, keyword, between, value, after);
+            prop_assert_eq!(Params::of(&line).count(&keyword), Param::Read(value));
+        }
+
+        /// A keyword is a whole word. Buried inside a longer one it is not
+        /// there at all, which is what the regexes this replaced got wrong.
+        #[test]
+        fn a_keyword_inside_a_longer_word_is_absent(
+            keyword in keyword(),
+            prefix in "[a-z]{1,6}",
+            value in any::<u64>(),
+        ) {
+            let line = format!("{}{} {}", prefix, keyword, value);
+            prop_assert_eq!(Params::of(&line).count(&keyword), Param::Absent);
+            prop_assert!(!Params::of(&line).flag(&keyword));
+        }
+
+        /// The strict read is the standard library's, and differs from it only
+        /// in saying which word would not parse.
+        #[test]
+        fn the_strict_read_agrees_with_the_standard_library(
+            keyword in keyword(),
+            word in word(),
+        ) {
+            let line = format!("{} {}", keyword, word);
+            let read: Param<u8> = Params::of(&line).parse(&keyword);
+            match word.parse::<u8>() {
+                Ok(value) => prop_assert_eq!(read, Param::Read(value)),
+                Err(_) => prop_assert_eq!(read, Param::Unreadable(&word)),
+            }
+        }
+
+        /// A parameter is absent exactly when there is no word after its
+        /// keyword, whatever that word turns out to be.
+        #[test]
+        fn absent_means_no_word_followed_the_keyword(line in ".*", keyword in keyword()) {
+            let params = Params::of(&line);
+            let absent = matches!(params.count(&keyword), Param::Absent);
+            prop_assert_eq!(absent, params.value(&keyword).is_none());
+        }
+    }
+}
