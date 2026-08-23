@@ -28,7 +28,6 @@ name = "arche"
 version = "0.3.10"
 dependencies = [
  "basic_engine",
- "regex",
 ]
 
 [[package]]

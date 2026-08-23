@@ -1,3 +1,4 @@
+mod params;
 mod time_control;
 mod uci;
 
@@ -24,7 +25,7 @@ fn main() -> ExitCode {
             UCI::new_with_engine(e).read_loop();
             ExitCode::SUCCESS
         }
-        Some("bench") => match uci::bench_depth(&args.join(" ")) {
+        Some("bench") => match uci::bench_depth(&params::Params::of(&args.join(" "))) {
             Ok(depth) => {
                 println!(
                     "{}",

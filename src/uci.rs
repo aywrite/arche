@@ -1,3 +1,4 @@
+use crate::params::{Param, Params};
 use crate::time_control::TimeControl;
 use basic_engine::Color;
 use basic_engine::Engine;
@@ -6,48 +7,31 @@ use basic_engine::SearchOutcome;
 use basic_engine::SearchParameters;
 use basic_engine::bench;
 use basic_engine::{PvLine, SearchResult};
-use regex::Regex;
 use std::io::{BufRead, Stdout, Write};
-use std::sync::LazyLock;
 use std::time::Duration;
 
-static WTIME_RE: LazyLock<Regex> = LazyLock::new(|| Regex::new(r"wtime (-?\d+)").unwrap());
-static BTIME_RE: LazyLock<Regex> = LazyLock::new(|| Regex::new(r"btime (-?\d+)").unwrap());
-static WINC_RE: LazyLock<Regex> = LazyLock::new(|| Regex::new(r"winc (-?\d+)").unwrap());
-static BINC_RE: LazyLock<Regex> = LazyLock::new(|| Regex::new(r"binc (-?\d+)").unwrap());
-static MOVES_TO_GO_RE: LazyLock<Regex> = LazyLock::new(|| Regex::new(r"movestogo (\d+)").unwrap());
-static MOVE_TIME: LazyLock<Regex> = LazyLock::new(|| Regex::new(r"movetime (\d+)").unwrap());
-static DEPTH_RE: LazyLock<Regex> = LazyLock::new(|| Regex::new(r"depth (\d+)").unwrap());
-static NODES_RE: LazyLock<Regex> = LazyLock::new(|| Regex::new(r"nodes (\d+)").unwrap());
-static PERFT_RE: LazyLock<Regex> = LazyLock::new(|| Regex::new(r"perft (\d+)").unwrap());
-
-/// Reads the value that follows a keyword. A clock below zero, which the match
-/// tools send once their time margin has been eaten into, reads as an empty
-/// one. Otherwise the value is digits, so the only way it can fail to parse is
-/// by being too large to hold, in which case use the largest value we can.
-/// Discarding either would read as the keyword having been absent, which for
-/// a clock means searching without a limit.
-fn capture(re: &Regex, line: &str) -> Option<u64> {
-    let digits = re.captures(line)?.get(1)?.as_str();
-    if digits.starts_with('-') {
-        return Some(0);
-    }
-    Some(digits.parse().unwrap_or(u64::MAX))
-}
-
-fn time_control_from(line: &str, color: Color) -> TimeControl {
+/// The time part of a `go` command, from the point of view of the side to
+/// move.
+///
+/// A clock or a move time that was sent but cannot be read stands in as spent
+/// rather than being discarded, because discarding it would read as the
+/// keyword having been absent, and a `go` with no time at all searches without
+/// a limit. That trades one bad outcome for a smaller one: an unreadable move
+/// time beside a good clock spends the clock rather than reading it, and moves
+/// almost at once. Playing a weak move is recoverable and thinking for ever is
+/// not. A count of moves is left alone instead: it only divides the clock, and
+/// the time control already treats a missing one as a number to assume.
+fn time_control_from(params: &Params, color: Color) -> TimeControl {
+    let (clock, increment) = match color {
+        Color::White => ("wtime", "winc"),
+        Color::Black => ("btime", "binc"),
+    };
     TimeControl {
-        time: match color {
-            Color::White => capture(&WTIME_RE, line),
-            Color::Black => capture(&BTIME_RE, line),
-        },
-        increment: match color {
-            Color::White => capture(&WINC_RE, line),
-            Color::Black => capture(&BINC_RE, line),
-        },
-        moves_to_go: capture(&MOVES_TO_GO_RE, line),
-        move_time: capture(&MOVE_TIME, line),
-        infinite: line.contains("infinite"),
+        time: params.count(clock).read_or(0),
+        increment: params.count(increment).read_or(0),
+        moves_to_go: params.count("movestogo").read(),
+        move_time: params.count("movetime").read_or(0),
+        infinite: params.flag("infinite"),
     }
 }
 
@@ -144,7 +128,7 @@ impl<T: Engine, W: Write> UCI<T, W> {
             // `bench [depth]`, the same as the command line argument: the
             // depth is for trying the command cheaply, the number that means
             // anything is the one at the default
-            match bench_depth(line) {
+            match bench_depth(&Params::of(line)) {
                 Ok(depth) => {
                     let report = bench::run_suite(
                         &bench::positions(),
@@ -160,7 +144,7 @@ impl<T: Engine, W: Write> UCI<T, W> {
                 )),
             }
         } else if line.starts_with("perft") {
-            let depth = perft_depth(line);
+            let depth = perft_depth(&Params::of(line));
             let nodes = self.engine.perft(depth);
             self.say(format_args!(
                 "info string perft depth {} nodes {}",
@@ -200,10 +184,13 @@ impl<T: Engine, W: Write> UCI<T, W> {
     }
 
     fn parse_go(&mut self, line: &str) {
+        let params = Params::of(line);
         let mut sp = SearchParameters::new();
-        sp.search_duration = time_control_from(line, self.engine.active_color()).budget();
-        sp.depth = go_depth(line);
-        sp.nodes = capture(&NODES_RE, line);
+        sp.search_duration = time_control_from(&params, self.engine.active_color()).budget();
+        sp.depth = go_depth(&params);
+        // an unreadable node limit is ignored rather than obeyed as zero,
+        // which would stop the search before it had a move to report
+        sp.nodes = params.count("nodes").read();
 
         let start = sp.start_time;
         // the closure writes while the engine is borrowed for the search, so
@@ -232,25 +219,33 @@ impl<T: Engine, W: Write> UCI<T, W> {
 /// The depth asked of a go command, if one was. A depth too big for a byte
 /// is a request to go deep, not a reason to refuse the command, so it is
 /// clamped to the most a byte holds rather than rejected.
-fn go_depth(line: &str) -> Option<u8> {
-    capture(&DEPTH_RE, line).map(|depth| depth.try_into().unwrap_or(u8::MAX))
+fn go_depth(params: &Params) -> Option<u8> {
+    params
+        .count("depth")
+        .read()
+        .map(|depth| depth.try_into().unwrap_or(u8::MAX))
 }
 
 /// The depth asked of a bench command or argument: the word after `bench`,
 /// or the bench's own depth when there is none. A word that is not a depth
 /// comes back as the error, for the caller to say so; running the default in
 /// its place would take seconds and explain nothing.
-pub(crate) fn bench_depth(line: &str) -> Result<u8, String> {
-    match line.split_whitespace().nth(1) {
-        None => Ok(bench::DEPTH),
-        Some(word) => word.parse().map_err(|_| word.to_string()),
+pub(crate) fn bench_depth(params: &Params) -> Result<u8, String> {
+    match params.parse::<u8>("bench") {
+        Param::Absent => Ok(bench::DEPTH),
+        Param::Read(depth) => Ok(depth),
+        Param::Unreadable(word) => Err(word.to_string()),
     }
 }
 
 /// The depth asked of a perft command. A bare `perft` counts to depth one,
-/// which is what the command did before it took a depth at all.
-fn perft_depth(line: &str) -> u8 {
-    capture(&PERFT_RE, line)
+/// which is what the command did before it took a depth at all. Unlike the
+/// bench, a depth too big for a byte is clamped rather than refused: perft is
+/// asked for by hand and the answer to too deep is to wait or interrupt.
+fn perft_depth(params: &Params) -> u8 {
+    params
+        .count("perft")
+        .read()
         .map(|depth| depth.try_into().unwrap_or(u8::MAX))
         .unwrap_or(1)
 }
@@ -459,7 +454,7 @@ mod tests {
     fn each_colour_reads_its_own_clock() {
         let line = "go wtime 111 btime 222 winc 333 binc 444 movestogo 5";
         assert_eq!(
-            time_control_from(line, Color::White),
+            time_control_from(&Params::of(line), Color::White),
             TimeControl {
                 time: Some(111),
                 increment: Some(333),
@@ -469,7 +464,7 @@ mod tests {
             }
         );
         assert_eq!(
-            time_control_from(line, Color::Black),
+            time_control_from(&Params::of(line), Color::Black),
             TimeControl {
                 time: Some(222),
                 increment: Some(444),
@@ -482,7 +477,7 @@ mod tests {
 
     #[test]
     fn a_missing_clock_for_our_colour_is_not_taken_from_the_other() {
-        let control = time_control_from("go btime 222 binc 444", Color::White);
+        let control = time_control_from(&Params::of("go btime 222 binc 444"), Color::White);
         assert_eq!(control.time, None);
         assert_eq!(control.increment, None);
     }
@@ -490,18 +485,18 @@ mod tests {
     #[test]
     fn move_time_and_infinite_are_read() {
         assert_eq!(
-            time_control_from("go movetime 500", Color::White).move_time,
+            time_control_from(&Params::of("go movetime 500"), Color::White).move_time,
             Some(500)
         );
-        assert!(time_control_from("go infinite", Color::White).infinite);
-        assert!(!time_control_from("go wtime 1000", Color::White).infinite);
+        assert!(time_control_from(&Params::of("go infinite"), Color::White).infinite);
+        assert!(!time_control_from(&Params::of("go wtime 1000"), Color::White).infinite);
     }
 
     #[test]
     fn a_clock_too_large_to_hold_is_not_read_as_absent() {
         let line = "go wtime 99999999999999999999999";
         assert_eq!(
-            time_control_from(line, Color::White).time,
+            time_control_from(&Params::of(line), Color::White).time,
             Some(u64::MAX),
             "an unreadable clock must not turn into an unlimited search"
         );
@@ -513,17 +508,52 @@ mod tests {
         // margin has been eaten into. Not reading it would leave the budget
         // unset and search without a limit, at the moment there is the least
         // time to spare
-        let control = time_control_from("go wtime -5 btime -5", Color::White);
+        let control = time_control_from(&Params::of("go wtime -5 btime -5"), Color::White);
         assert_eq!(control.time, Some(0));
-        let control = time_control_from("go wtime -5 btime -5 winc -1 binc -1", Color::Black);
+        let control = time_control_from(
+            &Params::of("go wtime -5 btime -5 winc -1 binc -1"),
+            Color::Black,
+        );
         assert_eq!(control.time, Some(0));
         assert_eq!(control.increment, Some(0));
     }
 
     #[test]
+    fn a_clock_that_cannot_be_read_is_a_spent_one_rather_than_no_clock() {
+        // discarding it would read as the keyword having been absent, and a
+        // go with no time at all searches without a limit
+        let control = time_control_from(&Params::of("go wtime abc winc x"), Color::White);
+        assert_eq!(control.time, Some(0));
+        assert_eq!(control.increment, Some(0));
+        assert!(
+            control.budget().is_some(),
+            "an unreadable clock must still bound the search"
+        );
+    }
+
+    #[test]
+    fn an_unreadable_limit_is_ignored_rather_than_obeyed_as_zero() {
+        // zero would be a limit of nothing, and the search would come back
+        // without a move rather than without a limit
+        assert_eq!(go_depth(&Params::of("go depth abc")), None);
+        assert_eq!(Params::of("go nodes abc").count("nodes").read(), None);
+    }
+
+    #[test]
+    fn a_keyword_inside_a_longer_word_is_not_one() {
+        // the regexes this replaced had no word boundary, so a clock could be
+        // read out of the middle of another token
+        let control = time_control_from(&Params::of("go xwtime 300000"), Color::White);
+        assert_eq!(control.time, None);
+    }
+
+    #[test]
     fn a_node_limit_is_read() {
-        assert_eq!(capture(&NODES_RE, "go nodes 1234"), Some(1234));
-        assert_eq!(capture(&NODES_RE, "go depth 3"), None);
+        assert_eq!(
+            Params::of("go nodes 1234").count("nodes").read(),
+            Some(1234)
+        );
+        assert_eq!(Params::of("go depth 3").count("nodes").read(), None);
     }
 
     #[test]
@@ -545,9 +575,9 @@ mod tests {
 
     #[test]
     fn a_depth_too_big_for_a_byte_is_clamped_rather_than_refused() {
-        assert_eq!(go_depth("go depth 5"), Some(5));
-        assert_eq!(go_depth("go depth 999"), Some(u8::MAX));
-        assert_eq!(go_depth("go infinite"), None);
+        assert_eq!(go_depth(&Params::of("go depth 5")), Some(5));
+        assert_eq!(go_depth(&Params::of("go depth 999")), Some(u8::MAX));
+        assert_eq!(go_depth(&Params::of("go infinite")), None);
     }
 
     #[test]
@@ -582,9 +612,13 @@ mod tests {
 
     #[test]
     fn a_perft_command_reads_its_depth() {
-        assert_eq!(perft_depth("perft 3"), 3);
-        assert_eq!(perft_depth("perft"), 1, "a bare perft counts to depth one");
-        assert_eq!(perft_depth("perft 999"), u8::MAX);
+        assert_eq!(perft_depth(&Params::of("perft 3")), 3);
+        assert_eq!(
+            perft_depth(&Params::of("perft")),
+            1,
+            "a bare perft counts to depth one"
+        );
+        assert_eq!(perft_depth(&Params::of("perft 999")), u8::MAX);
     }
 
     #[test]
