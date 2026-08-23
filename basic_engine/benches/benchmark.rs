@@ -79,7 +79,7 @@ bench_engine_fen!(
     alpha_beta_5,
     engine,
     {
-        engine.clear_cache();
+        engine.clear_transpositions();
     },
     { engine.iterative_deepening_search(SearchParameters::new_with_depth(5), |_, _, _| {}) }
 );

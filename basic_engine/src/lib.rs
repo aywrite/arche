@@ -6,6 +6,7 @@ mod magic;
 mod misc;
 mod play;
 mod psqt;
+mod transposition;
 mod zobrist;
 
 pub use board::Board;
