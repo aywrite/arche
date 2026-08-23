@@ -188,12 +188,14 @@ mod castle_permissions {
 /// The index of a square, counting a1 as zero. Ranks are one based, the way
 /// a fen and the board display write them.
 pub fn coordinate_to_index(rank: u8, file: File) -> u8 {
+    debug_assert!((1..=8).contains(&rank));
     ((rank - 1) * 8) + (file) as u8
 }
 
 /// The same square in the mailbox indexing, which offsets by a row and a column
 /// of sentinels. See `BaseConversions`.
 pub fn coordinate_to_large_index(rank: u8, file: File) -> u8 {
+    debug_assert!((1..=8).contains(&rank));
     ((rank - 1) * 10) + (file) as u8 + 11
 }
 
@@ -376,24 +378,6 @@ impl fmt::Display for File {
             File::H => write!(f, "h")?,
         }
         Ok(())
-    }
-}
-
-impl TryFrom<&str> for File {
-    type Error = String;
-
-    fn try_from(s: &str) -> Result<Self, Self::Error> {
-        if s.len() != 1 {
-            return Err(format!("Expected a single character token, got: {}", s));
-        };
-        let c = s.chars().next().unwrap();
-        File::try_from(c)
-    }
-}
-
-impl From<File> for u64 {
-    fn from(file: File) -> Self {
-        file as u64
     }
 }
 
