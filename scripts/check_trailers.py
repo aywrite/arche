@@ -32,9 +32,12 @@ SPEED = re.compile(
     r"^[+-]\d+(\.\d+)?% \(bench nps, ([2-9]|\d{2,}) interleaved rounds "
     r"vs [0-9a-f]{7,40}, spread \d+(\.\d+)?%\)$"
 )
+# an sprt names its verdict: bounds alone would leave a passed test and a
+# failed one telling the same story
 ELO = re.compile(
     r"^(not measured"
-    r"|[+-]\d+ ±\d+ \((sprt \[-?\d+(\.\d+)?, -?\d+(\.\d+)?\], )?"
+    r"|[+-]\d+ ±\d+ \((sprt \[-?\d+(\.\d+)?, -?\d+(\.\d+)?\] "
+    r"(passed|failed|inconclusive), )?"
     r"\d+ games, [^,()]+, vs [^()]+\))$"
 )
 

@@ -128,7 +128,7 @@ git keeps at the end of a message, and the commit-msg hook checks them:
 | --- | --- | --- |
 | `Bench: 42847751` | `feat`, `fix`, `perf` and `refactor` to `board`, `eval`, `magic`, `search` or `zobrist` | `scripts/bench_trailer.sh` |
 | `Speed: +3.1% (bench nps, 5 interleaved rounds vs a1b2c3d, spread 2.4%)` | `perf` to one of those scopes | `scripts/speed.sh` |
-| `Elo: +12 ±8 (sprt [0, 10], 1240 games, 10+0.1, vs v0.3.10)` | nothing, checked when present | the Strength workflow's summary |
+| `Elo: +12 ±8 (sprt [0, 10] passed, 1240 games, 10+0.1, vs v0.3.10)` | nothing, checked when present | the Strength workflow's summary |
 
 So an engine commit is made as
 

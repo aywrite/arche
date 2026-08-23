@@ -149,9 +149,24 @@ def test_a_fixed_match_gives_the_elo_trailer(tmp_path):
     assert result.stdout == "Elo: +7 ±45 (50 games, 10+0.1, vs v0.3.10)\n"
 
 
-def test_an_sprt_match_names_its_bounds_in_the_trailer(tmp_path):
-    result = trailer(tmp_path, SPRT_CAPPED, tc="1+0.01", baseline="master")
-    assert result.stdout == "Elo: +58 ±81 (sprt [0, 10], 60 games, 1+0.01, vs master)\n"
+def test_an_sprt_match_names_its_bounds_and_verdict_in_the_trailer(tmp_path):
+    # the verdict is the point of an sprt: an estimate of +58 with the
+    # test failed and one with it passed are not the same claim, and the
+    # history has to be able to tell them apart without the log
+    interrupted = (
+        "Tournament was interrupted. To resume the tournament, "
+        "run: ./fastchess -config file=config.json"
+    )
+    for ending, verdict in [
+        (interrupted, "inconclusive"),
+        ("SPRT ([0.00, 10.00]) completed - H1 was accepted", "passed"),
+        ("SPRT ([0.00, 10.00]) completed - H0 was accepted", "failed"),
+    ]:
+        text = SPRT_CAPPED.replace(interrupted, ending)
+        result = trailer(tmp_path, text, tc="1+0.01", baseline="master")
+        assert result.stdout == (
+            f"Elo: +58 ±81 (sprt [0, 10] {verdict}, 60 games, 1+0.01, vs master)\n"
+        ), verdict
 
 
 def test_a_sweep_has_no_elo_to_state(tmp_path):
