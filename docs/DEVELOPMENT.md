@@ -227,8 +227,8 @@ versions against each other with
 [8moves_v3](https://github.com/official-stockfish/books).
 
 ```
-git checkout --detach v0.3.7 && cargo build --release && cp target/release/arche /tmp/old
-git checkout - && cargo build --release && cp target/release/arche /tmp/new
+scripts/build_at.sh v0.3.7 /tmp/old
+cargo build --release && cp target/release/arche /tmp/new
 
 fastchess \
   -engine name=new cmd=/tmp/new \
