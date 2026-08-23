@@ -81,25 +81,20 @@ jobs:
 
       - uses: ./.github/actions/match-tools
 
-      # Deliberately not Swatinem/rust-cache, which the workflows that build one
-      # commit do use. This builds whichever commit it was pointed at into the
-      # same target directory, so a cache keyed on the ref would be poisoned by
-      # whatever it was last asked to measure.
+      # the cache keeps the dependencies; the engine is built from an export
+      # of its commit, and the checkout stays on the ref this ran on
+      - uses: Swatinem/rust-cache@v2
+
       - name: Build the engine
         run: |
           if [ -n "$CANDIDATE" ]; then
             sha=$(scripts/resolve_ref.sh "$CANDIDATE") \
               || { echo "::error::cannot resolve candidate ${CANDIDATE}"; exit 1; }
-            git checkout --detach "$sha"
           else
             sha=$GITHUB_SHA
           fi
           echo "CANDIDATE_SHA=${sha}" >> "$GITHUB_ENV"
-          cargo build --release
-          mkdir -p tools
-          cp target/release/arche tools/arche
-          # back to the ref this was run against, the estimate script lives there
-          git checkout --detach "$GITHUB_SHA"
+          scripts/build_at.sh "$sha" tools/arche
 
       # Not cached. Each one is a second of compiling and eighty kilobytes, so
       # fetching a cache costs more than building them does.
