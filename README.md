@@ -74,7 +74,7 @@ which is enough to run the engine as a bot account on [lichess.org](https://lich
 Images are published to `ghcr.io/aywrite/arche-lichess-bot`.
 
 ```
-docker run -e LICHESS_BOT_TOKEN=<token> ghcr.io/aywrite/arche-lichess-bot:master
+docker run -e LICHESS_BOT_TOKEN=<token> ghcr.io/aywrite/arche-lichess-bot:latest
 ```
 
 See [docs/LICHESS.md](docs/LICHESS.md) for the tags, the token the container needs, how the

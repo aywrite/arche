@@ -5,7 +5,7 @@
 which is enough to run the engine as a bot account on [lichess.org](https://lichess.org).
 
 ```
-docker run -e LICHESS_BOT_TOKEN=<token> ghcr.io/aywrite/arche-lichess-bot:master
+docker run -e LICHESS_BOT_TOKEN=<token> ghcr.io/aywrite/arche-lichess-bot:latest
 ```
 
 The token is a lichess API token for a bot account with the `bot:play` scope. The engine
@@ -15,9 +15,11 @@ any other setting, mount a replacement over `/lichess-bot/config.yml`; the defau
 
 ## Tags
 
-Images are published to `ghcr.io/aywrite/arche-lichess-bot`, tagged `master` on every push to
-master. A release is tagged `latest`, `<major>.<minor>`, `<version>` and `v<version>`, the last
-of which matches the git tag and is the one quoted in the release notes along with its digest.
+Images are published to `ghcr.io/aywrite/arche-lichess-bot` on release only. A release is tagged
+`latest`, `<major>.<minor>`, `<version>` and `v<version>`, the last of which matches the git tag
+and is the one quoted in the release notes along with its digest. A pull request or a push to
+master builds and smoke tests the image without publishing it. The `master` tag that earlier
+versions published is no longer updated; a bot still running it is on whatever master was then.
 
 ## The book
 
