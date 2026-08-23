@@ -2,9 +2,7 @@ use crate::Game;
 use crate::board::{Board, MoveList};
 use crate::misc::{Color, Score};
 use crate::play::Play;
-use crate::transposition::{
-    Bound, DEFAULT_TABLE_BYTES, GhiCounters, Pv, TranspositionTable, score_from_tt, score_to_tt,
-};
+use crate::transposition::{DEFAULT_TABLE_BYTES, GhiCounters, Probe, TranspositionTable};
 use std::fmt;
 use std::time;
 
@@ -147,7 +145,6 @@ pub struct AlphaBeta {
     /// search is depth first and single threaded, so one flag threads the taint
     /// up without changing every return type.
     tainted: bool,
-    pub ghi: GhiCounters,
     start_time: time::Instant,
     search_duration: Option<time::Duration>,
     /// The clock limit of the search call under way. search() takes it
@@ -209,7 +206,6 @@ impl AlphaBeta {
             transpositions: TranspositionTable::with_capacity_bytes(bytes),
             selective_depth: 0,
             tainted: false,
-            ghi: GhiCounters::default(),
             start_time: time::Instant::now(),
             search_duration: None,
             deadline: None,
@@ -225,6 +221,13 @@ impl AlphaBeta {
 
     pub fn clear_transpositions(&mut self) {
         self.transpositions.clear();
+    }
+
+    /// How much of the search's use of the transposition table depended on
+    /// the path taken rather than on the position. A measurement, not a
+    /// result: see the graph history interaction notes on the counters.
+    pub fn ghi(&self) -> GhiCounters {
+        self.transpositions.ghi()
     }
 
     /// How many of the nodes visited so far were quiescence's, over every
@@ -336,7 +339,7 @@ impl AlphaBeta {
 
         let mut best_move: Option<Play> = None;
         let old_alpha = alpha;
-        let pv_play = self.transpositions.get(self.board.key).map(|pv| pv.play);
+        let pv_play = self.transpositions.ordering_play(&self.board);
         // in check the position is not quiet whatever the material says, so
         // every evasion is searched, quiet or not. Most of what full width
         // generation returns cannot answer a check and would only be refused
@@ -376,94 +379,10 @@ impl AlphaBeta {
         }
 
         if alpha != old_alpha {
-            // depth zero and an Ordering bound: never read back in place of
-            // evaluating a position, only to sort its moves
-            let entry = self.entry(best_move.unwrap(), alpha, 0, Bound::Ordering, false);
-            self.transpositions.set(self.board.key, entry);
+            self.transpositions
+                .record_ordering(&self.board, best_move.unwrap(), alpha);
         }
         Ok(alpha)
-    }
-
-    /// The entry the position as it stands would be stored under. Converting
-    /// the score to the table's mate-relative form happens here, so that no
-    /// caller has to remember to.
-    #[inline]
-    fn entry(&self, play: Play, score: Score, depth: u8, bound: Bound, tainted: bool) -> Pv {
-        Pv {
-            play,
-            depth,
-            score: score_to_tt(score, self.board.line_ply),
-            bound,
-            tainted,
-        }
-    }
-
-    /// Store an entry and count it against the graph history figures.
-    ///
-    /// Quiescence stores through the table directly instead: its entries are
-    /// only fit for ordering, and the figures describe the full width search.
-    #[inline]
-    fn store(&mut self, play: Play, score: Score, depth: u8, bound: Bound, tainted: bool) {
-        let entry = self.entry(play, score, depth, bound, tainted);
-        self.transpositions.set(self.board.key, entry);
-        self.count_store(tainted);
-    }
-
-    /// The same, past the depth contest that `set` applies. Only the root
-    /// stores this way, for the reason `set_always` gives.
-    #[inline]
-    fn store_always(&mut self, play: Play, score: Score, depth: u8, bound: Bound, tainted: bool) {
-        let entry = self.entry(play, score, depth, bound, tainted);
-        self.transpositions.set_always(self.board.key, entry);
-        self.count_store(tainted);
-    }
-
-    #[inline]
-    fn count_store(&mut self, tainted: bool) {
-        self.ghi.stores += 1;
-        self.ghi.tainted_stores += u64::from(tainted);
-    }
-
-    /// Look up the current position in the transposition table.
-    ///
-    /// Returns the stored best move (if any) which is always safe to use for
-    /// move ordering, and a score when the stored entry is deep enough and its
-    /// bound allows a cutoff at the current alpha/beta window.
-    fn get_transposition(
-        &mut self,
-        key: u64,
-        alpha: Score,
-        beta: Score,
-        depth: u8,
-    ) -> (Option<Play>, Option<Score>) {
-        // copied out so the counters below are not borrowing the table
-        let Some(pv) = self.transpositions.get(key) else {
-            return (None, None);
-        };
-        if pv.depth >= depth {
-            let score = score_from_tt(pv.score, self.board.line_ply);
-            let cuts = match pv.bound {
-                Bound::Exact => true,
-                Bound::Upper => score <= alpha,
-                Bound::Lower => score >= beta,
-                Bound::Ordering => false,
-            };
-            if cuts && self.config.refuse_tainted_cutoffs && pv.tainted {
-                // the stored draw was reachable by the path that stored it and
-                // may not be reachable by this one, so the move is still worth
-                // ordering by but the score is not worth trusting
-                return (Some(pv.play), None);
-            }
-            if cuts {
-                self.ghi.score_cutoffs += 1;
-                self.ghi.tainted_score_cutoffs += u64::from(pv.tainted);
-                // whatever the stored score depended on, this frame now depends
-                // on too
-                self.tainted = pv.tainted;
-                return (Some(pv.play), Some(score));
-            }
-        }
-        (Some(pv.play), None)
     }
 
     fn alpha_beta(
@@ -512,10 +431,22 @@ impl AlphaBeta {
         let old_alpha = alpha;
         let mut found_legal_move = false;
         let mut best_move: Option<Play> = None;
-        let (pv_play, tt_score) = self.get_transposition(self.board.key, alpha, beta, depth);
-        if let Some(tt_score) = tt_score {
-            return Ok(tt_score);
-        }
+        let pv_play = match self.transpositions.probe(
+            &self.board,
+            alpha,
+            beta,
+            depth,
+            self.config.refuse_tainted_cutoffs,
+        ) {
+            Probe::Cut { score, tainted } => {
+                // whatever the stored score depended on, this frame now depends
+                // on too
+                self.tainted = tainted;
+                return Ok(score);
+            }
+            Probe::Order(play) => Some(play),
+            Probe::Miss => None,
+        };
 
         // The table's move sorts ahead of everything else below, and when there
         // is one it takes the cutoff nine times in ten. Searching it before
@@ -538,7 +469,13 @@ impl AlphaBeta {
                     if tt_score > alpha {
                         best_move = Some(tt);
                         if tt_score >= beta {
-                            self.store(tt, beta, depth, Bound::Lower, node_tainted);
+                            self.transpositions.record_cutoff(
+                                &self.board,
+                                tt,
+                                beta,
+                                depth,
+                                node_tainted,
+                            );
                             self.tainted = node_tainted;
                             return Ok(beta);
                         }
@@ -574,7 +511,13 @@ impl AlphaBeta {
                 if score > alpha {
                     best_move = Some(*m);
                     if score >= beta {
-                        self.store(*m, beta, depth, Bound::Lower, node_tainted);
+                        self.transpositions.record_cutoff(
+                            &self.board,
+                            *m,
+                            beta,
+                            depth,
+                            node_tainted,
+                        );
                         self.tainted = node_tainted;
                         return Ok(beta);
                     }
@@ -595,7 +538,8 @@ impl AlphaBeta {
 
         if alpha != old_alpha {
             let best = best_move.expect("alpha only rises when a move raises it");
-            self.store(best, alpha, depth, Bound::Exact, node_tainted);
+            self.transpositions
+                .record_best(&self.board, best, alpha, depth, node_tainted);
         }
         self.tainted = node_tainted;
         Ok(alpha)
@@ -663,7 +607,7 @@ impl AlphaBeta {
         let mut found_legal_move = false;
         let mut root_tainted = false;
 
-        let pv_play = self.transpositions.get(self.board.key).map(|pv| pv.play);
+        let pv_play = self.transpositions.ordering_play(&self.board);
         let mut moves = self.board.generate_moves();
         self.order_moves(&mut moves, pv_play);
 
@@ -700,7 +644,8 @@ impl AlphaBeta {
         let play = best.expect("any legal move's score beats the opening alpha of Score::MIN + 1");
         // stored past the depth contest: this is the move about to be
         // answered, and the line reported for it is read back from this slot
-        self.store_always(play, alpha, depth, Bound::Exact, root_tainted);
+        self.transpositions
+            .record_answer(&self.board, play, alpha, depth, root_tainted);
         SearchOutcome::Complete(self.result_for(play, alpha))
     }
 
@@ -714,17 +659,9 @@ impl AlphaBeta {
         // Board is Copy, so the search's own board is untouched by this.
         let mut board = self.board;
         while line.len() < MAX_DEPTH as usize {
-            let Some(pv) = self.transpositions.get(board.key) else {
+            let Some(play) = self.transpositions.intended_play(&board) else {
                 break;
             };
-            if matches!(pv.bound, Bound::Ordering) {
-                // written by quiescence, which looks at captures and
-                // promotions alone, so the move is fit for ordering the next
-                // search and not for telling anyone what the engine intends
-                // to play
-                break;
-            }
-            let play = pv.play;
             // a probe compares the whole key, so what still gets through is
             // another position which hashed to the same one. Its move belongs
             // to that position, and playing it here would print a line the
@@ -917,7 +854,7 @@ mod search {
     use super::Board;
     use super::Engine;
     use super::Game;
-    use super::{Bound, Play, Pv, SearchConfig, SearchOutcome, SearchParameters, SearchResult};
+    use super::{Play, SearchConfig, SearchOutcome, SearchParameters, SearchResult};
     use crate::board::{fens, play_named};
     use pretty_assertions::assert_eq;
     use std::time;
@@ -953,16 +890,9 @@ mod search {
         }
     }
 
-    /// An entry of the kind a completed search leaves behind.
-    fn searched(play: Play) -> Pv {
-        Pv {
-            play,
-            score: 0,
-            depth: 5,
-            bound: Bound::Exact,
-            tainted: false,
-        }
-    }
+    /// The depth a seeded entry claims: deep enough that nothing these tests
+    /// search can outrank it.
+    const SEEDED_DEPTH: u8 = 5;
 
     #[test]
     fn a_losing_position_is_still_losing_with_a_warm_table() {
@@ -998,13 +928,7 @@ mod search {
         let game = Board::from_fen("k7/8/8/3q4/8/8/3R4/K7 w - - 0 1").unwrap();
         let mut e = engine(game);
         let quiet = play_named(&e.board, "a1b1");
-        e.transpositions.set(
-            e.board.key,
-            Pv {
-                depth: 14,
-                ..searched(quiet)
-            },
-        );
+        e.transpositions.record_best(&e.board, quiet, 0, 14, false);
         let result = completed(e.search(2));
         let takes = play_named(&e.board, "d2d5");
         assert_eq!(result.best_move, takes);
@@ -1369,13 +1293,14 @@ mod search {
         for depth in 1..=7 {
             completed(e.search(depth));
         }
-        assert!(e.ghi.stores > 0, "the search stored nothing");
+        assert!(e.ghi().stores > 0, "the search stored nothing");
         assert!(
-            e.ghi.tainted_stores > 0,
+            e.ghi().tainted_stores > 0,
             "no draw taint was recorded: propagation is broken"
         );
         assert_eq!(
-            e.ghi.tainted_score_cutoffs, 0,
+            e.ghi().tainted_score_cutoffs,
+            0,
             "a path dependent score was trusted"
         );
     }
@@ -1400,7 +1325,7 @@ mod search {
             completed(e.search(depth));
         }
         assert!(
-            e.ghi.tainted_score_cutoffs > 0,
+            e.ghi().tainted_score_cutoffs > 0,
             "the scores the search was told to trust cut nothing"
         );
     }
@@ -1492,13 +1417,13 @@ mod search {
         let mut e = engine(Board::from_fen(fen).unwrap());
         completed(e.search(4));
         assert!(
-            e.transpositions.get(e.board.key).is_some(),
+            e.transpositions.ordering_play(&e.board).is_some(),
             "nothing was stored"
         );
         assert_ne!(format!("{}", e.pv_line()), "");
 
         e.new_game();
-        assert!(e.transpositions.get(e.board.key).is_none());
+        assert!(e.transpositions.ordering_play(&e.board).is_none());
         assert_eq!(format!("{}", e.pv_line()), "");
     }
 
@@ -1521,7 +1446,8 @@ mod search {
         let mut board = e.board;
         for name in cycle.iter().cycle().take(16) {
             let play = play_named(&board, name);
-            e.transpositions.set(board.key, searched(play));
+            e.transpositions
+                .record_best(&board, play, 0, SEEDED_DEPTH, false);
             assert!(board.make_move(&play), "failed to play {}", name);
         }
 
@@ -1535,7 +1461,8 @@ mod search {
         let mut board = e.board;
         for name in ["c3d4", "f8g8"] {
             let play = play_named(&board, name);
-            e.transpositions.set(board.key, searched(play));
+            e.transpositions
+                .record_best(&board, play, 0, SEEDED_DEPTH, false);
             assert!(board.make_move(&play), "failed to play {}", name);
         }
         assert_eq!(board.fifty_move_rule, 101);
@@ -1554,7 +1481,8 @@ mod search {
         let a2 = 8;
         let a5 = 32;
         let colliding = Play::new(a2, a5, None, None, false, false);
-        e.transpositions.set(e.board.key, searched(colliding));
+        e.transpositions
+            .record_best(&e.board, colliding, 0, SEEDED_DEPTH, false);
 
         assert_eq!(format!("{}", e.pv_line()), "");
     }
@@ -1566,16 +1494,7 @@ mod search {
         // means to play
         let mut e = engine(Board::new());
         let play = play_named(&e.board, "e2e4");
-        e.transpositions.set(
-            e.board.key,
-            Pv {
-                play,
-                score: 0,
-                depth: 0,
-                bound: Bound::Ordering,
-                tainted: false,
-            },
-        );
+        e.transpositions.record_ordering(&e.board, play, 0);
 
         assert_eq!(format!("{}", e.pv_line()), "");
     }
@@ -1589,7 +1508,8 @@ mod search {
         let board = Board::from_fen("4r2k/8/8/8/8/8/4N3/4K3 w - - 0 1").unwrap();
         let mut e = engine(board);
         let pinned = play_named(&e.board, "e2d4");
-        e.transpositions.set(e.board.key, searched(pinned));
+        e.transpositions
+            .record_best(&e.board, pinned, 0, SEEDED_DEPTH, false);
 
         assert_eq!(format!("{}", e.pv_line()), "");
     }
@@ -1612,7 +1532,8 @@ mod search {
         let mut board = e.board;
         for name in &names {
             let play = play_named(&board, name);
-            e.transpositions.set(board.key, searched(play));
+            e.transpositions
+                .record_best(&board, play, 0, SEEDED_DEPTH, false);
             assert!(board.make_move(&play), "failed to play {}", name);
         }
 

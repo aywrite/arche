@@ -2,6 +2,7 @@
 //! re-searching interior nodes. An accelerator: deleting it may slow the
 //! search but never changes the answer.
 
+use crate::board::Board;
 use crate::engine::CHECKMATE_THRESHOLD;
 use crate::misc::Score;
 use crate::play::Play;
@@ -13,7 +14,7 @@ pub const DEFAULT_TABLE_BYTES: usize = 256 * 1024 * 1024;
 /// relative to the node they are stored at (plies-to-mate from this node)
 /// rather than relative to the root of the search, so that they remain correct
 /// when the entry is reused at a different distance from the root.
-pub fn score_to_tt(score: Score, line_ply: usize) -> Score {
+fn score_to_tt(score: Score, line_ply: usize) -> Score {
     if score > CHECKMATE_THRESHOLD {
         score + line_ply as Score
     } else if score < -CHECKMATE_THRESHOLD {
@@ -25,7 +26,7 @@ pub fn score_to_tt(score: Score, line_ply: usize) -> Score {
 
 /// The inverse of score_to_tt: convert a stored mate score back to being
 /// relative to the root of the current search.
-pub fn score_from_tt(score: Score, line_ply: usize) -> Score {
+fn score_from_tt(score: Score, line_ply: usize) -> Score {
     if score > CHECKMATE_THRESHOLD {
         score - line_ply as Score
     } else if score < -CHECKMATE_THRESHOLD {
@@ -55,15 +56,15 @@ pub struct GhiCounters {
 /// What the search stores about a position and reads back: the entry as the
 /// search sees it. The table packs it into an `Entry` of its own.
 #[derive(Copy, Clone, Debug)]
-pub struct Pv {
-    pub play: Play,
-    pub score: Score,
+struct Pv {
+    play: Play,
+    score: Score,
     /// True if the score flowed from a repetition or fifty move draw somewhere
     /// below it, so it describes the path taken to this position and not the
     /// position itself. See docs on graph history interaction.
-    pub tainted: bool,
-    pub depth: u8,
-    pub bound: Bound,
+    tainted: bool,
+    depth: u8,
+    bound: Bound,
 }
 
 /// What the stored score means: the searched window decides whether a score
@@ -71,7 +72,7 @@ pub struct Pv {
 /// cutoff its kind allows. Two bits of an entry, which the values are.
 #[derive(Copy, Clone, Debug)]
 #[repr(u8)]
-pub enum Bound {
+enum Bound {
     Exact = 0,
     // fail low nodes are not stored yet, see the known issues in the readme
     Upper = 1,
@@ -88,6 +89,20 @@ impl Bound {
             _ => Bound::Ordering,
         }
     }
+}
+
+/// What a probe found. A stored score is only handed back when the entry is
+/// deep enough, its bound allows a cutoff at the window asked about, and it
+/// does not describe a draw down somebody else's path.
+#[derive(Copy, Clone, Debug)]
+pub enum Probe {
+    /// Nothing is known about this position.
+    Miss,
+    /// A move worth trying first, and no score worth trusting.
+    Order(Play),
+    /// A score the caller may return without searching. It carries whether it
+    /// came from a draw tainted entry, because that travels on up.
+    Cut { score: Score, tainted: bool },
 }
 
 /// A slot in the table: sixteen bytes, four to a cache line.
@@ -216,6 +231,7 @@ impl Bucket {
 #[derive(Debug)]
 pub struct TranspositionTable {
     table: Vec<Bucket>,
+    ghi: GhiCounters,
     /// The search under way, as the entries it stores are marked.
     generation: u8,
 }
@@ -225,6 +241,7 @@ impl TranspositionTable {
     fn with_capacity(capacity: usize) -> Self {
         Self {
             table: vec![Bucket::EMPTY; capacity.div_ceil(BUCKET).max(1)],
+            ghi: GhiCounters::default(),
             generation: 1,
         }
     }
@@ -257,7 +274,7 @@ impl TranspositionTable {
         (((key as u128) * (self.table.len() as u128)) >> 64) as usize
     }
 
-    pub fn get(&self, key: u64) -> Option<Pv> {
+    fn get(&self, key: u64) -> Option<Pv> {
         let slice = Entry::slice(key);
         self.table[self.index_for(key)]
             .entries
@@ -298,7 +315,7 @@ impl TranspositionTable {
         (index, victim)
     }
 
-    pub fn set(&mut self, key: u64, pv: Pv) {
+    fn set(&mut self, key: u64, pv: Pv) {
         let (index, i) = self.slot_for(key);
         let old = self.table[index].entries[i];
         if old.generation() != 0 && self.age(old) < STALE_AFTER_SEARCHES {
@@ -324,9 +341,157 @@ impl TranspositionTable {
     /// another, which is a lie the match tools flag. The leftover's extra
     /// depth is no loss: its score describes repetition and fifty move
     /// context the game has since moved past.
-    pub fn set_always(&mut self, key: u64, pv: Pv) {
+    fn set_always(&mut self, key: u64, pv: Pv) {
         let (index, i) = self.slot_for(key);
         self.table[index].entries[i] = Entry::pack(key, pv, self.generation);
+    }
+
+    /// A move worth trying first at this position, learned by a quiescence
+    /// search. Never a score to cut on, and never counted against the graph
+    /// history figures: quiescence looks at captures and promotions alone, so
+    /// what it says a position is worth is not what a full width search would
+    /// say, and the figures describe the full width search.
+    #[inline]
+    pub fn record_ordering(&mut self, board: &Board, play: Play, score: Score) {
+        self.set(
+            board.key,
+            entry(board, play, score, 0, Bound::Ordering, false),
+        );
+    }
+
+    /// A move which refuted this position: the search failed high on it, so
+    /// beta is a floor under what the position is worth and not the worth
+    /// itself.
+    pub fn record_cutoff(
+        &mut self,
+        board: &Board,
+        play: Play,
+        beta: Score,
+        depth: u8,
+        tainted: bool,
+    ) {
+        self.set(
+            board.key,
+            entry(board, play, beta, depth, Bound::Lower, tainted),
+        );
+        self.count_store(tainted);
+    }
+
+    /// The best move found by searching all of them here, with the score it
+    /// scored: neither a floor nor a ceiling but the value itself.
+    pub fn record_best(
+        &mut self,
+        board: &Board,
+        play: Play,
+        score: Score,
+        depth: u8,
+        tainted: bool,
+    ) {
+        self.set(
+            board.key,
+            entry(board, play, score, depth, Bound::Exact, tainted),
+        );
+        self.count_store(tainted);
+    }
+
+    /// The move the engine is about to answer with. Stored past the depth
+    /// contest the other verbs hold, for the reason `set_always` gives: this
+    /// is the move being played, and the reported line is read back from its
+    /// slot.
+    pub fn record_answer(
+        &mut self,
+        board: &Board,
+        play: Play,
+        score: Score,
+        depth: u8,
+        tainted: bool,
+    ) {
+        self.set_always(
+            board.key,
+            entry(board, play, score, depth, Bound::Exact, tainted),
+        );
+        self.count_store(tainted);
+    }
+
+    #[inline]
+    fn count_store(&mut self, tainted: bool) {
+        self.ghi.stores += 1;
+        self.ghi.tainted_stores += u64::from(tainted);
+    }
+
+    /// What the table knows about this position, given the window and depth
+    /// the caller is searching to. `refuse_tainted` is the search's, not the
+    /// table's: whether to trust a score that came from a draw is a decision
+    /// about the search being run, and `SearchConfig` holds it.
+    pub fn probe(
+        &mut self,
+        board: &Board,
+        alpha: Score,
+        beta: Score,
+        depth: u8,
+        refuse_tainted: bool,
+    ) -> Probe {
+        let Some(pv) = self.get(board.key) else {
+            return Probe::Miss;
+        };
+        if pv.depth >= depth {
+            let score = score_from_tt(pv.score, board.line_ply);
+            let cuts = match pv.bound {
+                Bound::Exact => true,
+                Bound::Upper => score <= alpha,
+                Bound::Lower => score >= beta,
+                Bound::Ordering => false,
+            };
+            if cuts && refuse_tainted && pv.tainted {
+                // the stored draw was reachable by the path that stored it and
+                // may not be reachable by this one, so the move is still worth
+                // ordering by but the score is not worth trusting
+                return Probe::Order(pv.play);
+            }
+            if cuts {
+                self.ghi.score_cutoffs += 1;
+                self.ghi.tainted_score_cutoffs += u64::from(pv.tainted);
+                return Probe::Cut {
+                    score,
+                    tainted: pv.tainted,
+                };
+            }
+        }
+        Probe::Order(pv.play)
+    }
+
+    /// The move to try first here, whatever wrote it. A quiescence move is fit
+    /// for this even though its score is fit for nothing.
+    #[inline]
+    pub fn ordering_play(&self, board: &Board) -> Option<Play> {
+        self.get(board.key).map(|pv| pv.play)
+    }
+
+    /// The move the table says is meant here, for reporting a line. Unlike
+    /// `ordering_play` this refuses a quiescence entry: that move orders the
+    /// next search and does not say what the engine intends to play.
+    pub fn intended_play(&self, board: &Board) -> Option<Play> {
+        let pv = self.get(board.key)?;
+        (!matches!(pv.bound, Bound::Ordering)).then_some(pv.play)
+    }
+
+    /// How much of what the table handed back depended on the path taken.
+    pub fn ghi(&self) -> GhiCounters {
+        self.ghi
+    }
+}
+
+/// Fold a position and a result into an entry. Converting the score to the
+/// table's mate-relative form happens here, so that no caller has to remember
+/// to.
+#[inline]
+fn entry(board: &Board, play: Play, score: Score, depth: u8, bound: Bound, tainted: bool) -> Pv {
+    Pv {
+        play,
+        depth,
+        score: score_to_tt(score, board.line_ply),
+        bound,
+        tainted,
     }
 }
 
