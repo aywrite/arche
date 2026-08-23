@@ -34,7 +34,7 @@ cargo test --workspace
 
 The helper scripts have tests of their own, run with pytest and gated in ci by
 the Scripts workflow. They pin the output formats the scripts parse — a
-fastchess result, a criterion comparison, a pgn — so an upstream that changes
+fastchess result, the bench's last line, a pgn — so an upstream that changes
 shape fails a test instead of quietly publishing the wrong number:
 
 ```
@@ -153,24 +153,9 @@ The Elo line is pasted from the Strength workflow's summary, which prints it
 ready to use, and `Elo: not measured` is the honest alternative on a change
 that was not played. The changelog prints all three after the entry.
 
-## Benchmarks
+## The bench and speed
 
-```
-cargo bench -p basic_engine --bench benchmark
-```
-
-Criterion stores its previous results under `target/criterion`, so the useful
-sequence is to benchmark master, apply a change, and benchmark again. Wall clock
-numbers move around on a loaded machine, so treat anything under about ten
-percent as noise.
-
-The benchmark workflow runs the same benchmarks on every pull request, once for
-the commit the pull request would land on and once for the pull request itself,
-both on the same runner. It writes the comparison to the job summary. It only
-reports and will not fail a build, for the same reason: even measured back to
-back on one machine, criterion calls single digit differences significant.
-
-What does hold search behaviour still is the bench:
+What holds search behaviour still is the bench:
 
 ```
 target/release/arche bench
@@ -184,13 +169,37 @@ same thing on any machine, and `node_counts_have_not_moved` in
 `basic_engine/src/bench.rs` pins it position by position. A deliberate change
 to the search is expected to move it, and the numbers are updated in the same
 commit so the diff shows how much more, or less, of each tree is being looked
-at, with the new total stated in the commit's `Bench:` trailer. The last line, `<nodes> nodes <nps> nps`, is the one the match tools read,
+at. The last line, `<nodes> nodes <nps> nps`, is the one the match tools read,
 and `bench` is also a uci command. Both take a depth after the word, as in
 `arche bench 3`, for trying the command cheaply; the number that means
 anything is the one at the default. The suite, depth and table are chosen once:
 changing any of them changes every number the bench has ever printed, which is
 why the depth is expected to be raised exactly once, after the search has
 learned to prune, rather than adjusted as it goes.
+
+Speed is measured against another build, never on its own: a rate says
+nothing across machines, and a single pair of runs says little on one.
+`scripts/speed.sh` builds the commit the tree stands on, runs the bench for
+each side in turn with the side that goes first alternating, and prints the
+change between medians with the spread beside it, which is the `Speed:`
+trailer a perf commit carries. The Bench workflow's speed job does the same
+on every pull request, both sides built and run on one runner, and posts the
+result as a comment, or to the job summary alone for a pull request from a
+fork. It reports and does not gate: the count is the claim, and the rate is
+the context it is read in.
+
+There are criterion microbenchmarks too, of move generation, perft and the
+search at a fixed depth, for profiling a change by hand:
+
+```
+cargo bench -p basic_engine --bench benchmark
+```
+
+Criterion keeps its previous results under `target/criterion`, so benchmark
+master, apply the change, and benchmark again, and treat anything under about
+ten percent as noise. They do not run in ci: on a shared runner their single
+digit changes were noise with a confidence interval, and the bench's rate over
+a real search says more in a tenth of the time.
 
 The search runs under a `SearchConfig`, and two configurations are named.
 The reference, `SearchConfig::reference()`, is alpha-beta with every shortcut

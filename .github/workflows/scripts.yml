@@ -1,7 +1,7 @@
 name: Scripts
 
-# The helper scripts parse other tools' output — fastchess results, criterion
-# comparisons, pgn files — so they rot silently when a format shifts. These
+# The helper scripts parse other tools' output — fastchess results, the bench's
+# last line, pgn files — so they rot silently when a format shifts. These
 # tests are the only thing standing between that and a release note quoting
 # the wrong number.
 
