@@ -1,6 +1,7 @@
 name: Bench
 
-# Two checks on what a pull request's commits say about themselves.
+# Two checks on what a pull request's commits say about themselves, and one
+# measurement of what they do.
 #
 # The trailers job runs the pre-commit hooks over the tree and the commit-msg
 # hooks over every commit, so a scope the changelog does not know, or an
@@ -8,10 +9,16 @@ name: Bench
 # clone that never installed the hooks.
 #
 # The bench job builds each commit that states a bench and counts it. The
-# count is exact and the same on any machine, so unlike the benchmark
-# workflow this one gates: a commit whose stated bench is not the bench is
-# wrong, and a history whose numbers cannot be trusted is worse than one
-# with none.
+# count is exact and the same on any machine, so this one gates: a commit
+# whose stated bench is not the bench is wrong, and a history whose numbers
+# cannot be trusted is worse than one with none.
+#
+# The speed job measures the pull request against the commit it would land
+# on, both built and run on one runner in one job, the way scripts/speed.sh
+# measures a perf commit: the bench of each side in turn, the side that goes
+# first alternating, and the change between medians printed with the spread
+# it has to be read against. It reports and does not gate. A runner's rate is
+# context, not a claim; the count is the claim, and it has the job above.
 
 on:
   pull_request:
@@ -74,3 +81,89 @@ jobs:
       - name: Count the bench of every commit that states one
         shell: bash
         run: scripts/verify_bench.sh "$(git rev-parse HEAD^1)" "$(git rev-parse HEAD^2)"
+
+  speed:
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    permissions:
+      contents: read
+      pull-requests: write
+    steps:
+      - uses: actions/checkout@v7
+        with:
+          # both sides get built, so both need their history
+          fetch-depth: 0
+      - uses: Swatinem/rust-cache@v2
+      - name: Build both sides
+        shell: bash
+        run: |
+          # the checkout is a merge of the pull request into its base: the
+          # first parent is the base and the merge is what would land
+          base=$(git rev-parse HEAD^1)
+          head=$(git rev-parse HEAD)
+          echo "BASE_SHA=$base" >> "$GITHUB_ENV"
+          git checkout --quiet --detach "$base"
+          cargo build --release --locked
+          cp target/release/arche base-arche
+          git checkout --quiet --detach "$head"
+          cargo build --release --locked
+          cp target/release/arche pr-arche
+      - name: Measure
+        id: measure
+        shell: bash
+        run: |
+          python3 scripts/speed.py ./base-arche ./pr-arche \
+            --base-ref "${BASE_SHA:0:8}" --rounds 5 | tee speed.txt
+      - name: Summarise
+        # a failed measurement is reported as one, not as whatever tee had
+        # written by the time speed.py gave up
+        if: ${{ !cancelled() }}
+        env:
+          MEASURED: ${{ steps.measure.outcome }}
+        shell: bash
+        run: |
+          {
+            # marks the comment as this job's, so the next run replaces it
+            echo "<!-- speed-summary -->"
+            echo "## Speed against \`${BASE_SHA:0:8}\`"
+            echo
+            echo "Both sides built and run on this runner in this job, the way"
+            echo "\`scripts/speed.sh\` measures a perf commit. The change is between"
+            echo "medians, and the spread beside it is what the change has to be"
+            echo "read against. The node counts are the search's: they move when"
+            echo "the search does, and a speed change leaves them alone."
+            echo
+            echo '```'
+            if [ "$MEASURED" = success ]; then
+              cat speed.txt
+            else
+              echo "the measurement failed, see the job's log"
+            fi
+            echo '```'
+          } > speed-summary.md
+          cat speed-summary.md >> "$GITHUB_STEP_SUMMARY"
+
+      # A summary nobody opens is barely better than none, so put it where the
+      # change is being read. Done with the api rather than an action so there
+      # is one less thing to keep off a deprecated node.
+      - name: Post the summary to the pull request
+        # a fork's pull request gets a read only token, so there is nothing to
+        # post with and failing the job over it would help no one
+        if: ${{ !cancelled() && !github.event.pull_request.head.repo.fork }}
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          PR: ${{ github.event.pull_request.number }}
+        shell: bash
+        run: |
+          jq -n --rawfile body speed-summary.md '{body: $body}' > comment.json
+          # edit the comment the last run left rather than adding one per push
+          existing=$(gh api --paginate "repos/${GITHUB_REPOSITORY}/issues/${PR}/comments" \
+            --jq '.[] | select(.body | startswith("<!-- speed-summary -->")) | .id' \
+            | tail -1)
+          if [ -n "$existing" ]; then
+            gh api --silent --method PATCH \
+              "repos/${GITHUB_REPOSITORY}/issues/comments/${existing}" --input comment.json
+          else
+            gh api --silent --method POST \
+              "repos/${GITHUB_REPOSITORY}/issues/${PR}/comments" --input comment.json
+          fi
