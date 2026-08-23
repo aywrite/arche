@@ -202,7 +202,7 @@ impl<T: Engine, W: Write> UCI<T, W> {
     fn parse_go(&mut self, line: &str) {
         let mut sp = SearchParameters::new();
         sp.search_duration = time_control_from(line, self.engine.active_color()).budget();
-        sp.depth = capture(&DEPTH_RE, line).map(|depth| depth.try_into().unwrap_or(u8::MAX));
+        sp.depth = go_depth(line);
         sp.nodes = capture(&NODES_RE, line);
 
         let start = sp.start_time;
@@ -227,6 +227,13 @@ impl<T: Engine, W: Write> UCI<T, W> {
             SearchOutcome::Aborted(None) => self.say(format_args!("bestmove 0000")),
         }
     }
+}
+
+/// The depth asked of a go command, if one was. A depth too big for a byte
+/// is a request to go deep, not a reason to refuse the command, so it is
+/// clamped to the most a byte holds rather than rejected.
+fn go_depth(line: &str) -> Option<u8> {
+    capture(&DEPTH_RE, line).map(|depth| depth.try_into().unwrap_or(u8::MAX))
 }
 
 /// The depth asked of a bench command or argument: the word after `bench`,
@@ -537,8 +544,10 @@ mod tests {
     }
 
     #[test]
-    fn an_oversized_depth_does_not_panic() {
-        assert_eq!(capture(&DEPTH_RE, "go depth 999"), Some(999));
+    fn a_depth_too_big_for_a_byte_is_clamped_rather_than_refused() {
+        assert_eq!(go_depth("go depth 5"), Some(5));
+        assert_eq!(go_depth("go depth 999"), Some(u8::MAX));
+        assert_eq!(go_depth("go infinite"), None);
     }
 
     #[test]
