@@ -56,7 +56,8 @@ cargo clippy --workspace --all-targets -- -D warnings
 ```
 
 The pre-commit configuration runs them too, along with a check that the commit
-message is a conventional commit, which is what the changelog is generated from:
+message is a conventional commit, which is what the changelog is generated from,
+and carries the trailers its kind requires, which are described below:
 
 ```
 pip install pre-commit
@@ -114,6 +115,43 @@ Merge commits are exempt.
 `git-cliff --unreleased` prints what the next release would say, which is the
 quickest way to check a scope landed where it should.
 
+## Commit trailers
+
+A commit that changes the engine carries the bench after it, so the history
+says how much of the tree each change looks at, and a commit that claims
+speed carries how much it measured. Both are trailers, the `Key: value` lines
+git keeps at the end of a message, and the commit-msg hook checks them:
+
+| trailer | required on | produced by |
+| --- | --- | --- |
+| `Bench: 42847751` | `feat`, `fix`, `perf` and `refactor` to `board`, `eval`, `magic`, `search` or `zobrist` | `scripts/bench_trailer.sh` |
+| `Speed: +3.1% (bench nps, 5 interleaved rounds vs a1b2c3d, spread 2.4%)` | `perf` to one of those scopes | `scripts/speed.sh` |
+| `Elo: +12 ±8 (sprt [0, 10], 1240 games, 10+0.1, vs v0.3.10)` | nothing, checked when present | the Strength workflow's summary |
+
+So an engine commit is made as
+
+```
+git commit --trailer "$(scripts/bench_trailer.sh)"
+```
+
+and a perf commit adds `--trailer "$(scripts/speed.sh | tail -n 1)"`, which
+builds the commit the tree stands on once, keeps it under `target/speed/`,
+and runs the bench for each side in turn with the side that goes first
+alternating, so the spread it prints beside the change is what the change has
+to be read against: a plus three with a six percent spread is not a claim.
+Both scripts build the tree as it stands rather than as it is staged, so
+stage everything first. A refactor that moves nothing still states the bench,
+since unchanged is a claim worth making, and the Bench workflow builds every
+commit that states one and counts it, so a wrong number fails the pull
+request. The trailers are the final paragraph of the message and nothing
+else, which is how git reads them, and the bench has to be the last bench
+number anywhere in the message, because that is the one openbench reads, so
+a sentence that names one goes above them.
+
+The Elo line is pasted from the Strength workflow's summary, which prints it
+ready to use, and `Elo: not measured` is the honest alternative on a change
+that was not played. The changelog prints all three after the entry.
+
 ## Benchmarks
 
 ```
@@ -145,7 +183,7 @@ same thing on any machine, and `node_counts_have_not_moved` in
 `basic_engine/src/bench.rs` pins it position by position. A deliberate change
 to the search is expected to move it, and the numbers are updated in the same
 commit so the diff shows how much more, or less, of each tree is being looked
-at. The last line, `<nodes> nodes <nps> nps`, is the one the match tools read,
+at, with the new total stated in the commit's `Bench:` trailer. The last line, `<nodes> nodes <nps> nps`, is the one the match tools read,
 and `bench` is also a uci command. Both take a depth after the word, as in
 `arche bench 3`, for trying the command cheaply; the number that means
 anything is the one at the default. The suite, depth and table are chosen once:
