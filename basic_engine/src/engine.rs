@@ -109,8 +109,55 @@ impl SearchParameters {
     }
 }
 
+/// The policies a search runs under: the shortcuts it takes and the scores
+/// it trusts. Each one is a fact about the tree searched, so changing one
+/// moves the bench.
+///
+/// Two configurations are named. The reference has every shortcut off and
+/// every refusal on: alpha-beta with a table that only speeds it up, which
+/// is why a position searched warm answers as it does cold, deepened as it
+/// does direct, and with a small table as with a large one. The tests hold
+/// the reference to that and it stays as it is when shortcuts arrive. A
+/// change claiming to be sound keeps those tests green whatever else it
+/// moves; a change that prunes moves the default and leaves the reference
+/// alone; and the two played against each other say what the shortcuts are
+/// worth. The default is what the engine plays with.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct SearchConfig {
+    /// Whether to refuse a score from a draw tainted entry, trusting only
+    /// its move.
+    ///
+    /// On in the reference and by default. A tainted score describes the
+    /// path that stored it rather than the position, so a search arriving
+    /// another way can read a draw it cannot actually reach. Refusing
+    /// costs, over the five positions the node counts pinned then at their
+    /// depths, nothing at all in kiwipete, promotions and the middlegame,
+    /// which have no tainted cutoffs to refuse, +0.037% in the opening and
+    /// +2.970% in the pawn endgame, for +0.617% overall.
+    pub refuse_tainted_cutoffs: bool,
+}
+
+impl SearchConfig {
+    /// The search with every shortcut off: what the exactness tests hold
+    /// the search to, and the side a shortcut is measured against.
+    pub const fn reference() -> Self {
+        Self {
+            refuse_tainted_cutoffs: true,
+        }
+    }
+}
+
+impl Default for SearchConfig {
+    /// What the engine plays with. The reference, for now: there is no
+    /// shortcut yet to turn on.
+    fn default() -> Self {
+        Self::reference()
+    }
+}
+
 pub struct AlphaBeta {
     pub board: Board,
+    config: SearchConfig,
     nodes: u64,
     moves: HashTable,
     selective_depth: u8,
@@ -140,8 +187,15 @@ pub struct AlphaBeta {
 
 impl AlphaBeta {
     pub fn with_table_bytes(board: Board, bytes: usize) -> Self {
+        Self::with_config(board, bytes, SearchConfig::default())
+    }
+
+    /// An engine searching under the policies given, with a table of the
+    /// size given.
+    pub fn with_config(board: Board, bytes: usize, config: SearchConfig) -> Self {
         Self {
             board,
+            config,
             nodes: 0,
             moves: HashTable::with_capacity_bytes(bytes),
             selective_depth: 0,
@@ -343,7 +397,7 @@ impl AlphaBeta {
                 Bound::Lower => score >= beta,
                 Bound::Ordering => false,
             };
-            if cuts && REFUSE_TAINTED_CUTOFFS && pv.tainted {
+            if cuts && self.config.refuse_tainted_cutoffs && pv.tainted {
                 // the stored draw was reachable by the path that stored it and
                 // may not be reachable by this one, so the move is still worth
                 // ordering by but the score is not worth trusting
@@ -788,16 +842,6 @@ impl Engine for AlphaBeta {
     }
 }
 
-/// Whether to refuse a score from a draw tainted entry, trusting only its move.
-///
-/// On. A tainted score describes the path that stored it rather than the
-/// position, so a search arriving another way can read a draw it cannot
-/// actually reach. Refusing costs, over the five positions the node counts
-/// pinned then at their depths, nothing at all in kiwipete, promotions and
-/// the middlegame, which have no tainted cutoffs to refuse, +0.037% in the
-/// opening and +2.970% in the pawn endgame, for +0.617% overall.
-const REFUSE_TAINTED_CUTOFFS: bool = true;
-
 /// How often the transposition table hands back a score that depended on the
 /// path taken rather than on the position, which is the graph history
 /// interaction error every engine carries and none of them measure.
@@ -996,7 +1040,7 @@ mod search {
     use super::Board;
     use super::Engine;
     use super::Game;
-    use super::{Bound, Play, Pv, SearchOutcome, SearchParameters, SearchResult};
+    use super::{Bound, Play, Pv, SearchConfig, SearchOutcome, SearchParameters, SearchResult};
     use crate::board::{fens, play_named};
     use pretty_assertions::assert_eq;
     use std::time;
@@ -1009,6 +1053,14 @@ mod search {
 
     fn engine(board: Board) -> AlphaBeta {
         AlphaBeta::with_table_bytes(board, TABLE_BYTES)
+    }
+
+    /// The reference search, for the tests that hold it to answering the
+    /// same whatever the table holds. They are the search's exactness
+    /// contract and stay green through every shortcut: a shortcut moves the
+    /// default, which `engine` builds, and not this.
+    fn reference(board: Board) -> AlphaBeta {
+        AlphaBeta::with_config(board, TABLE_BYTES, SearchConfig::reference())
     }
 
     /// A tactical middlegame the cache tests search over and over: sharp
@@ -1171,9 +1223,9 @@ mod search {
             "rnbq1k1r/pp1Pbppp/2p5/8/2B5/8/PPP1NnPP/RNBQK2R w KQ - 1 8",
         ];
         for fen in fens {
-            let mut cold = engine(Board::from_fen(fen).unwrap());
+            let mut cold = reference(Board::from_fen(fen).unwrap());
             let expected = completed(cold.search(5));
-            let mut warm = engine(Board::from_fen(fen).unwrap());
+            let mut warm = reference(Board::from_fen(fen).unwrap());
             let result = (1..=5)
                 .map(|depth| completed(warm.search(depth)))
                 .next_back()
@@ -1450,8 +1502,11 @@ mod search {
         // while the hole silently reopens. tainted_score_cutoffs is zero by
         // construction while the refusal holds, so it moving means a probe
         // path that consumes scores without the refusal guard was added.
+        // The refusal is a policy of the reference, so the reference is what
+        // is built: a default told one day to trust those scores is an
+        // experiment to measure, not a hole to find here.
         let fen = "8/2p5/3p4/KP5r/1R3p1k/8/4P1P1/8 w - - 0 1";
-        let mut e = engine(Board::from_fen(fen).unwrap());
+        let mut e = reference(Board::from_fen(fen).unwrap());
         for depth in 1..=7 {
             completed(e.search(depth));
         }
@@ -1467,6 +1522,49 @@ mod search {
     }
 
     #[test]
+    fn a_fresh_engine_searches_the_same_tree_every_time() {
+        // the default is what the bench counts and what a match by node
+        // count replays, so it has to follow from the position and the
+        // table alone: no clock, no randomness and no memory of a previous
+        // game in it. The reference is held to more than this; the default
+        // is held to this whatever shortcuts it takes
+        let board = Board::from_fen(SHARP_MIDDLEGAME).unwrap();
+        let mut first = engine(board);
+        let mut second = engine(board);
+        let a = completed(first.search(5));
+        let b = completed(second.search(5));
+        assert_eq!(
+            (a.nodes, a.score, a.best_move.to_string()),
+            (b.nodes, b.score, b.best_move.to_string())
+        );
+    }
+
+    #[test]
+    fn a_search_told_to_trust_tainted_scores_takes_their_cutoffs() {
+        // the refusal is the one policy the config carries so far, and a
+        // search told to trust those scores is the control arm of the graph
+        // history experiments. The switch has to reach the probe: a field
+        // the search never reads would make every comparison against the
+        // reference a comparison of the reference with itself
+        let fen = "8/2p5/3p4/KP5r/1R3p1k/8/4P1P1/8 w - - 0 1";
+        // the reference with the one switch flipped, which is what a control
+        // arm is; written that way so it still says so once there are more
+        #[allow(clippy::needless_update)]
+        let trusting = SearchConfig {
+            refuse_tainted_cutoffs: false,
+            ..SearchConfig::reference()
+        };
+        let mut e = AlphaBeta::with_config(Board::from_fen(fen).unwrap(), TABLE_BYTES, trusting);
+        for depth in 1..=7 {
+            completed(e.search(depth));
+        }
+        assert!(
+            e.ghi.tainted_score_cutoffs > 0,
+            "the scores the search was told to trust cut nothing"
+        );
+    }
+
+    #[test]
     fn a_warm_cache_matches_cold_across_draw_context() {
         // The same pieces hash to the same key whatever the fifty move counter
         // says, so a search made a few plies from the draw fills the table
@@ -1475,12 +1573,12 @@ mod search {
         // clock ahead of it.
         let near_draw = "5k2/1p3p1p/p3pK1P/P1P1P3/4bP2/2B5/8/8 w - - 96 112";
         let fresh = "5k2/1p3p1p/p3pK1P/P1P1P3/4bP2/2B5/8/8 w - - 0 1";
-        let mut warm = engine(Board::from_fen(near_draw).unwrap());
+        let mut warm = reference(Board::from_fen(near_draw).unwrap());
         completed(warm.search(6));
         warm.parse_fen(fresh).unwrap();
         let result = completed(warm.search(6));
 
-        let mut cold = engine(Board::from_fen(fresh).unwrap());
+        let mut cold = reference(Board::from_fen(fresh).unwrap());
         let expected = completed(cold.search(6));
         assert_eq!(result.score, expected.score);
         assert_eq!(
@@ -1498,14 +1596,14 @@ mod search {
             "8/2p5/3p4/KP5r/1R3p1k/8/4P1P1/8 w - - 10 10",
             "r3k2r/Pppp1ppp/1b3nbN/nP6/BBP1P3/q4N2/Pp1P2PP/R2Q1RK1 w kq - 0 1",
         ];
-        let mut warm = engine(Board::new());
+        let mut warm = reference(Board::new());
         for fen in fens {
             warm.parse_fen(fen).unwrap();
             completed(warm.search(5));
         }
         for fen in fens {
             let game = Board::from_fen(fen).unwrap();
-            let mut cold = engine(game);
+            let mut cold = reference(game);
             let expected = completed(cold.search(5));
             warm.parse_fen(fen).unwrap();
             let result = completed(warm.search(5));
@@ -1523,9 +1621,13 @@ mod search {
     fn a_small_table_matches_a_large_table() {
         // a table small enough to force constant collisions must not change the result
         let fen = SHARP_MIDDLEGAME;
-        let mut big = engine(Board::from_fen(fen).unwrap());
+        let mut big = reference(Board::from_fen(fen).unwrap());
         let expected = completed(big.search(5));
-        let mut small = AlphaBeta::with_table_bytes(Board::from_fen(fen).unwrap(), 8 * 1024);
+        let mut small = AlphaBeta::with_config(
+            Board::from_fen(fen).unwrap(),
+            8 * 1024,
+            SearchConfig::reference(),
+        );
         let result = completed(small.search(5));
         assert_eq!(result.score, expected.score);
     }
@@ -1679,13 +1781,13 @@ mod search {
     fn a_stopped_search_does_not_poison_the_cache() {
         let fen = SHARP_MIDDLEGAME;
         let game = Board::from_fen(fen).unwrap();
-        let mut cold = engine(game);
+        let mut cold = reference(game);
         let expected = completed(cold.search(6));
 
         // a search with no time budget stops immediately, it must not leave partial results in
         // the hash table which change the outcome of the next search
         let game = Board::from_fen(fen).unwrap();
-        let mut e = engine(game);
+        let mut e = reference(game);
         e.configure(time::Instant::now(), Some(time::Duration::ZERO));
         assert!(matches!(e.search(6), SearchOutcome::Aborted(_)));
 
