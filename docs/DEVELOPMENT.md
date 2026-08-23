@@ -180,8 +180,9 @@ learned to prune, rather than adjusted as it goes.
 
 Speed is measured against another build, never on its own: a rate says
 nothing across machines, and a single pair of runs says little on one.
-`scripts/speed.sh` builds the commit the tree stands on, runs the bench for
-each side in turn with the side that goes first alternating, and prints the
+`scripts/speed.sh` builds the commit the tree stands on, from an export rather
+than a checkout so the tree is left as it is, runs the bench for each side in
+turn with the side that goes first alternating, and prints the
 change between medians with the spread beside it, which is the `Speed:`
 trailer a perf commit carries. The Bench workflow's speed job does the same
 on every pull request, both sides built and run on one runner, and posts the

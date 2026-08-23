@@ -169,13 +169,12 @@ jobs:
 
       - uses: ./.github/actions/match-tools
 
-      # Deliberately not Swatinem/rust-cache, which the workflows that build one
-      # commit do use. This builds two arbitrary commits into the same target
-      # directory, so a cache keyed on the ref would be poisoned by whichever
-      # pair it was last asked to compare.
+      # the cache keeps the dependencies; each side's engine is built from an
+      # export of its commit, and the checkout stays on the ref this ran on
+      - uses: Swatinem/rust-cache@v2
+
       - name: Build both versions
         run: |
-          mkdir -p tools
           # a pull request head is not fetched by default and the resolve job
           # ran on a different machine, so fetch anything not already here
           for sha in "$CANDIDATE_SHA" "$BASELINE_SHA"; do
@@ -183,14 +182,8 @@ jobs:
               || git fetch -q origin "$sha" \
               || git fetch -q origin "+refs/pull/*/head:refs/remotes/pull/*"
           done
-          git checkout --detach "$CANDIDATE_SHA"
-          cargo build --release
-          cp target/release/arche tools/new
-          git checkout --detach "$BASELINE_SHA"
-          cargo build --release
-          cp target/release/arche tools/old
-          # back to the ref this was run against, the summary script lives there
-          git checkout --detach "$GITHUB_SHA"
+          scripts/build_at.sh "$CANDIDATE_SHA" tools/new
+          scripts/build_at.sh "$BASELINE_SHA" tools/old
 
       - name: Play the match
         working-directory: tools

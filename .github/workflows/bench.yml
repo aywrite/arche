@@ -102,15 +102,9 @@ jobs:
         run: |
           # the checkout is a merge of the pull request into its base: the
           # first parent is the base and the merge is what would land
-          base=$(git rev-parse HEAD^1)
-          head=$(git rev-parse HEAD)
-          echo "BASE_SHA=$base" >> "$GITHUB_ENV"
-          git checkout --quiet --detach "$base"
-          cargo build --release --locked
-          cp target/release/arche base-arche
-          git checkout --quiet --detach "$head"
-          cargo build --release --locked
-          cp target/release/arche pr-arche
+          echo "BASE_SHA=$(git rev-parse HEAD^1)" >> "$GITHUB_ENV"
+          scripts/build_at.sh HEAD^1 base-arche
+          scripts/build_at.sh HEAD pr-arche
       - name: Measure
         id: measure
         shell: bash
