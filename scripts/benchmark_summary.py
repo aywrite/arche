@@ -67,15 +67,83 @@ def percent(change):
         return 0.0
 
 
+def bench_last_line(text):
+    """The nodes and rate from a bench's output, or None when there is none."""
+    for line in reversed(text.strip().splitlines()):
+        words = line.split()
+        if len(words) == 4 and words[1] == "nodes" and words[3] == "nps":
+            return int(words[0]), int(words[2])
+    return None
+
+
+def bench_table(base_text, pr_text):
+    """The engine's own bench on each side of the pull request, as markdown.
+
+    The node count is compared for being the same, not for size: a search
+    change moves it and that is the commit's Bench trailer's business. The
+    rate is the speed figure over a real search rather than a microbenchmark,
+    read against the same noise as the rows above it.
+    """
+    base, pr = bench_last_line(base_text), bench_last_line(pr_text)
+    lines = [
+        "## Bench",
+        "",
+        "The engine's own bench on each side, on the same runner.",
+        "",
+        "| | base | pull request | change |",
+        "| --- | --- | --- | --- |",
+    ]
+    if base is None or pr is None:
+        missing = "not measured"
+        lines.append(
+            f"| nodes | {base[0] if base else missing} | {pr[0] if pr else missing} | |"
+        )
+        return "\n".join(lines) + "\n"
+    moved = base[0] != pr[0]
+    lines.append(f"| nodes | {base[0]} | {pr[0]} | {'moved' if moved else 'same'} |")
+    change = 100.0 * (pr[1] - base[1]) / base[1]
+    lines.append(f"| nps | {base[1]} | {pr[1]} | {change:+.1f}% |")
+    if moved:
+        lines += [
+            "",
+            (
+                "The node counts moved, so this is a search change as well as "
+                "whatever it does to the speed; the commit's Bench trailer says "
+                "by how much."
+            ),
+        ]
+    return "\n".join(lines) + "\n"
+
+
+def bench_files(argv):
+    """The two bench outputs named after --bench, or nothing."""
+    if "--bench" not in argv:
+        return None
+    at = argv.index("--bench")
+    return argv[at + 1], argv[at + 2]
+
+
+def read_or_empty(path):
+    try:
+        with open(path, encoding="utf-8") as file:
+            return file.read()
+    except OSError:
+        return ""
+
+
 def main():
     # criterion writes utf-8, a minus sign and a micro sign among it, whatever
     # the console's own encoding is. Read and write the same way, so a windows
     # clone parses the sign rather than a mangled one and prints the table
     sys.stdin.reconfigure(encoding="utf-8")
     sys.stdout.reconfigure(encoding="utf-8")
+    bench = bench_files(sys.argv[1:])
     results = list(parse(sys.stdin))
     if not results:
         print("No benchmark comparison was produced.")
+        if bench:
+            print()
+            print(bench_table(read_or_empty(bench[0]), read_or_empty(bench[1])))
         return 1
 
     moved = [r for r in results if r[3] == "Performance has regressed"]
@@ -94,6 +162,9 @@ def main():
     ):
         label = LABEL.get(verdict, verdict)
         print(f"| `{name}` | {time or ''} | {change or 'no baseline'} | {label} |")
+    if bench:
+        print()
+        print(bench_table(read_or_empty(bench[0]), read_or_empty(bench[1])))
     return 0
 
 
