@@ -131,8 +131,9 @@ impl PieceSquareTables {
         }
     }
 
-    /// Built at compile time, so there is nothing to construct on startup and
-    /// nothing to synchronise on when reading it.
+    /// Built at compile time, so there is nothing to construct on startup,
+    /// nothing to synchronise on when reading it, and nothing standing between
+    /// a proof and the code it is about. Worth keeping a `const`.
     pub const TABLES: PieceSquareTables = PieceSquareTables {
         white_pawns: mirror(&PAWNS),
         black_pawns: PAWNS,

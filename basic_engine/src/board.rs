@@ -348,6 +348,11 @@ impl Board {
     /// generating, which is what it would have done anyway. So the fiddly cases
     /// are simply refused rather than checked, which keeps this cheap enough to
     /// be worth asking on the way past.
+    ///
+    /// This is also `make_move`'s precondition written down, which it otherwise
+    /// does not have: it says what a move has to be for `make_move` to read its
+    /// fields as a description of this board. Keep it stated over the move and
+    /// the position alone, with nothing else assumed.
     pub fn is_pseudo_legal(&self, m: &Play) -> bool {
         // castling, en passant and promotion each carry conditions of their own
         // that this would have to restate. They are rare, so let them generate.
@@ -649,6 +654,12 @@ impl Board {
     /// describes. Perft looks at none of it, so without this a mistake leaves
     /// every count correct and shows up only as the engine evaluating or
     /// transposing wrongly. Debug only: it walks the whole board.
+    ///
+    /// Each `recompute_*` below is a second implementation on purpose, and only
+    /// worth having while it stays one. Factoring shared code out of a
+    /// recompute and the piece-at-a-time path it is checked against would leave
+    /// both sides wrong together and this passing, which is worse than not
+    /// checking at all: do not tidy them into each other.
     fn debug_assert_state_in_step(&self) {
         debug_assert_eq!(self.psqt, self.recompute_psqt(), "psqt out of step");
         debug_assert_eq!(
@@ -716,7 +727,9 @@ impl Board {
         total
     }
 
-    /// The material of each side, computed the same way and for the same reason.
+    /// The material of each side, computed the same way and for the same
+    /// reason. Deliberately not `material_value`, which the accumulators are
+    /// seeded from: see the note there.
     pub fn recompute_material(&self) -> (u32, u32) {
         let mut white = 0;
         let mut black = 0;
@@ -1342,6 +1355,10 @@ impl Board {
         }
     }
 
+    /// Repeats the search `get_piece_index` does rather than calling it. The
+    /// recomputes reach a piece through here and `make_move` reaches one
+    /// through there, which keeps a mistake in either from hiding itself in the
+    /// state check.
     #[inline]
     pub fn get_piece_and_color_index(&self, index: u8) -> Option<(Piece, Color)> {
         let mask = 1u64 << index;
@@ -1374,6 +1391,11 @@ impl Board {
         self.get_piece_and_color_index(coordinate_to_index(rank, file))
     }
 
+    /// The material of each side, counted a bitboard at a time. Says the same
+    /// thing as `recompute_material` and shares no code with it on purpose:
+    /// `from_fen` seeds the accumulators from this one, and the state check
+    /// compares them against that one. Collapse the two and a freshly parsed
+    /// board would be checked against the function that filled it in.
     fn material_value(&self) -> (u32, u32) {
         let mut black_value = 0;
         let mut white_value = 0;
