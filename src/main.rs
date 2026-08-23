@@ -5,6 +5,7 @@ pub use uci::UCI;
 
 use basic_engine::AlphaBeta;
 use basic_engine::Board;
+use basic_engine::SearchConfig;
 use basic_engine::bench;
 use std::process::ExitCode;
 
@@ -27,7 +28,12 @@ fn main() -> ExitCode {
             Ok(depth) => {
                 println!(
                     "{}",
-                    bench::run_suite(&bench::positions(), depth, bench::TABLE_BYTES)
+                    bench::run_suite(
+                        &bench::positions(),
+                        depth,
+                        bench::TABLE_BYTES,
+                        SearchConfig::default()
+                    )
                 );
                 ExitCode::SUCCESS
             }

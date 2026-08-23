@@ -1,6 +1,7 @@
 use crate::time_control::TimeControl;
 use basic_engine::Color;
 use basic_engine::Engine;
+use basic_engine::SearchConfig;
 use basic_engine::SearchOutcome;
 use basic_engine::SearchParameters;
 use basic_engine::bench;
@@ -147,7 +148,12 @@ impl<T: Engine, W: Write> UCI<T, W> {
             // anything is the one at the default
             match bench_depth(line) {
                 Ok(depth) => {
-                    let report = bench::run_suite(&bench::positions(), depth, bench::TABLE_BYTES);
+                    let report = bench::run_suite(
+                        &bench::positions(),
+                        depth,
+                        bench::TABLE_BYTES,
+                        SearchConfig::default(),
+                    );
                     self.say(format_args!("{}", report));
                 }
                 Err(word) => self.say(format_args!(
