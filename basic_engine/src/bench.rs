@@ -10,7 +10,7 @@
 
 use crate::Game;
 use crate::board::Board;
-use crate::engine::{AlphaBeta, Engine, SearchOutcome, SearchParameters};
+use crate::engine::{AlphaBeta, Engine, SearchConfig, SearchOutcome, SearchParameters};
 use std::fmt;
 use std::time::{Duration, Instant};
 
@@ -75,8 +75,8 @@ pub struct PositionReport {
     pub tt_stores: u64,
     /// Entries stored with a draw tainted score, a part of the stores.
     pub tainted_stores: u64,
-    /// Cutoffs taken from a draw tainted score, which the search refuses, so
-    /// this stays at zero while it does.
+    /// Cutoffs taken from a draw tainted score, which the configuration may
+    /// refuse, and the default does, so this stays at zero while it does.
     pub tainted_cutoffs: u64,
     /// The search alone, not the table's allocation.
     pub elapsed: Duration,
@@ -116,15 +116,22 @@ fn nps(nodes: u64, elapsed: Duration) -> u64 {
 /// and a fresh table, allocated before its clock starts, and is deepened to
 /// the depth the way a game would be, so the table is warm from each
 /// iteration to the next. A depth of zero runs no iteration and counts
-/// nothing, which is no bench at all, so it is searched as one.
-pub fn run_suite(positions: &[Position], depth: u8, table_bytes: usize) -> Report {
+/// nothing, which is no bench at all, so it is searched as one. The bench
+/// the command prints runs the default configuration, the one the engine
+/// plays with; the reference is run the same way to pin its own counts.
+pub fn run_suite(
+    positions: &[Position],
+    depth: u8,
+    table_bytes: usize,
+    config: SearchConfig,
+) -> Report {
     let depth = depth.max(1);
     let positions = positions
         .iter()
         .map(|position| {
             let board = Board::from_fen(&position.fen)
                 .unwrap_or_else(|e| panic!("bench position {} does not parse: {}", position.id, e));
-            let mut engine = AlphaBeta::with_table_bytes(board, table_bytes);
+            let mut engine = AlphaBeta::with_config(board, table_bytes, config);
             let start = Instant::now();
             let outcome = engine
                 .iterative_deepening_search(SearchParameters::new_with_depth(depth), |_, _, _| {});
@@ -282,7 +289,7 @@ mod tests {
     #[test]
     fn the_report_ends_with_the_line_the_match_tools_read() {
         let suite = parse_epd("4k3/8/8/8/8/8/8/4K3 w - - id \"bare kings\";");
-        let report = run_suite(&suite, 2, 1 << 20);
+        let report = run_suite(&suite, 2, 1 << 20, SearchConfig::default());
         let text = report.to_string();
         let last = text.lines().last().unwrap();
         let words: Vec<&str> = last.split(' ').collect();
@@ -300,7 +307,7 @@ mod tests {
             "4k3/8/8/8/8/8/8/4K3 w - - id \"bare kings\";\n\
              rnbqkbnr/pppppppp/8/8/8/8/PPPPPPPP/RNBQKBNR w KQkq - id \"start\";",
         );
-        let report = run_suite(&suite, 3, 1 << 16);
+        let report = run_suite(&suite, 3, 1 << 16, SearchConfig::default());
         assert_eq!(report.positions.len(), 2);
         assert!(report.positions.iter().all(|p| p.nodes > 0));
         assert!(report.positions[1].quiescence_nodes <= report.positions[1].nodes);
@@ -322,7 +329,7 @@ mod tests {
         // a depth of zero runs no iteration and finds nothing, which is not
         // a bench: there is nothing to count below one
         let suite = parse_epd("4k3/8/8/8/8/8/8/4K3 w - - id \"bare kings\";");
-        let report = run_suite(&suite, 0, 1 << 20);
+        let report = run_suite(&suite, 0, 1 << 20, SearchConfig::default());
         assert_eq!(report.depth, 1);
         assert!(report.positions[0].nodes > 0);
     }
@@ -340,7 +347,7 @@ mod tests {
     /// at, position by position.
     #[test]
     fn node_counts_have_not_moved() {
-        let report = run_suite(&positions(), DEPTH, TABLE_BYTES);
+        let report = run_suite(&positions(), DEPTH, TABLE_BYTES, SearchConfig::default());
         let counted: Vec<(&str, u64)> = report
             .positions
             .iter()
@@ -367,6 +374,53 @@ mod tests {
                 ("queen endgame", 2_373_132),
                 ("king and pawn", 9_196),
                 ("trebuchet", 3_264),
+            ]
+        );
+    }
+
+    /// The reference search's counts, pinned apart from the default's. The
+    /// two are one tree today and part company at the first shortcut: from
+    /// then on a change that moves both touched the search the two share,
+    /// and one that moves the default's alone is a shortcut. Pinned
+    /// shallower than the bench, which is cheaper and coarser: a twentieth
+    /// of the time, with a table under half full, so a change to what the
+    /// table keeps shows here less than it does at the bench's depth. The
+    /// pin stays where it is when that depth is raised.
+    #[test]
+    fn reference_node_counts_have_not_moved() {
+        const REFERENCE_DEPTH: u8 = 5;
+        let report = run_suite(
+            &positions(),
+            REFERENCE_DEPTH,
+            TABLE_BYTES,
+            SearchConfig::reference(),
+        );
+        let counted: Vec<(&str, u64)> = report
+            .positions
+            .iter()
+            .map(|p| (p.id.as_str(), p.nodes))
+            .collect();
+        assert_eq!(
+            counted,
+            vec![
+                ("start", 29_326),
+                ("italian", 189_082),
+                ("ruy lopez", 158_058),
+                ("kiwipete", 294_415),
+                ("perft 4", 254_459),
+                ("promotions", 119_565),
+                ("middlegame", 215_281),
+                ("sharp middlegame", 333_615),
+                ("bratko kopec 1", 61_500),
+                ("wac 4", 99_422),
+                ("rook and pawns", 19_691),
+                ("tarrasch", 58_191),
+                ("lucena", 34_076),
+                ("philidor", 48_009),
+                ("minor endgame", 13_904),
+                ("queen endgame", 88_220),
+                ("king and pawn", 1_565),
+                ("trebuchet", 627),
             ]
         );
     }

@@ -192,6 +192,19 @@ changing any of them changes every number the bench has ever printed, which is
 why the depth is expected to be raised exactly once, after the search has
 learned to prune, rather than adjusted as it goes.
 
+The search runs under a `SearchConfig`, and two configurations are named.
+The reference, `SearchConfig::reference()`, is alpha-beta with every shortcut
+off: its table only speeds it up, so a position searched warm answers as it
+does cold, and the tests in `basic_engine/src/engine.rs` that say so build
+the reference and hold it to that for good. They are the soundness check: a
+change that claims to be sound keeps them green whatever else it moves. The
+default is what the engine plays with and what the bench prints. It is the
+reference today and parts company with it at the first shortcut; from then
+on `reference_node_counts_have_not_moved` pins the reference's tree beside
+the default's, so a commit's diff says which kind of change it carries. One
+that moves both counts touched the search the two share, move ordering or
+the table, say; one that moves the default's alone is a shortcut.
+
 ## Playing a match against a previous version
 
 Benchmarks measure speed, they do not measure whether the engine plays better.
