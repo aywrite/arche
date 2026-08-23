@@ -32,7 +32,9 @@ impl BitBoard for u64 {
     fn debug_print(&self) {
         println!("    a b c d e f g h");
         println!("  -----------------");
-        for rank in 1..9 {
+        // the eighth rank first, the way the board display and a diagram write
+        // it, rather than in index order
+        for rank in (1..=8).rev() {
             print!("{} |", rank);
             for file in File::VARIANTS {
                 if (self & (1u64 << coordinate_to_index(rank, file))) > 0 {
