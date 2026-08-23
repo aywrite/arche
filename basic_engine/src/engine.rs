@@ -11,6 +11,12 @@ const MAX_DEPTH: u8 = 20;
 /// How many nodes pass between reads of the clock.
 const POLL_INTERVAL: u64 = 3000;
 const DEFAULT_TABLE_BYTES: usize = 256 * 1024 * 1024;
+// Move lists up to this long are sorted on the stack in order_moves, and it
+// is a MoveList's inline capacity, so that is all of them bar a spill.
+// Swept by callgrind rather than chosen: smaller cutoffs are a wash,
+// because the mid length lists of full width nodes keep paying the
+// allocating fallback while every call pays the extra branch.
+const SORT_ON_THE_STACK_UP_TO: usize = 64;
 // Any score this close to CHECKMATE_SCORE is a forced mate. Regular evals are
 // bounded by the material on the board, which cannot come near it.
 const CHECKMATE_THRESHOLD: Score = CHECKMATE_SCORE - 1000;
@@ -185,6 +191,34 @@ pub struct AlphaBeta {
     quiescence_nodes: u64,
 }
 
+/// What sort_by_cached_key does, minus its allocation, for a list that fits
+/// the buffer: a stable insertion sort over keys computed once each.
+/// Shifting only while strictly greater keeps equal keys in their generated
+/// order, exactly as the stable sort does, so the two produce the same order
+/// and the tree searched is the same whichever runs; the node count tests
+/// hold both to that. Generic over the key, so this call compiles to the
+/// same code it replaced rather than to one through a pointer.
+#[inline]
+fn sort_on_the_stack(moves: &mut [Play], key: impl Fn(&Play) -> i64) {
+    debug_assert!(moves.len() <= SORT_ON_THE_STACK_UP_TO);
+    let mut keys = [0i64; SORT_ON_THE_STACK_UP_TO];
+    for (i, m) in moves.iter().enumerate() {
+        keys[i] = key(m);
+    }
+    for i in 1..moves.len() {
+        let k = keys[i];
+        let m = moves[i];
+        let mut j = i;
+        while j > 0 && keys[j - 1] > k {
+            keys[j] = keys[j - 1];
+            moves[j] = moves[j - 1];
+            j -= 1;
+        }
+        keys[j] = k;
+        moves[j] = m;
+    }
+}
+
 impl AlphaBeta {
     pub fn with_table_bytes(board: Board, bytes: usize) -> Self {
         Self::with_config(board, bytes, SearchConfig::default())
@@ -274,13 +308,24 @@ impl AlphaBeta {
     /// move it declined to play early was never searched, so it is still in
     /// this list and still has to be the first one tried.
     fn order_moves(&self, moves: &mut MoveList, pv_play: Option<Play>) {
-        moves.sort_by_cached_key(|m| {
+        let key = |m: &Play| {
             let mut score = m.mvv_lva(&self.board);
             if pv_play == Some(*m) {
                 score += 100_000;
             }
             -score
-        });
+        };
+        // Most lists here are short: quiescence sorts a handful of captures
+        // or the evasions the filter kept, and the counts say under nine
+        // moves on average. sort_by_cached_key allocates scratch on every
+        // call, which at that size costs more than the sorting, so lists
+        // take the stack sort instead, keeping the allocating sort only for
+        // a list that spilled the buffer.
+        if moves.len() <= SORT_ON_THE_STACK_UP_TO {
+            sort_on_the_stack(moves, key);
+        } else {
+            moves.sort_by_cached_key(key);
+        }
     }
 
     fn quiescence(&mut self, mut alpha: Score, beta: Score) -> Result<Score, Aborted> {
