@@ -358,19 +358,51 @@ impl AlphaBeta {
         if alpha != old_alpha {
             // depth zero and an Ordering bound: never read back in place of
             // evaluating a position, only to sort its moves
-            self.moves.set(
-                self.board.key,
-                Pv {
-                    play: best_move.unwrap(),
-                    score: score_to_tt(alpha, self.board.line_ply),
-                    depth: 0,
-                    bound: Bound::Ordering,
-                    tainted: false,
-                    ply: self.board.ply as u16,
-                },
-            );
+            let entry = self.entry(best_move.unwrap(), alpha, 0, Bound::Ordering, false);
+            self.moves.set(self.board.key, entry);
         }
         Ok(alpha)
+    }
+
+    /// The entry the position as it stands would be stored under. Converting
+    /// the score to the table's mate-relative form happens here, so that no
+    /// caller has to remember to.
+    #[inline]
+    fn entry(&self, play: Play, score: Score, depth: u8, bound: Bound, tainted: bool) -> Pv {
+        Pv {
+            play,
+            depth,
+            score: score_to_tt(score, self.board.line_ply),
+            bound,
+            ply: self.board.ply as u16,
+            tainted,
+        }
+    }
+
+    /// Store an entry and count it against the graph history figures.
+    ///
+    /// Quiescence stores through the table directly instead: its entries are
+    /// only fit for ordering, and the figures describe the full width search.
+    #[inline]
+    fn store(&mut self, play: Play, score: Score, depth: u8, bound: Bound, tainted: bool) {
+        let entry = self.entry(play, score, depth, bound, tainted);
+        self.moves.set(self.board.key, entry);
+        self.count_store(tainted);
+    }
+
+    /// The same, past the depth contest that `set` applies. Only the root
+    /// stores this way, for the reason `set_always` gives.
+    #[inline]
+    fn store_always(&mut self, play: Play, score: Score, depth: u8, bound: Bound, tainted: bool) {
+        let entry = self.entry(play, score, depth, bound, tainted);
+        self.moves.set_always(self.board.key, entry);
+        self.count_store(tainted);
+    }
+
+    #[inline]
+    fn count_store(&mut self, tainted: bool) {
+        self.ghi.stores += 1;
+        self.ghi.tainted_stores += u64::from(tainted);
     }
 
     /// Look up the current position in the transposition table.
@@ -487,19 +519,7 @@ impl AlphaBeta {
                     if tt_score > alpha {
                         best_move = Some(tt);
                         if tt_score >= beta {
-                            self.moves.set(
-                                self.board.key,
-                                Pv {
-                                    play: tt,
-                                    depth,
-                                    score: score_to_tt(beta, self.board.line_ply),
-                                    bound: Bound::Lower,
-                                    ply: self.board.ply as u16,
-                                    tainted: node_tainted,
-                                },
-                            );
-                            self.ghi.stores += 1;
-                            self.ghi.tainted_stores += u64::from(node_tainted);
+                            self.store(tt, beta, depth, Bound::Lower, node_tainted);
                             self.tainted = node_tainted;
                             return Ok(beta);
                         }
@@ -535,19 +555,7 @@ impl AlphaBeta {
                 if score > alpha {
                     best_move = Some(*m);
                     if score >= beta {
-                        self.moves.set(
-                            self.board.key,
-                            Pv {
-                                play: *m,
-                                depth,
-                                score: score_to_tt(beta, self.board.line_ply),
-                                bound: Bound::Lower,
-                                ply: self.board.ply as u16,
-                                tainted: node_tainted,
-                            },
-                        );
-                        self.ghi.stores += 1;
-                        self.ghi.tainted_stores += u64::from(node_tainted);
+                        self.store(*m, beta, depth, Bound::Lower, node_tainted);
                         self.tainted = node_tainted;
                         return Ok(beta);
                     }
@@ -567,19 +575,8 @@ impl AlphaBeta {
         }
 
         if alpha != old_alpha {
-            self.moves.set(
-                self.board.key,
-                Pv {
-                    play: best_move.unwrap(),
-                    depth,
-                    score: score_to_tt(alpha, self.board.line_ply),
-                    bound: Bound::Exact,
-                    ply: self.board.ply as u16,
-                    tainted: node_tainted,
-                },
-            );
-            self.ghi.stores += 1;
-            self.ghi.tainted_stores += u64::from(node_tainted);
+            let best = best_move.expect("alpha only rises when a move raises it");
+            self.store(best, alpha, depth, Bound::Exact, node_tainted);
         }
         self.tainted = node_tainted;
         Ok(alpha)
@@ -683,19 +680,7 @@ impl AlphaBeta {
         let play = best.expect("any legal move's score beats the opening alpha of Score::MIN + 1");
         // stored past the depth contest: this is the move about to be
         // answered, and the line reported for it is read back from this slot
-        self.moves.set_always(
-            self.board.key,
-            Pv {
-                play,
-                depth,
-                score: score_to_tt(alpha, self.board.line_ply),
-                bound: Bound::Exact,
-                ply: self.board.ply as u16,
-                tainted: root_tainted,
-            },
-        );
-        self.ghi.stores += 1;
-        self.ghi.tainted_stores += u64::from(root_tainted);
+        self.store_always(play, alpha, depth, Bound::Exact, root_tainted);
         SearchOutcome::Complete(self.result_for(play, alpha))
     }
 
