@@ -147,10 +147,10 @@ pub fn run_suite(
                 id: position.id.clone(),
                 nodes,
                 quiescence_nodes: engine.quiescence_nodes(),
-                tt_cutoffs: engine.ghi.score_cutoffs,
-                tt_stores: engine.ghi.stores,
-                tainted_stores: engine.ghi.tainted_stores,
-                tainted_cutoffs: engine.ghi.tainted_score_cutoffs,
+                tt_cutoffs: engine.ghi().score_cutoffs,
+                tt_stores: engine.ghi().stores,
+                tainted_stores: engine.ghi().tainted_stores,
+                tainted_cutoffs: engine.ghi().tainted_score_cutoffs,
                 elapsed,
             }
         })
