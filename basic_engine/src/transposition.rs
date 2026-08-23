@@ -1,6 +1,15 @@
 //! A cache of already-searched positions, used to order moves and to skip
 //! re-searching interior nodes. An accelerator: deleting it may slow the
 //! search but never changes the answer.
+//!
+//! What an entry holds is this module's own business: nothing outside names
+//! the entry, its bound, the sixteen byte packing or the form a score is
+//! stored in. That is where the room is for what the table does not do yet.
+//! Fail low nodes are not stored at all, and a cutoff no move can be
+//! attributed to, which is what null move pruning or a static cutoff would
+//! want to record, has nowhere to go while an entry must name a play. The two
+//! bytes already set aside for the static evaluation are the same bet. Each is
+//! a change to this file and to none of its callers.
 
 use crate::board::Board;
 use crate::engine::CHECKMATE_THRESHOLD;
