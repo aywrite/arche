@@ -15,8 +15,8 @@ the order they look worth doing after that.
 - evaluate drawn positions
 - the rest of evaluation: mobility, and special cases such as the bishop pair and open files
 - the rest of the uci protocol
-  - `setoption` is not handled and no options are advertised, so the 256MB transposition table
-    can only be changed in code
+  - the only options advertised are `Hash` and a `Threads` fixed at one, so everything else an
+    interface might set, `Ponder` and `Clear Hash` among them, is refused rather than acted on
   - `stop` is not handled, which rules out pondering and `go infinite`
   - `ponderhit`, `debug` and `register` are not handled either
 - read an opening book in the engine, only the lichess-bot image has one at the moment and it is
