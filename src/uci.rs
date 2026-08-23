@@ -11,8 +11,6 @@ use std::io::{BufRead, Stdout, Write};
 use std::sync::LazyLock;
 use std::time::Duration;
 
-const START_FEN: &str = "rnbqkbnr/pppppppp/8/8/8/8/PPPPPPPP/RNBQKBNR w KQkq - 0 1";
-
 static WTIME_RE: LazyLock<Regex> = LazyLock::new(|| Regex::new(r"wtime (-?\d+)").unwrap());
 static BTIME_RE: LazyLock<Regex> = LazyLock::new(|| Regex::new(r"btime (-?\d+)").unwrap());
 static WINC_RE: LazyLock<Regex> = LazyLock::new(|| Regex::new(r"winc (-?\d+)").unwrap());
@@ -184,7 +182,7 @@ impl<T: Engine, W: Write> UCI<T, W> {
             None => (position_string, None),
         };
         if start.starts_with("startpos") {
-            self.engine.parse_fen(START_FEN)?;
+            self.engine.parse_fen(basic_engine::STARTING_FEN)?;
         } else if let Some(fen) = start.strip_prefix("fen") {
             self.engine.parse_fen(fen.trim())?;
         } else {
