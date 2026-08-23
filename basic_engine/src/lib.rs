@@ -9,7 +9,9 @@ mod psqt;
 mod zobrist;
 
 pub use board::Board;
-pub use engine::{AlphaBeta, Engine, PvLine, SearchOutcome, SearchParameters, SearchResult};
+pub use engine::{
+    AlphaBeta, Engine, PvLine, SearchConfig, SearchOutcome, SearchParameters, SearchResult,
+};
 pub use misc::{Color, Score};
 pub use play::Play;
 use std::fmt;
