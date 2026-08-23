@@ -23,7 +23,6 @@ authors = [
 license = "GPL-3.0-or-later"
 
 [dependencies]
-regex = "1"
 basic_engine = { path = "./basic_engine" }
 
 [profile.release]
