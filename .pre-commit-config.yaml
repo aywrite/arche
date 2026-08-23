@@ -36,6 +36,16 @@ repos:
         language: system
         types: [rust]
         pass_filenames: false
+      # An engine commit states its bench, a perf commit its speed, and an elo
+      # claim comes in one shape. What each is and how to produce it is in
+      # docs/DEVELOPMENT.md under commit trailers.
+      # Its own python rather than the system's, which on windows is a stub
+      # that only offers to install one.
+      - id: check-trailers
+        name: check the commit trailers
+        entry: python scripts/check_trailers.py
+        language: python
+        stages: [commit-msg]
   - repo: https://github.com/compilerla/conventional-pre-commit
     rev: v4.4.0
     hooks:
