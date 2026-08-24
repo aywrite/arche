@@ -11,6 +11,8 @@
 use crate::Game;
 use crate::board::Board;
 use crate::engine::{AlphaBeta, Engine, SearchConfig, SearchOutcome, SearchParameters};
+use crate::misc::Score;
+use crate::play::Play;
 use std::fmt;
 use std::time::{Duration, Instant};
 
@@ -66,6 +68,11 @@ fn parse_epd(text: &str) -> Vec<Position> {
 #[derive(Debug, Clone)]
 pub struct PositionReport {
     pub id: String,
+    /// The move the search chose, and the score it gave it, from the side
+    /// to move. A policy that changes either has changed the answer and not
+    /// only the tree that found it.
+    pub play: Play,
+    pub score: Score,
     pub nodes: u64,
     /// The nodes quiescence visited, a part of nodes.
     pub quiescence_nodes: u64,
@@ -78,6 +85,9 @@ pub struct PositionReport {
     /// Cutoffs taken from a draw tainted score, which the configuration may
     /// refuse, and the default does, so this stays at zero while it does.
     pub tainted_cutoffs: u64,
+    /// Cutoffs refused for their taint and searched instead, which is what
+    /// refusing costs; zero under a configuration that trusts them.
+    pub refused_cutoffs: u64,
     /// The search alone, not the table's allocation.
     pub elapsed: Duration,
 }
@@ -87,6 +97,7 @@ pub struct PositionReport {
 pub struct Report {
     pub depth: u8,
     pub table_bytes: usize,
+    pub config: SearchConfig,
     pub positions: Vec<PositionReport>,
 }
 
@@ -136,8 +147,8 @@ pub fn run_suite(
             let outcome = engine
                 .iterative_deepening_search(SearchParameters::new_with_depth(depth), |_, _, _| {});
             let elapsed = start.elapsed();
-            let nodes = match outcome {
-                SearchOutcome::Complete(result) => result.nodes,
+            let result = match outcome {
+                SearchOutcome::Complete(result) => result,
                 other => panic!(
                     "bench position {} did not complete: {:?}",
                     position.id, other
@@ -145,12 +156,15 @@ pub fn run_suite(
             };
             PositionReport {
                 id: position.id.clone(),
-                nodes,
+                play: result.best_move,
+                score: result.score,
+                nodes: result.nodes,
                 quiescence_nodes: engine.quiescence_nodes(),
                 tt_cutoffs: engine.ghi().score_cutoffs,
                 tt_stores: engine.ghi().stores,
                 tainted_stores: engine.ghi().tainted_stores,
                 tainted_cutoffs: engine.ghi().tainted_score_cutoffs,
+                refused_cutoffs: engine.ghi().refused_cutoffs,
                 elapsed,
             }
         })
@@ -158,6 +172,7 @@ pub fn run_suite(
     Report {
         depth,
         table_bytes,
+        config,
         positions,
     }
 }
@@ -177,10 +192,11 @@ impl fmt::Display for Report {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         writeln!(
             f,
-            "bench depth {} hash {}MB positions {}",
+            "bench depth {} hash {}MB positions {} taint {}",
             self.depth,
             self.table_bytes / (1024 * 1024),
-            self.positions.len()
+            self.positions.len(),
+            self.config.taint_word()
         )?;
         // the name column is as wide as the widest name, so a suite of
         // fen-named positions still lines up
@@ -193,28 +209,46 @@ impl fmt::Display for Report {
             .max("position".len());
         writeln!(
             f,
-            "{:<width$} {:>10} {:>7} {:>9} {:>9} {:>8} {:>6} {:>6} {:>10}",
-            "position", "nodes", "qs%", "cutoffs", "stores", "tainted", "tcuts", "ms", "nps"
+            "{:<width$} {:>5} {:>6} {:>10} {:>7} {:>9} {:>9} {:>8} {:>6} {:>7} {:>6} {:>10}",
+            "position",
+            "move",
+            "score",
+            "nodes",
+            "qs%",
+            "cutoffs",
+            "stores",
+            "tainted",
+            "tcuts",
+            "refused",
+            "ms",
+            "nps"
         )?;
+        // the total row has no move or score, so those two arrive as text
         let row = |f: &mut fmt::Formatter<'_>,
                    name: &str,
+                   play: &str,
+                   score: &str,
                    nodes: u64,
                    quiescence: u64,
                    cutoffs: u64,
                    stores: u64,
                    tainted: u64,
                    tainted_cutoffs: u64,
+                   refused_cutoffs: u64,
                    elapsed: Duration| {
             writeln!(
                 f,
-                "{:<width$} {:>10} {:>6.1}% {:>9} {:>9} {:>8} {:>6} {:>6} {:>10}",
+                "{:<width$} {:>5} {:>6} {:>10} {:>6.1}% {:>9} {:>9} {:>8} {:>6} {:>7} {:>6} {:>10}",
                 name,
+                play,
+                score,
                 nodes,
                 share(quiescence, nodes),
                 cutoffs,
                 stores,
                 tainted,
                 tainted_cutoffs,
+                refused_cutoffs,
                 elapsed.as_millis(),
                 nps(nodes, elapsed)
             )
@@ -223,12 +257,15 @@ impl fmt::Display for Report {
             row(
                 f,
                 &p.id,
+                &p.play.to_string(),
+                &p.score.to_string(),
                 p.nodes,
                 p.quiescence_nodes,
                 p.tt_cutoffs,
                 p.tt_stores,
                 p.tainted_stores,
                 p.tainted_cutoffs,
+                p.refused_cutoffs,
                 p.elapsed,
             )?;
         }
@@ -236,12 +273,15 @@ impl fmt::Display for Report {
         row(
             f,
             "total",
+            "",
+            "",
             self.nodes(),
             sum(|p| p.quiescence_nodes),
             sum(|p| p.tt_cutoffs),
             sum(|p| p.tt_stores),
             sum(|p| p.tainted_stores),
             sum(|p| p.tainted_cutoffs),
+            sum(|p| p.refused_cutoffs),
             self.elapsed(),
         )?;
         write!(f, "{} nodes {} nps", self.nodes(), self.nps())
@@ -305,7 +345,61 @@ mod tests {
         assert_eq!(words[3], "nps");
         assert_eq!(words[0].parse::<u64>().unwrap(), report.nodes());
         assert_eq!(words[2].parse::<u64>().unwrap(), report.nps());
-        assert!(text.starts_with("bench depth 2 hash 1MB positions 1\n"));
+        assert!(text.starts_with("bench depth 2 hash 1MB positions 1 taint refuse\n"));
+    }
+
+    #[test]
+    fn the_report_says_what_each_search_chose_and_refused() {
+        // the move and score are what a policy changes when it changes
+        // anything that matters, and the refusals are what the default
+        // policy costs, so all three are columns of the report: two bench
+        // outputs diffed say whether the root moved, not only the tree.
+        // The same suite searched trusting tainted scores states that
+        // policy in its header, refuses nothing, and may choose otherwise
+        let suite = parse_epd("8/2p5/3p4/KP5r/1R3p1k/8/4P1P1/8 w - - id \"rook and pawns\";");
+        let refusing = run_suite(&suite, 7, 1 << 20, SearchConfig::reference());
+        let text = refusing.to_string();
+        let position = &refusing.positions[0];
+        assert!(position.refused_cutoffs > 0, "{}", text);
+        // the columns are read by position, the way the header names them,
+        // so a value printed in the wrong column fails rather than being
+        // found somewhere else on the line
+        let columns = |line: &str| {
+            line.split_whitespace()
+                .map(str::to_string)
+                .collect::<Vec<_>>()
+        };
+        let header = columns(text.lines().nth(1).unwrap());
+        let row = columns(
+            text.lines()
+                .find(|line| line.starts_with("rook and pawns"))
+                .unwrap(),
+        );
+        let column = |name: &str| {
+            let at = header
+                .iter()
+                .position(|h| h == name)
+                .unwrap_or_else(|| panic!("no {name} column"));
+            // the name is three words; the header has one word a column
+            row[at + 2].clone()
+        };
+        assert_eq!(column("move"), position.play.to_string());
+        assert_eq!(column("score"), position.score.to_string());
+        assert_eq!(column("refused"), position.refused_cutoffs.to_string());
+
+        #[allow(clippy::needless_update)]
+        let trusting = SearchConfig {
+            refuse_tainted_cutoffs: false,
+            ..SearchConfig::reference()
+        };
+        let trusted = run_suite(&suite, 7, 1 << 20, trusting);
+        assert!(
+            trusted
+                .to_string()
+                .starts_with("bench depth 7 hash 1MB positions 1 taint trust\n")
+        );
+        assert_eq!(trusted.positions[0].refused_cutoffs, 0);
+        assert!(trusted.positions[0].tainted_cutoffs > 0);
     }
 
     #[test]
