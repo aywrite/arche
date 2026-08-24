@@ -29,10 +29,12 @@ the order they look worth doing after that.
 
 ## Known limitations
 
-- a transposition score that came from a repetition or fifty move draw is refused rather than
-  trusted, so the search cannot read a draw down a path that could not reach it. The reverse
-  direction is still open: a score stored with the draw out of reach can be read by a path
-  with the draw in reach, say a fifty move counter about to run out, and be trusted
+- a transposition score that came from a repetition or fifty move draw is trusted, except
+  within four plies of the fifty move horizon, where every cutoff is refused. The search can
+  therefore read a draw down a path that could not reach it; the policies were played against
+  each other and refusing such scores lost about forty five elo to trusting them, so the
+  error is carried knowingly, measured by the graph history counters, and the refusing search
+  remains as the reference and as `taint refuse`
 - a quiescence entry stored within reach of the depth cap describes a capture
   search that was cut short, and a probe far from the cap trusts it anyway. The
   same truncation sits under every deep entry through its leaves; storing where

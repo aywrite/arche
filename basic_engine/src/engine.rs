@@ -122,8 +122,8 @@ pub struct SearchConfig {
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum TaintPolicy {
     /// Store tainted scores and refuse their cutoffs, trusting only the
-    /// move. The reference and the default: the table only ever speeds the
-    /// search up, and a warm answer is a cold one.
+    /// move. The reference: the table only ever speeds the search up, and
+    /// a warm answer is a cold one.
     Refuse,
     /// Store tainted scores and take their cutoffs as if the taint were
     /// not there: the control arm, what an engine with no taint bit does.
@@ -180,9 +180,9 @@ impl SearchConfig {
     }
 
     /// The default with its taint policy set by word, or none for a word
-    /// that is no policy. The default rather than the reference, so that
-    /// `refuse` names what a bench runs when it is told nothing and the
-    /// header it prints can be handed back to it.
+    /// that is no policy. The default rather than the reference, so the
+    /// word a bench's header prints names what it ran and can be handed
+    /// back to it.
     // the default with the one switch set; written that way so it still
     // reads so once there are more switches
     #[allow(clippy::needless_update)]
@@ -202,10 +202,16 @@ impl SearchConfig {
 }
 
 impl Default for SearchConfig {
-    /// What the engine plays with. The reference, for now: there is no
-    /// shortcut yet to turn on.
+    /// What the engine plays with: the table trusted behind the fifty
+    /// move guard, the first place the default and the reference part
+    /// company. The four policies played each other and refusing lost
+    /// about forty five elo to either trusting arm, paid in shallower
+    /// endgame search; the guard cost nothing a match could see and
+    /// covers the one regime where a wrong cutoff provably loses.
     fn default() -> Self {
-        Self::reference()
+        Self {
+            taint: TaintPolicy::Rule50,
+        }
     }
 }
 
