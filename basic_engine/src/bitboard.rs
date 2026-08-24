@@ -5,9 +5,14 @@ pub trait BitBoard {
     fn clear_bit(&mut self, index: u8);
     fn is_bit_set(&self, index: u8) -> bool;
 
-    /// Print the board as a rank and file grid. Nothing calls it: it is a
-    /// debugging aid kept to be reached for when bitboard code misbehaves,
-    /// and nothing else prints a raw bitboard.
+    /// Print the board as a rank and file grid.
+    ///
+    /// One of three printers nothing calls: this one, `Board::attacked_print`
+    /// and the `Display` on `BaseConversions`. They are kept to be reached for
+    /// when the thing each prints comes out wrong, which is the only time
+    /// anyone wants to look at a raw bitboard, an attack map or the mailbox.
+    /// Deleting one because nothing calls it is deleting it for the reason it
+    /// exists.
     #[allow(dead_code)]
     fn debug_print(&self);
 }

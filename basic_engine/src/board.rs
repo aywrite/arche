@@ -4,7 +4,6 @@ use super::misc::{
     coordinate_to_large_index, index_to_coordinate,
 };
 use super::play::Play;
-use crate::Game;
 use crate::magic::Magic;
 use crate::psqt::PieceSquareTables;
 use crate::zobrist::Zobrist;
@@ -25,7 +24,7 @@ fn pop_lsb(bb: &mut u64) -> u8 {
 /// One ply of history: everything `undo_move` needs that the move itself does
 /// not carry, being the rights and counters the move cleared and the key and
 /// checkers it replaced.
-#[derive(Debug, Copy, Clone, PartialEq, Eq, Hash)]
+#[derive(Debug, Copy, Clone, PartialEq, Eq)]
 struct PlayState {
     play: Play,
 
@@ -83,8 +82,8 @@ static MAGIC: LazyLock<Magic> = LazyLock::new(Magic::new);
 static BETWEEN: LazyLock<[[u64; 64]; 64]> = LazyLock::new(between_masks);
 
 fn between_masks() -> [[u64; 64]; 64] {
-    let attack_masks: &AttackMasks = &ATTACK_MASKS;
-    let magic: &Magic = &MAGIC;
+    let attack_masks = &*ATTACK_MASKS;
+    let magic = &*MAGIC;
     let mut between = [[0u64; 64]; 64];
     for a in 0..64u8 {
         for b in 0..64u8 {
@@ -162,9 +161,8 @@ impl BaseConversions {
     }
 }
 
-/// Print the mailbox as a grid, the sentinels included. Nothing calls it: it
-/// is a debugging aid kept for when a walk comes out wrong, the same standing
-/// `debug_print` has for bitboards.
+/// Print the mailbox as a grid, the sentinels included, for when a walk comes
+/// out wrong. Uncalled on purpose, see `BitBoard::debug_print`.
 impl fmt::Display for BaseConversions {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         for rank in 0..10 {
@@ -288,7 +286,7 @@ impl AttackMasks {
 /// forty kilobytes and `Copy`. Copying one is nothing next to a search and a
 /// great deal next to a node, so the search makes and unmakes moves on the one
 /// board; only `pv_line` and the tests take copies.
-#[derive(Debug, PartialEq, Copy, Clone, Eq, Hash)]
+#[derive(Debug, PartialEq, Copy, Clone, Eq)]
 pub struct Board {
     pawns: u64,
     knights: u64,
@@ -388,8 +386,8 @@ impl Board {
         }
 
         let all_pieces = self.black | self.white;
-        let attack_masks: &AttackMasks = &ATTACK_MASKS;
-        let magic: &Magic = &MAGIC;
+        let attack_masks = &*ATTACK_MASKS;
+        let magic = &*MAGIC;
         match piece {
             Piece::Knight => attack_masks.knights[m.from as usize].is_bit_set(m.to),
             Piece::King => attack_masks.kings[m.from as usize].is_bit_set(m.to),
@@ -410,7 +408,9 @@ impl Board {
                     return false;
                 }
                 if m.capture.is_some() {
-                    // capture_mask was already established by the checks above
+                    // that the piece taken is really there, and is really
+                    // the one named, was settled above: all that is left is
+                    // whether a pawn on the from square attacks the to one
                     return match self.active_color {
                         Color::White => attack_masks.black_pawns[m.from as usize].is_bit_set(m.to),
                         Color::Black => attack_masks.white_pawns[m.from as usize].is_bit_set(m.to),
@@ -464,8 +464,8 @@ impl Board {
             Color::White => (self.white, self.black),
         };
         let all_pieces = self.black | self.white;
-        let attack_masks: &AttackMasks = &ATTACK_MASKS;
-        let magic: &Magic = &MAGIC;
+        let attack_masks = &*ATTACK_MASKS;
+        let magic = &*MAGIC;
         // the captures list keeps only the squares the opponent stands on,
         // the full list keeps every square our own pieces do not
         let target_filter = if CAPTURES_ONLY {
@@ -527,7 +527,7 @@ impl Board {
             // 2. king is not in check
             // 3. movement squares are not occupied
             // 4. None of the squares are in check
-            if matches!(self.active_color, Color::White)
+            if self.active_color == Color::White
                 && (self.castle.white_king_side || self.castle.white_queen_side)
             {
                 let check = self.square_attacked(E1, Color::Black);
@@ -549,7 +549,7 @@ impl Board {
                         moves.push(Play::new(from, G1, None, None, false, true));
                     }
                 }
-            } else if matches!(self.active_color, Color::Black)
+            } else if self.active_color == Color::Black
                 && (self.castle.black_king_side || self.castle.black_queen_side)
             {
                 let check = self.square_attacked(E8, Color::White);
@@ -650,10 +650,7 @@ impl Board {
 
     #[inline]
     pub fn eval(&self) -> Score {
-        let eval = self.white_value as i32 - self.black_value as i32;
-
-        let eval = (eval + self.psqt) as Score;
-
+        let eval = (self.white_value as i32 - self.black_value as i32 + self.psqt) as Score;
         match self.active_color {
             Color::White => eval,
             Color::Black => -eval,
@@ -702,7 +699,7 @@ impl Board {
                 key ^= ZOBRIST.get_piece_key(index, piece, color);
             }
         }
-        if matches!(self.active_color, Color::Black) {
+        if self.active_color == Color::Black {
             key ^= ZOBRIST.side;
         }
         key ^= ZOBRIST.castle_key(self.castle);
@@ -758,8 +755,8 @@ impl Board {
 
     pub fn square_attacked(&self, index: u8, color: Color) -> bool {
         let all = self.black | self.white;
-        let attack_masks: &AttackMasks = &ATTACK_MASKS;
-        let magic: &Magic = &MAGIC;
+        let attack_masks = &*ATTACK_MASKS;
+        let magic = &*MAGIC;
         let (color_mask, pawn_masks) = match color {
             Color::Black => (self.black, &attack_masks.black_pawns),
             Color::White => (self.white, &attack_masks.white_pawns),
@@ -959,7 +956,7 @@ impl Board {
         // update the ply
         self.ply += 1;
         self.line_ply += 1;
-        if matches!(self.active_color, Color::Black) {
+        if self.active_color == Color::Black {
             // update the full move counter
             self.move_number += 1;
         }
@@ -973,7 +970,7 @@ impl Board {
         // at all, so the probe has nothing to find. `checkers` still holds
         // the mover's own checkers here: it is only replaced below, once the
         // move has been allowed to stand.
-        let attack_masks: &AttackMasks = &ATTACK_MASKS;
+        let attack_masks = &*ATTACK_MASKS;
         let could_expose_king = !MAINTAIN_CHECKERS
             || self.checkers != 0
             || from_piece == Piece::King
@@ -1025,7 +1022,7 @@ impl Board {
         self.fifty_move_rule = history.fifty_move_rule;
         self.ply -= 1;
         self.line_ply -= 1;
-        if matches!(opposing_color, Color::Black) {
+        if opposing_color == Color::Black {
             self.move_number -= 1;
         }
 
@@ -1096,7 +1093,7 @@ impl Board {
     /// holds the squares a pawn of that colour must stand on to attack the one
     /// indexed, which is what is being asked here.
     fn pawn_can_capture_on(&self, index: u8, capturer: Color) -> bool {
-        let attack_masks: &AttackMasks = &ATTACK_MASKS;
+        let attack_masks = &*ATTACK_MASKS;
         let (from, pawns) = match capturer {
             Color::White => (attack_masks.white_pawns[index as usize], self.white),
             Color::Black => (attack_masks.black_pawns[index as usize], self.black),
@@ -1147,8 +1144,8 @@ impl Board {
         if play.castle || play.en_passant {
             return self.recompute_checkers();
         }
-        let attack_masks: &AttackMasks = &ATTACK_MASKS;
-        let magic: &Magic = &MAGIC;
+        let attack_masks = &*ATTACK_MASKS;
+        let magic = &*MAGIC;
         let to = play.to;
         let from = play.from;
         let mut checkers = 0u64;
@@ -1202,8 +1199,8 @@ impl Board {
     pub fn recompute_checkers(&self) -> u64 {
         let king = self.king_index(self.active_color);
         let all = self.black | self.white;
-        let attack_masks: &AttackMasks = &ATTACK_MASKS;
-        let magic: &Magic = &MAGIC;
+        let attack_masks = &*ATTACK_MASKS;
+        let magic = &*MAGIC;
         let (attacker_mask, pawn_masks) = match !self.active_color {
             Color::Black => (self.black, &attack_masks.black_pawns),
             Color::White => (self.white, &attack_masks.white_pawns),
@@ -1247,9 +1244,9 @@ impl Board {
         moves.retain(|m| kings.is_bit_set(m.from) || m.en_passant || targets.is_bit_set(m.to));
     }
 
-    /// Print every square this colour attacks as a grid. Nothing calls it: it
-    /// is a debugging aid kept to be reached for when square_attacked
-    /// misbehaves, the same standing debug_print has for bitboards.
+    /// Print every square this colour attacks as a grid, for when
+    /// `square_attacked` misbehaves. Uncalled on purpose, see
+    /// `BitBoard::debug_print`.
     pub fn attacked_print(&self, color: Color) {
         println!("   a|b|c|d|e|f|g|h|");
         println!("  ----------------");
@@ -1447,10 +1444,13 @@ impl Board {
         }
         nodes
     }
-}
 
-impl Game for Board {
-    fn from_fen(fen: &str) -> Result<Self, String> {
+    /// The position a fen describes, or what is wrong with the fen.
+    ///
+    /// Validated only as far as what the search cannot survive: see the
+    /// checks below and the known limitations in `docs/ROADMAP.md` for what
+    /// an illegal position can still get away with.
+    pub fn from_fen(fen: &str) -> Result<Self, String> {
         let mut fen_iter = fen.split(' ');
         let position = fen_iter
             .next()
@@ -1511,7 +1511,7 @@ impl Game for Board {
             history: EMPTY_HISTORY,
             key: INITIAL_KEY,
         };
-        if matches!(board.active_color, Color::Black) {
+        if board.active_color == Color::Black {
             board.ply += 1;
         }
 
@@ -1573,7 +1573,7 @@ impl Game for Board {
         // fold the non-piece state into the position key so that keys are
         // comparable between boards parsed from FEN and boards reached by
         // playing moves
-        if matches!(board.active_color, Color::Black) {
+        if board.active_color == Color::Black {
             board.key ^= ZOBRIST.side;
         }
         board.key ^= ZOBRIST.castle_key(board.castle);
@@ -1676,8 +1676,7 @@ pub(crate) fn play_named(board: &Board, name: &str) -> Play {
 
 #[cfg(test)]
 mod evaluate {
-    use super::fens;
-    use super::{Board, Game};
+    use super::{Board, fens};
     use pretty_assertions::assert_eq;
 
     /// After every legal move in the shared positions, the material
@@ -1764,7 +1763,7 @@ mod evaluate {
 mod make_move {
     use super::fens;
     use super::{A1, A8, B1, B8, MAX_GAME_SIZE};
-    use super::{Board, Game, Play};
+    use super::{Board, Play};
     use pretty_assertions::{assert_eq, assert_ne};
 
     /// Every legal move must change the position, and unmaking it must give
@@ -1910,7 +1909,6 @@ mod make_move {
 #[cfg(test)]
 mod position_key {
     use super::Board;
-    use super::Game;
     use pretty_assertions::{assert_eq, assert_ne};
 
     #[test]
@@ -2046,8 +2044,7 @@ mod position_key {
 
 #[cfg(test)]
 mod perft {
-    use super::fens;
-    use super::{Board, Game};
+    use super::{Board, fens};
     use pretty_assertions::assert_eq;
 
     /// The six standard positions, with their counts from depth one up to the
@@ -2102,8 +2099,7 @@ mod perft {
 
 #[cfg(test)]
 mod fen_parsing {
-    use super::fens;
-    use super::{Board, Game};
+    use super::{Board, fens};
     use proptest::prelude::*;
 
     proptest! {
@@ -2191,8 +2187,7 @@ mod fen_parsing {
 
 #[cfg(test)]
 mod perft_edge_cases {
-    use super::fens;
-    use super::{Board, Game};
+    use super::{Board, fens};
     use pretty_assertions::assert_eq;
 
     /// Positions that the six standard perft positions do not reach: the two
@@ -2360,7 +2355,7 @@ mod perft_edge_cases {
 #[cfg(test)]
 mod pseudo_legal {
     use super::fens;
-    use super::{Board, Game, Play};
+    use super::{Board, Play};
     use crate::misc::Piece;
 
     /// "d4" to the index the board uses, so the cases below read as squares
@@ -2456,8 +2451,7 @@ mod pseudo_legal {
 
 #[cfg(test)]
 mod random_games {
-    use super::fens;
-    use super::{Board, Game};
+    use super::{Board, fens};
     use proptest::prelude::*;
 
     /// Walks start from positions with different machinery in reach: the

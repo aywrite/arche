@@ -28,7 +28,7 @@ pub const fn split_mix(state: u64) -> (u64, u64) {
     (z ^ (z >> 31), state)
 }
 
-#[derive(Debug, Copy, Clone, PartialEq, Eq, Hash)]
+#[derive(Debug, Copy, Clone, PartialEq, Eq)]
 pub struct Coordinate {
     rank: u8,
     file: File,
@@ -91,7 +91,7 @@ mod coordinate {
 }
 
 // Each color/side bit is true if that color is still allowed to castle on that side
-#[derive(Debug, Copy, Clone, PartialEq, Eq, Hash)]
+#[derive(Debug, Copy, Clone, PartialEq, Eq)]
 pub struct CastlePermissions {
     pub black_king_side: bool,
     pub black_queen_side: bool,
@@ -220,7 +220,7 @@ mod index_conversion {
     }
 }
 
-#[derive(Debug, Copy, Clone, PartialEq, Eq, Hash)]
+#[derive(Debug, Copy, Clone, PartialEq, Eq)]
 pub enum PromotePiece {
     Knight,
     Bishop,
@@ -248,7 +248,7 @@ impl From<&PromotePiece> for char {
     }
 }
 
-#[derive(Debug, Copy, Clone, PartialEq, Eq, Hash)]
+#[derive(Debug, Copy, Clone, PartialEq, Eq)]
 pub enum Piece {
     Pawn,
     Knight,
@@ -313,7 +313,7 @@ impl From<&PromotePiece> for Piece {
     }
 }
 
-#[derive(Debug, Copy, Clone, PartialEq, Eq, Hash)]
+#[derive(Debug, Copy, Clone, PartialEq, Eq)]
 pub enum Color {
     Black,
     White,
@@ -340,7 +340,7 @@ impl Not for Color {
     }
 }
 
-#[derive(Copy, Clone, Debug, PartialEq, Eq, Hash)]
+#[derive(Copy, Clone, Debug, PartialEq, Eq)]
 pub enum File {
     A = 0,
     B = 1,

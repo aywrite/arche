@@ -7,7 +7,7 @@ use std::fmt;
 /// search is tuned around: a move is copied into a move list, out of it, into
 /// the history and into the transposition table, several times per node.
 /// Widening it has been measured twice and was slower both times.
-#[derive(Debug, Copy, Clone, PartialEq, Eq, Hash)]
+#[derive(Debug, Copy, Clone, PartialEq, Eq)]
 pub struct Play {
     pub from: u8,
     pub to: u8,

@@ -1,4 +1,3 @@
-use crate::Game;
 use crate::board::{Board, MoveList};
 use crate::limits::Limits;
 use crate::misc::{Color, Score};
@@ -113,21 +112,14 @@ pub struct SearchConfig {
     ///
     /// On in the reference and by default. A tainted score describes the
     /// path that stored it rather than the position, so a search arriving
-    /// another way can read a draw it cannot actually reach. Refusing
-    /// costs, over the bench at its depth and table, +3.3% nodes: +0.2% in
-    /// the openings and +0.1% in the middlegames, which store almost no
-    /// taint, and +41% in the endgames, where a tenth of what lands in
-    /// the table is tainted and a fifth of the cutoffs it offers are
-    /// refused. The cost grows with depth, +0.4% at depth five and +2.2% at
-    /// nine, where the endgames cost +53% and the queen endgame three times
-    /// its nodes, and it hardly moves with the table, except at 1 MB and
-    /// depth nine, where sixty five thousand slots are asked to take
-    /// seventy million stores and the two searches no longer share enough
-    /// of the table to compare. No root
-    /// move differed between refusing and trusting on any position at any
-    /// depth or table measured; at depth nine one score did, lucena's, by
-    /// five centipawns at 16 MB and above. What the refusal buys has yet to
-    /// be seen.
+    /// another way can read a draw it cannot actually reach.
+    ///
+    /// Refusing costs a few percent of the tree overall and a great deal of
+    /// the endgames, which are where the taint is; it has yet to be shown to
+    /// buy anything. The figures are not written down here because they are
+    /// figures for one depth and one table, and the bench's depth is due to
+    /// be raised once: run `bench hash <MB> taint refuse` against
+    /// `taint trust` for the pair as they stand.
     pub refuse_tainted_cutoffs: bool,
 }
 
@@ -608,7 +600,7 @@ impl AlphaBeta {
     /// together from the next. Calling this on its own skips that, and a
     /// table whose generation never moves keeps every entry looking current:
     /// nothing goes stale and the oldest entries are never the ones given up.
-    pub fn search_within(&mut self, depth: u8, limits: Limits) -> SearchOutcome {
+    pub fn search_within(&mut self, mut depth: u8, limits: Limits) -> SearchOutcome {
         self.limits = limits;
         self.next_check = 0;
         self.nodes = 0;
@@ -625,7 +617,6 @@ impl AlphaBeta {
         }
         self.nodes += 1;
 
-        let mut depth = depth;
         if self.board.in_check() {
             depth += 1;
         }
@@ -803,7 +794,7 @@ impl Engine for AlphaBeta {
         for p in self.board.generate_moves() {
             let play_str = format!("{}", p).to_lowercase();
             if play == play_str {
-                return self.board.make_move(&p); // TODO change this to return Result
+                return self.board.make_move(&p);
             };
         }
         false
@@ -883,7 +874,6 @@ mod search {
     use super::AlphaBeta;
     use super::Board;
     use super::Engine;
-    use super::Game;
     use super::{Limits, Play, SearchConfig, SearchOutcome, SearchParameters, SearchResult};
     use crate::board::{fens, play_named};
     use pretty_assertions::assert_eq;
@@ -1273,7 +1263,6 @@ mod search {
 
     #[test]
     fn deepening_reports_each_completed_depth() {
-        use super::SearchParameters;
         let mut e = engine(Board::new());
         let mut depths = Vec::new();
         let mut node_counts = Vec::new();
@@ -1304,7 +1293,6 @@ mod search {
 
     #[test]
     fn a_finished_game_is_game_over_with_no_depth_to_report() {
-        use super::SearchParameters;
         // fool's mate, white to move with no reply, and a stalemate: there is
         // nothing to play, so a search says so and deepening reports nothing
         let fens = [
@@ -1340,7 +1328,6 @@ mod search {
 
     #[test]
     fn deepening_to_depth_zero_finds_nothing() {
-        use super::SearchParameters;
         let mut e = engine(Board::new());
         let outcome = e.iterative_deepening_search(SearchParameters::to_depth(0), |_, _, _| {});
         assert!(matches!(outcome, SearchOutcome::Aborted(None)));
