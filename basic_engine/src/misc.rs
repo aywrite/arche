@@ -187,15 +187,15 @@ mod castle_permissions {
 
 /// The index of a square, counting a1 as zero. Ranks are one based, the way
 /// a fen and the board display write them.
-pub fn coordinate_to_index(rank: u8, file: File) -> u8 {
-    debug_assert!((1..=8).contains(&rank));
+pub const fn coordinate_to_index(rank: u8, file: File) -> u8 {
+    debug_assert!(matches!(rank, 1..=8));
     ((rank - 1) * 8) + (file) as u8
 }
 
 /// The same square in the mailbox indexing, which offsets by a row and a column
 /// of sentinels. See `BaseConversions`.
-pub fn coordinate_to_large_index(rank: u8, file: File) -> u8 {
-    debug_assert!((1..=8).contains(&rank));
+pub const fn coordinate_to_large_index(rank: u8, file: File) -> u8 {
+    debug_assert!(matches!(rank, 1..=8));
     ((rank - 1) * 10) + (file) as u8 + 11
 }
 

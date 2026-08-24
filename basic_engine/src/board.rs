@@ -74,7 +74,9 @@ static PIECE_SQUARE_TABLES: PieceSquareTables = PieceSquareTables::TABLES;
 static ZOBRIST: Zobrist = Zobrist::TABLE;
 
 static ATTACK_MASKS: AttackMasks = AttackMasks::new();
-pub static BASE_CONVERSIONS: LazyLock<BaseConversions> = LazyLock::new(BaseConversions::new);
+// a const rather than a static, so that what is built from it can be built at
+// compile time too: a const initialiser may not read a static
+pub const BASE_CONVERSIONS: BaseConversions = BaseConversions::new();
 static MAGIC: LazyLock<Magic> = LazyLock::new(Magic::new);
 // the squares strictly between two aligned squares, and empty for a pair
 // that shares no line. What a piece must land on to block a slider on one
@@ -141,18 +143,26 @@ impl BaseConversions {
     pub const STRAIGHT_STEPS: [isize; 4] = [10, -10, 1, -1]; // rooks and queens
     pub const DIAGONAL_STEPS: [isize; 4] = [9, -9, 11, -11]; // bishops and queens
 
-    fn new() -> Self {
+    /// Built at compile time, so there is nothing to build on startup and
+    /// nothing to check on the way to a step. A `const fn` has no `for`, hence
+    /// the two `while` walks over what is still a rank and a file.
+    const fn new() -> Self {
         let mut base = BaseConversions {
             base_100_to_64: [Self::OFF_BOARD; 100],
             base_64_to_100: [0u8; 64],
         };
-        for rank in 1..=8 {
-            for file in File::VARIANTS {
+        let mut rank = 1;
+        while rank <= 8 {
+            let mut f = 0;
+            while f < File::VARIANTS.len() {
+                let file = File::VARIANTS[f];
                 let index = coordinate_to_large_index(rank, file);
                 let index_64 = coordinate_to_index(rank, file) as usize;
                 base.base_100_to_64[index as usize] = index_64 as u8;
                 base.base_64_to_100[index_64] = index;
+                f += 1;
             }
+            rank += 1;
         }
         base
     }
