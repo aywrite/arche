@@ -355,7 +355,7 @@ mod tests {
         assert_eq!(words[3], "nps");
         assert_eq!(words[0].parse::<u64>().unwrap(), report.nodes());
         assert_eq!(words[2].parse::<u64>().unwrap(), report.nps());
-        assert!(text.starts_with("bench depth 2 hash 1MB positions 1 taint refuse\n"));
+        assert!(text.starts_with("bench depth 2 hash 1MB positions 1 taint rule50\n"));
     }
 
     #[test]
@@ -456,24 +456,24 @@ mod tests {
         assert_eq!(
             counted,
             vec![
-                ("start", 1_038_544),
-                ("italian", 4_600_718),
-                ("ruy lopez", 2_730_131),
+                ("start", 1_033_785),
+                ("italian", 4_599_668),
+                ("ruy lopez", 2_731_176),
                 ("kiwipete", 3_670_071),
                 ("perft 4", 3_058_267),
-                ("promotions", 2_045_667),
-                ("middlegame", 3_422_701),
-                ("sharp middlegame", 9_728_179),
+                ("promotions", 2_045_370),
+                ("middlegame", 3_422_070),
+                ("sharp middlegame", 9_712_705),
                 ("bratko kopec 1", 641_197),
-                ("wac 4", 1_996_694),
-                ("rook and pawns", 152_754),
-                ("tarrasch", 386_728),
-                ("lucena", 565_797),
-                ("philidor", 798_455),
-                ("minor endgame", 127_376),
-                ("queen endgame", 1_155_631),
-                ("king and pawn", 8_723),
-                ("trebuchet", 3_260),
+                ("wac 4", 1_993_930),
+                ("rook and pawns", 147_788),
+                ("tarrasch", 371_337),
+                ("lucena", 494_242),
+                ("philidor", 726_994),
+                ("minor endgame", 116_764),
+                ("queen endgame", 784_634),
+                ("king and pawn", 8_625),
+                ("trebuchet", 3_191),
             ]
         );
     }

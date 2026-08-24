@@ -1102,7 +1102,7 @@ go depth 3
                 "bench depth 7 hash 1MB",
                 "taint trust",
                 "bench depth 1 hash 16MB",
-                "taint refuse",
+                "taint rule50",
             ],
             "{}",
             said
