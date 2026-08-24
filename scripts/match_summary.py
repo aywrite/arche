@@ -29,17 +29,34 @@ def estimate(text: str) -> str:
     return f"{round(float(elo)):+d} ±{round(float(margin))} Elo ({games} games)"
 
 
-def verdict(text: str) -> str:
-    """The sprt verdict, or nothing for a match that was not run under -sprt."""
+def sprt(text: str) -> tuple[str, str] | None:
+    """The bounds an sprt was run under, as fastchess printed them, and which
+    of passed, failed and inconclusive it came to; or nothing for a match that
+    was not run under -sprt. Both renderings below read the verdict from here
+    rather than each deciding it, or a summary could call a test inconclusive
+    while the trailer beside it called the same test failed."""
     bounds = LLR.findall(text)
     if not bounds:
-        return ""
+        return None
     accepted = VERDICT.findall(text)
+    # no verdict line at all means a cap stopped it before either hypothesis
+    # was reached
     if not accepted:
-        return f", SPRT {bounds[-1]} inconclusive"
-    hypothesis = accepted[-1]
-    reading = "stronger" if hypothesis == "H1" else "not stronger"
-    return f", SPRT {bounds[-1]} accepted {hypothesis}: {reading}"
+        return bounds[-1], "inconclusive"
+    return bounds[-1], ("passed" if accepted[-1] == "H1" else "failed")
+
+
+def verdict(text: str) -> str:
+    """The sprt verdict as the workflow summary words it."""
+    if (found := sprt(text)) is None:
+        return ""
+    bounds, reached = found
+    if reached == "inconclusive":
+        return f", SPRT {bounds} inconclusive"
+    hypothesis, reading = (
+        ("H1", "stronger") if reached == "passed" else ("H0", "not stronger")
+    )
+    return f", SPRT {bounds} accepted {hypothesis}: {reading}"
 
 
 def trailer(text: str, tc: str, baseline: str) -> str:
@@ -47,27 +64,23 @@ def trailer(text: str, tc: str, baseline: str) -> str:
     commit-msg hook accepts: the estimate, the sprt bounds and verdict when
     there were any, the games, the time control and what was played. The
     verdict is the point of an sprt, an estimate of +58 with the test
-    failed and one with it passed are not the same claim, so it is named,
-    and a match a cap stopped is inconclusive. A sweep has no estimate,
-    fastchess prints inf, and a trailer claiming a number it never gave
-    would be a lie the hook could not catch."""
+    failed and one with it passed are not the same claim, so it is named. A
+    sweep has no estimate, fastchess prints inf, and a trailer claiming a
+    number it never gave would be a lie the hook could not catch."""
     found = ELO.findall(text)
     if not found:
         return "Elo: not measured"
     elo, margin = found[-1]
     games = GAMES.findall(text)[-1]
-    sprt = ""
-    if bounds := LLR.findall(text):
-        low, high = (float(bound) for bound in bounds[-1].strip("[]").split(","))
-        accepted = VERDICT.findall(text)
-        verdict = (
-            "inconclusive"
-            if not accepted
-            else ("passed" if accepted[-1] == "H1" else "failed")
-        )
-        sprt = f"sprt [{low:g}, {high:g}] {verdict}, "
+    test = ""
+    if (found_sprt := sprt(text)) is not None:
+        bounds, reached = found_sprt
+        # the bounds are workflow inputs and arrive with trailing zeroes the
+        # hook's shape does without
+        low, high = (float(bound) for bound in bounds.strip("[]").split(","))
+        test = f"sprt [{low:g}, {high:g}] {reached}, "
     estimate = f"{round(float(elo)):+d} ±{round(float(margin))}"
-    return f"Elo: {estimate} ({sprt}{games} games, {tc}, vs {baseline})"
+    return f"Elo: {estimate} ({test}{games} games, {tc}, vs {baseline})"
 
 
 def main() -> None:
