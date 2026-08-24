@@ -109,10 +109,20 @@ pub struct SearchConfig {
     /// On in the reference and by default. A tainted score describes the
     /// path that stored it rather than the position, so a search arriving
     /// another way can read a draw it cannot actually reach. Refusing
-    /// costs, over the five positions the node counts pinned then at their
-    /// depths, nothing at all in kiwipete, promotions and the middlegame,
-    /// which have no tainted cutoffs to refuse, +0.037% in the opening and
-    /// +2.970% in the pawn endgame, for +0.617% overall.
+    /// costs, over the bench at its depth and table, +3.3% nodes: +0.2% in
+    /// the openings and +0.1% in the middlegames, which store almost no
+    /// taint, and +41% in the endgames, where a tenth of what lands in
+    /// the table is tainted and a fifth of the cutoffs it offers are
+    /// refused. The cost grows with depth, +0.4% at depth five and +2.2% at
+    /// nine, where the endgames cost +53% and the queen endgame three times
+    /// its nodes, and it hardly moves with the table, except at 1 MB and
+    /// depth nine, where sixty five thousand slots are asked to take
+    /// seventy million stores and the two searches no longer share enough
+    /// of the table to compare. No root
+    /// move differed between refusing and trusting on any position at any
+    /// depth or table measured; at depth nine one score did, lucena's, by
+    /// five centipawns at 16 MB and above. What the refusal buys has yet to
+    /// be seen.
     pub refuse_tainted_cutoffs: bool,
 }
 
@@ -123,6 +133,39 @@ impl SearchConfig {
         Self {
             refuse_tainted_cutoffs: true,
         }
+    }
+
+    /// The word the bench prints for what this configuration does with a
+    /// draw tainted score, `refuse` it and search or `trust` it and cut,
+    /// and reads back with `with_taint`. The words are the policies the
+    /// graph history experiments compare.
+    pub fn taint_word(self) -> &'static str {
+        if self.refuse_tainted_cutoffs {
+            "refuse"
+        } else {
+            "trust"
+        }
+    }
+
+    /// The default with its taint policy set by word, or none for a word
+    /// that is no policy. The default rather than the reference, so that
+    /// `refuse` names what a bench runs when it is told nothing and the
+    /// header it prints can be handed back to it; `trust` is then the
+    /// engine as it plays with that one refusal off, the control arm of
+    /// the experiments.
+    // the default with the one switch set; written that way so it still
+    // reads so once there are more switches
+    #[allow(clippy::needless_update)]
+    pub fn with_taint(word: &str) -> Option<Self> {
+        let refuse_tainted_cutoffs = match word {
+            "refuse" => true,
+            "trust" => false,
+            _ => return None,
+        };
+        Some(Self {
+            refuse_tainted_cutoffs,
+            ..Self::default()
+        })
     }
 }
 
@@ -1303,6 +1346,32 @@ mod search {
             0,
             "a path dependent score was trusted"
         );
+        // the refusals are what the policy costs, so they are counted as
+        // the cutoffs would have been: a refusal that went uncounted would
+        // make the policy look free
+        assert!(
+            e.ghi().refused_cutoffs > 0,
+            "the refusal refused nothing, or refused without counting"
+        );
+    }
+
+    #[test]
+    fn every_taint_word_names_a_policy_and_the_policy_names_it_back() {
+        // the bench reads a word and prints one, and they have to be the
+        // same word or a report could not be rerun from its header; and
+        // the word the default prints has to name the default, or a bench
+        // told nothing and a bench told that word would run apart
+        for word in ["refuse", "trust"] {
+            let config =
+                SearchConfig::with_taint(word).unwrap_or_else(|| panic!("{word} is not a policy"));
+            assert_eq!(config.taint_word(), word);
+        }
+        let default = SearchConfig::default();
+        assert_eq!(
+            SearchConfig::with_taint(default.taint_word()),
+            Some(default)
+        );
+        assert_eq!(SearchConfig::with_taint("maybe"), None);
     }
 
     #[test]
@@ -1327,6 +1396,11 @@ mod search {
         assert!(
             e.ghi().tainted_score_cutoffs > 0,
             "the scores the search was told to trust cut nothing"
+        );
+        assert_eq!(
+            e.ghi().refused_cutoffs,
+            0,
+            "a search trusting tainted scores refused one"
         );
     }
 
