@@ -314,7 +314,7 @@ pub struct Board {
     ply: usize,
     pub line_ply: usize,
     move_number: usize,
-    pub fifty_move_rule: usize,
+    fifty_move_rule: usize,
 
     white_value: u32,
     black_value: u32,
@@ -811,6 +811,15 @@ impl Board {
             .filter_map(|ply| self.history[history_index(ply)])
             .filter(|state| state.position_key == self.key)
             .count()
+    }
+
+    /// Whether the fifty move counter has run out.
+    ///
+    /// Not the same as drawn: a mate delivered on the hundredth half move
+    /// ends the game on it, before the side mated has a move to claim the
+    /// draw with, so a caller that can tell a mate has to ask that too.
+    pub fn fifty_move_expired(&self) -> bool {
+        self.fifty_move_rule >= 100
     }
 
     /// True on the third occurrence, which is when a game is actually drawn.

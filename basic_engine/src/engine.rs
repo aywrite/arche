@@ -427,7 +427,7 @@ impl AlphaBeta {
         // repetition there is not a finished game because the engine still has
         // to move, but from here on it is a draw either side can take
         let in_check = self.board.in_check();
-        if self.board.fifty_move_rule >= 100 {
+        if self.board.fifty_move_expired() {
             // a mate delivered by the hundredth half move is a mate: the game
             // ends on it, before the side mated has a move on which to claim
             // the draw. Only asked here and not of a repetition, which cannot
@@ -605,7 +605,7 @@ impl AlphaBeta {
         self.board.line_ply = 0;
 
         // the game is already drawn, there is no move to look for
-        if self.board.fifty_move_rule >= 100 {
+        if self.board.fifty_move_expired() {
             return SearchOutcome::GameOver;
         }
 
@@ -692,7 +692,7 @@ impl AlphaBeta {
             line.push(play);
             // the line is a draw from here, so whatever the table says comes
             // next is a continuation that would never be played
-            if board.fifty_move_rule >= 100 || board.has_repeated() {
+            if board.fifty_move_expired() || board.has_repeated() {
                 break;
             }
         }
@@ -1550,7 +1550,7 @@ mod search {
                 .record_best(&board, play, 0, SEEDED_DEPTH, false);
             assert!(board.make_move(&play), "failed to play {}", name);
         }
-        assert_eq!(board.fifty_move_rule, 101);
+        assert!(board.fifty_move_expired());
 
         // the first move draws by the fifty move rule, so the reply the table
         // holds is one the game never gets to
