@@ -81,32 +81,63 @@ static MAGIC: LazyLock<Magic> = LazyLock::new(Magic::new);
 // the squares strictly between two aligned squares, and empty for a pair
 // that shares no line. What a piece must land on to block a slider on one
 // square checking a king on the other.
-static BETWEEN: LazyLock<[[u64; 64]; 64]> = LazyLock::new(between_masks);
+static BETWEEN: [[u64; 64]; 64] = between_masks();
 
-fn between_masks() -> [[u64; 64]; 64] {
-    let attack_masks = &ATTACK_MASKS;
-    let magic = &*MAGIC;
+const fn between_masks() -> [[u64; 64]; 64] {
     let mut between = [[0u64; 64]; 64];
-    for a in 0..64u8 {
-        for b in 0..64u8 {
-            if a == b {
-                continue;
-            }
-            // with only the endpoints occupied, each one's rays stop at the
-            // other, so the rays they see in common are the squares between
-            // them. Asked only for aligned pairs: unaligned rays also cross,
-            // but off the line the answer is meant to be empty.
-            let ends = (1u64 << a) | (1u64 << b);
-            if attack_masks.straight[a as usize].is_bit_set(b) {
-                between[a as usize][b as usize] =
-                    magic.get_straight_move(a, ends) & magic.get_straight_move(b, ends);
-            } else if attack_masks.diagonal[a as usize].is_bit_set(b) {
-                between[a as usize][b as usize] =
-                    magic.get_diagonal_move(a, ends) & magic.get_diagonal_move(b, ends);
-            }
+    let mut a = 0u8;
+    while a < 64 {
+        let mut b = 0u8;
+        while b < 64 {
+            between[a as usize][b as usize] = between_squares(a, b);
+            b += 1;
         }
+        a += 1;
     }
     between
+}
+
+/// One step from `from` towards `to` along the axis they are measured on, and
+/// none when they already agree on it.
+const fn towards(from: i8, to: i8) -> i8 {
+    if to > from {
+        1
+    } else if to < from {
+        -1
+    } else {
+        0
+    }
+}
+
+/// Walk from `a` one square at a time in the direction of `b`, collecting what
+/// it passes over. A rank, a file or a diagonal is the only way that walk can
+/// land on `b`: for any other pair it steps off the board first, which is the
+/// empty answer an unaligned pair is meant to give.
+///
+/// The blocker-aware probes said the same thing when asked with only the
+/// endpoints occupied, and this owes nothing to the magic tables, which is what
+/// lets it be built at compile time. `a_ray_walk_finds_what_the_sliders_do`
+/// holds the two to each other.
+const fn between_squares(a: u8, b: u8) -> u64 {
+    if a == b {
+        return 0;
+    }
+    let (target_rank, target_file) = ((b / 8) as i8, (b % 8) as i8);
+    let (mut rank, mut file) = ((a / 8) as i8, (a % 8) as i8);
+    let rank_step = towards(rank, target_rank);
+    let file_step = towards(file, target_file);
+    let mut mask = 0u64;
+    loop {
+        rank += rank_step;
+        file += file_step;
+        if !(rank >= 0 && rank < 8 && file >= 0 && file < 8) {
+            return 0;
+        }
+        if rank == target_rank && file == target_file {
+            return mask;
+        }
+        mask |= 1u64 << ((rank * 8 + file) as u32);
+    }
 }
 
 // the squares that have to be empty for each castle
@@ -2621,6 +2652,44 @@ mod random_games {
             for before in line.iter().rev() {
                 board.undo_move();
                 prop_assert_eq!(&board, before, "unmaking did not restore the position");
+            }
+        }
+    }
+}
+
+#[cfg(test)]
+mod between {
+    use super::{ATTACK_MASKS, BETWEEN};
+    use crate::bitboard::BitBoard;
+    use crate::magic::Magic;
+    use pretty_assertions::assert_eq;
+
+    /// The table used to be built by probing the magic tables with only the two
+    /// endpoints occupied and intersecting what each end saw. The ray walk that
+    /// replaced it has to answer identically for every one of the four thousand
+    /// pairs, aligned and not, or a check would be answered with the wrong
+    /// squares.
+    #[test]
+    fn a_ray_walk_finds_what_the_sliders_do() {
+        let magic = Magic::new();
+        for a in 0..64u8 {
+            for b in 0..64u8 {
+                let mut probed = 0u64;
+                if a != b {
+                    let ends = (1u64 << a) | (1u64 << b);
+                    if ATTACK_MASKS.straight[a as usize].is_bit_set(b) {
+                        probed =
+                            magic.get_straight_move(a, ends) & magic.get_straight_move(b, ends);
+                    } else if ATTACK_MASKS.diagonal[a as usize].is_bit_set(b) {
+                        probed =
+                            magic.get_diagonal_move(a, ends) & magic.get_diagonal_move(b, ends);
+                    }
+                }
+                assert_eq!(
+                    BETWEEN[a as usize][b as usize], probed,
+                    "between {} and {}",
+                    a, b
+                );
             }
         }
     }
