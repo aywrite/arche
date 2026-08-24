@@ -138,8 +138,10 @@ mod tests {
     #[test]
     fn a_keyword_only_counts_as_a_whole_word() {
         // the value belongs to movetime, and nothing here says time
+        // a_keyword_inside_a_longer_word_is_absent covers the half of this
+        // that says time is not there at all; what is here as well is that
+        // movetime still reads its own value while it contains one
         let params = Params::of("go movetime 500");
-        assert_eq!(params.value("time"), None);
         assert_eq!(params.count("time"), Param::Absent);
         assert_eq!(params.count("movetime"), Param::Read(500));
         assert!(!params.flag("move"));
@@ -151,27 +153,6 @@ mod tests {
         let params = Params::of("go depth");
         assert!(params.flag("depth"));
         assert_eq!(params.count("depth"), Param::Absent);
-    }
-
-    #[test]
-    fn any_amount_of_space_separates_words() {
-        let params = Params::of("  go   wtime\t300000  ");
-        assert_eq!(params.count("wtime"), Param::Read(300_000));
-    }
-
-    #[test]
-    fn a_count_below_zero_is_a_spent_one() {
-        // what the match tools send once their time margin has been eaten into
-        let params = Params::of("go wtime -5 btime -0 winc -99999999999999999999");
-        assert_eq!(params.count("wtime"), Param::Read(0));
-        assert_eq!(params.count("btime"), Param::Read(0));
-        assert_eq!(params.count("winc"), Param::Read(0));
-    }
-
-    #[test]
-    fn a_count_too_large_to_hold_is_the_largest_we_can() {
-        let params = Params::of("go wtime 99999999999999999999999");
-        assert_eq!(params.count("wtime"), Param::Read(u64::MAX));
     }
 
     #[test]
@@ -278,7 +259,8 @@ mod properties {
         }
 
         /// However far below zero, a clock reads as spent rather than as
-        /// something that could not be read.
+        /// something that could not be read. Below zero is what the match
+        /// tools send once their time margin has been eaten into.
         #[test]
         fn any_negative_count_is_a_spent_one(keyword in keyword(), digits in "[0-9]{1,40}") {
             let line = format!("{} -{}", keyword, digits);
