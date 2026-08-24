@@ -2,13 +2,13 @@ use crate::params::{Param, Params};
 use crate::time_control::TimeControl;
 use basic_engine::Color;
 use basic_engine::Engine;
+use basic_engine::Limits;
 use basic_engine::SearchConfig;
 use basic_engine::SearchOutcome;
 use basic_engine::SearchParameters;
 use basic_engine::bench;
 use basic_engine::{PvLine, SearchResult};
 use std::io::{BufRead, Stdout, Write};
-use std::time::Duration;
 
 /// The time part of a `go` command, from the point of view of the side to
 /// move.
@@ -300,21 +300,23 @@ impl<T: Engine, W: Write> UCI<T, W> {
 
     fn parse_go(&mut self, line: &str) {
         let params = Params::of(line);
-        let mut sp = SearchParameters::new();
-        sp.search_duration = time_control_from(&params, self.engine.active_color()).budget();
-        sp.depth = go_depth(&params);
-        // an unreadable node limit is ignored rather than obeyed as zero,
-        // which would stop the search before it had a move to report
-        sp.nodes = params.count("nodes").read();
+        // the clock starts here, when the command arrived, and the search
+        // reports its elapsed time against the same start
+        let limits = Limits::starting_now(
+            time_control_from(&params, self.engine.active_color()).budget(),
+            // an unreadable node limit is ignored rather than obeyed as zero,
+            // which would stop the search before it had a move to report
+            params.count("nodes").read(),
+        );
+        let sp = SearchParameters::new(go_depth(&params), limits);
 
-        let start = sp.start_time;
         // the closure writes while the engine is borrowed for the search, so
         // it goes to the writer directly rather than through say
         let out = &mut self.out;
         let outcome = self
             .engine
             .iterative_deepening_search(sp, |depth, result, pv| {
-                let _ = writeln!(out, "{}", format_info(depth, result, &pv, start.elapsed()));
+                let _ = writeln!(out, "{}", format_info(depth, result, &pv));
             });
         match outcome {
             SearchOutcome::Complete(result) | SearchOutcome::Aborted(Some(result)) => {
@@ -400,8 +402,8 @@ fn perft_depth(params: &Params) -> u8 {
 /// One completed depth as a UCI info line. The elapsed time arrives as a
 /// parameter rather than being read from a clock here, so that tests can pin
 /// the whole line.
-fn format_info(depth: u8, result: &SearchResult, pv: &PvLine, elapsed: Duration) -> String {
-    let millis = elapsed.as_millis();
+fn format_info(depth: u8, result: &SearchResult, pv: &PvLine) -> String {
+    let millis = result.elapsed.as_millis();
     // measure a search faster than a millisecond as one, so the rate stays
     // finite and the arithmetic stays whole
     let nps = (result.nodes as u128 * 1000 / millis.max(1)) as u64;
@@ -422,6 +424,7 @@ mod tests {
     use super::*;
     use basic_engine::{AlphaBeta, Board};
     use std::io::Cursor;
+    use std::time::Duration;
 
     /// A table small enough that a test can afford one per case, speaking
     /// into a buffer so that what the interface would see can be asserted.
@@ -1032,13 +1035,14 @@ go depth 3
     fn an_info_line_reports_a_centipawn_score() {
         let result = SearchResult {
             nodes: 2000,
+            elapsed: Duration::from_millis(500),
             selective_depth: 7,
             best_move: play_named("e2e4"),
             score: 25,
         };
         let pv = PvLine::new(vec![play_named("e2e4"), play_named("g1f3")]);
         assert_eq!(
-            format_info(5, &result, &pv, Duration::from_millis(500)),
+            format_info(5, &result, &pv),
             "info depth 5 seldepth 7 nodes 2000 time 500 nps 4000 score cp 25 pv e2e4 g1f3"
         );
     }
@@ -1048,13 +1052,14 @@ go depth 3
         // three plies from checkmate reads as mate in two moves
         let result = SearchResult {
             nodes: 1500,
+            elapsed: Duration::from_millis(20),
             selective_depth: 4,
             best_move: play_named("e2e4"),
             score: 30_000 - 3,
         };
         let pv = PvLine::new(vec![play_named("e2e4")]);
         assert_eq!(
-            format_info(4, &result, &pv, Duration::from_millis(20)),
+            format_info(4, &result, &pv),
             "info depth 4 seldepth 4 nodes 1500 time 20 nps 75000 score mate 2 pv e2e4"
         );
     }
@@ -1063,13 +1068,14 @@ go depth 3
     fn a_search_faster_than_a_millisecond_still_reports_a_rate() {
         let result = SearchResult {
             nodes: 300,
+            elapsed: Duration::ZERO,
             selective_depth: 1,
             best_move: play_named("e2e4"),
             score: 0,
         };
         let pv = PvLine::new(vec![]);
         assert_eq!(
-            format_info(1, &result, &pv, Duration::ZERO),
+            format_info(1, &result, &pv),
             "info depth 1 seldepth 1 nodes 300 time 0 nps 300000 score cp 0 pv "
         );
     }
