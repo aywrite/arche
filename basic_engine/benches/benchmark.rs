@@ -2,7 +2,7 @@ use criterion::{BenchmarkId, Criterion, criterion_group, criterion_main};
 use std::hint::black_box;
 use std::time::{Duration, Instant};
 
-use basic_engine::{AlphaBeta, Board, Color, Engine, Game, SearchParameters};
+use basic_engine::{AlphaBeta, Board, Color, Engine, SearchParameters};
 
 const TEST_POSITIONS: [&str; 4] = [
     basic_engine::STARTING_FEN, // initial

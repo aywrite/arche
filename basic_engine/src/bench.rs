@@ -8,7 +8,6 @@
 //! the match tools scale their time controls by, so the clock runs over the
 //! search alone and not over allocating the table.
 
-use crate::Game;
 use crate::board::Board;
 use crate::engine::{AlphaBeta, Engine, SearchConfig, SearchOutcome, SearchParameters};
 use crate::misc::Score;
