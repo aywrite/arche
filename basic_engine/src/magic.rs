@@ -7,7 +7,6 @@
 //! for rather than derived, which is what the ignored test at the bottom of
 //! this file does.
 
-use crate::bitboard::BitBoard;
 use crate::board::{BASE_CONVERSIONS, BaseConversions};
 
 /// The squares a slider on `from` could be blocked on: its rays, less the last
@@ -17,18 +16,21 @@ use crate::board::{BASE_CONVERSIONS, BaseConversions};
 /// Trimming the ends is what keeps the mask small, and the mask is what sizes
 /// the table. A rook in a corner is blocked on twelve squares rather than
 /// fourteen, and every bit dropped halves what its square needs.
-fn blocker_mask(from: u8, directions: [isize; 4]) -> u64 {
+const fn blocker_mask(mailbox: &BaseConversions, from: u8, directions: [isize; 4]) -> u64 {
     let mut mask = 0u64;
-    for step in directions {
+    let mut d = 0;
+    while d < directions.len() {
+        let step = directions[d];
         let mut square = from;
         // stop before the edge: a blocker on the last square of a ray has
         // nothing behind it to block
-        while let Some(next) = BASE_CONVERSIONS.step(square, step) {
-            mask.set_bit(square);
+        while let Some(next) = mailbox.step(square, step) {
+            mask |= 1u64 << square;
             square = next;
         }
+        d += 1;
     }
-    mask.clear_bit(from);
+    mask &= !(1u64 << from);
     mask
 }
 
@@ -40,45 +42,71 @@ fn blocker_mask(from: u8, directions: [isize; 4]) -> u64 {
 /// has to agree with. A free function of the position alone so that it can be
 /// asked directly, rather than only being reachable while a table is filled in:
 /// `the_tables_answer_what_a_ray_walk_would` compares the two.
-pub(crate) fn attacks_from(from: u8, blockers: u64, directions: [isize; 4]) -> u64 {
+///
+/// The mailbox is handed in rather than read from `BASE_CONVERSIONS` so that
+/// the const build makes one and walks it a hundred thousand times, instead of
+/// materialising a copy of it at every step of every ray.
+pub(crate) const fn attacks_from(
+    mailbox: &BaseConversions,
+    from: u8,
+    blockers: u64,
+    directions: [isize; 4],
+) -> u64 {
     let mut moves = 0u64;
-    for step in directions {
+    let mut d = 0;
+    while d < directions.len() {
+        let step = directions[d];
         let mut square = from;
-        while let Some(next) = BASE_CONVERSIONS.step(square, step) {
-            moves.set_bit(next);
-            if blockers.is_bit_set(next) {
+        while let Some(next) = mailbox.step(square, step) {
+            moves |= 1u64 << next;
+            if blockers & (1u64 << next) != 0 {
                 break;
             }
             square = next;
         }
+        d += 1;
     }
     moves
 }
 
-/// Every subset of the mask's set bits, one per value of `index`: bit `n` of
-/// the index says whether the mask's `n`th set bit is occupied.
-fn blocker_configurations(mask: u64) -> Vec<u64> {
+/// One subset of the mask's set bits: bit `n` of `index` says whether the
+/// mask's `n`th set bit is occupied.
+const fn blocker_configuration(mask: u64, index: u64) -> u64 {
     let bits = mask.count_ones();
-    (0..1u64 << bits)
-        .map(|index| {
-            let mut board = mask;
-            let mut remaining = mask;
-            for bit in 0..bits {
-                let square = remaining.trailing_zeros() as u8;
-                remaining &= remaining - 1;
-                if !index.is_bit_set(bit as u8) {
-                    board.clear_bit(square);
-                }
-            }
-            board
-        })
+    let mut board = mask;
+    let mut remaining = mask;
+    let mut bit = 0;
+    while bit < bits {
+        let square = remaining.trailing_zeros();
+        remaining &= remaining - 1;
+        if index & (1u64 << bit) == 0 {
+            board &= !(1u64 << square);
+        }
+        bit += 1;
+    }
+    board
+}
+
+/// Every subset of the mask's set bits, in index order.
+#[cfg(test)]
+fn blocker_configurations(mask: u64) -> Vec<u64> {
+    (0..1u64 << mask.count_ones())
+        .map(|index| blocker_configuration(mask, index))
         .collect()
 }
 
+/// How wide each kind's attack table is: the sum over the squares of two to the
+/// power of the bits in that square's blocker mask. Stated rather than counted
+/// because an array has to be sized before it is filled; `new` asserts that the
+/// masks fill it exactly, so a wrong number fails the build rather than the
+/// engine.
+const STRAIGHT_ATTACKS: usize = 102_400;
+const DIAGONAL_ATTACKS: usize = 5_248;
+
 /// One slider kind's lookup tables. Every square's attack sets sit end to end
-/// in a single allocation, with `offsets` saying where each square's block
-/// starts, so a probe is one indirection rather than two.
-struct SliderTables {
+/// in a single array, with `offsets` saying where each square's block starts,
+/// so a probe is one indirection rather than two.
+struct SliderTables<const ATTACKS: usize> {
     blocker_masks: [u64; 64],
     magics: [u64; 64],
     /// `64 - bits` for each square, so a probe shifts without subtracting
@@ -86,35 +114,47 @@ struct SliderTables {
     /// called when it lived in two places.
     shifts: [u8; 64],
     offsets: [u32; 64],
-    attacks: Vec<u64>,
+    attacks: [u64; ATTACKS],
 }
 
-impl SliderTables {
-    fn new(directions: [isize; 4], magics: [u64; 64]) -> Self {
+impl<const ATTACKS: usize> SliderTables<ATTACKS> {
+    const fn new(directions: [isize; 4], magics: [u64; 64]) -> Self {
         let mut blocker_masks = [0u64; 64];
         let mut shifts = [0u8; 64];
         let mut offsets = [0u32; 64];
-        let mut attacks: Vec<u64> = Vec::new();
+        let mut attacks = [0u64; ATTACKS];
+        let mut filled = 0usize;
+        // one mailbox for the whole build, walked by every ray below
+        let mailbox = BASE_CONVERSIONS;
 
-        for square in 0..64u8 {
+        let mut square = 0u8;
+        while square < 64 {
             let i = square as usize;
-            let mask = blocker_mask(square, directions);
+            let mask = blocker_mask(&mailbox, square, directions);
             let bits = mask.count_ones();
             blocker_masks[i] = mask;
             shifts[i] = 64 - bits as u8;
-            offsets[i] = attacks.len() as u32;
+            offsets[i] = filled as u32;
 
-            let start = attacks.len();
-            attacks.resize(start + (1usize << bits), 0);
-            for blockers in blocker_configurations(mask) {
+            let configurations = 1u64 << bits;
+            let mut configuration = 0u64;
+            while configuration < configurations {
+                let blockers = blocker_configuration(mask, configuration);
                 let index = (blockers.wrapping_mul(magics[i]) >> shifts[i]) as usize;
-                let moves = attacks_from(square, blockers, directions);
+                let moves = attacks_from(&mailbox, square, blockers, directions);
                 // two configurations may share an index only when they admit
                 // the same moves, which is what makes the magic a valid one
-                debug_assert!(attacks[start + index] == 0 || attacks[start + index] == moves);
-                attacks[start + index] = moves;
+                assert!(attacks[filled + index] == 0 || attacks[filled + index] == moves);
+                attacks[filled + index] = moves;
+                configuration += 1;
             }
+            filled += configurations as usize;
+            square += 1;
         }
+        assert!(
+            filled == ATTACKS,
+            "the table is not the width the masks ask for"
+        );
 
         Self {
             blocker_masks,
@@ -135,12 +175,12 @@ impl SliderTables {
 }
 
 pub struct Magic {
-    straight: SliderTables,
-    diagonal: SliderTables,
+    straight: SliderTables<STRAIGHT_ATTACKS>,
+    diagonal: SliderTables<DIAGONAL_ATTACKS>,
 }
 
 impl Magic {
-    pub fn new() -> Self {
+    pub const fn new() -> Self {
         Self {
             straight: SliderTables::new(BaseConversions::STRAIGHT_STEPS, STRAIGHT_MAGICS),
             diagonal: SliderTables::new(BaseConversions::DIAGONAL_STEPS, DIAGONAL_MAGICS),
@@ -201,9 +241,9 @@ pub const DIAGONAL_MAGICS: [u64; 64] = [
 #[cfg(test)]
 mod magic_generation {
     use super::{
-        DIAGONAL_MAGICS, Magic, STRAIGHT_MAGICS, attacks_from, blocker_configurations, blocker_mask,
+        DIAGONAL_MAGICS, STRAIGHT_MAGICS, attacks_from, blocker_configurations, blocker_mask,
     };
-    use crate::board::BaseConversions;
+    use crate::board::{BASE_CONVERSIONS, BaseConversions, MAGIC};
     use crate::misc::split_mix;
 
     const STRAIGHT: [isize; 4] = BaseConversions::STRAIGHT_STEPS;
@@ -218,11 +258,11 @@ mod magic_generation {
     }
 
     fn cases(square: u8, directions: [isize; 4]) -> Cases {
-        let mask = blocker_mask(square, directions);
+        let mask = blocker_mask(&BASE_CONVERSIONS, square, directions);
         let blockers = blocker_configurations(mask);
         let attacks = blockers
             .iter()
-            .map(|&b| attacks_from(square, b, directions))
+            .map(|&b| attacks_from(&BASE_CONVERSIONS, square, b, directions))
             .collect();
         Cases {
             blockers,
@@ -298,21 +338,25 @@ mod magic_generation {
     /// so the whole space is a hundred thousand or so lookups.
     #[test]
     fn the_tables_answer_what_a_ray_walk_would() {
-        let magic = Magic::new();
+        let magic = &MAGIC;
         for square in 0..64u8 {
-            for blockers in blocker_configurations(blocker_mask(square, STRAIGHT)) {
+            for blockers in
+                blocker_configurations(blocker_mask(&BASE_CONVERSIONS, square, STRAIGHT))
+            {
                 assert_eq!(
                     magic.get_straight_move(square, blockers),
-                    attacks_from(square, blockers, STRAIGHT),
+                    attacks_from(&BASE_CONVERSIONS, square, blockers, STRAIGHT),
                     "straight, square {} with blockers {:#018x}",
                     square,
                     blockers
                 );
             }
-            for blockers in blocker_configurations(blocker_mask(square, DIAGONAL)) {
+            for blockers in
+                blocker_configurations(blocker_mask(&BASE_CONVERSIONS, square, DIAGONAL))
+            {
                 assert_eq!(
                     magic.get_diagonal_move(square, blockers),
-                    attacks_from(square, blockers, DIAGONAL),
+                    attacks_from(&BASE_CONVERSIONS, square, blockers, DIAGONAL),
                     "diagonal, square {} with blockers {:#018x}",
                     square,
                     blockers

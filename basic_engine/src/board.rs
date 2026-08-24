@@ -9,7 +9,6 @@ use crate::psqt::PieceSquareTables;
 use crate::zobrist::Zobrist;
 use smallvec::SmallVec;
 use std::fmt;
-use std::sync::LazyLock;
 
 pub type MoveList = SmallVec<[Play; 64]>;
 
@@ -77,7 +76,10 @@ static ATTACK_MASKS: AttackMasks = AttackMasks::new();
 // a const rather than a static, so that what is built from it can be built at
 // compile time too: a const initialiser may not read a static
 pub const BASE_CONVERSIONS: BaseConversions = BaseConversions::new();
-static MAGIC: LazyLock<Magic> = LazyLock::new(Magic::new);
+// the lint is a guard against a const that loops forever; this one is only
+// long, a hundred thousand ray walks filling the two attack tables
+#[allow(long_running_const_eval)]
+pub(crate) static MAGIC: Magic = Magic::new();
 // the squares strictly between two aligned squares, and empty for a pair
 // that shares no line. What a piece must land on to block a slider on one
 // square checking a king on the other.
@@ -200,14 +202,18 @@ impl BaseConversions {
 
     /// The square one `step` away, or `None` if the step leaves the board.
     #[inline]
-    pub fn step(&self, from: u8, step: isize) -> Option<u8> {
+    pub const fn step(&self, from: u8, step: isize) -> Option<u8> {
         let index_100 = self.base_64_to_100[from as usize] as isize + step;
         debug_assert!(
-            (0..100).contains(&index_100),
+            matches!(index_100, 0..100),
             "one step cannot leave the mailbox"
         );
         let square = self.base_100_to_64[index_100 as usize];
-        (square != Self::OFF_BOARD).then_some(square)
+        if square != Self::OFF_BOARD {
+            Some(square)
+        } else {
+            None
+        }
     }
 }
 
@@ -378,8 +384,6 @@ impl Default for Board {
 
 impl Board {
     pub fn new() -> Board {
-        // pay for the magic tables at startup rather than on the first search
-        LazyLock::force(&MAGIC);
         Board::from_fen(crate::STARTING_FEN).unwrap()
     }
 
@@ -433,7 +437,7 @@ impl Board {
 
         let all_pieces = self.black | self.white;
         let attack_masks = &ATTACK_MASKS;
-        let magic = &*MAGIC;
+        let magic = &MAGIC;
         match piece {
             Piece::Knight => attack_masks.knights[m.from as usize].is_bit_set(m.to),
             Piece::King => attack_masks.kings[m.from as usize].is_bit_set(m.to),
@@ -528,7 +532,7 @@ impl Board {
         };
         let all_pieces = self.black | self.white;
         let attack_masks = &ATTACK_MASKS;
-        let magic = &*MAGIC;
+        let magic = &MAGIC;
         // the captures list keeps only the squares the opponent stands on,
         // the full list keeps every square our own pieces do not
         let target_filter = if CAPTURES_ONLY {
@@ -800,7 +804,7 @@ impl Board {
     pub fn square_attacked(&self, index: u8, color: Color) -> bool {
         let all = self.black | self.white;
         let attack_masks = &ATTACK_MASKS;
-        let magic = &*MAGIC;
+        let magic = &MAGIC;
         let (color_mask, pawn_masks) = match color {
             Color::Black => (self.black, &attack_masks.black_pawns),
             Color::White => (self.white, &attack_masks.white_pawns),
@@ -1196,7 +1200,7 @@ impl Board {
             return self.recompute_checkers();
         }
         let attack_masks = &ATTACK_MASKS;
-        let magic = &*MAGIC;
+        let magic = &MAGIC;
         let to = play.to;
         let from = play.from;
         let mut checkers = 0u64;
@@ -1251,7 +1255,7 @@ impl Board {
         let king = self.king_index(self.active_color);
         let all = self.black | self.white;
         let attack_masks = &ATTACK_MASKS;
-        let magic = &*MAGIC;
+        let magic = &MAGIC;
         let (attacker_mask, pawn_masks) = match !self.active_color {
             Color::Black => (self.black, &attack_masks.black_pawns),
             Color::White => (self.white, &attack_masks.white_pawns),
@@ -2659,9 +2663,8 @@ mod random_games {
 
 #[cfg(test)]
 mod between {
-    use super::{ATTACK_MASKS, BETWEEN};
+    use super::{ATTACK_MASKS, BETWEEN, MAGIC};
     use crate::bitboard::BitBoard;
-    use crate::magic::Magic;
     use pretty_assertions::assert_eq;
 
     /// The table used to be built by probing the magic tables with only the two
@@ -2671,7 +2674,7 @@ mod between {
     /// squares.
     #[test]
     fn a_ray_walk_finds_what_the_sliders_do() {
-        let magic = Magic::new();
+        let magic = &MAGIC;
         for a in 0..64u8 {
             for b in 0..64u8 {
                 let mut probed = 0u64;
