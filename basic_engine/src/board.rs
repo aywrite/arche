@@ -73,7 +73,7 @@ const H8: u8 = 63;
 static PIECE_SQUARE_TABLES: PieceSquareTables = PieceSquareTables::TABLES;
 static ZOBRIST: Zobrist = Zobrist::TABLE;
 
-static ATTACK_MASKS: LazyLock<AttackMasks> = LazyLock::new(AttackMasks::new);
+static ATTACK_MASKS: AttackMasks = AttackMasks::new();
 pub static BASE_CONVERSIONS: LazyLock<BaseConversions> = LazyLock::new(BaseConversions::new);
 static MAGIC: LazyLock<Magic> = LazyLock::new(Magic::new);
 // the squares strictly between two aligned squares, and empty for a pair
@@ -82,7 +82,7 @@ static MAGIC: LazyLock<Magic> = LazyLock::new(Magic::new);
 static BETWEEN: LazyLock<[[u64; 64]; 64]> = LazyLock::new(between_masks);
 
 fn between_masks() -> [[u64; 64]; 64] {
-    let attack_masks = &*ATTACK_MASKS;
+    let attack_masks = &ATTACK_MASKS;
     let magic = &*MAGIC;
     let mut between = [[0u64; 64]; 64];
     for a in 0..64u8 {
@@ -192,93 +192,87 @@ struct AttackMasks {
     kings: [u64; 64],
 }
 
+/// The squares one step from `from` in each of `steps`, a step that leaves
+/// the board dropped. Steps are a rank and a file, so a step off the side is
+/// caught by the file going out of range rather than by a per direction mask
+/// that would have to be got right eight times over.
+const fn stepped(from: u8, steps: &[(i8, i8)]) -> u64 {
+    let rank = (from / 8) as i8;
+    let file = (from % 8) as i8;
+    let mut mask = 0u64;
+    let mut i = 0;
+    while i < steps.len() {
+        let (rank_step, file_step) = steps[i];
+        let (r, f) = (rank + rank_step, file + file_step);
+        if r >= 0 && r < 8 && f >= 0 && f < 8 {
+            mask |= 1u64 << ((r * 8 + f) as u32);
+        }
+        i += 1;
+    }
+    mask
+}
+
+/// Every square reached from `from` by repeating each of `steps` until the
+/// board runs out, the square itself included.
+const fn rayed(from: u8, steps: &[(i8, i8)]) -> u64 {
+    let mut mask = 1u64 << from;
+    let mut i = 0;
+    while i < steps.len() {
+        let (rank_step, file_step) = steps[i];
+        let mut r = (from / 8) as i8 + rank_step;
+        let mut f = (from % 8) as i8 + file_step;
+        while r >= 0 && r < 8 && f >= 0 && f < 8 {
+            mask |= 1u64 << ((r * 8 + f) as u32);
+            r += rank_step;
+            f += file_step;
+        }
+        i += 1;
+    }
+    mask
+}
+
+/// The eight directions each leaper moves in, as a rank step and a file step.
+/// A pawn's are the squares it must stand on to attack the one indexed, which
+/// is the mirror of what it attacks: a white pawn takes upwards, so it stands
+/// one rank below.
+#[rustfmt::skip]
+const KING_STEPS: [(i8, i8); 8] = [
+    (1, -1), (1, 0), (1, 1), (0, -1), (0, 1), (-1, -1), (-1, 0), (-1, 1),
+];
+#[rustfmt::skip]
+const KNIGHT_STEPS: [(i8, i8); 8] = [
+    (2, -1), (2, 1), (1, -2), (1, 2), (-1, -2), (-1, 2), (-2, -1), (-2, 1),
+];
+const WHITE_PAWN_STEPS: [(i8, i8); 2] = [(-1, -1), (-1, 1)];
+const BLACK_PAWN_STEPS: [(i8, i8); 2] = [(1, -1), (1, 1)];
+const STRAIGHT_STEPS: [(i8, i8); 4] = [(1, 0), (-1, 0), (0, 1), (0, -1)];
+const DIAGONAL_STEPS: [(i8, i8); 4] = [(1, 1), (1, -1), (-1, 1), (-1, -1)];
+
 impl AttackMasks {
-    fn new() -> Self {
-        let mut attack_masks = AttackMasks {
+    /// Built at compile time, which is why the walks above are in coordinates
+    /// rather than through the mailbox: a `const` leaves nothing to build on
+    /// startup and nothing to check on the way to a mask.
+    const fn new() -> Self {
+        let mut masks = AttackMasks {
             black_pawns: [0; 64],
             white_pawns: [0; 64],
             knights: [0; 64],
-            straight: [0; 64], // rooks and queens
-            diagonal: [0; 64], // bishops and queens
+            straight: [0; 64],
+            diagonal: [0; 64],
             kings: [0; 64],
         };
-        for i in 0isize..64 {
-            let (rank, file) = index_to_coordinate(i as u8);
-            let mut kings: Vec<isize> = vec![-1, 1, -8, 8, 7, 9, -7, -9];
-            let mut black_pawns: Vec<isize> = vec![7, 9];
-            let mut white_pawns: Vec<isize> = vec![-7, -9];
-            let knights = [15, 17, -15, -17, 6, 10, -6, -10];
-
-            let top_rank = i <= H1.into();
-            let bottom_rank = i >= A8.into();
-            let left_edge = (i % 8) == 0;
-            let right_edge = (i % 8) == 7;
-
-            if top_rank {
-                kings.retain(|j| ![-7, -8, -9].contains(j));
-                white_pawns = vec![];
-            } else if bottom_rank {
-                kings.retain(|j| ![7, 8, 9].contains(j));
-                black_pawns = vec![];
-            }
-
-            if left_edge {
-                kings.retain(|j| ![-1, -9, 7].contains(j));
-                white_pawns.retain(|j| ![-9].contains(j));
-                black_pawns.retain(|j| ![7].contains(j));
-            } else if right_edge {
-                kings.retain(|j| ![1, -7, 9].contains(j));
-                black_pawns.retain(|j| ![9].contains(j));
-                white_pawns.retain(|j| ![-7].contains(j));
-            }
-
-            for j in &kings {
-                let index = i + j;
-                attack_masks.kings[i as usize].set_bit(index as u8);
-            }
-
-            for j in &white_pawns {
-                let index = i + j;
-                attack_masks.white_pawns[i as usize].set_bit(index as u8);
-            }
-            for j in &black_pawns {
-                let index = i + j;
-                attack_masks.black_pawns[i as usize].set_bit(index as u8);
-            }
-
-            for j in &knights {
-                let index = i + j;
-                if (0..64).contains(&index) {
-                    let (new_rank, new_file) = index_to_coordinate(index as u8);
-                    let rank_diff = rank as isize - new_rank as isize;
-                    let file_diff = file as isize - new_file as isize;
-
-                    if (rank_diff).abs() <= 2 && (file_diff).abs() <= 2 {
-                        attack_masks.knights[i as usize].set_bit(index as u8);
-                    };
-                }
-            }
-
-            for j in 0..8 {
-                let horizontal_index = (i / 8 * 8) + j;
-                let vertical_index = (i % 8) + (j * 8);
-                attack_masks.straight[i as usize].set_bit(horizontal_index as u8);
-                attack_masks.straight[i as usize].set_bit(vertical_index as u8);
-            }
-
-            // the whole diagonals, the square itself included: these say only
-            // whether two squares are aligned, and nothing asks that of a
-            // square and itself
-            attack_masks.diagonal[i as usize].set_bit(i as u8);
-            for step in BaseConversions::DIAGONAL_STEPS {
-                let mut square = i as u8;
-                while let Some(next) = BASE_CONVERSIONS.step(square, step) {
-                    attack_masks.diagonal[i as usize].set_bit(next);
-                    square = next;
-                }
-            }
+        let mut square = 0u8;
+        while square < 64 {
+            let i = square as usize;
+            masks.kings[i] = stepped(square, &KING_STEPS);
+            masks.knights[i] = stepped(square, &KNIGHT_STEPS);
+            masks.white_pawns[i] = stepped(square, &WHITE_PAWN_STEPS);
+            masks.black_pawns[i] = stepped(square, &BLACK_PAWN_STEPS);
+            masks.straight[i] = rayed(square, &STRAIGHT_STEPS);
+            masks.diagonal[i] = rayed(square, &DIAGONAL_STEPS);
+            square += 1;
         }
-        attack_masks
+        masks
     }
 }
 
@@ -386,7 +380,7 @@ impl Board {
         }
 
         let all_pieces = self.black | self.white;
-        let attack_masks = &*ATTACK_MASKS;
+        let attack_masks = &ATTACK_MASKS;
         let magic = &*MAGIC;
         match piece {
             Piece::Knight => attack_masks.knights[m.from as usize].is_bit_set(m.to),
@@ -464,7 +458,7 @@ impl Board {
             Color::White => (self.white, self.black),
         };
         let all_pieces = self.black | self.white;
-        let attack_masks = &*ATTACK_MASKS;
+        let attack_masks = &ATTACK_MASKS;
         let magic = &*MAGIC;
         // the captures list keeps only the squares the opponent stands on,
         // the full list keeps every square our own pieces do not
@@ -755,7 +749,7 @@ impl Board {
 
     pub fn square_attacked(&self, index: u8, color: Color) -> bool {
         let all = self.black | self.white;
-        let attack_masks = &*ATTACK_MASKS;
+        let attack_masks = &ATTACK_MASKS;
         let magic = &*MAGIC;
         let (color_mask, pawn_masks) = match color {
             Color::Black => (self.black, &attack_masks.black_pawns),
@@ -861,7 +855,6 @@ impl Board {
         });
 
         let opposing_color = !self.active_color;
-        let zobrist: &Zobrist = &ZOBRIST;
         // update castling permissions
         let old_castle = self.castle;
         match play.from {
@@ -890,6 +883,7 @@ impl Board {
         }
         // XORing both the old and new castle keys removes the old permissions
         // from the position key and adds the new ones (a no-op when unchanged)
+        let zobrist: &Zobrist = &ZOBRIST;
         self.key ^= zobrist.castle_key(old_castle) ^ zobrist.castle_key(self.castle);
         if let Some(en_passant) = self.en_passant {
             // the en passant rights of the previous position have expired
@@ -970,7 +964,7 @@ impl Board {
         // at all, so the probe has nothing to find. `checkers` still holds
         // the mover's own checkers here: it is only replaced below, once the
         // move has been allowed to stand.
-        let attack_masks = &*ATTACK_MASKS;
+        let attack_masks = &ATTACK_MASKS;
         let could_expose_king = !MAINTAIN_CHECKERS
             || self.checkers != 0
             || from_piece == Piece::King
@@ -1093,7 +1087,7 @@ impl Board {
     /// holds the squares a pawn of that colour must stand on to attack the one
     /// indexed, which is what is being asked here.
     fn pawn_can_capture_on(&self, index: u8, capturer: Color) -> bool {
-        let attack_masks = &*ATTACK_MASKS;
+        let attack_masks = &ATTACK_MASKS;
         let (from, pawns) = match capturer {
             Color::White => (attack_masks.white_pawns[index as usize], self.white),
             Color::Black => (attack_masks.black_pawns[index as usize], self.black),
@@ -1144,7 +1138,7 @@ impl Board {
         if play.castle || play.en_passant {
             return self.recompute_checkers();
         }
-        let attack_masks = &*ATTACK_MASKS;
+        let attack_masks = &ATTACK_MASKS;
         let magic = &*MAGIC;
         let to = play.to;
         let from = play.from;
@@ -1199,7 +1193,7 @@ impl Board {
     pub fn recompute_checkers(&self) -> u64 {
         let king = self.king_index(self.active_color);
         let all = self.black | self.white;
-        let attack_masks = &*ATTACK_MASKS;
+        let attack_masks = &ATTACK_MASKS;
         let magic = &*MAGIC;
         let (attacker_mask, pawn_masks) = match !self.active_color {
             Color::Black => (self.black, &attack_masks.black_pawns),
