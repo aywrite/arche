@@ -64,12 +64,18 @@ pub struct GhiCounters {
     /// stored draw was reachable by the path that stored it and may not be
     /// reachable by this one. Zero while the search refuses them.
     pub tainted_score_cutoffs: u64,
+    /// Tainted results the search declined to offer the table because its
+    /// policy keeps only clean scores, counted before the replacement
+    /// contest: some of these would have lost it anyway, so this is the
+    /// policy's reach rather than exactly what the table went without.
+    pub skipped_stores: u64,
     /// Probes that found a tainted score deep enough to cut and refused it,
     /// handing back the move alone: the cost of refusing, counted in the
     /// branch where a trusting search takes its cutoff, so the two are the
     /// same event under each policy. Not the same count: the refusing
     /// search is the larger tree and probes more. Zero while the search
-    /// trusts them.
+    /// trusts them; under the rule50 policy this counts its horizon
+    /// refusals instead, tainted or not.
     pub refused_cutoffs: u64,
 }
 
@@ -82,10 +88,9 @@ struct Pv {
     /// True if the score flowed from a repetition or fifty move draw somewhere
     /// below it, so it describes the path taken to this position and not the
     /// position itself. This is the graph history interaction every engine
-    /// carries: what the search does with such a score is
-    /// `SearchConfig::refuse_tainted_cutoffs`, and which half of the problem
-    /// the flag does not cover is in the known limitations in
-    /// `docs/ROADMAP.md`.
+    /// carries: what the search does with such a score is its
+    /// `TaintPolicy`, and which half of the problem the flag does not
+    /// cover is in the known limitations in `docs/ROADMAP.md`.
     tainted: bool,
     depth: u8,
     bound: Bound,
@@ -478,6 +483,13 @@ impl TranspositionTable {
         self.count_store(tainted);
     }
 
+    /// The search declined a store under its taint policy; see
+    /// `GhiCounters::skipped_stores`.
+    #[inline]
+    pub fn count_skipped_store(&mut self) {
+        self.ghi.skipped_stores += 1;
+    }
+
     #[inline]
     fn count_store(&mut self, tainted: bool) {
         self.ghi.stores += 1;
@@ -495,6 +507,7 @@ impl TranspositionTable {
         beta: Score,
         depth: u8,
         refuse_tainted: bool,
+        guard_rule50: bool,
     ) -> Probe {
         let Some(pv) = self.get(board.key) else {
             return Probe::Miss;
@@ -507,6 +520,13 @@ impl TranspositionTable {
                 Bound::Lower => score >= beta,
                 Bound::Ordering => false,
             };
+            if cuts && guard_rule50 && board.fifty_move_near_expiry() {
+                // near the horizon every stored score is suspect, tainted
+                // or not, so the whole cutoff is given up rather than the
+                // tainted ones alone
+                self.ghi.refused_cutoffs += 1;
+                return Probe::Order(pv.play);
+            }
             if cuts && refuse_tainted && pv.tainted {
                 // the stored draw was reachable by the path that stored it and
                 // may not be reachable by this one, so the move is still worth
@@ -721,7 +741,7 @@ mod tests {
         let board = crate::board::Board::new();
         let play = Play::new(0, 1, None, None, false, false);
         table.record_ceiling(&board, play, -50, 5, false);
-        match table.probe(&board, -10, 10, 5, true) {
+        match table.probe(&board, -10, 10, 5, true, false) {
             Probe::Cut { score, tainted } => {
                 assert_eq!(score, -50);
                 assert!(!tainted);
@@ -729,9 +749,31 @@ mod tests {
             other => panic!("a ceiling under alpha did not cut: {other:?}"),
         }
         assert!(matches!(
-            table.probe(&board, -100, 10, 5, true),
+            table.probe(&board, -100, 10, 5, true, false),
             Probe::Order(_)
         ));
+    }
+
+    #[test]
+    fn the_rule50_guard_refuses_any_cutoff_at_the_horizon() {
+        // under the guard a deep clean entry cuts from a fresh position
+        // and is refused move-only once the counter stands at the guard,
+        // with the refusal counted as the policy's cost
+        use super::Probe;
+        let mut table = TranspositionTable::with_capacity(4).expect("a table of a few buckets");
+        let fresh = crate::board::Board::from_fen("4k3/8/8/8/8/8/8/4K3 w - - 0 1").unwrap();
+        let near = crate::board::Board::from_fen("4k3/8/8/8/8/8/8/4K3 w - - 96 112").unwrap();
+        let play = Play::new(0, 1, None, None, false, false);
+        table.record_best(&fresh, play, 0, 5, false);
+        assert!(matches!(
+            table.probe(&fresh, -10, 10, 5, false, true),
+            Probe::Cut { .. }
+        ));
+        assert!(matches!(
+            table.probe(&near, -10, 10, 5, false, true),
+            Probe::Order(_)
+        ));
+        assert_eq!(table.ghi().refused_cutoffs, 1);
     }
 
     #[test]
