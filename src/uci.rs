@@ -435,6 +435,68 @@ mod tests {
         )
     }
 
+    /// An engine that searches nothing and keeps what it was asked for.
+    ///
+    /// The clock a `go` names is worked out here and enforced in the engine,
+    /// and between the two it crosses one call. This is what stands on the
+    /// other side of that call, so a test can say what reached it rather than
+    /// timing a real search and inferring.
+    struct Recorder {
+        asked: Option<SearchParameters>,
+        color: Color,
+    }
+
+    impl Recorder {
+        fn to_move(color: Color) -> Self {
+            Self { asked: None, color }
+        }
+    }
+
+    impl Engine for Recorder {
+        fn iterative_deepening_search(
+            &mut self,
+            search_options: SearchParameters,
+            _on_depth: impl FnMut(u8, &SearchResult, PvLine),
+        ) -> SearchOutcome {
+            self.asked = Some(search_options);
+            // nothing was searched, so there is no move to report
+            SearchOutcome::GameOver
+        }
+
+        fn active_color(&self) -> Color {
+            self.color
+        }
+
+        fn parse_fen(&mut self, _fen: &str) -> Result<(), String> {
+            Ok(())
+        }
+        fn new_game(&mut self) {}
+        fn make_move_str(&mut self, _play: &str) -> bool {
+            true
+        }
+        fn set_table_bytes(&mut self, _bytes: usize) -> bool {
+            true
+        }
+        fn display_board(&self) {}
+        fn perft(&mut self, _depth: u8) -> u64 {
+            0
+        }
+    }
+
+    /// What a `go` line asks of the engine behind it.
+    fn asked_of_engine(line: &str) -> SearchParameters {
+        asked_of_engine_as(line, Color::White)
+    }
+
+    /// The same, for a side to move.
+    fn asked_of_engine_as(line: &str, color: Color) -> SearchParameters {
+        let mut uci = UCI::with_output(Recorder::to_move(color), Vec::new());
+        uci.run(Cursor::new(format!("{}\n", line)));
+        uci.engine
+            .asked
+            .expect("the go command never reached the engine")
+    }
+
     /// Everything said so far, as one string.
     fn said(uci: &UCI<AlphaBeta, Vec<u8>>) -> String {
         String::from_utf8(uci.out.clone()).unwrap()
@@ -904,6 +966,70 @@ go depth 3
             .and_then(|n| n.parse().ok())
             .unwrap_or_else(|| panic!("no node count in {}", info));
         assert!(nodes <= 5000, "{}", said);
+    }
+
+    #[test]
+    fn the_clock_a_go_names_reaches_the_search() {
+        // 500 less the move overhead, which is what time_control works out
+        // and what has to arrive on the other side of the call
+        assert_eq!(
+            asked_of_engine("go movetime 500").limits.clock(),
+            Some(Duration::from_millis(450))
+        );
+    }
+
+    #[test]
+    fn a_search_is_given_the_clock_of_the_side_to_move() {
+        // both clocks are on the line and they are far apart, so a search
+        // handed the wrong one is handed thirty times the time it has
+        let line = "go wtime 60000 btime 4000";
+        assert_eq!(
+            asked_of_engine_as(line, Color::White).limits.clock(),
+            Some(Duration::from_millis(1450)),
+            "white was not given its own clock"
+        );
+        assert_eq!(
+            asked_of_engine_as(line, Color::Black).limits.clock(),
+            Some(Duration::from_millis(50)),
+            "black was not given its own clock"
+        );
+    }
+
+    #[test]
+    fn a_node_limit_reaches_the_search() {
+        let asked = asked_of_engine("go nodes 5000");
+        assert_eq!(asked.limits.node_budget(), 5000);
+        assert_eq!(asked.limits.clock(), None, "a node limit is not a clock");
+    }
+
+    #[test]
+    fn a_depth_reaches_the_search_without_a_limit_beside_it() {
+        let asked = asked_of_engine("go depth 3");
+        assert_eq!(asked.depth, Some(3));
+        assert_eq!(asked.limits.clock(), None);
+        assert_eq!(asked.limits.node_budget(), u64::MAX);
+    }
+
+    #[test]
+    fn a_go_saying_nothing_limits_the_search_by_nothing() {
+        let asked = asked_of_engine("go");
+        assert_eq!(asked.depth, None);
+        assert_eq!(asked.limits.clock(), None);
+        assert_eq!(asked.limits.node_budget(), u64::MAX);
+    }
+
+    #[test]
+    fn a_clock_and_a_node_limit_both_reach_the_search() {
+        let asked = asked_of_engine("go movetime 500 nodes 5000");
+        assert_eq!(asked.limits.clock(), Some(Duration::from_millis(450)));
+        assert_eq!(asked.limits.node_budget(), 5000);
+    }
+
+    #[test]
+    fn an_unreadable_limit_reaches_the_search_as_no_limit() {
+        // read as zero it would stop the search before it had a move
+        let asked = asked_of_engine("go nodes abc");
+        assert_eq!(asked.limits.node_budget(), u64::MAX);
     }
 
     #[test]
