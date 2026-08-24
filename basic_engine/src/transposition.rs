@@ -79,7 +79,11 @@ struct Pv {
     score: Score,
     /// True if the score flowed from a repetition or fifty move draw somewhere
     /// below it, so it describes the path taken to this position and not the
-    /// position itself. See docs on graph history interaction.
+    /// position itself. This is the graph history interaction every engine
+    /// carries: what the search does with such a score is
+    /// `SearchConfig::refuse_tainted_cutoffs`, and which half of the problem
+    /// the flag does not cover is in the known limitations in
+    /// `docs/ROADMAP.md`.
     tainted: bool,
     depth: u8,
     bound: Bound,
@@ -92,7 +96,8 @@ struct Pv {
 #[repr(u8)]
 enum Bound {
     Exact = 0,
-    // fail low nodes are not stored yet, see the known issues in the readme
+    // fail low nodes are not stored yet, see the known limitations in
+    // docs/ROADMAP.md
     Upper = 1,
     Lower = 2,
     Ordering = 3,
@@ -152,10 +157,14 @@ struct Entry {
     static_eval: i16,
 }
 
-// the bench's node counts depend on how many slots a table of a given size
-// holds, so a compiler that laid the entry out differently would move every
-// one of them: this says why, the moment it happens
+// The layout is load bearing: four entries to a cache line, so a probe reads
+// one line and sees all four, and how many slots a table of a given size
+// holds is what every pinned node count is counted against. A compiler that
+// laid either out differently would move all of them, so it fails the build
+// here rather than the suite later.
 const _: () = assert!(mem::size_of::<Entry>() == 16);
+const _: () = assert!(mem::size_of::<Bucket>() == 64);
+const _: () = assert!(mem::align_of::<Bucket>() == 64);
 
 /// An entry stored this many searches ago or more is replaced whatever its
 /// depth: its score describes repetition and fifty move context the game
@@ -544,7 +553,7 @@ fn entry(board: &Board, play: Play, score: Score, depth: u8, bound: Bound, taint
 
 #[cfg(test)]
 mod tests {
-    use super::{Bound, Bucket, Entry, Play, Pv, STALE_AFTER_SEARCHES, TranspositionTable};
+    use super::{Bound, Play, Pv, STALE_AFTER_SEARCHES, TranspositionTable};
     use crate::engine::MAX_DEPTH;
     use crate::misc::{Piece, PromotePiece};
     use pretty_assertions::assert_eq;
@@ -558,20 +567,6 @@ mod tests {
             bound,
             tainted: false,
         }
-    }
-
-    #[test]
-    fn an_entry_is_sixteen_bytes() {
-        // four to a cache line, and the bench's node counts depend on how
-        // many a table of a given size holds
-        assert_eq!(mem::size_of::<Entry>(), 16);
-    }
-
-    #[test]
-    fn a_bucket_is_one_cache_line() {
-        // a probe reads the line once and sees all four entries in it
-        assert_eq!(mem::size_of::<Bucket>(), 64);
-        assert_eq!(mem::align_of::<Bucket>(), 64);
     }
 
     #[test]
