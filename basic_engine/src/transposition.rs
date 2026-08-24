@@ -413,19 +413,20 @@ impl TranspositionTable {
     }
 
     /// A move which refuted this position: the search failed high on it, so
-    /// beta is a floor under what the position is worth and not the worth
-    /// itself.
+    /// the score is a floor under what the position is worth and not the
+    /// worth itself. The search runs fail soft, so the floor recorded is the
+    /// best score it saw, at least as tight as the beta it crossed.
     pub fn record_cutoff(
         &mut self,
         board: &Board,
         play: Play,
-        beta: Score,
+        floor: Score,
         depth: u8,
         tainted: bool,
     ) {
         if self.set(
             board.key,
-            entry(board, play, beta, depth, Bound::Lower, tainted),
+            entry(board, play, floor, depth, Bound::Lower, tainted),
         ) {
             self.count_store(tainted);
         }
