@@ -47,7 +47,9 @@ fn score_from_tt(score: Score, line_ply: usize) -> Score {
 
 /// How often the transposition table hands back a score that depended on the
 /// path taken rather than on the position, which is the graph history
-/// interaction error every engine carries and none of them measure.
+/// interaction error every engine carries and none of them measure. The
+/// figures describe the whole search, quiescence included, since quiescence
+/// stores real bounds and takes real cutoffs like any other node.
 #[derive(Copy, Clone, Debug, Default)]
 pub struct GhiCounters {
     /// Entries which landed carrying a draw tainted score.
@@ -98,6 +100,9 @@ enum Bound {
     Exact = 0,
     Upper = 1,
     Lower = 2,
+    /// Written by nothing since quiescence began storing real bounds; the
+    /// two flag bits decode totally, so the value keeps a name, and a
+    /// probe treats it as a move with no score worth trusting.
     Ordering = 3,
 }
 
@@ -397,19 +402,6 @@ impl TranspositionTable {
         self.table[index].entries[i] = Entry::pack(key, pv, self.generation);
     }
 
-    /// A move worth trying first at this position, learned by a quiescence
-    /// search. Never a score to cut on, and never counted against the graph
-    /// history figures: quiescence looks at captures and promotions alone, so
-    /// what it says a position is worth is not what a full width search would
-    /// say, and the figures describe the full width search.
-    #[inline]
-    pub fn record_ordering(&mut self, board: &Board, play: Play, score: Score) {
-        self.set(
-            board.key,
-            entry(board, play, score, 0, Bound::Ordering, false),
-        );
-    }
-
     /// A move which refuted this position: the search failed high on it, so
     /// the score is a floor under what the position is worth and not the
     /// worth itself. The search runs fail soft, so the floor recorded is the
@@ -542,11 +534,12 @@ impl TranspositionTable {
     }
 
     /// The move the table says is meant here, for reporting a line. Unlike
-    /// `ordering_play` this refuses a quiescence entry: that move orders the
-    /// next search and does not say what the engine intends to play.
+    /// `ordering_play` this refuses a depth zero entry: quiescence wrote it,
+    /// its move orders the next search from a tree of captures alone, and it
+    /// does not say what the engine intends to play.
     pub fn intended_play(&self, board: &Board) -> Option<Play> {
         let pv = self.get(board.key)?;
-        (!matches!(pv.bound, Bound::Ordering)).then_some(pv.play)
+        (pv.depth > 0 && !matches!(pv.bound, Bound::Ordering)).then_some(pv.play)
     }
 
     /// How much of what the table handed back depended on the path taken.
@@ -710,8 +703,10 @@ mod tests {
 
     #[test]
     fn a_quiescence_entry_does_not_evict_a_searched_entry() {
+        // quiescence writes at depth zero, so the depth contest is what
+        // keeps its entries from displacing a searched position's
         let mut table = full_bucket(5);
-        table.set(5, new_pv(Bound::Ordering, 0));
+        table.set(5, new_pv(Bound::Lower, 0));
         assert!(table.get(5).is_none());
         assert_eq!(kept(&table, 1..=4), 4);
     }
