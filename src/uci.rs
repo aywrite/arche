@@ -125,23 +125,21 @@ impl<T: Engine, W: Write> UCI<T, W> {
         } else if line.starts_with("go") {
             self.parse_go(line);
         } else if line.starts_with("bench") {
-            // `bench [depth]`, the same as the command line argument: the
-            // depth is for trying the command cheaply, the number that means
-            // anything is the one at the default
-            match bench_depth(&Params::of(line)) {
-                Ok(depth) => {
+            // the same as the command line argument: the depth is for
+            // trying the command cheaply, the number that means anything is
+            // the one at the default, and the table and policy are for
+            // measuring rather than pinning
+            match bench_settings(&Params::of(line)) {
+                Ok(settings) => {
                     let report = bench::run_suite(
                         &bench::positions(),
-                        depth,
-                        bench::TABLE_BYTES,
-                        SearchConfig::default(),
+                        settings.depth,
+                        settings.table_bytes,
+                        settings.config,
                     );
                     self.say(format_args!("{}", report));
                 }
-                Err(word) => self.say(format_args!(
-                    "info string unrecognised bench depth: {}",
-                    word
-                )),
+                Err(what) => self.say(format_args!("info string unrecognised bench {}", what)),
             }
         } else if line.starts_with("perft") {
             let depth = perft_depth(&Params::of(line));
@@ -226,16 +224,51 @@ fn go_depth(params: &Params) -> Option<u8> {
         .map(|depth| depth.try_into().unwrap_or(u8::MAX))
 }
 
-/// The depth asked of a bench command or argument: the word after `bench`,
-/// or the bench's own depth when there is none. A word that is not a depth
-/// comes back as the error, for the caller to say so; running the default in
-/// its place would take seconds and explain nothing.
-pub(crate) fn bench_depth(params: &Params) -> Result<u8, String> {
-    match params.parse::<u8>("bench") {
-        Param::Absent => Ok(bench::DEPTH),
-        Param::Read(depth) => Ok(depth),
-        Param::Unreadable(word) => Err(word.to_string()),
-    }
+/// What a bench command or argument asked for: `bench [depth] [hash <MB>]
+/// [taint refuse|trust]`, each setting standing in for the bench's own when
+/// absent. The depth is for trying the command cheaply; the table and the
+/// policy are what the graph history measurements vary, and a report states
+/// all three in its header so it can be rerun from it.
+pub(crate) struct BenchSettings {
+    pub depth: u8,
+    pub table_bytes: usize,
+    pub config: SearchConfig,
+}
+
+/// The largest table a bench may ask for, in mebibytes: sixteen gibibytes,
+/// more than any machine here has, and the ceiling the uci `Hash` option
+/// will have, since a bench is a search like any other.
+const BENCH_HASH_MAX_MB: usize = 16384;
+
+/// The words a bench takes after its depth. One of them standing where
+/// the depth would be means the depth was left out, not mistyped.
+const BENCH_KEYWORDS: [&str; 2] = ["hash", "taint"];
+
+/// Reads the bench settings, or says which word could not be read: the
+/// setting's name and the word, for the caller to report. Running the
+/// default in its place would take seconds and explain nothing.
+pub(crate) fn bench_settings(params: &Params) -> Result<BenchSettings, String> {
+    let depth = match params.parse::<u8>("bench") {
+        Param::Absent => bench::DEPTH,
+        Param::Read(depth) => depth,
+        Param::Unreadable(word) if BENCH_KEYWORDS.contains(&word) => bench::DEPTH,
+        Param::Unreadable(word) => return Err(format!("depth: {word}")),
+    };
+    let table_bytes = match params.parse::<usize>("hash") {
+        Param::Absent => bench::TABLE_BYTES,
+        Param::Read(mb) if (1..=BENCH_HASH_MAX_MB).contains(&mb) => mb * 1024 * 1024,
+        Param::Read(mb) => return Err(format!("hash: {mb}")),
+        Param::Unreadable(word) => return Err(format!("hash: {word}")),
+    };
+    let config = match params.value("taint") {
+        None => SearchConfig::default(),
+        Some(word) => SearchConfig::with_taint(word).ok_or_else(|| format!("taint: {word}"))?,
+    };
+    Ok(BenchSettings {
+        depth,
+        table_bytes,
+        config,
+    })
 }
 
 /// The depth asked of a perft command. A bare `perft` counts to depth one,
@@ -607,6 +640,62 @@ mod tests {
             said(&uci),
             "info string unrecognised bench depth: abc\n\
              info string unrecognised bench depth: 300\n"
+        );
+    }
+
+    #[test]
+    fn a_bench_command_takes_a_table_size_and_a_taint_policy() {
+        // the two settings the graph history measurements vary, stated
+        // back in the header so a report says what it ran with. Each word
+        // is optional, the words may come in either order, the depth may
+        // be left out ahead of them, and a keyword with nothing after it
+        // is the setting left out, as a bare `go depth` is
+        let mut uci = uci();
+        uci.run(Cursor::new(
+            "bench 1 hash 1 taint trust\nbench 1 taint refuse hash 2\nbench hash 1 taint trust\nbench 1 taint\n",
+        ));
+        let said = said(&uci);
+        let headers: Vec<&str> = said
+            .lines()
+            .filter(|line| line.starts_with("bench depth"))
+            .map(|line| {
+                let (settings, rest) = line.split_once(" positions ").unwrap();
+                let (_, policy) = rest.split_once(' ').unwrap();
+                (settings, policy)
+            })
+            .flat_map(|(settings, policy)| [settings, policy])
+            .collect();
+        assert_eq!(
+            headers,
+            [
+                "bench depth 1 hash 1MB",
+                "taint trust",
+                "bench depth 1 hash 2MB",
+                "taint refuse",
+                "bench depth 7 hash 1MB",
+                "taint trust",
+                "bench depth 1 hash 16MB",
+                "taint refuse",
+            ],
+            "{}",
+            said
+        );
+    }
+
+    #[test]
+    fn an_unreadable_bench_setting_is_reported_rather_than_searched() {
+        // a table of no size at all, one the machine cannot hold, and a
+        // policy that does not exist are each refused by name
+        let mut uci = uci();
+        uci.run(Cursor::new(
+            "bench 1 hash 0\nbench 1 hash 99999\nbench 1 hash big\nbench 1 taint maybe\n",
+        ));
+        assert_eq!(
+            said(&uci),
+            "info string unrecognised bench hash: 0\n\
+             info string unrecognised bench hash: 99999\n\
+             info string unrecognised bench hash: big\n\
+             info string unrecognised bench taint: maybe\n"
         );
     }
 

@@ -7,8 +7,8 @@ cargo build --release
 ```
 
 The binary is written to `target/release/arche` (`arche.exe` on windows). It starts
-in uci mode immediately. The one argument it takes is `bench [depth]`, which
-prints the bench described below and exits.
+in uci mode immediately. The one argument it takes is `bench`, with the depth,
+table and policy words described below, which prints the bench and exits.
 
 The release profile uses link time optimisation and a single codegen unit, so a
 release build is noticeably slower to compile than a debug one but is several
@@ -165,8 +165,10 @@ target/release/arche bench
 ```
 
 It searches the positions in `basic_engine/bench.epd` to a fixed depth with a
-fixed table and prints what each search counted: nodes, the share of them
-quiescence visited, transposition cutoffs, draw tainted stores, and the speed.
+fixed table and prints what each search counted: the move chosen and its
+score, nodes, the share of them quiescence visited, transposition cutoffs and
+stores, the draw tainted stores among them, the tainted cutoffs taken and the
+ones refused, and the speed.
 The number of nodes a search visits is exact rather than timed, so it says the
 same thing on any machine, and `node_counts_have_not_moved` in
 `basic_engine/src/bench.rs` pins it position by position. A deliberate change
@@ -175,7 +177,11 @@ commit so the diff shows how much more, or less, of each tree is being looked
 at. The last line, `<nodes> nodes <nps> nps`, is the one the match tools read,
 and `bench` is also a uci command. Both take a depth after the word, as in
 `arche bench 3`, for trying the command cheaply; the number that means
-anything is the one at the default. The suite, depth and table are chosen once:
+anything is the one at the default. Both also take `hash <MB>` and
+`taint refuse|trust`, as in `arche bench 9 hash 256 taint trust`, which are
+for measuring what the table and the draw taint policy do to a search rather
+than for pinning anything: the header states what a report ran with, so one
+can be rerun from it. The suite, depth and table are chosen once:
 changing any of them changes every number the bench has ever printed, which is
 why the depth is expected to be raised exactly once, after the search has
 learned to prune, rather than adjusted as it goes.
