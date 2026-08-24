@@ -311,13 +311,13 @@ pub struct Board {
     // answer a check without playing them
     checkers: u64,
 
-    pub ply: usize,
+    ply: usize,
     pub line_ply: usize,
     move_number: usize,
     pub fifty_move_rule: usize,
 
-    pub white_value: u32,
-    pub black_value: u32,
+    white_value: u32,
+    black_value: u32,
     // piece square table score, kept up to date incrementally. Wider than the
     // table entries it accumulates so that summing a boardful of them, and
     // adding the material difference on top, cannot overflow.
@@ -327,6 +327,8 @@ pub struct Board {
     pub key: u64,
 }
 
+/// Nothing calls this: it is here because clippy asks for a `Default`
+/// wherever there is a `new` taking no arguments, and the lints are denied.
 impl Default for Board {
     fn default() -> Self {
         Board::new()
@@ -674,7 +676,7 @@ impl Board {
     /// are made, built the way `from_fen` builds it. `key` is meant to equal
     /// this at all times, which `debug_assert_state_in_step` checks on every
     /// move made.
-    pub fn recompute_key(&self) -> u64 {
+    fn recompute_key(&self) -> u64 {
         let mut key = INITIAL_KEY;
         let mut occupied = self.white | self.black;
         while occupied != 0 {
@@ -697,7 +699,7 @@ impl Board {
     /// board rather than accumulated as pieces move. `psqt` is meant to equal
     /// this at all times, which `debug_assert_state_in_step` checks on every
     /// move made.
-    pub fn recompute_psqt(&self) -> i32 {
+    fn recompute_psqt(&self) -> i32 {
         let mut total: i32 = 0;
         // walking the occupied squares rather than all sixty four, an empty
         // board is then free rather than sixty four misses
@@ -721,7 +723,7 @@ impl Board {
     /// The material of each side, computed the same way and for the same
     /// reason. Deliberately not `material_value`, which the accumulators are
     /// seeded from: see the note there.
-    pub fn recompute_material(&self) -> (u32, u32) {
+    fn recompute_material(&self) -> (u32, u32) {
         let mut white = 0;
         let mut black = 0;
         let mut occupied = self.white | self.black;
@@ -795,7 +797,13 @@ impl Board {
     }
 
     /// True on the third occurrence, which is when a game is actually drawn.
-    pub fn is_repetition(&self) -> bool {
+    ///
+    /// Nothing in the search calls it: the search takes a draw on the first
+    /// repetition instead, for the reason `has_repeated` gives. This is the
+    /// rule that one is measured against, and what the tests contrast it
+    /// with, so it is kept rather than inlined into them.
+    #[allow(dead_code)]
+    pub(crate) fn is_repetition(&self) -> bool {
         self.repetition_count() >= 2
     }
 
@@ -1095,14 +1103,10 @@ impl Board {
         (self.kings & mask).trailing_zeros() as u8
     }
 
-    pub fn is_king_attacked(&self) -> bool {
-        self.square_attacked(self.king_index(self.active_color), !self.active_color)
-    }
-
     /// Whether the side to move stands in check, read from the checkers
-    /// `make_move` maintains instead of running the attack probe
-    /// `is_king_attacked` runs. The two always agree; this one is for the
-    /// search, which asks at every node.
+    /// `make_move` maintains rather than by probing the king's square for an
+    /// attack. The two would answer the same; this one is for the search,
+    /// which asks at every node.
     pub fn in_check(&self) -> bool {
         self.checkers != 0
     }
@@ -1179,7 +1183,7 @@ impl Board {
     /// than maintained as moves are made, the way `square_attacked` asks its
     /// question but keeping the attackers instead of stopping at the first.
     /// `checkers` is meant to equal this at all times.
-    pub fn recompute_checkers(&self) -> u64 {
+    fn recompute_checkers(&self) -> u64 {
         let king = self.king_index(self.active_color);
         let all = self.black | self.white;
         let attack_masks = &ATTACK_MASKS;
@@ -1230,7 +1234,8 @@ impl Board {
     /// Print every square this colour attacks as a grid, for when
     /// `square_attacked` misbehaves. Uncalled on purpose, see
     /// `BitBoard::debug_print`.
-    pub fn attacked_print(&self, color: Color) {
+    #[allow(dead_code)]
+    fn attacked_print(&self, color: Color) {
         println!("   a|b|c|d|e|f|g|h|");
         println!("  ----------------");
         for rank in (1..=8).rev() {
@@ -1353,7 +1358,7 @@ impl Board {
     /// through there, which keeps a mistake in either from hiding itself in the
     /// state check.
     #[inline]
-    pub fn get_piece_and_color_index(&self, index: u8) -> Option<(Piece, Color)> {
+    fn get_piece_and_color_index(&self, index: u8) -> Option<(Piece, Color)> {
         let mask = 1u64 << index;
         let piece = if (self.pawns & mask) > 0 {
             Piece::Pawn
