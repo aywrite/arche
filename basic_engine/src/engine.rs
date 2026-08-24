@@ -601,6 +601,13 @@ impl AlphaBeta {
     /// One fixed depth search under the limits given for it. The deepening
     /// loop hands each iteration its own, which is how depth one runs with
     /// none.
+    ///
+    /// The caller owns the table's generation. `search` and the deepening
+    /// loop each start one with `new_search`, so that however many
+    /// iterations follow, what they store belongs to the one search and ages
+    /// together from the next. Calling this on its own skips that, and a
+    /// table whose generation never moves keeps every entry looking current:
+    /// nothing goes stale and the oldest entries are never the ones given up.
     pub fn search_within(&mut self, depth: u8, limits: Limits) -> SearchOutcome {
         self.limits = limits;
         self.next_check = 0;
