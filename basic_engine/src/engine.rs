@@ -375,7 +375,23 @@ impl AlphaBeta {
 
         let mut best_move: Option<Play> = None;
         let old_alpha = alpha;
-        let pv_play = self.transpositions.ordering_play(&self.board);
+        // a probe at depth zero: any stored bound is deep enough here, so
+        // quiescence takes the cutoffs the table can prove, under the same
+        // taint refusal the full width search applies
+        let pv_play = match self.transpositions.probe(
+            &self.board,
+            alpha,
+            beta,
+            0,
+            self.config.refuse_tainted_cutoffs,
+        ) {
+            Probe::Cut { score, tainted } => {
+                self.tainted = tainted;
+                return Ok(score);
+            }
+            Probe::Order(play) => Some(play),
+            Probe::Miss => None,
+        };
         // in check the position is not quiet whatever the material says, so
         // every evasion is searched, quiet or not. Most of what full width
         // generation returns cannot answer a check and would only be refused
@@ -387,6 +403,10 @@ impl AlphaBeta {
         };
         self.order_moves(&mut moves, pv_play);
 
+        // quiescence itself never reads a draw, but a search told to trust
+        // tainted scores can cut on a tainted entry inside a capture tree,
+        // and that taint travels up through here like anywhere else
+        let mut node_tainted = false;
         let mut found_legal_move = false;
         for m in &moves {
             if self.board.make_move(m) {
@@ -395,14 +415,20 @@ impl AlphaBeta {
                 // the aborted line
                 let result = self.quiescence(-beta, -alpha);
                 self.board.undo_move();
+                node_tainted |= self.tainted;
                 let score = -result?;
-                best = best.max(score);
+                if score > best {
+                    best = score;
+                    best_move = Some(*m);
+                }
                 if score > alpha {
                     if score >= beta {
+                        self.transpositions
+                            .record_cutoff(&self.board, *m, score, 0, node_tainted);
+                        self.tainted = node_tainted;
                         return Ok(score);
                     }
                     alpha = score;
-                    best_move = Some(*m);
                 }
             }
         }
@@ -413,10 +439,16 @@ impl AlphaBeta {
             return Ok(-CHECKMATE_SCORE + (self.board.line_ply as Score));
         }
 
-        if alpha != old_alpha {
-            self.transpositions
-                .record_ordering(&self.board, best_move.unwrap(), alpha);
+        if let Some(play) = best_move {
+            if alpha != old_alpha {
+                self.transpositions
+                    .record_best(&self.board, play, best, 0, node_tainted);
+            } else {
+                self.transpositions
+                    .record_ceiling(&self.board, play, best, 0, node_tainted);
+            }
         }
+        self.tainted = node_tainted;
         Ok(best)
     }
 
@@ -1406,6 +1438,53 @@ mod search {
     }
 
     #[test]
+    fn taint_crosses_a_quiescence_frame_whose_tainted_capture_is_not_last() {
+        // a trusting search that cuts on a tainted entry inside a capture
+        // tree must taint what flows out of that tree. The queen forks the
+        // rook and the pawn, and no white move saves both, so every line
+        // concedes something and the capture tree is really searched. The
+        // rook is taken first, into a seeded tainted entry; the pawn
+        // capture searched after it must not launder the flag on its way
+        // out, and the stores that follow say whether it did
+        let fen = "7k/3q4/8/8/R5P1/8/8/K7 w - - 0 1";
+        let seeded = |config: SearchConfig| {
+            let mut e = AlphaBeta::with_config(Board::from_fen(fen).unwrap(), TABLE_BYTES, config);
+            let mut board = e.board;
+            for name in ["a1b1", "d7a4"] {
+                let play = play_named(&board, name);
+                assert!(board.make_move(&play), "failed to play {}", name);
+            }
+            let any = play_named(&board, "b1c1");
+            e.transpositions.record_best(&board, any, 0, 9, true);
+            // the root's own entry names the king move, so the seeded line
+            // is searched first, with the whole window still open: no
+            // sibling's value has yet shrunk it to where standing pat ends
+            // the frame before the captures run
+            let king = play_named(&e.board, "a1b1");
+            e.transpositions.record_best(&e.board, king, 0, 9, false);
+            // the seeding itself counts one tainted store, so the search's
+            // own contribution is what the two policies are compared on
+            let seeded = e.ghi().tainted_stores;
+            completed(e.search(1));
+            e.ghi().tainted_stores - seeded
+        };
+        #[allow(clippy::needless_update)]
+        let trusting = SearchConfig {
+            refuse_tainted_cutoffs: false,
+            ..SearchConfig::reference()
+        };
+        assert!(
+            seeded(trusting) > 0,
+            "the taint was laundered between the capture and the root"
+        );
+        assert_eq!(
+            seeded(SearchConfig::reference()),
+            0,
+            "a refusing search took the tainted cutoff after all"
+        );
+    }
+
+    #[test]
     fn a_search_told_to_trust_tainted_scores_takes_their_cutoffs() {
         // the refusal is the one policy the config carries so far, and a
         // search told to trust those scores is the control arm of the graph
@@ -1596,10 +1675,11 @@ mod search {
     fn the_pv_line_does_not_follow_a_quiescence_entry() {
         // quiescence looks at captures and promotions alone, so its move is
         // fit for ordering the next search and not for saying what the engine
-        // means to play
+        // means to play. Its entries are the depth zero ones, and that is
+        // what the line walk refuses
         let mut e = engine(Board::new());
         let play = play_named(&e.board, "e2e4");
-        e.transpositions.record_ordering(&e.board, play, 0);
+        e.transpositions.record_best(&e.board, play, 0, 0, false);
 
         assert_eq!(format!("{}", e.pv_line()), "");
     }

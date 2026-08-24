@@ -33,6 +33,10 @@ the order they look worth doing after that.
   trusted, so the search cannot read a draw down a path that could not reach it. The reverse
   direction is still open: a score stored with the draw out of reach can be read by a path
   with the draw in reach, say a fifty move counter about to run out, and be trusted
+- a quiescence entry stored within reach of the depth cap describes a capture
+  search that was cut short, and a probe far from the cap trusts it anyway. The
+  same truncation sits under every deep entry through its leaves; storing where
+  the horizon actually bit just moved the writers nearer to it
 - a fen is only validated as far as what the search cannot survive, a king a side and the side
   not to move being out of check. A position which is illegal in other ways, such as one with
   nine pawns or castling rights without a rook, is accepted and played from
