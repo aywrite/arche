@@ -19,6 +19,10 @@ the order they look worth doing after that.
     interface might set, `Ponder` and `Clear Hash` among them, is refused rather than acted on
   - `stop` is not handled, which rules out pondering and `go infinite`
   - `ponderhit`, `debug` and `register` are not handled either
+  - a move in a `position` line that cannot be played is reported the same way whether
+    no move of that name exists here or the move exists and leaves the king in check.
+    `make_move_str` answers with a bool, so the interface is told which move failed and
+    not what was wrong with it
 - read an opening book in the engine, only the lichess-bot image has one at the moment and it is
   lichess-bot that reads it rather than the engine
 - winboard
