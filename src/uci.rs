@@ -399,9 +399,10 @@ fn perft_depth(params: &Params) -> u8 {
         .unwrap_or(1)
 }
 
-/// One completed depth as a UCI info line. The elapsed time arrives as a
-/// parameter rather than being read from a clock here, so that tests can pin
-/// the whole line.
+/// One completed depth as a UCI info line. The elapsed time comes from the
+/// result rather than from a clock read here, so the rate reported divides a
+/// node count by the time that same search took; a test pins the whole line
+/// by building the result it formats.
 fn format_info(depth: u8, result: &SearchResult, pv: &PvLine) -> String {
     let millis = result.elapsed.as_millis();
     // measure a search faster than a millisecond as one, so the rate stays
