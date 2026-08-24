@@ -60,8 +60,15 @@ pub struct GhiCounters {
     pub score_cutoffs: u64,
     /// Probes that returned a tainted score, which is the error itself: the
     /// stored draw was reachable by the path that stored it and may not be
-    /// reachable by this one.
+    /// reachable by this one. Zero while the search refuses them.
     pub tainted_score_cutoffs: u64,
+    /// Probes that found a tainted score deep enough to cut and refused it,
+    /// handing back the move alone: the cost of refusing, counted in the
+    /// branch where a trusting search takes its cutoff, so the two are the
+    /// same event under each policy. Not the same count: the refusing
+    /// search is the larger tree and probes more. Zero while the search
+    /// trusts them.
+    pub refused_cutoffs: u64,
 }
 
 /// What the search stores about a position and reads back: the entry as the
@@ -463,6 +470,7 @@ impl TranspositionTable {
                 // the stored draw was reachable by the path that stored it and
                 // may not be reachable by this one, so the move is still worth
                 // ordering by but the score is not worth trusting
+                self.ghi.refused_cutoffs += 1;
                 return Probe::Order(pv.play);
             }
             if cuts {
@@ -671,6 +679,31 @@ mod tests {
         table.set(5, new_pv(Bound::Ordering, 0));
         assert!(table.get(5).is_none());
         assert_eq!(kept(&table, 1..=4), 4);
+    }
+
+    #[test]
+    fn a_store_the_contest_turns_away_says_so() {
+        // the graph history figures count what lands, and set's answer is
+        // what they ride on: a refused store reporting true would put
+        // entries in the count that are not in the table
+        let mut table = full_bucket(8);
+        assert!(!table.set(5, new_pv(Bound::Lower, 1)));
+        assert!(table.set(5, new_pv(Bound::Lower, 9)));
+    }
+
+    #[test]
+    fn a_turned_away_store_is_not_counted() {
+        // the one bucket is already deep, so the shallow cutoff is turned
+        // away and must leave the figures alone; deeper, it lands and counts
+        let mut table = full_bucket(8);
+        let board = crate::board::Board::new();
+        let play = Play::new(0, 1, None, None, false, false);
+        table.record_cutoff(&board, play, 0, 1, true);
+        assert_eq!(table.ghi().stores, 0, "a turned away store was counted");
+        assert_eq!(table.ghi().tainted_stores, 0);
+        table.record_cutoff(&board, play, 0, 9, true);
+        assert_eq!(table.ghi().stores, 1);
+        assert_eq!(table.ghi().tainted_stores, 1);
     }
 
     #[test]
