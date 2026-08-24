@@ -96,8 +96,6 @@ struct Pv {
 #[repr(u8)]
 enum Bound {
     Exact = 0,
-    // fail low nodes are not stored yet, see the known limitations in
-    // docs/ROADMAP.md
     Upper = 1,
     Lower = 2,
     Ordering = 3,
@@ -432,6 +430,25 @@ impl TranspositionTable {
         }
     }
 
+    /// Every move here fell short of the window: the score is a ceiling
+    /// over what the position is worth, and the move is the one that came
+    /// closest, worth trying first next time even though it proved nothing.
+    pub fn record_ceiling(
+        &mut self,
+        board: &Board,
+        play: Play,
+        ceiling: Score,
+        depth: u8,
+        tainted: bool,
+    ) {
+        if self.set(
+            board.key,
+            entry(board, play, ceiling, depth, Bound::Upper, tainted),
+        ) {
+            self.count_store(tainted);
+        }
+    }
+
     /// The best move found by searching all of them here, with the score it
     /// scored: neither a floor nor a ceiling but the value itself.
     pub fn record_best(
@@ -697,6 +714,29 @@ mod tests {
         table.set(5, new_pv(Bound::Ordering, 0));
         assert!(table.get(5).is_none());
         assert_eq!(kept(&table, 1..=4), 4);
+    }
+
+    #[test]
+    fn a_recorded_ceiling_cuts_below_its_score_and_only_orders_above_it() {
+        // a fail low store is only worth having if a later probe whose
+        // alpha the ceiling cannot reach may cut on it, and a probe whose
+        // window the ceiling sits inside must still search
+        use super::Probe;
+        let mut table = TranspositionTable::with_capacity(4).expect("a table of a few buckets");
+        let board = crate::board::Board::new();
+        let play = Play::new(0, 1, None, None, false, false);
+        table.record_ceiling(&board, play, -50, 5, false);
+        match table.probe(&board, -10, 10, 5, true) {
+            Probe::Cut { score, tainted } => {
+                assert_eq!(score, -50);
+                assert!(!tainted);
+            }
+            other => panic!("a ceiling under alpha did not cut: {other:?}"),
+        }
+        assert!(matches!(
+            table.probe(&board, -100, 10, 5, true),
+            Probe::Order(_)
+        ));
     }
 
     #[test]
