@@ -453,6 +453,23 @@ impl Board {
         self.generate::<true>()
     }
 
+    /// The moves worth trying here: every pseudo legal one, less those that
+    /// cannot answer a check when there is one. Most of what full width
+    /// generation returns in check would only be refused by `make_move`, so
+    /// dropping it before the list is sorted spares the sort and the make.
+    ///
+    /// Correct whichever position it is asked of: out of check it is
+    /// `generate_moves`. The caller does not have to establish that it is in
+    /// check first, which is what the filter used to ask of it.
+    #[inline]
+    pub fn evasions(&self) -> MoveList {
+        let mut moves = self.generate_moves();
+        if self.in_check() {
+            self.retain_evasions(&mut moves);
+        }
+        moves
+    }
+
     pub fn generate_moves(&self) -> MoveList {
         self.generate::<false>()
     }
@@ -820,10 +837,7 @@ impl Board {
     /// draw rule and a mate could coincide, which is rare, so it plays the
     /// moves rather than keeping anything incremental.
     pub fn has_legal_move(&mut self) -> bool {
-        let mut moves = self.generate_moves();
-        if self.in_check() {
-            self.retain_evasions(&mut moves);
-        }
+        let moves = self.evasions();
         for m in &moves {
             if self.make_move(m) {
                 self.undo_move();
@@ -1217,7 +1231,7 @@ impl Board {
     /// that work for moves it would certainly refuse. En passant is kept
     /// unexamined: the captured pawn does not stand on the to square, so the
     /// capture and block masks misread it, and it is rare.
-    pub fn retain_evasions(&self, moves: &mut MoveList) {
+    fn retain_evasions(&self, moves: &mut MoveList) {
         debug_assert!(self.checkers != 0, "asked of a position not in check");
         let targets = if self.checkers.count_ones() > 1 {
             // only the king can answer a double check
@@ -2441,6 +2455,55 @@ mod pseudo_legal {
 }
 
 #[cfg(test)]
+mod evasions {
+    use super::Board;
+    use pretty_assertions::assert_eq;
+
+    /// Everything the filter kept that was not the king moving, by name.
+    fn answers(board: &Board) -> Vec<String> {
+        let king = board.king_index(board.active_color);
+        let mut named: Vec<String> = board
+            .evasions()
+            .iter()
+            .filter(|m| m.from != king)
+            .map(|m| m.to_string())
+            .collect();
+        named.sort();
+        named
+    }
+
+    #[test]
+    fn a_double_check_leaves_only_king_moves() {
+        // the knight on f6 and the rook on e1 both check, and no move
+        // answers both, so the king has to move. Black has a rook and a pawn
+        // with moves of their own for the filter to drop
+        let board = Board::from_fen("r3k3/7p/5N2/8/8/8/8/4R1K1 b - - 0 1").unwrap();
+        assert_eq!(answers(&board), Vec::<String>::new());
+        assert!(
+            board.evasions().len() < board.generate_moves().len(),
+            "the filter dropped nothing"
+        );
+    }
+
+    #[test]
+    fn a_slider_check_may_be_taken_or_blocked() {
+        // the rook on e1 checks up the file. The rook on a1 can take it and
+        // the knight can step in front of it at e2 or e6; the knight's other
+        // six moves and the rook's whole file answer nothing
+        let board = Board::from_fen("4k3/8/8/8/3n4/8/8/r3R1K1 b - - 0 1").unwrap();
+        assert_eq!(answers(&board), vec!["a1e1", "d4e2", "d4e6"]);
+    }
+
+    #[test]
+    fn out_of_check_the_evasions_are_every_move() {
+        // asked of a position not in check it filters nothing, which is what
+        // lets the caller ask without establishing that first
+        let board = Board::new();
+        assert_eq!(board.evasions().len(), board.generate_moves().len());
+    }
+}
+
+#[cfg(test)]
 mod random_games {
     use super::{Board, fens};
     use proptest::prelude::*;
@@ -2491,8 +2554,7 @@ mod random_games {
                 // make_move refuses: a legal evasion dropped would read as a
                 // mate to the search that trusts the filter
                 if board.in_check() {
-                    let mut kept = moves.clone();
-                    board.retain_evasions(&mut kept);
+                    let kept = board.evasions();
                     for m in &moves {
                         if !kept.contains(m) {
                             prop_assert!(

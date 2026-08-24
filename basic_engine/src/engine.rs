@@ -375,9 +375,7 @@ impl AlphaBeta {
         // generation returns cannot answer a check and would only be refused
         // by make_move, so it is dropped before it is even sorted
         let mut moves = if in_check {
-            let mut moves = self.board.generate_moves();
-            self.board.retain_evasions(&mut moves);
-            moves
+            self.board.evasions()
         } else {
             self.board.generate_captures()
         };
@@ -515,12 +513,11 @@ impl AlphaBeta {
             }
         }
 
-        let mut moves = self.board.generate_moves();
-        if in_check {
-            // most of the list cannot answer the check and would only be
-            // refused by make_move; drop it before it is even sorted
-            self.board.retain_evasions(&mut moves);
-        }
+        let mut moves = if in_check {
+            self.board.evasions()
+        } else {
+            self.board.generate_moves()
+        };
         self.order_moves(&mut moves, pv_play);
 
         for m in &moves {
