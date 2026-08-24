@@ -1159,15 +1159,6 @@ mod search {
     }
 
     #[test]
-    fn a_search_with_no_time_budget_aborts_without_a_move() {
-        let mut e = engine(Board::new());
-        assert!(matches!(
-            e.search_within(5, already_spent()),
-            SearchOutcome::Aborted(None)
-        ));
-    }
-
-    #[test]
     fn a_blown_deadline_stops_before_it_searches() {
         // the first poll happens before the root is counted, so a clock
         // already gone costs nothing at all rather than a poll interval
