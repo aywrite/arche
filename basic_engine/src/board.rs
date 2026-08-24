@@ -905,11 +905,13 @@ impl Board {
         self.make_move_impl::<true>(play)
     }
 
-    /// The one caller that never reads `checkers` is perft, which plays its
-    /// moves through the impl with MAINTAIN_CHECKERS off: the legality probe
-    /// runs unconditionally, since the stale checkers cannot be consulted,
-    /// and `checkers_given` is skipped. History still saves and restores the
-    /// field, so the board's checkers are intact once the walk unwinds.
+    /// The one caller that never reads `checkers` is perft, which counts
+    /// with MAINTAIN_CHECKERS off: the legality probe runs unconditionally,
+    /// since the stale checkers cannot be consulted, and `checkers_given` is
+    /// skipped. History still saves and restores the field, so the board's
+    /// checkers are intact once the walk unwinds. `perft_as_played` counts
+    /// the same positions with it on, so what a game relies on is held to
+    /// the same numbers.
     fn make_move_impl<const MAINTAIN_CHECKERS: bool>(&mut self, play: &Play) -> bool {
         self.history[history_index(self.ply)] = Some(PlayState {
             play: *play,
@@ -1487,7 +1489,33 @@ impl Board {
         (white_value, black_value)
     }
 
+    /// Count the legal moves to a depth, the standard measure of whether
+    /// move generation is right.
     pub fn perft(&mut self, depth: u8) -> u64 {
+        self.perft_impl::<false>(depth)
+    }
+
+    /// The same count, walked the way the engine plays: checkers maintained
+    /// as each move is made, and the legality probe skipped wherever those
+    /// checkers say it can be.
+    ///
+    /// A correct board counts the same either way, which is the whole of
+    /// what this is for. The counts the perft suites pin are the accepted
+    /// ones, hand verified and exhaustive, but the walk that produced them
+    /// is not the walk a game takes: `checkers_given` and the skip it feeds
+    /// are compiled out of it. Asking for the same positions again this way
+    /// puts those two under the same counts. A skip that wrongly cleared a
+    /// move would let an illegal one stand and the count would rise; a
+    /// `checkers_given` that wrongly said no check would clear the skip the
+    /// same way. In a debug build the assertion beside `checkers_given`
+    /// catches the harmless direction too, over every move of every position
+    /// rather than the few thousand a proptest reaches.
+    #[cfg(test)]
+    pub(crate) fn perft_as_played(&mut self, depth: u8) -> u64 {
+        self.perft_impl::<true>(depth)
+    }
+
+    fn perft_impl<const MAINTAIN_CHECKERS: bool>(&mut self, depth: u8) -> u64 {
         // Based on pseudocode at https://www.chessprogramming.org/Perft
         let mut nodes = 0;
 
@@ -1496,8 +1524,8 @@ impl Board {
         }
 
         for m in &self.generate_moves() {
-            if self.make_move_impl::<false>(m) {
-                nodes += self.perft(depth - 1);
+            if self.make_move_impl::<MAINTAIN_CHECKERS>(m) {
+                nodes += self.perft_impl::<MAINTAIN_CHECKERS>(depth - 1);
                 self.undo_move();
             }
         }
@@ -2154,6 +2182,26 @@ mod perft {
             }
         }
     }
+
+    /// The same counts, walked the way the engine plays: the numbers above
+    /// are the accepted ones, and this is what holds the game's own path to
+    /// them. See `perft_as_played`.
+    #[test]
+    fn the_standard_positions_count_the_same_as_played() {
+        for (description, fen, counts) in CASES {
+            let mut board = Board::from_fen(fen).unwrap();
+            for (i, &expected) in counts.iter().enumerate() {
+                let depth = i as u8 + 1;
+                assert_eq!(
+                    board.perft_as_played(depth),
+                    expected,
+                    "{} at depth {}, as played",
+                    description,
+                    depth
+                );
+            }
+        }
+    }
 }
 
 #[cfg(test)]
@@ -2254,7 +2302,7 @@ mod perft_edge_cases {
     /// attack, promoting out of check, and stalemate. Each entry was checked
     /// against python-chess rather than transcribed, since a published table is
     /// only worth as much as the copy of it.
-    const CASES: [(&str, u8, u64, &str); 23] = [
+    const CASES: [(&str, u8, u64, &str); 24] = [
         (
             "3k4/3p4/8/K1P4r/8/8/8/8 b - - 0 1",
             6,
@@ -2393,6 +2441,17 @@ mod perft_edge_cases {
             39,
             "castling with a knight on f2",
         ),
+        (
+            // taking en passant empties two squares, and the one the
+            // captured pawn stood on is the one that mattered: it blocked
+            // the bishop's diagonal to the king. The capturing pawn comes
+            // from a square on no line through the king at all, so nothing
+            // about where it started says the capture is worth checking
+            "1b5k/8/8/3Pp3/8/8/7K/8 w - e6 0 2",
+            1,
+            6,
+            "en passant uncovers a bishop on a diagonal the capturer never stood on",
+        ),
     ];
 
     #[test]
@@ -2403,6 +2462,25 @@ mod perft_edge_cases {
                 board.perft(depth),
                 expected,
                 "{} ({} at depth {})",
+                description,
+                fen,
+                depth
+            );
+        }
+    }
+
+    /// The same cases, walked the way the engine plays. These are the shapes
+    /// most likely to catch checkers maintenance out: the pins, the en
+    /// passant discoveries, the castles through an attacked square and the
+    /// promotions that answer a check.
+    #[test]
+    fn every_edge_case_counts_the_same_as_played() {
+        for (fen, depth, expected, description) in CASES {
+            let mut board = Board::from_fen(fen).unwrap();
+            assert_eq!(
+                board.perft_as_played(depth),
+                expected,
+                "{} ({} at depth {}), as played",
                 description,
                 fen,
                 depth
