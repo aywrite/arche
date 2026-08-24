@@ -873,11 +873,10 @@ impl Board {
         }
         // XORing both the old and new castle keys removes the old permissions
         // from the position key and adds the new ones (a no-op when unchanged)
-        let zobrist: &Zobrist = &ZOBRIST;
-        self.key ^= zobrist.castle_key(old_castle) ^ zobrist.castle_key(self.castle);
+        self.key ^= ZOBRIST.castle_key(old_castle) ^ ZOBRIST.castle_key(self.castle);
         if let Some(en_passant) = self.en_passant {
             // the en passant rights of the previous position have expired
-            self.key ^= zobrist.en_passant_key(en_passant.as_index());
+            self.key ^= ZOBRIST.en_passant_key(en_passant.as_index());
         }
         self.en_passant = None;
         self.fifty_move_rule += 1;
@@ -896,7 +895,7 @@ impl Board {
                 };
                 if self.pawn_can_capture_on(passed, opposing_color) {
                     self.en_passant = Some(Coordinate::from_index(passed));
-                    self.key ^= zobrist.en_passant_key(passed);
+                    self.key ^= ZOBRIST.en_passant_key(passed);
                 }
             }
             if play.en_passant {
@@ -962,7 +961,7 @@ impl Board {
             || attack_masks.straight[king_index as usize].is_bit_set(play.from)
             || attack_masks.diagonal[king_index as usize].is_bit_set(play.from);
         self.active_color = opposing_color;
-        self.key ^= zobrist.side;
+        self.key ^= ZOBRIST.side;
         self.debug_assert_state_in_step();
         debug_assert!(
             could_expose_king || !self.square_attacked(king_index, opposing_color),
@@ -1249,34 +1248,13 @@ impl Board {
         println!();
     }
 
+    /// Put a piece on a square, with the position key, the piece square score
+    /// and the material accumulators following it on.
     #[inline]
     fn set_piece_index(&mut self, index: u8, piece: Piece, color: Color) {
         debug_assert!(!self.black.is_bit_set(index));
         debug_assert!(!self.white.is_bit_set(index));
-        let zobrist: &Zobrist = &ZOBRIST;
-        self.key ^= zobrist.get_piece_key(index, piece, color);
-        self.psqt += i32::from(match color {
-            Color::White => PIECE_SQUARE_TABLES.get_value(index as usize, piece, Color::White),
-            Color::Black => -PIECE_SQUARE_TABLES.get_value(index as usize, piece, Color::Black),
-        });
-        match piece {
-            Piece::Pawn => self.pawns.set_bit(index),
-            Piece::Knight => self.knights.set_bit(index),
-            Piece::Bishop => self.bishops.set_bit(index),
-            Piece::Rook => self.rooks.set_bit(index),
-            Piece::Queen => self.queens.set_bit(index),
-            Piece::King => self.kings.set_bit(index),
-        };
-        match color {
-            Color::Black => {
-                self.black.set_bit(index);
-                self.black_value += piece.material_value();
-            }
-            Color::White => {
-                self.white.set_bit(index);
-                self.white_value += piece.material_value();
-            }
-        };
+        self.move_accumulators::<true>(index, piece, color);
     }
 
     fn set_piece(&mut self, piece: Piece, color: Color, rank: u8, file: File) {
@@ -1284,33 +1262,57 @@ impl Board {
         self.set_piece_index(index, piece, color);
     }
 
+    /// Take a piece off a square, undoing all of the above.
     #[inline]
     fn clear_piece_index(&mut self, index: u8, piece: Piece, color: Color) {
         debug_assert!((self.black | self.white).is_bit_set(index));
-        let zobrist: &Zobrist = &ZOBRIST;
-        self.key ^= zobrist.get_piece_key(index, piece, color);
-        self.psqt -= i32::from(match color {
+        self.move_accumulators::<false>(index, piece, color);
+    }
+
+    /// The two directions written once. They are the same walk with every
+    /// sign reversed, and `SET` is settled at compile time, so each caller
+    /// above monomorphises into what was spelled out twice before: no branch
+    /// on it survives into the search.
+    #[inline(always)]
+    fn move_accumulators<const SET: bool>(&mut self, index: u8, piece: Piece, color: Color) {
+        self.key ^= ZOBRIST.get_piece_key(index, piece, color);
+
+        let psqt = i32::from(match color {
             Color::White => PIECE_SQUARE_TABLES.get_value(index as usize, piece, Color::White),
             Color::Black => -PIECE_SQUARE_TABLES.get_value(index as usize, piece, Color::Black),
         });
-        match piece {
-            Piece::Pawn => self.pawns.clear_bit(index),
-            Piece::Knight => self.knights.clear_bit(index),
-            Piece::Bishop => self.bishops.clear_bit(index),
-            Piece::Rook => self.rooks.clear_bit(index),
-            Piece::Queen => self.queens.clear_bit(index),
-            Piece::King => self.kings.clear_bit(index),
+        if SET {
+            self.psqt += psqt;
+        } else {
+            self.psqt -= psqt;
+        }
+
+        let board = match piece {
+            Piece::Pawn => &mut self.pawns,
+            Piece::Knight => &mut self.knights,
+            Piece::Bishop => &mut self.bishops,
+            Piece::Rook => &mut self.rooks,
+            Piece::Queen => &mut self.queens,
+            Piece::King => &mut self.kings,
         };
-        match color {
-            Color::Black => {
-                self.black.clear_bit(index);
-                self.black_value -= piece.material_value();
-            }
-            Color::White => {
-                self.white.clear_bit(index);
-                self.white_value -= piece.material_value();
-            }
+        if SET {
+            board.set_bit(index);
+        } else {
+            board.clear_bit(index);
+        }
+
+        let value = piece.material_value();
+        let (side, total) = match color {
+            Color::Black => (&mut self.black, &mut self.black_value),
+            Color::White => (&mut self.white, &mut self.white_value),
         };
+        if SET {
+            side.set_bit(index);
+            *total += value;
+        } else {
+            side.clear_bit(index);
+            *total -= value;
+        }
     }
 
     /// What is being taken on the to square, without asking when nothing can
