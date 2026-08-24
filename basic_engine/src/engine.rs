@@ -357,12 +357,18 @@ impl AlphaBeta {
         // of check and may have no quiet way to. The full search never enters
         // here in check, the check extension searches those nodes full width,
         // so a check seen here was delivered by a capture searched here.
+        // fail soft: what leaves this node is the best score actually seen,
+        // not the window edge it crossed. A caller learns how far past its
+        // window the position landed, and the table stores the tighter bound
+        let mut best = Score::MIN + 1;
         let in_check = self.board.in_check();
         if !in_check {
             let score = self.eval();
             if score >= beta {
-                return Ok(beta);
-            } else if score >= alpha {
+                return Ok(score);
+            }
+            best = score;
+            if score >= alpha {
                 alpha = score;
             }
         }
@@ -390,9 +396,10 @@ impl AlphaBeta {
                 let result = self.quiescence(-beta, -alpha);
                 self.board.undo_move();
                 let score = -result?;
+                best = best.max(score);
                 if score > alpha {
                     if score >= beta {
-                        return Ok(beta);
+                        return Ok(score);
                     }
                     alpha = score;
                     best_move = Some(*m);
@@ -410,7 +417,7 @@ impl AlphaBeta {
             self.transpositions
                 .record_ordering(&self.board, best_move.unwrap(), alpha);
         }
-        Ok(alpha)
+        Ok(best)
     }
 
     fn alpha_beta(
@@ -459,6 +466,10 @@ impl AlphaBeta {
         let old_alpha = alpha;
         let mut found_legal_move = false;
         let mut best_move: Option<Play> = None;
+        // fail soft, as in quiescence: the node answers with the best score
+        // it saw, and a cutoff stores that score, a floor at least as tight
+        // as beta and usually tighter
+        let mut best = Score::MIN + 1;
         let pv_play = match self.transpositions.probe(
             &self.board,
             alpha,
@@ -494,18 +505,19 @@ impl AlphaBeta {
                     // child would
                     node_tainted |= self.tainted;
                     let tt_score = -result?;
+                    best = best.max(tt_score);
                     if tt_score > alpha {
                         best_move = Some(tt);
                         if tt_score >= beta {
                             self.transpositions.record_cutoff(
                                 &self.board,
                                 tt,
-                                beta,
+                                tt_score,
                                 depth,
                                 node_tainted,
                             );
                             self.tainted = node_tainted;
-                            return Ok(beta);
+                            return Ok(tt_score);
                         }
                         alpha = tt_score;
                     }
@@ -535,18 +547,19 @@ impl AlphaBeta {
                 // it turns out to be the best one here
                 node_tainted |= self.tainted;
                 let score = -result?;
+                best = best.max(score);
                 if score > alpha {
                     best_move = Some(*m);
                     if score >= beta {
                         self.transpositions.record_cutoff(
                             &self.board,
                             *m,
-                            beta,
+                            score,
                             depth,
                             node_tainted,
                         );
                         self.tainted = node_tainted;
-                        return Ok(beta);
+                        return Ok(score);
                     }
                     alpha = score;
                 }
@@ -564,12 +577,12 @@ impl AlphaBeta {
         }
 
         if alpha != old_alpha {
-            let best = best_move.expect("alpha only rises when a move raises it");
+            let play = best_move.expect("alpha only rises when a move raises it");
             self.transpositions
-                .record_best(&self.board, best, alpha, depth, node_tainted);
+                .record_best(&self.board, play, best, depth, node_tainted);
         }
         self.tainted = node_tainted;
-        Ok(alpha)
+        Ok(best)
     }
 
     pub fn new(board: Board) -> Self {
