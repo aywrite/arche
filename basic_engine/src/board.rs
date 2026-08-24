@@ -113,6 +113,15 @@ const F1_G1: u64 = 1 << F1 | 1 << G1;
 const B8_C8_D8: u64 = 1 << B8 | 1 << C8 | 1 << D8;
 const F8_G8: u64 = 1 << F8 | 1 << G8;
 
+/// One castle: the squares that must be empty, the squares the king may not
+/// be attacked on as it goes, and the square it lands on.
+type Castle = (u64, [u8; 2], u8);
+
+/// Each colour's two castles, queen's side first, which is the order the
+/// generator produces them in and so part of the order the search sees.
+const WHITE_CASTLES: [Castle; 2] = [(B1_C1_D1, [C1, D1], C1), (F1_G1, [F1, G1], G1)];
+const BLACK_CASTLES: [Castle; 2] = [(B8_C8_D8, [C8, D8], C8), (F8_G8, [F8, G8], G8)];
+
 /// The sixty four squares laid out inside a ten by ten grid whose border rows
 /// and columns are sentinels, so that a step off the side of the board lands on
 /// one instead of wrapping onto the far file.
@@ -517,52 +526,33 @@ impl Board {
             if CAPTURES_ONLY {
                 continue;
             }
-            // 1. castle permission is available
-            // 2. king is not in check
-            // 3. movement squares are not occupied
-            // 4. None of the squares are in check
-            if self.active_color == Color::White
-                && (self.castle.white_king_side || self.castle.white_queen_side)
-            {
-                let check = self.square_attacked(E1, Color::Black);
-                if !check {
-                    if self.castle.white_queen_side
-                        && (B1_C1_D1 & all_pieces) == 0
-                        && [C1, D1]
-                            .iter()
-                            .all(|i| !self.square_attacked(*i, Color::Black))
+            // castling: the right is still held, the king is not in check,
+            // the squares between are empty, and the king does not pass
+            // through a square the opponent attacks. Both colours read the
+            // one rule below off their own row of the table
+            let (king_square, opponent, held, castles) = match self.active_color {
+                Color::White => (
+                    E1,
+                    Color::Black,
+                    [self.castle.white_queen_side, self.castle.white_king_side],
+                    &WHITE_CASTLES,
+                ),
+                Color::Black => (
+                    E8,
+                    Color::White,
+                    [self.castle.black_queen_side, self.castle.black_king_side],
+                    &BLACK_CASTLES,
+                ),
+            };
+            // one probe of the king's square for both castles rather than
+            // one each, and none at all when neither right is left
+            if (held[0] || held[1]) && !self.square_attacked(king_square, opponent) {
+                for (i, &(empty, passes, king_to)) in castles.iter().enumerate() {
+                    if held[i]
+                        && (empty & all_pieces) == 0
+                        && !passes.iter().any(|s| self.square_attacked(*s, opponent))
                     {
-                        moves.push(Play::new(from, C1, None, None, false, true));
-                    }
-                    if self.castle.white_king_side
-                        && (F1_G1 & all_pieces) == 0
-                        && [F1, G1]
-                            .iter()
-                            .all(|i| !self.square_attacked(*i, Color::Black))
-                    {
-                        moves.push(Play::new(from, G1, None, None, false, true));
-                    }
-                }
-            } else if self.active_color == Color::Black
-                && (self.castle.black_king_side || self.castle.black_queen_side)
-            {
-                let check = self.square_attacked(E8, Color::White);
-                if !check {
-                    if self.castle.black_queen_side
-                        && (B8_C8_D8 & all_pieces) == 0
-                        && [C8, D8]
-                            .iter()
-                            .all(|i| !self.square_attacked(*i, Color::White))
-                    {
-                        moves.push(Play::new(from, C8, None, None, false, true));
-                    }
-                    if self.castle.black_king_side
-                        && (F8_G8 & all_pieces) == 0
-                        && [F8, G8]
-                            .iter()
-                            .all(|i| !self.square_attacked(*i, Color::White))
-                    {
-                        moves.push(Play::new(from, G8, None, None, false, true));
+                        moves.push(Play::new(from, king_to, None, None, false, true));
                     }
                 }
             }
