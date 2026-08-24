@@ -2,6 +2,7 @@ pub mod bench;
 mod bitboard;
 mod board;
 mod engine;
+mod limits;
 mod magic;
 mod misc;
 mod play;
@@ -13,6 +14,7 @@ pub use board::Board;
 pub use engine::{
     AlphaBeta, Engine, PvLine, SearchConfig, SearchOutcome, SearchParameters, SearchResult,
 };
+pub use limits::Limits;
 pub use misc::{Color, Score};
 pub use play::Play;
 use std::fmt;

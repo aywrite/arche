@@ -14,7 +14,7 @@ use crate::engine::{AlphaBeta, Engine, SearchConfig, SearchOutcome, SearchParame
 use crate::misc::Score;
 use crate::play::Play;
 use std::fmt;
-use std::time::{Duration, Instant};
+use std::time::Duration;
 
 /// The depth every position is searched to.
 pub const DEPTH: u8 = 7;
@@ -143,10 +143,8 @@ pub fn run_suite(
             let board = Board::from_fen(&position.fen)
                 .unwrap_or_else(|e| panic!("bench position {} does not parse: {}", position.id, e));
             let mut engine = AlphaBeta::with_config(board, table_bytes, config);
-            let start = Instant::now();
-            let outcome = engine
-                .iterative_deepening_search(SearchParameters::new_with_depth(depth), |_, _, _| {});
-            let elapsed = start.elapsed();
+            let outcome =
+                engine.iterative_deepening_search(SearchParameters::to_depth(depth), |_, _, _| {});
             let result = match outcome {
                 SearchOutcome::Complete(result) => result,
                 other => panic!(
@@ -154,6 +152,9 @@ pub fn run_suite(
                     position.id, other
                 ),
             };
+            // the search says how long it took, measured over the same
+            // interval as the nodes it counted
+            let elapsed = result.elapsed;
             PositionReport {
                 id: position.id.clone(),
                 play: result.best_move,
