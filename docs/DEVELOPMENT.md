@@ -178,7 +178,7 @@ at. The last line, `<nodes> nodes <nps> nps`, is the one the match tools read,
 and `bench` is also a uci command. Both take a depth after the word, as in
 `arche bench 3`, for trying the command cheaply; the number that means
 anything is the one at the default. Both also take `hash <MB>` and
-`taint refuse|trust`, as in `arche bench 9 hash 256 taint trust`, which are
+`taint refuse|trust|skip|rule50`, as in `arche bench 9 hash 256 taint trust`, which are
 for measuring what the table and the draw taint policy do to a search rather
 than for pinning anything: the header states what a report ran with, so one
 can be rerun from it. The suite, depth and table are chosen once:

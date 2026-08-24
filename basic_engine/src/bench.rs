@@ -85,8 +85,12 @@ pub struct PositionReport {
     /// refuse, and the default does, so this stays at zero while it does.
     pub tainted_cutoffs: u64,
     /// Cutoffs refused for their taint and searched instead, which is what
-    /// refusing costs; zero under a configuration that trusts them.
+    /// refusing costs; zero under a configuration that trusts them. Under
+    /// the rule50 policy this counts its horizon refusals instead.
     pub refused_cutoffs: u64,
+    /// Tainted results not stored, under the policy that keeps only clean
+    /// scores; zero under every other.
+    pub skipped_stores: u64,
     /// The search alone, not the table's allocation.
     pub elapsed: Duration,
 }
@@ -165,6 +169,7 @@ pub fn run_suite(
                 tainted_stores: engine.ghi().tainted_stores,
                 tainted_cutoffs: engine.ghi().tainted_score_cutoffs,
                 refused_cutoffs: engine.ghi().refused_cutoffs,
+                skipped_stores: engine.ghi().skipped_stores,
                 elapsed,
             }
         })
@@ -209,7 +214,7 @@ impl fmt::Display for Report {
             .max("position".len());
         writeln!(
             f,
-            "{:<width$} {:>5} {:>6} {:>10} {:>7} {:>9} {:>9} {:>8} {:>6} {:>7} {:>6} {:>10}",
+            "{:<width$} {:>5} {:>6} {:>10} {:>7} {:>9} {:>9} {:>8} {:>6} {:>7} {:>7} {:>6} {:>10}",
             "position",
             "move",
             "score",
@@ -220,6 +225,7 @@ impl fmt::Display for Report {
             "tainted",
             "tcuts",
             "refused",
+            "skipped",
             "ms",
             "nps"
         )?;
@@ -235,10 +241,11 @@ impl fmt::Display for Report {
                    tainted: u64,
                    tainted_cutoffs: u64,
                    refused_cutoffs: u64,
+                   skipped_stores: u64,
                    elapsed: Duration| {
             writeln!(
                 f,
-                "{:<width$} {:>5} {:>6} {:>10} {:>6.1}% {:>9} {:>9} {:>8} {:>6} {:>7} {:>6} {:>10}",
+                "{:<width$} {:>5} {:>6} {:>10} {:>6.1}% {:>9} {:>9} {:>8} {:>6} {:>7} {:>7} {:>6} {:>10}",
                 name,
                 play,
                 score,
@@ -249,6 +256,7 @@ impl fmt::Display for Report {
                 tainted,
                 tainted_cutoffs,
                 refused_cutoffs,
+                skipped_stores,
                 elapsed.as_millis(),
                 nps(nodes, elapsed)
             )
@@ -266,6 +274,7 @@ impl fmt::Display for Report {
                 p.tainted_stores,
                 p.tainted_cutoffs,
                 p.refused_cutoffs,
+                p.skipped_stores,
                 p.elapsed,
             )?;
         }
@@ -282,6 +291,7 @@ impl fmt::Display for Report {
             sum(|p| p.tainted_stores),
             sum(|p| p.tainted_cutoffs),
             sum(|p| p.refused_cutoffs),
+            sum(|p| p.skipped_stores),
             self.elapsed(),
         )?;
         write!(f, "{} nodes {} nps", self.nodes(), self.nps())
@@ -387,11 +397,7 @@ mod tests {
         assert_eq!(column("score"), position.score.to_string());
         assert_eq!(column("refused"), position.refused_cutoffs.to_string());
 
-        #[allow(clippy::needless_update)]
-        let trusting = SearchConfig {
-            refuse_tainted_cutoffs: false,
-            ..SearchConfig::reference()
-        };
+        let trusting = SearchConfig::with_taint("trust").expect("trust is a policy");
         let trusted = run_suite(&suite, 7, 1 << 20, trusting);
         assert!(
             trusted

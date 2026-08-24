@@ -867,6 +867,14 @@ impl Board {
         self.fifty_move_rule >= 100
     }
 
+    /// Whether the fifty move counter stands within four plies of expiry:
+    /// the horizon behind which the rule50 taint policy refuses every
+    /// transposition cutoff, as Stockfish does in its main search, and
+    /// here in quiescence besides.
+    pub fn fifty_move_near_expiry(&self) -> bool {
+        self.fifty_move_rule >= 96
+    }
+
     /// True on the third occurrence, which is when a game is actually drawn.
     ///
     /// Nothing in the search calls it: the search takes a draw on the first

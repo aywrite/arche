@@ -107,20 +107,55 @@ impl SearchParameters {
 /// worth. The default is what the engine plays with.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub struct SearchConfig {
-    /// Whether to refuse a score from a draw tainted entry, trusting only
-    /// its move.
-    ///
-    /// On in the reference and by default. A tainted score describes the
-    /// path that stored it rather than the position, so a search arriving
-    /// another way can read a draw it cannot actually reach.
-    ///
-    /// Refusing costs a few percent of the tree overall and a great deal of
-    /// the endgames, which are where the taint is; it has yet to be shown to
-    /// buy anything. The figures are not written down here because they are
-    /// figures for one depth and one table, and the bench's depth is due to
-    /// be raised once: run `bench hash <MB> taint refuse` against
-    /// `taint trust` for the pair as they stand.
-    pub refuse_tainted_cutoffs: bool,
+    /// What the search does about draw tainted transposition scores, the
+    /// ones that describe the path that stored them rather than the
+    /// position. The policies are the graph history experiment's arms;
+    /// what each costs and buys is measured, not written here: run
+    /// `bench hash <MB> taint <word>` against another word for the pair
+    /// as they stand.
+    pub taint: TaintPolicy,
+}
+
+/// What to do with a draw tainted score: one stored by a search that read
+/// a repetition or fifty move draw below it, which a search arriving down
+/// another path may not be able to reach.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum TaintPolicy {
+    /// Store tainted scores and refuse their cutoffs, trusting only the
+    /// move. The reference and the default: the table only ever speeds the
+    /// search up, and a warm answer is a cold one.
+    Refuse,
+    /// Store tainted scores and take their cutoffs as if the taint were
+    /// not there: the control arm, what an engine with no taint bit does.
+    Trust,
+    /// Never store a tainted score, so a probe cannot read one; the slot
+    /// keeps whatever it had. The root's answer still stores whatever it
+    /// is, since the reported line is read back from its slot, so the rare
+    /// tainted cutoff that offers is refused as under `Refuse`.
+    Skip,
+    /// No taint accounting at the probe; instead every cutoff is refused
+    /// once the fifty move counter reaches the guard, which is how
+    /// Stockfish's main search plays; this engine applies the guard in
+    /// quiescence besides. The taint still travels and is still counted,
+    /// so the figures say what this policy trusts that the others refuse.
+    Rule50,
+}
+
+impl TaintPolicy {
+    /// Whether a probe refuses the cutoff a tainted entry offers.
+    pub(crate) fn refuses_tainted_cutoffs(self) -> bool {
+        matches!(self, TaintPolicy::Refuse | TaintPolicy::Skip)
+    }
+
+    /// Whether a probe refuses every cutoff near the fifty move horizon.
+    pub(crate) fn guards_rule50(self) -> bool {
+        matches!(self, TaintPolicy::Rule50)
+    }
+
+    /// Whether a tainted result is stored at all.
+    pub(crate) fn stores_tainted(self) -> bool {
+        !matches!(self, TaintPolicy::Skip)
+    }
 }
 
 impl SearchConfig {
@@ -128,39 +163,39 @@ impl SearchConfig {
     /// the search to, and the side a shortcut is measured against.
     pub const fn reference() -> Self {
         Self {
-            refuse_tainted_cutoffs: true,
+            taint: TaintPolicy::Refuse,
         }
     }
 
     /// The word the bench prints for what this configuration does with a
-    /// draw tainted score, `refuse` it and search or `trust` it and cut,
-    /// and reads back with `with_taint`. The words are the policies the
-    /// graph history experiments compare.
+    /// draw tainted score, and reads back with `with_taint`. The words are
+    /// the policies the graph history experiments compare.
     pub fn taint_word(self) -> &'static str {
-        if self.refuse_tainted_cutoffs {
-            "refuse"
-        } else {
-            "trust"
+        match self.taint {
+            TaintPolicy::Refuse => "refuse",
+            TaintPolicy::Trust => "trust",
+            TaintPolicy::Skip => "skip",
+            TaintPolicy::Rule50 => "rule50",
         }
     }
 
     /// The default with its taint policy set by word, or none for a word
     /// that is no policy. The default rather than the reference, so that
     /// `refuse` names what a bench runs when it is told nothing and the
-    /// header it prints can be handed back to it; `trust` is then the
-    /// engine as it plays with that one refusal off, the control arm of
-    /// the experiments.
+    /// header it prints can be handed back to it.
     // the default with the one switch set; written that way so it still
     // reads so once there are more switches
     #[allow(clippy::needless_update)]
     pub fn with_taint(word: &str) -> Option<Self> {
-        let refuse_tainted_cutoffs = match word {
-            "refuse" => true,
-            "trust" => false,
+        let taint = match word {
+            "refuse" => TaintPolicy::Refuse,
+            "trust" => TaintPolicy::Trust,
+            "skip" => TaintPolicy::Skip,
+            "rule50" => TaintPolicy::Rule50,
             _ => return None,
         };
         Some(Self {
-            refuse_tainted_cutoffs,
+            taint,
             ..Self::default()
         })
     }
@@ -249,6 +284,17 @@ impl AlphaBeta {
 
     fn eval(&self) -> Score {
         self.board.eval()
+    }
+
+    /// Whether a result may be stored under the taint policy. A tainted
+    /// one that may not be is counted as skipped, so the policy's cost is
+    /// a figure rather than an absence.
+    fn keeps(&mut self, tainted: bool) -> bool {
+        if tainted && !self.config.taint.stores_tainted() {
+            self.transpositions.count_skipped_store();
+            return false;
+        }
+        true
     }
 
     pub fn clear_transpositions(&mut self) {
@@ -383,7 +429,8 @@ impl AlphaBeta {
             alpha,
             beta,
             0,
-            self.config.refuse_tainted_cutoffs,
+            self.config.taint.refuses_tainted_cutoffs(),
+            self.config.taint.guards_rule50(),
         ) {
             Probe::Cut { score, tainted } => {
                 self.tainted = tainted;
@@ -423,8 +470,15 @@ impl AlphaBeta {
                 }
                 if score > alpha {
                     if score >= beta {
-                        self.transpositions
-                            .record_cutoff(&self.board, *m, score, 0, node_tainted);
+                        if self.keeps(node_tainted) {
+                            self.transpositions.record_cutoff(
+                                &self.board,
+                                *m,
+                                score,
+                                0,
+                                node_tainted,
+                            );
+                        }
                         self.tainted = node_tainted;
                         return Ok(score);
                     }
@@ -440,12 +494,14 @@ impl AlphaBeta {
         }
 
         if let Some(play) = best_move {
-            if alpha != old_alpha {
-                self.transpositions
-                    .record_best(&self.board, play, best, 0, node_tainted);
-            } else {
-                self.transpositions
-                    .record_ceiling(&self.board, play, best, 0, node_tainted);
+            if self.keeps(node_tainted) {
+                if alpha != old_alpha {
+                    self.transpositions
+                        .record_best(&self.board, play, best, 0, node_tainted);
+                } else {
+                    self.transpositions
+                        .record_ceiling(&self.board, play, best, 0, node_tainted);
+                }
             }
         }
         self.tainted = node_tainted;
@@ -507,7 +563,8 @@ impl AlphaBeta {
             alpha,
             beta,
             depth,
-            self.config.refuse_tainted_cutoffs,
+            self.config.taint.refuses_tainted_cutoffs(),
+            self.config.taint.guards_rule50(),
         ) {
             Probe::Cut { score, tainted } => {
                 // whatever the stored score depended on, this frame now depends
@@ -543,13 +600,15 @@ impl AlphaBeta {
                     }
                     if tt_score > alpha {
                         if tt_score >= beta {
-                            self.transpositions.record_cutoff(
-                                &self.board,
-                                tt,
-                                tt_score,
-                                depth,
-                                node_tainted,
-                            );
+                            if self.keeps(node_tainted) {
+                                self.transpositions.record_cutoff(
+                                    &self.board,
+                                    tt,
+                                    tt_score,
+                                    depth,
+                                    node_tainted,
+                                );
+                            }
                             self.tainted = node_tainted;
                             return Ok(tt_score);
                         }
@@ -587,13 +646,15 @@ impl AlphaBeta {
                 }
                 if score > alpha {
                     if score >= beta {
-                        self.transpositions.record_cutoff(
-                            &self.board,
-                            *m,
-                            score,
-                            depth,
-                            node_tainted,
-                        );
+                        if self.keeps(node_tainted) {
+                            self.transpositions.record_cutoff(
+                                &self.board,
+                                *m,
+                                score,
+                                depth,
+                                node_tainted,
+                            );
+                        }
                         self.tainted = node_tainted;
                         return Ok(score);
                     }
@@ -613,12 +674,14 @@ impl AlphaBeta {
         }
 
         let play = best_move.expect("a legal move was found, so one of them is best");
-        if alpha != old_alpha {
-            self.transpositions
-                .record_best(&self.board, play, best, depth, node_tainted);
-        } else {
-            self.transpositions
-                .record_ceiling(&self.board, play, best, depth, node_tainted);
+        if self.keeps(node_tainted) {
+            if alpha != old_alpha {
+                self.transpositions
+                    .record_best(&self.board, play, best, depth, node_tainted);
+            } else {
+                self.transpositions
+                    .record_ceiling(&self.board, play, best, depth, node_tainted);
+            }
         }
         self.tainted = node_tainted;
         Ok(best)
@@ -923,7 +986,9 @@ mod search {
     use super::AlphaBeta;
     use super::Board;
     use super::Engine;
-    use super::{Limits, Play, SearchConfig, SearchOutcome, SearchParameters, SearchResult};
+    use super::{
+        Limits, Play, SearchConfig, SearchOutcome, SearchParameters, SearchResult, TaintPolicy,
+    };
     use crate::board::{fens, play_named};
     use pretty_assertions::assert_eq;
     use std::time;
@@ -1424,7 +1489,7 @@ mod search {
         // same word or a report could not be rerun from its header; and
         // the word the default prints has to name the default, or a bench
         // told nothing and a bench told that word would run apart
-        for word in ["refuse", "trust"] {
+        for word in ["refuse", "trust", "skip", "rule50"] {
             let config =
                 SearchConfig::with_taint(word).unwrap_or_else(|| panic!("{word} is not a policy"));
             assert_eq!(config.taint_word(), word);
@@ -1470,7 +1535,7 @@ mod search {
         };
         #[allow(clippy::needless_update)]
         let trusting = SearchConfig {
-            refuse_tainted_cutoffs: false,
+            taint: TaintPolicy::Trust,
             ..SearchConfig::reference()
         };
         assert!(
@@ -1496,7 +1561,7 @@ mod search {
         // arm is; written that way so it still says so once there are more
         #[allow(clippy::needless_update)]
         let trusting = SearchConfig {
-            refuse_tainted_cutoffs: false,
+            taint: TaintPolicy::Trust,
             ..SearchConfig::reference()
         };
         let mut e = AlphaBeta::with_config(Board::from_fen(fen).unwrap(), TABLE_BYTES, trusting);
@@ -1529,6 +1594,40 @@ mod search {
         let result = completed(warm.search(6));
 
         let mut cold = reference(Board::from_fen(fresh).unwrap());
+        let expected = completed(cold.search(6));
+        assert_eq!(result.score, expected.score);
+        assert_eq!(
+            format!("{}", result.best_move),
+            format!("{}", expected.best_move),
+        );
+    }
+
+    #[test]
+    fn a_skipping_search_matches_cold_across_draw_context_with_nothing_to_refuse() {
+        // the skip policy keeps tainted scores out of the table instead of
+        // refusing them on the way back out, so it owes the same answer
+        // warm as cold, and it should get there without the refusal ever
+        // firing: what was never stored cannot need refusing. The root's
+        // answer slot is the stated exception, and the probe's guard on it
+        // is what keeps this test honest rather than lucky
+        let near_draw = "5k2/1p3p1p/p3pK1P/P1P1P3/4bP2/2B5/8/8 w - - 96 112";
+        let fresh = "5k2/1p3p1p/p3pK1P/P1P1P3/4bP2/2B5/8/8 w - - 0 1";
+        let skipping = SearchConfig::with_taint("skip").unwrap();
+        let mut warm =
+            AlphaBeta::with_config(Board::from_fen(near_draw).unwrap(), TABLE_BYTES, skipping);
+        completed(warm.search(6));
+        assert!(warm.ghi().skipped_stores > 0, "nothing was ever skipped");
+        // the root's answer slot is the one stated exception, stored once
+        // a search whatever its taint, so one search allows one
+        assert!(
+            warm.ghi().tainted_stores <= 1,
+            "a tainted score was kept beyond the root's answer slot"
+        );
+        warm.parse_fen(fresh).unwrap();
+        let result = completed(warm.search(6));
+
+        let mut cold =
+            AlphaBeta::with_config(Board::from_fen(fresh).unwrap(), TABLE_BYTES, skipping);
         let expected = completed(cold.search(6));
         assert_eq!(result.score, expected.score);
         assert_eq!(
