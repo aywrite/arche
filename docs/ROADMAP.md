@@ -29,8 +29,6 @@ the order they look worth doing after that.
 
 ## Known limitations
 
-- fail low nodes (upper bounds) are never stored in the transposition table, only exact
-  scores and fail highs
 - a transposition score that came from a repetition or fifty move draw is refused rather than
   trusted, so the search cannot read a draw down a path that could not reach it. The reverse
   direction is still open: a score stored with the draw out of reach can be read by a path

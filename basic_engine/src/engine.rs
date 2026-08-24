@@ -507,9 +507,11 @@ impl AlphaBeta {
                     // child would
                     node_tainted |= self.tainted;
                     let tt_score = -result?;
-                    best = best.max(tt_score);
-                    if tt_score > alpha {
+                    if tt_score > best {
+                        best = tt_score;
                         best_move = Some(tt);
+                    }
+                    if tt_score > alpha {
                         if tt_score >= beta {
                             self.transpositions.record_cutoff(
                                 &self.board,
@@ -550,9 +552,11 @@ impl AlphaBeta {
                 // it turns out to be the best one here
                 node_tainted |= self.tainted;
                 let score = -result?;
-                best = best.max(score);
-                if score > alpha {
+                if score > best {
+                    best = score;
                     best_move = Some(*m);
+                }
+                if score > alpha {
                     if score >= beta {
                         self.transpositions.record_cutoff(
                             &self.board,
@@ -579,10 +583,13 @@ impl AlphaBeta {
             return Ok(0);
         }
 
+        let play = best_move.expect("a legal move was found, so one of them is best");
         if alpha != old_alpha {
-            let play = best_move.expect("alpha only rises when a move raises it");
             self.transpositions
                 .record_best(&self.board, play, best, depth, node_tainted);
+        } else {
+            self.transpositions
+                .record_ceiling(&self.board, play, best, depth, node_tainted);
         }
         self.tainted = node_tainted;
         Ok(best)
