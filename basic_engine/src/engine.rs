@@ -237,6 +237,13 @@ pub struct AlphaBeta {
     /// like the ghi counters: it runs over the engine's whole life, and the
     /// bench reads it from an engine made for the one search
     quiescence_nodes: u64,
+    /// Scratch for the ordering keys, one buffer reused by every sort. As a
+    /// local it had to be initialised on every call, and the compiler made
+    /// that a five hundred byte memset per list ordered; here it is written
+    /// once and only ever the first `len` entries are read or written. The
+    /// sort finishes with the buffer before the search recurses, so no two
+    /// uses are ever alive at once.
+    ordering_keys: [i64; SORT_ON_THE_STACK_UP_TO],
 }
 
 /// What sort_by_cached_key does, minus its allocation, for a list that fits
@@ -283,6 +290,7 @@ impl AlphaBeta {
             limits: Limits::unlimited(),
             next_check: 0,
             quiescence_nodes: 0,
+            ordering_keys: [0; SORT_ON_THE_STACK_UP_TO],
         }
     }
 
@@ -365,7 +373,7 @@ impl AlphaBeta {
     /// which case it skips it here. The bonus still earns its keep: a table
     /// move it declined to play early was never searched, so it is still in
     /// this list and still has to be the first one tried.
-    fn order_moves(&self, moves: &mut MoveList, pv_play: Option<Play>) {
+    fn order_moves(&mut self, moves: &mut MoveList, pv_play: Option<Play>) {
         // Most lists here are short: quiescence sorts a handful of captures
         // or the evasions the filter kept, and the counts say under nine
         // moves on average. sort_by_cached_key allocates scratch on every
@@ -373,11 +381,11 @@ impl AlphaBeta {
         // take the stack sort instead, keeping the allocating sort only for
         // a list that spilled the buffer.
         if moves.len() <= SORT_ON_THE_STACK_UP_TO {
-            let mut keys = [0i64; SORT_ON_THE_STACK_UP_TO];
             for (i, m) in moves.iter().enumerate() {
-                keys[i] = self.ordering_key(m, pv_play);
+                let key = self.ordering_key(m, pv_play);
+                self.ordering_keys[i] = key;
             }
-            sort_on_the_stack(moves, &mut keys);
+            sort_on_the_stack(moves, &mut self.ordering_keys);
         } else {
             moves.sort_by_cached_key(|m| self.ordering_key(m, pv_play));
         }
