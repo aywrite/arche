@@ -1306,7 +1306,20 @@ impl Board {
             self.checkers | BETWEEN[king][checker]
         };
         let kings = self.kings;
-        moves.retain(|m| kings.is_bit_set(m.from) || m.en_passant || targets.is_bit_set(m.to));
+        // Compacted in place rather than through `retain`, which reaches the
+        // list through its index operator once per move and asks each time
+        // whether the list has spilled to the heap. One slice taken here
+        // answers that once for the whole list.
+        let list = moves.as_mut_slice();
+        let mut kept = 0;
+        for i in 0..list.len() {
+            let play = list[i];
+            if kings.is_bit_set(play.from) || play.en_passant || targets.is_bit_set(play.to) {
+                list[kept] = play;
+                kept += 1;
+            }
+        }
+        moves.truncate(kept);
     }
 
     /// Print every square this colour attacks as a grid, for when
