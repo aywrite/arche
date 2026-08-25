@@ -12,7 +12,7 @@ runs:
   steps:
     - name: Cache the match tools
       id: cache
-      uses: actions/cache@v6
+      uses: actions/cache@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
       with:
         # Named one by one rather than as the whole of tools/, because a match
         # writes its games, its results and the engines it played into the same
