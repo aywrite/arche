@@ -240,19 +240,17 @@ pub struct AlphaBeta {
 }
 
 /// What sort_by_cached_key does, minus its allocation, for a list that fits
-/// the buffer: a stable insertion sort over keys computed once each.
-/// Shifting only while strictly greater keeps equal keys in their generated
-/// order, exactly as the stable sort does, so the two produce the same order
-/// and the tree searched is the same whichever runs; the node count tests
-/// hold both to that. Generic over the key, so this call compiles to the
-/// same code it replaced rather than to one through a pointer.
+/// the buffer: a stable insertion sort over keys the caller computed once
+/// each. Shifting only while strictly greater keeps equal keys in their
+/// generated order, exactly as the stable sort does, so the two produce the
+/// same order and the tree searched is the same whichever runs; the node
+/// count tests hold both to that. The keys arrive in a buffer beside the
+/// moves rather than as a function to call: a key closure of any weight was
+/// a call per move rather than code in this loop, which is where most of
+/// the sorting went.
 #[inline]
-fn sort_on_the_stack(moves: &mut [Play], key: impl Fn(&Play) -> i64) {
+fn sort_on_the_stack(moves: &mut [Play], keys: &mut [i64; SORT_ON_THE_STACK_UP_TO]) {
     debug_assert!(moves.len() <= SORT_ON_THE_STACK_UP_TO);
-    let mut keys = [0i64; SORT_ON_THE_STACK_UP_TO];
-    for (i, m) in moves.iter().enumerate() {
-        keys[i] = key(m);
-    }
     for i in 1..moves.len() {
         let k = keys[i];
         let m = moves[i];
@@ -368,13 +366,6 @@ impl AlphaBeta {
     /// move it declined to play early was never searched, so it is still in
     /// this list and still has to be the first one tried.
     fn order_moves(&self, moves: &mut MoveList, pv_play: Option<Play>) {
-        let key = |m: &Play| {
-            let mut score = m.mvv_lva(&self.board);
-            if pv_play == Some(*m) {
-                score += 100_000;
-            }
-            -score
-        };
         // Most lists here are short: quiescence sorts a handful of captures
         // or the evasions the filter kept, and the counts say under nine
         // moves on average. sort_by_cached_key allocates scratch on every
@@ -382,10 +373,26 @@ impl AlphaBeta {
         // take the stack sort instead, keeping the allocating sort only for
         // a list that spilled the buffer.
         if moves.len() <= SORT_ON_THE_STACK_UP_TO {
-            sort_on_the_stack(moves, key);
+            let mut keys = [0i64; SORT_ON_THE_STACK_UP_TO];
+            for (i, m) in moves.iter().enumerate() {
+                keys[i] = self.ordering_key(m, pv_play);
+            }
+            sort_on_the_stack(moves, &mut keys);
         } else {
-            moves.sort_by_cached_key(key);
+            moves.sort_by_cached_key(|m| self.ordering_key(m, pv_play));
         }
+    }
+
+    /// What a move sorts by, smaller first: its MVV-LVA score with the
+    /// table's move pushed ahead of everything else, negated so that the
+    /// best score is the smallest key.
+    #[inline]
+    fn ordering_key(&self, m: &Play, pv_play: Option<Play>) -> i64 {
+        let mut score = m.mvv_lva(&self.board);
+        if pv_play == Some(*m) {
+            score += 100_000;
+        }
+        -score
     }
 
     fn quiescence(&mut self, mut alpha: Score, beta: Score) -> Result<Score, Aborted> {

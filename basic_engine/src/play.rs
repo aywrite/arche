@@ -39,29 +39,26 @@ impl Play {
 
     /// Most valuable victim, least valuable attacker: take the biggest piece
     /// with the smallest one first.
+    ///
+    /// The scores index by piece rather than matching on it: the arms did
+    /// different arithmetic per piece, which compiled to an indirect jump
+    /// taken once per capture scored, and the pieces arrive in no order a
+    /// predictor can learn. Inline because the sort computes a key per move
+    /// generated, and this is most of the key.
+    #[inline]
     pub fn mvv_lva(&self, board: &Board) -> i64 {
-        let victim_score = match self.capture {
-            None => return 0,
-            Some(Piece::Pawn) => 100,
-            Some(Piece::Knight) => 250,
-            Some(Piece::Bishop) => 300,
-            Some(Piece::Rook) => 400,
-            Some(Piece::Queen) => 500,
-            Some(Piece::King) => 1000,
+        const VICTIM_SCORES: [i64; 6] = [100, 250, 300, 400, 500, 1000];
+        const ATTACKER_SCORES: [i64; 6] = [6, 5, 4, 3, 2, 1];
+        let Some(victim) = self.capture else {
+            return 0;
         };
-        let attacker_score = match board.get_piece_index(self.from) {
-            None => return 0,
-            Some(Piece::Pawn) => 6,
-            Some(Piece::Knight) => 5,
-            Some(Piece::Bishop) => 4,
-            Some(Piece::Rook) => 3,
-            Some(Piece::Queen) => 2,
-            Some(Piece::King) => 1,
+        let Some(attacker) = board.get_piece_index(self.from) else {
+            return 0;
         };
-        let score = victim_score + attacker_score;
+        let score = VICTIM_SCORES[victim as usize] + ATTACKER_SCORES[attacker as usize];
         // a queen taking a defended piece is usually just losing the queen, so
         // push it below the other captures rather than trying it first
-        if attacker_score == 2 && board.square_attacked(self.to, !board.active_color) {
+        if matches!(attacker, Piece::Queen) && board.square_attacked(self.to, !board.active_color) {
             return score - 300;
         }
         score
