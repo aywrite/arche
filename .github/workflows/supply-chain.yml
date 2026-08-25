@@ -1,0 +1,64 @@
+name: Supply chain
+
+# Runs cargo-deny over the dependency tree: the advisories published against
+# it, the licences it is on, and the registries it came from. What each of
+# those is set to, and why cargo-deny rather than cargo-audit, is in deny.toml.
+#
+# Its own workflow rather than a job in Rust, because of the schedule. An
+# advisory is published by someone else, against a version of a crate that has
+# been in Cargo.lock for months, and nothing here pushes a commit when that
+# happens — so a check that only runs on a pull request misses exactly the case
+# it exists for, and would first notice on whatever change happened to come
+# next. The schedule is what turns that into a failing run and the mail github
+# sends about one. Adding it to Rust instead would either have spent the whole
+# three platform matrix on it every Monday or needed a condition on every job
+# there saying which triggers it was for.
+#
+# Note that github disables a scheduled workflow in a repository that has seen
+# no activity for sixty days, and says so by mail; a run from the actions tab
+# turns it back on.
+
+on:
+  push:
+    branches: [ "master" ]
+  pull_request:
+    branches: [ "master" ]
+  schedule:
+    # Monday morning UTC. Github runs a cron on a busy runner pool and can be
+    # some way late, which does not matter for a check whose subject changed at
+    # some point in the last week.
+    - cron: "0 6 * * 1"
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+# a new push to a pull request makes the run in progress redundant
+concurrency:
+  group: ${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: ${{ github.event_name == 'pull_request' }}
+
+jobs:
+  deny:
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+      # the same action the release preparation uses, which fetches a prebuilt
+      # cargo-deny rather than spending several minutes compiling one
+      - uses: taiki-e/install-action@b6ff580856c41316412a0b9b60540fbc6f8c82cc # v2.86.7
+        with:
+          # A version rather than whatever is newest, for the reason the
+          # actions themselves are pinned: this job reads deny.toml, the fields
+          # in it are the ones this version defines, and a major that renamed or
+          # dropped one would fail every run afterwards for a reason that had
+          # nothing to do with the tree it was checking. Pinning the tool does
+          # not freeze what it checks against — the advisory database is fetched
+          # at run time, which is what makes the weekly run worth having.
+          # Dependabot does not watch this one, so it is bumped by hand when
+          # deny.toml is next touched.
+          tool: cargo-deny@0.20.2
+      # advisories, licences, sources and bans in one pass. It reads Cargo.lock
+      # rather than resolving afresh, so this is the tree that would be built.
+      - name: Check the dependency tree
+        run: cargo deny --locked check

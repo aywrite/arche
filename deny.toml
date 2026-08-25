@@ -1,0 +1,72 @@
+# What the dependency tree is allowed to contain.
+#
+# cargo-deny rather than cargo-audit, because a dependency goes wrong in three
+# ways and one file covers all of them: an advisory published against a crate,
+# a crate on terms the engine's own licence cannot carry, and a crate pulled
+# from somewhere nobody chose. cargo-audit answers the first and only the
+# first, so the other two would each want their own tool, config and job.
+#
+# Dependabot already opens a pull request when a crate has a new version. That
+# is a notification, and it arrives whether or not anything is wrong with the
+# version being replaced. This is the gate. It runs from
+# .github/workflows/supply-chain.yml on every pull request and once a week
+# besides, because an advisory is published without anyone here pushing
+# anything.
+
+[advisories]
+# Vulnerabilities are always an error and have no setting of their own. The
+# fields here are the ones that do.
+#
+# Unmaintained is every crate rather than only the ones the workspace names
+# directly: a transitive dependency runs the same code, and a tree this small
+# has little of it to sort out when one turns up.
+unmaintained = "all"
+unsound = "all"
+# A yank is an author withdrawing a version. It is worth hearing about and it
+# is not by itself a vulnerability — the ones that are have advisories, and
+# those fail above — so it is reported rather than gated, and an unrelated
+# pull request is not held up by someone else's accidental publish.
+yanked = "warn"
+# An advisory that has been read and judged not to apply goes here with the
+# reason it does not, as { id = "RUSTSEC-0000-0000", reason = "..." }.
+ignore = []
+
+[licenses]
+# What the tree actually resolves to, read off crates.io crate by crate rather
+# than guessed at: ninety five crates, nearly all of them offering MIT and
+# Apache-2.0 either way round, three of them Apache-2.0 alone, and
+# unicode-ident, which is `(MIT OR Apache-2.0) AND Unicode-3.0` and so needs
+# the third entry whichever half of the first it is taken under.
+allow = [
+    "Apache-2.0",
+    "MIT",
+    "Unicode-3.0",
+]
+# The release archives carry none of criterion, proptest or pretty_assertions,
+# but the tests build them and the lock file pins them, so they are read here
+# like anything else. The list above is the whole lock file's; leaving the dev
+# dependencies out would only mean it described less than it appears to.
+include-dev = true
+# The engine is GPL-3.0-or-later and neither of its two crates is published,
+# which is what private means here. Skipping them keeps the list above a
+# statement about dependencies alone.
+private = { ignore = true }
+
+[bans]
+# Two versions of one crate in the same tree is the ecosystem's business rather
+# than this repository's — criterion and proptest disagree about a handful, and
+# neither is ours to reconcile — so it is reported and not gated.
+multiple-versions = "warn"
+# A wildcard version requirement is a dependency on whatever is published next.
+# The path dependency on basic_engine is exempt because it is a path rather
+# than a requirement on a registry.
+wildcards = "deny"
+allow-wildcard-paths = true
+
+[sources]
+# Everything comes from crates.io today, which is the default allowed registry,
+# and nothing comes from a git repository. Denying the unknown rather than
+# warning about it means a crate that starts arriving from somewhere else has
+# to be a deliberate edit here before it can build.
+unknown-registry = "deny"
+unknown-git = "deny"
