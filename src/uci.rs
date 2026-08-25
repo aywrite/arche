@@ -423,7 +423,7 @@ fn format_info(depth: u8, result: &SearchResult, pv: &PvLine) -> String {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use basic_engine::{AlphaBeta, Board};
+    use basic_engine::{AlphaBeta, Board, Clock};
     use std::io::Cursor;
     use std::time::Duration;
 
@@ -972,28 +972,39 @@ go depth 3
     #[test]
     fn the_clock_a_go_names_reaches_the_search() {
         // 500 less the move overhead, which is what time_control works out
-        // and what has to arrive on the other side of the call
+        // and what has to arrive on the other side of the call. A named move
+        // time arrives named, so the deepening loop spends it rather than
+        // answering early and keeping the rest
         assert_eq!(
             asked_of_engine("go movetime 500").limits.clock(),
-            Some(Duration::from_millis(450))
+            Some(Clock::Fixed(Duration::from_millis(450)))
         );
     }
 
     #[test]
     fn a_search_is_given_the_clock_of_the_side_to_move() {
         // both clocks are on the line and they are far apart, so a search
-        // handed the wrong one is handed thirty times the time it has
+        // handed the wrong one is handed thirty times the time it has. A
+        // share of a game clock arrives as one, since what is not spent on
+        // this move is still there for the next
         let line = "go wtime 60000 btime 4000";
         assert_eq!(
             asked_of_engine_as(line, Color::White).limits.clock(),
-            Some(Duration::from_millis(1450)),
+            Some(Clock::Share(Duration::from_millis(1450))),
             "white was not given its own clock"
         );
         assert_eq!(
             asked_of_engine_as(line, Color::Black).limits.clock(),
-            Some(Duration::from_millis(50)),
+            Some(Clock::Share(Duration::from_millis(50))),
             "black was not given its own clock"
         );
+    }
+
+    #[test]
+    fn a_go_infinite_reaches_the_search_with_no_clock_to_cut_it_short() {
+        let asked = asked_of_engine("go infinite wtime 60000");
+        assert_eq!(asked.limits.clock(), None);
+        assert_eq!(asked.limits.node_budget(), u64::MAX);
     }
 
     #[test]
@@ -1022,7 +1033,10 @@ go depth 3
     #[test]
     fn a_clock_and_a_node_limit_both_reach_the_search() {
         let asked = asked_of_engine("go movetime 500 nodes 5000");
-        assert_eq!(asked.limits.clock(), Some(Duration::from_millis(450)));
+        assert_eq!(
+            asked.limits.clock(),
+            Some(Clock::Fixed(Duration::from_millis(450)))
+        );
         assert_eq!(asked.limits.node_budget(), 5000);
     }
 

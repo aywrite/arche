@@ -1,3 +1,4 @@
+use basic_engine::Clock;
 use std::time::Duration;
 
 /// Held back from every budget, so that we are not still thinking when the
@@ -32,7 +33,12 @@ pub struct TimeControl {
 
 impl TimeControl {
     /// How long to search for, or `None` to search without a time limit.
-    pub fn budget(&self) -> Option<Duration> {
+    ///
+    /// Which kind of clock it is goes with it: a move time is a time the
+    /// interface named, and everything else here is a share this side worked
+    /// out for itself from a clock that keeps running. Only the second is a
+    /// guess the search may spend less of, which is what `Clock` is for.
+    pub fn budget(&self) -> Option<Clock> {
         if self.infinite {
             return None;
         }
@@ -44,9 +50,12 @@ impl TimeControl {
             (None, None, Some(increment)) => percent(increment, INCREMENT_PERCENT),
             (None, None, None) => return None,
         };
-        Some(Duration::from_millis(
-            spend.saturating_sub(MOVE_OVERHEAD_MS).max(MIN_BUDGET_MS),
-        ))
+        let budget =
+            Duration::from_millis(spend.saturating_sub(MOVE_OVERHEAD_MS).max(MIN_BUDGET_MS));
+        Some(match self.move_time {
+            Some(_) => Clock::Fixed(budget),
+            None => Clock::Share(budget),
+        })
     }
 
     fn clock_share(&self, time: u64, increment: u64) -> u64 {
@@ -74,7 +83,9 @@ mod tests {
     use super::*;
 
     fn millis(control: &TimeControl) -> Option<u64> {
-        control.budget().map(|d| d.as_millis() as u64)
+        control
+            .budget()
+            .map(|clock| clock.deadline().as_millis() as u64)
     }
 
     fn clock(time: u64) -> TimeControl {
@@ -105,6 +116,33 @@ mod tests {
             ..Default::default()
         };
         assert_eq!(millis(&control), Some(450));
+    }
+
+    #[test]
+    fn a_move_time_is_named_and_everything_else_is_a_share() {
+        // what the deepening loop reads to decide whether it may answer
+        // before the budget is spent: only a share of a running clock is
+        // this side's own guess, and only a guess is worth stopping short of
+        assert_eq!(
+            TimeControl {
+                move_time: Some(500),
+                ..Default::default()
+            }
+            .budget(),
+            Some(Clock::Fixed(Duration::from_millis(450)))
+        );
+        assert_eq!(
+            clock(60_000).budget(),
+            Some(Clock::Share(Duration::from_millis(1_450)))
+        );
+        assert_eq!(
+            TimeControl {
+                increment: Some(1_000),
+                ..Default::default()
+            }
+            .budget(),
+            Some(Clock::Share(Duration::from_millis(700)))
+        );
     }
 
     #[test]
