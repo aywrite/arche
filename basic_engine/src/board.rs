@@ -886,13 +886,40 @@ impl Board {
         self.repetition_count() >= 2
     }
 
-    /// True once this position has come up before. Inside a search that is
-    /// already enough to call it a draw: a position reached twice can be
-    /// reached a third time by whichever side wants it, so neither can be made
-    /// to avoid it, and waiting for the third costs four plies of depth to see
-    /// something that is available now.
+    /// True once the position counts as a draw for the search to take.
+    ///
+    /// Inside the search one earlier occurrence is enough: a position the
+    /// line itself reached twice can be reached a third time by whichever
+    /// side wants it, so neither can be made to avoid it, and waiting for
+    /// the third costs four plies of depth to see something available now.
+    /// An occurrence from before the root proves less, because the
+    /// opponent helped choose the moves that reached it and need not
+    /// choose them again, so of pre-root history the game's own rule is
+    /// required: the position must already have stood twice. Stockfish
+    /// draws nearly this line, but strictly after the root: a line's
+    /// first return to the root position itself is a draw here and not
+    /// there. The line demonstrated that cycle from the root, so it is
+    /// taken as available.
     pub fn has_repeated(&self) -> bool {
-        self.repetition_count() >= 1
+        let root = self.ply - self.line_ply;
+        let window = self.fifty_move_rule.min(self.ply).min(MAX_GAME_SIZE - 1);
+        let mut before_root = 0;
+        for ply in self.ply - window..self.ply {
+            let Some(state) = self.history[history_index(ply)] else {
+                continue;
+            };
+            if state.position_key != self.key {
+                continue;
+            }
+            if ply >= root {
+                return true;
+            }
+            before_root += 1;
+            if before_root >= 2 {
+                return true;
+            }
+        }
+        false
     }
 
     /// Whether the side to move has a legal move at all. Asked only where a
@@ -1976,6 +2003,46 @@ mod make_move {
     /// The search does not wait for the third occurrence. Once a position has
     /// come back once, either side can take the draw, so there is nothing to be
     /// gained by spending four more plies of depth confirming it.
+    #[test]
+    fn a_position_that_stood_once_before_the_root_is_not_yet_a_draw() {
+        // the game reached this position once and moved on; the opponent
+        // helped choose that path and need not choose it again, so a
+        // search rooted here may not write the draw off as available. Once
+        // it has stood twice before the root, the game rule itself is one
+        // recurrence away, and the search takes it
+        let mut board = Board::from_fen(fens::SHUFFLE).unwrap();
+        let cycle = [(A8, B8), (A1, B1), (B8, A8), (B1, A1)];
+        for (from, to) in cycle {
+            board.make_move(&Play::new(from, to, None, None, false, false));
+        }
+        // a search begins here: the one earlier occurrence is pre-root
+        board.line_ply = 0;
+        assert_eq!(board.has_repeated(), false);
+
+        for (from, to) in cycle {
+            board.make_move(&Play::new(from, to, None, None, false, false));
+        }
+        // a search begins with the position already twice in the book
+        board.line_ply = 0;
+        assert_eq!(board.has_repeated(), true);
+    }
+
+    #[test]
+    fn a_cycle_closed_strictly_inside_the_line_is_a_draw_at_once() {
+        // the deciding occurrence sits after the root rather than at it,
+        // which is what holds the boundary to at-or-after the root and
+        // not exactly-at: every other cycle test closes on the root's
+        // own ply
+        let mut board = Board::from_fen(fens::SHUFFLE).unwrap();
+        board.make_move(&Play::new(A8, B8, None, None, false, false));
+        for (from, to) in [(A1, B1), (B8, A8), (B1, A1)] {
+            assert_eq!(board.has_repeated(), false);
+            board.make_move(&Play::new(from, to, None, None, false, false));
+        }
+        board.make_move(&Play::new(A8, B8, None, None, false, false));
+        assert_eq!(board.has_repeated(), true);
+    }
+
     #[test]
     fn has_repeated_fires_a_cycle_before_is_repetition() {
         let mut board = Board::from_fen(fens::SHUFFLE).unwrap();
