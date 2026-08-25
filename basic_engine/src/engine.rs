@@ -886,6 +886,16 @@ impl Engine for AlphaBeta {
         self.transpositions.new_search();
 
         for depth in 1..=max_depth {
+            // the soft bound: an iteration there is not enough of the clock
+            // left to get through is not begun at all, and what is in hand
+            // answers instead. The deadline stays as the backstop for the
+            // iteration that is begun and turns out to have been the last
+            if !search_options
+                .limits
+                .worth_another_iteration(best.is_some())
+            {
+                return SearchOutcome::Aborted(best);
+            }
             let limits = search_options
                 .limits
                 .for_iteration(best.is_some(), total_nodes);
@@ -1038,6 +1048,7 @@ mod search {
         Value,
     };
     use crate::board::{fens, play_named};
+    use crate::limits::Clock;
     use pretty_assertions::assert_eq;
     use std::time;
 
@@ -1321,7 +1332,7 @@ mod search {
     fn already_spent() -> Limits {
         Limits::starting_at(
             time::Instant::now() - time::Duration::from_secs(1),
-            Some(time::Duration::from_millis(1)),
+            Some(Clock::Share(time::Duration::from_millis(1))),
             u64::MAX,
         )
     }
@@ -1489,7 +1500,7 @@ mod search {
             None,
             Limits::starting_at(
                 time::Instant::now() - time::Duration::from_secs(1),
-                Some(time::Duration::from_millis(1)),
+                Some(Clock::Share(time::Duration::from_millis(1))),
                 1_000_000,
             ),
         );
@@ -1504,7 +1515,10 @@ mod search {
         let limit = 1_000;
         let options = SearchParameters::new(
             None,
-            Limits::starting_now(Some(time::Duration::from_secs(10)), Some(limit)),
+            Limits::starting_now(
+                Some(Clock::Share(time::Duration::from_secs(10))),
+                Some(limit),
+            ),
         );
         let mut completed: u64 = 0;
         let outcome =
@@ -1600,10 +1614,36 @@ mod search {
         let mut e = engine(Board::new());
         let params = SearchParameters::new(
             None,
-            Limits::starting_now(Some(time::Duration::from_millis(50)), None),
+            Limits::starting_now(Some(Clock::Share(time::Duration::from_millis(50))), None),
         );
         let outcome = e.iterative_deepening_search(params, |_, _, _| {});
         assert!(matches!(outcome, SearchOutcome::Aborted(Some(_))));
+    }
+
+    #[test]
+    fn a_deepening_stops_before_an_iteration_the_clock_will_not_cover() {
+        // more than the soft share of a second has gone and the second
+        // itself has not, so the deadline would let a second depth start and
+        // the soft bound does not. Which fraction of the budget that is, and
+        // why, belongs to Limits; what is asserted here is that the deepening
+        // loop asks it at all, and asks it only of a share of a game clock
+        for (kind, depths) in [
+            (Clock::Share as fn(time::Duration) -> Clock, vec![1]),
+            (Clock::Fixed as fn(time::Duration) -> Clock, vec![1, 2]),
+        ] {
+            let mut e = engine(Board::new());
+            let params = SearchParameters::new(
+                Some(2),
+                Limits::starting_at(
+                    time::Instant::now() - time::Duration::from_millis(600),
+                    Some(kind(time::Duration::from_secs(1))),
+                    u64::MAX,
+                ),
+            );
+            let mut reached = Vec::new();
+            e.iterative_deepening_search(params, |depth, _, _| reached.push(depth));
+            assert_eq!(reached, depths, "{:?}", kind(time::Duration::from_secs(1)));
+        }
     }
 
     #[test]

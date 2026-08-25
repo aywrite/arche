@@ -16,7 +16,7 @@ pub use board::Board;
 pub use engine::{
     AlphaBeta, Engine, PvLine, SearchConfig, SearchOutcome, SearchParameters, SearchResult,
 };
-pub use limits::Limits;
+pub use limits::{Clock, Limits};
 pub use misc::{Color, Score};
 pub use play::Play;
 pub use transposition::DEFAULT_TABLE_BYTES;
