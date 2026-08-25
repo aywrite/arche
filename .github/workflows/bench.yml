@@ -1,7 +1,13 @@
 name: Bench
 
-# Two checks on what a pull request's commits say about themselves, and one
-# measurement of what they do.
+# Checks on what commits say about themselves, and one measurement of what
+# they do.
+#
+# The pins job is the only one that runs on a push to master as well, because
+# it is the only one cheap enough to. A commit rebased before it lands is not
+# the commit the jobs below built, so a message they passed can be stale by
+# the time it arrives: the bench a tree counts is the sum of the counts it
+# pins, and that is read rather than built.
 #
 # The trailers job runs the pre-commit hooks over the tree and the commit-msg
 # hooks over every commit, so a scope the changelog does not know, or an
@@ -11,7 +17,10 @@ name: Bench
 # The bench job builds each commit that states a bench and counts it. The
 # count is exact and the same on any machine, so this one gates: a commit
 # whose stated bench is not the bench is wrong, and a history whose numbers
-# cannot be trusted is worse than one with none.
+# cannot be trusted is worse than one with none. It runs on pull requests
+# alone, where building each commit is the price of proving the pins; on
+# master the Rust workflow's tests prove those, and the pins job holds the
+# messages to them.
 #
 # The speed job measures the pull request against the commit it would land
 # on, both built and run on one runner in one job, the way scripts/speed.sh
@@ -23,19 +32,54 @@ name: Bench
 on:
   pull_request:
     branches: [ "master" ]
+  push:
+    branches: [ "master" ]
 
 permissions:
   contents: read
 
 concurrency:
   group: ${{ github.workflow }}-${{ github.ref }}
-  cancel-in-progress: true
+  # a superseded pull request run is worth cancelling; a push to master is
+  # not, since the commits it would have checked are already on master and
+  # nothing else will look at them
+  cancel-in-progress: ${{ github.event_name == 'pull_request' }}
 
 env:
   CARGO_TERM_COLOR: always
 
 jobs:
+  pins:
+    # What a landed commit says about itself, checked against what its own
+    # tree pins. The job below builds a pull request's commits, but a commit
+    # rebased before it lands is not the commit that was built: if the base
+    # changed what the bench counts, a message that passed is stale by the
+    # time it arrives, and nothing looked again. This is cheap enough to look
+    # again, on the commits as they actually landed.
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    steps:
+      - uses: actions/checkout@v7
+        with:
+          fetch-depth: 0
+      - name: Check every commit's stated bench against its pins
+        shell: bash
+        run: |
+          if [ "${{ github.event_name }}" = push ]; then
+            # a first push has no before, so fall back to the one parent
+            base="${{ github.event.before }}"
+            case "$base" in
+              ''|0000000000000000000000000000000000000000) base=$(git rev-parse HEAD^) ;;
+            esac
+            head="${{ github.sha }}"
+          else
+            base=$(git rev-parse HEAD^1)
+            head=$(git rev-parse HEAD^2)
+          fi
+          scripts/check_bench_pins.py "$base" "$head"
+
   trailers:
+    if: github.event_name == 'pull_request'
     runs-on: ubuntu-latest
     timeout-minutes: 20
     steps:
@@ -74,6 +118,7 @@ jobs:
           exit "$failed"
 
   bench:
+    if: github.event_name == 'pull_request'
     runs-on: ubuntu-latest
     timeout-minutes: 30
     steps:
@@ -86,6 +131,7 @@ jobs:
         run: scripts/verify_bench.sh "$(git rev-parse HEAD^1)" "$(git rev-parse HEAD^2)"
 
   speed:
+    if: github.event_name == 'pull_request'
     runs-on: ubuntu-latest
     timeout-minutes: 30
     permissions:
