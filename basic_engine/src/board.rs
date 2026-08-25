@@ -1189,6 +1189,17 @@ impl Board {
         self.checkers != 0
     }
 
+    /// Whether the side to move has anything but pawns and its king. A side
+    /// that has not is the side zugzwang happens to: every move it has
+    /// commits a pawn or the king, so the static eval is no floor there.
+    pub fn has_non_pawn_material(&self) -> bool {
+        let ours = match self.active_color {
+            Color::White => self.white,
+            Color::Black => self.black,
+        };
+        ours & !(self.pawns | self.kings) != 0
+    }
+
     /// The pieces checking the new side to move after the move just made,
     /// asked of the board after the move. Answered from the move rather than
     /// by probing the king square from scratch: only the piece that landed

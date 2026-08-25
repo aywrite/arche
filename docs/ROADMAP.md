@@ -34,7 +34,8 @@ the order they look worth doing after that.
   therefore read a draw down a path that could not reach it; the policies were played against
   each other and refusing such scores lost about forty five elo to trusting them, so the
   error is carried knowingly, measured by the graph history counters, and the refusing search
-  remains as the reference and as `taint refuse`
+  remains as the reference. `taint refuse` restores the refusal alone, on top of whatever
+  else the default does; the full reference has no command line spelling
 - a quiescence entry stored within reach of the depth cap describes a capture
   search that was cut short, and a probe far from the cap trusts it anyway. The
   same truncation sits under every deep entry through its leaves; storing where

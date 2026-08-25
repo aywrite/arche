@@ -456,22 +456,22 @@ mod tests {
         assert_eq!(
             counted,
             vec![
-                ("start", 1_033_785),
-                ("italian", 4_599_668),
-                ("ruy lopez", 2_731_176),
-                ("kiwipete", 3_670_071),
-                ("perft 4", 3_058_267),
-                ("promotions", 2_045_370),
-                ("middlegame", 3_422_070),
-                ("sharp middlegame", 9_712_705),
-                ("bratko kopec 1", 641_197),
+                ("start", 1_002_654),
+                ("italian", 2_692_551),
+                ("ruy lopez", 1_509_622),
+                ("kiwipete", 810_924),
+                ("perft 4", 221_356),
+                ("promotions", 141_380),
+                ("middlegame", 592_220),
+                ("sharp middlegame", 5_521_604),
+                ("bratko kopec 1", 641_156),
                 ("wac 4", 1_993_930),
-                ("rook and pawns", 147_788),
-                ("tarrasch", 371_337),
-                ("lucena", 494_242),
-                ("philidor", 726_994),
-                ("minor endgame", 116_764),
-                ("queen endgame", 784_634),
+                ("rook and pawns", 131_792),
+                ("tarrasch", 342_124),
+                ("lucena", 468_939),
+                ("philidor", 711_352),
+                ("minor endgame", 101_631),
+                ("queen endgame", 762_107),
                 ("king and pawn", 8_625),
                 ("trebuchet", 3_191),
             ]
@@ -479,9 +479,10 @@ mod tests {
     }
 
     /// The reference search's counts, pinned apart from the default's. The
-    /// two are one tree today and part company at the first shortcut: from
-    /// then on a change that moves both touched the search the two share,
-    /// and one that moves the default's alone is a shortcut. Pinned
+    /// two are separate trees now that the default prunes: a change that
+    /// moves both touched the search they share, move ordering or the
+    /// table, say, and one that moves the default's alone is a shortcut,
+    /// which is what this pin standing still through one says. Pinned
     /// shallower than the bench, which is cheaper and coarser: a twentieth
     /// of the time, with a table under half full, so a change to what the
     /// table keeps shows here less than it does at the bench's depth. The
