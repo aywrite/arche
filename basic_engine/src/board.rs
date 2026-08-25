@@ -10,7 +10,11 @@ use crate::zobrist::Zobrist;
 use smallvec::SmallVec;
 use std::fmt;
 
-pub type MoveList = SmallVec<[Play; 64]>;
+// A list's inline capacity, and the size of the ordering module's key
+// buffer, so every list short of a spill sorts on the stack. The value is
+// measured and settled: see the roadmap before moving it.
+pub(crate) const MOVE_LIST_INLINE: usize = 64;
+pub type MoveList = SmallVec<[Play; MOVE_LIST_INLINE]>;
 
 /// Pop the lowest set bit and return its index.
 #[inline(always)]
@@ -1436,7 +1440,7 @@ impl Board {
     }
 
     #[inline]
-    pub fn get_piece_index(&self, index: u8) -> Option<Piece> {
+    pub(crate) fn get_piece_index(&self, index: u8) -> Option<Piece> {
         let mask = 1u64 << index;
         if (self.pawns & mask) > 0 {
             Some(Piece::Pawn)

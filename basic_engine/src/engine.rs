@@ -1,6 +1,7 @@
-use crate::board::{Board, MoveList};
+use crate::board::Board;
 use crate::limits::Limits;
 use crate::misc::{Color, Score};
+use crate::ordering::MoveOrdering;
 use crate::play::Play;
 use crate::transposition::{DEFAULT_TABLE_BYTES, GhiCounters, Probe, TranspositionTable};
 use crate::value::Value;
@@ -9,12 +10,6 @@ use std::time;
 
 const CHECKMATE_SCORE: Score = 30_000;
 pub(crate) const MAX_DEPTH: u8 = 20;
-// Move lists up to this long are sorted on the stack in order_moves, and it
-// is a MoveList's inline capacity, so that is all of them bar a spill.
-// Swept by callgrind rather than chosen: smaller cutoffs are a wash,
-// because the mid length lists of full width nodes keep paying the
-// allocating fallback while every call pays the extra branch.
-const SORT_ON_THE_STACK_UP_TO: usize = 64;
 // Any score this close to CHECKMATE_SCORE is a forced mate. Regular evals are
 // bounded by the material on the board, which cannot come near it.
 pub(crate) const CHECKMATE_THRESHOLD: Score = CHECKMATE_SCORE - 1000;
@@ -262,39 +257,9 @@ pub struct AlphaBeta {
     /// like the ghi counters: it runs over the engine's whole life, and the
     /// bench reads it from an engine made for the one search
     quiescence_nodes: u64,
-    /// Scratch for the ordering keys, one buffer reused by every sort. As a
-    /// local it had to be initialised on every call, and the compiler made
-    /// that a five hundred byte memset per list ordered; here it is written
-    /// once and only ever the first `len` entries are read or written. The
-    /// sort finishes with the buffer before the search recurses, so no two
-    /// uses are ever alive at once.
-    ordering_keys: [i64; SORT_ON_THE_STACK_UP_TO],
-}
-
-/// What sort_by_cached_key does, minus its allocation, for a list that fits
-/// the buffer: a stable insertion sort over keys the caller computed once
-/// each. Shifting only while strictly greater keeps equal keys in their
-/// generated order, exactly as the stable sort does, so the two produce the
-/// same order and the tree searched is the same whichever runs; the node
-/// count tests hold both to that. The keys arrive in a buffer beside the
-/// moves rather than as a function to call: a key closure of any weight was
-/// a call per move rather than code in this loop, which is where most of
-/// the sorting went.
-#[inline]
-fn sort_on_the_stack(moves: &mut [Play], keys: &mut [i64; SORT_ON_THE_STACK_UP_TO]) {
-    debug_assert!(moves.len() <= SORT_ON_THE_STACK_UP_TO);
-    for i in 1..moves.len() {
-        let k = keys[i];
-        let m = moves[i];
-        let mut j = i;
-        while j > 0 && keys[j - 1] > k {
-            keys[j] = keys[j - 1];
-            moves[j] = moves[j - 1];
-            j -= 1;
-        }
-        keys[j] = k;
-        moves[j] = m;
-    }
+    /// The move ordering and its scratch buffer, search state like the
+    /// limits above: one per engine, reused by every node.
+    ordering: MoveOrdering,
 }
 
 impl AlphaBeta {
@@ -314,7 +279,7 @@ impl AlphaBeta {
             limits: Limits::unlimited(),
             next_check: 0,
             quiescence_nodes: 0,
-            ordering_keys: [0; SORT_ON_THE_STACK_UP_TO],
+            ordering: MoveOrdering::new(),
         }
     }
 
@@ -390,43 +355,6 @@ impl AlphaBeta {
         }
     }
 
-    /// MVV-LVA order, with the table's move for this position, if there is
-    /// one, ahead of everything else.
-    ///
-    /// The search may already have played that move without generating, in
-    /// which case it skips it here. The bonus still earns its keep: a table
-    /// move it declined to play early was never searched, so it is still in
-    /// this list and still has to be the first one tried.
-    fn order_moves(&mut self, moves: &mut MoveList, pv_play: Option<Play>) {
-        // Most lists here are short: quiescence sorts a handful of captures
-        // or the evasions the filter kept, and the counts say under nine
-        // moves on average. sort_by_cached_key allocates scratch on every
-        // call, which at that size costs more than the sorting, so lists
-        // take the stack sort instead, keeping the allocating sort only for
-        // a list that spilled the buffer.
-        if moves.len() <= SORT_ON_THE_STACK_UP_TO {
-            for (i, m) in moves.iter().enumerate() {
-                let key = self.ordering_key(m, pv_play);
-                self.ordering_keys[i] = key;
-            }
-            sort_on_the_stack(moves, &mut self.ordering_keys);
-        } else {
-            moves.sort_by_cached_key(|m| self.ordering_key(m, pv_play));
-        }
-    }
-
-    /// What a move sorts by, smaller first: its MVV-LVA score with the
-    /// table's move pushed ahead of everything else, negated so that the
-    /// best score is the smallest key.
-    #[inline]
-    fn ordering_key(&self, m: &Play, pv_play: Option<Play>) -> i64 {
-        let mut score = m.mvv_lva(&self.board);
-        if pv_play == Some(*m) {
-            score += 100_000;
-        }
-        -score
-    }
-
     fn quiescence(&mut self, mut alpha: Score, beta: Score) -> Result<Value, Aborted> {
         // quiescence looks at captures and promotions, and evasions when in
         // check, and never checks for a repetition: a capture cannot repeat a
@@ -489,7 +417,7 @@ impl AlphaBeta {
         } else {
             self.board.generate_captures()
         };
-        self.order_moves(&mut moves, pv_play);
+        self.ordering.order(&self.board, &mut moves, pv_play);
 
         // quiescence itself never reads a draw, but a search told to trust
         // tainted scores can cut on a tainted entry inside a capture tree,
@@ -698,7 +626,7 @@ impl AlphaBeta {
         } else {
             self.board.generate_moves()
         };
-        self.order_moves(&mut moves, pv_play);
+        self.ordering.order(&self.board, &mut moves, pv_play);
 
         for m in &moves {
             if tt_tried == Some(*m) {
@@ -813,7 +741,7 @@ impl AlphaBeta {
 
         let pv_play = self.transpositions.ordering_play(&self.board);
         let mut moves = self.board.generate_moves();
-        self.order_moves(&mut moves, pv_play);
+        self.ordering.order(&self.board, &mut moves, pv_play);
 
         for m in &moves {
             if self.board.make_move(m) {

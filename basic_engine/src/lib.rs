@@ -5,6 +5,7 @@ mod engine;
 mod limits;
 mod magic;
 mod misc;
+mod ordering;
 mod play;
 mod psqt;
 mod transposition;
