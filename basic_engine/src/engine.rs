@@ -18,6 +18,23 @@ const SORT_ON_THE_STACK_UP_TO: usize = 64;
 // Any score this close to CHECKMATE_SCORE is a forced mate. Regular evals are
 // bounded by the material on the board, which cannot come near it.
 pub(crate) const CHECKMATE_THRESHOLD: Score = CHECKMATE_SCORE - 1000;
+// How far above beta a static eval has to stand, per ply still to search,
+// before a node is answered from it instead of searched: what the opponent
+// is allowed to win back over those plies. A pawn a ply. The bench barely
+// argues either way, sixty through a hundred and twenty spanning a tenth
+// of the count between them, so what chose this figure is the depth four
+// mate in two the_mate_distance_survives_a_deeper_warm_search pins:
+// eighty five loses it and ninety keeps it. A margin standing one notch
+// from a mate it can miss is not a margin, so this is the round number
+// above that, and it costs about two percent of the tree over ninety.
+const REVERSE_FUTILITY_MARGIN: Score = 100;
+// The depth the shortcut stops at. The margin grows by a fixed step a ply
+// and a straight line stops describing a tree quickly, which the bench
+// agrees with: four, six and eight are the same count to a tenth of a
+// percent, so the plies past this one are pruning nothing the shallower
+// ones had not already pruned, at a guess that gets worse the deeper it
+// is made.
+const REVERSE_FUTILITY_MAX_DEPTH: u8 = 4;
 
 /// What the protocol interface asks of an engine: positions in, answers out.
 /// How an implementation searches is its own business, which is why the
@@ -115,6 +132,11 @@ pub struct SearchConfig {
     /// `bench hash <MB> taint <word>` against another word for the pair
     /// as they stand.
     pub taint: TaintPolicy,
+    /// Whether a node near the leaves may answer from its static evaluation
+    /// alone when that stands far enough above beta, rather than search for
+    /// the fail high it is all but certain to find. A shortcut, and a guess:
+    /// on in the default, off in the reference.
+    pub reverse_futility: bool,
 }
 
 /// What to do with a draw tainted score: one stored by a search that read
@@ -165,6 +187,7 @@ impl SearchConfig {
     pub const fn reference() -> Self {
         Self {
             taint: TaintPolicy::Refuse,
+            reverse_futility: false,
         }
     }
 
@@ -184,9 +207,8 @@ impl SearchConfig {
     /// that is no policy. The default rather than the reference, so the
     /// word a bench's header prints names what it ran and can be handed
     /// back to it.
-    // the default with the one switch set; written that way so it still
-    // reads so once there are more switches
-    #[allow(clippy::needless_update)]
+    // the default with the taint switch set and the rest of them left as
+    // the default has them: the word names a policy, not a configuration
     pub fn with_taint(word: &str) -> Option<Self> {
         let taint = match word {
             "refuse" => TaintPolicy::Refuse,
@@ -209,9 +231,15 @@ impl Default for SearchConfig {
     /// about forty five elo to either trusting arm, paid in shallower
     /// endgame search; the guard cost nothing a match could see and
     /// covers the one regime where a wrong cutoff provably loses.
+    ///
+    /// Reverse futility is the second place they part company, and the
+    /// first that prunes: it halves the bench, and unlike the taint policy
+    /// it is a guess about a tree rather than a rule about a score, which
+    /// is why the reference keeps it off.
     fn default() -> Self {
         Self {
             taint: TaintPolicy::Rule50,
+            reverse_futility: true,
         }
     }
 }
@@ -580,6 +608,52 @@ impl AlphaBeta {
             Probe::Order(play) => Some(play),
             Probe::Miss => None,
         };
+
+        // Reverse futility, after the table has had its say: a position
+        // standing this far above beta by the static eval alone is taken to
+        // fail high without looking for the move that does it. The reasoning
+        // is quiescence's standing pat one ply higher up — the side to move
+        // is under no obligation to make things worse, so the eval is a floor
+        // on what it can get — with the margin as what the opponent is
+        // allowed to win back over the plies left to search. That last part
+        // is the guess, and the reference does not make it.
+        //
+        // So what is claimed is a lower bound, and `eval - margin` is it:
+        // that is the worst the assumption allows, and it is what has to
+        // clear beta for the cutoff to be one. Fail soft returns the bound
+        // that was proved rather than beta, and returning `eval` instead
+        // would return a bound nothing here argues for, since the search
+        // never looked for a line that keeps the whole eval.
+        //
+        // Nothing is stored: a transposition entry names the play it was
+        // reached by, and no move was searched here to name one. And the
+        // value is clean, since a static eval is a fact about the position
+        // and consulted no path to reach it.
+        if self.config.reverse_futility
+            && depth <= REVERSE_FUTILITY_MAX_DEPTH
+            // a side that has to answer a check cannot decline to move, so
+            // it has no static floor, exactly as in quiescence
+            && !in_check
+            // and neither has a side with nothing but pawns and a king,
+            // which is the material zugzwang happens to
+            && self.board.has_non_pawn_material()
+            // the half of this that works is the negative one: there beta
+            // belongs to a mate the other side is proving, every eval clears
+            // a beta like that, and the whole subtree would go unsearched
+            // and a faster mate inside it be missed. The positive half is
+            // unreachable belt and braces, since the floor never exceeds an
+            // eval and material bounds every eval far below the threshold;
+            // it stands here so the gate stays right if the eval ever grows
+            // terms that reach higher
+            && beta.abs() < CHECKMATE_THRESHOLD
+        {
+            let floor = self
+                .eval()
+                .saturating_sub(REVERSE_FUTILITY_MARGIN * depth as Score);
+            if floor >= beta {
+                return Ok(Value::clean(floor));
+            }
+        }
 
         // The table's move sorts ahead of everything else below, and when there
         // is one it takes the cutoff nine times in ten. Searching it before
@@ -1056,6 +1130,21 @@ mod search {
     /// default, which `engine` builds, and not this.
     fn reference(board: Board) -> AlphaBeta {
         AlphaBeta::with_config(board, TABLE_BYTES, SearchConfig::reference())
+    }
+
+    /// The reference with the static shortcut switched on and nothing else
+    /// touched, which is what an arm is: whatever moves between this and
+    /// `reference` is reverse futility and not the taint policy the default
+    /// carries beside it.
+    fn shortcut(board: Board) -> AlphaBeta {
+        AlphaBeta::with_config(
+            board,
+            TABLE_BYTES,
+            SearchConfig {
+                reverse_futility: true,
+                ..SearchConfig::reference()
+            },
+        )
     }
 
     /// A tactical middlegame the cache tests search over and over: sharp
@@ -1540,7 +1629,6 @@ mod search {
             completed(e.search(1));
             e.ghi().tainted_stores - seeded
         };
-        #[allow(clippy::needless_update)]
         let trusting = SearchConfig {
             taint: TaintPolicy::Trust,
             ..SearchConfig::reference()
@@ -1565,8 +1653,7 @@ mod search {
         // reference a comparison of the reference with itself
         let fen = "8/2p5/3p4/KP5r/1R3p1k/8/4P1P1/8 w - - 0 1";
         // the reference with the one switch flipped, which is what a control
-        // arm is; written that way so it still says so once there are more
-        #[allow(clippy::needless_update)]
+        // arm is
         let trusting = SearchConfig {
             taint: TaintPolicy::Trust,
             ..SearchConfig::reference()
@@ -1583,6 +1670,103 @@ mod search {
             e.ghi().refused_cutoffs,
             0,
             "a search trusting tainted scores refused one"
+        );
+    }
+
+    #[test]
+    fn the_static_shortcut_looks_at_less_of_the_tree() {
+        // the switch has to reach the search: one the search never read
+        // would make every comparison with the reference a comparison of
+        // the reference with itself, and the bench's two pinned counts
+        // would move together instead of apart
+        let mut e = shortcut(Board::from_fen(SHARP_MIDDLEGAME).unwrap());
+        completed(e.search(6));
+        let mut cold = reference(Board::from_fen(SHARP_MIDDLEGAME).unwrap());
+        completed(cold.search(6));
+        assert!(
+            e.nodes < cold.nodes,
+            "the shortcut searched {} nodes against the reference's {}",
+            e.nodes,
+            cold.nodes
+        );
+    }
+
+    #[test]
+    fn the_static_shortcut_is_never_taken_by_a_node_in_check() {
+        // hxg7+ Kxg7 Rxh7+ Kxh7 Qf6 mates, and every node of that line
+        // after the first is a node in check: white hands over a pawn and
+        // a rook to open the king up, so at each of them black is the
+        // material to the good and a static eval standing still there
+        // reads as winning. A shortcut that fired in check would answer
+        // those nodes from that material and the mate would go with them,
+        // the position reading a piece down for white instead. In check
+        // there is no declining to move, so no static floor exists to be
+        // answered from, which is the same reason quiescence does not
+        // stand pat there.
+        let fen = "r5rk/2p1Nppp/3p3P/pp2p1P1/4P3/2qnPQK1/8/R6R w - - 0 1";
+        let mut e = shortcut(Board::from_fen(fen).unwrap());
+        let result = completed(e.search(4));
+        assert_eq!(result.checkmate_in(), Some(4));
+
+        let mut cold = reference(Board::from_fen(fen).unwrap());
+        let expected = completed(cold.search(4));
+        assert_eq!(result.score, expected.score);
+        assert_eq!(
+            format!("{}", result.best_move),
+            format!("{}", expected.best_move),
+        );
+    }
+
+    #[test]
+    fn a_mate_in_the_window_is_searched_for_rather_than_guessed_at() {
+        // Once a mate is in hand, everything searched after it is searched
+        // with minus that mate for a beta, and every eval of a board stands
+        // above a number like that: a shortcut that did not look at beta
+        // would answer the whole of the rest of the list from the static
+        // eval, and a faster mate hiding in it would never be looked for.
+        // A canary rather than a discrimination: on every position tried,
+        // dropping the guard changed the tree by a seventh and the answers
+        // not at all, so what this holds is that the mate distances stay
+        // right, not that the guard alone keeps them so.
+        let fens = [
+            "5n1k/5Kpp/8/8/8/8/8/2Q4R w - - 0 1",
+            "2rr3k/pp3pp1/1nnqbN1p/3pN3/2pP4/2P3Q1/PPB4P/R4RK1 w - - 0 1",
+            "2r3k1/p4p2/3Rp2p/1p2P1pK/8/1P4P1/P3Q2P/1q6 b - - 0 1",
+        ];
+        for fen in fens {
+            let mut e = shortcut(Board::from_fen(fen).unwrap());
+            let result = completed(e.search(5));
+            let mut cold = reference(Board::from_fen(fen).unwrap());
+            let expected = completed(cold.search(5));
+            assert!(expected.checkmate_in().is_some(), "{} mates nobody", fen);
+            assert_eq!(result.checkmate_in(), expected.checkmate_in(), "{}", fen);
+            assert_eq!(
+                format!("{}", result.best_move),
+                format!("{}", expected.best_move),
+                "{}",
+                fen
+            );
+        }
+    }
+
+    #[test]
+    fn the_static_shortcut_is_never_taken_by_a_side_holding_only_pawns() {
+        // the trebuchet, where whoever is to move loses: both kings are in
+        // zugzwang, every move there is worsens the position, and a static
+        // floor is exactly the thing that is not true of it. Neither side
+        // has a piece and neither pawn can ever promote past the other, so
+        // the shortcut is refused at every node of this tree and the arm
+        // searches what the reference searches, node for node.
+        let fen = "8/8/8/4p3/4Pk2/3K4/8/8 w - - 0 1";
+        let mut e = shortcut(Board::from_fen(fen).unwrap());
+        let result = completed(e.search(7));
+        let mut cold = reference(Board::from_fen(fen).unwrap());
+        let expected = completed(cold.search(7));
+        assert_eq!(e.nodes, cold.nodes);
+        assert_eq!(result.score, expected.score);
+        assert_eq!(
+            format!("{}", result.best_move),
+            format!("{}", expected.best_move),
         );
     }
 
