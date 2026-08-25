@@ -58,6 +58,13 @@ of these again without saying what is different this time.
   stack local at every recursion frame, so inline bytes multiply by depth and
   trade against a 48KB L1D. Spilling is already negligible; there is nothing
   there to fix.
+- Requiring the game's own two prior occurrences before a pre-root repetition
+  scores as a draw, the line Stockfish draws. Lost -22 ±18 over 446 games at
+  5+0.05 (sprt [0, 10] failed, PR #107): an eval this simple is better off
+  taking every draw the history makes available than re-fighting positions it
+  half-understands, and the stricter rule spends depth keeping alive games it
+  then loses. Worth re-asking once tapered evaluation and king safety land,
+  not before.
 - Prefetching a child's transposition slot straight after `make_move`, 6.7%
   slower over six interleaved rounds. The prefetch sits immediately before the
   recursive call and the child probes the table almost first, so there is no
