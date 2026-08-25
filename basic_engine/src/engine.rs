@@ -3,6 +3,7 @@ use crate::limits::Limits;
 use crate::misc::{Color, Score};
 use crate::play::Play;
 use crate::transposition::{DEFAULT_TABLE_BYTES, GhiCounters, Probe, TranspositionTable};
+use crate::value::Value;
 use std::fmt;
 use std::time;
 
@@ -222,10 +223,6 @@ pub struct AlphaBeta {
     transpositions: TranspositionTable,
     selective_depth: u8,
     // search state
-    /// Whether the value the last search call returned was draw tainted. The
-    /// search is depth first and single threaded, so one flag threads the taint
-    /// up without changing every return type.
-    tainted: bool,
     /// What the search call under way may spend. The deepening loop hands
     /// each iteration its own, which is how depth one runs with none.
     limits: Limits,
@@ -286,7 +283,6 @@ impl AlphaBeta {
             nodes: 0,
             transpositions: TranspositionTable::of_bytes(bytes),
             selective_depth: 0,
-            tainted: false,
             limits: Limits::unlimited(),
             next_check: 0,
             quiescence_nodes: 0,
@@ -301,8 +297,8 @@ impl AlphaBeta {
     /// Whether a result may be stored under the taint policy. A tainted
     /// one that may not be is counted as skipped, so the policy's cost is
     /// a figure rather than an absence.
-    fn keeps(&mut self, tainted: bool) -> bool {
-        if tainted && !self.config.taint.stores_tainted() {
+    fn keeps(&mut self, value: Value) -> bool {
+        if value.tainted && !self.config.taint.stores_tainted() {
             self.transpositions.count_skipped_store();
             return false;
         }
@@ -403,16 +399,15 @@ impl AlphaBeta {
         -score
     }
 
-    fn quiescence(&mut self, mut alpha: Score, beta: Score) -> Result<Score, Aborted> {
+    fn quiescence(&mut self, mut alpha: Score, beta: Score) -> Result<Value, Aborted> {
         // quiescence looks at captures and promotions, and evasions when in
         // check, and never checks for a repetition: a capture cannot repeat a
         // position, and the quiet moves here are evasions, so a cycle needs a
         // line of nothing but mutual quiet checks, which MAX_DEPTH bounds and
         // real positions do not sustain
-        self.tainted = false;
         self.selective_depth = self.selective_depth.max(self.board.line_ply as u8);
         if self.board.line_ply >= MAX_DEPTH.into() {
-            return Ok(self.eval());
+            return Ok(Value::clean(self.eval()));
         }
 
         self.poll_deadline()?;
@@ -432,7 +427,7 @@ impl AlphaBeta {
         if !in_check {
             let score = self.eval();
             if score >= beta {
-                return Ok(score);
+                return Ok(Value::clean(score));
             }
             best = score;
             if score >= alpha {
@@ -453,10 +448,7 @@ impl AlphaBeta {
             self.config.taint.refuses_tainted_cutoffs(),
             self.config.taint.guards_rule50(),
         ) {
-            Probe::Cut { score, tainted } => {
-                self.tainted = tainted;
-                return Ok(score);
-            }
+            Probe::Cut(value) => return Ok(value),
             Probe::Order(play) => Some(play),
             Probe::Miss => None,
         };
@@ -483,25 +475,20 @@ impl AlphaBeta {
                 // the aborted line
                 let result = self.quiescence(-beta, -alpha);
                 self.board.undo_move();
-                node_tainted |= self.tainted;
-                let score = -result?;
+                let value = -result?;
+                node_tainted |= value.tainted;
+                let score = value.score;
                 if score > best {
                     best = score;
                     best_move = Some(*m);
                 }
                 if score > alpha {
                     if score >= beta {
-                        if self.keeps(node_tainted) {
-                            self.transpositions.record_cutoff(
-                                &self.board,
-                                *m,
-                                score,
-                                0,
-                                node_tainted,
-                            );
+                        let value = Value::with_taint(score, node_tainted);
+                        if self.keeps(value) {
+                            self.transpositions.record_cutoff(&self.board, *m, value, 0);
                         }
-                        self.tainted = node_tainted;
-                        return Ok(score);
+                        return Ok(value);
                     }
                     alpha = score;
                 }
@@ -511,22 +498,23 @@ impl AlphaBeta {
         if in_check && !found_legal_move {
             // checkmate, at the end of a capture sequence: report it as the
             // search does, so the line that forces it reads as the mate it is
-            return Ok(-CHECKMATE_SCORE + (self.board.line_ply as Score));
+            return Ok(Value::clean(
+                -CHECKMATE_SCORE + (self.board.line_ply as Score),
+            ));
         }
 
+        let value = Value::with_taint(best, node_tainted);
         if let Some(play) = best_move {
-            if self.keeps(node_tainted) {
+            if self.keeps(value) {
                 if alpha != old_alpha {
-                    self.transpositions
-                        .record_best(&self.board, play, best, 0, node_tainted);
+                    self.transpositions.record_best(&self.board, play, value, 0);
                 } else {
                     self.transpositions
-                        .record_ceiling(&self.board, play, best, 0, node_tainted);
+                        .record_ceiling(&self.board, play, value, 0);
                 }
             }
         }
-        self.tainted = node_tainted;
-        Ok(best)
+        Ok(value)
     }
 
     fn alpha_beta(
@@ -534,7 +522,7 @@ impl AlphaBeta {
         mut alpha: Score,
         beta: Score,
         mut depth: u8,
-    ) -> Result<Score, Aborted> {
+    ) -> Result<Value, Aborted> {
         self.poll_deadline()?;
         self.selective_depth = self.selective_depth.max(self.board.line_ply as u8);
         self.nodes += 1;
@@ -551,17 +539,16 @@ impl AlphaBeta {
             // first time it came up, so the cost stays off the lines that
             // repeat
             if in_check && !self.board.has_legal_move() {
-                self.tainted = false;
-                return Ok(-CHECKMATE_SCORE + (self.board.line_ply as Score));
+                return Ok(Value::clean(
+                    -CHECKMATE_SCORE + (self.board.line_ply as Score),
+                ));
             }
             // where the taint starts: the draw is true of the path that
             // reached this position, not of the position itself
-            self.tainted = true;
-            return Ok(0);
+            return Ok(Value::tainted(0));
         }
         if self.board.has_repeated() {
-            self.tainted = true;
-            return Ok(0);
+            return Ok(Value::tainted(0));
         }
         let mut node_tainted = false;
         if in_check {
@@ -587,12 +574,9 @@ impl AlphaBeta {
             self.config.taint.refuses_tainted_cutoffs(),
             self.config.taint.guards_rule50(),
         ) {
-            Probe::Cut { score, tainted } => {
-                // whatever the stored score depended on, this frame now depends
-                // on too
-                self.tainted = tainted;
-                return Ok(score);
-            }
+            // whatever the stored score depended on, whoever takes it now
+            // depends on too, which is what the value carries
+            Probe::Cut(value) => return Ok(value),
             Probe::Order(play) => Some(play),
             Probe::Miss => None,
         };
@@ -613,25 +597,21 @@ impl AlphaBeta {
                     // the table's move is searched before the rest are even
                     // generated, so it taints this node the same way any other
                     // child would
-                    node_tainted |= self.tainted;
-                    let tt_score = -result?;
+                    let value = -result?;
+                    node_tainted |= value.tainted;
+                    let tt_score = value.score;
                     if tt_score > best {
                         best = tt_score;
                         best_move = Some(tt);
                     }
                     if tt_score > alpha {
                         if tt_score >= beta {
-                            if self.keeps(node_tainted) {
-                                self.transpositions.record_cutoff(
-                                    &self.board,
-                                    tt,
-                                    tt_score,
-                                    depth,
-                                    node_tainted,
-                                );
+                            let value = Value::with_taint(tt_score, node_tainted);
+                            if self.keeps(value) {
+                                self.transpositions
+                                    .record_cutoff(&self.board, tt, value, depth);
                             }
-                            self.tainted = node_tainted;
-                            return Ok(tt_score);
+                            return Ok(value);
                         }
                         alpha = tt_score;
                     }
@@ -659,25 +639,21 @@ impl AlphaBeta {
                 self.board.undo_move();
                 // a value built from a tainted child is tainted, whether or not
                 // it turns out to be the best one here
-                node_tainted |= self.tainted;
-                let score = -result?;
+                let value = -result?;
+                node_tainted |= value.tainted;
+                let score = value.score;
                 if score > best {
                     best = score;
                     best_move = Some(*m);
                 }
                 if score > alpha {
                     if score >= beta {
-                        if self.keeps(node_tainted) {
-                            self.transpositions.record_cutoff(
-                                &self.board,
-                                *m,
-                                score,
-                                depth,
-                                node_tainted,
-                            );
+                        let value = Value::with_taint(score, node_tainted);
+                        if self.keeps(value) {
+                            self.transpositions
+                                .record_cutoff(&self.board, *m, value, depth);
                         }
-                        self.tainted = node_tainted;
-                        return Ok(score);
+                        return Ok(value);
                     }
                     alpha = score;
                 }
@@ -687,25 +663,26 @@ impl AlphaBeta {
         if !found_legal_move {
             // mate and stalemate are properties of the position, not of the
             // path that reached it
-            self.tainted = false;
             if in_check {
-                return Ok(-CHECKMATE_SCORE + (self.board.line_ply as Score));
+                return Ok(Value::clean(
+                    -CHECKMATE_SCORE + (self.board.line_ply as Score),
+                ));
             }
-            return Ok(0);
+            return Ok(Value::clean(0));
         }
 
         let play = best_move.expect("a legal move was found, so one of them is best");
-        if self.keeps(node_tainted) {
+        let value = Value::with_taint(best, node_tainted);
+        if self.keeps(value) {
             if alpha != old_alpha {
                 self.transpositions
-                    .record_best(&self.board, play, best, depth, node_tainted);
+                    .record_best(&self.board, play, value, depth);
             } else {
                 self.transpositions
-                    .record_ceiling(&self.board, play, best, depth, node_tainted);
+                    .record_ceiling(&self.board, play, value, depth);
             }
         }
-        self.tainted = node_tainted;
-        Ok(best)
+        Ok(value)
     }
 
     pub fn new(board: Board) -> Self {
@@ -777,9 +754,10 @@ impl AlphaBeta {
                             best.map(|play| self.result_for(play, alpha)),
                         );
                     }
-                    Ok(s) => {
-                        root_tainted |= self.tainted;
-                        let score = -s;
+                    Ok(value) => {
+                        let value = -value;
+                        root_tainted |= value.tainted;
+                        let score = value.score;
                         if score > alpha {
                             alpha = score;
                             best = Some(*m);
@@ -797,8 +775,12 @@ impl AlphaBeta {
         let play = best.expect("any legal move's score beats the opening alpha of Score::MIN + 1");
         // stored past the depth contest: this is the move about to be
         // answered, and the line reported for it is read back from this slot
-        self.transpositions
-            .record_answer(&self.board, play, alpha, depth, root_tainted);
+        self.transpositions.record_answer(
+            &self.board,
+            play,
+            Value::with_taint(alpha, root_tainted),
+            depth,
+        );
         SearchOutcome::Complete(self.result_for(play, alpha))
     }
 
@@ -1009,6 +991,7 @@ mod search {
     use super::Engine;
     use super::{
         Limits, Play, SearchConfig, SearchOutcome, SearchParameters, SearchResult, TaintPolicy,
+        Value,
     };
     use crate::board::{fens, play_named};
     use pretty_assertions::assert_eq;
@@ -1126,7 +1109,8 @@ mod search {
         let game = Board::from_fen("k7/8/8/3q4/8/8/3R4/K7 w - - 0 1").unwrap();
         let mut e = engine(game);
         let quiet = play_named(&e.board, "a1b1");
-        e.transpositions.record_best(&e.board, quiet, 0, 14, false);
+        e.transpositions
+            .record_best(&e.board, quiet, Value::clean(0), 14);
         let result = completed(e.search(2));
         let takes = play_named(&e.board, "d2d5");
         assert_eq!(result.best_move, takes);
@@ -1541,13 +1525,15 @@ mod search {
                 assert!(board.make_move(&play), "failed to play {}", name);
             }
             let any = play_named(&board, "b1c1");
-            e.transpositions.record_best(&board, any, 0, 9, true);
+            e.transpositions
+                .record_best(&board, any, Value::tainted(0), 9);
             // the root's own entry names the king move, so the seeded line
             // is searched first, with the whole window still open: no
             // sibling's value has yet shrunk it to where standing pat ends
             // the frame before the captures run
             let king = play_named(&e.board, "a1b1");
-            e.transpositions.record_best(&e.board, king, 0, 9, false);
+            e.transpositions
+                .record_best(&e.board, king, Value::clean(0), 9);
             // the seeding itself counts one tainted store, so the search's
             // own contribution is what the two policies are compared on
             let seeded = e.ghi().tainted_stores;
@@ -1751,7 +1737,7 @@ mod search {
         for name in cycle.iter().cycle().take(16) {
             let play = play_named(&board, name);
             e.transpositions
-                .record_best(&board, play, 0, SEEDED_DEPTH, false);
+                .record_best(&board, play, Value::clean(0), SEEDED_DEPTH);
             assert!(board.make_move(&play), "failed to play {}", name);
         }
 
@@ -1766,7 +1752,7 @@ mod search {
         for name in ["c3d4", "f8g8"] {
             let play = play_named(&board, name);
             e.transpositions
-                .record_best(&board, play, 0, SEEDED_DEPTH, false);
+                .record_best(&board, play, Value::clean(0), SEEDED_DEPTH);
             assert!(board.make_move(&play), "failed to play {}", name);
         }
         assert!(board.fifty_move_expired());
@@ -1786,7 +1772,7 @@ mod search {
         let a5 = 32;
         let colliding = Play::new(a2, a5, None, None, false, false);
         e.transpositions
-            .record_best(&e.board, colliding, 0, SEEDED_DEPTH, false);
+            .record_best(&e.board, colliding, Value::clean(0), SEEDED_DEPTH);
 
         assert_eq!(format!("{}", e.pv_line()), "");
     }
@@ -1799,7 +1785,8 @@ mod search {
         // what the line walk refuses
         let mut e = engine(Board::new());
         let play = play_named(&e.board, "e2e4");
-        e.transpositions.record_best(&e.board, play, 0, 0, false);
+        e.transpositions
+            .record_best(&e.board, play, Value::clean(0), 0);
 
         assert_eq!(format!("{}", e.pv_line()), "");
     }
@@ -1814,7 +1801,7 @@ mod search {
         let mut e = engine(board);
         let pinned = play_named(&e.board, "e2d4");
         e.transpositions
-            .record_best(&e.board, pinned, 0, SEEDED_DEPTH, false);
+            .record_best(&e.board, pinned, Value::clean(0), SEEDED_DEPTH);
 
         assert_eq!(format!("{}", e.pv_line()), "");
     }
@@ -1838,7 +1825,7 @@ mod search {
         for name in &names {
             let play = play_named(&board, name);
             e.transpositions
-                .record_best(&board, play, 0, SEEDED_DEPTH, false);
+                .record_best(&board, play, Value::clean(0), SEEDED_DEPTH);
             assert!(board.make_move(&play), "failed to play {}", name);
         }
 

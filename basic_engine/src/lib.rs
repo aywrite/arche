@@ -8,6 +8,7 @@ mod misc;
 mod play;
 mod psqt;
 mod transposition;
+mod value;
 mod zobrist;
 
 pub use board::Board;
