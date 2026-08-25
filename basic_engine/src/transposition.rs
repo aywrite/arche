@@ -15,6 +15,7 @@ use crate::board::Board;
 use crate::engine::CHECKMATE_THRESHOLD;
 use crate::misc::Score;
 use crate::play::Play;
+use crate::value::Value;
 use std::mem;
 
 pub const DEFAULT_TABLE_BYTES: usize = 256 * 1024 * 1024;
@@ -131,9 +132,9 @@ pub enum Probe {
     Miss,
     /// A move worth trying first, and no score worth trusting.
     Order(Play),
-    /// A score the caller may return without searching. It carries whether it
-    /// came from a draw tainted entry, because that travels on up.
-    Cut { score: Score, tainted: bool },
+    /// A score the caller may return without searching, carrying where it
+    /// came from, because that travels on up.
+    Cut(Value),
 }
 
 /// A slot in the table: sixteen bytes, four to a cache line.
@@ -411,56 +412,26 @@ impl TranspositionTable {
     /// the score is a floor under what the position is worth and not the
     /// worth itself. The search runs fail soft, so the floor recorded is the
     /// best score it saw, at least as tight as the beta it crossed.
-    pub fn record_cutoff(
-        &mut self,
-        board: &Board,
-        play: Play,
-        floor: Score,
-        depth: u8,
-        tainted: bool,
-    ) {
-        if self.set(
-            board.key,
-            entry(board, play, floor, depth, Bound::Lower, tainted),
-        ) {
-            self.count_store(tainted);
+    pub fn record_cutoff(&mut self, board: &Board, play: Play, floor: Value, depth: u8) {
+        if self.set(board.key, entry(board, play, floor, depth, Bound::Lower)) {
+            self.count_store(floor.tainted);
         }
     }
 
     /// Every move here fell short of the window: the score is a ceiling
     /// over what the position is worth, and the move is the one that came
     /// closest, worth trying first next time even though it proved nothing.
-    pub fn record_ceiling(
-        &mut self,
-        board: &Board,
-        play: Play,
-        ceiling: Score,
-        depth: u8,
-        tainted: bool,
-    ) {
-        if self.set(
-            board.key,
-            entry(board, play, ceiling, depth, Bound::Upper, tainted),
-        ) {
-            self.count_store(tainted);
+    pub fn record_ceiling(&mut self, board: &Board, play: Play, ceiling: Value, depth: u8) {
+        if self.set(board.key, entry(board, play, ceiling, depth, Bound::Upper)) {
+            self.count_store(ceiling.tainted);
         }
     }
 
     /// The best move found by searching all of them here, with the score it
     /// scored: neither a floor nor a ceiling but the value itself.
-    pub fn record_best(
-        &mut self,
-        board: &Board,
-        play: Play,
-        score: Score,
-        depth: u8,
-        tainted: bool,
-    ) {
-        if self.set(
-            board.key,
-            entry(board, play, score, depth, Bound::Exact, tainted),
-        ) {
-            self.count_store(tainted);
+    pub fn record_best(&mut self, board: &Board, play: Play, score: Value, depth: u8) {
+        if self.set(board.key, entry(board, play, score, depth, Bound::Exact)) {
+            self.count_store(score.tainted);
         }
     }
 
@@ -468,19 +439,9 @@ impl TranspositionTable {
     /// contest the other verbs hold, for the reason `set_always` gives: this
     /// is the move being played, and the reported line is read back from its
     /// slot.
-    pub fn record_answer(
-        &mut self,
-        board: &Board,
-        play: Play,
-        score: Score,
-        depth: u8,
-        tainted: bool,
-    ) {
-        self.set_always(
-            board.key,
-            entry(board, play, score, depth, Bound::Exact, tainted),
-        );
-        self.count_store(tainted);
+    pub fn record_answer(&mut self, board: &Board, play: Play, score: Value, depth: u8) {
+        self.set_always(board.key, entry(board, play, score, depth, Bound::Exact));
+        self.count_store(score.tainted);
     }
 
     /// The search declined a store under its taint policy; see
@@ -537,10 +498,7 @@ impl TranspositionTable {
             if cuts {
                 self.ghi.score_cutoffs += 1;
                 self.ghi.tainted_score_cutoffs += u64::from(pv.tainted);
-                return Probe::Cut {
-                    score,
-                    tainted: pv.tainted,
-                };
+                return Probe::Cut(Value::with_taint(score, pv.tainted));
             }
         }
         Probe::Order(pv.play)
@@ -572,19 +530,19 @@ impl TranspositionTable {
 /// table's mate-relative form happens here, so that no caller has to remember
 /// to.
 #[inline]
-fn entry(board: &Board, play: Play, score: Score, depth: u8, bound: Bound, tainted: bool) -> Pv {
+fn entry(board: &Board, play: Play, value: Value, depth: u8, bound: Bound) -> Pv {
     Pv {
         play,
         depth,
-        score: score_to_tt(score, board.line_ply),
+        score: score_to_tt(value.score, board.line_ply),
         bound,
-        tainted,
+        tainted: value.tainted,
     }
 }
 
 #[cfg(test)]
 mod tests {
-    use super::{Bound, Play, Pv, STALE_AFTER_SEARCHES, TranspositionTable};
+    use super::{Bound, Play, Pv, STALE_AFTER_SEARCHES, TranspositionTable, Value};
     use crate::engine::MAX_DEPTH;
     use crate::misc::{Piece, PromotePiece};
     use pretty_assertions::assert_eq;
@@ -740,12 +698,9 @@ mod tests {
         let mut table = TranspositionTable::with_capacity(4).expect("a table of a few buckets");
         let board = crate::board::Board::new();
         let play = Play::new(0, 1, None, None, false, false);
-        table.record_ceiling(&board, play, -50, 5, false);
+        table.record_ceiling(&board, play, Value::clean(-50), 5);
         match table.probe(&board, -10, 10, 5, true, false) {
-            Probe::Cut { score, tainted } => {
-                assert_eq!(score, -50);
-                assert!(!tainted);
-            }
+            Probe::Cut(value) => assert_eq!(value, Value::clean(-50)),
             other => panic!("a ceiling under alpha did not cut: {other:?}"),
         }
         assert!(matches!(
@@ -764,7 +719,7 @@ mod tests {
         let fresh = crate::board::Board::from_fen("4k3/8/8/8/8/8/8/4K3 w - - 0 1").unwrap();
         let near = crate::board::Board::from_fen("4k3/8/8/8/8/8/8/4K3 w - - 96 112").unwrap();
         let play = Play::new(0, 1, None, None, false, false);
-        table.record_best(&fresh, play, 0, 5, false);
+        table.record_best(&fresh, play, Value::clean(0), 5);
         assert!(matches!(
             table.probe(&fresh, -10, 10, 5, false, true),
             Probe::Cut { .. }
@@ -793,10 +748,10 @@ mod tests {
         let mut table = full_bucket(8);
         let board = crate::board::Board::new();
         let play = Play::new(0, 1, None, None, false, false);
-        table.record_cutoff(&board, play, 0, 1, true);
+        table.record_cutoff(&board, play, Value::tainted(0), 1);
         assert_eq!(table.ghi().stores, 0, "a turned away store was counted");
         assert_eq!(table.ghi().tainted_stores, 0);
-        table.record_cutoff(&board, play, 0, 9, true);
+        table.record_cutoff(&board, play, Value::tainted(0), 9);
         assert_eq!(table.ghi().stores, 1);
         assert_eq!(table.ghi().tainted_stores, 1);
     }
