@@ -198,6 +198,32 @@ result as a comment, or to the job summary alone for a pull request from a
 fork. It reports and does not gate: the count is the claim, and the rate is
 the context it is read in.
 
+When the two sides count the same nodes, the rate is the whole story and the
+`Speed:` trailer is what to quote. When they do not, the report says so and
+adds a breakdown, because the rate on its own is then misleading in both
+directions:
+
+```
+base: 42073055 nodes in 3.51 s, candidate: 39085868 nodes in 3.22 s
+nodes -7.1%, nps +1.2%, time to depth -8.2%
+```
+
+`nps` is nodes over time, so it already divides out the size of the tree: it
+answers what a node costs, and a search that visits a tenth fewer nodes at the
+same cost each shows +0.0% while finishing a tenth sooner. Time to depth is
+that missing number, and it is exact rather than a second measurement, since
+the count and the rate give it directly.
+
+Read neither as a claim when the counts differ. The two sides are averaging
+over different nodes, and a change that prunes can post a better rate purely
+because the nodes it stopped visiting were the dear ones, so the rate is no
+longer a like for like comparison of what a node costs either. Time to depth
+says what the change is worth at this depth; whether the smaller tree is the
+right tree is a question only games answer, which is what `Elo:` is for. The
+`Speed:` trailer keeps its one meaning, the change in rate against a named
+commit, so that a trailer written today and one written two years ago say the
+same kind of thing.
+
 There are criterion microbenchmarks too, of move generation, perft and the
 search at a fixed depth, for profiling a change by hand:
 

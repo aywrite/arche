@@ -82,7 +82,34 @@ def test_the_sides_are_told_apart_even_when_they_are_one_binary(tmp_path):
     assert (measured.base_nodes, measured.candidate_nodes) == (100, 100)
 
 
-def test_the_report_names_differing_node_counts(tmp_path, capsys):
+def test_the_time_to_depth_is_the_count_divided_by_the_rate():
+    measured = speed.Measured(
+        base_nps=[100, 100, 100],
+        candidate_nps=[200, 200, 200],
+        base_nodes=1000,
+        candidate_nodes=1000,
+    )
+    assert speed.time_to_depth(measured) == (10.0, 5.0)
+
+
+def test_the_time_is_taken_a_round_at_a_time_not_from_the_median_rate():
+    # an even number of rounds makes the median the mean of the middle two,
+    # and that does not survive being divided into: twelve hundred nodes at a
+    # hundred a second and at two hundred is twelve seconds and six, a median
+    # of nine, where the median rate of a hundred and fifty would say eight
+    measured = speed.Measured(
+        base_nps=[100, 200],
+        candidate_nps=[100, 200],
+        base_nodes=1200,
+        candidate_nodes=1200,
+    )
+    assert speed.time_to_depth(measured) == (9.0, 9.0)
+
+
+def test_the_report_breaks_the_change_down_when_the_counts_differ(tmp_path, capsys):
+    # the case the breakdown is there for: the tree loses a tenth of itself
+    # and every node costs what it did, so the rate says nothing happened
+    # while the search finishes a tenth sooner
     base = fake_engine(tmp_path, "base", [100] * 2, nodes=100)
     candidate = fake_engine(tmp_path, "candidate", [100] * 2, nodes=90)
     assert (
@@ -93,9 +120,24 @@ def test_the_report_names_differing_node_counts(tmp_path, capsys):
     )
     out = capsys.readouterr().out
     assert "100 nodes" in out and "90 nodes" in out
+    assert "nodes -10.0%, nps +0.0%, time to depth -10.0%" in out
+    assert speed.COUNTS_DIFFER in out
+    # and the trailer goes on saying the one thing it has always said
     assert out.strip().endswith(
         "Speed: +0.0% (bench nps, 2 interleaved rounds vs abc1234, spread 0.0%)"
     )
+
+
+def test_the_report_leaves_the_breakdown_out_when_the_counts_match(tmp_path, capsys):
+    # with the tree held still the time is the exact inverse of the rate, so
+    # printing both would be the same measurement twice
+    base = fake_engine(tmp_path, "base", [100] * 2, nodes=100)
+    candidate = fake_engine(tmp_path, "candidate", [110] * 2, nodes=100)
+    assert speed.main([str(base), str(candidate), "--rounds", "2"]) == 0
+    out = capsys.readouterr().out
+    assert "100 nodes in" in out
+    assert "time to depth" not in out
+    assert speed.COUNTS_DIFFER not in out
 
 
 def test_fewer_than_two_rounds_is_refused(tmp_path, capsys):
