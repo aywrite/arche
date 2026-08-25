@@ -93,58 +93,58 @@ const QUEENS: [i16; 64] = [
 
 /// The entries are `i16` rather than a machine word because every piece that is
 /// set or cleared reads one, which is several times per move made or unmade, and
-/// the ten tables are then 1280 bytes rather than 5120 and stay in L1 alongside
-/// everything else the search is touching. The values run from -50 to 50, so the
-/// narrower type costs nothing.
+/// the twelve tables are then 1536 bytes rather than 6144 and stay in L1
+/// alongside everything else the search is touching. The values run from -50 to
+/// 50, so the narrower type costs nothing.
+///
+/// One array picked by arithmetic rather than a table per colour and piece
+/// picked by a match. The match compiled to a jump table, and reading it was
+/// the largest single source of mispredicted indirect branches in the search:
+/// the piece being placed is whatever the position holds, so the branch
+/// predictor has nothing to go on and missed it about half the time. The kings
+/// carry a table of zeroes rather than a case of their own, which is what
+/// leaves the pick with nothing to branch on.
 pub struct PieceSquareTables {
-    white_pawns: [i16; 64],
-    black_pawns: [i16; 64],
-
-    white_knights: [i16; 64],
-    black_knights: [i16; 64],
-
-    white_bishops: [i16; 64],
-    black_bishops: [i16; 64],
-
-    white_rooks: [i16; 64],
-    black_rooks: [i16; 64],
-
-    white_queens: [i16; 64],
-    black_queens: [i16; 64],
+    tables: [[i16; 64]; 12],
 }
 
 impl PieceSquareTables {
     #[inline]
     pub fn get_value(&self, index: usize, piece: Piece, color: Color) -> i16 {
-        match (piece, color) {
-            (Piece::Pawn, Color::White) => self.white_pawns[index],
-            (Piece::Knight, Color::White) => self.white_knights[index],
-            (Piece::Bishop, Color::White) => self.white_bishops[index],
-            (Piece::Rook, Color::White) => self.white_rooks[index],
-            (Piece::Queen, Color::White) => self.white_queens[index],
-            (Piece::Pawn, Color::Black) => self.black_pawns[index],
-            (Piece::Knight, Color::Black) => self.black_knights[index],
-            (Piece::Bishop, Color::Black) => self.black_bishops[index],
-            (Piece::Rook, Color::Black) => self.black_rooks[index],
-            (Piece::Queen, Color::Black) => self.black_queens[index],
-            (Piece::King, _) => 0,
+        self.tables[Self::table_index(piece, color)][index]
+    }
+
+    /// The same shape `Zobrist` indexes its piece keys by: white takes the
+    /// piece's own row, black the one six further on.
+    #[inline]
+    const fn table_index(piece: Piece, color: Color) -> usize {
+        match color {
+            Color::White => piece as usize,
+            Color::Black => piece as usize + 6,
         }
     }
 
     /// Built at compile time, so there is nothing to construct on startup,
     /// nothing to synchronise on when reading it, and nothing standing between
     /// a proof and the code it is about. Worth keeping a `const`.
+    ///
+    /// Written in the order `table_index` reads it: the six pieces as `Piece`
+    /// declares them for white, then the same six for black.
     pub const TABLES: PieceSquareTables = PieceSquareTables {
-        white_pawns: mirror(&PAWNS),
-        black_pawns: PAWNS,
-        white_knights: mirror(&KNIGHTS),
-        black_knights: KNIGHTS,
-        white_bishops: mirror(&BISHOPS),
-        black_bishops: BISHOPS,
-        white_rooks: mirror(&ROOKS),
-        black_rooks: ROOKS,
-        white_queens: mirror(&QUEENS),
-        black_queens: QUEENS,
+        tables: [
+            mirror(&PAWNS),
+            mirror(&KNIGHTS),
+            mirror(&BISHOPS),
+            mirror(&ROOKS),
+            mirror(&QUEENS),
+            [0; 64],
+            PAWNS,
+            KNIGHTS,
+            BISHOPS,
+            ROOKS,
+            QUEENS,
+            [0; 64],
+        ],
     };
 }
 
@@ -199,6 +199,29 @@ mod tests {
             assert_eq!(value(Piece::Knight, Color::White, file, rank), -50);
         }
         assert_eq!(value(Piece::Knight, Color::White, File::E, 4), 20);
+    }
+
+    /// The bishop and the queen are the two the reflection test below cannot
+    /// tell apart: both tables are symmetric about the centre, so reading one
+    /// into the other's row passes it and every other test here. The squares
+    /// named are ones the two disagree on, which is what pins each table to
+    /// its own row rather than to a shape they share.
+    #[test]
+    fn a_bishop_is_worth_most_on_the_long_diagonals() {
+        assert_eq!(value(Piece::Bishop, Color::White, File::B, 3), 10);
+        assert_eq!(value(Piece::Bishop, Color::White, File::C, 4), 10);
+        assert_eq!(value(Piece::Bishop, Color::White, File::A, 1), -20);
+        assert_eq!(value(Piece::Bishop, Color::Black, File::B, 6), 10);
+    }
+
+    #[test]
+    fn a_queen_is_kept_off_the_edges_but_not_pushed_out() {
+        // the same squares a bishop scores 10 on, which is what tells the two
+        // tables apart
+        assert_eq!(value(Piece::Queen, Color::White, File::B, 3), 5);
+        assert_eq!(value(Piece::Queen, Color::White, File::C, 4), 5);
+        assert_eq!(value(Piece::Queen, Color::White, File::A, 1), -20);
+        assert_eq!(value(Piece::Queen, Color::Black, File::B, 6), 5);
     }
 
     /// Weaker than the tests above, since it holds whether or not the tables are
