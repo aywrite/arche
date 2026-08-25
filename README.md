@@ -44,7 +44,15 @@ prints what each search counted, for measuring a change to the search or the spe
 machine. It is a UCI command as well as an argument.
 
 Binaries for linux, macos and windows are attached to each
-[release](https://github.com/aywrite/arche/releases). To build from source:
+[release](https://github.com/aywrite/arche/releases), each with a sha256 checksum and a build
+provenance attestation. The checksum says a download arrived intact. The attestation says where
+it came from, and is answered for by github rather than by the page the download sits on:
+
+```
+gh attestation verify arche-v<version>-<target>.tar.gz --repo aywrite/arche
+```
+
+To build from source:
 
 ```
 cargo build --release

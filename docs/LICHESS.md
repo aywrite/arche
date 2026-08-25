@@ -22,6 +22,14 @@ and is the one quoted in the release notes along with its digest. A pull request
 master builds and smoke tests the image without publishing it. The `master` tag that earlier
 versions published is no longer updated; a bot still running it is on whatever master was then.
 
+A published image carries a build provenance attestation, filed against this repository and
+looked up by digest, so a tag can be checked against where it came from rather than trusted for
+being in the right place:
+
+```
+gh attestation verify oci://ghcr.io/aywrite/arche-lichess-bot:v<version> --repo aywrite/arche
+```
+
 ## The book
 
 The book is generated at build time by `docker/build_book.py` from
