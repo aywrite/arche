@@ -189,7 +189,11 @@ Both scripts build the tree as it stands rather than as it is staged, so
 stage everything first. A refactor that moves nothing still states the bench,
 since unchanged is a claim worth making, and the Bench workflow builds every
 commit that states one and counts it, so a wrong number fails the pull
-request. The trailers are the final paragraph of the message and nothing
+request. A commit rebased before it lands is not the commit that was built,
+though, so the same workflow reads every commit pushed to master against the
+counts its own tree pins, which is the same number without the build: the
+message that passed on one base has to still be true on the one it arrives
+on. The trailers are the final paragraph of the message and nothing
 else, which is how git reads them, and the bench has to be the last bench
 number anywhere in the message, because that is the one openbench reads, so
 a sentence that names one goes above them.
