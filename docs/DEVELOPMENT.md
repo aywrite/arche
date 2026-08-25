@@ -524,3 +524,10 @@ placement.
 
 All of them edit the notes by reading them and writing them back, so they share
 a concurrency group and take turns rather than one landing on top of the other.
+
+The archives and the image are attested as well as checksummed, which needs
+nothing doing by hand: the workflows ask github to sign a statement that these
+bytes came out of that run at that tag, and github answers for it afterwards
+rather than the release page doing so. `gh attestation verify <file> --repo
+aywrite/arche` is what checks one; the readme has it for a binary and
+docs/LICHESS.md for the image.

@@ -34,9 +34,15 @@ jobs:
     # The arm64 half of the published image is built under emulation, which is
     # slow enough to be worth a ceiling.
     timeout-minutes: 90
+    # the last two are the attestation's: the job asks github for a short lived
+    # signing certificate with its own oidc token, and files the result against
+    # this repository. They are the job's rather than the workflow's, which has
+    # none of its own
     permissions:
       contents: read
       packages: write
+      id-token: write
+      attestations: write
     outputs:
       digest: ${{ steps.push.outputs.digest }}
       # named here rather than where it is used, because the env context is not
@@ -102,6 +108,30 @@ jobs:
           labels: ${{ steps.meta.outputs.labels }}
           cache-from: type=gha
           cache-to: type=gha,mode=max
+          # Buildkit's own attestations, which travel with the image in its
+          # index and are what `docker buildx imagetools inspect` reads. max
+          # provenance records the build arguments and the source as well as
+          # the materials, and the sbom lists what the runtime layer holds,
+          # which for an image that installs lichess-bot and its python
+          # dependencies is most of what an advisory would be about. Only set
+          # on this step: the smoke test build above loads into the local
+          # docker rather than pushing, and that exporter takes neither.
+          provenance: mode=max
+          sbom: true
+
+      # The one above travels with the image and is signed by the build. This
+      # one is github's, filed against this repository and looked up by digest,
+      # which is what `gh attestation verify` asks for and does not need the
+      # registry to be reachable. push-to-registry puts it beside the image as
+      # well, so a client that has the image has the attestation. How to check
+      # it is in docs/LICHESS.md.
+      - name: Attest the published image
+        if: inputs.release
+        uses: actions/attest-build-provenance@977bb373ede98d70efdf65b84cb5f73e068dcc2a # v3.0.0
+        with:
+          subject-name: ${{ env.REGISTRY }}/${{ env.IMAGE_NAME }}
+          subject-digest: ${{ steps.push.outputs.digest }}
+          push-to-registry: true
 
   release-notes:
     needs: build

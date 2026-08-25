@@ -51,9 +51,18 @@ jobs:
           - macos-latest
           - windows-latest
     runs-on: ${{ matrix.os }}
+    # contents: write is the workflow's, restated because a job that declares
+    # permissions gets these and no others. The other two are the attestation's:
+    # the job asks github for a short lived signing certificate with its own
+    # oidc token, and files the result against this repository.
+    permissions:
+      contents: write
+      id-token: write
+      attestations: write
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
       - uses: taiki-e/upload-rust-binary-action@f0d45ae91ee7b8ee928de7a9d04d893a08bcbec6 # v1.30.2
+        id: upload
         with:
           bin: "arche"
           tar: unix
@@ -66,14 +75,38 @@ jobs:
           # (required) GitHub token for uploading assets to GitHub Releases.
           token: ${{ secrets.GITHUB_TOKEN }}
 
+      # The checksum above says a download arrived intact and nothing about
+      # where it came from, and it is published on the same page as the file it
+      # describes, so anyone who could replace one could replace both. The
+      # attestation is the other half: a signed statement that these bytes came
+      # out of this workflow, at this commit, which `gh attestation verify`
+      # checks with github rather than with the release page. How to run it is
+      # in the readme.
+      #
+      # The subject is the checksum file rather than the archives, because the
+      # action names that file in its sha256 output and it already lists every
+      # archive this runner built with its digest. A path would have had to know
+      # which of the two the platform produced, since the tar is built on unix
+      # and the zip on windows.
+      - name: Attest what was built
+        uses: actions/attest-build-provenance@977bb373ede98d70efdf65b84cb5f73e068dcc2a # v3.0.0
+        with:
+          subject-checksums: ${{ steps.upload.outputs.sha256 }}
+
   # Builds and publishes the lichess-bot image for the tag. It runs from here
   # rather than from its own tag trigger so that it waits for the tests and for
   # the release it writes to.
   docker:
     needs: create-release
+    # A called workflow cannot hold more than the job that calls it was given,
+    # so the two the image's attestation needs are granted here as well as
+    # declared there. Without them the build job asks for a signing certificate
+    # it is not allowed to have.
     permissions:
       contents: write
       packages: write
+      id-token: write
+      attestations: write
     uses: ./.github/workflows/docker.yml
     with:
       release: true
