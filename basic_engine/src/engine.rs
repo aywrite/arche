@@ -739,9 +739,27 @@ impl AlphaBeta {
         let mut found_legal_move = false;
         let mut root_tainted = false;
 
+        // the entry here is the one the last iteration answered with, stored
+        // past the depth contest, and order_moves puts the table's move ahead
+        // of every other. So a deepening search tries the previous depth's
+        // best first, which is what lets an aborted iteration's best replace
+        // it: see the Aborted arm of iterative_deepening_search
         let pv_play = self.transpositions.ordering_play(&self.board);
         let mut moves = self.board.generate_moves();
         self.ordering.order(&self.board, &mut moves, pv_play);
+        // the soundness of replacing a completed answer with an aborted
+        // iteration's rests on that ordering, so a change that breaks it,
+        // say a root bonus outbidding the table move, fails here rather
+        // than silently answering with a move never compared to the old one
+        if let Some(previous) = pv_play {
+            debug_assert!(
+                moves
+                    .iter()
+                    .position(|m| *m == previous)
+                    .is_none_or(|at| at == 0),
+                "the table's move is no longer first at the root"
+            );
+        }
 
         for m in &moves {
             if self.board.make_move(m) {
@@ -872,11 +890,34 @@ impl Engine for AlphaBeta {
                 .limits
                 .for_iteration(best.is_some(), total_nodes);
             match self.search_within(depth, limits) {
-                SearchOutcome::Aborted(_) => {
-                    // the interrupted iteration's best-so-far is discarded: a
-                    // completed shallower iteration outranks it, and depth one
-                    // runs without limits so there always is one
-                    return SearchOutcome::Aborted(best);
+                SearchOutcome::Aborted(deeper) => {
+                    // the interrupted iteration's best outranks the completed
+                    // depth's whenever it has one. The root searches full
+                    // window, so that score is exact over the moves it did
+                    // search, which makes it a deeper exact answer over fewer
+                    // moves rather than a bound.
+                    //
+                    // The move it replaces is one of the moves searched: the
+                    // root orders by the table's entry for the position, which
+                    // is the answer the last iteration stored, so the previous
+                    // best is the first move this iteration tried. That
+                    // ordering is the whole of why the swap is sound. Without
+                    // it the new move would be better only over a subset the
+                    // old one need not belong to, and preferring it would mean
+                    // preferring a move that was never compared with the one
+                    // being given up.
+                    return SearchOutcome::Aborted(match deeper {
+                        Some(mut result) => {
+                            // its count covers the whole deepening, as a
+                            // completed iteration's does
+                            result.nodes += total_nodes;
+                            Some(result)
+                        }
+                        // nothing finished at this depth, so the last
+                        // completed one still answers; depth one runs without
+                        // limits, so there always is one
+                        None => best,
+                    });
                 }
                 SearchOutcome::GameOver => {
                     // checkmate, stalemate or a rule draw: deeper searches
@@ -951,8 +992,9 @@ pub enum SearchOutcome {
     /// Searching deeper cannot change it.
     GameOver,
     /// A limit ran out partway through, carrying a best-so-far when the
-    /// root got far enough to have one. Weaker than any Complete result: the
-    /// play may be a fail high that never got re-searched.
+    /// root got far enough to have one. The root searches full window, so
+    /// that score is exact over the moves it did search rather than a bound
+    /// on the position; what it leaves out is the moves it never reached.
     Aborted(Option<SearchResult>),
 }
 
@@ -1338,6 +1380,107 @@ mod search {
     }
 
     #[test]
+    fn an_aborted_iteration_still_counts_the_whole_deepening() {
+        // the same sweep as above read the other way round: wherever the root
+        // finished a move before the budget ran out, that move answers rather
+        // than the completed depth's, and its count covers the aborted
+        // iteration as well as the depths before it, which together are the
+        // budget to the node
+        let mut deeper = 0;
+        for limit in (50..6_000).step_by(97) {
+            let mut e = engine(Board::new());
+            let options = SearchParameters::new(None, nodes_only(limit));
+            let mut last_report = 0;
+            let outcome =
+                e.iterative_deepening_search(options, |_, result, _| last_report = result.nodes);
+            let SearchOutcome::Aborted(Some(result)) = outcome else {
+                panic!(
+                    "expected a move under a budget of {}, got {:?}",
+                    limit, outcome
+                )
+            };
+            if result.nodes == last_report {
+                // the iteration aborted before any root move finished
+                continue;
+            }
+            assert_eq!(result.nodes, limit, "budget {}", limit);
+            deeper += 1;
+        }
+        assert!(
+            deeper > 0,
+            "no budget in the sweep aborted with a root move in hand"
+        );
+    }
+
+    #[test]
+    fn an_iteration_that_searched_no_root_move_leaves_the_completed_depth_answering() {
+        // a budget of exactly what three depths cost leaves the fourth
+        // nothing at all: it aborts on its first poll with no move of its
+        // own, so the answer is still the one depth three completed
+        let mut e = engine(Board::new());
+        let three = completed(e.iterative_deepening_search(
+            SearchParameters::new(Some(3), Limits::unlimited()),
+            |_, _, _| {},
+        ));
+
+        let mut e = engine(Board::new());
+        let options = SearchParameters::new(None, nodes_only(three.nodes));
+        let outcome = e.iterative_deepening_search(options, |_, _, _| {});
+        let SearchOutcome::Aborted(Some(result)) = outcome else {
+            panic!("expected the completed depth's move, got {:?}", outcome)
+        };
+        assert_eq!(result.nodes, three.nodes);
+        assert_eq!(result.best_move, three.best_move);
+    }
+
+    /// What a fresh engine answers depth four from the opening with, and
+    /// what a depth five search under `budget` answers after it. Built anew
+    /// for every budget so that the table each one searches with is the
+    /// same and the answer depends on the budget alone.
+    fn five_after_four(budget: u64) -> (Play, SearchOutcome) {
+        let mut e = engine(Board::new());
+        let four = completed(e.search(4));
+        let five = e.search_within(5, nodes_only(budget));
+        (four.best_move, five)
+    }
+
+    #[test]
+    fn the_root_searches_the_previous_depths_best_move_first() {
+        // what makes the swap above sound, and the one thing that would
+        // silently unmake it. The smallest budget an aborted iteration has a
+        // move to answer with is the one that just covers the first root
+        // move it tried, so whatever answers at that budget is the move the
+        // root tried first, and it has to be the one the depth before
+        // answered with
+        let finished = |budget| !matches!(five_after_four(budget).1, SearchOutcome::Aborted(None));
+        // more nodes is never fewer root moves finished, so the smallest
+        // budget with a move in hand can be bisected for
+        let (mut none, mut some) = (0, 100_000);
+        assert!(
+            finished(some),
+            "depth five finished no root move in {} nodes",
+            some
+        );
+        while none + 1 < some {
+            let mid = (none + some) / 2;
+            if finished(mid) {
+                some = mid
+            } else {
+                none = mid
+            }
+        }
+
+        let (previous, outcome) = five_after_four(some);
+        let SearchOutcome::Aborted(Some(result)) = outcome else {
+            panic!(
+                "one root move is not the whole of depth five, got {:?}",
+                outcome
+            )
+        };
+        assert_eq!(result.best_move, previous);
+    }
+
+    #[test]
     fn a_node_budget_and_a_clock_stop_at_whichever_comes_first() {
         // the clock wins: a spent clock and a generous budget end after
         // depth one, which runs whatever either says
@@ -1446,13 +1589,14 @@ mod search {
     }
 
     #[test]
-    fn a_clock_that_runs_out_mid_deepening_still_answers_with_a_completed_depth() {
+    fn a_clock_that_runs_out_mid_deepening_still_answers_with_a_move() {
         // the one clock in the suite that is not zero. A zero budget aborts
         // on the first poll, before the next check is ever armed, so this
         // is the only test of the clock being read again thousands of nodes
         // on. Fifty milliseconds from the opening is orders of magnitude
-        // short of MAX_DEPTH, so the clock wins, and the answer has to be
-        // the move of a depth that completed
+        // short of MAX_DEPTH, so the clock wins, and whether the move comes
+        // from the last depth to finish or from the one it stopped in the
+        // middle of, there has to be one
         let mut e = engine(Board::new());
         let params = SearchParameters::new(
             None,
