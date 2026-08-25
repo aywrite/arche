@@ -93,7 +93,7 @@ jobs:
       candidate_name: ${{ steps.find.outputs.candidate_name }}
       candidate_sha: ${{ steps.find.outputs.candidate_sha }}
     steps:
-      - uses: actions/checkout@v7
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
           fetch-depth: 0
 
@@ -163,7 +163,7 @@ jobs:
       PREVIOUS: ${{ needs.resolve.outputs.baseline_name }}
       BASELINE_SHA: ${{ needs.resolve.outputs.baseline_sha }}
     steps:
-      - uses: actions/checkout@v7
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
           fetch-depth: 0
 
@@ -171,7 +171,7 @@ jobs:
 
       # the cache keeps the dependencies; each side's engine is built from an
       # export of its commit, and the checkout stays on the ref this ran on
-      - uses: Swatinem/rust-cache@v2
+      - uses: Swatinem/rust-cache@6323deb102c322ba6fcbdcafc7e3dddab59af2b6 # v2.9.2
 
       - name: Build both versions
         run: |

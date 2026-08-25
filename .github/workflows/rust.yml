@@ -28,8 +28,8 @@ jobs:
           - windows-latest
     runs-on: ${{ matrix.os }}
     steps:
-    - uses: actions/checkout@v7
-    - uses: Swatinem/rust-cache@v2
+    - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+    - uses: Swatinem/rust-cache@6323deb102c322ba6fcbdcafc7e3dddab59af2b6 # v2.9.2
     - name: Check formatting
       run: cargo fmt --all --check
     - name: Build
@@ -40,8 +40,8 @@ jobs:
   lint:
     runs-on: ubuntu-latest
     steps:
-    - uses: actions/checkout@v7
-    - uses: Swatinem/rust-cache@v2
+    - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+    - uses: Swatinem/rust-cache@6323deb102c322ba6fcbdcafc7e3dddab59af2b6 # v2.9.2
     - name: Run clippy
       run: cargo clippy --workspace --locked --all-targets -- -D warnings
 
@@ -50,8 +50,8 @@ jobs:
   test-debug:
     runs-on: ubuntu-latest
     steps:
-    - uses: actions/checkout@v7
-    - uses: Swatinem/rust-cache@v2
+    - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+    - uses: Swatinem/rust-cache@6323deb102c322ba6fcbdcafc7e3dddab59af2b6 # v2.9.2
     - name: Run tests
       run: cargo test --workspace --locked
 
@@ -62,8 +62,12 @@ jobs:
       # takes precedence over rust-toolchain.toml
       RUSTUP_TOOLCHAIN: "1.85"
     steps:
-    - uses: actions/checkout@v7
-    - uses: dtolnay/rust-toolchain@1.85
-    - uses: Swatinem/rust-cache@v2
+    - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+    # the trailing comment on this one is a toolchain rather than a version of
+    # the action: the ref names what to install, so the sha is whatever the
+    # 1.85 branch pointed at, and moving it would move this job off the version
+    # it exists to check. .github/dependabot.yml keeps it out of the bumps.
+    - uses: dtolnay/rust-toolchain@85c23e28f7ccc75a9a153d45d385d94a85464876 # 1.85
+    - uses: Swatinem/rust-cache@6323deb102c322ba6fcbdcafc7e3dddab59af2b6 # v2.9.2
     - name: Check the workspace
       run: cargo check --workspace --locked --all-targets

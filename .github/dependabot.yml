@@ -21,17 +21,19 @@ updates:
       actions:
         patterns:
           - "*"
+    # The workflows used to reference floating major tags, which already point
+    # at the latest patch, so a patch or minor bump only turned v4 into v4.5.2
+    # and stopped it tracking anything, and both were ignored here. They now
+    # reference a commit sha with the version it was in a trailing comment,
+    # because a tag is mutable and a release hands these actions a token that
+    # can write to the repository and to the package registry. Dependabot
+    # rewrites the sha and the comment together, so every bump is a real
+    # change to what runs and is worth the pull request it opens.
     ignore:
-      # The workflows use floating major tags, which already point at the
-      # latest patch, so a patch or minor bump only turns v4 into v4.5.2 and
-      # stops it tracking anything. Only a new major is worth a pull request.
-      - dependency-name: "*"
-        update-types:
-          - "version-update:semver-patch"
-          - "version-update:semver-minor"
-      # This one is pinned on purpose, the tag names the rust toolchain to
-      # install rather than a version of the action, so bumping it would raise
-      # the version the msrv job is there to check against.
+      # The exception, and the only one. This action's ref names the rust
+      # toolchain to install rather than a version of the action, so a bump
+      # would raise the version the msrv job is there to check against. The sha
+      # it is pinned to is what the 1.85 branch pointed at.
       - dependency-name: "dtolnay/rust-toolchain"
   - package-ecosystem: "docker"
     directory: "/docker"

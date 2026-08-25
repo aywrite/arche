@@ -37,19 +37,19 @@ jobs:
           echo "::error::releases are cut from master, this was started from ${{ github.ref_name }}"
           exit 1
 
-      - uses: actions/checkout@v7
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
           # cargo-release and git-cliff both need the history and the tags
           fetch-depth: 0
 
-      - uses: Swatinem/rust-cache@v2
+      - uses: Swatinem/rust-cache@6323deb102c322ba6fcbdcafc7e3dddab59af2b6 # v2.9.2
         with:
           # this job installs cargo-release into CARGO_HOME/bin, which this
           # action caches by default. restoring that cache made the install
           # below a no-op without the binary actually being there.
           cache-bin: false
 
-      - uses: taiki-e/install-action@v2
+      - uses: taiki-e/install-action@b6ff580856c41316412a0b9b60540fbc6f8c82cc # v2.86.7
         with:
           # cliff.toml is written against the version 2 template syntax
           tool: cargo-binstall,git-cliff@2
