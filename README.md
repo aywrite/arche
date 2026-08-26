@@ -3,11 +3,16 @@ Andrew's Rust Chess Engine
 
 ## About
 
-This project is mostly intended for self-edification. The engine is not intended to be
-particularly novel or powerful, and most of the effort goes into being able to tell whether a
-change to it helped. Every change to the engine states in its commit message how much of the
-tree the search looks at afterwards, and a change that claims to be faster states how much
-faster it measured.
+Arche is a UCI chess engine in Rust. Most of the effort goes into being able to tell whether a
+change to it helped: every change states in its commit message how much of the tree the search
+looks at afterwards, one that changes how the engine plays is measured in games before it
+merges, and one that claims to be faster states how much faster it measured.
+
+The board is represented using only bitboards (with magic bitboards for move generation of
+sliding pieces). The search is alpha beta with a transposition table, iterative deepening,
+quiescence search and MVV-LVA move ordering. Evaluation is material plus piece square tables.
+
+### Background
 
 Since 2026 most of the changes in this repo are written by AI. I had abandoned this project
 for want of time, but AI has changed that. AI allows me to explore new ideas — be they my own,
@@ -15,13 +20,6 @@ AI generated or borrowed from other engines. I still decide on the roadmap, but 
 call the engine all my own work. It remains first and foremost a fun project that helps me
 learn about how chess engines work and performance tuning in Rust.
 
-The board is currently represented using only bitboards (with magic bitboards for move
-generation of sliding pieces).
-
-The search is alpha beta with a transposition table, iterative deepening, quiescence search and
-MVV-LVA move ordering. Evaluation is material plus piece square tables.
-
-None of this is meant as a reference implementation, and it is not especially idiomatic Rust.
 The engine is something to experiment on rather than an example to copy.
 
 ## Documentation
@@ -36,7 +34,7 @@ The engine is something to experiment on rather than an example to copy.
 ## Usage
 
 The engine does not ship with any GUI. It currently implements a subset of the UCI protocol,
-you can use it with an open source GUI such as [Arena](http://www.playwitharena.de/).
+so an open source GUI such as [Arena](http://www.playwitharena.de/) can drive it.
 
 The program starts in UCI mode immediately. The one argument it takes is
 `bench [depth] [hash <MB>] [taint refuse|trust|skip|rule50]`, which searches a fixed set of positions and
