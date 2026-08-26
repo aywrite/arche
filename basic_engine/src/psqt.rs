@@ -21,6 +21,47 @@ const fn mirror(array: &[i16; 64]) -> [i16; 64] {
     mirrored
 }
 
+/// Both halves of a tapered score in one word: the midgame value in the low
+/// sixteen bits and the endgame value in the high ones.
+///
+/// Summing a boardful of these is one add rather than two, which is what lets
+/// the accumulator carry two numbers for what it cost to carry one. A negative
+/// midgame value borrows from the endgame half, which `eg_value` undoes by
+/// adding the borrow back before it shifts. Negation needs no unpacking
+/// either: negating the sum negates both halves, which is what lets the
+/// accumulator subtract a black piece the way it subtracts a white one.
+///
+/// The halves are only independent while each stays inside an `i16`. A
+/// boardful of these tables reaches about sixteen hundred either way, so there
+/// is an order of magnitude in hand.
+pub const fn pack(mg: i16, eg: i16) -> i32 {
+    ((eg as i32) << 16) + mg as i32
+}
+
+/// The midgame half, which is the low bits as they stand.
+#[inline]
+pub const fn mg_value(score: i32) -> i32 {
+    score as u16 as i16 as i32
+}
+
+/// The endgame half, taken after adding back what a negative midgame half
+/// borrowed from it.
+#[inline]
+pub const fn eg_value(score: i32) -> i32 {
+    ((score as u32).wrapping_add(0x8000) >> 16) as u16 as i16 as i32
+}
+
+/// One table's worth of the two phases packed together.
+const fn packed(mg: [i16; 64], eg: [i16; 64]) -> [i32; 64] {
+    let mut out: [i32; 64] = [0; 64];
+    let mut i = 0;
+    while i < 64 {
+        out[i] = pack(mg[i], eg[i]);
+        i += 1;
+    }
+    out
+}
+
 // From https://www.chessprogramming.org/Simplified_Evaluation_Function.
 //
 // These are written the way the page prints them, with the eighth rank in the
@@ -91,26 +132,79 @@ const QUEENS: [i16; 64] = [
     -20,-10,-10, -5, -5,-10,-10,-20
 ];
 
-/// The entries are `i16` rather than a machine word because every piece that is
+// The king is the piece the two phases disagree about most, and the page gives
+// a table for each: hidden behind its own pawns while there are pieces to
+// hide from, and in the middle of the board once there are not. A single table
+// cannot say both, which is why the king carried a table of zeroes until the
+// score was tapered.
+
+#[rustfmt::skip]
+const KING: [i16; 64] = [
+    -30,-40,-40,-50,-50,-40,-40,-30,
+    -30,-40,-40,-50,-50,-40,-40,-30,
+    -30,-40,-40,-50,-50,-40,-40,-30,
+    -30,-40,-40,-50,-50,-40,-40,-30,
+    -20,-30,-30,-40,-40,-30,-30,-20,
+    -10,-20,-20,-20,-20,-20,-20,-10,
+     20, 20,  0,  0,  0,  0, 20, 20,
+     20, 30, 10,  0,  0, 10, 30, 20
+];
+
+#[rustfmt::skip]
+const KING_END: [i16; 64] = [
+    -50,-40,-30,-20,-20,-30,-40,-50,
+    -30,-20,-10,  0,  0,-10,-20,-30,
+    -30,-10, 20, 30, 30, 20,-10,-30,
+    -30,-10, 30, 40, 40, 30,-10,-30,
+    -30,-10, 30, 40, 40, 30,-10,-30,
+    -30,-10, 20, 30, 30, 20,-10,-30,
+    -30,-30,  0,  0,  0,  0,-30,-30,
+    -50,-30,-30,-30,-30,-30,-30,-50
+];
+
+/// The pawn is the other one, and here the page has nothing to offer: it
+/// prints a single pawn table, and that table is a middlegame one. It pushes
+/// the two centre pawns and holds the rest back to shelter a castled king,
+/// which is why a pawn still at home on d2 scores less there than one on a2.
+/// With no pieces left to shelter from, none of that is true and only the
+/// distance to promotion is, so the endgame table is a ramp: the same for
+/// every file, steepening as the pawn gets close enough for the ending to be
+/// about it.
+#[rustfmt::skip]
+const PAWNS_END: [i16; 64] = [
+      0,  0,  0,  0,  0,  0,  0,  0,
+     80, 80, 80, 80, 80, 80, 80, 80,
+     50, 50, 50, 50, 50, 50, 50, 50,
+     30, 30, 30, 30, 30, 30, 30, 30,
+     15, 15, 15, 15, 15, 15, 15, 15,
+      5,  5,  5,  5,  5,  5,  5,  5,
+      0,  0,  0,  0,  0,  0,  0,  0,
+      0,  0,  0,  0,  0,  0,  0,  0
+];
+
+/// The entries are `i32` rather than a machine word because every piece that is
 /// set or cleared reads one, which is several times per move made or unmade, and
-/// the twelve tables are then 1536 bytes rather than 6144 and stay in L1
-/// alongside everything else the search is touching. The values run from -50 to
-/// 50, so the narrower type costs nothing.
+/// the twelve tables are then 3072 bytes rather than 6144 and stay in L1
+/// alongside everything else the search is touching. Each entry is a packed
+/// pair rather than one value, so the width buys both phases rather than range:
+/// see `pack`.
 ///
 /// One array picked by arithmetic rather than a table per colour and piece
 /// picked by a match. The match compiled to a jump table, and reading it was
 /// the largest single source of mispredicted indirect branches in the search:
 /// the piece being placed is whatever the position holds, so the branch
 /// predictor has nothing to go on and missed it about half the time. The kings
-/// carry a table of zeroes rather than a case of their own, which is what
+/// take a row of their own rather than a case of their own, which is what
 /// leaves the pick with nothing to branch on.
 pub struct PieceSquareTables {
-    tables: [[i16; 64]; 12],
+    tables: [[i32; 64]; 12],
 }
 
 impl PieceSquareTables {
+    /// The packed pair for a piece on a square. Both phases at once, since a
+    /// caller accumulating them wants one read and one add rather than two.
     #[inline]
-    pub fn get_value(&self, index: usize, piece: Piece, color: Color) -> i16 {
+    pub fn get_value(&self, index: usize, piece: Piece, color: Color) -> i32 {
         self.tables[Self::table_index(piece, color)][index]
     }
 
@@ -129,21 +223,24 @@ impl PieceSquareTables {
     /// a proof and the code it is about. Worth keeping a `const`.
     ///
     /// Written in the order `table_index` reads it: the six pieces as `Piece`
-    /// declares them for white, then the same six for black.
+    /// declares them for white, then the same six for black. A piece whose two
+    /// phases agree is handed the same table twice, which is every piece but
+    /// the king and the pawn: a knight belongs in the middle of the board and
+    /// a rook on the seventh whatever else is left on it.
     pub const TABLES: PieceSquareTables = PieceSquareTables {
         tables: [
-            mirror(&PAWNS),
-            mirror(&KNIGHTS),
-            mirror(&BISHOPS),
-            mirror(&ROOKS),
-            mirror(&QUEENS),
-            [0; 64],
-            PAWNS,
-            KNIGHTS,
-            BISHOPS,
-            ROOKS,
-            QUEENS,
-            [0; 64],
+            packed(mirror(&PAWNS), mirror(&PAWNS_END)),
+            packed(mirror(&KNIGHTS), mirror(&KNIGHTS)),
+            packed(mirror(&BISHOPS), mirror(&BISHOPS)),
+            packed(mirror(&ROOKS), mirror(&ROOKS)),
+            packed(mirror(&QUEENS), mirror(&QUEENS)),
+            packed(mirror(&KING), mirror(&KING_END)),
+            packed(PAWNS, PAWNS_END),
+            packed(KNIGHTS, KNIGHTS),
+            packed(BISHOPS, BISHOPS),
+            packed(ROOKS, ROOKS),
+            packed(QUEENS, QUEENS),
+            packed(KING, KING_END),
         ],
     };
 }
@@ -154,9 +251,19 @@ mod tests {
     use crate::misc::File;
     use crate::misc::coordinate_to_index;
 
-    fn value(piece: Piece, color: Color, file: File, rank: u8) -> i16 {
+    fn packed_at(piece: Piece, color: Color, file: File, rank: u8) -> i32 {
         let index = coordinate_to_index(rank, file) as usize;
         PieceSquareTables::TABLES.get_value(index, piece, color)
+    }
+
+    /// The midgame half of a square, which is what the tables said before
+    /// there were two of them and what most of these tests are still about.
+    fn value(piece: Piece, color: Color, file: File, rank: u8) -> i32 {
+        mg_value(packed_at(piece, color, file, rank))
+    }
+
+    fn eg(piece: Piece, color: Color, file: File, rank: u8) -> i32 {
+        eg_value(packed_at(piece, color, file, rank))
     }
 
     /// The tables are written with the eighth rank first and the board indexes
@@ -235,12 +342,15 @@ mod tests {
             Piece::Bishop,
             Piece::Rook,
             Piece::Queen,
+            Piece::King,
         ] {
             for rank in 1..=8 {
                 for file in File::VARIANTS {
+                    // the whole pair at once, so a table tapered for one
+                    // colour and not the other fails here
                     assert_eq!(
-                        value(piece, Color::White, file, rank),
-                        value(piece, Color::Black, file, 9 - rank),
+                        packed_at(piece, Color::White, file, rank),
+                        packed_at(piece, Color::Black, file, 9 - rank),
                         "{:?} on {:?}{}",
                         piece,
                         file,
@@ -251,9 +361,60 @@ mod tests {
         }
     }
 
+    /// The two king tables are the reason the score is tapered at all, so
+    /// these say which way round they are: behind its own pawns in the
+    /// middlegame, in the middle of the board in the ending.
     #[test]
-    fn a_king_is_not_scored_by_square() {
+    fn a_king_hides_in_the_middlegame_and_comes_out_in_the_ending() {
+        // the squares castling short puts it on score best of any
+        assert_eq!(value(Piece::King, Color::White, File::G, 1), 30);
         assert_eq!(value(Piece::King, Color::White, File::E, 1), 0);
-        assert_eq!(value(Piece::King, Color::Black, File::E, 8), 0);
+        assert_eq!(value(Piece::King, Color::White, File::E, 4), -40);
+
+        assert_eq!(eg(Piece::King, Color::White, File::E, 4), 40);
+        assert_eq!(eg(Piece::King, Color::White, File::G, 1), -30);
+        assert_eq!(eg(Piece::King, Color::White, File::A, 1), -50);
+
+        assert_eq!(value(Piece::King, Color::Black, File::G, 8), 30);
+        assert_eq!(eg(Piece::King, Color::Black, File::E, 5), 40);
+    }
+
+    /// The endgame pawn table is a ramp and the midgame one is not, which is
+    /// the whole of the difference between them. The centre pawn held back to
+    /// shelter a king is the square that shows it.
+    #[test]
+    fn a_pawn_is_scored_by_rank_alone_in_the_ending() {
+        for file in File::VARIANTS {
+            assert_eq!(eg(Piece::Pawn, Color::White, file, 7), 80);
+            assert_eq!(eg(Piece::Pawn, Color::White, file, 5), 30);
+            assert_eq!(eg(Piece::Pawn, Color::White, file, 2), 0);
+        }
+        // shelter in the middlegame, nothing either way in the ending
+        assert_eq!(value(Piece::Pawn, Color::White, File::D, 2), -20);
+        assert_eq!(eg(Piece::Pawn, Color::White, File::D, 2), 0);
+    }
+
+    /// A pair packs and unpacks to itself, negative halves included: a black
+    /// piece is subtracted from the accumulator packed, never unpacked first.
+    #[test]
+    fn a_packed_pair_survives_being_packed() {
+        for (mg, eg) in [(0, 0), (50, -50), (-50, 80), (-1, -1), (1600, -1600)] {
+            let score = pack(mg, eg);
+            assert_eq!(
+                (mg_value(score), eg_value(score)),
+                (i32::from(mg), i32::from(eg))
+            );
+            assert_eq!(
+                (mg_value(-score), eg_value(-score)),
+                (-i32::from(mg), -i32::from(eg))
+            );
+        }
+    }
+
+    /// Packed pairs add as pairs, which is what the accumulator relies on.
+    #[test]
+    fn packed_pairs_sum_a_half_at_a_time() {
+        let total = pack(50, -50) + pack(-20, 80) + pack(-1, -1);
+        assert_eq!((mg_value(total), eg_value(total)), (29, 29));
     }
 }
