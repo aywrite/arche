@@ -8,6 +8,7 @@ mod misc;
 mod ordering;
 mod play;
 mod psqt;
+pub mod tactics;
 mod transposition;
 mod value;
 mod zobrist;

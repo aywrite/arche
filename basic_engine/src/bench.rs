@@ -12,6 +12,7 @@ use crate::board::Board;
 use crate::engine::{AlphaBeta, Engine, SearchConfig, SearchOutcome, SearchParameters};
 use crate::misc::Score;
 use crate::play::Play;
+use std::collections::HashMap;
 use std::fmt;
 use std::time::Duration;
 
@@ -30,6 +31,12 @@ const SUITE: &str = include_str!("../bench.epd");
 pub struct Position {
     pub id: String,
     pub fen: String,
+    /// The operations the line carried, by opcode. `id` is lifted out
+    /// above because every reader wants it and a line without one is named
+    /// by its fen; the rest are left here for whichever reader knows what
+    /// they mean. The bench reads none of them, and the tactical suite
+    /// reads `bm`.
+    pub operations: HashMap<String, String>,
 }
 
 /// The suite's positions, in the order the file lists them.
@@ -42,7 +49,7 @@ pub fn positions() -> Vec<Position> {
 /// are filled in as zero and one, a position that has just arisen. A line
 /// with no id is named by its fen. Blank lines and lines opening with `#`
 /// are skipped.
-fn parse_epd(text: &str) -> Vec<Position> {
+pub fn parse_epd(text: &str) -> Vec<Position> {
     text.lines()
         .map(str::trim)
         .filter(|line| !line.is_empty() && !line.starts_with('#'))
@@ -50,15 +57,32 @@ fn parse_epd(text: &str) -> Vec<Position> {
             let mut words = line.split_whitespace();
             let fen: Vec<&str> = words.by_ref().take(4).collect();
             let fen = format!("{} 0 1", fen.join(" "));
-            // what is left is the operations, each ended by a semicolon
-            let operations = words.collect::<Vec<&str>>().join(" ");
-            let id = operations
+            // what is left is the operations, each an opcode and its
+            // operands and each ended by a semicolon. An operation with no
+            // operands is dropped: every opcode read here takes them, and
+            // one that does not would arrive as an empty string that no
+            // reader could tell from a missing one. The quotes around an id
+            // are epd syntax rather than part of the name, so they come off
+            // here and nothing below has to know they were ever there
+            let operations: HashMap<String, String> = words
+                .collect::<Vec<&str>>()
+                .join(" ")
                 .split(';')
                 .map(str::trim)
-                .find_map(|operation| operation.strip_prefix("id "))
-                .map(|name| name.trim().trim_matches('"').to_string())
-                .unwrap_or_else(|| fen.clone());
-            Position { id, fen }
+                .filter_map(|operation| operation.split_once(char::is_whitespace))
+                .map(|(opcode, operands)| {
+                    (
+                        opcode.to_string(),
+                        operands.trim().trim_matches('"').to_string(),
+                    )
+                })
+                .collect();
+            let id = operations.get("id").cloned().unwrap_or_else(|| fen.clone());
+            Position {
+                id,
+                fen,
+                operations,
+            }
         })
         .collect()
 }
@@ -311,15 +335,40 @@ mod tests {
             "4k3/8/8/8/8/8/8/4K3 w - - id \"bare kings\";",
             "4k3/8/8/8/8/8/8/4K3\tw  - -  c0 \"a note\"; id \"bare kings\";",
         ] {
-            assert_eq!(
-                parse_epd(line),
-                vec![Position {
-                    id: "bare kings".to_string(),
-                    fen: "4k3/8/8/8/8/8/8/4K3 w - - 0 1".to_string(),
-                }],
-                "{line:?}"
-            );
+            let parsed = parse_epd(line);
+            assert_eq!(parsed.len(), 1, "{line:?}");
+            // the fen and the id, which is what this one is about; the
+            // operations differ between the two lines and have a test of
+            // their own below
+            assert_eq!(parsed[0].id, "bare kings", "{line:?}");
+            assert_eq!(parsed[0].fen, "4k3/8/8/8/8/8/8/4K3 w - - 0 1", "{line:?}");
         }
+    }
+
+    /// The bench reads none of these, so nothing else would notice if the
+    /// reader started dropping them. The tactical suite reads bm out of the
+    /// same map.
+    #[test]
+    fn every_operation_on_a_line_is_kept() {
+        let parsed =
+            parse_epd("8/8/8/8/8/8/8/K1k5 w - - id \"two ops\"; bm a1b1 a1a2; c0 \"a comment\";");
+        assert_eq!(parsed.len(), 1);
+        assert_eq!(parsed[0].id, "two ops");
+        assert_eq!(
+            parsed[0].operations.get("bm"),
+            Some(&"a1b1 a1a2".to_string())
+        );
+        assert_eq!(
+            parsed[0].operations.get("c0"),
+            Some(&"a comment".to_string())
+        );
+    }
+
+    #[test]
+    fn an_operation_with_no_operands_is_dropped() {
+        let parsed = parse_epd("8/8/8/8/8/8/8/K1k5 w - - id \"lonely\"; hmvc;");
+        assert_eq!(parsed[0].id, "lonely");
+        assert!(!parsed[0].operations.contains_key("hmvc"));
     }
 
     #[test]
