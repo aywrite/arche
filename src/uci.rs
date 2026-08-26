@@ -333,14 +333,20 @@ impl<T: Engine, W: Write> UCI<T, W> {
     }
 }
 
-/// The depth asked of a go command, if one was. A depth too big for a byte
-/// is a request to go deep, not a reason to refuse the command, so it is
-/// clamped to the most a byte holds rather than rejected.
+/// The depth asked of a go command, if one was. A depth past what the engine
+/// will search is a request to go deep, not a reason to refuse the command,
+/// so it is held to the ply rail rather than rejected.
+///
+/// The rail is also what keeps the root's check extension inside a byte: a
+/// depth of two hundred and fifty five from a position in check used to be
+/// deepened to two hundred and fifty six and overflow.
 fn go_depth(params: &Params) -> Option<u8> {
-    params
-        .count("depth")
-        .read()
-        .map(|depth| depth.try_into().unwrap_or(u8::MAX))
+    params.count("depth").read().map(|depth| {
+        depth
+            .try_into()
+            .unwrap_or(u8::MAX)
+            .min(basic_engine::MAX_PLY)
+    })
 }
 
 /// What a bench command or argument asked for: `bench [depth] [hash <MB>]
@@ -1049,10 +1055,24 @@ go depth 3
     }
 
     #[test]
-    fn a_depth_too_big_for_a_byte_is_clamped_rather_than_refused() {
+    fn a_depth_past_the_ply_rail_is_clamped_rather_than_refused() {
         assert_eq!(go_depth(&Params::of("go depth 5")), Some(5));
-        assert_eq!(go_depth(&Params::of("go depth 999")), Some(u8::MAX));
+        assert_eq!(
+            go_depth(&Params::of("go depth 999")),
+            Some(basic_engine::MAX_PLY)
+        );
         assert_eq!(go_depth(&Params::of("go infinite")), None);
+    }
+
+    #[test]
+    fn a_depth_of_two_hundred_and_fifty_five_reaches_the_search_clamped() {
+        // the root deepens by one more when it is in check, so a request of
+        // the largest depth a byte holds used to overflow it and panic in a
+        // debug build. Nothing that arrives now can, because nothing past
+        // the rail arrives, and the rail itself leaves room for the
+        // extension by a build time assertion beside it
+        let asked = asked_of_engine("go depth 255");
+        assert_eq!(asked.depth, Some(basic_engine::MAX_PLY));
     }
 
     #[test]

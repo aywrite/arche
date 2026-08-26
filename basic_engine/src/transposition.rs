@@ -178,8 +178,9 @@ const _: () = assert!(mem::align_of::<Bucket>() == 64);
 /// An entry stored this many searches ago or more is replaced whatever its
 /// depth: its score describes repetition and fifty move context the game
 /// has moved past, and a slot is worth more to the search under way. The
-/// window the ply rule gave before, MAX_DEPTH plus three plies with a side
-/// searching every other ply, came to about the same.
+/// window the ply rule gave before, the twenty ply cap that then bounded a
+/// search plus three plies with a side searching every other ply, came to
+/// about the same.
 const STALE_AFTER_SEARCHES: u8 = 12;
 
 /// The generations run from one to this and round again; zero is never one,
@@ -543,7 +544,7 @@ fn entry(board: &Board, play: Play, value: Value, depth: u8, bound: Bound) -> Pv
 #[cfg(test)]
 mod tests {
     use super::{Bound, Play, Pv, STALE_AFTER_SEARCHES, TranspositionTable, Value};
-    use crate::engine::MAX_DEPTH;
+    use crate::engine::MAX_PLY;
     use crate::misc::{Piece, PromotePiece};
     use pretty_assertions::assert_eq;
     use std::mem;
@@ -607,7 +608,7 @@ mod tests {
                     false,
                 ),
                 score: -29_999,
-                depth: MAX_DEPTH,
+                depth: MAX_PLY,
                 bound,
                 tainted: true,
             };
