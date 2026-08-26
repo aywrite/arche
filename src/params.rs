@@ -14,7 +14,10 @@ use std::num::IntErrorKind;
 use std::str::FromStr;
 
 /// The words of one command line.
-pub(crate) struct Params<'a> {
+// pub, and its methods below are not: outside the crate the only thing
+// worth doing with one is building it and handing it to bench_settings.
+// The readers stay pub(crate) until something outside needs one
+pub struct Params<'a> {
     words: Vec<&'a str>,
 }
 
@@ -37,7 +40,7 @@ pub(crate) enum Param<'a, T> {
 }
 
 impl<'a> Params<'a> {
-    pub(crate) fn of(line: &'a str) -> Self {
+    pub fn of(line: &'a str) -> Self {
         Self {
             words: line.split_whitespace().collect(),
         }
