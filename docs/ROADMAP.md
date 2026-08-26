@@ -14,6 +14,9 @@ the engine plays. Roughly in the order they look worth doing.
 - killer moves and a history heuristic, staged in the ordering module
 - principal variation search, and a delta margin in quiescence
 - late move reductions
+- a tuner: fit the evaluation's weights to positions labelled with game results rather than
+  choosing them by hand, and a loss harness that triages an evaluation idea in minutes where a
+  match costs hours. The evaluation rows below are hand-weightable; not much past them is
 - evaluate drawn positions
 - the rest of evaluation: mobility, and special cases such as the bishop pair and open files
 - the rest of the uci protocol
