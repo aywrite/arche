@@ -6,12 +6,14 @@ See [DEVELOPMENT.md](DEVELOPMENT.md) for how to measure whether one of these hel
 ## Not implemented yet
 
 The measurement spine — the bench, the commit trailers, a reference search to
-compare against — lands before the first change to the search, so that every
-later commit carries its numbers and the series has no gap in it. Roughly in
-the order they look worth doing after that.
+compare against — is in place, so each of these arrives with its numbers: a
+`Bench:` trailer always, and an `Elo:` trailer from an SPRT when it changes how
+the engine plays. Roughly in the order they look worth doing.
 
 - null move pruning
-- killer moves
+- killer moves and a history heuristic, staged in the ordering module
+- principal variation search, and a delta margin in quiescence
+- late move reductions
 - evaluate drawn positions
 - the rest of evaluation: mobility, and special cases such as the bishop pair and open files
 - the rest of the uci protocol
