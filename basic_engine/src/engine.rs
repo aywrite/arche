@@ -9,7 +9,23 @@ use std::fmt;
 use std::time;
 
 const CHECKMATE_SCORE: Score = 30_000;
-pub(crate) const MAX_DEPTH: u8 = 20;
+/// The rail a requested depth is held to, quiescence stops at, and the
+/// reported line is walked to.
+///
+/// Not a bound on every line: a chain of check extensions can carry the
+/// full width search past any constant, and what really ends one is the
+/// repetition and fifty move rules. A safety rail rather than a budget. It is bounded well inside the two
+/// things that would break if a line outran them: the history ring, which
+/// holds a thousand and twenty four plies less the fifty move window, and
+/// the mate score window, which leaves a thousand below CHECKMATE_SCORE.
+/// Sixty four would have fitted as comfortably; a hundred and twenty eight
+/// is bought because moving it later is a play change with a match behind
+/// it, and this is enough that it need never move again.
+pub const MAX_PLY: u8 = 128;
+// the root deepens by one more when it is in check, so a depth held to the
+// rail has to leave room for that inside a byte. A rail raised past this
+// fails the build rather than overflowing partway through a game.
+const _: () = assert!(MAX_PLY < u8::MAX);
 // Any score this close to CHECKMATE_SCORE is a forced mate. Regular evals are
 // bounded by the material on the board, which cannot come near it.
 pub(crate) const CHECKMATE_THRESHOLD: Score = CHECKMATE_SCORE - 1000;
@@ -359,10 +375,12 @@ impl AlphaBeta {
         // quiescence looks at captures and promotions, and evasions when in
         // check, and never checks for a repetition: a capture cannot repeat a
         // position, and the quiet moves here are evasions, so a cycle needs a
-        // line of nothing but mutual quiet checks, which MAX_DEPTH bounds and
-        // real positions do not sustain
+        // line of nothing but mutual quiet checks, which MAX_PLY bounds and
+        // real positions do not sustain. That bound is the rail and not a
+        // budget: what ends a capture search is running out of captures, and
+        // the horizon gets the same resolution at whatever depth it sits
         self.selective_depth = self.selective_depth.max(self.board.line_ply as u8);
-        if self.board.line_ply >= MAX_DEPTH.into() {
+        if self.board.line_ply >= MAX_PLY.into() {
             return Ok(Value::clean(self.eval()));
         }
 
@@ -713,6 +731,9 @@ impl AlphaBeta {
     /// table whose generation never moves keeps every entry looking current:
     /// nothing goes stale and the oldest entries are never the ones given up.
     pub fn search_within(&mut self, mut depth: u8, limits: Limits) -> SearchOutcome {
+        // held to the rail here and not only at the interface, so a caller
+        // of the library cannot ask the check extension below to overflow
+        depth = depth.min(MAX_PLY);
         self.limits = limits;
         self.next_check = 0;
         self.nodes = 0;
@@ -813,7 +834,7 @@ impl AlphaBeta {
         let mut line = Vec::new();
         // Board is Copy, so the search's own board is untouched by this.
         let mut board = self.board;
-        while line.len() < MAX_DEPTH as usize {
+        while line.len() < MAX_PLY as usize {
             let Some(play) = self.transpositions.intended_play(&board) else {
                 break;
             };
@@ -877,9 +898,13 @@ impl Engine for AlphaBeta {
         // what leaves here describes the whole search so far, which is the
         // count the time elapsed so far can honestly divide
         let mut total_nodes: u64 = 0;
+        // no depth asked for means as deep as the engine goes, and what
+        // stops such a search is its clock or its budget. The rail is here
+        // so that a search under neither still ends
         let max_depth = match search_options.depth {
-            Some(depth) => depth,
-            None => MAX_DEPTH,
+            // held to the rail, or the depths past it would each rerun it
+            Some(depth) => depth.min(MAX_PLY),
+            None => MAX_PLY,
         };
         // one search, however many iterations: what the iterations store is
         // one generation's, and ages together from the next go
@@ -1049,6 +1074,7 @@ mod search {
     };
     use crate::board::{fens, play_named};
     use crate::limits::Clock;
+    use crate::misc::Piece;
     use pretty_assertions::assert_eq;
     use std::time;
 
@@ -1302,6 +1328,17 @@ mod search {
     }
 
     #[test]
+    fn a_depth_past_the_rail_from_a_check_is_clamped_in_the_library_too() {
+        // the interface clamps what it parses, but search() is public and
+        // the root deepens by one more when it is in check: the largest
+        // depth a byte holds plus that one used to overflow it before the
+        // search could answer
+        let game = Board::from_fen("3R2k1/5ppp/8/8/8/8/8/6K1 b - - 0 1").unwrap();
+        let mut e = engine(game);
+        assert!(matches!(e.search(u8::MAX), SearchOutcome::GameOver));
+    }
+
+    #[test]
     fn a_mate_on_the_hundredth_half_move_is_a_mate_not_a_draw() {
         // Rh8 mates, and it is the hundredth half move since anything
         // irreversible. Checkmate ends the game on the spot, before the mated
@@ -1548,11 +1585,11 @@ mod search {
         ));
 
         let mut e = engine(Board::new());
-        let options = SearchParameters::new(Some(super::MAX_DEPTH), nodes_only(1_000));
+        let options = SearchParameters::new(Some(super::MAX_PLY), nodes_only(1_000));
         let mut last_depth = 0;
         let outcome = e.iterative_deepening_search(options, |depth, _, _| last_depth = depth);
         assert!(matches!(outcome, SearchOutcome::Aborted(Some(_))));
-        assert!(last_depth < super::MAX_DEPTH);
+        assert!(last_depth < super::MAX_PLY);
     }
 
     #[test]
@@ -1609,7 +1646,7 @@ mod search {
         // on the first poll, before the next check is ever armed, so this
         // is the only test of the clock being read again thousands of nodes
         // on. Fifty milliseconds from the opening is orders of magnitude
-        // short of MAX_DEPTH, so the clock wins, and whether the move comes
+        // short of the ply rail, so the clock wins, and whether the move comes
         // from the last depth to finish or from the one it stopped in the
         // middle of, there has to be one
         let mut e = engine(Board::new());
@@ -2104,30 +2141,62 @@ mod search {
     }
 
     #[test]
-    fn the_pv_line_is_bounded_by_the_search_depth() {
-        // pawns only, so no position comes up twice and the fifty move counter
-        // keeps being reset: nothing stops this line but the bound
-        let mut names = Vec::new();
-        for file in "abcdefgh".chars() {
-            names.push(format!("{file}2{file}3"));
-            names.push(format!("{file}7{file}6"));
-        }
-        for file in "abcdefgh".chars() {
-            names.push(format!("{file}3{file}4"));
-            names.push(format!("{file}6{file}5"));
-        }
-
+    fn the_pv_line_is_bounded_by_the_ply_rail() {
+        // a line longer than the rail, laid down a ply at a time. Each ply
+        // takes a move that neither repeats a position nor lets the fifty
+        // move counter run out, which are the two things the line walk
+        // stops at of its own accord, so nothing but the bound can end this
+        // one. A pawn move is preferred wherever there is one, because that
+        // is what resets the counter, and the thirty two of them are spread
+        // far enough through this to keep the rest of it inside the rule
         let mut e = engine(Board::new());
         let mut board = e.board;
-        for name in &names {
-            let play = play_named(&board, name);
+        let wanted = super::MAX_PLY as usize + 4;
+        for ply in 0..wanted {
+            let moves = board.generate_moves();
+            let mut chosen: Option<Play> = None;
+            for pawns_first in [true, false] {
+                for m in &moves {
+                    if (board.get_piece_index(m.from) == Some(Piece::Pawn)) != pawns_first {
+                        continue;
+                    }
+                    if !board.make_move(m) {
+                        continue;
+                    }
+                    let carries_on = !board.has_repeated() && !board.fifty_move_expired();
+                    board.undo_move();
+                    if carries_on {
+                        chosen = Some(*m);
+                        break;
+                    }
+                }
+                if chosen.is_some() {
+                    break;
+                }
+            }
+            let play =
+                chosen.unwrap_or_else(|| panic!("nothing carries the line on at ply {}", ply));
             e.transpositions
                 .record_best(&board, play, Value::clean(0), SEEDED_DEPTH);
-            assert!(board.make_move(&play), "failed to play {}", name);
+            assert!(board.make_move(&play), "failed to play {}", play);
         }
 
-        assert!(names.len() > super::MAX_DEPTH as usize);
-        assert_eq!(e.pv_line().line.len(), super::MAX_DEPTH as usize);
+        assert_eq!(e.pv_line().line.len(), super::MAX_PLY as usize);
+    }
+
+    #[test]
+    fn quiescence_resolves_captures_past_the_depth_it_used_to_stop_at() {
+        // the old cap was twenty plies measured from the root, so no line
+        // could report a selective depth past it whatever the position. A
+        // sharp middlegame searched shallow reaches further than that in
+        // captures alone now, which is the whole of what the split bought
+        let mut e = engine(Board::from_fen(SHARP_MIDDLEGAME).unwrap());
+        let result = completed(e.search(8));
+        assert!(
+            result.selective_depth > 20,
+            "quiescence stopped at {} plies",
+            result.selective_depth
+        );
     }
 
     #[test]

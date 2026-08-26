@@ -15,7 +15,7 @@ mod zobrist;
 
 pub use board::Board;
 pub use engine::{
-    AlphaBeta, Engine, PvLine, SearchConfig, SearchOutcome, SearchParameters, SearchResult,
+    AlphaBeta, Engine, MAX_PLY, PvLine, SearchConfig, SearchOutcome, SearchParameters, SearchResult,
 };
 pub use limits::{Clock, Limits};
 pub use misc::{Color, Score};
