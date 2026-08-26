@@ -66,8 +66,8 @@ of these again without saying what is different this time.
   5+0.05 (sprt [0, 10] failed, PR #107): an eval this simple is better off
   taking every draw the history makes available than re-fighting positions it
   half-understands, and the stricter rule spends depth keeping alive games it
-  then loses. Worth re-asking once tapered evaluation and king safety land,
-  not before.
+  then loses. Tapered evaluation has since landed and this was not re-measured
+  against it; worth re-asking once king safety lands too.
 - Prefetching a child's transposition slot straight after `make_move`, 6.7%
   slower over six interleaved rounds. The prefetch sits immediately before the
   recursive call and the child probes the table almost first, so there is no

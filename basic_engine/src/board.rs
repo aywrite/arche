@@ -5,7 +5,7 @@ use super::misc::{
 };
 use super::play::Play;
 use crate::magic::Magic;
-use crate::psqt::PieceSquareTables;
+use crate::psqt::{PieceSquareTables, eg_value, mg_value};
 use crate::zobrist::Zobrist;
 use smallvec::SmallVec;
 use std::fmt;
@@ -74,6 +74,14 @@ const G8: u8 = 62;
 const H8: u8 = 63;
 
 static PIECE_SQUARE_TABLES: PieceSquareTables = PieceSquareTables::TABLES;
+/// What each piece leaves on the board, in `Piece` order, on the scale the
+/// two halves of a tapered score are interpolated on. A queen counts for four,
+/// a rook two and a minor one, so the opening's complement of pieces comes to
+/// `TOTAL_PHASE` and a bare king and pawns to nothing. Pawns count for nothing
+/// because an ending is an ending whether or not there are pawns in it.
+static PHASE_WEIGHTS: [i32; 6] = [0, 1, 1, 2, 4, 0];
+/// What the opening's pieces add up to under `PHASE_WEIGHTS`.
+const TOTAL_PHASE: i32 = 24;
 static ZOBRIST: Zobrist = Zobrist::TABLE;
 
 static ATTACK_MASKS: AttackMasks = AttackMasks::new();
@@ -370,10 +378,17 @@ pub struct Board {
 
     white_value: u32,
     black_value: u32,
-    // piece square table score, kept up to date incrementally. Wider than the
-    // table entries it accumulates so that summing a boardful of them, and
-    // adding the material difference on top, cannot overflow.
+    // piece square table score, kept up to date incrementally, as the packed
+    // pair of midgame and endgame scores the tables hold: see `psqt::pack`.
+    // Summing a boardful of pairs is one add, so carrying both phases costs
+    // what carrying one did, and neither half comes near the sixteen bits it
+    // has to stay inside.
     psqt: i32,
+    // what is left on the board, on the scale `PHASE_WEIGHTS` measures, and so
+    // which of the two halves above the position is scored by. Accumulated
+    // rather than counted off the piece boards at every leaf: four popcounts
+    // there measured dearer than one add per piece touched here.
+    phase: i32,
 
     history: [Option<PlayState>; MAX_GAME_SIZE],
     pub key: u64,
@@ -701,9 +716,22 @@ impl Board {
         moves
     }
 
+    /// The score of the position from the side to move's point of view.
+    ///
+    /// The piece square half is read at the phase the position is in rather
+    /// than at either end of it, so that a king walks out as the pieces come
+    /// off instead of on the move that takes the last one. Material is not
+    /// tapered: an endgame piece value is the same thing as a constant added
+    /// to that piece's endgame table, and the tables are the tidier place to
+    /// say it.
     #[inline]
     pub fn eval(&self) -> Score {
-        let eval = (self.white_value as i32 - self.black_value as i32 + self.psqt) as Score;
+        // promotions can leave more on the board than the opening had, so the
+        // phase is capped. It cannot go the other way: no weight is negative.
+        let phase = self.phase.min(TOTAL_PHASE);
+        let psqt = (mg_value(self.psqt) * phase + eg_value(self.psqt) * (TOTAL_PHASE - phase))
+            / TOTAL_PHASE;
+        let eval = (self.white_value as i32 - self.black_value as i32 + psqt) as Score;
         match self.active_color {
             Color::White => eval,
             Color::Black => -eval,
@@ -722,6 +750,7 @@ impl Board {
     /// checking at all: do not tidy them into each other.
     fn debug_assert_state_in_step(&self) {
         debug_assert_eq!(self.psqt, self.recompute_psqt(), "psqt out of step");
+        debug_assert_eq!(self.phase, self.recompute_phase(), "phase out of step");
         debug_assert_eq!(
             (self.white_value, self.black_value),
             self.recompute_material(),
@@ -774,14 +803,29 @@ impl Board {
         while occupied != 0 {
             let index = pop_lsb(&mut occupied);
             if let Some((piece, color)) = self.get_piece_and_color_index(index) {
-                total += i32::from(match color {
+                total += match color {
                     Color::White => {
                         PIECE_SQUARE_TABLES.get_value(index as usize, piece, Color::White)
                     }
                     Color::Black => {
                         -PIECE_SQUARE_TABLES.get_value(index as usize, piece, Color::Black)
                     }
-                });
+                };
+            }
+        }
+        total
+    }
+
+    /// The game phase of the position as it stands, computed from the board
+    /// rather than accumulated as pieces move. `phase` is meant to equal this
+    /// at all times, which `debug_assert_state_in_step` checks on every move.
+    fn recompute_phase(&self) -> i32 {
+        let mut total = 0;
+        let mut occupied = self.white | self.black;
+        while occupied != 0 {
+            let index = pop_lsb(&mut occupied);
+            if let Some((piece, _)) = self.get_piece_and_color_index(index) {
+                total += PHASE_WEIGHTS[piece as usize];
             }
         }
         total
@@ -1421,14 +1465,19 @@ impl Board {
     fn move_accumulators<const SET: bool>(&mut self, index: u8, piece: Piece, color: Color) {
         self.key ^= ZOBRIST.get_piece_key(index, piece, color);
 
-        let psqt = i32::from(match color {
+        // a packed pair, negated whole for black: negating the sum negates
+        // both halves, so neither is unpacked until the leaf asks for it
+        let psqt = match color {
             Color::White => PIECE_SQUARE_TABLES.get_value(index as usize, piece, Color::White),
             Color::Black => -PIECE_SQUARE_TABLES.get_value(index as usize, piece, Color::Black),
-        });
+        };
+        let phase = PHASE_WEIGHTS[piece as usize];
         if SET {
             self.psqt += psqt;
+            self.phase += phase;
         } else {
             self.psqt -= psqt;
+            self.phase -= phase;
         }
 
         let board = &mut self.pieces[piece as usize];
@@ -1651,6 +1700,7 @@ impl Board {
             white_value: 0,
             black_value: 0,
             psqt: 0,
+            phase: 0,
 
             history: EMPTY_HISTORY,
             key: INITIAL_KEY,
@@ -1820,8 +1870,32 @@ pub(crate) fn play_named(board: &Board, name: &str) -> Play {
 
 #[cfg(test)]
 mod evaluate {
-    use super::{Board, fens};
+    use super::{Board, TOTAL_PHASE, fens};
     use pretty_assertions::assert_eq;
+
+    /// Both the accumulator and `recompute_phase` read `PHASE_WEIGHTS`, so the
+    /// state-in-step check holds them to each other and neither to what the
+    /// weights should be. This says what they add up to: a full board is the
+    /// midgame end of the taper, kings and pawns alone the endgame end, and
+    /// each piece is worth what the interpolation was written expecting.
+    #[test]
+    fn a_full_board_is_one_end_of_the_taper_and_a_pawn_ending_the_other() {
+        assert_eq!(Board::new().phase, TOTAL_PHASE);
+        assert_eq!(
+            Board::from_fen("4k3/pppppppp/8/8/8/8/PPPPPPPP/4K3 w - - 0 1")
+                .unwrap()
+                .phase,
+            0
+        );
+        for (fen, phase) in [
+            ("4k3/8/8/8/8/8/8/3QK3 w - - 0 1", 4),
+            ("4k3/8/8/8/8/8/8/3RK3 w - - 0 1", 2),
+            ("4k3/8/8/8/8/8/8/3BK3 w - - 0 1", 1),
+            ("4k3/8/8/8/8/8/8/3NK3 w - - 0 1", 1),
+        ] {
+            assert_eq!(Board::from_fen(fen).unwrap().phase, phase, "{}", fen);
+        }
+    }
 
     /// After every legal move in the shared positions, the material
     /// accumulators must equal a recount, and the score must be the exact
@@ -1874,6 +1948,68 @@ mod evaluate {
             advanced.eval(),
             home.eval()
         );
+    }
+
+    /// The point of tapering: the same king on the same square is scored
+    /// differently depending on what is left on the board. A bare king wants
+    /// the middle; a king with the pieces still on wants the back rank.
+    ///
+    /// The pairs below differ by the king's square and nothing else, material
+    /// included, so the difference between them is the king's table alone.
+    #[test]
+    fn a_king_is_scored_by_what_is_left_on_the_board() {
+        let centre = Board::from_fen("4k3/8/8/8/4K3/8/8/8 w - - 0 1").unwrap();
+        let corner = Board::from_fen("4k3/8/8/8/8/8/8/6K1 w - - 0 1").unwrap();
+        assert!(
+            centre.eval() > corner.eval(),
+            "with nothing else on the board a king on e4 scored {} and one on g1 scored {}",
+            centre.eval(),
+            corner.eval()
+        );
+
+        let centre =
+            Board::from_fen("rnbqkbnr/pppppppp/8/8/4K3/8/PPPPPPPP/RNBQ1B1R w kq - 0 1").unwrap();
+        let corner =
+            Board::from_fen("rnbqkbnr/pppppppp/8/8/8/8/PPPPPPPP/RNBQ1BKR w kq - 0 1").unwrap();
+        assert!(
+            centre.eval() < corner.eval(),
+            "with the pieces still on a king on e4 scored {} and one on g1 scored {}",
+            centre.eval(),
+            corner.eval()
+        );
+    }
+
+    /// And in between it is in between. A phase read the wrong way round would
+    /// still land inside the pair, so this pins the direction the score moves
+    /// in as the board empties rather than only that it moves.
+    #[test]
+    fn a_king_is_worth_more_in_the_middle_the_emptier_the_board() {
+        // the same two king squares as above at three phases
+        fn centre_over_corner(centre: &str, corner: &str) -> i32 {
+            i32::from(Board::from_fen(centre).unwrap().eval())
+                - i32::from(Board::from_fen(corner).unwrap().eval())
+        }
+        let opening = centre_over_corner(
+            "rnbqkbnr/pppppppp/8/8/4K3/8/PPPPPPPP/RNBQ1B1R w kq - 0 1",
+            "rnbqkbnr/pppppppp/8/8/8/8/PPPPPPPP/RNBQ1BKR w kq - 0 1",
+        );
+        // a rook a side, which is a phase of four out of twenty four
+        let middlegame = centre_over_corner(
+            "r3k3/8/8/8/4K3/8/8/R7 w q - 0 1",
+            "r3k3/8/8/8/8/8/8/R5K1 w q - 0 1",
+        );
+        let ending = centre_over_corner(
+            "4k3/8/8/8/4K3/8/8/8 w - - 0 1",
+            "4k3/8/8/8/8/8/8/6K1 w - - 0 1",
+        );
+        assert!(
+            opening < middlegame && middlegame < ending,
+            "e4 over g1 scored {} in the opening, {} with a rook a side and {} bare",
+            opening,
+            middlegame,
+            ending
+        );
+        assert!(opening < 0 && ending > 0, "{} then {}", opening, ending);
     }
 
     /// A position and its reflection, colours swapped, have to score the same
@@ -2767,6 +2903,12 @@ mod random_games {
                         board.psqt,
                         board.recompute_psqt(),
                         "psqt out of step after {}",
+                        play
+                    );
+                    prop_assert_eq!(
+                        board.phase,
+                        board.recompute_phase(),
+                        "phase out of step after {}",
                         play
                     );
                     prop_assert_eq!(

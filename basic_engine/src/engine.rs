@@ -1284,8 +1284,9 @@ mod search {
 
     #[test]
     fn a_losing_side_plays_for_the_fifty_move_draw() {
-        // white is down material in this position so should play for fifty move draw
-        let game = Board::from_fen("5k2/1p3p1p/p3pK1P/P1P1P3/4bP2/2B5/8/8 w - - 99 112").unwrap();
+        // white is a bishop down here, and every move but a pawn push or a
+        // capture takes the clock to a hundred, so the draw is the best of it
+        let game = Board::from_fen("5k2/1p3p1p/p3pK1P/P1P1P3/4bP2/8/8/8 w - - 99 112").unwrap();
         let mut e = engine(game);
         let result = completed(e.search(3));
         assert_eq!(result.score, 0);
@@ -1295,7 +1296,7 @@ mod search {
     fn a_triggered_fifty_move_rule_is_game_over() {
         // The fifty move rule has been triggered - the game is already drawn,
         // there is no move to look for
-        let game = Board::from_fen("5k2/1p3p1p/p3pK1P/P1P1P3/4bP2/2B5/8/8 w - - 100 112").unwrap();
+        let game = Board::from_fen("5k2/1p3p1p/p3pK1P/P1P1P3/4bP2/8/8/8 w - - 100 112").unwrap();
         let mut e = engine(game);
         assert!(matches!(e.search(3), SearchOutcome::GameOver));
     }
