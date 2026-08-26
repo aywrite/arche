@@ -2398,17 +2398,298 @@ mod perft {
 }
 
 #[cfg(test)]
+mod in_step {
+    use super::{Board, Color};
+    use proptest::prelude::*;
+
+    /// Everything a board has to satisfy, whether it was played to or parsed.
+    ///
+    /// The five recompute comparisons are what `debug_assert_state_in_step`
+    /// checks on every made move: state kept incrementally has to equal a
+    /// recompute from the pieces, or the search reads a score, a key or a
+    /// check that the position does not have. The rest cannot fail on a board
+    /// that was played to, because make_move never produces them, and can
+    /// fail on a board built from a string somebody sent us.
+    pub(super) fn prop_assert_in_step(board: &Board) -> Result<(), TestCaseError> {
+        // one board a piece, so two of them sharing a bit is a square with
+        // two pieces on it and nothing downstream would notice
+        let pieces = board.pieces;
+        for (i, a) in pieces.iter().enumerate() {
+            for b in &pieces[i + 1..] {
+                prop_assert_eq!(a & b, 0u64, "a square holds two piece types");
+            }
+        }
+        prop_assert_eq!(board.white & board.black, 0u64, "a square is both colours");
+        prop_assert_eq!(
+            board.white | board.black,
+            pieces.iter().fold(0u64, |all, bb| all | bb),
+            "the colour boards and the piece boards disagree"
+        );
+        for color in [Color::White, Color::Black] {
+            let mask = match color {
+                Color::White => board.white,
+                Color::Black => board.black,
+            };
+            prop_assert_eq!(
+                (board.kings() & mask).count_ones(),
+                1,
+                "not exactly one king of one colour"
+            );
+        }
+        prop_assert_eq!(
+            board.key,
+            board.recompute_key(),
+            "the key is not this position"
+        );
+        prop_assert_eq!(board.psqt, board.recompute_psqt(), "the psqt drifted");
+        prop_assert_eq!(board.phase, board.recompute_phase(), "the phase drifted");
+        prop_assert_eq!(
+            (board.white_value, board.black_value),
+            board.recompute_material(),
+            "the material drifted"
+        );
+        prop_assert_eq!(
+            board.checkers,
+            board.recompute_checkers(),
+            "the checkers drifted"
+        );
+        prop_assert!(
+            !board.square_attacked(board.king_index(!board.active_color), board.active_color),
+            "the side not to move is in check"
+        );
+        Ok(())
+    }
+}
+#[cfg(test)]
 mod fen_parsing {
     use super::{Board, fens};
     use proptest::prelude::*;
+
+    /// A piece placement field that is always well formed: eight ranks of
+    /// eight squares with one king a side. Everything else about it is
+    /// random, pawns on the back rank included, because from_fen accepts
+    /// those knowingly and the search has to survive one.
+    fn placement() -> impl Strategy<Value = String> {
+        (
+            prop::collection::vec(
+                prop_oneof![
+                    24 => Just(None),
+                    2 => Just(Some('p')),
+                    2 => Just(Some('P')),
+                    1 => Just(Some('n')),
+                    1 => Just(Some('N')),
+                    1 => Just(Some('b')),
+                    1 => Just(Some('B')),
+                    1 => Just(Some('r')),
+                    1 => Just(Some('R')),
+                    1 => Just(Some('q')),
+                    1 => Just(Some('Q')),
+                ],
+                64,
+            ),
+            any::<prop::sample::Index>(),
+            any::<prop::sample::Index>(),
+        )
+            .prop_map(|(mut squares, white, black)| {
+                // exactly one king a side, put in last so nothing above can
+                // have taken the square or added a second
+                let white = white.index(64);
+                let mut black = black.index(64);
+                if black == white {
+                    black = (black + 1) % 64;
+                }
+                squares[white] = Some('K');
+                squares[black] = Some('k');
+                render(&squares)
+            })
+    }
+
+    /// Sixty four squares as the eight rank strings of a fen.
+    fn render(squares: &[Option<char>]) -> String {
+        let mut ranks = Vec::with_capacity(8);
+        for rank in squares.chunks(8) {
+            let mut text = String::new();
+            let mut empty = 0;
+            for square in rank {
+                match square {
+                    Some(piece) => {
+                        if empty > 0 {
+                            text.push_str(&empty.to_string());
+                            empty = 0;
+                        }
+                        text.push(*piece);
+                    }
+                    None => empty += 1,
+                }
+            }
+            if empty > 0 {
+                text.push_str(&empty.to_string());
+            }
+            ranks.push(text);
+        }
+        ranks.join("/")
+    }
+
+    /// A fen the parser will usually accept. This is the one that reaches the
+    /// coherence check below; a malformed fen is refused before there is a
+    /// board to check, so a generator that only produced those would be
+    /// asking nothing at all.
+    fn well_formed_fen() -> impl Strategy<Value = String> {
+        (
+            placement(),
+            prop_oneof![Just("w"), Just("b")],
+            prop_oneof![Just("-"), Just("KQkq"), Just("Kq"), Just("Q"), Just("kq")],
+            prop_oneof![Just("-"), Just("e3"), Just("e6"), Just("a3"), Just("h6")],
+            prop_oneof![Just("0"), Just("50"), Just("99")],
+            prop_oneof![Just("1"), Just("40")],
+        )
+            .prop_map(|(placement, side, castle, en_passant, half, full)| {
+                format!(
+                    "{} {} {} {} {} {}",
+                    placement, side, castle, en_passant, half, full
+                )
+            })
+    }
+
+    /// One rank of a placement field built out of parts that are plausible on
+    /// their own, which as a whole will almost never sum to eight.
+    fn rank() -> impl Strategy<Value = String> {
+        prop::collection::vec(
+            prop_oneof![
+                Just("p"),
+                Just("k"),
+                Just("K"),
+                Just("Q"),
+                Just("1"),
+                Just("4"),
+                Just("8"),
+                Just("0"),
+                Just("9"),
+                Just("x"),
+            ],
+            1..9usize,
+        )
+        .prop_map(|parts| parts.concat())
+    }
+
+    /// A fen assembled from parts that are each plausible and together are
+    /// usually nonsense. This one is about the refusal path: every field can
+    /// be wrong in a different way, and none of them may crash the parser.
+    fn malformed_fen() -> impl Strategy<Value = String> {
+        (
+            prop::collection::vec(rank(), 1..10usize),
+            prop_oneof![Just("w"), Just("b"), Just("W"), Just("-")],
+            prop_oneof![Just("-"), Just("KQkq"), Just("QQ"), Just("KQkqA")],
+            prop_oneof![Just("-"), Just("e3"), Just("e9"), Just("i3"), Just("ee")],
+            prop_oneof![
+                Just("0"),
+                Just("-1"),
+                Just("99999999999999999999"),
+                Just("x")
+            ],
+            prop_oneof![Just("1"), Just("-3"), Just("y")],
+        )
+            .prop_map(|(ranks, side, castle, en_passant, half, full)| {
+                format!(
+                    "{} {} {} {} {} {}",
+                    ranks.join("/"),
+                    side,
+                    castle,
+                    en_passant,
+                    half,
+                    full
+                )
+            })
+    }
+
+    /// A fen that was valid until one edit landed on it. Nearer to what a
+    /// buggy interface sends than anything assembled from parts, and it is
+    /// what reaches the paths only a nearly-right fen gets to.
+    fn mutated_fen() -> impl Strategy<Value = String> {
+        (
+            prop::sample::select(&fens::CORE[..]),
+            any::<prop::sample::Index>(),
+            0u8..4,
+        )
+            .prop_map(|(fen, index, how)| {
+                // every fen here is ascii, so any index is a char boundary
+                let mut fen = fen.to_string();
+                let at = index.index(fen.len());
+                match how {
+                    0 => {
+                        fen.remove(at);
+                        fen
+                    }
+                    1 => fen[..at].to_string(),
+                    2 => {
+                        fen.insert(at, 'Z');
+                        fen
+                    }
+                    _ => format!("{} {}", fen, &fen[..at]),
+                }
+            })
+    }
+
+    /// The coherence tests below say something only about the fens that are
+    /// accepted, so a generator that stopped producing any would leave them
+    /// passing and asking nothing. This is what says so out loud.
+    ///
+    /// About a third get through, and the two thirds that do not are all one
+    /// rule: pieces scattered at random leave the side not to move in check
+    /// most of the time, and from_fen refuses those because the search would
+    /// answer by taking the king. So the floor is a tenth, well under what
+    /// the generator manages. What is being caught is a generator that has
+    /// collapsed to nearly nothing, not one that drifted by a few per cent.
+    #[test]
+    fn the_generator_reaches_the_parser() {
+        use proptest::strategy::ValueTree;
+        use proptest::test_runner::TestRunner;
+        let mut runner = TestRunner::deterministic();
+        let strategy = well_formed_fen();
+        let accepted = (0..200)
+            .filter(|_| {
+                let fen = strategy.new_tree(&mut runner).unwrap().current();
+                Board::from_fen(&fen).is_ok()
+            })
+            .count();
+        assert!(
+            accepted > 20,
+            "only {} of 200 generated fens parsed, so the coherence tests are close to vacuous",
+            accepted
+        );
+    }
 
     proptest! {
         #[test]
         fn random_str_doesnt_crash(s in ".*") {
             _ = Board::from_fen(&s);
         }
-    }
 
+        /// A refusal is always allowed. What is not allowed is accepting a
+        /// board that is not in step: the search trusts everything from_fen
+        /// hands it, and a key that does not match the pieces poisons the
+        /// table for the rest of the game.
+        #[test]
+        fn a_well_formed_fen_is_refused_or_coherent(fen in well_formed_fen()) {
+            if let Ok(board) = Board::from_fen(&fen) {
+                super::in_step::prop_assert_in_step(&board)?;
+            }
+        }
+
+        #[test]
+        fn a_malformed_fen_is_refused_or_coherent(fen in malformed_fen()) {
+            if let Ok(board) = Board::from_fen(&fen) {
+                super::in_step::prop_assert_in_step(&board)?;
+            }
+        }
+
+        #[test]
+        fn a_mutated_fen_is_refused_or_coherent(fen in mutated_fen()) {
+            if let Ok(board) = Board::from_fen(&fen) {
+                super::in_step::prop_assert_in_step(&board)?;
+            }
+        }
+    }
     #[test]
     fn the_starting_position_parses() {
         assert!(Board::from_fen(fens::START).is_ok());
@@ -2893,36 +3174,9 @@ mod random_games {
                 let before = board;
                 let play = moves[pick.index(moves.len())];
                 if board.make_move(&play) {
-                    prop_assert_eq!(
-                        board.key,
-                        board.recompute_key(),
-                        "key out of step after {}",
-                        play
-                    );
-                    prop_assert_eq!(
-                        board.psqt,
-                        board.recompute_psqt(),
-                        "psqt out of step after {}",
-                        play
-                    );
-                    prop_assert_eq!(
-                        board.phase,
-                        board.recompute_phase(),
-                        "phase out of step after {}",
-                        play
-                    );
-                    prop_assert_eq!(
-                        (board.white_value, board.black_value),
-                        board.recompute_material(),
-                        "material out of step after {}",
-                        play
-                    );
-                    prop_assert_eq!(
-                        board.checkers,
-                        board.recompute_checkers(),
-                        "checkers out of step after {}",
-                        play
-                    );
+                    super::in_step::prop_assert_in_step(&board).map_err(|e| {
+                        TestCaseError::fail(format!("out of step after {}: {:?}", play, e))
+                    })?;
                     line.push(before);
                 } else {
                     // a move refused for leaving the king attacked has to
