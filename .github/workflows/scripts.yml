@@ -27,5 +27,5 @@ jobs:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
       - name: Run the script tests
         run: |
-          python3 -m pip install --quiet pytest pyyaml
+          python3 -m pip install --quiet -r scripts/requirements.txt
           python3 -m pytest scripts/tests -q

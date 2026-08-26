@@ -1,0 +1,15 @@
+# What the script tests need, so that ci installs the same thing a clone does.
+#
+# They were named on the pip line in the workflow and nowhere else, unpinned,
+# which meant a test that needed a package nobody had listed passed locally for
+# whoever happened to have it and failed in ci for everyone. Compatible release
+# pins rather than exact ones: these are test tools, and the thing being held
+# still is the major version whose behaviour the tests were written against.
+#
+# The linting is pinned separately, by .pre-commit-config.yaml, which manages
+# its own environments.
+pytest~=9.1
+pyyaml~=6.0
+# reads and writes the epd the tactical suite is generated from, and is the
+# same release the lichess image builds the opening book with
+chess~=1.11

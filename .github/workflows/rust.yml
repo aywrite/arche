@@ -55,6 +55,24 @@ jobs:
     - name: Run tests
       run: cargo test --workspace --locked
 
+  # The tactical suite, on one platform, and gating.
+  #
+  # A fixed depth with a fixed table makes the count of positions the search
+  # finds exact and the same on any machine, which is the property that lets
+  # it fail a build rather than only print a number — the same property the
+  # bench gates on. It is also ten seconds of searching here and rather more
+  # on a runner, which is not worth paying for three times over a matrix that
+  # would agree with itself every time.
+  #
+  # Ignored in the default run for that reason, so this asks for it by name.
+  tactics:
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    steps:
+    - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+    - uses: Swatinem/rust-cache@6323deb102c322ba6fcbdcafc7e3dddab59af2b6 # v2.9.2
+    - name: Run the tactical suite
+      run: cargo test --release --locked -p basic_engine -- --ignored the_suite_finds_what_it_found_before --nocapture
   # checks that the rust-version in the manifests is still true
   minimum-supported-rust-version:
     runs-on: ubuntu-latest
