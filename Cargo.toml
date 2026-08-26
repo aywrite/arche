@@ -7,6 +7,19 @@ authors.workspace = true
 license.workspace = true
 publish = false
 
+# A library as well as a binary. Everything in src/ was written to be driven
+# by an interface, and a binary is reachable from nothing, so a test outside
+# it had no way in. Both targets are named arche, which cargo allows and
+# which keeps `--bin arche`, what the release workflow asks for, meaning what
+# it always meant.
+[lib]
+name = "arche"
+path = "src/lib.rs"
+
+[[bin]]
+name = "arche"
+path = "src/main.rs"
+
 [workspace]
 members = [
   "basic_engine"

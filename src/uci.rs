@@ -348,7 +348,7 @@ fn go_depth(params: &Params) -> Option<u8> {
 /// absent. The depth is for trying the command cheaply; the table and the
 /// policy are what the graph history measurements vary, and a report states
 /// all three in its header so it can be rerun from it.
-pub(crate) struct BenchSettings {
+pub struct BenchSettings {
     pub depth: u8,
     pub table_bytes: usize,
     pub config: SearchConfig,
@@ -361,7 +361,7 @@ const BENCH_KEYWORDS: [&str; 2] = ["hash", "taint"];
 /// Reads the bench settings, or says which word could not be read: the
 /// setting's name and the word, for the caller to report. Running the
 /// default in its place would take seconds and explain nothing.
-pub(crate) fn bench_settings(params: &Params) -> Result<BenchSettings, String> {
+pub fn bench_settings(params: &Params) -> Result<BenchSettings, String> {
     let depth = match params.parse::<u8>("bench") {
         Param::Absent => bench::DEPTH,
         Param::Read(depth) => depth,
@@ -424,6 +424,7 @@ fn format_info(depth: u8, result: &SearchResult, pv: &PvLine) -> String {
 mod tests {
     use super::*;
     use basic_engine::{AlphaBeta, Board, Clock};
+    use proptest::prelude::*;
     use std::io::Cursor;
     use std::time::Duration;
 
@@ -1219,5 +1220,206 @@ go depth 3
             format_info(1, &result, &pv),
             "info depth 1 seldepth 1 nodes 300 time 0 nps 300000 score cp 0 pv "
         );
+    }
+
+    // ---- generated sessions -------------------------------------------
+
+    /// Every line the protocol lets an engine say. Anything else is the
+    /// engine muttering where an interface can hear it, which is how a
+    /// handshake ends up mis-parsed by something that was only ever going to
+    /// read the words it knows.
+    const SPOKEN: [&str; 6] = ["info", "bestmove", "id", "option", "uciok", "readyok"];
+
+    /// The keywords a generated line opens with: the ones the loop dispatches
+    /// on, and near misses that ought to fall through to the unrecognised
+    /// branch.
+    ///
+    /// `bench` is deliberately absent. It runs a real bench of seventeen
+    /// million nodes whoever is behind the loop, so a generated one would
+    /// take a couple of seconds a case, and it prints its report as a table
+    /// rather than as protocol. That table is fine — nothing but a person
+    /// types `bench` at an engine — but it is not a line an interface could
+    /// read, so a session containing one cannot be asked the question below.
+    const KEYWORDS: [&str; 15] = [
+        "uci",
+        "isready",
+        "ucinewgame",
+        "setoption",
+        "position",
+        "go",
+        "perft",
+        "display",
+        "stop",
+        "ponderhit",
+        "debug",
+        "goodbye",
+        "positional",
+        "",
+        "  go",
+    ];
+
+    /// A word a command line might carry: a keyword the protocol defines, a
+    /// number of the shapes an interface really sends, something shaped like
+    /// a square or a move, and junk.
+    fn word() -> impl Strategy<Value = String> {
+        prop_oneof![
+            prop::sample::select(vec![
+                "name",
+                "value",
+                "Hash",
+                "Threads",
+                "startpos",
+                "fen",
+                "moves",
+                "wtime",
+                "btime",
+                "winc",
+                "binc",
+                "movestogo",
+                "movetime",
+                "infinite",
+                "depth",
+                "nodes",
+                "hash",
+                "taint",
+            ])
+            .prop_map(String::from),
+            prop::sample::select(vec![
+                "0",
+                "1",
+                "-1",
+                "16",
+                "300000",
+                "99999999999999999999",
+                "3.5",
+            ])
+            .prop_map(String::from),
+            prop::sample::select(vec![
+                "e2e4", "e7e8q", "0000", "e9e9", "a1", "-", "refuse", "trust",
+            ])
+            .prop_map(String::from),
+            "[a-zA-Z0-9]{1,6}",
+        ]
+    }
+
+    fn line() -> impl Strategy<Value = String> {
+        (
+            prop::sample::select(&KEYWORDS[..]),
+            prop::collection::vec(word(), 0..7usize),
+        )
+            .prop_map(|(keyword, words)| {
+                let mut line = keyword.to_string();
+                for word in words {
+                    line.push(' ');
+                    line.push_str(&word);
+                }
+                line
+            })
+    }
+
+    fn session() -> impl Strategy<Value = Vec<String>> {
+        prop::collection::vec(line(), 0..12usize)
+    }
+
+    /// How many of these lines the loop will dispatch as a `go`.
+    ///
+    /// Read the way the loop reads it, prefix and all, rather than by
+    /// splitting into words: `goodbye` really does reach the go branch today,
+    /// and a count that disagreed with the loop about that would be testing
+    /// what the loop ought to do rather than what it does.
+    fn gos(lines: &[String]) -> usize {
+        lines.iter().filter(|line| line.starts_with("go")).count()
+    }
+
+    fn bestmoves(said: &str) -> usize {
+        said.lines()
+            .filter(|line| line.starts_with("bestmove"))
+            .count()
+    }
+
+    fn run_session(lines: &[String]) -> String {
+        let mut uci = UCI::with_output(Recorder::to_move(Color::White), Vec::new());
+        uci.run(Cursor::new(lines.join("\n") + "\n"));
+        String::from_utf8(uci.out.clone()).unwrap()
+    }
+
+    proptest! {
+        /// The loop answers whatever arrives and says only things the
+        /// protocol defines.
+        #[test]
+        fn a_session_is_answered_in_the_protocol(lines in session()) {
+            for line in run_session(&lines).lines() {
+                prop_assert!(
+                    SPOKEN.iter().any(|keyword| line.starts_with(keyword)),
+                    "said something the protocol does not define: {}",
+                    line
+                );
+            }
+        }
+
+        /// Exactly one bestmove for every go. This is the promise an
+        /// interface waits on: none and the game hangs on our clock, two and
+        /// the second is read as the answer to whatever go comes next, which
+        /// is a move played in a position it was not chosen for.
+        #[test]
+        fn every_go_is_answered_exactly_once(lines in session()) {
+            let said = run_session(&lines);
+            prop_assert_eq!(gos(&lines), bestmoves(&said), "said: {}", said);
+        }
+
+        /// Nothing after a quit is read, whatever it is.
+        #[test]
+        fn a_quit_ends_the_session(before in session(), after in session()) {
+            let mut lines = before.clone();
+            lines.push("quit".to_string());
+            lines.extend(after);
+            let said = run_session(&lines);
+            prop_assert_eq!(gos(&before), bestmoves(&said), "the lines after a quit were read");
+        }
+    }
+
+    proptest! {
+        // A real search behind the loop, so the recording engine is not the
+        // only thing these promises have been checked against. Few cases:
+        // every one of them searches, and the point is the promises rather
+        // than the coverage the sessions above already give.
+        #![proptest_config(ProptestConfig::with_cases(16))]
+
+        #[test]
+        fn a_real_engine_keeps_the_same_promises(lines in prop::collection::vec(line(), 0..5usize)) {
+            // Two things a real search will not survive being asked at
+            // random. A generated perft depth is a number like 300000,
+            // which would not finish this century; the recording engine
+            // answers perft with a zero, so the sessions above are where its
+            // parsing is covered. And a go with no clock in it searches to
+            // the depth cap, which is seconds a case, so every go here is
+            // given a move time. It goes straight after the keyword because
+            // the reader takes the first of a repeated word, so this one
+            // wins over whatever the generator put further along; infinite
+            // would beat it whatever it said, so it comes out.
+            let lines: Vec<String> = lines
+                .into_iter()
+                .filter(|line| !line.starts_with("perft"))
+                .map(|line| match line.strip_prefix("go") {
+                    Some(rest) => format!("go movetime 5 {}", rest.replace("infinite", "")),
+                    None => line,
+                })
+                .collect();
+            let mut uci = UCI::with_output(
+                AlphaBeta::with_table_bytes(Board::new(), 8 * 1024),
+                Vec::new(),
+            );
+            uci.run(Cursor::new(lines.join("\n") + "\n"));
+            let spoken = said(&uci);
+
+            for line in spoken.lines() {
+                prop_assert!(
+                    SPOKEN.iter().any(|keyword| line.starts_with(keyword)),
+                    "said something the protocol does not define: {}",
+                    line
+                );
+            }
+            prop_assert_eq!(gos(&lines), bestmoves(&spoken), "said: {}", spoken);
+        }
     }
 }
