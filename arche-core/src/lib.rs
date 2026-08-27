@@ -5,6 +5,7 @@ pub mod bench;
 mod bitboard;
 mod board;
 mod engine;
+mod eval;
 mod limits;
 mod magic;
 mod misc;

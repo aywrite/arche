@@ -3,12 +3,12 @@
 
 use super::bitboard::BitBoard;
 use super::misc::{
-    CastlePermissions, Color, Coordinate, File, Piece, PromotePiece, Score, coordinate_to_index,
+    CastlePermissions, Color, Coordinate, File, Piece, PromotePiece, coordinate_to_index,
     coordinate_to_large_index, index_to_coordinate,
 };
 use super::play::Play;
+use crate::eval::{self, Accumulator};
 use crate::magic::Magic;
-use crate::psqt::{PieceSquareTables, eg_value, mg_value};
 use crate::zobrist::Zobrist;
 use smallvec::SmallVec;
 use std::fmt;
@@ -76,15 +76,6 @@ const F8: u8 = 61;
 const G8: u8 = 62;
 const H8: u8 = 63;
 
-static PIECE_SQUARE_TABLES: PieceSquareTables = PieceSquareTables::TABLES;
-/// What each piece leaves on the board, in `Piece` order, on the scale the
-/// two halves of a tapered score are interpolated on. A queen counts for four,
-/// a rook two and a minor one, so the opening's complement of pieces comes to
-/// `TOTAL_PHASE` and a bare king and pawns to nothing. Pawns count for nothing
-/// because an ending is an ending whether or not there are pawns in it.
-static PHASE_WEIGHTS: [i32; 6] = [0, 1, 1, 2, 4, 0];
-/// What the opening's pieces add up to under `PHASE_WEIGHTS`.
-const TOTAL_PHASE: i32 = 24;
 static ZOBRIST: Zobrist = Zobrist::TABLE;
 
 static ATTACK_MASKS: AttackMasks = AttackMasks::new();
@@ -392,19 +383,10 @@ pub struct Board {
     move_number: usize,
     fifty_move_rule: usize,
 
-    white_value: u32,
-    black_value: u32,
-    // piece square table score, kept up to date incrementally, as the packed
-    // pair of midgame and endgame scores the tables hold: see `psqt::pack`.
-    // Summing a boardful of pairs is one add, so carrying both phases costs
-    // what carrying one did, and neither half comes near the sixteen bits it
-    // has to stay inside.
-    psqt: i32,
-    // what is left on the board, on the scale `PHASE_WEIGHTS` measures, and so
-    // which of the two halves above the position is scored by. Accumulated
-    // rather than counted off the piece boards at every leaf: four popcounts
-    // there measured dearer than one add per piece touched here.
-    phase: i32,
+    // the evaluation's incremental state, told about every piece placed and
+    // removed. The eval module owns what it means; the board only keeps it
+    // in step
+    pub(crate) eval: Accumulator,
 
     history: [Option<PlayState>; MAX_GAME_SIZE],
     pub key: u64,
@@ -732,45 +714,22 @@ impl Board {
         moves
     }
 
-    /// The score of the position from the side to move's point of view.
-    ///
-    /// The piece square half is read at the phase the position is in rather
-    /// than at either end of it, so that a king walks out as the pieces come
-    /// off instead of on the move that takes the last one. Material is not
-    /// tapered: an endgame piece value is the same thing as a constant added
-    /// to that piece's endgame table, and the tables are the tidier place to
-    /// say it.
-    #[inline]
-    pub fn eval(&self) -> Score {
-        // promotions can leave more on the board than the opening had, so the
-        // phase is capped. It cannot go the other way: no weight is negative.
-        let phase = self.phase.min(TOTAL_PHASE);
-        let psqt = (mg_value(self.psqt) * phase + eg_value(self.psqt) * (TOTAL_PHASE - phase))
-            / TOTAL_PHASE;
-        let eval = (self.white_value as i32 - self.black_value as i32 + psqt) as Score;
-        match self.active_color {
-            Color::White => eval,
-            Color::Black => -eval,
-        }
-    }
-
     /// Check everything maintained a piece at a time against the position it
     /// describes. Perft looks at none of it, so without this a mistake leaves
     /// every count correct and shows up only as the engine evaluating or
     /// transposing wrongly. Debug only: it walks the whole board.
     ///
-    /// Each `recompute_*` below is a second implementation on purpose, and only
-    /// worth having while it stays one. Factoring shared code out of a
-    /// recompute and the piece-at-a-time path it is checked against would leave
-    /// both sides wrong together and this passing, which is worse than not
-    /// checking at all: do not tidy them into each other.
+    /// Each recompute — the ones below and `Accumulator::recomputed` — is a
+    /// second implementation on purpose, and only worth having while it
+    /// stays one. Factoring shared code out of a recompute and the
+    /// piece-at-a-time path it is checked against would leave both sides
+    /// wrong together and this passing, which is worse than not checking at
+    /// all: do not tidy them into each other.
     fn debug_assert_state_in_step(&self) {
-        debug_assert_eq!(self.psqt, self.recompute_psqt(), "psqt out of step");
-        debug_assert_eq!(self.phase, self.recompute_phase(), "phase out of step");
         debug_assert_eq!(
-            (self.white_value, self.black_value),
-            self.recompute_material(),
-            "material out of step"
+            self.eval,
+            Accumulator::recomputed(self),
+            "evaluation out of step"
         );
         debug_assert_eq!(self.key, self.recompute_key(), "key out of step");
         debug_assert_eq!(
@@ -812,44 +771,9 @@ impl Board {
         key
     }
 
-    /// The piece square score of the position as it stands, computed from the
-    /// board rather than accumulated as pieces move. `psqt` is meant to equal
-    /// this at all times, which `debug_assert_state_in_step` checks on every
-    /// move made.
-    fn recompute_psqt(&self) -> i32 {
-        let mut total: i32 = 0;
-        // walking the occupied squares rather than all sixty four, an empty
-        // board is then free rather than sixty four misses
-        let mut occupied = self.white | self.black;
-        while occupied != 0 {
-            let index = pop_lsb(&mut occupied);
-            if let Some((piece, color)) = self.get_piece_and_color_index(index) {
-                total += match color {
-                    Color::White => {
-                        PIECE_SQUARE_TABLES.get_value(index as usize, piece, Color::White)
-                    }
-                    Color::Black => {
-                        -PIECE_SQUARE_TABLES.get_value(index as usize, piece, Color::Black)
-                    }
-                };
-            }
-        }
-        total
-    }
-
-    /// The game phase of the position as it stands, computed from the board
-    /// rather than accumulated as pieces move. `phase` is meant to equal this
-    /// at all times, which `debug_assert_state_in_step` checks on every move.
-    fn recompute_phase(&self) -> i32 {
-        let mut total = 0;
-        let mut occupied = self.white | self.black;
-        while occupied != 0 {
-            let index = pop_lsb(&mut occupied);
-            if let Some((piece, _)) = self.get_piece_and_color_index(index) {
-                total += PHASE_WEIGHTS[piece as usize];
-            }
-        }
-        total
+    /// The occupied squares, for the eval module's recompute walk.
+    pub(crate) fn occupied(&self) -> u64 {
+        self.white | self.black
     }
 
     /// What stands on each square according to the piece boards, which is the
@@ -876,25 +800,6 @@ impl Board {
             }
         }
         squares
-    }
-
-    /// The material of each side, computed the same way and for the same
-    /// reason. Deliberately not `material_value`, which the accumulators are
-    /// seeded from: see the note there.
-    fn recompute_material(&self) -> (u32, u32) {
-        let mut white = 0;
-        let mut black = 0;
-        let mut occupied = self.white | self.black;
-        while occupied != 0 {
-            let index = pop_lsb(&mut occupied);
-            if let Some((piece, color)) = self.get_piece_and_color_index(index) {
-                match color {
-                    Color::White => white += piece.material_value(),
-                    Color::Black => black += piece.material_value(),
-                }
-            }
-        }
-        (white, black)
     }
 
     pub fn square_attacked(&self, index: u8, color: Color) -> bool {
@@ -1511,21 +1416,7 @@ impl Board {
     #[inline(always)]
     fn move_accumulators<const SET: bool>(&mut self, index: u8, piece: Piece, color: Color) {
         self.key ^= ZOBRIST.get_piece_key(index, piece, color);
-
-        // a packed pair, negated whole for black: negating the sum negates
-        // both halves, so neither is unpacked until the leaf asks for it
-        let psqt = match color {
-            Color::White => PIECE_SQUARE_TABLES.get_value(index as usize, piece, Color::White),
-            Color::Black => -PIECE_SQUARE_TABLES.get_value(index as usize, piece, Color::Black),
-        };
-        let phase = PHASE_WEIGHTS[piece as usize];
-        if SET {
-            self.psqt += psqt;
-            self.phase += phase;
-        } else {
-            self.psqt -= psqt;
-            self.phase -= phase;
-        }
+        self.eval.count::<SET>(index, piece, color);
 
         let board = &mut self.pieces[piece as usize];
         if SET {
@@ -1538,17 +1429,14 @@ impl Board {
         // never has to ask what was standing there
         self.squares[(index & 63) as usize] = if SET { Some(piece) } else { None };
 
-        let value = piece.material_value();
-        let (side, total) = match color {
-            Color::Black => (&mut self.black, &mut self.black_value),
-            Color::White => (&mut self.white, &mut self.white_value),
+        let side = match color {
+            Color::Black => &mut self.black,
+            Color::White => &mut self.white,
         };
         if SET {
             side.set_bit(index);
-            *total += value;
         } else {
             side.clear_bit(index);
-            *total -= value;
         }
     }
 
@@ -1582,7 +1470,7 @@ impl Board {
     /// through `get_piece_index`, which keeps a mistake in either from hiding
     /// itself in the state check.
     #[inline]
-    fn get_piece_and_color_index(&self, index: u8) -> Option<(Piece, Color)> {
+    pub(crate) fn get_piece_and_color_index(&self, index: u8) -> Option<(Piece, Color)> {
         let mask = 1u64 << index;
         let piece = if (self.pawns() & mask) > 0 {
             Piece::Pawn
@@ -1614,31 +1502,31 @@ impl Board {
     }
 
     /// The material of each side, counted a bitboard at a time. Says the same
-    /// thing as `recompute_material` and shares no code with it on purpose:
-    /// `from_fen` seeds the accumulators from this one, and the state check
-    /// compares them against that one. Collapse the two and a freshly parsed
-    /// board would be checked against the function that filled it in.
-    fn material_value(&self) -> (u32, u32) {
+    /// thing as the eval module's recompute and shares no code with it on
+    /// purpose: `from_fen` seeds the accumulator from this one, and the state
+    /// check compares it against that one. Collapse the two and a freshly
+    /// parsed board would be checked against the function that filled it in.
+    pub(crate) fn material_value(&self) -> (u32, u32) {
         let mut black_value = 0;
         let mut white_value = 0;
 
-        white_value += (self.pawns() & self.white).count_ones() * Piece::Pawn.material_value();
-        black_value += (self.pawns() & self.black).count_ones() * Piece::Pawn.material_value();
+        white_value += (self.pawns() & self.white).count_ones() * eval::material(Piece::Pawn);
+        black_value += (self.pawns() & self.black).count_ones() * eval::material(Piece::Pawn);
 
-        white_value += (self.knights() & self.white).count_ones() * Piece::Knight.material_value();
-        black_value += (self.knights() & self.black).count_ones() * Piece::Knight.material_value();
+        white_value += (self.knights() & self.white).count_ones() * eval::material(Piece::Knight);
+        black_value += (self.knights() & self.black).count_ones() * eval::material(Piece::Knight);
 
-        white_value += (self.bishops() & self.white).count_ones() * Piece::Bishop.material_value();
-        black_value += (self.bishops() & self.black).count_ones() * Piece::Bishop.material_value();
+        white_value += (self.bishops() & self.white).count_ones() * eval::material(Piece::Bishop);
+        black_value += (self.bishops() & self.black).count_ones() * eval::material(Piece::Bishop);
 
-        white_value += (self.rooks() & self.white).count_ones() * Piece::Rook.material_value();
-        black_value += (self.rooks() & self.black).count_ones() * Piece::Rook.material_value();
+        white_value += (self.rooks() & self.white).count_ones() * eval::material(Piece::Rook);
+        black_value += (self.rooks() & self.black).count_ones() * eval::material(Piece::Rook);
 
-        white_value += (self.queens() & self.white).count_ones() * Piece::Queen.material_value();
-        black_value += (self.queens() & self.black).count_ones() * Piece::Queen.material_value();
+        white_value += (self.queens() & self.white).count_ones() * eval::material(Piece::Queen);
+        black_value += (self.queens() & self.black).count_ones() * eval::material(Piece::Queen);
 
-        white_value += (self.kings() & self.white).count_ones() * Piece::King.material_value();
-        black_value += (self.kings() & self.black).count_ones() * Piece::King.material_value();
+        white_value += (self.kings() & self.white).count_ones() * eval::material(Piece::King);
+        black_value += (self.kings() & self.black).count_ones() * eval::material(Piece::King);
 
         (white_value, black_value)
     }
@@ -1743,10 +1631,7 @@ impl Board {
             fifty_move_rule: half_move_clock
                 .parse::<usize>()
                 .map_err(|e| e.to_string())?,
-            white_value: 0,
-            black_value: 0,
-            psqt: 0,
-            phase: 0,
+            eval: Accumulator::EMPTY,
 
             history: EMPTY_HISTORY,
             key: INITIAL_KEY,
@@ -1826,7 +1711,7 @@ impl Board {
                 board.en_passant = None;
             }
         }
-        (board.white_value, board.black_value) = board.material_value();
+        board.eval.seed_material(board.material_value());
         board.checkers = board.recompute_checkers();
         // a parsed position must satisfy the same invariants a played one
         // does, or the two ways of reaching a position drift apart
@@ -1862,7 +1747,7 @@ impl fmt::Display for Board {
             self.ply,
             self.move_number,
             self.fifty_move_rule,
-            (i64::from(self.white_value) - i64::from(self.black_value)),
+            self.eval.material_difference(),
         )?;
         writeln!(f)?;
         Ok(())
@@ -1912,177 +1797,6 @@ pub(crate) fn play_named(board: &Board, name: &str) -> Play {
         .iter()
         .find(|m| format!("{}", m) == name)
         .unwrap_or_else(|| panic!("{} is not a move here", name))
-}
-
-#[cfg(test)]
-mod evaluate {
-    use super::{Board, TOTAL_PHASE, fens};
-    use pretty_assertions::assert_eq;
-
-    /// Both the accumulator and `recompute_phase` read `PHASE_WEIGHTS`, so the
-    /// state-in-step check holds them to each other and neither to what the
-    /// weights should be. This says what they add up to: a full board is the
-    /// midgame end of the taper, kings and pawns alone the endgame end, and
-    /// each piece is worth what the interpolation was written expecting.
-    #[test]
-    fn a_full_board_is_one_end_of_the_taper_and_a_pawn_ending_the_other() {
-        assert_eq!(Board::new().phase, TOTAL_PHASE);
-        assert_eq!(
-            Board::from_fen("4k3/pppppppp/8/8/8/8/PPPPPPPP/4K3 w - - 0 1")
-                .unwrap()
-                .phase,
-            0
-        );
-        for (fen, phase) in [
-            ("4k3/8/8/8/8/8/8/3QK3 w - - 0 1", 4),
-            ("4k3/8/8/8/8/8/8/3RK3 w - - 0 1", 2),
-            ("4k3/8/8/8/8/8/8/3BK3 w - - 0 1", 1),
-            ("4k3/8/8/8/8/8/8/3NK3 w - - 0 1", 1),
-        ] {
-            assert_eq!(Board::from_fen(fen).unwrap().phase, phase, "{}", fen);
-        }
-    }
-
-    /// After every legal move in the shared positions, the material
-    /// accumulators must equal a recount, and the score must be the exact
-    /// negative of the opponent's view of it.
-    #[test]
-    fn material_stays_counted_and_the_eval_stays_antisymmetric() {
-        for fen in fens::CORE {
-            let mut board = Board::from_fen(fen).unwrap();
-            for m in &board.generate_moves() {
-                if board.make_move(m) {
-                    assert_eq!(
-                        (board.white_value, board.black_value),
-                        board.material_value(),
-                        "{} in {}",
-                        m,
-                        fen
-                    );
-                    let score = board.eval();
-                    board.active_color = !board.active_color;
-                    assert_eq!(score, -board.eval(), "{} in {}", m, fen);
-                    board.active_color = !board.active_color;
-                    board.undo_move();
-                }
-            }
-        }
-    }
-
-    /// The assertions above hold whichever way up the piece square tables are,
-    /// because both colours read them the same way and the symmetry survives.
-    /// These say which way is up.
-    #[test]
-    fn a_pawn_is_worth_more_the_closer_it_is_to_promoting() {
-        let advanced = Board::from_fen("4k3/4P3/8/8/8/8/8/4K3 w - - 0 1").unwrap();
-        let home = Board::from_fen("4k3/8/8/8/8/8/4P3/4K3 w - - 0 1").unwrap();
-        assert!(
-            advanced.eval() > home.eval(),
-            "a pawn on e7 scored {} and one on e2 scored {}",
-            advanced.eval(),
-            home.eval()
-        );
-    }
-
-    #[test]
-    fn a_pawn_is_worth_more_the_closer_it_is_to_promoting_for_black_too() {
-        let advanced = Board::from_fen("4k3/8/8/8/8/8/4p3/4K3 b - - 0 1").unwrap();
-        let home = Board::from_fen("4k3/4p3/8/8/8/8/8/4K3 b - - 0 1").unwrap();
-        assert!(
-            advanced.eval() > home.eval(),
-            "a pawn on e2 scored {} and one on e7 scored {}",
-            advanced.eval(),
-            home.eval()
-        );
-    }
-
-    /// The point of tapering: the same king on the same square is scored
-    /// differently depending on what is left on the board. A bare king wants
-    /// the middle; a king with the pieces still on wants the back rank.
-    ///
-    /// The pairs below differ by the king's square and nothing else, material
-    /// included, so the difference between them is the king's table alone.
-    #[test]
-    fn a_king_is_scored_by_what_is_left_on_the_board() {
-        let centre = Board::from_fen("4k3/8/8/8/4K3/8/8/8 w - - 0 1").unwrap();
-        let corner = Board::from_fen("4k3/8/8/8/8/8/8/6K1 w - - 0 1").unwrap();
-        assert!(
-            centre.eval() > corner.eval(),
-            "with nothing else on the board a king on e4 scored {} and one on g1 scored {}",
-            centre.eval(),
-            corner.eval()
-        );
-
-        let centre =
-            Board::from_fen("rnbqkbnr/pppppppp/8/8/4K3/8/PPPPPPPP/RNBQ1B1R w kq - 0 1").unwrap();
-        let corner =
-            Board::from_fen("rnbqkbnr/pppppppp/8/8/8/8/PPPPPPPP/RNBQ1BKR w kq - 0 1").unwrap();
-        assert!(
-            centre.eval() < corner.eval(),
-            "with the pieces still on a king on e4 scored {} and one on g1 scored {}",
-            centre.eval(),
-            corner.eval()
-        );
-    }
-
-    /// And in between it is in between. A phase read the wrong way round would
-    /// still land inside the pair, so this pins the direction the score moves
-    /// in as the board empties rather than only that it moves.
-    #[test]
-    fn a_king_is_worth_more_in_the_middle_the_emptier_the_board() {
-        // the same two king squares as above at three phases
-        fn centre_over_corner(centre: &str, corner: &str) -> i32 {
-            i32::from(Board::from_fen(centre).unwrap().eval())
-                - i32::from(Board::from_fen(corner).unwrap().eval())
-        }
-        let opening = centre_over_corner(
-            "rnbqkbnr/pppppppp/8/8/4K3/8/PPPPPPPP/RNBQ1B1R w kq - 0 1",
-            "rnbqkbnr/pppppppp/8/8/8/8/PPPPPPPP/RNBQ1BKR w kq - 0 1",
-        );
-        // a rook a side, which is a phase of four out of twenty four
-        let middlegame = centre_over_corner(
-            "r3k3/8/8/8/4K3/8/8/R7 w q - 0 1",
-            "r3k3/8/8/8/8/8/8/R5K1 w q - 0 1",
-        );
-        let ending = centre_over_corner(
-            "4k3/8/8/8/4K3/8/8/8 w - - 0 1",
-            "4k3/8/8/8/8/8/8/6K1 w - - 0 1",
-        );
-        assert!(
-            opening < middlegame && middlegame < ending,
-            "e4 over g1 scored {} in the opening, {} with a rook a side and {} bare",
-            opening,
-            middlegame,
-            ending
-        );
-        assert!(opening < 0 && ending > 0, "{} then {}", opening, ending);
-    }
-
-    /// A position and its reflection, colours swapped, have to score the same
-    /// for whoever is to move. This does not catch the tables being upside down,
-    /// since that happens to both colours at once, but it does catch one colour
-    /// being changed without the other.
-    #[test]
-    fn a_mirrored_position_scores_the_same() {
-        for (white, black) in [
-            (
-                "4k3/4P3/8/8/8/8/8/4K3 w - - 0 1",
-                "4k3/8/8/8/8/8/4p3/4K3 b - - 0 1",
-            ),
-            (
-                "4k3/8/8/8/8/8/8/R3K3 w - - 0 1",
-                "r3k3/8/8/8/8/8/8/4K3 b - - 0 1",
-            ),
-            (
-                "rnbqkbnr/pppppppp/8/8/4P3/8/PPPP1PPP/RNBQKBNR b KQkq - 0 1",
-                "rnbqkbnr/pppp1ppp/8/4p3/8/8/PPPPPPPP/RNBQKBNR w KQkq - 0 1",
-            ),
-        ] {
-            let white = Board::from_fen(white).unwrap();
-            let black = Board::from_fen(black).unwrap();
-            assert_eq!(white.eval(), black.eval(), "{} against {}", white, black);
-        }
-    }
 }
 
 #[cfg(test)]
@@ -2445,12 +2159,12 @@ mod perft {
 
 #[cfg(test)]
 mod in_step {
-    use super::{Board, Color};
+    use super::{Accumulator, Board, Color};
     use proptest::prelude::*;
 
     /// Everything a board has to satisfy, whether it was played to or parsed.
     ///
-    /// The six recompute comparisons are what `debug_assert_state_in_step`
+    /// The recompute comparisons are what `debug_assert_state_in_step`
     /// checks on every made move: state kept incrementally has to equal a
     /// recompute from the pieces, or the search reads a score, a key or a
     /// check that the position does not have. The rest cannot fail on a board
@@ -2487,12 +2201,10 @@ mod in_step {
             board.recompute_key(),
             "the key is not this position"
         );
-        prop_assert_eq!(board.psqt, board.recompute_psqt(), "the psqt drifted");
-        prop_assert_eq!(board.phase, board.recompute_phase(), "the phase drifted");
         prop_assert_eq!(
-            (board.white_value, board.black_value),
-            board.recompute_material(),
-            "the material drifted"
+            board.eval,
+            Accumulator::recomputed(board),
+            "the evaluation drifted"
         );
         prop_assert_eq!(
             board.checkers,

@@ -338,7 +338,7 @@ impl AlphaBeta {
     }
 
     fn eval(&self) -> Score {
-        self.board.eval()
+        crate::eval::eval(&self.board)
     }
 
     /// Whether a result may be stored under the taint policy. A tainted

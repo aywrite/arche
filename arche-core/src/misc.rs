@@ -262,19 +262,6 @@ pub enum Piece {
 }
 
 impl Piece {
-    /// A table rather than a match. The match compiled to a jump table, and
-    /// once the piece arrives as a load from the board's square array the
-    /// target is data the predictor cannot see through: most of the search's
-    /// indirect mispredicts were this dispatch inside `move_accumulators`.
-    /// Indexed the way the piece square tables and `Zobrist` already index
-    /// by piece, and the assertions below pin the discriminants four sites
-    /// now count on.
-    const MATERIAL: [u32; 6] = [100, 310, 320, 500, 900, 10000];
-
-    pub fn material_value(self) -> u32 {
-        Self::MATERIAL[self as usize]
-    }
-
     /// The pieces in discriminant order, for walking something indexed the
     /// way `pieces` and the tables are. The assertion below is what holds
     /// the order to the discriminants.
@@ -288,9 +275,10 @@ impl Piece {
     ];
 }
 
-// nothing pins the enum's discriminants except these: `material_value`, the
-// piece square tables, `Zobrist` and mvv-lva all index by them, so reordering
-// the enum fails here rather than by scoring a queen as a pawn
+// nothing pins the enum's discriminants except these: the eval module's
+// material and phase tables, the piece square tables, `Zobrist` and mvv-lva
+// all index by them, so reordering the enum fails here rather than by
+// scoring a queen as a pawn
 const _: () = assert!(
     Piece::Pawn as usize == 0
         && Piece::Knight as usize == 1
