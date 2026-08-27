@@ -1,3 +1,6 @@
+# SPDX-License-Identifier: GPL-3.0-or-later
+# Copyright (C) 2022-2026 Andrew Wright
+
 """The commit scope list is kept in four places, and they have to agree.
 
 The commit-msg hook holds the scopes it accepts. cliff.toml names the build

@@ -1,3 +1,6 @@
+// SPDX-License-Identifier: GPL-3.0-or-later
+// Copyright (C) 2022-2026 Andrew Wright
+
 //! The protocol layer: reading a uci command, working out what a `go` may
 //! spend, and saying back what the search found.
 //!

@@ -1,3 +1,6 @@
+# SPDX-License-Identifier: GPL-3.0-or-later
+# Copyright (C) 2022-2026 Andrew Wright
+
 """Tests for the workflow ref resolver.
 
 The fixture is a local upstream standing in for github, so every form a

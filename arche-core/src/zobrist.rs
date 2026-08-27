@@ -1,3 +1,6 @@
+// SPDX-License-Identifier: GPL-3.0-or-later
+// Copyright (C) 2022-2026 Andrew Wright
+
 use crate::Color;
 use crate::misc::{CastlePermissions, Piece, split_mix};
 

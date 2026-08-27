@@ -1,3 +1,6 @@
+// SPDX-License-Identifier: GPL-3.0-or-later
+// Copyright (C) 2022-2026 Andrew Wright
+
 //! What bounds a single search: the clock it may spend and the nodes it may
 //! visit, measured from the moment the search began.
 //!

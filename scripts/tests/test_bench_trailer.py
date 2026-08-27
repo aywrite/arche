@@ -1,3 +1,6 @@
+# SPDX-License-Identifier: GPL-3.0-or-later
+# Copyright (C) 2022-2026 Andrew Wright
+
 """Tests for the bench trailer script.
 
 A cargo shim stands in for the build and writes a fake engine where the real

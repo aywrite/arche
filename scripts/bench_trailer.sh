@@ -1,4 +1,7 @@
 #!/usr/bin/env bash
+# SPDX-License-Identifier: GPL-3.0-or-later
+# Copyright (C) 2022-2026 Andrew Wright
+
 # Print the Bench trailer for the tree as it stands, for an engine commit:
 #
 #     git commit --trailer "$(scripts/bench_trailer.sh)"

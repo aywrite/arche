@@ -1,3 +1,6 @@
+# SPDX-License-Identifier: GPL-3.0-or-later
+# Copyright (C) 2022-2026 Andrew Wright
+
 """Tests for the gauntlet rating estimate.
 
 The fixed points here are chess statistics rather than implementation detail:

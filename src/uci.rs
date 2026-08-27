@@ -1,3 +1,6 @@
+// SPDX-License-Identifier: GPL-3.0-or-later
+// Copyright (C) 2022-2026 Andrew Wright
+
 use crate::params::{Param, Params};
 use crate::time_control::TimeControl;
 use arche_core::Color;

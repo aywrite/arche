@@ -1,4 +1,7 @@
 #!/usr/bin/env bash
+# SPDX-License-Identifier: GPL-3.0-or-later
+# Copyright (C) 2022-2026 Andrew Wright
+
 # Writes the changelog section for a release. Run by cargo-release as a
 # pre-release hook, with the version being released as the only argument.
 set -euo pipefail

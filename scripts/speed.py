@@ -1,4 +1,7 @@
 #!/usr/bin/env python3
+# SPDX-License-Identifier: GPL-3.0-or-later
+# Copyright (C) 2022-2026 Andrew Wright
+
 """Measure one engine's bench against another's and print the Speed trailer.
 
 A rate on its own says nothing across machines, and a single pair of runs

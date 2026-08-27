@@ -1,3 +1,6 @@
+# SPDX-License-Identifier: GPL-3.0-or-later
+# Copyright (C) 2022-2026 Andrew Wright
+
 """Tests for the changelog pre-release hook.
 
 git-cliff is replaced by a shim that records how it was called and prepends a

@@ -1,3 +1,6 @@
+# SPDX-License-Identifier: GPL-3.0-or-later
+# Copyright (C) 2022-2026 Andrew Wright
+
 """Tests for building the engine as it was at a commit.
 
 A repository of two commits whose one file says which commit it is, and a

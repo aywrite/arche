@@ -1,3 +1,6 @@
+// SPDX-License-Identifier: GPL-3.0-or-later
+// Copyright (C) 2022-2026 Andrew Wright
+
 //! The bench: a fixed suite of positions, each searched to a fixed depth with
 //! a fixed table, and what the searches counted.
 //!

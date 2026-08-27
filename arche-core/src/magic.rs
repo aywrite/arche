@@ -1,3 +1,6 @@
+// SPDX-License-Identifier: GPL-3.0-or-later
+// Copyright (C) 2022-2026 Andrew Wright
+
 //! Magic bitboards: a slider's moves in one multiply, shift and lookup.
 //!
 //! For a square, the blockers that can matter are a fixed handful of bits. A

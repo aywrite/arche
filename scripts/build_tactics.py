@@ -1,4 +1,7 @@
 #!/usr/bin/env python3
+# SPDX-License-Identifier: GPL-3.0-or-later
+# Copyright (C) 2022-2026 Andrew Wright
+
 """Convert a published tactical suite to the notation the engine speaks.
 
 Published suites name their best moves in san: `Rxb2`, `Ra8#`, `O-O`. San
