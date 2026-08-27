@@ -58,7 +58,7 @@ private = { ignore = true }
 # neither is ours to reconcile — so it is reported and not gated.
 multiple-versions = "warn"
 # A wildcard version requirement is a dependency on whatever is published next.
-# The path dependency on basic_engine is exempt because it is a path rather
+# The path dependency on arche-core is exempt because it is a path rather
 # than a requirement on a registry.
 wildcards = "deny"
 allow-wildcard-paths = true

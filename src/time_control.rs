@@ -1,4 +1,4 @@
-use basic_engine::Clock;
+use arche_core::Clock;
 use std::time::Duration;
 
 /// Held back from every budget, so that we are not still thinking when the

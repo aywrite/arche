@@ -10,7 +10,7 @@ that is read once. So the conversion happens here, once, with python-chess,
 and its result is committed: ci then needs neither the network nor python to
 run the suite.
 
-    python3 scripts/build_tactics.py wac.epd basic_engine/tactics.epd
+    python3 scripts/build_tactics.py wac.epd arche-core/tactics.epd
 
 The source is pinned below at a commit rather than named by a branch, so what
 this produced can be produced again. It is not rerun to refresh the committed

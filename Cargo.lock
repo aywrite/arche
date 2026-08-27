@@ -27,18 +27,12 @@ checksum = "940b3a0ca603d1eade50a4846a2afffd5ef57a9feac2c0e2ec2e14f9ead76000"
 name = "arche"
 version = "0.3.10"
 dependencies = [
- "basic_engine",
+ "arche-core",
  "proptest",
 ]
 
 [[package]]
-name = "autocfg"
-version = "1.5.1"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "f2032f911046de80f0a198e0901378627c33f59ea0ac00e363d481118bd70a53"
-
-[[package]]
-name = "basic_engine"
+name = "arche-core"
 version = "0.3.10"
 dependencies = [
  "criterion",
@@ -46,6 +40,12 @@ dependencies = [
  "proptest",
  "smallvec",
 ]
+
+[[package]]
+name = "autocfg"
+version = "1.5.1"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "f2032f911046de80f0a198e0901378627c33f59ea0ac00e363d481118bd70a53"
 
 [[package]]
 name = "bit-set"

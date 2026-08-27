@@ -72,7 +72,7 @@ jobs:
     - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
     - uses: Swatinem/rust-cache@6323deb102c322ba6fcbdcafc7e3dddab59af2b6 # v2.9.2
     - name: Run the tactical suite
-      run: cargo test --release --locked -p basic_engine -- --ignored the_suite_finds_what_it_found_before --nocapture
+      run: cargo test --release --locked -p arche-core -- --ignored the_suite_finds_what_it_found_before --nocapture
   # checks that the rust-version in the manifests is still true
   minimum-supported-rust-version:
     runs-on: ubuntu-latest

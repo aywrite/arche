@@ -2,10 +2,10 @@ use criterion::{BenchmarkId, Criterion, criterion_group, criterion_main};
 use std::hint::black_box;
 use std::time::{Duration, Instant};
 
-use basic_engine::{AlphaBeta, Board, Color, Engine, SearchParameters};
+use arche_core::{AlphaBeta, Board, Color, Engine, SearchParameters};
 
 const TEST_POSITIONS: [&str; 4] = [
-    basic_engine::STARTING_FEN, // initial
+    arche_core::STARTING_FEN, // initial
     "r3k2r/p1ppqpb1/bn2pnp1/3PN3/1p2P3/2N2Q1p/PPPBBPPP/R3K2R w KQkq - 0 1", // Kiwipete
     "8/2p5/3p4/KP5r/1R3p1k/8/4P1P1/8 w - - 10 10", // position 3
     "r3k2r/Pppp1ppp/1b3nbN/nP6/BBP1P3/q4N2/Pp1P2PP/R2Q1RK1 w kq - 0 1", // position 4

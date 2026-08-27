@@ -22,7 +22,7 @@ path = "src/main.rs"
 
 [workspace]
 members = [
-  "basic_engine"
+  "arche-core"
 ]
 
 # shared so that the release tooling has a single version to bump
@@ -36,7 +36,7 @@ authors = [
 license = "GPL-3.0-or-later"
 
 [dependencies]
-basic_engine = { path = "./basic_engine" }
+arche-core = { path = "./arche-core" }
 
 [dev-dependencies]
 # already the engine's, so this adds an edge rather than a package
