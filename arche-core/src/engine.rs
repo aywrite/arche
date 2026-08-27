@@ -85,7 +85,11 @@ pub trait Engine {
     #[must_use]
     fn set_table_bytes(&mut self, bytes: usize) -> bool;
 
-    fn display_board(&self);
+    /// The position, printed the way the board prints itself, for the
+    /// adapter to show a person. A string rather than a write to a handle:
+    /// the library never prints, and the adapter owns where its bytes go
+    /// and what lock they take to get there.
+    fn board_display(&self) -> String;
 
     fn perft(&mut self, depth: u8) -> u64;
 
@@ -1057,8 +1061,8 @@ impl Engine for AlphaBeta {
         false
     }
 
-    fn display_board(&self) {
-        println!("{}", self.board);
+    fn board_display(&self) -> String {
+        self.board.to_string()
     }
 }
 
