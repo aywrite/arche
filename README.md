@@ -43,7 +43,10 @@ machine. It is a UCI command as well as an argument.
 
 Binaries for linux, macos and windows are attached to each
 [release](https://github.com/aywrite/arche/releases), each with a sha256 checksum and a build
-provenance attestation. The checksum says a download arrived intact. The attestation says where
+provenance attestation. The x86-64 archives come in three builds: the plain one runs on
+anything, and `-v2` and `-v3` use progressively newer instructions — pick the newest your cpu
+supports (`-v3` wants avx2, which is most machines since about 2013). All three search the
+same tree; the newer ones just walk it faster. The checksum says a download arrived intact. The attestation says where
 it came from, and is answered for by github rather than by the page the download sits on:
 
 ```
