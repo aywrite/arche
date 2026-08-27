@@ -862,10 +862,20 @@ impl Board {
     /// emptied is exactly the drift worth catching, and walking the occupied
     /// squares would never look at it.
     fn recompute_squares(&self) -> [Option<Piece>; 64] {
-        std::array::from_fn(|index| {
-            self.get_piece_and_color_index(index as u8)
-                .map(|(piece, _)| piece)
-        })
+        // by popping the pieces off their boards rather than asking all
+        // sixty four squares what stands on them: this runs on every move
+        // of every debug test, and the per-square walk tripled the debug
+        // suite's time in ci. The answer is the same array either way, and
+        // the empty squares stay None by never being written
+        let mut squares = [None; 64];
+        for (index, board) in self.pieces.iter().enumerate() {
+            let piece = Piece::PIECES[index];
+            let mut remaining = *board;
+            while remaining != 0 {
+                squares[pop_lsb(&mut remaining) as usize] = Some(piece);
+            }
+        }
+        squares
     }
 
     /// The material of each side, computed the same way and for the same

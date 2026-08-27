@@ -274,6 +274,18 @@ impl Piece {
     pub fn material_value(self) -> u32 {
         Self::MATERIAL[self as usize]
     }
+
+    /// The pieces in discriminant order, for walking something indexed the
+    /// way `pieces` and the tables are. The assertion below is what holds
+    /// the order to the discriminants.
+    pub const PIECES: [Piece; 6] = [
+        Piece::Pawn,
+        Piece::Knight,
+        Piece::Bishop,
+        Piece::Rook,
+        Piece::Queen,
+        Piece::King,
+    ];
 }
 
 // nothing pins the enum's discriminants except these: `material_value`, the
