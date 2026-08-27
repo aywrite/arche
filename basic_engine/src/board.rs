@@ -361,6 +361,19 @@ pub struct Board {
     white: u64,
     black: u64,
 
+    // what stands on each square, so that asking costs a load rather than a
+    // walk down the six boards above. Written by `move_accumulators` beside
+    // them, which is the one place a piece is put down or picked up, and read
+    // by `get_piece_index`, which generation asks once per capture, ordering
+    // once per move scored, and make and unmake once each. Sixty four bytes on
+    // a board that is already forty kilobytes, and the board is only copied
+    // outside the search.
+    //
+    // Not called a mailbox, though that is what it is, because this crate
+    // already calls the ten by twelve padded index scheme in `misc` the
+    // mailbox and one name for two things is worse than a plain one here.
+    squares: [Option<Piece>; 64],
+
     pub active_color: Color,
     castle: CastlePermissions,
     en_passant: Option<Coordinate>,
@@ -757,6 +770,11 @@ impl Board {
             "material out of step"
         );
         debug_assert_eq!(self.key, self.recompute_key(), "key out of step");
+        debug_assert_eq!(
+            self.squares,
+            self.recompute_squares(),
+            "squares out of step"
+        );
         // the recompute reads the en passant field as it stands, so the check
         // above cannot tell a field set against the rule: assert the rule
         // itself, that a recorded square is one the side to move can take on
@@ -829,6 +847,22 @@ impl Board {
             }
         }
         total
+    }
+
+    /// What stands on each square according to the piece boards, which is the
+    /// walk `get_piece_index` used to do before `squares` answered instead.
+    /// `squares` is meant to equal this at all times, which
+    /// `debug_assert_state_in_step` checks on every move made.
+    ///
+    /// All sixty four squares rather than the occupied ones alone, unlike the
+    /// recomputes above: an entry left behind on a square that has since been
+    /// emptied is exactly the drift worth catching, and walking the occupied
+    /// squares would never look at it.
+    fn recompute_squares(&self) -> [Option<Piece>; 64] {
+        std::array::from_fn(|index| {
+            self.get_piece_and_color_index(index as u8)
+                .map(|(piece, _)| piece)
+        })
     }
 
     /// The material of each side, computed the same way and for the same
@@ -1486,6 +1520,10 @@ impl Board {
         } else {
             board.clear_bit(index);
         }
+        // and the same news told to `squares`. The callers above assert that a
+        // set lands on an empty square and a clear on an occupied one, so this
+        // never has to ask what was standing there
+        self.squares[(index & 63) as usize] = if SET { Some(piece) } else { None };
 
         let value = piece.material_value();
         let (side, total) = match color {
@@ -1502,9 +1540,10 @@ impl Board {
     }
 
     /// What is being taken on the to square, without asking when nothing can
-    /// be. `get_piece_index` only answers `None` after testing all six piece
-    /// bitboards, and most of the moves generated are quiet, so the mask of
-    /// squares a capture is even possible on is worth a look first.
+    /// be. Most of the moves generated are quiet, so the mask of squares a
+    /// capture is even possible on is still worth a look first: it answers
+    /// from a register for the moves that are, and the load below is only
+    /// reached for the ones that might not be.
     #[inline(always)]
     fn capture_on(&self, to: u8, capture_mask: u64) -> Option<Piece> {
         if capture_mask.is_bit_set(to) {
@@ -1514,30 +1553,21 @@ impl Board {
         }
     }
 
+    /// What stands on a square, read rather than searched for.
     #[inline]
     pub(crate) fn get_piece_index(&self, index: u8) -> Option<Piece> {
-        let mask = 1u64 << index;
-        if (self.pawns() & mask) > 0 {
-            Some(Piece::Pawn)
-        } else if (self.knights() & mask) > 0 {
-            Some(Piece::Knight)
-        } else if (self.bishops() & mask) > 0 {
-            Some(Piece::Bishop)
-        } else if (self.rooks() & mask) > 0 {
-            Some(Piece::Rook)
-        } else if (self.queens() & mask) > 0 {
-            Some(Piece::Queen)
-        } else if (self.kings() & mask) > 0 {
-            Some(Piece::King)
-        } else {
-            None
-        }
+        debug_assert!(index < 64);
+        // masked so the read carries no bounds check, which is the bargain the
+        // bitboard accessors already strike: the assert above is what catches
+        // a square off the board, and it is a debug assert, so the search pays
+        // nothing for it.
+        self.squares[(index & 63) as usize]
     }
 
-    /// Repeats the search `get_piece_index` does rather than calling it. The
-    /// recomputes reach a piece through here and `make_move` reaches one
-    /// through there, which keeps a mistake in either from hiding itself in the
-    /// state check.
+    /// Walks the six piece boards rather than reading `squares`. The
+    /// recomputes reach a piece through here and everything else reaches one
+    /// through `get_piece_index`, which keeps a mistake in either from hiding
+    /// itself in the state check.
     #[inline]
     fn get_piece_and_color_index(&self, index: u8) -> Option<(Piece, Color)> {
         let mask = 1u64 << index;
@@ -1683,6 +1713,9 @@ impl Board {
             pieces: [0; 6],
             white: 0,
             black: 0,
+            // an empty board, filled in by the `set_piece` calls below along
+            // with everything else the accumulators carry
+            squares: [None; 64],
 
             active_color: Color::from_char(active_color_token)
                 .ok_or("Failed to parse active color from token")?,
@@ -2404,7 +2437,7 @@ mod in_step {
 
     /// Everything a board has to satisfy, whether it was played to or parsed.
     ///
-    /// The five recompute comparisons are what `debug_assert_state_in_step`
+    /// The six recompute comparisons are what `debug_assert_state_in_step`
     /// checks on every made move: state kept incrementally has to equal a
     /// recompute from the pieces, or the search reads a score, a key or a
     /// check that the position does not have. The rest cannot fail on a board
@@ -2452,6 +2485,11 @@ mod in_step {
             board.checkers,
             board.recompute_checkers(),
             "the checkers drifted"
+        );
+        prop_assert_eq!(
+            board.squares,
+            board.recompute_squares(),
+            "the squares drifted"
         );
         prop_assert!(
             !board.square_attacked(board.king_index(!board.active_color), board.active_color),
