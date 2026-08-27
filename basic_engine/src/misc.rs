@@ -259,17 +259,31 @@ pub enum Piece {
 }
 
 impl Piece {
+    /// A table rather than a match. The match compiled to a jump table, and
+    /// once the piece arrives as a load from the board's square array the
+    /// target is data the predictor cannot see through: most of the search's
+    /// indirect mispredicts were this dispatch inside `move_accumulators`.
+    /// Indexed the way the piece square tables and `Zobrist` already index
+    /// by piece, and the assertions below pin the discriminants four sites
+    /// now count on.
+    const MATERIAL: [u32; 6] = [100, 310, 320, 500, 900, 10000];
+
     pub fn material_value(self) -> u32 {
-        match self {
-            Piece::Pawn => 100,
-            Piece::Knight => 310,
-            Piece::Bishop => 320,
-            Piece::Rook => 500,
-            Piece::Queen => 900,
-            Piece::King => 10000,
-        }
+        Self::MATERIAL[self as usize]
     }
 }
+
+// nothing pins the enum's discriminants except these: `material_value`, the
+// piece square tables, `Zobrist` and mvv-lva all index by them, so reordering
+// the enum fails here rather than by scoring a queen as a pawn
+const _: () = assert!(
+    Piece::Pawn as usize == 0
+        && Piece::Knight as usize == 1
+        && Piece::Bishop as usize == 2
+        && Piece::Rook as usize == 3
+        && Piece::Queen as usize == 4
+        && Piece::King as usize == 5
+);
 
 /// The piece's letter as fen and the board display write it, in lowercase.
 /// Case carries the colour, which is not the piece's to know.
