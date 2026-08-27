@@ -385,7 +385,13 @@ impl<T: Engine, W: Write> UCI<T, W> {
             let result = self.parse_position(line);
             self.report(result);
         } else if line.starts_with("display") {
-            self.engine.display_board();
+            // one info string a row, so the dump goes through the writer's
+            // lock like every other line and an interface reads it as the
+            // commentary it is rather than as protocol it has to parse
+            let board = self.engine.board_display();
+            for row in board.lines() {
+                self.say(format_args!("info string {}", row));
+            }
         } else if line.starts_with("stop") {
             // the reader thread stops the search; by the time one reaches
             // here there is nothing left to stop. Taken in silence all the
@@ -728,7 +734,9 @@ mod tests {
         fn set_table_bytes(&mut self, _bytes: usize) -> bool {
             true
         }
-        fn display_board(&self) {}
+        fn board_display(&self) -> String {
+            String::new()
+        }
         fn perft(&mut self, _depth: u8) -> u64 {
             0
         }
@@ -803,6 +811,27 @@ mod tests {
         let mut uci = uci();
         for line in ["", "   ", "wibble", "positional", "isready"] {
             assert!(uci.handle(line), "{} should not have quit", line);
+        }
+    }
+
+    #[test]
+    fn display_speaks_through_the_writer_as_info_strings() {
+        let mut uci = uci();
+        uci.handle("display");
+        let spoken = said(&uci);
+        assert!(
+            spoken.contains("a b c d e f g h"),
+            "not the board: {}",
+            spoken
+        );
+        // an interface reads lines, and every one of these must be one it
+        // can pass over rather than protocol it has to parse
+        for line in spoken.lines() {
+            assert!(
+                line.starts_with("info string "),
+                "a bare line an interface cannot read: {}",
+                line
+            );
         }
     }
 
