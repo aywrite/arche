@@ -371,7 +371,7 @@ mod magic_generation {
     /// accident: about fourteen seconds as invoked below, against under a
     /// second with `--release`.
     ///
-    ///     cargo test -p basic_engine regenerate_magics -- --ignored --nocapture
+    ///     cargo test -p arche-core regenerate_magics -- --ignored --nocapture
     #[test]
     #[ignore = "prints replacement constants, see the doc comment"]
     fn regenerate_magics() {

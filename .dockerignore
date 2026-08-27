@@ -2,7 +2,7 @@
 !Cargo.toml
 !Cargo.lock
 !src
-!basic_engine
+!arche-core
 !docker
 !LICENSE
-basic_engine/target
+arche-core/target

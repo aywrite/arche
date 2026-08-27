@@ -1,9 +1,9 @@
 use arche::UCI;
 use arche::params::Params;
 use arche::uci;
-use basic_engine::AlphaBeta;
-use basic_engine::Board;
-use basic_engine::bench;
+use arche_core::AlphaBeta;
+use arche_core::Board;
+use arche_core::bench;
 use std::process::ExitCode;
 
 /// What the binary takes, for whoever ran it to find out. Short because there

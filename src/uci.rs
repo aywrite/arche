@@ -1,13 +1,13 @@
 use crate::params::{Param, Params};
 use crate::time_control::TimeControl;
-use basic_engine::Color;
-use basic_engine::Engine;
-use basic_engine::Limits;
-use basic_engine::SearchConfig;
-use basic_engine::SearchOutcome;
-use basic_engine::SearchParameters;
-use basic_engine::bench;
-use basic_engine::{PvLine, SearchResult};
+use arche_core::Color;
+use arche_core::Engine;
+use arche_core::Limits;
+use arche_core::SearchConfig;
+use arche_core::SearchOutcome;
+use arche_core::SearchParameters;
+use arche_core::bench;
+use arche_core::{PvLine, SearchResult};
 use std::io::{BufRead, Stdout, Write};
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::mpsc::{Receiver, Sender, channel};
@@ -60,7 +60,7 @@ const HASH_MAX_MB: u64 = {
 /// The size the handshake advertises as the default, taken from the engine's
 /// own so that an interface which never sends a `setoption` is told the table
 /// it is actually going to get.
-const HASH_DEFAULT_MB: u64 = (basic_engine::DEFAULT_TABLE_BYTES / (1024 * 1024)) as u64;
+const HASH_DEFAULT_MB: u64 = (arche_core::DEFAULT_TABLE_BYTES / (1024 * 1024)) as u64;
 
 // a default outside the range advertised beside it would be a handshake no
 // interface could honour, so moving the engine's default out of range fails
@@ -498,7 +498,7 @@ impl<T: Engine, W: Write> UCI<T, W> {
             None => (position_string, None),
         };
         if start.starts_with("startpos") {
-            self.engine.parse_fen(basic_engine::STARTING_FEN)?;
+            self.engine.parse_fen(arche_core::STARTING_FEN)?;
         } else if let Some(fen) = start.strip_prefix("fen") {
             self.engine.parse_fen(fen.trim())?;
         } else {
@@ -583,12 +583,10 @@ fn holds_its_answer(params: &Params, depth: Option<u8>, limits: &Limits) -> bool
 /// depth of two hundred and fifty five from a position in check used to be
 /// deepened to two hundred and fifty six and overflow.
 fn go_depth(params: &Params) -> Option<u8> {
-    params.count("depth").read().map(|depth| {
-        depth
-            .try_into()
-            .unwrap_or(u8::MAX)
-            .min(basic_engine::MAX_PLY)
-    })
+    params
+        .count("depth")
+        .read()
+        .map(|depth| depth.try_into().unwrap_or(u8::MAX).min(arche_core::MAX_PLY))
 }
 
 /// What a bench command or argument asked for: `bench [depth] [hash <MB>]
@@ -671,7 +669,7 @@ fn format_info(depth: u8, result: &SearchResult, pv: &PvLine) -> String {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use basic_engine::{AlphaBeta, Board, Clock};
+    use arche_core::{AlphaBeta, Board, Clock};
     use proptest::prelude::*;
     use std::io::Cursor;
     use std::time::{Duration, Instant};
@@ -1301,7 +1299,7 @@ go depth 3
         assert_eq!(go_depth(&Params::of("go depth 5")), Some(5));
         assert_eq!(
             go_depth(&Params::of("go depth 999")),
-            Some(basic_engine::MAX_PLY)
+            Some(arche_core::MAX_PLY)
         );
         assert_eq!(go_depth(&Params::of("go infinite")), None);
     }
@@ -1314,7 +1312,7 @@ go depth 3
         // the rail arrives, and the rail itself leaves room for the
         // extension by a build time assertion beside it
         let asked = asked_of_engine("go depth 255");
-        assert_eq!(asked.depth, Some(basic_engine::MAX_PLY));
+        assert_eq!(asked.depth, Some(arche_core::MAX_PLY));
     }
 
     #[test]
@@ -1423,7 +1421,7 @@ go depth 3
         assert_eq!(uci.engine.active_color(), Color::White);
     }
 
-    use basic_engine::Play;
+    use arche_core::Play;
 
     /// The move of this name in the starting position, for building the
     /// synthetic results the format tests pin.

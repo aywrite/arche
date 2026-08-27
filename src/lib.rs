@@ -6,7 +6,7 @@
 //! driving from a test the same way, and a test outside the binary had no way
 //! in while the binary was all there was.
 //!
-//! The engine is the `basic_engine` crate. Nothing here knows how to search;
+//! The engine is the `arche-core` crate. Nothing here knows how to search;
 //! it knows what to ask for and how to report the answer.
 
 pub mod params;

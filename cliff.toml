@@ -58,7 +58,7 @@ commit_parsers = [
     # ahead of the types so that a feat(docker) or a perf(bench) does not read
     # as a change to how the engine plays. The list is the build table in
     # docs/DEVELOPMENT.md, and scripts/tests/test_scopes.py holds them to it.
-    { message = "^\\w+\\((bench|book|ci|deps(-dev)?|docker|docs|lint|release|tactics)\\)!?:", group = "<!-- 6 -->Development"},
+    { message = "^\\w+\\((bench|book|ci|deps(-dev)?|docker|docs|lint|release|tactics|workspace)\\)!?:", group = "<!-- 6 -->Development"},
     { message = "^feat", group = "<!-- 0 -->Features"},
     { message = "^fix", group = "<!-- 1 -->Bug Fixes"},
     { message = "^perf", group = "<!-- 2 -->Performance"},
