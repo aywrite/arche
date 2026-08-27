@@ -6,6 +6,8 @@ use crate::play::Play;
 use crate::transposition::{DEFAULT_TABLE_BYTES, GhiCounters, Probe, TranspositionTable};
 use crate::value::Value;
 use std::fmt;
+use std::sync::Arc;
+use std::sync::atomic::{AtomicBool, Ordering};
 use std::time;
 
 const CHECKMATE_SCORE: Score = 30_000;
@@ -107,12 +109,35 @@ pub struct SearchParameters {
     /// What the search may spend: the clock it started on and the nodes it
     /// may visit.
     pub limits: Limits,
+    /// Set by another thread to stop the search at the next poll, which is
+    /// how the protocol's `stop` reaches a search already running. None for
+    /// a search nobody can interrupt, and a search with none counts exactly
+    /// the nodes it counted before there was a flag to read.
+    ///
+    /// It rides beside the limits rather than inside them because a limit
+    /// is a number the search owns and this is a word from elsewhere;
+    /// `Limits` stays `Copy` for it.
+    pub stop: Option<Arc<AtomicBool>>,
 }
 
 impl SearchParameters {
-    /// A search to the depth given, under the limits given.
+    /// A search to the depth given, under the limits given, which nothing
+    /// can stop early.
     pub fn new(depth: Option<u8>, limits: Limits) -> Self {
-        Self { depth, limits }
+        Self {
+            depth,
+            limits,
+            stop: None,
+        }
+    }
+
+    /// The same, with a flag another thread may set to stop it.
+    pub fn stoppable(depth: Option<u8>, limits: Limits, stop: Arc<AtomicBool>) -> Self {
+        Self {
+            depth,
+            limits,
+            stop: Some(stop),
+        }
     }
 
     /// A search to a fixed depth and nothing else: no clock, no budget.
@@ -268,6 +293,11 @@ pub struct AlphaBeta {
     /// The node count at which the limits are looked at next, which the
     /// limits themselves decide.
     next_check: u64,
+    /// The flag another thread sets to stop the search, or none while
+    /// nothing may. The deepening loop arms it a depth at a time, exactly
+    /// as it arms the clock, so a search asked directly for a depth is
+    /// never interruptible and never reads it.
+    stop: Option<Arc<AtomicBool>>,
     /// The nodes quiescence visited, a part of nodes. Counted for the bench,
     /// which reports what share of the tree the captures are. Never reset,
     /// like the ghi counters: it runs over the engine's whole life, and the
@@ -294,6 +324,7 @@ impl AlphaBeta {
             selective_depth: 0,
             limits: Limits::unlimited(),
             next_check: 0,
+            stop: None,
             quiescence_nodes: 0,
             ordering: MoveOrdering::new(),
         }
@@ -355,6 +386,17 @@ impl AlphaBeta {
     #[inline(never)]
     fn check_limits(&mut self) -> Result<(), Aborted> {
         if self.limits.expired(self.nodes) {
+            return Err(Aborted);
+        }
+        // relaxed: the flag is the whole of what the two threads share, so
+        // there is nothing for it to publish and nothing to order it
+        // against. A few thousand nodes of latency is well under the
+        // millisecond an interface waiting on a bestmove can notice
+        if self
+            .stop
+            .as_ref()
+            .is_some_and(|stop| stop.load(Ordering::Relaxed))
+        {
             return Err(Aborted);
         }
         self.next_check = self.limits.next_check_after(self.nodes);
@@ -730,7 +772,16 @@ impl AlphaBeta {
     /// together from the next. Calling this on its own skips that, and a
     /// table whose generation never moves keeps every entry looking current:
     /// nothing goes stale and the oldest entries are never the ones given up.
-    pub fn search_within(&mut self, mut depth: u8, limits: Limits) -> SearchOutcome {
+    pub fn search_within(&mut self, depth: u8, limits: Limits) -> SearchOutcome {
+        // nothing outside stops a search asked for directly. The flag
+        // belongs to the deepening loop, which arms it a depth at a time
+        self.stop = None;
+        self.search_root(depth, limits)
+    }
+
+    /// The body of one fixed depth search, with whatever the caller has
+    /// already armed left as it stands.
+    fn search_root(&mut self, mut depth: u8, limits: Limits) -> SearchOutcome {
         // held to the rail here and not only at the interface, so a caller
         // of the library cannot ask the check extension below to overflow
         depth = depth.min(MAX_PLY);
@@ -924,7 +975,17 @@ impl Engine for AlphaBeta {
             let limits = search_options
                 .limits
                 .for_iteration(best.is_some(), total_nodes);
-            match self.search_within(depth, limits) {
+            // the stop flag is armed the way the clock is: until a depth
+            // has been answered there is nothing to answer with, so a stop
+            // arriving during depth one lets depth one finish. That is
+            // microseconds, and it is what makes every `go` end in a real
+            // move rather than in a null one from a position with moves
+            self.stop = if best.is_some() {
+                search_options.stop.clone()
+            } else {
+                None
+            };
+            match self.search_root(depth, limits) {
                 SearchOutcome::Aborted(deeper) => {
                     // the interrupted iteration's best outranks the completed
                     // depth's whenever it has one. The root searches full
@@ -1076,6 +1137,8 @@ mod search {
     use crate::limits::Clock;
     use crate::misc::Piece;
     use pretty_assertions::assert_eq;
+    use std::sync::Arc;
+    use std::sync::atomic::{AtomicBool, Ordering};
     use std::time;
 
     /// The default table is 256MB, which is the right size to play with and
@@ -1563,6 +1626,61 @@ mod search {
             e.iterative_deepening_search(options, |_, result, _| completed = result.nodes);
         assert!(matches!(outcome, SearchOutcome::Aborted(Some(_))));
         assert_eq!(completed + e.nodes, limit);
+    }
+
+    #[test]
+    fn a_stop_flag_already_set_still_answers_the_first_depth() {
+        // the flag is armed the way the clock is, so depth one runs whatever
+        // it says and there is always a real move to answer with
+        let mut e = engine(Board::new());
+        let stop = Arc::new(AtomicBool::new(true));
+        let options = SearchParameters::stoppable(None, Limits::unlimited(), Arc::clone(&stop));
+        let mut depths = Vec::new();
+        let outcome = e.iterative_deepening_search(options, |depth, _, _| depths.push(depth));
+        assert!(matches!(outcome, SearchOutcome::Aborted(Some(_))));
+        assert_eq!(
+            depths,
+            vec![1],
+            "the flag stopped the search before it had a move"
+        );
+    }
+
+    #[test]
+    fn a_stop_flag_set_mid_search_ends_the_deepening_with_a_move() {
+        // an unlimited search of a sharp position would run for minutes.
+        // A thread sets the flag once a depth has been reported, and what
+        // comes back is the move in hand rather than nothing
+        let mut e = engine(Board::from_fen(SHARP_MIDDLEGAME).unwrap());
+        let stop = Arc::new(AtomicBool::new(false));
+        let options = SearchParameters::stoppable(None, Limits::unlimited(), Arc::clone(&stop));
+        let mut deepest = 0;
+        let outcome = e.iterative_deepening_search(options, |depth, _, _| {
+            deepest = depth;
+            if depth >= 3 {
+                stop.store(true, Ordering::Relaxed);
+            }
+        });
+        let (SearchOutcome::Aborted(Some(result)) | SearchOutcome::Complete(result)) = outcome
+        else {
+            panic!("a stopped search must still answer, got {:?}", outcome)
+        };
+        assert!(deepest < super::MAX_PLY, "the flag stopped nothing");
+        assert!(result.nodes > 0);
+    }
+
+    #[test]
+    fn a_search_asked_for_directly_carries_no_flag_to_read() {
+        // what keeps the bench counting what it counted before there was a
+        // flag: nothing but the deepening loop ever arms one
+        let mut e = engine(Board::new());
+        e.stop = Some(Arc::new(AtomicBool::new(true)));
+        assert!(matches!(e.search(2), SearchOutcome::Complete(_)));
+        assert!(e.stop.is_none(), "a leftover flag outlived the search");
+        assert!(
+            SearchParameters::new(Some(2), Limits::unlimited())
+                .stop
+                .is_none()
+        );
     }
 
     #[test]

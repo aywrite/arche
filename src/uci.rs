@@ -9,6 +9,10 @@ use basic_engine::SearchParameters;
 use basic_engine::bench;
 use basic_engine::{PvLine, SearchResult};
 use std::io::{BufRead, Stdout, Write};
+use std::sync::atomic::{AtomicBool, Ordering};
+use std::sync::mpsc::{Receiver, Sender, channel};
+use std::sync::{Arc, Mutex, PoisonError};
+use std::thread;
 
 /// The time part of a `go` command, from the point of view of the side to
 /// move.
@@ -71,6 +75,167 @@ fn clamp_hash(megabytes: u64) -> u64 {
     megabytes.clamp(HASH_MIN_MB, HASH_MAX_MB)
 }
 
+/// A writer two threads say things through.
+///
+/// The search speaks from the session thread and the reader thread answers
+/// `isready` for itself, so both have one of these and the lock is taken for
+/// a whole line at a time. Without that an `info` line and a `readyok` could
+/// meet halfway through each other, and an interface reads lines.
+pub struct SharedWriter<W: Write>(Arc<Mutex<W>>);
+
+impl<W: Write> SharedWriter<W> {
+    fn new(inner: W) -> Self {
+        Self(Arc::new(Mutex::new(inner)))
+    }
+}
+
+// derived Clone would want W: Clone, which is not what is being cloned
+impl<W: Write> Clone for SharedWriter<W> {
+    fn clone(&self) -> Self {
+        Self(Arc::clone(&self.0))
+    }
+}
+
+impl<W: Write> Write for SharedWriter<W> {
+    /// A poisoned lock is a panic on the other thread, which has already
+    /// been reported where it happened. There is nothing this can do about
+    /// it and an interface still wants its answer, so the buffer is taken
+    /// as it stands.
+    fn write(&mut self, buf: &[u8]) -> std::io::Result<usize> {
+        self.0
+            .lock()
+            .unwrap_or_else(PoisonError::into_inner)
+            .write(buf)
+    }
+
+    fn flush(&mut self) -> std::io::Result<()> {
+        self.0
+            .lock()
+            .unwrap_or_else(PoisonError::into_inner)
+            .flush()
+    }
+
+    /// One lock for a whole line. The default writes each piece of the
+    /// format separately, which would take the lock several times and let
+    /// the other thread in between two of them.
+    fn write_fmt(&mut self, args: std::fmt::Arguments<'_>) -> std::io::Result<()> {
+        self.0
+            .lock()
+            .unwrap_or_else(PoisonError::into_inner)
+            .write_fmt(args)
+    }
+}
+
+/// What the reader thread and the session loop share: whether a search is
+/// under way, the flag that stops it, and the thread to wake when that flag
+/// is set.
+#[derive(Clone)]
+struct SessionControl {
+    searching: Arc<AtomicBool>,
+    stop: Arc<AtomicBool>,
+    /// The session's own thread. A search that has run out of depths to
+    /// search sits waiting for a `stop`, and nothing else would wake it.
+    session: thread::Thread,
+}
+
+impl SessionControl {
+    /// A control whose session runs on the calling thread.
+    fn for_this_thread() -> Self {
+        Self {
+            searching: Arc::new(AtomicBool::new(false)),
+            stop: Arc::new(AtomicBool::new(false)),
+            session: thread::current(),
+        }
+    }
+
+    fn searching(&self) -> bool {
+        self.searching.load(Ordering::Acquire)
+    }
+
+    fn began_searching(&self) {
+        self.searching.store(true, Ordering::Release);
+    }
+
+    /// The search has answered: both flags come down. A `stop` read in
+    /// this gap is no longer lost either way, since the reader also passes
+    /// every `stop` down the channel and the dispatch clears the flag
+    /// again there.
+    fn answered(&self) {
+        self.searching.store(false, Ordering::Release);
+        self.stop.store(false, Ordering::Release);
+    }
+
+    /// Ask the search to stop. Set whether or not one is running: a `stop`
+    /// typed the instant after a `go` may be read before the session has
+    /// begun searching, and a flag set early stops the search that follows
+    /// rather than being lost. The session clears it once it has answered,
+    /// and the `stop` itself is passed on to clear it if it did not.
+    fn ask_to_stop(&self) {
+        self.stop.store(true, Ordering::Release);
+        self.session.unpark();
+    }
+
+    fn clear(&self) {
+        self.stop.store(false, Ordering::Release);
+    }
+
+    fn handle(&self) -> Arc<AtomicBool> {
+        Arc::clone(&self.stop)
+    }
+
+    /// Sit on a finished search's answer until a `stop` arrives, which is
+    /// what `go infinite` promises the interface.
+    fn wait_for_stop(&self) {
+        while !self.stop.load(Ordering::Acquire) {
+            thread::park();
+        }
+    }
+}
+
+/// The reader thread: every line the interface sends arrives here first.
+///
+/// While a search is running it answers what the protocol says must be
+/// answered at once and passes everything else on to be handled after the
+/// `bestmove`. Nothing is dropped: a `position` thrown away would leave the
+/// interface's idea of the game and the engine's silently apart, and the
+/// next `go` would search the wrong position.
+fn read_ahead<I, W>(input: I, mut out: W, control: &SessionControl, lines: Sender<String>)
+where
+    I: Iterator<Item = std::io::Result<String>>,
+    W: Write,
+{
+    for line in input {
+        let line = match line {
+            Ok(line) => line,
+            // there is nothing left to read and no one to tell, so leave
+            // the way the pipe closing does below
+            Err(error) => {
+                let _ = writeln!(out, "info string could not read input: {}", error);
+                break;
+            }
+        };
+        // a quit stops the search as a stop does, and is then passed on: the
+        // search still owes a bestmove, and it is emitted before we exit
+        if line.starts_with("stop") || line.starts_with("quit") {
+            control.ask_to_stop();
+        } else if line.starts_with("isready") && control.searching() {
+            // the one answer the protocol requires mid-search
+            let _ = writeln!(out, "readyok");
+            continue;
+        }
+        if lines.send(line).is_err() {
+            // the session has gone
+            return;
+        }
+    }
+    // the pipe closing is the interface leaving. A search still running, or
+    // an answer held for a stop that can no longer come, would outlive the
+    // only party that wanted it, so the ending reads as the quit the
+    // interface did not get to send
+    control.ask_to_stop();
+    let _ = lines.send("quit".to_string());
+}
+
 pub struct UCI<T: Engine, W: Write> {
     author: String,
     name: String,
@@ -80,9 +245,25 @@ pub struct UCI<T: Engine, W: Write> {
     out: W,
 }
 
-impl<T: Engine> UCI<T, Stdout> {
+impl<T: Engine> UCI<T, SharedWriter<Stdout>> {
     pub fn new_with_engine(engine: T) -> Self {
-        Self::with_output(engine, std::io::stdout())
+        Self::with_output(engine, SharedWriter::new(std::io::stdout()))
+    }
+
+    /// Read stdin on a thread of its own and run the session on this one.
+    ///
+    /// The engine never crosses the boundary: it is searched here, on the
+    /// thread it was built on, and the reader is over there so that a
+    /// `stop` is read while the search is running rather than after it.
+    pub fn read_loop(&mut self) {
+        let control = SessionControl::for_this_thread();
+        let (sender, lines) = channel();
+        let reader = control.clone();
+        let out = self.out.clone();
+        thread::spawn(move || {
+            read_ahead(std::io::stdin().lock().lines(), out, &reader, sender);
+        });
+        self.session(lines, &control);
     }
 }
 
@@ -98,8 +279,34 @@ impl<T: Engine, W: Write> UCI<T, W> {
         }
     }
 
-    pub fn read_loop(&mut self) {
-        self.run(std::io::stdin().lock());
+    /// The session loop: lines the reader thread did not answer itself,
+    /// handled here in the order they were sent.
+    fn session(&mut self, lines: Receiver<String>, control: &SessionControl) {
+        for line in lines {
+            if !self.dispatch(&line, control) {
+                return;
+            }
+        }
+    }
+
+    /// One line, with a reader thread behind it. Everything but `go` is the
+    /// dispatcher's business unchanged; a `go` is bracketed so the reader
+    /// knows a search is running and can stop it.
+    ///
+    /// Returns false once the engine has been asked to quit.
+    fn dispatch(&mut self, line: &str, control: &SessionControl) -> bool {
+        if line.starts_with("go") {
+            control.began_searching();
+            self.parse_go(line, Some(control));
+            control.answered();
+            return true;
+        }
+        if line.starts_with("stop") {
+            // whatever it was meant for has answered by now, or there was
+            // nothing to answer. Either way the flag it set is spent
+            control.clear();
+        }
+        self.handle(line)
     }
 
     /// Writes one line to the interface. A failed write means the interface
@@ -116,8 +323,13 @@ impl<T: Engine, W: Write> UCI<T, W> {
         }
     }
 
-    /// Handles input until it is exhausted or `quit` arrives. Separate from
-    /// read_loop so that it can be driven without stdin.
+    /// Handles input until it is exhausted or `quit` arrives, on one thread
+    /// and with nothing able to interrupt a search.
+    ///
+    /// The session loop is what the engine runs; this is what a test drives
+    /// when the question is what the dispatcher does with a line rather than
+    /// what two threads do with each other.
+    #[cfg(test)]
     fn run<R: BufRead>(&mut self, input: R) {
         for line in input.lines() {
             match line {
@@ -171,8 +383,13 @@ impl<T: Engine, W: Write> UCI<T, W> {
             self.report(result);
         } else if line.starts_with("display") {
             self.engine.display_board();
+        } else if line.starts_with("stop") {
+            // the reader thread stops the search; by the time one reaches
+            // here there is nothing left to stop. Taken in silence all the
+            // same, because the protocol allows a stop at any moment and
+            // an engine that answered one with a complaint would be wrong
         } else if line.starts_with("go") {
-            self.parse_go(line);
+            self.parse_go(line, None);
         } else if line.starts_with("bench") {
             // the same as the command line argument: the depth is for
             // trying the command cheaply, the number that means anything is
@@ -298,7 +515,11 @@ impl<T: Engine, W: Write> UCI<T, W> {
         Ok(())
     }
 
-    fn parse_go(&mut self, line: &str) {
+    /// A `go`, with the session's control when there is a reader thread
+    /// behind it and none when the loop is being driven straight from a
+    /// reader. Without one the search cannot be stopped and does not hold
+    /// its answer, which is what the engine did before there was a thread.
+    fn parse_go(&mut self, line: &str, control: Option<&SessionControl>) {
         let params = Params::of(line);
         // the clock starts here, when the command arrived, and the search
         // reports its elapsed time against the same start
@@ -308,7 +529,12 @@ impl<T: Engine, W: Write> UCI<T, W> {
             // which would stop the search before it had a move to report
             params.count("nodes").read(),
         );
-        let sp = SearchParameters::new(go_depth(&params), limits);
+        let depth = go_depth(&params);
+        let holds = holds_its_answer(&params, depth, &limits);
+        let sp = match control {
+            Some(control) => SearchParameters::stoppable(depth, limits, control.handle()),
+            None => SearchParameters::new(depth, limits),
+        };
 
         // the closure writes while the engine is borrowed for the search, so
         // it goes to the writer directly rather than through say
@@ -318,6 +544,11 @@ impl<T: Engine, W: Write> UCI<T, W> {
             .iterative_deepening_search(sp, |depth, result, pv| {
                 let _ = writeln!(out, "{}", format_info(depth, result, &pv));
             });
+        // an infinite search does not answer until it is told to, even when
+        // it ran out of depths to search first
+        if let Some(control) = control.filter(|_| holds) {
+            control.wait_for_stop();
+        }
         match outcome {
             SearchOutcome::Complete(result) | SearchOutcome::Aborted(Some(result)) => {
                 self.say(format_args!("bestmove {}", result.best_move));
@@ -331,6 +562,17 @@ impl<T: Engine, W: Write> UCI<T, W> {
             SearchOutcome::Aborted(None) => self.say(format_args!("bestmove 0000")),
         }
     }
+}
+
+/// Whether this `go` must sit on its answer until a `stop` arrives.
+///
+/// `go infinite` says so outright. A `go` with nothing to bound it at all
+/// says the same thing by saying nothing: it used to mean a search to the
+/// old depth cap on no clock, which nothing sends deliberately, and one
+/// behaviour is worth more here than a distinction between the two.
+fn holds_its_answer(params: &Params, depth: Option<u8>, limits: &Limits) -> bool {
+    params.flag("infinite")
+        || (depth.is_none() && limits.clock().is_none() && limits.node_budget() == u64::MAX)
 }
 
 /// The depth asked of a go command, if one was. A depth past what the engine
@@ -432,7 +674,7 @@ mod tests {
     use basic_engine::{AlphaBeta, Board, Clock};
     use proptest::prelude::*;
     use std::io::Cursor;
-    use std::time::Duration;
+    use std::time::{Duration, Instant};
 
     /// A table small enough that a test can afford one per case, speaking
     /// into a buffer so that what the interface would see can be asserted.
@@ -1441,5 +1683,283 @@ go depth 3
             }
             prop_assert_eq!(gos(&lines), bestmoves(&spoken), "said: {}", spoken);
         }
+    }
+
+    // ---- the session loop ---------------------------------------------
+
+    /// A session on threads of its own, driven the way an interface drives
+    /// one: lines typed in, and what was said read back while it is being
+    /// said rather than after the loop has ended.
+    struct Driven {
+        typed: Sender<String>,
+        said: SharedWriter<Vec<u8>>,
+        session: thread::JoinHandle<()>,
+    }
+
+    impl Driven {
+        fn of<T: Engine + Send + 'static>(engine: T) -> Self {
+            let (typed, script) = channel::<String>();
+            let said = SharedWriter::new(Vec::new());
+            let out = said.clone();
+            let session = thread::spawn(move || {
+                let mut uci = UCI::with_output(engine, out.clone());
+                let control = SessionControl::for_this_thread();
+                let (sender, lines) = channel();
+                let reader = control.clone();
+                thread::spawn(move || {
+                    read_ahead(script.into_iter().map(Ok), out, &reader, sender);
+                });
+                uci.session(lines, &control);
+            });
+            Self {
+                typed,
+                said,
+                session,
+            }
+        }
+
+        /// A real search behind the loop, on a table small enough to afford
+        /// one per test.
+        fn searching() -> Self {
+            Self::of(AlphaBeta::with_table_bytes(Board::new(), 8 * 1024))
+        }
+
+        /// A session whose engine answers at once, which is how the holding
+        /// of an answer is tested without waiting for a search to run out
+        /// of depths.
+        fn instant() -> Self {
+            Self::of(Recorder::to_move(Color::White))
+        }
+
+        fn type_line(&self, line: &str) {
+            let _ = self.typed.send(line.to_string());
+        }
+
+        fn said(&self) -> String {
+            let buffer = self.said.0.lock().unwrap_or_else(PoisonError::into_inner);
+            String::from_utf8(buffer.clone()).unwrap()
+        }
+
+        /// Everything said once `what` has been, or a failure naming what
+        /// was said instead. Generous, because it bounds a real search on
+        /// whatever machine is running the suite rather than measuring one.
+        fn wait_for(&self, what: &str) -> String {
+            let deadline = Instant::now() + Duration::from_secs(30);
+            loop {
+                let said = self.said();
+                if said.contains(what) {
+                    return said;
+                }
+                assert!(
+                    Instant::now() < deadline,
+                    "nothing said {:?} in thirty seconds, only: {}",
+                    what,
+                    said
+                );
+                thread::sleep(Duration::from_millis(1));
+            }
+        }
+
+        /// Nothing more is said for this long. Used where the promise is
+        /// that an answer is held back, which nothing but waiting can show.
+        fn stays_quiet_for(&self, span: Duration) -> String {
+            let said = self.said();
+            thread::sleep(span);
+            assert_eq!(said, self.said(), "something was said in the meantime");
+            said
+        }
+
+        /// Close the interface and wait for the session to end.
+        fn finish(self) -> String {
+            drop(self.typed);
+            self.session.join().expect("the session panicked");
+            let buffer = self.said.0.lock().unwrap_or_else(PoisonError::into_inner);
+            String::from_utf8(buffer.clone()).unwrap()
+        }
+    }
+
+    /// The last thing said, which is the bestmove in every session here.
+    fn last_line(said: &str) -> &str {
+        said.lines().last().unwrap_or("")
+    }
+
+    #[test]
+    fn a_stop_mid_search_answers_with_a_real_move() {
+        // twenty seconds of move time, stopped inside the first second of
+        // it: the search comes back with the move it had rather than with
+        // the null move, and it comes back at once
+        let driven = Driven::searching();
+        driven.type_line("position startpos");
+        driven.type_line("go movetime 20000");
+        driven.wait_for("info depth 1");
+        let stopped = Instant::now();
+        driven.type_line("stop");
+        let said = driven.wait_for("bestmove");
+        assert!(
+            stopped.elapsed() < Duration::from_secs(10),
+            "the stop was not acted on: {}",
+            said
+        );
+        assert_ne!(
+            last_line(&said),
+            "bestmove 0000",
+            "a stopped search answered with no move: {}",
+            said
+        );
+        driven.finish();
+    }
+
+    #[test]
+    fn a_stop_while_nothing_is_searching_is_taken_in_silence() {
+        // it used to come back as an unrecognised command, which is what
+        // an interface cancelling a game gets told today
+        let driven = Driven::instant();
+        driven.type_line("stop");
+        driven.type_line("isready");
+        driven.wait_for("readyok");
+        assert_eq!(driven.finish(), "readyok\n");
+    }
+
+    #[test]
+    fn an_isready_is_answered_while_a_search_runs() {
+        // the protocol requires this one to be answered at once, whatever
+        // the engine is in the middle of, and the reader thread answers it
+        let driven = Driven::searching();
+        driven.type_line("position startpos");
+        driven.type_line("go movetime 20000");
+        driven.wait_for("info depth 1");
+        driven.type_line("isready");
+        let said = driven.wait_for("readyok");
+        assert!(
+            !said.contains("bestmove"),
+            "the search had already answered: {}",
+            said
+        );
+        driven.type_line("stop");
+        driven.wait_for("bestmove");
+        driven.finish();
+    }
+
+    #[test]
+    fn a_go_infinite_holds_its_move_until_a_stop_arrives() {
+        // the engine behind this one answers at once, so the deepening is
+        // over long before the stop. The bestmove still waits for it,
+        // which is what infinite means
+        let driven = Driven::instant();
+        driven.type_line("go infinite");
+        assert_eq!(
+            driven.stays_quiet_for(Duration::from_millis(50)),
+            "",
+            "an infinite search answered without being stopped"
+        );
+        driven.type_line("stop");
+        driven.wait_for("bestmove");
+        driven.finish();
+    }
+
+    #[test]
+    fn a_bare_go_holds_its_move_the_way_an_infinite_one_does() {
+        // a go with nothing to bound it is an infinite one said differently
+        let driven = Driven::instant();
+        driven.type_line("go");
+        assert_eq!(driven.stays_quiet_for(Duration::from_millis(50)), "");
+        driven.type_line("stop");
+        driven.wait_for("bestmove");
+        driven.finish();
+    }
+
+    #[test]
+    fn the_interface_leaving_ends_a_held_answer() {
+        // a pipe that closes without a quit is an interface that has gone.
+        // The hold used to park on a stop that could no longer come, and
+        // the process outlived the only party that wanted its answer
+        let driven = Driven::instant();
+        driven.type_line("go infinite");
+        let said = driven.finish();
+        assert!(
+            last_line(&said).starts_with("bestmove"),
+            "the held answer was never said: {}",
+            said
+        );
+    }
+
+    #[test]
+    fn a_bounded_go_answers_without_being_stopped() {
+        // the other side of the rule: anything that says what it may spend
+        // answers when it has spent it
+        let driven = Driven::instant();
+        driven.type_line("go depth 3");
+        driven.wait_for("bestmove");
+        driven.finish();
+    }
+
+    #[test]
+    fn a_position_sent_during_a_search_is_applied_after_it() {
+        // dropping it would leave the interface's idea of the game and the
+        // engine's apart in silence, and the next go would search a
+        // position nobody asked about. The second go proves which position
+        // the engine ended up on: from that one there is no move at all
+        let driven = Driven::searching();
+        driven.type_line("position startpos");
+        driven.type_line("go movetime 20000");
+        driven.wait_for("info depth 1");
+        driven.type_line("position fen 7k/6Q1/6K1/8/8/8/8/8 b - - 0 1");
+        driven.type_line("go depth 1");
+        driven.type_line("stop");
+        driven.wait_for("bestmove 0000");
+        let said = driven.finish();
+        let bestmoves: Vec<&str> = said
+            .lines()
+            .filter(|line| line.starts_with("bestmove"))
+            .collect();
+        assert_eq!(bestmoves.len(), 2, "{}", said);
+        assert_ne!(bestmoves[0], "bestmove 0000", "{}", said);
+        assert_eq!(bestmoves[1], "bestmove 0000", "{}", said);
+    }
+
+    #[test]
+    fn a_quit_during_a_search_answers_before_it_exits() {
+        // every go gets a bestmove, unconditionally: there is one path out
+        // of a search and it ends in an answer
+        let driven = Driven::searching();
+        driven.type_line("position startpos");
+        driven.type_line("go movetime 20000");
+        driven.wait_for("info depth 1");
+        driven.type_line("quit");
+        let said = driven.finish();
+        assert!(last_line(&said).starts_with("bestmove"), "{}", said);
+        assert_ne!(last_line(&said), "bestmove 0000", "{}", said);
+    }
+
+    #[test]
+    fn what_holds_its_answer_is_what_nothing_bounds() {
+        let unbounded = Limits::starting_now(None, None);
+        assert!(holds_its_answer(
+            &Params::of("go infinite"),
+            None,
+            &unbounded
+        ));
+        assert!(holds_its_answer(&Params::of("go"), None, &unbounded));
+        // infinite outranks anything sent beside it, as the protocol says
+        assert!(holds_its_answer(
+            &Params::of("go infinite depth 2"),
+            Some(2),
+            &unbounded
+        ));
+        assert!(!holds_its_answer(
+            &Params::of("go depth 2"),
+            Some(2),
+            &unbounded
+        ));
+        assert!(!holds_its_answer(
+            &Params::of("go nodes 5000"),
+            None,
+            &Limits::starting_now(None, Some(5000))
+        ));
+        assert!(!holds_its_answer(
+            &Params::of("go movetime 500"),
+            None,
+            &Limits::starting_now(Some(Clock::Fixed(Duration::from_millis(450))), None)
+        ));
     }
 }
