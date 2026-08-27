@@ -90,9 +90,10 @@ impl Limits {
 
     /// No clock and no node budget: the search runs to the depth asked of it.
     ///
-    /// Not the protocol's `go infinite`, which means search until `stop` and
-    /// which this engine does not answer yet. Nothing here can express that,
-    /// and `check_limits` is the one place that would ask.
+    /// Not the protocol's `go infinite`, which means search until `stop`.
+    /// Nothing here expresses that and nothing here should: a stop comes
+    /// from another thread rather than from a number, so it rides on
+    /// `SearchParameters` beside these and is read at the same poll.
     pub fn unlimited() -> Self {
         Self::starting_at(Instant::now(), None, u64::MAX)
     }

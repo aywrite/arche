@@ -19,8 +19,8 @@ the engine plays. Roughly in the order they look worth doing.
 - the rest of the uci protocol
   - the only options advertised are `Hash` and a `Threads` fixed at one, so everything else an
     interface might set, `Ponder` and `Clear Hash` among them, is refused rather than acted on
-  - `stop` is not handled, which rules out pondering and `go infinite`
-  - `ponderhit`, `debug` and `register` are not handled either
+  - `ponderhit`, `debug` and `register` are not handled, so pondering is still out of reach
+    even though `stop` is answered now
   - a move in a `position` line that cannot be played is reported the same way whether
     no move of that name exists here or the move exists and leaves the king in check.
     `make_move_str` answers with a bool, so the interface is told which move failed and
