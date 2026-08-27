@@ -12,6 +12,10 @@ WORKDIR /src
 COPY Cargo.toml Cargo.lock ./
 COPY src ./src
 COPY basic_engine ./basic_engine
+# v2 is popcnt and sse4.2, everything a hosted runner or a vps has had for
+# fifteen years; the image is not the artifact a stranger with old hardware
+# reaches for, the release page's baseline build is
+ENV RUSTFLAGS="-C target-cpu=x86-64-v2"
 RUN cargo build --release --locked --bin arche
 
 FROM python:${PYTHON_VERSION}-slim-${DEBIAN_RELEASE} AS book

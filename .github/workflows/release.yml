@@ -50,7 +50,27 @@ jobs:
           - ubuntu-latest
           - macos-latest
           - windows-latest
+        # The x86-64 platforms get three builds: the baseline the tag always
+        # shipped, and the v2 and v3 microarchitecture levels, which is where
+        # popcnt and then avx2/bmi2 live. The evaluation counts pieces with
+        # count_ones and the generator pops bits with trailing_zeros, so the
+        # baseline build spells both out by hand. The node counts cannot move
+        # -- the flags change instructions, not the search -- which is what
+        # lets a variant be checked by running it. The mac runner is arm and
+        # needs no variants.
+        cpu: ["", x86-64-v2, x86-64-v3]
+        exclude:
+          - os: macos-latest
+            cpu: x86-64-v2
+          - os: macos-latest
+            cpu: x86-64-v3
     runs-on: ${{ matrix.os }}
+    env:
+      RUSTFLAGS: ${{ matrix.cpu && format('-C target-cpu={0}', matrix.cpu) || '' }}
+      # the plain build keeps the name every past release used; a variant
+      # says which level it needs, so nobody runs one on a cpu it will not
+      # start on without having chosen to
+      VARIANT: ${{ matrix.cpu == 'x86-64-v2' && '-v2' || matrix.cpu == 'x86-64-v3' && '-v3' || '' }}
     # contents: write is the workflow's, restated because a job that declares
     # permissions gets these and no others. The other two are the attestation's:
     # the job asks github for a short lived signing certificate with its own
@@ -61,6 +81,11 @@ jobs:
       attestations: write
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+      # the variant is proven to run before it is shipped: the runner is
+      # newer than any level built here, so a build that would trap on its
+      # own instructions fails this step rather than a downloader's evening
+      - name: Run what is about to be shipped
+        run: cargo run --release --locked -- bench 2
       - uses: taiki-e/upload-rust-binary-action@f0d45ae91ee7b8ee928de7a9d04d893a08bcbec6 # v1.30.2
         id: upload
         with:
@@ -68,7 +93,7 @@ jobs:
           tar: unix
           zip: windows
           checksum: "sha256"
-          archive: $bin-$tag-$target
+          archive: $bin-$tag-$target${{ env.VARIANT }}
           # The readme links to the changelog and to docs/, so they travel
           # with it; a relative link in the archive is dead otherwise.
           include: LICENSE,README.md,CHANGELOG.md,docs
