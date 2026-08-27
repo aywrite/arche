@@ -411,7 +411,7 @@ plain makefile and are eighty kilobytes each. It holds each opponent at its
 published rating and fits the one number that is unknown, which is ours:
 
 ```
-python3 scripts/rating_estimate.py gauntlet.pgn arche stash-v11:1690,stash-v12:1886
+python3 scripts/rating_estimate.py gauntlet.pgn arche stash-v13:1966,stash-v14:2058
 ```
 
 Locally the same thing is the fastchess command from the previous section with
