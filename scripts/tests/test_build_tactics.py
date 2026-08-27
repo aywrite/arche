@@ -1,3 +1,6 @@
+# SPDX-License-Identifier: GPL-3.0-or-later
+# Copyright (C) 2022-2026 Andrew Wright
+
 """Tests for the tactical suite converter.
 
 The engine has no san parser, so a published suite's `bm Rxb2` is turned into

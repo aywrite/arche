@@ -1,3 +1,6 @@
+// SPDX-License-Identifier: GPL-3.0-or-later
+// Copyright (C) 2022-2026 Andrew Wright
+
 //! Reading the parameters off a UCI command.
 //!
 //! A command is a line of whitespace separated words, and a parameter is a

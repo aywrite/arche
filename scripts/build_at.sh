@@ -1,4 +1,7 @@
 #!/usr/bin/env bash
+# SPDX-License-Identifier: GPL-3.0-or-later
+# Copyright (C) 2022-2026 Andrew Wright
+
 # Build the engine as it was at a commit, and put the binary where asked:
 #
 #     build_at.sh <ref> <binary>

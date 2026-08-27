@@ -1,3 +1,6 @@
+// SPDX-License-Identifier: GPL-3.0-or-later
+// Copyright (C) 2022-2026 Andrew Wright
+
 //! A cache of already-searched positions, used to order moves and to skip
 //! re-searching interior nodes. An accelerator: deleting it may slow the
 //! search but never changes the answer.

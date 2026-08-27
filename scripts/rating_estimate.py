@@ -1,4 +1,7 @@
 #!/usr/bin/env python3
+# SPDX-License-Identifier: GPL-3.0-or-later
+# Copyright (C) 2022-2026 Andrew Wright
+
 """Estimate a rating on the ccrl scale from a gauntlet against rated engines.
 
 Every opponent is held at its published ccrl figure, so the only free parameter

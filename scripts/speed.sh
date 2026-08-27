@@ -1,4 +1,7 @@
 #!/usr/bin/env bash
+# SPDX-License-Identifier: GPL-3.0-or-later
+# Copyright (C) 2022-2026 Andrew Wright
+
 # Measure the tree as it stands against the commit it will be made on top
 # of, head by default, and print the Speed trailer for a perf commit:
 #

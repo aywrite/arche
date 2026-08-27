@@ -1,3 +1,6 @@
+# SPDX-License-Identifier: GPL-3.0-or-later
+# Copyright (C) 2022-2026 Andrew Wright
+
 """Tests for the speed comparison.
 
 Two binaries stand in for the tree as it stands and the commit it is measured

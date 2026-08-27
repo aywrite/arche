@@ -1,3 +1,6 @@
+// SPDX-License-Identifier: GPL-3.0-or-later
+// Copyright (C) 2022-2026 Andrew Wright
+
 //! What a node is worth, and whether that worth describes the position or
 //! only the path taken to it.
 //!

@@ -1,3 +1,6 @@
+// SPDX-License-Identifier: GPL-3.0-or-later
+// Copyright (C) 2022-2026 Andrew Wright
+
 use crate::misc::index_to_coordinate;
 use crate::misc::{Piece, PromotePiece};
 use std::fmt;

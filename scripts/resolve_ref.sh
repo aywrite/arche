@@ -1,4 +1,7 @@
 #!/usr/bin/env bash
+# SPDX-License-Identifier: GPL-3.0-or-later
+# Copyright (C) 2022-2026 Andrew Wright
+
 # Resolve what a workflow was asked to play into a commit, and print it.
 #
 # A number is a pull request, whose head a checkout does not fetch. Anything

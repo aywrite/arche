@@ -1,3 +1,6 @@
+// SPDX-License-Identifier: GPL-3.0-or-later
+// Copyright (C) 2022-2026 Andrew Wright
+
 //! The order the search tries moves in: the table's move ahead of
 //! everything, captures by MVV-LVA, and the rest as they were generated —
 //! though the defended piece penalty can carry a queen capture behind even

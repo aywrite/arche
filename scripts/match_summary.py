@@ -1,4 +1,7 @@
 #!/usr/bin/env python3
+# SPDX-License-Identifier: GPL-3.0-or-later
+# Copyright (C) 2022-2026 Andrew Wright
+
 """Print the elo estimate, and any sprt verdict, from a fastchess result file."""
 
 import argparse

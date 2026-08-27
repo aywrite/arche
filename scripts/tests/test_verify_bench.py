@@ -1,3 +1,6 @@
+# SPDX-License-Identifier: GPL-3.0-or-later
+# Copyright (C) 2022-2026 Andrew Wright
+
 """Tests for the per commit bench check.
 
 A repository whose every commit carries a file saying what its engine would

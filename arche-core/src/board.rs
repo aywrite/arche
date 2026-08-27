@@ -1,3 +1,6 @@
+// SPDX-License-Identifier: GPL-3.0-or-later
+// Copyright (C) 2022-2026 Andrew Wright
+
 use super::bitboard::BitBoard;
 use super::misc::{
     CastlePermissions, Color, Coordinate, File, Piece, PromotePiece, Score, coordinate_to_index,

@@ -1,3 +1,6 @@
+# SPDX-License-Identifier: GPL-3.0-or-later
+# Copyright (C) 2022-2026 Andrew Wright
+
 """Tests for the one line match summary.
 
 The input is fastchess's result block, so the fixtures are copies of real

@@ -1,3 +1,6 @@
+# SPDX-License-Identifier: GPL-3.0-or-later
+# Copyright (C) 2022-2026 Andrew Wright
+
 """Tests for the commit message trailer check.
 
 A commit that changes the engine has to say what the bench counts after it,

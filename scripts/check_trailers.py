@@ -1,4 +1,7 @@
 #!/usr/bin/env python3
+# SPDX-License-Identifier: GPL-3.0-or-later
+# Copyright (C) 2022-2026 Andrew Wright
+
 """Check the trailers a commit message carries against what its kind requires.
 
 A commit that changes the engine says what the bench counts after it, so the

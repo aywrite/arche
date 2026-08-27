@@ -133,7 +133,7 @@ commit under **Development** whatever its type is:
 | `lint` | fmt and clippy fallout |
 | `release` | cargo-release, git-cliff and the release workflows |
 | `tactics` | the tactical suite and the count it gates on |
-| `workspace` | the crate layout and the manifests |
+| `workspace` | the crate layout, the manifests and the licence notices |
 
 The engine ones are grouped by type instead:
 
