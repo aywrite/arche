@@ -129,6 +129,14 @@ impl<W: Write> Write for SharedWriter<W> {
     }
 }
 
+/// The word a line opens with, which is all a command is: the dispatcher
+/// and the reader thread both read a line by this one function, so they
+/// cannot disagree about what counts as a `stop`, and `stopwatch` is not
+/// one.
+fn first_word(line: &str) -> &str {
+    line.split_whitespace().next().unwrap_or("")
+}
+
 /// What the reader thread and the session loop share: whether a search is
 /// under way, the flag that stops it, and the thread to wake when that flag
 /// is set.
@@ -136,18 +144,35 @@ impl<W: Write> Write for SharedWriter<W> {
 struct SessionControl {
     searching: Arc<AtomicBool>,
     stop: Arc<AtomicBool>,
+    /// Whether a reader thread attends the session. A held answer waits
+    /// on a stop only a reader can send, so a session without one answers
+    /// at once: the reading the pipe closing gets, applied to a session
+    /// that never had a pipe.
+    attended: bool,
     /// The session's own thread. A search that has run out of depths to
     /// search sits waiting for a `stop`, and nothing else would wake it.
     session: thread::Thread,
 }
 
 impl SessionControl {
-    /// A control whose session runs on the calling thread.
+    /// A control whose session runs on the calling thread, with a reader
+    /// attending it.
     fn for_this_thread() -> Self {
         Self {
             searching: Arc::new(AtomicBool::new(false)),
             stop: Arc::new(AtomicBool::new(false)),
+            attended: true,
             session: thread::current(),
+        }
+    }
+
+    /// A control for a session no reader attends, which is how the tests
+    /// drive the dispatcher one thread at a time.
+    #[cfg(test)]
+    fn unattended() -> Self {
+        Self {
+            attended: false,
+            ..Self::for_this_thread()
         }
     }
 
@@ -187,8 +212,12 @@ impl SessionControl {
     }
 
     /// Sit on a finished search's answer until a `stop` arrives, which is
-    /// what `go infinite` promises the interface.
+    /// what `go infinite` promises the interface. With no reader to send
+    /// one the answer is given at once instead of held for ever.
     fn wait_for_stop(&self) {
+        if !self.attended {
+            return;
+        }
         while !self.stop.load(Ordering::Acquire) {
             thread::park();
         }
@@ -217,14 +246,17 @@ where
                 break;
             }
         };
-        // a quit stops the search as a stop does, and is then passed on: the
-        // search still owes a bestmove, and it is emitted before we exit
-        if line.starts_with("stop") || line.starts_with("quit") {
-            control.ask_to_stop();
-        } else if line.starts_with("isready") && control.searching() {
+        match first_word(&line) {
+            // a quit stops the search as a stop does, and is then passed
+            // on: the search still owes a bestmove, and it is emitted
+            // before we exit
+            "stop" | "quit" => control.ask_to_stop(),
             // the one answer the protocol requires mid-search
-            let _ = writeln!(out, "readyok");
-            continue;
+            "isready" if control.searching() => {
+                let _ = writeln!(out, "readyok");
+                continue;
+            }
+            _ => {}
         }
         if lines.send(line).is_err() {
             // the session has gone
@@ -292,24 +324,82 @@ impl<T: Engine, W: Write> UCI<T, W> {
         }
     }
 
-    /// One line, with a reader thread behind it. Everything but `go` is the
-    /// dispatcher's business unchanged; a `go` is bracketed so the reader
-    /// knows a search is running and can stop it.
+    /// One line, one arm: a command is its first word, and the word says
+    /// everything about where the line goes. A `go` is bracketed so the
+    /// reader thread knows a search is running and can stop it.
     ///
     /// Returns false once the engine has been asked to quit.
     fn dispatch(&mut self, line: &str, control: &SessionControl) -> bool {
-        if line.starts_with("go") {
-            control.began_searching();
-            self.parse_go(line, Some(control));
-            control.answered();
-            return true;
+        match first_word(line) {
+            "quit" => return false,
+            "go" => {
+                control.began_searching();
+                self.parse_go(line, control);
+                control.answered();
+            }
+            "stop" => {
+                // the reader thread stops the search, so by the time one
+                // reaches here whatever it was meant for has answered, or
+                // there was nothing to answer, and the flag it set is
+                // spent. Taken in silence, because the protocol allows a
+                // stop at any moment and an engine that answered one with
+                // a complaint would be wrong
+                control.clear();
+            }
+            "isready" => self.say(format_args!("readyok")),
+            "ucinewgame" => {
+                self.engine.new_game();
+                let result = self.parse_position("position startpos");
+                self.report(result);
+            }
+            "uci" => {
+                // written to the field directly: say borrows all of self,
+                // and these lines also read from it
+                let _ = writeln!(self.out, "id name {} {}", self.name, self.version);
+                let _ = writeln!(self.out, "id author {}", self.author);
+                self.say(format_args!(
+                    "option name Hash type spin default {} min {} max {}",
+                    HASH_DEFAULT_MB, HASH_MIN_MB, HASH_MAX_MB
+                ));
+                // advertised with a range of one so that an interface
+                // configuring a match reads the engine as single threaded
+                // rather than being left to find out by playing one
+                self.say(format_args!(
+                    "option name Threads type spin default 1 min 1 max 1"
+                ));
+                self.say(format_args!("uciok"));
+            }
+            "setoption" => {
+                let result = self.set_option(line);
+                self.report(result);
+            }
+            "position" => {
+                let result = self.parse_position(line);
+                self.report(result);
+            }
+            "display" => {
+                // one info string a row, so the dump goes through the
+                // writer's lock like every other line and an interface
+                // reads it as the commentary it is rather than as protocol
+                // it has to parse. The blank separator rows say nothing
+                // once every row carries the prefix, so they stay behind
+                let board = self.engine.board_display();
+                for row in board.lines().filter(|row| !row.is_empty()) {
+                    self.say(format_args!("info string {}", row));
+                }
+            }
+            "bench" => self.bench(line),
+            "perft" => {
+                let depth = perft_depth(&Params::of(line));
+                let nodes = self.engine.perft(depth);
+                self.say(format_args!(
+                    "info string perft depth {} nodes {}",
+                    depth, nodes
+                ));
+            }
+            _ => self.say(format_args!("info string unrecognised command: {}", line)),
         }
-        if line.starts_with("stop") {
-            // whatever it was meant for has answered by now, or there was
-            // nothing to answer. Either way the flag it set is spent
-            control.clear();
-        }
-        self.handle(line)
+        true
     }
 
     /// Writes one line to the interface. A failed write means the interface
@@ -326,18 +416,23 @@ impl<T: Engine, W: Write> UCI<T, W> {
         }
     }
 
-    /// Handles input until it is exhausted or `quit` arrives, on one thread
-    /// and with nothing able to interrupt a search.
-    ///
-    /// The session loop is what the engine runs; this is what a test drives
-    /// when the question is what the dispatcher does with a line rather than
-    /// what two threads do with each other.
+    /// One line through the real dispatcher, unattended: what a test drives
+    /// when the question is what a line does rather than what two threads
+    /// do with each other.
+    #[cfg(test)]
+    fn handle(&mut self, line: &str) -> bool {
+        self.dispatch(line, &SessionControl::unattended())
+    }
+
+    /// Dispatches input until it is exhausted or `quit` arrives, on one
+    /// thread and with nothing able to interrupt a search.
     #[cfg(test)]
     fn run<R: BufRead>(&mut self, input: R) {
+        let control = SessionControl::unattended();
         for line in input.lines() {
             match line {
                 Ok(line) => {
-                    if !self.handle(&line) {
+                    if !self.dispatch(&line, &control) {
                         return;
                     }
                 }
@@ -351,82 +446,23 @@ impl<T: Engine, W: Write> UCI<T, W> {
         }
     }
 
-    /// Returns false once the engine has been asked to quit.
-    fn handle(&mut self, line: &str) -> bool {
-        if line.starts_with("quit") {
-            return false;
-        }
-        if line.starts_with("isready") {
-            self.say(format_args!("readyok"));
-        } else if line.starts_with("ucinewgame") {
-            self.engine.new_game();
-            let result = self.parse_position("position startpos");
-            self.report(result);
-        } else if line.starts_with("uci") {
-            // written to the field directly: say borrows all of self, and
-            // these lines also read from it
-            let _ = writeln!(self.out, "id name {} {}", self.name, self.version);
-            let _ = writeln!(self.out, "id author {}", self.author);
-            self.say(format_args!(
-                "option name Hash type spin default {} min {} max {}",
-                HASH_DEFAULT_MB, HASH_MIN_MB, HASH_MAX_MB
-            ));
-            // advertised with a range of one so that an interface configuring
-            // a match reads the engine as single threaded rather than being
-            // left to find out by playing one
-            self.say(format_args!(
-                "option name Threads type spin default 1 min 1 max 1"
-            ));
-            self.say(format_args!("uciok"));
-        } else if line.starts_with("setoption") {
-            let result = self.set_option(line);
-            self.report(result);
-        } else if line.starts_with("position") {
-            let result = self.parse_position(line);
-            self.report(result);
-        } else if line.starts_with("display") {
-            // one info string a row, so the dump goes through the writer's
-            // lock like every other line and an interface reads it as the
-            // commentary it is rather than as protocol it has to parse
-            let board = self.engine.board_display();
-            for row in board.lines() {
-                self.say(format_args!("info string {}", row));
+    /// The same bench as the command line argument: the depth is for trying
+    /// the command cheaply, the number that means anything is the one at
+    /// the default, and the table and policy are for measuring rather than
+    /// pinning.
+    fn bench(&mut self, line: &str) {
+        match bench_settings(&Params::of(line)) {
+            Ok(settings) => {
+                let report = bench::run_suite(
+                    &bench::positions(),
+                    settings.depth,
+                    settings.table_bytes,
+                    settings.config,
+                );
+                self.say(format_args!("{}", report));
             }
-        } else if line.starts_with("stop") {
-            // the reader thread stops the search; by the time one reaches
-            // here there is nothing left to stop. Taken in silence all the
-            // same, because the protocol allows a stop at any moment and
-            // an engine that answered one with a complaint would be wrong
-        } else if line.starts_with("go") {
-            self.parse_go(line, None);
-        } else if line.starts_with("bench") {
-            // the same as the command line argument: the depth is for
-            // trying the command cheaply, the number that means anything is
-            // the one at the default, and the table and policy are for
-            // measuring rather than pinning
-            match bench_settings(&Params::of(line)) {
-                Ok(settings) => {
-                    let report = bench::run_suite(
-                        &bench::positions(),
-                        settings.depth,
-                        settings.table_bytes,
-                        settings.config,
-                    );
-                    self.say(format_args!("{}", report));
-                }
-                Err(what) => self.say(format_args!("info string unrecognised bench {}", what)),
-            }
-        } else if line.starts_with("perft") {
-            let depth = perft_depth(&Params::of(line));
-            let nodes = self.engine.perft(depth);
-            self.say(format_args!(
-                "info string perft depth {} nodes {}",
-                depth, nodes
-            ));
-        } else {
-            self.say(format_args!("info string unrecognised command: {}", line));
+            Err(what) => self.say(format_args!("info string unrecognised bench {}", what)),
         }
-        true
     }
 
     /// `setoption name <option> value <value>`. The two options the handshake
@@ -501,7 +537,13 @@ impl<T: Engine, W: Write> UCI<T, W> {
     /// could be, since the interface is expected to send the whole line again
     /// rather than to carry on from a position we rejected.
     fn parse_position(&mut self, line: &str) -> Result<(), String> {
-        let position_string = line.strip_prefix("position").unwrap_or(line).trim();
+        // trimmed before the strip: the dispatcher read the first word past
+        // any leading space, and this must read the same line it did
+        let position_string = line
+            .trim_start()
+            .strip_prefix("position")
+            .unwrap_or(line)
+            .trim();
         let (start, move_list) = match position_string.split_once("moves") {
             Some((s, m)) => (s.trim(), Some(m)),
             None => (position_string, None),
@@ -524,11 +566,10 @@ impl<T: Engine, W: Write> UCI<T, W> {
         Ok(())
     }
 
-    /// A `go`, with the session's control when there is a reader thread
-    /// behind it and none when the loop is being driven straight from a
-    /// reader. Without one the search cannot be stopped and does not hold
-    /// its answer, which is what the engine did before there was a thread.
-    fn parse_go(&mut self, line: &str, control: Option<&SessionControl>) {
+    /// A `go`, under the session's control: the reader thread's stop flag
+    /// rides into the search, and a go that holds its answer waits here
+    /// for the stop that releases it.
+    fn parse_go(&mut self, line: &str, control: &SessionControl) {
         let params = Params::of(line);
         // the clock starts here, when the command arrived, and the search
         // reports its elapsed time against the same start
@@ -540,10 +581,7 @@ impl<T: Engine, W: Write> UCI<T, W> {
         );
         let depth = go_depth(&params);
         let holds = holds_its_answer(&params, depth, &limits);
-        let sp = match control {
-            Some(control) => SearchParameters::stoppable(depth, limits, control.handle()),
-            None => SearchParameters::new(depth, limits),
-        };
+        let sp = SearchParameters::stoppable(depth, limits, control.handle());
 
         // the closure writes while the engine is borrowed for the search, so
         // it goes to the writer directly rather than through say
@@ -555,7 +593,7 @@ impl<T: Engine, W: Write> UCI<T, W> {
             });
         // an infinite search does not answer until it is told to, even when
         // it ran out of depths to search first
-        if let Some(control) = control.filter(|_| holds) {
+        if holds {
             control.wait_for_stop();
         }
         match outcome {
@@ -812,6 +850,13 @@ mod tests {
         for line in ["", "   ", "wibble", "positional", "isready"] {
             assert!(uci.handle(line), "{} should not have quit", line);
         }
+    }
+
+    #[test]
+    fn a_command_is_its_first_word_wherever_the_line_starts() {
+        let mut uci = uci();
+        uci.handle("  position startpos moves e2e4");
+        assert_eq!(uci.engine.active_color(), Color::Black);
     }
 
     #[test]
@@ -1523,8 +1568,7 @@ go depth 3
     const SPOKEN: [&str; 6] = ["info", "bestmove", "id", "option", "uciok", "readyok"];
 
     /// The keywords a generated line opens with: the ones the loop dispatches
-    /// on, and near misses that ought to fall through to the unrecognised
-    /// branch.
+    /// on, and near misses that fall through to the unrecognised branch.
     ///
     /// `bench` is deliberately absent. It runs a real bench of seventeen
     /// million nodes whoever is behind the loop, so a generated one would
@@ -1613,14 +1657,11 @@ go depth 3
         prop::collection::vec(line(), 0..12usize)
     }
 
-    /// How many of these lines the loop will dispatch as a `go`.
-    ///
-    /// Read the way the loop reads it, prefix and all, rather than by
-    /// splitting into words: `goodbye` really does reach the go branch today,
-    /// and a count that disagreed with the loop about that would be testing
-    /// what the loop ought to do rather than what it does.
+    /// How many of these lines the loop will dispatch as a `go`, counted
+    /// with the dispatcher's own reading of a line, so the count cannot
+    /// disagree with the loop about what one is.
     fn gos(lines: &[String]) -> usize {
-        lines.iter().filter(|line| line.starts_with("go")).count()
+        lines.iter().filter(|line| first_word(line) == "go").count()
     }
 
     fn bestmoves(said: &str) -> usize {
@@ -1691,10 +1732,13 @@ go depth 3
             // would beat it whatever it said, so it comes out.
             let lines: Vec<String> = lines
                 .into_iter()
-                .filter(|line| !line.starts_with("perft"))
-                .map(|line| match line.strip_prefix("go") {
-                    Some(rest) => format!("go movetime 5 {}", rest.replace("infinite", "")),
-                    None => line,
+                .filter(|line| first_word(line) != "perft")
+                .map(|line| match first_word(&line) {
+                    "go" => {
+                        let rest = line.split_once("go").map_or("", |(_, rest)| rest);
+                        format!("go movetime 5 {}", rest.replace("infinite", ""))
+                    }
+                    _ => line,
                 })
                 .collect();
             let mut uci = UCI::with_output(
