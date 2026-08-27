@@ -286,17 +286,35 @@ impl<T: Engine> UCI<T, SharedWriter<Stdout>> {
     }
 
     /// Read stdin on a thread of its own and run the session on this one.
+    pub fn read_loop(&mut self) {
+        self.wire(|| std::io::stdin().lock().lines());
+    }
+}
+
+impl<T: Engine, W: Write + Send + 'static> UCI<T, SharedWriter<W>> {
+    /// Wire a session up: the input read on a thread of its own, the
+    /// session run on this one, and the two joined by the channel, the
+    /// control and the shared writer. This is the one assembly of those
+    /// parts — a test session and a stdin session differ only in the
+    /// input they hand it.
     ///
     /// The engine never crosses the boundary: it is searched here, on the
     /// thread it was built on, and the reader is over there so that a
     /// `stop` is read while the search is running rather than after it.
-    pub fn read_loop(&mut self) {
+    /// The input is built on the reader's thread too — stdin's lock lives
+    /// its whole life there — so what crosses is the recipe for it rather
+    /// than the thing.
+    fn wire<I, F>(&mut self, input: F)
+    where
+        I: Iterator<Item = std::io::Result<String>>,
+        F: FnOnce() -> I + Send + 'static,
+    {
         let control = SessionControl::for_this_thread();
         let (sender, lines) = channel();
         let reader = control.clone();
         let out = self.out.clone();
         thread::spawn(move || {
-            read_ahead(std::io::stdin().lock().lines(), out, &reader, sender);
+            read_ahead(input(), out, &reader, sender);
         });
         self.session(lines, &control);
     }
@@ -1775,15 +1793,10 @@ go depth 3
             let (typed, script) = channel::<String>();
             let said = SharedWriter::new(Vec::new());
             let out = said.clone();
+            // the production wiring, entered through the production door:
+            // the only substitution is the input
             let session = thread::spawn(move || {
-                let mut uci = UCI::with_output(engine, out.clone());
-                let control = SessionControl::for_this_thread();
-                let (sender, lines) = channel();
-                let reader = control.clone();
-                thread::spawn(move || {
-                    read_ahead(script.into_iter().map(Ok), out, &reader, sender);
-                });
-                uci.session(lines, &control);
+                UCI::with_output(engine, out).wire(move || script.into_iter().map(Ok));
             });
             Self {
                 typed,
