@@ -2,6 +2,157 @@
 
 All notable changes to this project will be documented in this file.
 
+## [0.3.11-rc.1] - 2026-08-28
+
+### Features
+
+- *(search)* Take a node budget and stop on the node it names
+- *(uci)* Honour go nodes
+- *(uci)* Answer bench on the command line and as a command
+- *(search)* Count the cutoffs the search refuses for their taint [bench 42073055]
+- *(search)* Let the transposition table be resized after startup [bench 42073055]
+- *(uci)* Take the table size from setoption Hash
+- *(search)* Name the four graph history policies [bench 36130893] [elo not measured]
+- *(search)* Trust the table behind the fifty move guard [bench 35561814] [elo +48 ±23 (sprt [0, 10] passed, 308 games, 5+0.05, vs e5b6026)]
+- *(search)* Answer a node near the leaves from its own evaluation [bench 17657158] [elo +62 ±27 (sprt [0, 10] passed, 500 games, 5+0.05, vs bf791e9)]
+- *(search)* Stop a deepening that cannot finish the next depth [bench 17657158] [elo +47 ±23 (sprt [0, 10] passed, 552 games, 5+0.05, vs a1e4d17)]
+- *(eval)* Taper the piece square score between two phases [bench 20099718] [elo +84 ±32 (sprt [0, 10] passed, 392 games, 10+0.1, vs a1e4d17)]
+- *(search)* Give each of the depth cap's three jobs its own bound [bench 20182103] [elo +4 ±10 (sprt [-10, 0] passed, 852 games, 5+0.05, vs 6f11ca4)]
+- *(uci)* Answer a stop while the search is still running [bench 20182103]
+- *(uci)* Say why the engine died where the interface can read it
+
+### Bug Fixes
+
+- *(search)* Score a mate on the hundredth half move as a mate
+- *(uci)* Read a negative clock as an empty one
+- *(search)* Finish depth one before the clock can stop the search
+- *(search)* Keep the configured deadline apart from the iteration's
+- *(search)* Count the transposition stores that land [bench 42073055]
+- *(search)* Answer with the aborted iteration's move when it has one [bench 17657158] [elo not measured]
+- *(uci)* Answer --version and --help, and reach the loop from a test
+
+### Performance
+
+- *(search)* Sort short move lists on the stack [bench 42847751] [speed +12.0%]
+- *(search)* Keep a table entry in sixteen bytes [bench 42611639] [speed +0.1%]
+- *(search)* Keep four entries to a cache line and pick among them [bench 42073055] [speed -2.6%] [elo +0 ±7 (sprt [-5, 0] inconclusive, 1622 games, 5+0.05, vs 4c9b8fb)]
+- *(board)* Write a piece move's two directions once [bench 42073055] [speed +2.4%]
+- *(search)* Return the score the search saw, not the window edge [bench 41396291] [speed -0.9%] [elo not measured]
+- *(search)* Remember the fail low nodes too [bench 39394488] [speed -5.6%] [elo not measured]
+- *(search)* Let quiescence use the table it was already paying for [bench 36130893] [speed -4.3%] [elo +33 ±19 (sprt [0, 10] passed, 742 games, 5+0.05, vs fc19c6a)]
+- *(search)* Hand the sort its keys instead of a closure [bench 36130893] [speed +2.6%]
+- *(board)* Compact the evasion list in one pass over it [bench 35561814] [speed +1.6%]
+- *(eval)* Index the piece square tables instead of matching [bench 17657158] [speed +1.8%]
+- *(board)* Index the piece boards instead of matching [bench 17657158] [speed +2.6%]
+- *(board)* Answer what stands on a square with a load, not a walk [bench 20182103] [speed +7.9%]
+- *(eval)* Read the material values from a table, not a match [bench 20182103] [speed +0.1%]
+
+### Refactor
+
+- *(search)* Keep the limit check's slow path cold
+- *(zobrist)* Spell Zobrist the way Zobrist spelled it
+- *(eval)* Name the piece square tables after what they hold
+- *(board)* Name the attack masks under construction
+- *(magic)* Name the blocker masks under construction
+- *(magic)* Build both sliders from one set of tables [bench 42847751]
+- *(search)* Give the search a SearchConfig, and name the reference one [bench 42847751]
+- *(board)* Parse the move number once and name the starting position [bench 42847751]
+- *(search)* Build and count a stored entry in one place [bench 42847751]
+- *(board)* Remove two dead conversions and right the debug print [bench 42847751]
+- *(uci)* Read a command's parameters off its words
+- *(search)* Move the transposition table to its own module [bench 42073055]
+- *(search)* Give the table verbs for what the search means [bench 42073055]
+- *(search)* Give a search its limits as one value [bench 42073055]
+- *(board)* Stop carrying what nothing uses [bench 42073055]
+- *(board)* Build the attack masks at compile time [bench 42073055]
+- *(board)* Give both colours one castling rule [bench 42073055]
+- *(board)* Keep only the surface something uses [bench 42073055]
+- *(board)* Ask the board for the evasions [bench 42073055]
+- *(board)* Say when the fifty move counter has run out [bench 42073055]
+- *(board)* Build the mailbox at compile time [bench 36130893]
+- *(board)* Walk the rays for the squares between [bench 36130893]
+- *(magic)* Build the slider tables at compile time [bench 36130893]
+- *(search)* Keep one ordering key buffer instead of filling one per sort [bench 36130893]
+- *(search)* Carry the draw taint with the score [bench 35561814]
+- *(search)* Gather the move ordering into one module [bench 17657158]
+- *(board)* Recompute the square array off the boards, not the squares [bench 20182103]
+- *(uci)* Say the board through the writer, not past it
+- *(uci)* Read a command as its first word, in one place
+- *(uci)* Assemble the session's threads in one place
+- *(eval)* Give the evaluation a module of its own [bench 20182103]
+- *(search)* Arm everything that stops an iteration in one place [bench 20182103]
+
+### Documentation
+
+- *(search)* Say what the private entry leaves room for
+- *(uci)* Say where the info line's elapsed time comes from
+- *(search)* Say who owns the table's generation across searches
+- *(uci)* Record what a refused move does not tell the interface
+- *(search)* Record the repetition rule that measurement rejected
+
+### Development
+
+- *(docs)* Say what the board relies on and correct what drifted
+- *(docs)* License the engine under GPL-3.0-or-later
+- *(ci)* Check the shell scripts out with unix line endings
+- *(ci)* Skip the shell script tests on windows
+- *(bench)* Read criterion's output as utf-8 whatever the console says
+- *(bench)* Add the bench, a fixed suite searched to a fixed depth
+- *(docs)* Say which duplication is load bearing
+- *(ci)* Require a bench on engine commits and a speed on perf commits
+- *(bench)* Print the bench and speed trailers from scripts
+- *(ci)* Count every commit's stated bench, and run the hooks in ci
+- *(release)* Print the elo trailer with a match, and the trailers in the changelog
+- *(docs)* Say which trailers a commit carries and how to produce them
+- *(docs)* Split the readme up and say what AI wrote
+- *(docs)* Say how to work here, and what has already been measured
+- *(bench)* Pin the reference search's counts apart from the default's
+- *(bench)* Read the starting position from the engine
+- *(bench)* Measure speed the way a perf commit does, and retire criterion
+- *(search)* Drop the tests a stronger neighbour already proves
+- *(uci)* Test the depth clamp rather than the capture under its name
+- *(bench)* Say each thing once in the bench and trailer check tests
+- *(bench)* Leave fmt and cargo check to the Rust workflow
+- *(docs)* Say what the test suite's time goes on now
+- *(bench)* Tell the sides of a speed measurement apart by side
+- *(release)* Name the sprt verdict in the Elo trailer
+- *(release)* Put docs scoped commits under Development, as the notes say
+- *(ci)* Hold the four scope lists to each other
+- *(ci)* Let a run on master finish when another lands behind it
+- *(docker)* Publish the image on release only
+- *(bench)* Build a commit from an export, in one script
+- *(ci)* Build the sides of a match and of the speed job from exports
+- *(bench)* Stamp an export with now and give it a target directory of its own
+- *(uci)* Fuzz the parameter parser with properties
+- *(bench)* Take a table size and a taint policy, and say the move
+- *(uci)* Assert the clock a go command sets reaches the search
+- *(search)* Drop the weaker of two tests with one setup
+- *(search)* Let the compiler check the table's layout
+- *(uci)* Drop the parameter tests the properties already cover
+- *(ci)* Read a match result once
+- *(board)* Count the perft positions the way a game plays them
+- *(ci)* Report time to depth when the node counts differ
+- *(ci)* Pin the actions to commit shas
+- *(ci)* Fail on an advisory against a dependency
+- *(release)* Attest what a release publishes
+- *(docs)* Bring the roadmap's order up to date with what measurement said
+- *(docs)* Lead the readme with what the engine is
+- *(board)* Generate plausible fens and check what parses [bench 20099718]
+- *(tactics)* Gate on a tactical suite, and report coverage [bench 20099718]
+- *(release)* Build the x86-64 archives at three cpu levels
+- *(workspace)* Call the engine crate arche-core [bench 20182103]
+- *(deps)* Bump actions/attest-build-provenance in the actions group
+- *(workspace)* State the licence in every source file [bench 20182103]
+- *(uci)* Drive the shipped binary through real sessions
+- *(ci)* Raise the gauntlet to where the engine now plays
+- *(bench)* Compare the fastest rounds, and say when a change is no claim
+- *(bench)* Give the speed job nine rounds
+- *(docs)* Add an architecture overview
+- *(docs)* Say how to write here
+- *(docs)* Update the documentation to match the code
+- *(workspace)* Say in the manifests what each crate is and where it lives
+- *(ci)* Name the script tests job for what it runs
+
 ## [0.3.10] - 2026-08-22
 
 ### Bug Fixes
