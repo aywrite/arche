@@ -1216,11 +1216,12 @@ impl Engine for AlphaBeta {
     }
 
     fn make_move_str(&mut self, play: &str) -> bool {
+        // a `Play` prints itself as the lower case coordinate notation the
+        // protocol sends, so the name is compared with that
         for p in self.board.generate_moves() {
-            let play_str = format!("{}", p).to_lowercase();
-            if play == play_str {
+            if play == p.to_string() {
                 return self.board.make_move(&p);
-            };
+            }
         }
         false
     }
@@ -1273,13 +1274,16 @@ struct Aborted;
 
 #[derive(Debug)]
 pub struct SearchResult {
-    pub nodes: u64, // The number of positions visited during the search
+    pub nodes: u64,
     /// How long the search took, measured over the same interval as the
     /// nodes beside it, so that one divides the other honestly.
     pub elapsed: time::Duration,
-    pub selective_depth: u8, // Selective search depth in plies
-    pub best_move: Play,     // The best move found as part of the search
-    pub score: Score,        // The estimated score for the best move if played
+    /// How deep the deepest line went, quiescence's captures included, which
+    /// is the `seldepth` an info line reports.
+    pub selective_depth: u8,
+    pub best_move: Play,
+    /// What the search made of `best_move`, from the side to move.
+    pub score: Score,
 }
 
 impl SearchResult {
@@ -1853,8 +1857,10 @@ mod search {
         assert!(result.nodes > 0);
     }
 
+    /// The clock and the node budget are armed the same way, which `Limits`
+    /// says of itself; this is the flag.
     #[test]
-    fn nothing_is_armed_until_a_depth_has_been_answered() {
+    fn the_stop_flag_is_not_armed_until_a_depth_has_been_answered() {
         let stop = Arc::new(AtomicBool::new(false));
         let options = SearchParameters::stoppable(None, Limits::unlimited(), Arc::clone(&stop));
         let (_, unarmed) = options.for_iteration(false, 0);
