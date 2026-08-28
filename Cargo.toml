@@ -5,6 +5,9 @@ edition.workspace = true
 rust-version.workspace = true
 authors.workspace = true
 license.workspace = true
+description = "A UCI chess engine."
+repository = "https://github.com/aywrite/arche"
+readme = "README.md"
 publish = false
 
 # A library as well as a binary. Everything in src/ was written to be driven
