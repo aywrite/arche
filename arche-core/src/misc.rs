@@ -82,7 +82,7 @@ mod coordinate {
     use super::Coordinate;
 
     #[test]
-    fn parse_valid() {
+    fn a_square_parses_and_a_dash_is_no_square() {
         assert!(Coordinate::from_string("e3").unwrap().is_some());
         assert!(Coordinate::from_string("a1").unwrap().is_some());
         assert!(Coordinate::from_string("h8").unwrap().is_some());
@@ -98,7 +98,7 @@ mod coordinate {
     }
 
     #[test]
-    fn parse_invalid_does_not_panic() {
+    fn anything_that_is_no_square_at_all_is_refused() {
         assert!(Coordinate::from_string("").is_err());
         assert!(Coordinate::from_string("e").is_err());
         assert!(Coordinate::from_string("ee").is_err());
@@ -109,7 +109,9 @@ mod coordinate {
     }
 }
 
-// Each color/side bit is true if that color is still allowed to castle on that side
+/// Who may still castle where. A right is given up for good, by the king or
+/// the rook moving or the rook being taken, so these only ever go from true
+/// to false.
 #[derive(Debug, Copy, Clone, PartialEq, Eq)]
 pub struct CastlePermissions {
     pub black_king_side: bool,
@@ -170,37 +172,21 @@ impl CastlePermissions {
 mod castle_permissions {
     use super::CastlePermissions;
 
+    /// Written in the order a fen writes them, so a round trip is the same
+    /// string back.
     #[test]
-    fn round_trip_all() {
-        let initial = "KQkq";
-        assert_eq!(
-            CastlePermissions::from_fen(initial).unwrap().as_fen(),
-            initial,
-        );
+    fn every_set_of_rights_comes_back_as_it_went_in() {
+        for rights in ["KQkq", "-", "Kq"] {
+            assert_eq!(
+                CastlePermissions::from_fen(rights).unwrap().as_fen(),
+                rights
+            );
+        }
     }
 
     #[test]
-    fn round_trip_none() {
-        let initial = "-";
-        assert_eq!(
-            CastlePermissions::from_fen(initial).unwrap().as_fen(),
-            initial,
-        );
-    }
-
-    #[test]
-    fn round_trip_mixed() {
-        let initial = "Kq";
-        assert_eq!(
-            CastlePermissions::from_fen(initial).unwrap().as_fen(),
-            initial,
-        );
-    }
-
-    #[test]
-    fn invalid_chars() {
-        let initial = "ksd";
-        assert!(CastlePermissions::from_fen(initial).is_err());
+    fn a_letter_that_is_no_right_is_refused() {
+        assert!(CastlePermissions::from_fen("ksd").is_err());
     }
 }
 
@@ -228,13 +214,15 @@ pub fn index_to_coordinate(index: u8) -> (u8, File) {
 mod index_conversion {
     use super::coordinate_to_index;
     use super::index_to_coordinate;
-    use proptest::prelude::*;
 
-    proptest! {
-        #[test]
-        fn round_trip(i in 0u8..64) {
-            let (rank, file) = index_to_coordinate(i);
-            assert_eq!(i, coordinate_to_index(rank, file));
+    /// All sixty four squares rather than a sample of them: the domain is
+    /// small enough to walk, so this says it of every square rather than of
+    /// most of them.
+    #[test]
+    fn every_index_survives_the_round_trip() {
+        for index in 0u8..64 {
+            let (rank, file) = index_to_coordinate(index);
+            assert_eq!(index, coordinate_to_index(rank, file));
         }
     }
 }

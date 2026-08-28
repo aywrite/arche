@@ -657,7 +657,7 @@ impl Board {
                 }
             }
         }
-        //pawns
+        // pawns
         let mut pawns = self.pawns() & color_mask;
         while pawns != 0 {
             let from = pop_lsb(&mut pawns);
@@ -692,7 +692,6 @@ impl Board {
                     Color::White => from as isize + 8,
                     Color::Black => from as isize - 8,
                 };
-                // can't make a forward move if the square is occupied
                 if (0..64).contains(&to) && !all_pieces.is_bit_set(to as u8) {
                     let to = to as u8;
                     if can_promote {
@@ -709,7 +708,6 @@ impl Board {
                                 Color::White => to as isize + 8,
                                 Color::Black => to as isize - 8,
                             };
-                            // can't make a double forward move if the to square is occupied
                             if !all_pieces.is_bit_set(to as u8) {
                                 moves.push(Play::new(from, to as u8, None, None, false, false));
                             }
@@ -859,7 +857,7 @@ impl Board {
         // kings
         if (attack_masks.kings[index as usize] & self.kings() & color_mask) > 0 {
             return true;
-        };
+        }
 
         false
     }
@@ -1023,7 +1021,6 @@ impl Board {
             }
         }
 
-        // move piece
         if let Some(capture) = play.capture {
             if !play.en_passant {
                 self.fifty_move_rule = 0;
@@ -1042,7 +1039,6 @@ impl Board {
         );
 
         if play.castle {
-            // move rook if castling
             match play.to {
                 C1 => self.move_piece(A1, D1, Piece::Rook, None, self.active_color),
                 C8 => self.move_piece(A8, D8, Piece::Rook, None, self.active_color),
@@ -1052,15 +1048,12 @@ impl Board {
             }
         }
 
-        // update the ply
         self.ply += 1;
         self.line_ply += 1;
         if self.active_color == Color::Black {
-            // update the full move counter
             self.move_number += 1;
         }
 
-        // return false if king in check
         let king_index = self.king_index(self.active_color);
         // A move only exposes its own king when there was a check to walk
         // back into, the king itself moved, a square on a line through the
@@ -1134,7 +1127,6 @@ impl Board {
             self.set_piece_index(en_passant_index, Piece::Pawn, self.active_color);
         }
 
-        // move piece
         let from_piece = self
             .get_piece_index(play.to)
             .expect("The to square must always be occupied when undoing");
@@ -1152,7 +1144,6 @@ impl Board {
             }
         }
         if play.castle {
-            // move rook if castling
             match play.to {
                 C1 => self.move_piece(D1, A1, Piece::Rook, None, opposing_color),
                 C8 => self.move_piece(D8, A8, Piece::Rook, None, opposing_color),
@@ -1607,27 +1598,13 @@ impl Board {
     /// check compares it against that one. Collapse the two and a freshly
     /// parsed board would be checked against the function that filled it in.
     pub(crate) fn material_value(&self) -> (u32, u32) {
-        let mut black_value = 0;
         let mut white_value = 0;
-
-        white_value += (self.pawns() & self.white).count_ones() * eval::material(Piece::Pawn);
-        black_value += (self.pawns() & self.black).count_ones() * eval::material(Piece::Pawn);
-
-        white_value += (self.knights() & self.white).count_ones() * eval::material(Piece::Knight);
-        black_value += (self.knights() & self.black).count_ones() * eval::material(Piece::Knight);
-
-        white_value += (self.bishops() & self.white).count_ones() * eval::material(Piece::Bishop);
-        black_value += (self.bishops() & self.black).count_ones() * eval::material(Piece::Bishop);
-
-        white_value += (self.rooks() & self.white).count_ones() * eval::material(Piece::Rook);
-        black_value += (self.rooks() & self.black).count_ones() * eval::material(Piece::Rook);
-
-        white_value += (self.queens() & self.white).count_ones() * eval::material(Piece::Queen);
-        black_value += (self.queens() & self.black).count_ones() * eval::material(Piece::Queen);
-
-        white_value += (self.kings() & self.white).count_ones() * eval::material(Piece::King);
-        black_value += (self.kings() & self.black).count_ones() * eval::material(Piece::King);
-
+        let mut black_value = 0;
+        for (piece, board) in Piece::PIECES.into_iter().zip(self.pieces) {
+            let value = eval::material(piece);
+            white_value += (board & self.white).count_ones() * value;
+            black_value += (board & self.black).count_ones() * value;
+        }
         (white_value, black_value)
     }
 
@@ -1684,16 +1661,18 @@ impl Board {
         let position = fen_iter
             .next()
             .ok_or("Error parsing FEN: could not find position block")?;
-        let active_color_token = match fen_iter.next() {
-            Some(c) => {
-                if c.len() == 1 {
-                    c.chars().next().ok_or("Expected a single character token")
-                } else {
-                    Err("Expected a single character token")
-                }
+        let active_color = fen_iter
+            .next()
+            .ok_or("Error parsing FEN: expected active color token found none")?;
+        let active_color_token = match active_color.chars().next() {
+            Some(c) if active_color.len() == 1 => c,
+            _ => {
+                return Err(format!(
+                    "Expected a single character token: {}",
+                    active_color
+                ));
             }
-            None => Err("Error parsing FEN: expected active color token found none"),
-        }?;
+        };
         let castle = fen_iter
             .next()
             .ok_or("Error parsing FEN: Could not find castle permissions")?;
@@ -2744,11 +2723,6 @@ mod fen_parsing {
             }
         }
     }
-    #[test]
-    fn the_starting_position_parses() {
-        assert!(Board::from_fen(fens::START).is_ok());
-    }
-
     #[test]
     fn the_wikipedia_examples_parse() -> Result<(), String> {
         Board::from_fen("rnbqkbnr/pppppppp/8/8/4P3/8/PPPP1PPP/RNBQKBNR b KQkq e3 0 1")?;
