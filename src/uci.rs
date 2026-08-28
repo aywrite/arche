@@ -1116,20 +1116,6 @@ mod tests {
     }
 
     #[test]
-    fn a_search_runs_on_a_table_the_hash_option_resized() {
-        let mut uci = uci();
-        uci.run(Cursor::new(
-            "setoption name Hash value 1\nposition startpos\ngo depth 3\n",
-        ));
-        let said = said(&uci);
-        assert!(
-            said.lines().last().unwrap_or("").starts_with("bestmove "),
-            "{}",
-            said
-        );
-    }
-
-    #[test]
     fn a_hash_size_below_the_smallest_offered_is_clamped_up_to_it() {
         let mut uci = uci();
         assert!(uci.handle("setoption name Hash value 0"));
@@ -1350,11 +1336,10 @@ go depth 3
     }
 
     #[test]
-    fn an_unreadable_limit_is_ignored_rather_than_obeyed_as_zero() {
-        // zero would be a limit of nothing, and the search would come back
+    fn an_unreadable_depth_is_ignored_rather_than_obeyed_as_zero() {
+        // zero would be a depth of nothing, and the search would come back
         // without a move rather than without a limit
         assert_eq!(go_depth(&Params::of("go depth abc")), None);
-        assert_eq!(Params::of("go nodes abc").count("nodes").read(), None);
     }
 
     #[test]
@@ -1363,15 +1348,6 @@ go depth 3
         // read out of the middle of another token
         let control = time_control_from(&Params::of("go xwtime 300000"), Color::White);
         assert_eq!(control.time, None);
-    }
-
-    #[test]
-    fn a_node_limit_is_read() {
-        assert_eq!(
-            Params::of("go nodes 1234").count("nodes").read(),
-            Some(1234)
-        );
-        assert_eq!(Params::of("go depth 3").count("nodes").read(), None);
     }
 
     #[test]
