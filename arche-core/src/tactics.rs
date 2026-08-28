@@ -9,9 +9,8 @@
 //! change to the search, including one that changes nothing about how the
 //! engine plays, so it says a great deal about what happened and nothing about
 //! whether it was good. This says whether the search still finds the move,
-//! which such a change should leave exactly where it was. Two numbers and two
-//! questions, and a change that moves one and not the other is worth being
-//! able to see.
+//! which such a change should leave exactly where it was. A change that moves
+//! one and not the other is worth being able to see.
 //!
 //! Deterministic for the reason the bench is: a fixed depth and a fixed table
 //! make the count exact and the same on any machine, which is what lets it

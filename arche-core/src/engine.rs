@@ -19,7 +19,7 @@ const CHECKMATE_SCORE: Score = 30_000;
 ///
 /// Not a bound on every line: a chain of check extensions can carry the
 /// full width search past any constant, and what really ends one is the
-/// repetition and fifty move rules. A safety rail rather than a budget. It is bounded well inside the two
+/// repetition and fifty move rules. It is bounded well inside the two
 /// things that would break if a line outran them: the history ring, which
 /// holds a thousand and twenty four plies less the fifty move window, and
 /// the mate score window, which leaves a thousand below CHECKMATE_SCORE.
@@ -1947,8 +1947,7 @@ mod search {
         // the search never reads would make every comparison against the
         // reference a comparison of the reference with itself
         let fen = "8/2p5/3p4/KP5r/1R3p1k/8/4P1P1/8 w - - 0 1";
-        // the reference with the one switch flipped, which is what a control
-        // arm is
+        // the reference with the one switch flipped
         let trusting = SearchConfig {
             taint: TaintPolicy::Trust,
             ..SearchConfig::reference()

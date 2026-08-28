@@ -130,10 +130,10 @@ jobs:
           engines=(-engine name=arche cmd=./arche)
           for rung in ${LADDER//,/ }; do
             tag=${rung%%:*}
-            # 256MB is what ccrl gives an engine, and now what this one
-            # gives itself, so both sides of the gauntlet hold the same number
-            # of positions. The engine's table is still not settable over uci,
-            # so that match is by coincidence rather than by configuration.
+            # 256MB is what ccrl gives an engine, and what this one defaults
+            # to, so both sides of the gauntlet hold the same number of
+            # positions. Stash is told the size; arche is left at its default,
+            # which its Hash option could set instead.
             engines+=(-engine "name=stash-${tag}" "cmd=./stash-${tag}" option.Hash=256)
           done
           # the engine allocates its table before it answers uci, which takes it

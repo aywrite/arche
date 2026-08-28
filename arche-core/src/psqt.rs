@@ -221,9 +221,8 @@ impl PieceSquareTables {
         }
     }
 
-    /// Built at compile time, so there is nothing to construct on startup,
-    /// nothing to synchronise on when reading it, and nothing standing between
-    /// a proof and the code it is about. Worth keeping a `const`.
+    /// Built at compile time, so there is nothing to construct on startup and
+    /// nothing to synchronise on when reading it.
     ///
     /// Written in the order `table_index` reads it: the six pieces as `Piece`
     /// declares them for white, then the same six for black. A piece whose two

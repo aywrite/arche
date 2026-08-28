@@ -12,8 +12,8 @@ engine:
   dir: "./engines/"
   name: "arche"
   protocol: "uci"
-  # Arche reads UCI commands from a single blocking loop and does not implement
-  # "stop", so it can neither ponder nor be interrupted during a search.
+  # Arche answers "stop" during a search now, but not "ponderhit", so it still
+  # cannot ponder.
   ponder: false
 
   # Options sent as "setoption" once the engine has started. Arche advertises

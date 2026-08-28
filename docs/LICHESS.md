@@ -17,10 +17,11 @@ over `/lichess-bot/config.yml`; the defaults are in `docker/config.yml`.
 ## Tags
 
 Images are published to `ghcr.io/aywrite/arche-lichess-bot` on release only. A release is tagged
-`latest`, `<major>.<minor>`, `<version>` and `v<version>`, the last of which matches the git tag
-and is the one quoted in the release notes along with its digest. A pull request or a push to
-master builds and smoke tests the image without publishing it. The `master` tag that earlier
-versions published is no longer updated; a bot still running it is on whatever master was then.
+`latest`, `<major>.<minor>`, `<version>`, `sha-<commit>` and `v<version>`, the last of which
+matches the git tag and is the one quoted in the release notes along with its digest. A pull
+request or a push to master builds and smoke tests the image without publishing it. The
+`master` tag that earlier versions published is no longer updated; a bot still running it is on
+whatever master was then.
 
 A published image carries a build provenance attestation, filed against this repository and
 looked up by digest, so a tag can be checked against where it came from rather than trusted for

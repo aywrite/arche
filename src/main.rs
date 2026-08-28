@@ -27,12 +27,12 @@ Documentation: https://github.com/aywrite/arche
 ";
 
 fn main() -> ExitCode {
-    // the one argument the binary takes: `arche bench [depth] [hash <MB>]
-    // [taint refuse|trust]` prints the bench and exits, which is how the
-    // match tools measure an engine's speed and how a commit states what
-    // its search change did to the tree. No argument starts the uci loop;
-    // anything else is a mistake, and a mistake that started the uci loop
-    // would sit waiting for input in silence
+    // `arche bench [depth] [hash <MB>] [taint refuse|trust|skip|rule50]`
+    // prints the bench and exits, which is how the match tools measure an
+    // engine's speed and how a commit states what its search change did to
+    // the tree. No argument starts the uci loop; anything else is a mistake,
+    // and a mistake that started the uci loop would sit waiting for input in
+    // silence
     let args: Vec<String> = std::env::args().skip(1).collect();
     match args.first().map(String::as_str) {
         None => {

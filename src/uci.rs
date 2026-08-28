@@ -691,10 +691,10 @@ fn go_depth(params: &Params) -> Option<u8> {
 }
 
 /// What a bench command or argument asked for: `bench [depth] [hash <MB>]
-/// [taint refuse|trust]`, each setting standing in for the bench's own when
-/// absent. The depth is for trying the command cheaply; the table and the
-/// policy are what the graph history measurements vary, and a report states
-/// all three in its header so it can be rerun from it.
+/// [taint refuse|trust|skip|rule50]`, each setting standing in for the
+/// bench's own when absent. The depth is for trying the command cheaply; the
+/// table and the policy are what the graph history measurements vary, and a
+/// report states all three in its header so it can be rerun from it.
 pub struct BenchSettings {
     pub depth: u8,
     pub table_bytes: usize,

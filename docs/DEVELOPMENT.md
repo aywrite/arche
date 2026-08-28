@@ -7,8 +7,9 @@ cargo build --release
 ```
 
 The binary is written to `target/release/arche` (`arche.exe` on windows). It starts
-in uci mode immediately. The one argument it takes is `bench`, with the depth,
-table and policy words described below, which prints the bench and exits.
+in uci mode immediately. The argument that does anything else is `bench`, with
+the depth, table and policy words described below, which prints the bench and
+exits; `--version` and `--help` are answered too.
 
 The release profile uses link time optimisation and a single codegen unit, so a
 release build is noticeably slower to compile than a debug one but is several
@@ -20,14 +21,14 @@ times faster to search. Always measure with a release build.
 cargo test --workspace --release
 ```
 
-The pinned bench searches dominate the runtime, forty million nodes of them,
-which is why the release profile is the usual choice for a quick pass. The
+The pinned bench searches dominate the runtime, twenty two million nodes of
+them, which is why the release profile is the usual choice for a quick pass. The
 debug run is the one that checks the most, so run it before landing a change:
 the debug profile keeps the overflow checks
 and the board's state-in-step assertions, which verify the position key, the
-eval accumulators and the en passant rule against a recompute on every move
-made. Release compiles all of that out, so a green release run alone says
-nothing about them.
+eval accumulators, the square array and the en passant rule against a
+recompute on every move made. Release compiles all of that out, so a green
+release run alone says nothing about them.
 
 ```
 cargo test --workspace
@@ -169,7 +170,7 @@ git keeps at the end of a message, and the commit-msg hook checks them:
 
 | trailer | required on | produced by |
 | --- | --- | --- |
-| `Bench: 42847751` | `feat`, `fix`, `perf` and `refactor` to `board`, `eval`, `magic`, `search` or `zobrist` | `scripts/bench_trailer.sh` |
+| `Bench: 20182103` | `feat`, `fix`, `perf`, `refactor` and `revert` to `board`, `eval`, `magic`, `search` or `zobrist` | `scripts/bench_trailer.sh` |
 | `Speed: +3.1% (bench nps, 5 interleaved rounds vs a1b2c3d, spread 2.4%)` | `perf` to one of those scopes | `scripts/speed.sh` |
 | `Elo: +12 ±8 (sprt [0, 10] passed, 1240 games, 10+0.1, vs v0.3.10)` | nothing, checked when present | the Strength workflow's summary |
 
@@ -208,8 +209,8 @@ target/release/arche bench
 It searches the positions in `arche-core/bench.epd` to a fixed depth with a
 fixed table and prints what each search counted: the move chosen and its
 score, nodes, the share of them quiescence visited, transposition cutoffs and
-stores, the draw tainted stores among them, the tainted cutoffs taken and the
-ones refused, and the speed.
+stores, the draw tainted stores among them, the tainted cutoffs taken, the
+ones refused, the tainted results the policy declined to store, and the speed.
 The number of nodes a search visits is exact rather than timed, so it says the
 same thing on any machine, and `node_counts_have_not_moved` in
 `arche-core/src/bench.rs` pins it position by position. A deliberate change
@@ -238,10 +239,10 @@ their fastest round each — nothing sharing the machine ever makes a run
 faster, so that pair is the one that survives a loaded runner — and says
 outright when the change between the medians is inside the spread, which
 is a measurement making no claim. The Bench workflow's speed job does the same
-on every pull request, both sides built and run on one runner, and posts the
-result as a comment, or to the job summary alone for a pull request from a
-fork. It reports and does not gate: the count is the claim, and the rate is
-the context it is read in.
+on every pull request, over nine rounds rather than the local five, both sides
+built and run on one runner, and posts the result as a comment, or to the job
+summary alone for a pull request from a fork. It reports and does not gate: the
+count is the claim, and the rate is the context it is read in.
 
 When the two sides count the same nodes, the rate is the whole story and the
 `Speed:` trailer is what to quote. When they do not, the report says so and
@@ -249,7 +250,8 @@ adds a breakdown, because the rate on its own is then misleading in both
 directions:
 
 ```
-base: 42073055 nodes in 3.51 s, candidate: 39085868 nodes in 3.22 s
+base: 20182103 nodes in 1.67 s, candidate: 18749340 nodes in 1.53 s
+fastest rounds: base 12073121 nps, candidate 12217998 nps, change +1.2%
 nodes -7.1%, nps +1.2%, time to depth -8.2%
 ```
 
@@ -288,12 +290,13 @@ off: its table only speeds it up, so a position searched warm answers as it
 does cold, and the tests in `arche-core/src/engine.rs` that say so build
 the reference and hold it to that for good. They are the soundness check: a
 change that claims to be sound keeps them green whatever else it moves. The
-default is what the engine plays with and what the bench prints. It is the
-reference today and parts company with it at the first shortcut; from then
-on `reference_node_counts_have_not_moved` pins the reference's tree beside
-the default's, so a commit's diff says which kind of change it carries. One
-that moves both counts touched the search the two share, move ordering or
-the table, say; one that moves the default's alone is a shortcut.
+default is what the engine plays with and what the bench prints. It parts
+company with the reference in two places today, the fifty move guard and
+reverse futility, and `reference_node_counts_have_not_moved` pins the
+reference's tree beside the default's, so a commit's diff says which kind
+of change it carries. One that moves both counts touched the search the two
+share, move ordering or the table, say; one that moves the default's alone
+is a shortcut.
 
 ## Playing a match against a previous version
 
@@ -432,16 +435,17 @@ moved up as the engine improves.
 
 These are the versions around the range the engine is in, and whether ccrl
 ranked the version itself or the figure is a community estimate from the games
-around it:
+around it. The default plays v12 through v15.3:
 
 | tag | ccrl blitz | |
 | --- | --- | --- |
 | v9 | 1275 | ranked |
 | v10 | 1620 | estimated |
 | v11 | 1690 | ranked |
-| v12 | 1886 | ranked |
-| v13 | 1972 | ranked |
-| v14 | 2060 | ranked |
+| v12 | 1881 | ranked |
+| v13 | 1966 | ranked |
+| v14 | 2058 | ranked |
+| v15.3 | 2173 | ranked |
 | v17 | 2298 | ranked |
 
 ### Reading the result
@@ -467,9 +471,10 @@ More games shrink the margin printed next to the number and do nothing at all to
 that. It is a placement, not a rating.
 
 The ladder is held as exact, too. A rung whose rating is a community estimate
-rather than a ccrl ranking, which is what v10 in the default ladder is, hands
+rather than a ccrl ranking, which is what v10 in the table above is, hands
 whatever it is wrong by straight to the answer, and no error bar here covers
-that either.
+that either. Every rung in the default is ranked, so that is a risk a ladder
+moved by hand takes on rather than one the default carries.
 
 The time control is a compromise rather than a default worth keeping by
 accident. Ten seconds runs the hundred games in about twenty minutes but leaves
@@ -561,7 +566,8 @@ git push origin vX.Y.Z
 
 Pushing the tag is what triggers the release workflow, which runs the tests,
 creates the github release from the changelog, and then builds and uploads
-binaries for linux, macos and windows. It goes on to call three workflows that
+binaries for linux, macos and windows, the x86-64 ones at three cpu levels. It
+goes on to call three workflows that
 add to the release once it exists: **Docker** publishes the lichess-bot image
 and quotes it in the notes with its digest, **Strength** plays the match and
 adds the elo estimate, and **Calibrate** plays the gauntlet and adds the ccrl
