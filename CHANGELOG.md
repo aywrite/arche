@@ -2,7 +2,7 @@
 
 All notable changes to this project will be documented in this file.
 
-## [0.3.11-rc.1] - 2026-08-28
+## [0.4.0] - 2026-08-28
 
 ### Features
 
@@ -152,6 +152,7 @@ All notable changes to this project will be documented in this file.
 - *(docs)* Update the documentation to match the code
 - *(workspace)* Say in the manifests what each crate is and where it lives
 - *(ci)* Name the script tests job for what it runs
+- *(search)* Prove the quiescence reach at depth five, not eight
 
 ## [0.3.10] - 2026-08-22
 
