@@ -228,66 +228,42 @@ mod evaluate {
 
     /// The assertions above hold whichever way up the piece square tables are,
     /// because both colours read them the same way and the symmetry survives.
-    /// These say which way is up.
+    /// These say which way is up, a colour at a time.
     #[test]
     fn a_pawn_is_worth_more_the_closer_it_is_to_promoting() {
-        let advanced = Board::from_fen("4k3/4P3/8/8/8/8/8/4K3 w - - 0 1").unwrap();
-        let home = Board::from_fen("4k3/8/8/8/8/8/4P3/4K3 w - - 0 1").unwrap();
-        assert!(
-            eval(&advanced) > eval(&home),
-            "a pawn on e7 scored {} and one on e2 scored {}",
-            eval(&advanced),
-            eval(&home)
-        );
-    }
-
-    #[test]
-    fn a_pawn_is_worth_more_the_closer_it_is_to_promoting_for_black_too() {
-        let advanced = Board::from_fen("4k3/8/8/8/8/8/4p3/4K3 b - - 0 1").unwrap();
-        let home = Board::from_fen("4k3/4p3/8/8/8/8/8/4K3 b - - 0 1").unwrap();
-        assert!(
-            eval(&advanced) > eval(&home),
-            "a pawn on e2 scored {} and one on e7 scored {}",
-            eval(&advanced),
-            eval(&home)
-        );
+        for (advanced, home) in [
+            (
+                "4k3/4P3/8/8/8/8/8/4K3 w - - 0 1",
+                "4k3/8/8/8/8/8/4P3/4K3 w - - 0 1",
+            ),
+            (
+                "4k3/8/8/8/8/8/4p3/4K3 b - - 0 1",
+                "4k3/4p3/8/8/8/8/8/4K3 b - - 0 1",
+            ),
+        ] {
+            let advanced = Board::from_fen(advanced).unwrap();
+            let home = Board::from_fen(home).unwrap();
+            assert!(
+                eval(&advanced) > eval(&home),
+                "the advanced pawn scored {} and the one at home {}",
+                eval(&advanced),
+                eval(&home)
+            );
+        }
     }
 
     /// The point of tapering: the same king on the same square is scored
     /// differently depending on what is left on the board. A bare king wants
     /// the middle; a king with the pieces still on wants the back rank.
     ///
-    /// The pairs below differ by the king's square and nothing else, material
-    /// included, so the difference between them is the king's table alone.
-    #[test]
-    fn a_king_is_scored_by_what_is_left_on_the_board() {
-        let centre = Board::from_fen("4k3/8/8/8/4K3/8/8/8 w - - 0 1").unwrap();
-        let corner = Board::from_fen("4k3/8/8/8/8/8/8/6K1 w - - 0 1").unwrap();
-        assert!(
-            eval(&centre) > eval(&corner),
-            "with nothing else on the board a king on e4 scored {} and one on g1 scored {}",
-            eval(&centre),
-            eval(&corner)
-        );
-
-        let centre =
-            Board::from_fen("rnbqkbnr/pppppppp/8/8/4K3/8/PPPPPPPP/RNBQ1B1R w kq - 0 1").unwrap();
-        let corner =
-            Board::from_fen("rnbqkbnr/pppppppp/8/8/8/8/PPPPPPPP/RNBQ1BKR w kq - 0 1").unwrap();
-        assert!(
-            eval(&centre) < eval(&corner),
-            "with the pieces still on a king on e4 scored {} and one on g1 scored {}",
-            eval(&centre),
-            eval(&corner)
-        );
-    }
-
-    /// A phase read the wrong way round would still land inside the pair, so
-    /// this pins the direction the score moves in as the board empties rather
-    /// than only that it moves.
+    /// Each pair below differs by the king's square and nothing else, material
+    /// included, so the difference between them is the king's table alone. A
+    /// phase read the wrong way round would still land inside a pair, so what
+    /// is pinned is the direction the score moves in as the board empties
+    /// rather than only that it moves.
     #[test]
     fn a_king_is_worth_more_in_the_middle_the_emptier_the_board() {
-        // the same two king squares as above at three phases
+        // two king squares, e4 and g1, at three phases
         fn centre_over_corner(centre: &str, corner: &str) -> i32 {
             i32::from(eval(&Board::from_fen(centre).unwrap()))
                 - i32::from(eval(&Board::from_fen(corner).unwrap()))
