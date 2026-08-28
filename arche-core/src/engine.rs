@@ -2333,9 +2333,12 @@ mod search {
         // the old cap was twenty plies measured from the root, so no line
         // could report a selective depth past it whatever the position. A
         // sharp middlegame searched shallow reaches further than that in
-        // captures alone now, which is the whole of what the split bought
+        // captures alone now. Depth five is the shallowest search that
+        // clears the old cap with room to spare; eight proved the same
+        // thing for a hundred times the nodes, two minutes of it in a
+        // debug run
         let mut e = engine(Board::from_fen(SHARP_MIDDLEGAME).unwrap());
-        let result = completed(e.search(8));
+        let result = completed(e.search(5));
         assert!(
             result.selective_depth > 20,
             "quiescence stopped at {} plies",
