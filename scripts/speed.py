@@ -131,6 +131,26 @@ nps compares what a node costs, and the two sides are averaging over
 different nodes. Time to depth is what the change is worth at this depth,
 and only games say whether the tree it now searches is the right one."""
 
+# Said when the change between the medians is smaller than the spread of the
+# rounds it came from, so a reader is not left to weigh the two percentages
+# against each other and read the headline anyway.
+NO_CLAIM = """the change is inside the spread, so the medians make no claim; the
+fastest rounds above are the steadier pair when the machine was not
+quiet"""
+
+
+def fastest_line(measured: Measured) -> str:
+    """The two sides at their fastest round each. Nothing that shares the
+    machine ever makes a run faster, so each side's best round is its least
+    interfered one: on a quiet box this agrees with the medians, and on a
+    loaded runner it is the comparison that survives the load."""
+    base = max(measured.base_nps)
+    candidate = max(measured.candidate_nps)
+    return (
+        f"fastest rounds: base {base} nps, candidate {candidate} nps, "
+        f"change {change(base, candidate):+.1f}%"
+    )
+
 
 def trailer(base: list[int], candidate: list[int], base_ref: str) -> str:
     """The Speed trailer: the change between medians, and the wider of the
@@ -166,9 +186,10 @@ def main(argv: list[str]) -> int:
         f"base: {measured.base_nodes} nodes in {base_seconds:.2f} s, "
         f"candidate: {measured.candidate_nodes} nodes in {candidate_seconds:.2f} s"
     )
+    print(fastest_line(measured))
+    base_rate = statistics.median(measured.base_nps)
+    candidate_rate = statistics.median(measured.candidate_nps)
     if measured.base_nodes != measured.candidate_nodes:
-        base_rate = statistics.median(measured.base_nps)
-        candidate_rate = statistics.median(measured.candidate_nps)
         print(
             f"nodes {change(measured.base_nodes, measured.candidate_nodes):+.1f}%, "
             f"nps {change(base_rate, candidate_rate):+.1f}%, "
@@ -179,6 +200,21 @@ def main(argv: list[str]) -> int:
         # trailer stays the last line, which is what speed.sh is piped into
         print()
         print(COUNTS_DIFFER)
+        print()
+    widest = max(spread(measured.base_nps), spread(measured.candidate_nps))
+    # a spread of exactly zero is a perfectly repeatable measurement, where
+    # any change at all is a claim. When the counts differ the block above
+    # has already said no number here is one, and the fastest pair it would
+    # point at compares rates over different trees, so the gate stays out
+    # of it. Compared at full precision: the one divergence a reader can
+    # see is a printed tie, where either reading of it is fair
+    if (
+        measured.base_nodes == measured.candidate_nodes
+        and widest > 0
+        and abs(change(base_rate, candidate_rate)) <= widest
+    ):
+        print()
+        print(NO_CLAIM)
         print()
     print(trailer(measured.base_nps, measured.candidate_nps, args.base_ref))
     return 0

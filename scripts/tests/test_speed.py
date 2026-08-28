@@ -143,6 +143,58 @@ def test_the_report_leaves_the_breakdown_out_when_the_counts_match(tmp_path, cap
     assert speed.COUNTS_DIFFER not in out
 
 
+def test_the_fastest_rounds_are_compared_beside_the_medians(tmp_path, capsys):
+    # a shared machine only ever slows a run, so each side's best round is
+    # its least interfered one: the loaded rounds drag the medians apart
+    # while the fastest pair still says nothing changed
+    base = fake_engine(tmp_path, "base", [100, 80], nodes=100)
+    candidate = fake_engine(tmp_path, "candidate", [90, 100], nodes=100)
+    assert speed.main([str(base), str(candidate), "--rounds", "2"]) == 0
+    out = capsys.readouterr().out
+    assert "fastest rounds: base 100 nps, candidate 100 nps, change +0.0%" in out
+
+
+def test_a_change_inside_the_spread_says_it_makes_no_claim(tmp_path, capsys):
+    base = fake_engine(tmp_path, "base", [100, 104], nodes=100)
+    candidate = fake_engine(tmp_path, "candidate", [101, 105], nodes=100)
+    assert speed.main([str(base), str(candidate), "--rounds", "2"]) == 0
+    out = capsys.readouterr().out
+    assert speed.NO_CLAIM in out
+    # the paragraph points at "the fastest rounds above", so they must be
+    assert out.index("fastest rounds:") < out.index(speed.NO_CLAIM)
+    # and the trailer stays the last line, which is what speed.sh pipes on
+    assert out.strip().splitlines()[-1].startswith("Speed: ")
+
+
+def test_a_change_outside_the_spread_stands_unqualified(tmp_path, capsys):
+    base = fake_engine(tmp_path, "base", [100, 101], nodes=100)
+    candidate = fake_engine(tmp_path, "candidate", [110, 111], nodes=100)
+    assert speed.main([str(base), str(candidate), "--rounds", "2"]) == 0
+    assert speed.NO_CLAIM not in capsys.readouterr().out
+
+
+def test_differing_counts_keep_the_no_claim_paragraph_out(tmp_path, capsys):
+    # the counts-differ block has already said no number here is a claim,
+    # and the fastest pair compares rates over different trees, so the
+    # gate pointing at it would mislead twice over
+    base = fake_engine(tmp_path, "base", [100, 104], nodes=100)
+    candidate = fake_engine(tmp_path, "candidate", [101, 105], nodes=90)
+    assert speed.main([str(base), str(candidate), "--rounds", "2"]) == 0
+    out = capsys.readouterr().out
+    assert speed.COUNTS_DIFFER in out
+    assert speed.NO_CLAIM not in out
+
+
+def test_a_perfectly_repeatable_measurement_makes_its_claim_at_any_size(
+    tmp_path, capsys
+):
+    # zero spread is zero doubt: a change of nothing at all is not talked down
+    base = fake_engine(tmp_path, "base", [100] * 2, nodes=100)
+    candidate = fake_engine(tmp_path, "candidate", [100] * 2, nodes=100)
+    assert speed.main([str(base), str(candidate), "--rounds", "2"]) == 0
+    assert speed.NO_CLAIM not in capsys.readouterr().out
+
+
 def test_fewer_than_two_rounds_is_refused(tmp_path, capsys):
     base = fake_engine(tmp_path, "base", [100])
     candidate = fake_engine(tmp_path, "candidate", [100])

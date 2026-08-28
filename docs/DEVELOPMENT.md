@@ -233,7 +233,11 @@ nothing across machines, and a single pair of runs says little on one.
 than a checkout so the tree is left as it is, runs the bench for each side in
 turn with the side that goes first alternating, and prints the
 change between medians with the spread beside it, which is the `Speed:`
-trailer a perf commit carries. The Bench workflow's speed job does the same
+trailer a perf commit carries. The report also compares the two sides at
+their fastest round each — nothing sharing the machine ever makes a run
+faster, so that pair is the one that survives a loaded runner — and says
+outright when the change between the medians is inside the spread, which
+is a measurement making no claim. The Bench workflow's speed job does the same
 on every pull request, both sides built and run on one runner, and posts the
 result as a comment, or to the job summary alone for a pull request from a
 fork. It reports and does not gate: the count is the claim, and the rate is
