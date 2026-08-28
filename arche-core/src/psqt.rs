@@ -274,18 +274,15 @@ mod tests {
     /// mirroring each other and the evaluation still symmetric. Nothing but an
     /// assertion about which way up a table is will notice, so these name the
     /// squares rather than compare the colours.
+    ///
+    /// White's squares alone: `the_two_colours_are_reflections_of_each_other`
+    /// walks every piece on every square, so black's follow from white's and
+    /// naming them here would only say the same thing twice.
     #[test]
     fn a_white_pawn_is_worth_more_the_closer_it_gets_to_promoting() {
         assert_eq!(value(Piece::Pawn, Color::White, File::E, 2), -20);
         assert_eq!(value(Piece::Pawn, Color::White, File::E, 4), 20);
         assert_eq!(value(Piece::Pawn, Color::White, File::E, 7), 50);
-    }
-
-    #[test]
-    fn a_black_pawn_is_worth_more_the_closer_it_gets_to_promoting() {
-        assert_eq!(value(Piece::Pawn, Color::Black, File::E, 7), -20);
-        assert_eq!(value(Piece::Pawn, Color::Black, File::E, 5), 20);
-        assert_eq!(value(Piece::Pawn, Color::Black, File::E, 2), 50);
     }
 
     #[test]
@@ -296,10 +293,6 @@ mod tests {
         assert_eq!(value(Piece::Rook, Color::White, File::A, 2), -5);
         // and the square it lands on castling short is worth a little
         assert_eq!(value(Piece::Rook, Color::White, File::D, 1), 5);
-
-        assert_eq!(value(Piece::Rook, Color::Black, File::D, 2), 10);
-        assert_eq!(value(Piece::Rook, Color::Black, File::A, 7), -5);
-        assert_eq!(value(Piece::Rook, Color::Black, File::D, 8), 5);
     }
 
     #[test]
@@ -320,7 +313,6 @@ mod tests {
         assert_eq!(value(Piece::Bishop, Color::White, File::B, 3), 10);
         assert_eq!(value(Piece::Bishop, Color::White, File::C, 4), 10);
         assert_eq!(value(Piece::Bishop, Color::White, File::A, 1), -20);
-        assert_eq!(value(Piece::Bishop, Color::Black, File::B, 6), 10);
     }
 
     #[test]
@@ -330,7 +322,6 @@ mod tests {
         assert_eq!(value(Piece::Queen, Color::White, File::B, 3), 5);
         assert_eq!(value(Piece::Queen, Color::White, File::C, 4), 5);
         assert_eq!(value(Piece::Queen, Color::White, File::A, 1), -20);
-        assert_eq!(value(Piece::Queen, Color::Black, File::B, 6), 5);
     }
 
     /// Weaker than the tests above, since it holds whether or not the tables are
@@ -376,9 +367,6 @@ mod tests {
         assert_eq!(eg(Piece::King, Color::White, File::E, 4), 40);
         assert_eq!(eg(Piece::King, Color::White, File::G, 1), -30);
         assert_eq!(eg(Piece::King, Color::White, File::A, 1), -50);
-
-        assert_eq!(value(Piece::King, Color::Black, File::G, 8), 30);
-        assert_eq!(eg(Piece::King, Color::Black, File::E, 5), 40);
     }
 
     /// The endgame pawn table is a ramp and the midgame one is not, which is
