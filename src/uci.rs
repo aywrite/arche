@@ -224,6 +224,42 @@ impl SessionControl {
     }
 }
 
+/// Says on the interface's own channel why the engine died, before it does.
+///
+/// A panic writes its message and a backtrace to stderr, which a chess GUI
+/// reads never and discards always: the process just disappears mid game.
+/// This hook writes one `info string` to the writer given (stdout, in the
+/// binary) so the reason lands in the GUI's log, then hands over to the hook
+/// that was already installed, which keeps the backtrace on stderr for
+/// anyone running the engine by hand.
+///
+/// Takes the writer rather than assuming stdout so a test can install it
+/// against a buffer and read back what a panic would have said.
+pub fn report_panics_to<W: Write + Send + 'static>(out: W) {
+    let previous = std::panic::take_hook();
+    let out = std::sync::Mutex::new(out);
+    std::panic::set_hook(Box::new(move |panic| {
+        let message = if let Some(text) = panic.payload().downcast_ref::<&str>() {
+            text
+        } else if let Some(text) = panic.payload().downcast_ref::<String>() {
+            text.as_str()
+        } else {
+            "no message"
+        };
+        if let Ok(mut out) = out.lock() {
+            match panic.location() {
+                Some(at) => {
+                    let _ = writeln!(out, "info string panicked at {}: {}", at, message);
+                }
+                None => {
+                    let _ = writeln!(out, "info string panicked: {}", message);
+                }
+            }
+        }
+        previous(panic);
+    }));
+}
+
 /// The reader thread: every line the interface sends arrives here first.
 ///
 /// While a search is running it answers what the protocol says must be
@@ -1863,6 +1899,23 @@ go depth 3
             let buffer = self.said.0.lock().unwrap_or_else(PoisonError::into_inner);
             String::from_utf8(buffer.clone()).unwrap()
         }
+    }
+
+    #[test]
+    fn a_panic_is_said_where_the_interface_can_read_it() {
+        // the hook is process wide, so the test reads back its own buffer
+        // rather than asserting anything about the process's stdout
+        let said = SharedWriter::new(Vec::new());
+        report_panics_to(said.clone());
+        let panicked = thread::spawn(|| panic!("the search fell over")).join();
+        assert!(panicked.is_err());
+        let buffer = said.0.lock().unwrap_or_else(PoisonError::into_inner);
+        let line = String::from_utf8(buffer.clone()).unwrap();
+        assert!(
+            line.starts_with("info string panicked at ") && line.contains("the search fell over"),
+            "the panic was reported as: {}",
+            line
+        );
     }
 
     /// The last thing said, which is the bestmove in every session here.
