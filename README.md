@@ -8,9 +8,11 @@ change to it helped: every change states in its commit message how much of the t
 looks at afterwards, one that changes how the engine plays is measured in games before it
 merges, and one that claims to be faster states how much faster it measured.
 
-The board is represented using only bitboards (with magic bitboards for move generation of
-sliding pieces). The search is alpha beta with a transposition table, iterative deepening,
-quiescence search and MVV-LVA move ordering. Evaluation is material plus piece square tables.
+The board is bitboards, with magic bitboards for move generation of sliding pieces and a square
+array beside them so that asking what stands on a square is a load rather than a walk down the
+boards. The search is alpha beta with a transposition table, iterative deepening,
+quiescence search, MVV-LVA move ordering and reverse futility pruning. Evaluation is material
+plus piece square tables, tapered between a middlegame and an endgame score.
 
 ### Background
 
@@ -38,10 +40,10 @@ The engine is something to experiment on rather than an example to copy.
 The engine does not ship with any GUI. It currently implements a subset of the UCI protocol,
 so an open source GUI such as [Arena](http://www.playwitharena.de/) can drive it.
 
-The program starts in UCI mode immediately. The one argument it takes is
+The program starts in UCI mode immediately. The argument that does anything else is
 `bench [depth] [hash <MB>] [taint refuse|trust|skip|rule50]`, which searches a fixed set of positions and
 prints what each search counted, for measuring a change to the search or the speed of a
-machine. It is a UCI command as well as an argument.
+machine. It is a UCI command as well as an argument. `--version` and `--help` are answered too.
 
 Binaries for linux, macos and windows are attached to each
 [release](https://github.com/aywrite/arche/releases), each with a sha256 checksum and a build

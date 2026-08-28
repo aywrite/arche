@@ -282,9 +282,9 @@ mod evaluate {
         );
     }
 
-    /// And in between it is in between. A phase read the wrong way round would
-    /// still land inside the pair, so this pins the direction the score moves
-    /// in as the board empties rather than only that it moves.
+    /// A phase read the wrong way round would still land inside the pair, so
+    /// this pins the direction the score moves in as the board empties rather
+    /// than only that it moves.
     #[test]
     fn a_king_is_worth_more_in_the_middle_the_emptier_the_board() {
         // the same two king squares as above at three phases

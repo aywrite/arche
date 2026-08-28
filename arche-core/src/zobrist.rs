@@ -14,8 +14,7 @@ pub struct Zobrist {
 impl Zobrist {
     /// The keys, built at compile time. They only have to be well spread and
     /// the same on both sides of a game, so there is nothing to be gained from
-    /// drawing them at startup, and a `const` leaves nothing standing between a
-    /// proof about the key and the code it is about. Worth keeping one.
+    /// drawing them at startup.
     pub const TABLE: Zobrist = Self::build(0x3865_5440_d1b6_3d78);
 
     const fn build(seed: u64) -> Self {
