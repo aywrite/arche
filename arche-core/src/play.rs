@@ -16,8 +16,11 @@ pub struct Play {
     pub capture: Option<Piece>,
     pub promote: Option<PromotePiece>,
 
-    pub en_passant: bool, // True if an en_passant move was played
-    pub castle: bool,     // True if the move was a castling
+    /// The two moves that displace a second piece, and so cannot be read off
+    /// the from and to squares alone: the pawn taken en passant does not
+    /// stand on the to square, and a castle moves a rook as well as the king.
+    pub en_passant: bool,
+    pub castle: bool,
 }
 
 impl Play {
