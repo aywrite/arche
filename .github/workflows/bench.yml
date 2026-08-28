@@ -109,8 +109,11 @@ jobs:
         id: measure
         shell: bash
         run: |
+          # nine rounds rather than the local five: a shared runner's rounds
+          # range further than a quiet box's, and the extra half minute buys
+          # medians a single loaded round cannot drag
           python3 scripts/speed.py ./base-arche ./pr-arche \
-            --base-ref "${BASE_SHA:0:8}" --rounds 5 | tee speed.txt
+            --base-ref "${BASE_SHA:0:8}" --rounds 9 | tee speed.txt
       - name: Summarise
         # a failed measurement is reported as one, not as whatever tee had
         # written by the time speed.py gave up
