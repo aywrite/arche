@@ -36,6 +36,9 @@ fn main() -> ExitCode {
     let args: Vec<String> = std::env::args().skip(1).collect();
     match args.first().map(String::as_str) {
         None => {
+            // a panic must reach the interface's log before the process goes:
+            // stderr is where the backtrace lands and where no gui looks
+            uci::report_panics_to(std::io::stdout());
             let game = Board::new();
             let e = AlphaBeta::new(game);
             UCI::new_with_engine(e).read_loop();
