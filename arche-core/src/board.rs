@@ -41,6 +41,18 @@ struct PlayState {
     checkers: u64,
 }
 
+/// The play a pass records. A pass is not a move and has none of its own, so
+/// this is a placeholder: nothing plays it back, and `undo_null_move` reads it
+/// only to check in a debug build that the ply it is taking back was a pass.
+const NULL_PLAY: Play = Play {
+    from: 0,
+    to: 0,
+    capture: None,
+    promote: None,
+    en_passant: false,
+    castle: false,
+};
+
 // Plies of history the board can record, as a ring. Only the fifty move window
 // is ever read back, so this has to cover that plus the depth of the current
 // search rather than the whole game.
@@ -77,6 +89,12 @@ const G8: u8 = 62;
 const H8: u8 = 63;
 
 static ZOBRIST: Zobrist = Zobrist::TABLE;
+
+/// What a pass folds into the key it records in the history, so that the
+/// entry matches nothing. See `make_null_move` and `has_repeated` for why an
+/// entry a pass wrote must never answer a repetition test. Odd, so it changes
+/// every key it is applied to, and otherwise arbitrary.
+const NULL_HISTORY_SALT: u64 = 0x9e37_79b9_7f4a_7c15;
 
 static ATTACK_MASKS: AttackMasks = AttackMasks::new();
 // a const rather than a static, so that what is built from it can be built at
@@ -892,6 +910,17 @@ impl Board {
     /// reached a third time by whichever side wants it, so neither can be made
     /// to avoid it, and waiting for the third costs four plies of depth to see
     /// something that is available now.
+    ///
+    /// A claim here is a claim that a legal path came back to this position,
+    /// which is why the entry a pass writes is salted and matches nothing. A
+    /// pass is not a move either side has, so a line through one is not a
+    /// path a rule knows about, and an unsalted entry would let a later real
+    /// position count the passed-from position as an occurrence and take a
+    /// draw no rule grants. Every real entry either side of a pass still
+    /// compares as it always did: the window is a range of plies rather than
+    /// a walk back from here, so removing one entry from it removes nothing
+    /// else. Engines that let a repetition be claimed through a pass differ
+    /// here, and this is the divergence.
     pub fn has_repeated(&self) -> bool {
         self.repetition_count() >= 1
     }
@@ -1138,6 +1167,77 @@ impl Board {
         // this guarantees make/undo can never let the key drift out of sync
         self.key = history.position_key;
         self.checkers = history.checkers;
+    }
+
+    /// Hand the move to the other side without touching a piece.
+    ///
+    /// Not a chess move, and nothing outside the search has any business
+    /// playing one: the search passes to ask what a position is worth to a
+    /// side that does nothing, which is a question about the tree rather than
+    /// about the game. No piece moves, so the piece boards, the squares and
+    /// the evaluation accumulators are all left exactly as they stand.
+    ///
+    /// A pass is a reversible ply. Nothing was captured and no pawn moved, so
+    /// the fifty move counter runs on, which near the horizon is the point:
+    /// passing does not buy the side to move its way out of a draw.
+    ///
+    /// The en passant square goes, as it does on any move: the right belonged
+    /// to the side that has just given the move away. The checkers come out
+    /// empty, because the side not to move is never in check, so the side
+    /// inheriting the move is not in check either.
+    ///
+    /// The history entry's key is salted, which is what keeps a pass out of
+    /// the repetition arithmetic; `has_repeated` has the reasoning.
+    pub fn make_null_move(&mut self) {
+        debug_assert!(!self.in_check(), "a side in check cannot pass");
+        self.history[history_index(self.ply)] = Some(PlayState {
+            play: NULL_PLAY,
+            en_passant: self.en_passant,
+            castle: self.castle,
+            fifty_move_rule: self.fifty_move_rule,
+            position_key: self.key ^ NULL_HISTORY_SALT,
+            checkers: self.checkers,
+        });
+
+        if let Some(en_passant) = self.en_passant {
+            self.key ^= ZOBRIST.en_passant_key(en_passant.as_index());
+            self.en_passant = None;
+        }
+        self.active_color = !self.active_color;
+        self.key ^= ZOBRIST.side;
+        self.fifty_move_rule += 1;
+        self.ply += 1;
+        self.line_ply += 1;
+        self.checkers = 0;
+
+        self.debug_assert_state_in_step();
+        debug_assert_eq!(
+            self.checkers,
+            self.recompute_checkers(),
+            "checkers out of step after a pass"
+        );
+    }
+
+    /// Take the pass back. The mirror of `make_null_move`, and the only thing
+    /// that may follow one.
+    pub fn undo_null_move(&mut self) {
+        let previous = history_index(self.ply - 1);
+        let history = self.history[previous].unwrap();
+        self.history[previous] = None;
+        debug_assert_eq!(history.play, NULL_PLAY, "the last ply was not a pass");
+
+        self.castle = history.castle;
+        self.en_passant = history.en_passant;
+        self.fifty_move_rule = history.fifty_move_rule;
+        self.ply -= 1;
+        self.line_ply -= 1;
+        self.active_color = !self.active_color;
+        // the salt comes back off: what was recorded was this position's key
+        // with it on
+        self.key = history.position_key ^ NULL_HISTORY_SALT;
+        self.checkers = history.checkers;
+
+        self.debug_assert_state_in_step();
     }
 
     #[inline]
@@ -1943,6 +2043,94 @@ mod make_move {
         // second repeat: the game is actually drawn
         assert_eq!(board.has_repeated(), true);
         assert_eq!(board.is_repetition(), true);
+    }
+}
+
+#[cfg(test)]
+mod null_move {
+    use super::fens;
+    use super::play_named;
+    use super::{Accumulator, Board};
+    use pretty_assertions::{assert_eq, assert_ne};
+
+    /// A pass changes the position and unmaking it gives back a board equal
+    /// in every field, which is what the search relies on either side of one.
+    #[test]
+    fn a_pass_unmakes_back_to_the_position_it_left() {
+        for fen in fens::CORE {
+            let board = Board::from_fen(fen).unwrap();
+            assert_eq!(board.in_check(), false, "{}", fen);
+            let mut passed = board;
+            passed.make_null_move();
+            assert_ne!(board, passed, "{}", fen);
+            passed.undo_null_move();
+            assert_eq!(board, passed, "{}", fen);
+        }
+    }
+
+    /// No piece moves, so everything kept incrementally has to come out of a
+    /// pass equal to a recompute. The debug build asserts this inside the
+    /// pass itself; this says it in a release build too, which is where the
+    /// bench and the tactical suite run.
+    #[test]
+    fn a_pass_leaves_the_derived_state_in_step() {
+        for fen in fens::CORE {
+            let mut board = Board::from_fen(fen).unwrap();
+            board.make_null_move();
+            assert_eq!(board.key, board.recompute_key(), "{}", fen);
+            assert_eq!(board.eval, Accumulator::recomputed(&board), "{}", fen);
+            assert_eq!(board.squares, board.recompute_squares(), "{}", fen);
+            assert_eq!(board.checkers, board.recompute_checkers(), "{}", fen);
+            assert_eq!(board.checkers, 0, "{}", fen);
+        }
+    }
+
+    /// A pass captures nothing and moves no pawn, so the counter runs on,
+    /// and comes back where it was.
+    #[test]
+    fn a_pass_runs_the_fifty_move_counter_on() {
+        let mut board = Board::from_fen("4k3/8/8/8/8/8/8/R3K3 w - - 37 40").unwrap();
+        assert_eq!(board.fifty_move_rule, 37);
+        board.make_null_move();
+        assert_eq!(board.fifty_move_rule, 38);
+        board.undo_null_move();
+        assert_eq!(board.fifty_move_rule, 37);
+    }
+
+    /// The en passant square goes with the move, as it does on any move: it
+    /// was the right of the side that has just passed the move on, and a
+    /// square nobody can take on fails the board's own check.
+    #[test]
+    fn a_pass_clears_the_en_passant_square() {
+        // white has just pushed d2-d4 past a black pawn on e4, so the square
+        // it passed over is one black can take on and is in the key
+        let board = Board::from_fen("rnbqkbnr/pppp1ppp/8/8/3Pp3/8/PPP1PPPP/RNBQKBNR b KQkq d3 0 3")
+            .unwrap();
+        assert!(board.en_passant.is_some());
+        let mut passed = board;
+        passed.make_null_move();
+        assert_eq!(passed.en_passant, None);
+        passed.undo_null_move();
+        assert_eq!(passed.en_passant, board.en_passant);
+        assert_eq!(passed.key, board.key);
+    }
+
+    /// A line through a pass is not a path a repetition rule knows about, so
+    /// coming back to the position the pass was made from is not a draw. Both
+    /// rooks travel home again here, one of them in three moves and the other
+    /// in two, which is what lets an odd number of plies undo a pass; the key
+    /// assertion is what says an unsalted entry would have matched.
+    #[test]
+    fn a_pass_is_not_a_prior_occurrence_of_the_position_it_passed_from() {
+        let mut board = Board::from_fen("r6k/8/8/8/8/8/8/R6K w - - 0 1").unwrap();
+        let key = board.key;
+        board.make_null_move();
+        for name in ["a8a7", "a1a2", "a7a6", "a2a1", "a6a8"] {
+            let play = play_named(&board, name);
+            assert!(board.make_move(&play), "{} is not legal here", name);
+        }
+        assert_eq!(board.key, key, "the line did not come back to the position");
+        assert_eq!(board.has_repeated(), false);
     }
 }
 

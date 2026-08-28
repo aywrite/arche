@@ -51,6 +51,17 @@ const REVERSE_FUTILITY_MARGIN: Score = 100;
 // ones had not already pruned, at a guess that gets worse the deeper it
 // is made.
 const REVERSE_FUTILITY_MAX_DEPTH: u8 = 4;
+// How many plies shallower than the node that passes the pass itself is
+// searched. The whole point of a pass is that it is answered cheaply, so
+// this is what the shortcut costs; too large and the reduced search proves
+// nothing, too small and it costs what searching the moves would have. Two
+// is where this starts, and what moves it is a match rather than the bench.
+const NULL_MOVE_REDUCTION: u8 = 2;
+// The shallowest depth a node may pass at, one more than the reduction so
+// that the reduced search is never asked for a depth below zero. At the
+// floor that search is quiescence, which still answers the question asked,
+// only from the captures alone.
+const NULL_MOVE_MIN_DEPTH: u8 = NULL_MOVE_REDUCTION + 1;
 
 /// What the protocol interface asks of an engine: positions in, answers out.
 /// How an implementation searches is its own business, which is why the
@@ -191,6 +202,11 @@ pub struct SearchConfig {
     /// the fail high it is all but certain to find. A shortcut, and a guess:
     /// on in the default, off in the reference.
     pub reverse_futility: bool,
+    /// Whether a node may hand the move to the other side and answer from a
+    /// reduced search of that, rather than search its own moves, when the
+    /// pass alone already stands above beta. The second shortcut, and a
+    /// guess like the first: on in the default, off in the reference.
+    pub null_move: bool,
 }
 
 /// What to do with a draw tainted score: one stored by a search that read
@@ -242,6 +258,7 @@ impl SearchConfig {
         Self {
             taint: TaintPolicy::Refuse,
             reverse_futility: false,
+            null_move: false,
         }
     }
 
@@ -290,10 +307,15 @@ impl Default for SearchConfig {
     /// first that prunes: it halves the bench, and unlike the taint policy
     /// it is a guess about a tree rather than a rule about a score, which
     /// is why the reference keeps it off.
+    ///
+    /// The pass is the third, and the same kind of guess. It buys its
+    /// confidence with a reduced search where reverse futility buys it with
+    /// a margin, so it prunes where a margin cannot reach.
     fn default() -> Self {
         Self {
             taint: TaintPolicy::Rule50,
             reverse_futility: true,
+            null_move: true,
         }
     }
 }
@@ -552,11 +574,17 @@ impl AlphaBeta {
         Ok(value)
     }
 
+    /// One full width node. `can_null` is false only under a pass, which is
+    /// how two of them in a row are refused: a position neither side has
+    /// moved in is not one a reduced search says anything about. A parameter
+    /// rather than a field toggled around the call, so that reading the
+    /// recursion says which nodes may pass.
     fn alpha_beta(
         &mut self,
         mut alpha: Score,
         beta: Score,
         mut depth: u8,
+        can_null: bool,
     ) -> Result<Value, Aborted> {
         self.poll_deadline()?;
         self.selective_depth = self.selective_depth.max(self.board.line_ply as u8);
@@ -662,6 +690,73 @@ impl AlphaBeta {
             }
         }
 
+        // The pass, after the margin has had its say and before any move is
+        // searched. If the side to move can hand the move over and a reduced
+        // search of the position that leaves still comes back above beta,
+        // then a real move here almost certainly does too, and the node is
+        // answered without searching one. Reverse futility just above claims
+        // the same thing from a margin; this claims it from a search, which
+        // is dearer and reaches where a margin cannot. It is a guess about
+        // the tree either way, so the reference makes neither.
+        //
+        // The window is a zero one. The question is only whether a pass
+        // beats beta, and that is the cheapest way to ask it.
+        //
+        // The gates, in the order they are cheapest to ask in:
+        //
+        // - not twice in a row, or the search would be answering a position
+        //   from a line neither side played anything in. Nothing reaches
+        //   that gate as the rest of them stand: a node passes only with
+        //   its eval at or above beta, the pass under it is searched with
+        //   the window turned round, and the eval turns round with it, so
+        //   the second node's eval is below its own beta and it never asks
+        //   for a pass. What holds a double pass off today is therefore the
+        //   eval gate rather than the rule, and this is the rule, standing
+        //   ready for the day that gate is dropped or given a margin;
+        // - deep enough for the reduction to leave a search behind it;
+        // - not in check, since a side that has to answer a check cannot
+        //   decline to move, the same reason the margin above is refused
+        //   there and quiescence does not stand pat;
+        // - not a side down to pawns and a king, which is the material
+        //   zugzwang happens to: there passing is better than every move
+        //   there is, so what the reduced search proves is nothing about
+        //   the moves;
+        // - beta inside the mate window, for the reason the margin gives:
+        //   against a beta belonging to a mate the other side is proving,
+        //   a cutoff here would leave the subtree that holds a faster mate
+        //   unsearched;
+        // - and the eval already above beta, so what is spent is spent on
+        //   proving something that looks true. The eval is one incremental
+        //   read here, and it turns away the passes that were going to fail.
+        //
+        // Nothing is stored, exactly as reverse futility stores nothing: an
+        // entry names the play it was reached by, and a pass is not one.
+        if self.config.null_move
+            && can_null
+            && depth >= NULL_MOVE_MIN_DEPTH
+            && !in_check
+            && self.board.has_non_pawn_material()
+            && beta.abs() < CHECKMATE_THRESHOLD
+            && self.eval() >= beta
+        {
+            self.board.make_null_move();
+            let result = self.alpha_beta(-beta, -beta + 1, depth - 1 - NULL_MOVE_REDUCTION, false);
+            // undo before an abort can propagate, or the board would keep
+            // the passed line
+            self.board.undo_null_move();
+            let value = -result?;
+            if value.score >= beta {
+                // a mate found through a pass is not a mate. The pass is not
+                // a move either side has, so what was proved is that the
+                // position is very good and not that it is won, and the
+                // score is held below the window a caller reads mates in
+                let score = value.score.min(CHECKMATE_THRESHOLD - 1);
+                return Ok(Value::with_taint(score, value.tainted));
+            }
+            // a pass that failed still read whatever it read on the way
+            node_tainted |= value.tainted;
+        }
+
         // The table's move sorts ahead of everything else below, and when there
         // is one it takes the cutoff nine times in ten. Searching it before
         // generating means the nodes it cuts never generate or sort at all.
@@ -673,7 +768,7 @@ impl AlphaBeta {
                 tt_tried = Some(tt);
                 if self.board.make_move(&tt) {
                     found_legal_move = true;
-                    let result = self.alpha_beta(-beta, -alpha, depth - 1);
+                    let result = self.alpha_beta(-beta, -alpha, depth - 1, true);
                     self.board.undo_move();
                     // the table's move is searched before the rest are even
                     // generated, so it taints this node the same way any other
@@ -716,7 +811,7 @@ impl AlphaBeta {
                 // undo before an abort can propagate, or the board would keep
                 // the aborted line. Propagating also keeps the meaningless
                 // score of an aborted frame away from the stores below.
-                let result = self.alpha_beta(-beta, -alpha, depth - 1);
+                let result = self.alpha_beta(-beta, -alpha, depth - 1, true);
                 self.board.undo_move();
                 // a value built from a tainted child is tainted, whether or not
                 // it turns out to be the best one here
@@ -863,7 +958,7 @@ impl AlphaBeta {
                 found_legal_move = true;
                 // undo before an abort can propagate, or the board would keep
                 // the aborted line
-                let result = self.alpha_beta(-beta, -alpha, depth - 1);
+                let result = self.alpha_beta(-beta, -alpha, depth - 1, true);
                 self.board.undo_move();
                 match result {
                     Err(Aborted) => {
@@ -1143,8 +1238,8 @@ mod search {
     use super::Board;
     use super::Engine;
     use super::{
-        Limits, Play, SearchConfig, SearchOutcome, SearchParameters, SearchResult, TaintPolicy,
-        Value,
+        CHECKMATE_THRESHOLD, Limits, Play, SearchConfig, SearchOutcome, SearchParameters,
+        SearchResult, TaintPolicy, Value,
     };
     use crate::board::{fens, play_named};
     use crate::limits::Clock;
@@ -1225,6 +1320,20 @@ mod search {
             TABLE_BYTES,
             SearchConfig {
                 reverse_futility: true,
+                ..SearchConfig::reference()
+            },
+        )
+    }
+
+    /// The reference with the pass switched on and nothing else touched,
+    /// the arm reverse futility has one of beside it: whatever moves between
+    /// this and `reference` is the pass and nothing else.
+    fn passing(board: Board) -> AlphaBeta {
+        AlphaBeta::with_config(
+            board,
+            TABLE_BYTES,
+            SearchConfig {
+                null_move: true,
                 ..SearchConfig::reference()
             },
         )
@@ -2062,6 +2171,145 @@ mod search {
             format!("{}", result.best_move),
             format!("{}", expected.best_move),
         );
+    }
+
+    #[test]
+    fn passing_looks_at_less_of_the_tree() {
+        // the switch has to reach the search: one the search never read
+        // would make every comparison with the reference a comparison of
+        // the reference with itself, and the bench's two pinned counts
+        // would move together instead of apart
+        let mut e = passing(Board::from_fen(SHARP_MIDDLEGAME).unwrap());
+        completed(e.search(6));
+        let mut cold = reference(Board::from_fen(SHARP_MIDDLEGAME).unwrap());
+        completed(cold.search(6));
+        assert!(
+            e.nodes < cold.nodes,
+            "the pass searched {} nodes against the reference's {}",
+            e.nodes,
+            cold.nodes
+        );
+    }
+
+    #[test]
+    fn a_side_holding_only_pawns_never_passes() {
+        // the trebuchet again, and for the same reason: whoever is to move
+        // loses, so passing is better there than every move there is and a
+        // reduced search of one proves nothing about them. That is what
+        // zugzwang is, and pawns and a king is the material it happens to.
+        // The gate refuses the pass at every node of this tree, so the arm
+        // searches what the reference searches, node for node.
+        let fen = "8/8/8/4p3/4Pk2/3K4/8/8 w - - 0 1";
+        let mut e = passing(Board::from_fen(fen).unwrap());
+        let result = completed(e.search(7));
+        let mut cold = reference(Board::from_fen(fen).unwrap());
+        let expected = completed(cold.search(7));
+        assert_eq!(e.nodes, cold.nodes);
+        assert_eq!(result.score, expected.score);
+        assert_eq!(
+            format!("{}", result.best_move),
+            format!("{}", expected.best_move),
+        );
+    }
+
+    #[test]
+    fn a_mate_only_a_move_refutes_survives_the_pass() {
+        // hxg7+ Kxg7 Rxh7+ Kxh7 Qf6 mates, and white is a pawn and a rook
+        // down along the way. Every node after the first is a node in
+        // check, where there is no declining to move, and the sacrifices
+        // are only answered by the moves that deliver them. A pass taken
+        // in either place would answer those nodes from the material and
+        // the mate would go with it.
+        let fen = "r5rk/2p1Nppp/3p3P/pp2p1P1/4P3/2qnPQK1/8/R6R w - - 0 1";
+        let mut e = passing(Board::from_fen(fen).unwrap());
+        let result = completed(e.search(4));
+        assert_eq!(result.checkmate_in(), Some(4));
+
+        let mut cold = reference(Board::from_fen(fen).unwrap());
+        let expected = completed(cold.search(4));
+        assert_eq!(result.score, expected.score);
+        assert_eq!(
+            format!("{}", result.best_move),
+            format!("{}", expected.best_move),
+        );
+    }
+
+    #[test]
+    fn a_mate_found_through_a_pass_does_not_come_back_as_one() {
+        // Black's king stands in the corner with white's knight the only
+        // square it can step to. Pass, and black has to take the knight,
+        // after which Qh2 mates: the reduced search under the pass comes
+        // back with a mate score. It is not a mate. White never had the
+        // pass to play, so what was proved is that the position is very
+        // good, and the node answers below the window a caller reads mates
+        // in. The mate that is really there is found by searching the moves.
+        //
+        // Beta is the eval, which is the largest one the pass is tried
+        // under, and that is what makes the mate the only score that can
+        // come back: taking the knight puts white under beta, so nothing
+        // short of the mate clears it. The node is asked for directly
+        // because a mate invented here has to be caught where it is
+        // invented. By the time the root has searched its moves the real
+        // mate outscores the invented one and nothing above can tell them
+        // apart.
+        let board = Board::from_fen("7k/5K1N/8/8/8/8/Q7/8 w - - 0 1").unwrap();
+        let mut e = passing(board);
+        let beta = e.eval();
+        let Ok(value) = e.alpha_beta(beta - 1, beta, 5, true) else {
+            panic!("nothing was armed to abort this search");
+        };
+        assert!(
+            value.score >= beta,
+            "the pass did not fail high, so nothing was clamped: {}",
+            value.score
+        );
+        assert!(
+            value.score < CHECKMATE_THRESHOLD,
+            "a mate proved only through a pass came back as one: {}",
+            value.score
+        );
+    }
+
+    /// One ply short of the fifty move horizon, and arranged so that the
+    /// pass is the only way to reach it. Every move white has is a capture
+    /// or a pawn move, which puts the counter back to nothing, so no line
+    /// white can play reads a draw; the pass moves no piece and takes no
+    /// pawn, so the counter runs on and the position under it is drawn.
+    /// Whatever taint comes out of a node here came out of the pass.
+    const ONLY_A_PASS_READS_THE_DRAW: &str = "1k6/8/8/8/8/5p1p/4P1PP/6NK w - - 99 60";
+
+    #[test]
+    fn a_cutoff_from_a_pass_carries_the_pass_taint() {
+        // The pass runs the counter out, so what comes back is the draw,
+        // which is a fact about the line and not about the position. Beta
+        // is nothing, so that draw clears it and the node is answered from
+        // the pass. The answer has to say what it depended on, or the
+        // table stores a score as if the position were worth it whatever
+        // the counter said.
+        let board = Board::from_fen(ONLY_A_PASS_READS_THE_DRAW).unwrap();
+        let mut e = passing(board);
+        let Ok(value) = e.alpha_beta(-1, 0, 3, true) else {
+            panic!("nothing was armed to abort this search");
+        };
+        assert_eq!(value, Value::tainted(0));
+    }
+
+    #[test]
+    fn a_pass_that_failed_still_taints_the_node() {
+        // The same position with beta at the eval, which is the largest one
+        // the pass is tried under. The draw the pass reads is worth nothing
+        // and beta is worth more, so the pass fails and the moves are
+        // searched. It still read the draw on the way, and the node has to
+        // carry that: white is winning here, so the score the node settles
+        // on is one of its own moves and the taint is the pass's alone.
+        let board = Board::from_fen(ONLY_A_PASS_READS_THE_DRAW).unwrap();
+        let mut e = passing(board);
+        let beta = e.eval();
+        assert!(beta > 0, "the pass has to fail, so beta must beat a draw");
+        let Ok(value) = e.alpha_beta(beta - 1, beta, 3, true) else {
+            panic!("nothing was armed to abort this search");
+        };
+        assert!(value.tainted, "the failed pass left no taint behind it");
     }
 
     #[test]
