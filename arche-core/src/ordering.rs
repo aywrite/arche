@@ -8,7 +8,9 @@
 //! The sort is stable and generation order breaks its ties, so the tree a
 //! search walks depends on both, and the node count tests pin the pair.
 //! Ordering that remembers across nodes — killers, history — lands here
-//! when it arrives.
+//! when it arrives; mind that the root's aborted-answer swap is sound only
+//! because the table's move sorts first, so nothing may outrank the bonus
+//! at the root. The deepening loop says why.
 
 use crate::board::{Board, MOVE_LIST_INLINE, MoveList};
 use crate::misc::Piece;

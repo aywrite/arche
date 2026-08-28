@@ -147,6 +147,17 @@ impl SearchParameters {
         }
     }
 
+    /// Everything one iteration may be stopped by, under the one rule:
+    /// until a depth has been answered there is nothing to answer with, so
+    /// nothing — not the clock, not the budget, not the flag — may stop
+    /// the search. Depth one is microseconds, and this is what makes every
+    /// `go` end in a real move rather than in a null one from a position
+    /// with moves.
+    fn for_iteration(&self, answered: bool, spent: u64) -> (Limits, Option<Arc<AtomicBool>>) {
+        let stop = if answered { self.stop.clone() } else { None };
+        (self.limits.for_iteration(answered, spent), stop)
+    }
+
     /// A search to a fixed depth and nothing else: no clock, no budget.
     pub fn to_depth(depth: u8) -> Self {
         Self::new(Some(depth), Limits::unlimited())
@@ -301,9 +312,10 @@ pub struct AlphaBeta {
     /// limits themselves decide.
     next_check: u64,
     /// The flag another thread sets to stop the search, or none while
-    /// nothing may. The deepening loop arms it a depth at a time, exactly
-    /// as it arms the clock, so a search asked directly for a depth is
-    /// never interruptible and never reads it.
+    /// nothing may. `SearchParameters::for_iteration` arms it exactly as
+    /// it arms the clock, and `search_root`'s prologue writes what arrived
+    /// in its signature, so a search asked directly for a depth is never
+    /// interruptible and never reads it.
     stop: Option<Arc<AtomicBool>>,
     /// The nodes quiescence visited, a part of nodes. Counted for the bench,
     /// which reports what share of the tree the captures are. Never reset,
@@ -780,19 +792,25 @@ impl AlphaBeta {
     /// table whose generation never moves keeps every entry looking current:
     /// nothing goes stale and the oldest entries are never the ones given up.
     pub fn search_within(&mut self, depth: u8, limits: Limits) -> SearchOutcome {
-        // nothing outside stops a search asked for directly. The flag
-        // belongs to the deepening loop, which arms it a depth at a time
-        self.stop = None;
-        self.search_root(depth, limits)
+        // nothing outside stops a search asked for directly
+        self.search_root(depth, limits, None)
     }
 
-    /// The body of one fixed depth search, with whatever the caller has
-    /// already armed left as it stands.
-    fn search_root(&mut self, mut depth: u8, limits: Limits) -> SearchOutcome {
+    /// The body of one fixed depth search. Everything that may interrupt
+    /// it arrives in the signature — the limits it spends, and the flag
+    /// that is the one interrupter from outside — and the prologue, not
+    /// the caller, writes the field the poll reads.
+    fn search_root(
+        &mut self,
+        mut depth: u8,
+        limits: Limits,
+        stop: Option<Arc<AtomicBool>>,
+    ) -> SearchOutcome {
         // held to the rail here and not only at the interface, so a caller
         // of the library cannot ask the check extension below to overflow
         depth = depth.min(MAX_PLY);
         self.limits = limits;
+        self.stop = stop;
         self.next_check = 0;
         self.nodes = 0;
         self.selective_depth = depth;
@@ -979,20 +997,8 @@ impl Engine for AlphaBeta {
             {
                 return SearchOutcome::Aborted(best);
             }
-            let limits = search_options
-                .limits
-                .for_iteration(best.is_some(), total_nodes);
-            // the stop flag is armed the way the clock is: until a depth
-            // has been answered there is nothing to answer with, so a stop
-            // arriving during depth one lets depth one finish. That is
-            // microseconds, and it is what makes every `go` end in a real
-            // move rather than in a null one from a position with moves
-            self.stop = if best.is_some() {
-                search_options.stop.clone()
-            } else {
-                None
-            };
-            match self.search_root(depth, limits) {
+            let (limits, stop) = search_options.for_iteration(best.is_some(), total_nodes);
+            match self.search_root(depth, limits, stop) {
                 SearchOutcome::Aborted(deeper) => {
                     // the interrupted iteration's best outranks the completed
                     // depth's whenever it has one. The root searches full
@@ -1673,6 +1679,20 @@ mod search {
         };
         assert!(deepest < super::MAX_PLY, "the flag stopped nothing");
         assert!(result.nodes > 0);
+    }
+
+    #[test]
+    fn nothing_is_armed_until_a_depth_has_been_answered() {
+        let stop = Arc::new(AtomicBool::new(false));
+        let options = SearchParameters::stoppable(None, Limits::unlimited(), Arc::clone(&stop));
+        let (_, unarmed) = options.for_iteration(false, 0);
+        assert!(unarmed.is_none(), "the first iteration was stoppable");
+        let (_, armed) = options.for_iteration(true, 0);
+        let armed = armed.expect("an answered search was not stoppable");
+        assert!(
+            Arc::ptr_eq(&armed, &stop),
+            "the armed flag is not the caller's"
+        );
     }
 
     #[test]
