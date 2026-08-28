@@ -24,6 +24,8 @@ The engine is something to experiment on rather than an example to copy.
 
 ## Documentation
 
+- [docs/ARCHITECTURE.md](docs/ARCHITECTURE.md) — how the code is organized and how the main
+  parts work
 - [docs/DEVELOPMENT.md](docs/DEVELOPMENT.md) — building, the tests, the benchmarks and the
   bench, playing a match against a previous version, placing the engine on the ccrl scale, and
   cutting a release
