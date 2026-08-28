@@ -22,3 +22,15 @@ be wrong, and which experiments have already been measured and rejected.
 - Pull request descriptions are short, plain and self-contained.
 - For a change that is not trivial, have a second agent review it if one is
   available, and check its findings against the code before acting on them.
+
+## Writing
+
+Anything a reader sees (commit messages, PR bodies, docs, comments) is written
+plainly. Short declarative sentences. Parentheses rather than em dashes. Say
+what changed and why without staging it: a commit title is "Add an
+architecture overview", not "Draw the map a new reader looks for".
+
+Some things read as generated and are avoided: three-part parallel
+constructions, hype words (robust, comprehensive, powerful, seamless), clever
+closing lines, and the same idiom twice in one file. When unsure, read the
+readme and the 2022 commits in `git log` and match those.
