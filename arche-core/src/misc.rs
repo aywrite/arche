@@ -112,12 +112,36 @@ mod coordinate {
 /// Who may still castle where. A right is given up for good, by the king or
 /// the rook moving or the rook being taken, so these only ever go from true
 /// to false.
-#[derive(Debug, Copy, Clone, PartialEq, Eq)]
+#[derive(Debug, Copy, Clone, Eq)]
 pub struct CastlePermissions {
     pub black_king_side: bool,
     pub black_queen_side: bool,
     pub white_king_side: bool,
     pub white_queen_side: bool,
+}
+
+/// Four one byte fields, so the rights are four bytes with nothing between
+/// them left undefined.
+const _: () = assert!(std::mem::size_of::<CastlePermissions>() == 4);
+
+/// Compared as one word rather than a right at a time.
+///
+/// The derive reads a field, branches, and reads the next, which is the
+/// cheaper shape when the answer is usually no and the first field settles
+/// it. Here the answer is usually yes — the rights survive almost every move
+/// unchanged, which is what make asks this to find out — so all four are read
+/// either way, and reading them together is a comparison instead of four.
+impl PartialEq for CastlePermissions {
+    #[inline]
+    fn eq(&self, other: &Self) -> bool {
+        // SAFETY: four `bool` fields at alignment one, asserted above to come
+        // to four bytes, so there is no padding and every byte is a `bool`'s
+        // own zero or one. Equal bytes and equal rights are the same thing.
+        unsafe {
+            std::mem::transmute::<CastlePermissions, u32>(*self)
+                == std::mem::transmute::<CastlePermissions, u32>(*other)
+        }
+    }
 }
 
 impl CastlePermissions {
