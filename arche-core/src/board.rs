@@ -1083,8 +1083,15 @@ impl Board {
             _ => (),
         }
         // XORing both the old and new castle keys removes the old permissions
-        // from the position key and adds the new ones (a no-op when unchanged)
-        self.key ^= ZOBRIST.castle_key(old_castle) ^ ZOBRIST.castle_key(self.castle);
+        // from the position key and adds the new ones. Asked first rather
+        // than folded unconditionally: the rights only change when a king or
+        // a rook leaves its square or a rook is taken on one, which is a
+        // handful of moves in a game, and on every other one the two keys are
+        // the same key and cancel. One comparison decides that, where folding
+        // both walked the four rights twice to arrive at nothing.
+        if self.castle != old_castle {
+            self.key ^= ZOBRIST.castle_key(old_castle) ^ ZOBRIST.castle_key(self.castle);
+        }
         if let Some(en_passant) = self.en_passant {
             // the en passant rights of the previous position have expired
             self.key ^= ZOBRIST.en_passant_key(en_passant.as_index());
