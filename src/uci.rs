@@ -2,8 +2,7 @@
 // Copyright (C) 2022-2026 Andrew Wright
 
 use crate::params::{Param, Params};
-pub use crate::session::report_panics_to;
-use crate::session::{self, SessionControl, SharedWriter, first_word};
+use crate::session::{self, SessionControl, SharedWriter, first_word, report_panics_to};
 use crate::time_control::TimeControl;
 use arche_core::Color;
 use arche_core::Engine;
@@ -98,6 +97,13 @@ impl<T: Engine> UCI<T, SharedWriter<Stdout>> {
 }
 
 impl<T: Engine, W: Write + Send + 'static> UCI<T, SharedWriter<W>> {
+    /// Install the panic hook speaking through this session's writer, so
+    /// the reason the engine died goes out through the same lock as every
+    /// other line rather than through a second handle on the same stream.
+    pub fn report_panics(&self) {
+        report_panics_to(self.out.clone());
+    }
+
     /// Run this session over the input given: the session module owns the
     /// threads and the loop, and every line comes back to `dispatch` here.
     /// The engine never crosses the boundary: it is searched on this

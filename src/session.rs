@@ -186,11 +186,15 @@ impl SessionControl {
 /// that was already installed, which keeps the backtrace on stderr for
 /// anyone running the engine by hand.
 ///
-/// Takes the writer rather than assuming stdout so a test can install it
-/// against a buffer and read back what a panic would have said.
-pub fn report_panics_to<W: Write + Send + 'static>(out: W) {
+/// Takes the session's writer rather than assuming stdout, so the report
+/// goes out through the same lock as every other line, and so a test can
+/// install it against a buffer and read back what a panic would have said.
+/// The lock is taken only if it is free: a panic raised by the very write
+/// the lock was taken for would find it still held by this thread, and a
+/// hook that blocked there would hang the report and the backtrace both.
+/// An engine dying that way says its piece on stderr alone.
+pub(crate) fn report_panics_to<W: Write + Send + 'static>(out: SharedWriter<W>) {
     let previous = std::panic::take_hook();
-    let out = std::sync::Mutex::new(out);
     std::panic::set_hook(Box::new(move |panic| {
         let message = if let Some(text) = panic.payload().downcast_ref::<&str>() {
             text
@@ -199,7 +203,14 @@ pub fn report_panics_to<W: Write + Send + 'static>(out: W) {
         } else {
             "no message"
         };
-        if let Ok(mut out) = out.lock() {
+        // a poisoned lock is some other thread's panic, already reported;
+        // this one still wants its say
+        let held = match out.0.try_lock() {
+            Ok(out) => Some(out),
+            Err(std::sync::TryLockError::Poisoned(poisoned)) => Some(poisoned.into_inner()),
+            Err(std::sync::TryLockError::WouldBlock) => None,
+        };
+        if let Some(mut out) = held {
             match panic.location() {
                 Some(at) => {
                     let _ = writeln!(out, "info string panicked at {}: {}", at, message);
