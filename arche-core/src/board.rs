@@ -1231,8 +1231,7 @@ impl Board {
             self.clear_piece_index(play.to, (&promote).into(), opposing_color);
             self.set_piece_index(play.from, Piece::Pawn, opposing_color);
         } else {
-            self.clear_piece_index(play.to, from_piece, opposing_color);
-            self.set_piece_index(play.from, from_piece, opposing_color);
+            self.relocate_piece_index(play.to, play.from, from_piece, opposing_color);
         }
 
         if let Some(capture) = play.capture {
@@ -1339,11 +1338,15 @@ impl Board {
     ) {
         debug_assert!((self.black | self.white).is_bit_set(from));
         debug_assert!(!(self.black | self.white).is_bit_set(to));
-        self.clear_piece_index(from, piece, color);
-        if let Some(promote) = promote_piece {
-            self.set_piece_index(to, (&promote).into(), color);
-        } else {
-            self.set_piece_index(to, piece, color);
+        match promote_piece {
+            // a promotion is not a relocation: the piece that stands on the
+            // board afterwards is not the one that left, so what it is worth
+            // and what it counts for the phase both change
+            Some(promote) => {
+                self.clear_piece_index(from, piece, color);
+                self.set_piece_index(to, (&promote).into(), color);
+            }
+            None => self.relocate_piece_index(from, to, piece, color),
         }
     }
 
@@ -1588,6 +1591,39 @@ impl Board {
     fn set_piece(&mut self, piece: Piece, color: Color, rank: u8, file: File) {
         let index = coordinate_to_index(rank, file);
         self.set_piece_index(index, piece, color);
+    }
+
+    /// Move a piece between two squares, which is neither a placement nor a
+    /// removal.
+    ///
+    /// Clearing one square and setting the other says the same thing, but it
+    /// says it in halves that cancel: the piece never leaves the board, so
+    /// what it is worth and what it counts for the phase are the same on both
+    /// squares, and each board it stands on ends with the bits it started
+    /// with. Only the two squares differ, and only they are touched here.
+    #[inline(always)]
+    fn relocate_piece_index(&mut self, from: u8, to: u8, piece: Piece, color: Color) {
+        debug_assert!(from != to);
+        debug_assert!(from < 64 && to < 64);
+        let moved =
+            ZOBRIST.get_piece_key(from, piece, color) ^ ZOBRIST.get_piece_key(to, piece, color);
+        self.key ^= moved;
+        // and the pawn key with it when it is a pawn that moved, on the same
+        // randoms and so on the value already in hand
+        if piece == Piece::Pawn {
+            self.pawn_key ^= moved;
+        }
+        self.eval.relocate(from, to, piece, color);
+
+        // one board keeps its population, so the two bits flip together
+        let both = (1u64 << from) | (1u64 << to);
+        self.pieces[piece as usize] ^= both;
+        match color {
+            Color::Black => self.black ^= both,
+            Color::White => self.white ^= both,
+        }
+        self.squares[(from & 63) as usize] = None;
+        self.squares[(to & 63) as usize] = Some(piece);
     }
 
     /// Take a piece off a square, undoing all of the above.
