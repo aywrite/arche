@@ -408,6 +408,19 @@ pub struct Board {
 
     history: [Option<PlayState>; MAX_GAME_SIZE],
     pub key: u64,
+    /// The same kind of key over the pawns alone: both sides' pawns and the
+    /// squares they stand on, and nothing else. Two positions with the same
+    /// pawns and different pieces share it, which is what a table keyed by
+    /// pawn structure wants. It carries no side to move, no castle rights
+    /// and no en passant square, so it says what the pawns are and not whose
+    /// turn it is.
+    ///
+    /// Kept in step by `move_accumulators` beside the position key, and so
+    /// by every path that puts a pawn down or picks one up: a push, a
+    /// capture either way, en passant, and a promotion, which takes a pawn
+    /// out of the key and puts nothing back. A pass moves no piece and
+    /// leaves it alone.
+    pub(crate) pawn_key: u64,
 }
 
 /// Nothing calls this: it is here because clippy asks for a `Default`
@@ -749,6 +762,11 @@ impl Board {
         );
         debug_assert_eq!(self.key, self.recompute_key(), "key out of step");
         debug_assert_eq!(
+            self.pawn_key,
+            self.recompute_pawn_key(),
+            "pawn key out of step"
+        );
+        debug_assert_eq!(
             self.squares,
             self.recompute_squares(),
             "squares out of step"
@@ -783,6 +801,28 @@ impl Board {
         key ^= ZOBRIST.castle_key(self.castle);
         if let Some(en_passant) = self.en_passant {
             key ^= ZOBRIST.en_passant_key(en_passant.as_index());
+        }
+        key
+    }
+
+    /// The pawn key computed from the pawn boards rather than maintained as
+    /// moves are made. `pawn_key` is meant to equal this at all times, which
+    /// `debug_assert_state_in_step` checks on every move made.
+    ///
+    /// A second implementation on purpose, like the recomputes above: it
+    /// walks the pawns where the maintained key follows each one placed and
+    /// removed.
+    fn recompute_pawn_key(&self) -> u64 {
+        let mut key = 0;
+        let mut pawns = self.pawns();
+        while pawns != 0 {
+            let index = pop_lsb(&mut pawns);
+            let color = if self.white.is_bit_set(index) {
+                Color::White
+            } else {
+                Color::Black
+            };
+            key ^= ZOBRIST.get_piece_key(index, Piece::Pawn, color);
         }
         key
     }
@@ -1506,7 +1546,13 @@ impl Board {
     /// on it survives into the search.
     #[inline(always)]
     fn move_accumulators<const SET: bool>(&mut self, index: u8, piece: Piece, color: Color) {
-        self.key ^= ZOBRIST.get_piece_key(index, piece, color);
+        let piece_key = ZOBRIST.get_piece_key(index, piece, color);
+        self.key ^= piece_key;
+        // the pawn key is the same randoms over the pawns alone, so it takes
+        // the value already loaded rather than a second lookup
+        if piece == Piece::Pawn {
+            self.pawn_key ^= piece_key;
+        }
         self.eval.count::<SET>(index, piece, color);
 
         let board = &mut self.pieces[piece as usize];
@@ -1714,6 +1760,9 @@ impl Board {
 
             history: EMPTY_HISTORY,
             key: INITIAL_KEY,
+            // an empty board has no pawns on it, and the `set_piece` calls
+            // below fold in each one that arrives
+            pawn_key: 0,
         };
         if board.active_color == Color::Black {
             board.ply += 1;
@@ -2308,6 +2357,158 @@ mod position_key {
 }
 
 #[cfg(test)]
+mod pawn_key {
+    use super::{Board, fens, play_named};
+    use pretty_assertions::{assert_eq, assert_ne};
+
+    fn play_move(board: &mut Board, name: &str) {
+        let play = play_named(board, name);
+        assert!(board.make_move(&play), "failed to play {}", name);
+    }
+
+    /// One position and one move for each way a pawn can appear, disappear or
+    /// travel. Each has to move the key, agree with the recompute once made,
+    /// and come back on the unmake.
+    #[test]
+    fn every_pawn_event_moves_the_key_and_unmakes_back_to_it() {
+        let cases = [
+            ("4k3/8/8/8/8/8/4P3/4K3 w - - 0 1", "e2e3"),
+            ("4k3/8/8/8/8/8/4P3/4K3 w - - 0 1", "e2e4"),
+            // a pawn taking a piece, and a piece taking a pawn
+            ("4k3/8/8/8/8/3n4/4P3/4K3 w - - 0 1", "e2d3"),
+            ("4k3/8/8/8/3N4/8/4p3/4K3 w - - 0 1", "d4e2"),
+            // en passant, where the pawn taken stands behind the square
+            // landed on
+            ("4k3/8/8/3pP3/8/8/8/4K3 w - d6 0 1", "e5d6"),
+            // a promotion takes a pawn out of the key and puts nothing back
+            ("4k3/P7/8/8/8/8/8/4K3 w - - 0 1", "a7a8q"),
+            ("4k3/P7/8/8/8/8/8/4K3 w - - 0 1", "a7a8n"),
+            ("1n2k3/P7/8/8/8/8/8/4K3 w - - 0 1", "a7b8q"),
+        ];
+        for (fen, name) in cases {
+            let board = Board::from_fen(fen).unwrap();
+            let mut played = board;
+            play_move(&mut played, name);
+            assert_ne!(board.pawn_key, played.pawn_key, "{} in {}", name, fen);
+            assert_eq!(
+                played.pawn_key,
+                played.recompute_pawn_key(),
+                "{} in {}",
+                name,
+                fen
+            );
+            played.undo_move();
+            assert_eq!(board.pawn_key, played.pawn_key, "{} in {}", name, fen);
+        }
+    }
+
+    /// A move that touches no pawn leaves the key exactly as it was, which is
+    /// what makes the key a name for the structure rather than for the
+    /// position.
+    #[test]
+    fn a_move_that_touches_no_pawn_leaves_the_key_alone() {
+        let board = Board::from_fen(fens::MIDDLEGAME).unwrap();
+        let mut played = board;
+        play_move(&mut played, "c3d5");
+        assert_ne!(board.key, played.key);
+        assert_eq!(board.pawn_key, played.pawn_key);
+    }
+
+    /// Every move of a position, made and unmade, against a recompute both
+    /// times. The debug build asserts this inside make_move; this says it in
+    /// a release build too.
+    #[test]
+    fn the_key_survives_every_move_of_every_position() {
+        for fen in fens::CORE {
+            let board = Board::from_fen(fen).unwrap();
+            assert_eq!(board.pawn_key, board.recompute_pawn_key(), "{}", fen);
+            for m in &board.generate_moves() {
+                let mut played = board;
+                if played.make_move(m) {
+                    assert_eq!(
+                        played.pawn_key,
+                        played.recompute_pawn_key(),
+                        "{} in {}",
+                        m,
+                        fen
+                    );
+                    played.undo_move();
+                    assert_eq!(board.pawn_key, played.pawn_key, "{} in {}", m, fen);
+                }
+            }
+        }
+    }
+
+    /// A pass moves no piece, so the pawns are where they were and so is the
+    /// key.
+    #[test]
+    fn a_pass_leaves_the_key_alone() {
+        for fen in fens::CORE {
+            let board = Board::from_fen(fen).unwrap();
+            let mut passed = board;
+            passed.make_null_move();
+            assert_eq!(passed.pawn_key, board.pawn_key, "{}", fen);
+            assert_eq!(passed.pawn_key, passed.recompute_pawn_key(), "{}", fen);
+            passed.undo_null_move();
+            assert_eq!(passed.pawn_key, board.pawn_key, "{}", fen);
+        }
+    }
+
+    /// The pieces are not in the key: two positions with the same pawns
+    /// behind different pieces are one structure and share it.
+    #[test]
+    fn the_same_pawns_behind_different_pieces_share_a_key() {
+        let bare = Board::from_fen("4k3/pppppppp/8/8/8/8/PPPPPPPP/4K3 w - - 0 1").unwrap();
+        let full = Board::from_fen(fens::START).unwrap();
+        assert_eq!(bare.pawn_key, full.pawn_key);
+        assert_ne!(bare.key, full.key);
+    }
+
+    /// Nor is anything else the position key carries: the side to move, the
+    /// castle rights and the en passant square all change the key and leave
+    /// this one where it was.
+    #[test]
+    fn nothing_but_the_pawns_is_in_the_key() {
+        let white = Board::from_fen("r3k2r/pppppppp/8/8/8/8/PPPPPPPP/R3K2R w KQkq - 0 1").unwrap();
+        let black = Board::from_fen("r3k2r/pppppppp/8/8/8/8/PPPPPPPP/R3K2R b KQkq - 0 1").unwrap();
+        let no_rights = Board::from_fen("r3k2r/pppppppp/8/8/8/8/PPPPPPPP/R3K2R w - - 0 1").unwrap();
+        assert_ne!(white.key, black.key);
+        assert_ne!(white.key, no_rights.key);
+        assert_eq!(white.pawn_key, black.pawn_key);
+        assert_eq!(white.pawn_key, no_rights.pawn_key);
+
+        // a black pawn on d4 takes on e3, so the square is one from_fen keeps
+        let without =
+            Board::from_fen("rnbqkbnr/ppp1pppp/8/8/3pP3/8/PPPP1PPP/RNBQKBNR b KQkq - 0 1").unwrap();
+        let with = Board::from_fen("rnbqkbnr/ppp1pppp/8/8/3pP3/8/PPPP1PPP/RNBQKBNR b KQkq e3 0 1")
+            .unwrap();
+        assert_ne!(without.key, with.key);
+        assert_eq!(without.pawn_key, with.pawn_key);
+    }
+
+    /// A position played to and the same position parsed have the same key,
+    /// which is what says `from_fen` builds it rather than inheriting one.
+    #[test]
+    fn a_played_position_and_a_parsed_one_agree() {
+        let mut board = Board::new();
+        for m in ["e2e4", "d7d5", "e4d5", "d8d5", "b1c3", "d5a5"] {
+            play_move(&mut board, m);
+        }
+        let parsed = Board::from_fen(&board.to_fen()).unwrap();
+        assert_eq!(board.pawn_key, parsed.pawn_key);
+        assert_ne!(board.pawn_key, Board::new().pawn_key);
+    }
+
+    /// An empty board of pawns is an empty key, so a structure that trades
+    /// every pawn off comes back to where it started.
+    #[test]
+    fn a_board_with_no_pawns_has_no_key() {
+        let board = Board::from_fen("4k3/8/8/8/8/8/8/4K3 w - - 0 1").unwrap();
+        assert_eq!(board.pawn_key, 0);
+    }
+}
+
+#[cfg(test)]
 mod perft {
     use super::{Board, fens};
     use pretty_assertions::assert_eq;
@@ -2425,6 +2626,11 @@ mod in_step {
             board.key,
             board.recompute_key(),
             "the key is not this position"
+        );
+        prop_assert_eq!(
+            board.pawn_key,
+            board.recompute_pawn_key(),
+            "the pawn key is not this structure"
         );
         prop_assert_eq!(
             board.eval,
