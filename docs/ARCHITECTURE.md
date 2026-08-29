@@ -99,10 +99,13 @@ material plus piece square tables, tapered between middlegame and endgame.
 
 - **main.rs**: Argument handling. `bench` runs the suite and exits, no
   argument starts the UCI loop.
-- **uci.rs**: The protocol, on two threads. A reader owns stdin and
-  answers the commands that need answering during a search (`stop`,
+- **uci.rs**: The protocol: what each command means, the options the
+  handshake advertises, and what a `go` may spend. Every line reaches it
+  through the session loop, on the thread the engine was built on.
+- **session.rs**: The threads a session runs on. A reader owns stdin and
+  acts on the commands that cannot wait for a search to end (`stop`,
   `quit`, `isready`); everything else is queued for the session loop,
-  which owns the engine and handles commands in order. A search is
+  which hands each line back to the protocol in order. A search is
   interrupted by setting the stop flag. A pipe closing counts as a quit,
   so a dead GUI cannot leave a search running.
 - **params.rs**: Reads the word/value pairs UCI commands are made of.
