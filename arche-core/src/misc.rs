@@ -69,6 +69,14 @@ impl Coordinate {
     }
 }
 
+/// The square as a fen and a uci move write it, file then rank, which is
+/// what `from_string` reads back.
+impl fmt::Display for Coordinate {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        write!(f, "{}{}", self.file, self.rank)
+    }
+}
+
 #[cfg(test)]
 mod coordinate {
     use super::Coordinate;
@@ -79,6 +87,14 @@ mod coordinate {
         assert!(Coordinate::from_string("a1").unwrap().is_some());
         assert!(Coordinate::from_string("h8").unwrap().is_some());
         assert!(Coordinate::from_string("-").unwrap().is_none());
+    }
+
+    #[test]
+    fn print_round_trips() {
+        for square in ["a1", "e4", "h8"] {
+            let parsed = Coordinate::from_string(square).unwrap().unwrap();
+            assert_eq!(parsed.to_string(), square);
+        }
     }
 
     #[test]

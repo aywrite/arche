@@ -6,6 +6,7 @@ use crate::limits::Limits;
 use crate::misc::{Color, Score};
 use crate::ordering::MoveOrdering;
 use crate::play::Play;
+use crate::residual::{Sample, Sampler, Shortcut};
 use crate::transposition::{DEFAULT_TABLE_BYTES, GhiCounters, Probe, TranspositionTable};
 use crate::value::Value;
 use std::fmt;
@@ -347,6 +348,11 @@ pub struct AlphaBeta {
     /// The move ordering and its scratch buffer, search state like the
     /// limits above: one per engine, reused by every node.
     ordering: MoveOrdering,
+    /// The residual sampler, or none, which is what every constructor here
+    /// builds and what the engine plays and benches with. An engine with
+    /// none takes no branch a search without a sampler did not take, which
+    /// is the claim the pinned node counts stand behind.
+    sampler: Option<Sampler>,
 }
 
 impl AlphaBeta {
@@ -368,7 +374,56 @@ impl AlphaBeta {
             stop: None,
             quiescence_nodes: 0,
             ordering: MoveOrdering::new(),
+            sampler: None,
         }
+    }
+
+    /// Have the search record the nodes its shortcuts answer, at the rate
+    /// the sampler was built with. Off until this is called, and the only
+    /// caller is the residuals command: nothing the engine plays or benches
+    /// with turns it on.
+    pub fn sample_shortcuts(&mut self, sampler: Sampler) {
+        self.sampler = Some(sampler);
+    }
+
+    /// The sampler back with everything it collected, leaving the engine
+    /// recording nothing. None from an engine that was never given one.
+    ///
+    /// Handed back rather than emptied in place, so that one sampler can be
+    /// carried across a run of searches and its countdown and its cap then
+    /// describe the whole run rather than restarting at each search in it.
+    pub fn take_sampler(&mut self) -> Option<Sampler> {
+        self.sampler.take()
+    }
+
+    /// One node a shortcut has just answered, offered to the sampler.
+    ///
+    /// The fen and the evaluation are built inside the closure, so an event
+    /// the countdown does not want costs a decrement and nothing else, and
+    /// an engine with no sampler costs the option check alone. Both hooks
+    /// sit on a return out of a node rather than in the loop, so neither is
+    /// on a path the search takes more than once per cutoff.
+    // cold and out of line, and tested with a bare is_some at each call
+    // site: inlining the sample body grew alpha_beta enough to move other
+    // code, and the moved jump tables aliased in the branch predictor for
+    // half a million extra mispredicts on a bench 5. Counted with
+    // callgrind; the option check is all the hot path keeps.
+    #[cold]
+    #[inline(never)]
+    fn sample(&mut self, kind: Shortcut, depth: u8, claimed: Score, beta: Score) {
+        // the fields are borrowed apart rather than through `self`, which is
+        // what lets the closure read the board while the sampler is held
+        let board = &self.board;
+        let Some(sampler) = self.sampler.as_mut() else {
+            return;
+        };
+        sampler.event(|| Sample {
+            fen: board.to_fen(),
+            depth,
+            kind,
+            claimed,
+            eval_beta: i32::from(crate::eval::eval(board)) - i32::from(beta),
+        });
     }
 
     fn eval(&self) -> Score {
@@ -686,6 +741,9 @@ impl AlphaBeta {
                 .eval()
                 .saturating_sub(REVERSE_FUTILITY_MARGIN * depth as Score);
             if floor >= beta {
+                if self.sampler.is_some() {
+                    self.sample(Shortcut::ReverseFutility, depth, floor, beta);
+                }
                 return Ok(Value::clean(floor));
             }
         }
@@ -751,6 +809,11 @@ impl AlphaBeta {
                 // position is very good and not that it is won, and the
                 // score is held below the window a caller reads mates in
                 let score = value.score.min(CHECKMATE_THRESHOLD - 1);
+                // the board is back from the pass, so what the sampler
+                // prints and evaluates here is the node itself
+                if self.sampler.is_some() {
+                    self.sample(Shortcut::NullMove, depth, score, beta);
+                }
                 return Ok(Value::with_taint(score, value.tainted));
             }
             // a pass that failed still read whatever it read on the way
@@ -2617,5 +2680,120 @@ mod search {
             format!("{}", result.best_move),
             format!("{}", expected.best_move),
         );
+    }
+}
+
+/// The residual sampler seen from the search: that it is off unless it is
+/// asked for, and that what it records describes the nodes the shortcuts
+/// answered. What the samples are worth is the residuals command's business.
+#[cfg(test)]
+mod sampling {
+    use super::{AlphaBeta, Board, Engine, SearchConfig, SearchParameters};
+    use crate::residual::{Sampler, Shortcut};
+    use pretty_assertions::assert_eq;
+
+    const TABLE_BYTES: usize = 1024 * 1024;
+    const SHARP_MIDDLEGAME: &str = "r1b2rk1/ppp1qppp/4pn2/6N1/Qn1P4/2NBP3/PP3PPP/R3K2R w KQ - 9 12";
+
+    fn engine(fen: &str) -> AlphaBeta {
+        AlphaBeta::with_table_bytes(Board::from_fen(fen).unwrap(), TABLE_BYTES)
+    }
+
+    /// The gate the whole design rests on. An engine nobody asked samples of
+    /// holds no sampler, and the bench's pinned counts beside this say the
+    /// search it runs is the search it ran before there was one.
+    #[test]
+    fn an_engine_samples_nothing_until_it_is_asked_to() {
+        let mut e = engine(SHARP_MIDDLEGAME);
+        assert!(e.sampler.is_none());
+        let reference =
+            AlphaBeta::with_config(Board::new(), TABLE_BYTES, SearchConfig::reference());
+        assert!(reference.sampler.is_none());
+        e.search(5);
+        assert!(e.take_sampler().is_none());
+    }
+
+    /// What every test below asks of an engine once it has searched: the
+    /// sampler back, emptied into what it collected.
+    fn collected(e: &mut AlphaBeta) -> crate::residual::Sampled {
+        e.take_sampler().expect("a sampler was installed").drain()
+    }
+
+    #[test]
+    fn every_sample_describes_a_node_a_shortcut_answered() {
+        const DEPTH: u8 = 5;
+        let mut e = engine(SHARP_MIDDLEGAME);
+        e.sample_shortcuts(Sampler::every(1));
+        e.search(DEPTH);
+        let sampled = collected(&mut e);
+        assert!(!sampled.taken.is_empty(), "the shortcuts answered nothing");
+        for sample in &sampled.taken {
+            // the fen is the whole point: a sample nothing can search again
+            // measures nothing
+            Board::from_fen(&sample.fen)
+                .unwrap_or_else(|e| panic!("{} does not parse: {}", sample.fen, e));
+            assert!(Shortcut::KINDS.contains(&sample.kind), "{:?}", sample);
+            // a node has less depth left than the root it hangs under, and
+            // the root deepens by one when it is in check
+            assert!(sample.depth >= 1, "{:?}", sample);
+            assert!(sample.depth <= DEPTH + 1, "{:?}", sample);
+        }
+    }
+
+    /// Both shortcuts reach the hook, not only whichever fires first. A kind
+    /// that stopped being recorded would otherwise show up as a thinner
+    /// distribution rather than as a failure.
+    #[test]
+    fn both_kinds_are_recorded() {
+        let mut e = engine(SHARP_MIDDLEGAME);
+        e.sample_shortcuts(Sampler::every(1));
+        e.search(6);
+        let sampled = collected(&mut e);
+        for kind in Shortcut::KINDS {
+            assert!(
+                sampled.taken.iter().any(|s| s.kind == kind),
+                "nothing recorded for {}",
+                kind.word()
+            );
+        }
+    }
+
+    /// A countdown and not a draw, so a distribution printed today is
+    /// printed again tomorrow by the same command.
+    #[test]
+    fn two_runs_of_the_same_search_record_the_same_samples() {
+        let run = || {
+            let mut e = engine(SHARP_MIDDLEGAME);
+            e.sample_shortcuts(Sampler::every(7));
+            e.iterative_deepening_search(SearchParameters::to_depth(5), |_, _, _| {});
+            collected(&mut e)
+        };
+        assert_eq!(run(), run());
+    }
+
+    /// The cap holds and says how much it dropped, which is what keeps a
+    /// long run at a low rate from asking for the memory of every fen in the
+    /// tree.
+    #[test]
+    fn a_search_past_the_cap_stops_recording_and_counts_the_rest() {
+        let mut e = engine(SHARP_MIDDLEGAME);
+        e.sample_shortcuts(Sampler::with_cap(1, 4));
+        e.search(5);
+        let sampled = collected(&mut e);
+        assert_eq!(sampled.taken.len(), 4);
+        assert!(sampled.overflowed > 0);
+    }
+
+    /// The margin each shortcut is betting on, recorded at the node it fired
+    /// at. Both gate on the evaluation standing at or above beta, so neither
+    /// can record a negative distance.
+    #[test]
+    fn the_recorded_distance_is_the_evaluation_over_beta() {
+        let mut e = engine(SHARP_MIDDLEGAME);
+        e.sample_shortcuts(Sampler::every(1));
+        e.search(5);
+        for sample in collected(&mut e).taken {
+            assert!(sample.eval_beta >= 0, "{:?}", sample);
+        }
     }
 }

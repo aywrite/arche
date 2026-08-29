@@ -12,6 +12,7 @@ mod misc;
 mod ordering;
 mod play;
 mod psqt;
+pub mod residual;
 pub mod tactics;
 mod transposition;
 mod value;
