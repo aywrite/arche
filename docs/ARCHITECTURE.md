@@ -108,7 +108,8 @@ material plus piece square tables, tapered between middlegame and endgame.
   which hands each line back to the protocol in order. A search is
   interrupted by setting the stop flag. A pipe closing counts as a quit,
   so a dead GUI cannot leave a search running.
-- **params.rs**: Reads the word/value pairs UCI commands are made of.
+- **params.rs**: Reads the word/value pairs UCI commands are made of, and
+  the phrases where a name runs to more than one word, as `Clear Hash` does.
 - **time_control.rs**: Turns a clock into a time budget for one move.
 
 ## Measurement

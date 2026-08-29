@@ -65,8 +65,9 @@ cargo build --release
 
 The binary is written to `target/release/arche`. The engine allocates a 256MB transposition
 table on startup; `setoption name Hash value <megabytes>` gives it one of another size, between
-1 and 16384MB. It searches on one thread and says so, so a `Threads` of anything but one is
-reported and then ignored.
+1 and 16384MB, and `setoption name Clear Hash` empties the one it has without resizing it. It
+searches on one thread and says so, so a `Threads` of anything but one is reported and then
+ignored.
 
 ## Strength
 

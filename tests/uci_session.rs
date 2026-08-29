@@ -202,6 +202,57 @@ fn a_stop_with_nothing_running_is_taken_in_silence() {
     assert!(s.finished().success());
 }
 
+/// The nodes the deepest info line of one search reports. The search is run
+/// from here, so the lines read are that search's own rather than every
+/// line the session has said.
+fn nodes_of_a_search(s: &mut Session, depth: u8) -> u64 {
+    let from = s.said.len();
+    s.say("position startpos");
+    s.say(&format!("go depth {}", depth));
+    s.wait_for(|l| l.starts_with("bestmove"));
+    let info = s.said[from..]
+        .iter()
+        .rfind(|l| l.starts_with("info depth "))
+        .unwrap_or_else(|| panic!("a search reported no depth: {:#?}", s.said));
+    info.split_whitespace()
+        .skip_while(|word| *word != "nodes")
+        .nth(1)
+        .and_then(|count| count.parse().ok())
+        .unwrap_or_else(|| panic!("no node count in {}", info))
+}
+
+#[test]
+fn the_clear_hash_button_empties_the_table() {
+    // the same search three times over: cold, then on the table the first
+    // one left behind, then after the button. The middle one is cheaper for
+    // what the table holds, and the third costs what the cold one did,
+    // which is what an emptied table looks like from outside the engine
+    let mut s = Session::start(&[]);
+    s.say("setoption name Hash value 1");
+    let cold = nodes_of_a_search(&mut s, 6);
+    let warm = nodes_of_a_search(&mut s, 6);
+    assert!(
+        warm < cold,
+        "the second search read nothing from the table: {} against {}",
+        warm,
+        cold
+    );
+
+    s.say("setoption name Clear Hash");
+    s.say("isready");
+    s.wait_for(|l| l == "readyok");
+    let cleared = nodes_of_a_search(&mut s, 6);
+    assert_eq!(cleared, cold, "the table still held the first search");
+    assert!(
+        !s.said.iter().any(|l| l.contains("unrecognised")),
+        "the button was complained about: {:#?}",
+        s.said
+    );
+
+    s.say("quit");
+    assert!(s.finished().success());
+}
+
 #[test]
 fn the_version_and_the_help_answer_and_exit_cleanly() {
     let mut version = Session::start(&["--version"]);
