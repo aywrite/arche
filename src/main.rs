@@ -7,6 +7,7 @@ use arche::uci;
 use arche_core::AlphaBeta;
 use arche_core::Board;
 use arche_core::bench;
+use arche_core::residual;
 use std::process::ExitCode;
 
 /// What the binary takes, for whoever ran it to find out. Short because there
@@ -19,6 +20,9 @@ Usage:
   arche                 start the uci loop and read commands from stdin
   arche bench [depth] [hash <MB>] [taint refuse|trust|skip|rule50]
                         search a fixed suite and print what each search counted
+  arche residuals [depth] [every <n>] [taint refuse|trust|skip|rule50]
+                        search the same suite, then ask the reference search
+                        what the nodes the shortcuts answered were worth
   arche --version, -V   print the version
   arche --help, -h      print this
 
@@ -62,6 +66,28 @@ fn main() -> ExitCode {
                 ExitCode::from(2)
             }
         },
+        // `arche residuals [depth] [every <n>] [taint <policy>]` measures
+        // what the search's shortcuts cost in accuracy. An argument and not
+        // a uci command: it takes minutes and answers a research question,
+        // and nothing about a live session wants either
+        Some("residuals") => match uci::residual_settings(&Params::of(&args.join(" "))) {
+            Ok(settings) => {
+                print!(
+                    "{}",
+                    residual::run(
+                        &bench::positions(),
+                        settings.depth,
+                        settings.every,
+                        settings.config
+                    )
+                );
+                ExitCode::SUCCESS
+            }
+            Err(what) => {
+                eprintln!("unrecognised residuals {}", what);
+                ExitCode::from(2)
+            }
+        },
         // asked for, so both are answered on stdout and succeed. An argument
         // that really is unrecognised keeps stderr and the failing code
         // below: the difference is whether anybody wanted the output
@@ -86,7 +112,7 @@ mod tests {
 
     #[test]
     fn the_usage_names_every_form_the_binary_takes() {
-        for form in ["arche bench", "--version", "--help"] {
+        for form in ["arche bench", "arche residuals", "--version", "--help"] {
             assert!(USAGE.contains(form), "the usage does not mention {}", form);
         }
     }
