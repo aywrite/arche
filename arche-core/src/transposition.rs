@@ -18,6 +18,7 @@ use crate::board::Board;
 use crate::misc::Score;
 use crate::play::Play;
 use crate::value::{Value, is_mate};
+use std::cell::Cell;
 use std::mem;
 
 pub const DEFAULT_TABLE_BYTES: usize = 256 * 1024 * 1024;
@@ -80,6 +81,147 @@ pub struct GhiCounters {
     /// trusts them; under the rule50 policy this counts its horizon
     /// refusals instead, tainted or not.
     pub refused_cutoffs: u64,
+}
+
+/// What the entry's thirty two bit key slice costs. A probe accepts an entry
+/// when the slice matches, and two positions sharing a slice and an index
+/// make the search read a stranger's entry as its own. The entry's comment
+/// puts that at about one probe in a thousand million; these are the same
+/// figure counted rather than reasoned about.
+///
+/// A run of the size the bench is expects no false accepts at all, so the
+/// observation on its own cannot tell a working instrument from a dead one.
+/// That is what `comparisons` and `narrow_accepts` are for. The first gives
+/// the expectation the observation is read against, and the second counts
+/// what a sixteen bit signature would have accepted over the same
+/// comparisons, which is large enough at this scale to be compared with its
+/// own expectation. A narrow figure sitting on its expectation says the rate
+/// really does scale by two to the minus the width on this workload, which
+/// is what lets the thirty two bit expectation be believed where the
+/// observation cannot say anything.
+///
+/// The audit is off in every path a game plays, so a run that was not asked
+/// for one has nothing to report rather than zeroes.
+#[derive(Copy, Clone, Debug, Default, PartialEq, Eq)]
+pub struct SignatureCounters {
+    /// Keyed lookups asked of the table, whatever asked for them.
+    pub probes: u64,
+    /// Probes the slice accepted, which is a hit as the table sees one.
+    pub hits: u64,
+    /// Live entries the probes compared their slice against whose full key
+    /// belonged to another position, over the entries each probe really
+    /// looked at. One chance in two to the width apiece, so this is the
+    /// denominator both expectations are drawn from.
+    pub comparisons: u64,
+    /// Accepted probes whose full key differed, so the entry belonged to
+    /// another position.
+    pub false_accepts: u64,
+    /// False accepts the search then took a score from, which is the half
+    /// that costs anything: a foreign move is turned away by the legality
+    /// check and costs a little order, and a foreign score cuts a subtree
+    /// that was never searched.
+    pub false_accept_cutoffs: u64,
+    /// Comparisons a sixteen bit signature would have accepted and this one
+    /// refused: the low sixteen bits agree where the whole slice does not.
+    /// A narrow signature would take these and the false accepts both, so
+    /// its rate is the two added.
+    ///
+    /// Counted and never acted on. A search really running sixteen bits
+    /// would have stopped its scan at the first of them, which is a
+    /// different tree, and this measures the comparisons the search that
+    /// ran actually made.
+    pub narrow_accepts: u64,
+    /// Stores whose slice matched a foreign full key, so the store took
+    /// another position's entry for this position's and replaced it.
+    ///
+    /// Landed stores only. A store the depth contest turns away after
+    /// comparing itself against a foreign entry's depth is a related cost,
+    /// since the comparison was against the wrong position and this
+    /// position's result went unstored, but nothing was evicted and it is
+    /// not counted here.
+    pub aliased_evictions: u64,
+}
+
+/// The chances in which a signature of that width accepts a foreign entry.
+const WIDE: f64 = 4_294_967_296.0;
+const NARROW: f64 = 65_536.0;
+
+impl SignatureCounters {
+    /// Add another table's figures to these, for a caller totalling a suite
+    /// of searches with a table each.
+    pub fn absorb(&mut self, other: SignatureCounters) {
+        self.probes += other.probes;
+        self.hits += other.hits;
+        self.comparisons += other.comparisons;
+        self.false_accepts += other.false_accepts;
+        self.false_accept_cutoffs += other.false_accept_cutoffs;
+        self.narrow_accepts += other.narrow_accepts;
+        self.aliased_evictions += other.aliased_evictions;
+    }
+
+    /// The false accepts the thirty two bit signature is expected to have
+    /// produced over the comparisons this run made, which is what the
+    /// observation beside it means anything against.
+    pub fn expected_false_accepts(&self) -> f64 {
+        self.comparisons as f64 / WIDE
+    }
+
+    /// The same for the narrow counter: the low sixteen bits agreeing while
+    /// the whole slice does not, which is one chance in sixty five thousand
+    /// less the chance the whole slice agrees too.
+    pub fn expected_narrow_accepts(&self) -> f64 {
+        self.comparisons as f64 * (1.0 / NARROW - 1.0 / WIDE)
+    }
+}
+
+/// The ground truth the table does not keep: the full key of every entry,
+/// held beside the entries and written whenever one lands.
+///
+/// Allocated only when the bench asks for the audit, so an ordinary search
+/// carries a null pointer and one predictable branch a probe. The dead
+/// `static_eval` bytes are no use for this. They are the bits the entry
+/// layout is being argued over, and sixteen more of signature would still
+/// alias where sixty four cannot.
+#[derive(Debug)]
+struct Audit {
+    /// One key an entry, in the table's own order: the bucket's index times
+    /// four, plus the entry within the bucket. A slot never written holds
+    /// zero, which nothing reads: the entry beside it has generation zero
+    /// and no probe gets that far.
+    keys: Box<[u64]>,
+    /// Counted through a cell because a probe reads the table through a
+    /// shared reference, and an instrument must not turn `get` into a
+    /// mutation for the sake of its own bookkeeping.
+    ///
+    /// The cell costs the table its `Sync`, which nothing asks of it: a
+    /// table belongs to one engine, and the protocol moves the engine whole
+    /// to the search thread rather than sharing it. `Send` is what that move
+    /// needs, and it is asserted below.
+    counters: Cell<SignatureCounters>,
+}
+
+impl Audit {
+    /// The keys for a table of this many entries, or none if there was not
+    /// the memory. Asked for rather than taken, the way the table asks for
+    /// its own buckets: a size that arrives over the protocol may be one the
+    /// machine cannot hold, and the allocator's answer to that is to abort.
+    fn of_entries(entries: usize) -> Option<Self> {
+        let mut keys = Vec::new();
+        keys.try_reserve_exact(entries).ok()?;
+        keys.resize(entries, 0);
+        Some(Self {
+            keys: keys.into_boxed_slice(),
+            counters: Cell::new(SignatureCounters::default()),
+        })
+    }
+
+    /// Change the counters, which a cell hands over by value.
+    #[inline]
+    fn count(&self, change: impl FnOnce(&mut SignatureCounters)) {
+        let mut counters = self.counters.get();
+        change(&mut counters);
+        self.counters.set(counters);
+    }
 }
 
 /// What the search stores about a position and reads back: the entry as the
@@ -177,6 +319,12 @@ const _: () = assert!(mem::size_of::<Entry>() == 16);
 const _: () = assert!(mem::size_of::<Bucket>() == 64);
 const _: () = assert!(mem::align_of::<Bucket>() == 64);
 
+// The audit's cell is not `Sync`, and the table is not asked to be: the
+// protocol moves an engine whole to the search thread. Moving is `Send`, and
+// losing that would be found at that move rather than here without this.
+const fn assert_send<T: Send>() {}
+const _: () = assert_send::<TranspositionTable>();
+
 /// An entry stored this many searches ago or more is replaced whatever its
 /// depth: its score describes repetition and fifty move context the game
 /// has moved past, and a slot is worth more to the search under way. The
@@ -273,6 +421,9 @@ pub struct TranspositionTable {
     ghi: GhiCounters,
     /// The search under way, as the entries it stores are marked.
     generation: u8,
+    /// The full keys of the entries, or none, which is what every table an
+    /// engine plays with holds. `audit_signatures` fills it in.
+    audit: Option<Box<Audit>>,
 }
 
 impl TranspositionTable {
@@ -290,12 +441,49 @@ impl TranspositionTable {
             table,
             ghi: GhiCounters::default(),
             generation: 1,
+            audit: None,
         })
     }
 
     pub fn clear(&mut self) {
         self.table.fill(Bucket::EMPTY);
         self.generation = 1;
+        if let Some(audit) = self.audit.as_deref_mut() {
+            audit.keys.fill(0);
+        }
+    }
+
+    /// Keep the full key of every entry beside it, so that a probe the
+    /// signature accepted can be held against the position it really stands
+    /// for. Off until this is called, and only the bench family calls it: a
+    /// session that plays games never allocates the keys.
+    ///
+    /// The table is cleared as the keys go on. There is no key on the side
+    /// for an entry stored before the audit began, and a probe reading one
+    /// would find a stranger's key where the entry is really its own, so an
+    /// audited table starts empty and every entry it reports on was stored
+    /// under the audit.
+    ///
+    /// Eight bytes an entry, beside the entry's sixteen, so an audited table
+    /// costs half its own size again. False if there was not the memory for
+    /// them, in which case the table is left as it was and unaudited: the
+    /// size the keys are asked for comes from whatever the caller sized the
+    /// table with. Nothing about the search changes either way, and no probe
+    /// or store reads a different entry for having been counted.
+    #[must_use]
+    pub fn audit_signatures(&mut self) -> bool {
+        let Some(audit) = Audit::of_entries(self.table.len() * BUCKET) else {
+            return false;
+        };
+        self.audit = Some(Box::new(audit));
+        self.clear();
+        true
+    }
+
+    /// What the signature audit counted, or none when the table is not
+    /// keeping the keys.
+    pub fn signatures(&self) -> Option<SignatureCounters> {
+        self.audit.as_deref().map(|audit| audit.counters.get())
     }
 
     pub fn with_capacity_bytes(bytes: usize) -> Option<Self> {
@@ -336,14 +524,68 @@ impl TranspositionTable {
     }
 
     fn get(&self, key: u64) -> Option<Pv> {
+        self.get_audited(key).0
+    }
+
+    /// The same lookup, saying as well whether the entry it accepted belongs
+    /// to another position. The answer is always false without the audit,
+    /// which is where the search's own callers get it from, and a caller
+    /// that takes a score from the entry passes it back to
+    /// `count_false_accept_cutoff`.
+    fn get_audited(&self, key: u64) -> (Option<Pv>, bool) {
+        let index = self.index_for(key);
         let slice = Entry::slice(key);
-        self.table[self.index_for(key)]
-            .entries
+        let bucket = &self.table[index].entries;
+        let found = bucket
             .iter()
+            .enumerate()
             // the key first: in a warm table nearly every entry has a
             // generation, and the key is what rejects three of the four
-            .find(|entry| entry.key == slice && entry.generation() != 0)
-            .map(|entry| entry.unpack())
+            .find(|(_, entry)| entry.key == slice && entry.generation() != 0);
+        let pv = found.map(|(_, entry)| entry.unpack());
+        let Some(audit) = self.audit.as_deref() else {
+            return (pv, false);
+        };
+        // the entries the scan above really looked at, which is up to and
+        // including the one it took. The chances of a false accept are the
+        // foreign entries among those and no others, so the denominator is
+        // read off the probe that happened rather than assumed to be four
+        let examined = found.map_or(BUCKET, |(i, _)| i + 1);
+        let mut comparisons = 0;
+        let mut narrow = 0;
+        for (i, entry) in bucket[..examined].iter().enumerate() {
+            if entry.generation() == 0 || audit.keys[index * BUCKET + i] == key {
+                continue;
+            }
+            comparisons += 1;
+            // the low sixteen bits agreeing where the whole slice does not:
+            // an acceptance a narrower signature would have made and this
+            // one refused
+            narrow += u64::from(entry.key as u16 == slice as u16 && entry.key != slice);
+        }
+        let foreign = found.is_some_and(|(i, _)| audit.keys[index * BUCKET + i] != key);
+        audit.count(|counters| {
+            counters.probes += 1;
+            counters.hits += u64::from(found.is_some());
+            counters.comparisons += comparisons;
+            counters.false_accepts += u64::from(foreign);
+            counters.narrow_accepts += narrow;
+        });
+        (pv, foreign)
+    }
+
+    /// A score just handed back came from an entry the audit found foreign.
+    /// Counted and nothing else: what the search does with a false accept is
+    /// what it would have done without the audit, which is the whole of the
+    /// instrument's claim to change nothing.
+    #[inline]
+    fn count_false_accept_cutoff(&self, foreign: bool) {
+        if !foreign {
+            return;
+        }
+        if let Some(audit) = self.audit.as_deref() {
+            audit.count(|counters| counters.false_accept_cutoffs += 1);
+        }
     }
 
     /// Where in its bucket a position goes: its own entry if it has one,
@@ -394,8 +636,26 @@ impl TranspositionTable {
                 return false;
             }
         }
-        self.table[index].entries[i] = Entry::pack(key, pv, self.generation);
+        self.store(index, i, key, pv);
         true
+    }
+
+    /// Write the entry, and under the audit record the full key it stands
+    /// for. A slot the position was given because the slice matched, holding
+    /// a different full key, is another position's entry taken for this
+    /// one and replaced without anything noticing.
+    #[inline]
+    fn store(&mut self, index: usize, i: usize, key: u64, pv: Pv) {
+        let old = self.table[index].entries[i];
+        self.table[index].entries[i] = Entry::pack(key, pv, self.generation);
+        let Some(audit) = self.audit.as_deref_mut() else {
+            return;
+        };
+        let at = index * BUCKET + i;
+        if old.generation() != 0 && old.key == Entry::slice(key) && audit.keys[at] != key {
+            audit.count(|counters| counters.aliased_evictions += 1);
+        }
+        audit.keys[at] = key;
     }
 
     /// Store without the depth contest above. The root's end-of-iteration
@@ -408,7 +668,7 @@ impl TranspositionTable {
     /// context the game has since moved past.
     fn set_always(&mut self, key: u64, pv: Pv) {
         let (index, i) = self.slot_for(key);
-        self.table[index].entries[i] = Entry::pack(key, pv, self.generation);
+        self.store(index, i, key, pv);
     }
 
     /// A move which refuted this position: the search failed high on it, so
@@ -473,7 +733,8 @@ impl TranspositionTable {
         refuse_tainted: bool,
         guard_rule50: bool,
     ) -> Probe {
-        let Some(pv) = self.get(board.key) else {
+        let (found, foreign) = self.get_audited(board.key);
+        let Some(pv) = found else {
             return Probe::Miss;
         };
         if pv.depth >= depth {
@@ -501,6 +762,7 @@ impl TranspositionTable {
             if cuts {
                 self.ghi.score_cutoffs += 1;
                 self.ghi.tainted_score_cutoffs += u64::from(pv.tainted);
+                self.count_false_accept_cutoff(foreign);
                 return Probe::Cut(Value::with_taint(score, pv.tainted));
             }
         }
@@ -831,6 +1093,118 @@ mod tests {
         table.set(1, new_pv(Bound::Exact, 8));
         assert_eq!(table.get(1 + (1 << 32)).unwrap().depth, 8);
         assert!(table.get(2).is_none());
+    }
+
+    /// The instrument is off unless it is asked for, which is what makes it
+    /// free: a table with no audit has nothing to report rather than zeroes.
+    #[test]
+    fn a_table_keeps_no_keys_until_the_audit_asks_for_them() {
+        let mut table = TranspositionTable::with_capacity(4).expect("a table of one bucket");
+        table.set(1, new_pv(Bound::Exact, 4));
+        assert!(table.get(1).is_some());
+        assert!(table.signatures().is_none());
+        assert!(table.audit_signatures());
+        assert_eq!(table.signatures().expect("audited"), Default::default());
+        // an entry stored before the audit has no key on the side, so a
+        // probe would read it as a stranger's. The audit starts the table
+        // empty rather than reporting on entries it never saw stored
+        assert!(table.get(1).is_none(), "the audit left an entry behind");
+        assert_eq!(table.signatures().expect("audited").probes, 1);
+        assert_eq!(table.signatures().expect("audited").false_accepts, 0);
+    }
+
+    /// Two keys agreeing on the slice and the index, built rather than
+    /// looked for: the slice is the low thirty two bits, and a one bucket
+    /// table gives every key the same index. The probe is a hit the table
+    /// cannot tell from a real one, and the store that follows takes the
+    /// first position's entry for the second's.
+    #[test]
+    fn a_probe_and_a_store_on_a_shared_slice_are_counted() {
+        let mut table = TranspositionTable::with_capacity(4).expect("a table of one bucket");
+        assert!(table.audit_signatures());
+        let twin = 1 + (1 << 32);
+        table.set(1, new_pv(Bound::Exact, 4));
+        assert!(table.get(twin).is_some(), "the slice accepted the twin");
+        let counted = table.signatures().expect("audited");
+        assert_eq!(counted.probes, 1);
+        assert_eq!(counted.hits, 1);
+        assert_eq!(counted.false_accepts, 1);
+        assert_eq!(counted.false_accept_cutoffs, 0, "no score was taken");
+        assert_eq!(
+            counted.aliased_evictions, 0,
+            "the first store found an empty slot"
+        );
+        table.set(twin, new_pv(Bound::Exact, 4));
+        assert_eq!(table.signatures().expect("audited").aliased_evictions, 1);
+    }
+
+    /// The same table and the same index with a slice of its own: the probe
+    /// misses, the store finds a slot of its own, and nothing is counted
+    /// against the signature. The comparison is still counted, because a
+    /// live entry belonging to another position is what a false accept
+    /// would have come from and the expectation is drawn from those.
+    #[test]
+    fn a_key_with_a_slice_of_its_own_is_counted_against_nothing() {
+        let mut table = TranspositionTable::with_capacity(4).expect("a table of one bucket");
+        assert!(table.audit_signatures());
+        table.set(1, new_pv(Bound::Exact, 4));
+        assert!(table.get(2).is_none());
+        table.set(2, new_pv(Bound::Exact, 4));
+        let counted = table.signatures().expect("audited");
+        assert_eq!(counted.probes, 1);
+        assert_eq!(counted.hits, 0);
+        assert_eq!(counted.comparisons, 1);
+        assert_eq!(counted.false_accepts, 0);
+        assert_eq!(counted.narrow_accepts, 0);
+        assert_eq!(counted.aliased_evictions, 0);
+    }
+
+    /// The hypothetical the contest wants: keys agreeing on the low sixteen
+    /// bits and differing above them. The probe misses, as it must, and the
+    /// counter says a sixteen bit signature would have taken the entry. The
+    /// figure is the one large enough to measure at the bench's scale, so it
+    /// is what says the rate really scales by the width.
+    #[test]
+    fn an_acceptance_a_narrower_signature_would_have_made_is_counted() {
+        let mut table = TranspositionTable::with_capacity(4).expect("a table of one bucket");
+        assert!(table.audit_signatures());
+        table.set(1, new_pv(Bound::Exact, 4));
+        // low sixteen bits of one, a whole slice of its own
+        let narrow_twin = 0x0001_0001;
+        assert!(table.get(narrow_twin).is_none(), "the slice refused it");
+        let counted = table.signatures().expect("audited");
+        assert_eq!(counted.comparisons, 1);
+        assert_eq!(counted.false_accepts, 0);
+        assert_eq!(counted.narrow_accepts, 1);
+        // and a key sharing neither width is counted against neither
+        assert!(table.get(0x0001_0002).is_none());
+        assert_eq!(table.signatures().expect("audited").narrow_accepts, 1);
+        assert_eq!(table.signatures().expect("audited").comparisons, 2);
+    }
+
+    /// The dangerous half. A foreign entry deep enough to cut is a subtree
+    /// answered from a score belonging to another position, and the probe
+    /// hands it back exactly as it would without the audit. Counting it is
+    /// all that detection does.
+    #[test]
+    fn a_score_taken_from_a_foreign_entry_is_counted_as_a_cutoff() {
+        use super::Probe;
+        let mut table = TranspositionTable::with_capacity(4).expect("a table of one bucket");
+        assert!(table.audit_signatures());
+        let board = crate::board::Board::new();
+        let play = Play::new(0, 1, None, None, false, false);
+        table.record_best(&board, play, Value::clean(20), 5);
+        // a key differing above the slice, which one bucket leaves sharing
+        // the index as well
+        let mut twin = board;
+        twin.key ^= 1 << 63;
+        match table.probe(&twin, -10, 10, 5, true, false) {
+            Probe::Cut(value) => assert_eq!(value, Value::clean(20)),
+            other => panic!("the foreign entry did not cut: {other:?}"),
+        }
+        let counted = table.signatures().expect("audited");
+        assert_eq!(counted.false_accepts, 1);
+        assert_eq!(counted.false_accept_cutoffs, 1);
     }
 
     #[test]

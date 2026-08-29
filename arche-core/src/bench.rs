@@ -15,6 +15,7 @@ use crate::board::Board;
 use crate::engine::{AlphaBeta, Engine, SearchConfig, SearchOutcome, SearchParameters};
 use crate::misc::Score;
 use crate::play::Play;
+use crate::transposition::SignatureCounters;
 use std::collections::HashMap;
 use std::fmt;
 use std::time::Duration;
@@ -118,6 +119,9 @@ pub struct PositionReport {
     /// Tainted results not stored, under the policy that keeps only clean
     /// scores; zero under every other.
     pub skipped_stores: u64,
+    /// What the table's signature audit counted, or none, which is what an
+    /// unaudited run reports.
+    pub signatures: Option<SignatureCounters>,
     /// The search alone, not the table's allocation.
     pub elapsed: Duration,
 }
@@ -144,6 +148,19 @@ impl Report {
     pub fn nps(&self) -> u64 {
         nps(self.nodes(), self.elapsed())
     }
+
+    /// What the signature audit counted over the whole suite, or none when
+    /// the run was not audited. A table a position, so the figures are added
+    /// up rather than read off one of them.
+    pub fn signatures(&self) -> Option<SignatureCounters> {
+        self.positions
+            .iter()
+            .filter_map(|p| p.signatures)
+            .reduce(|mut total, counted| {
+                total.absorb(counted);
+                total
+            })
+    }
 }
 
 /// Counted in microseconds, so a position searched in well under a
@@ -166,6 +183,35 @@ pub fn run_suite(
     table_bytes: usize,
     config: SearchConfig,
 ) -> Report {
+    run(positions, depth, table_bytes, config, false)
+        .expect("an unaudited run asks for no keys and so cannot fail to get them")
+}
+
+/// The same suite, with each table keeping the full key of every entry so
+/// that the report can say how often the thirty two bit signature accepted
+/// another position's entry. The tree searched is the tree `run_suite`
+/// searches: the audit counts and does nothing else, so the node counts are
+/// the same figures under either.
+///
+/// None if there was not the memory for the keys, which are half a table's
+/// size again. The caller says so rather than running unaudited: a report
+/// with no audit in it is not the report that was asked for.
+pub fn run_audited_suite(
+    positions: &[Position],
+    depth: u8,
+    table_bytes: usize,
+    config: SearchConfig,
+) -> Option<Report> {
+    run(positions, depth, table_bytes, config, true)
+}
+
+fn run(
+    positions: &[Position],
+    depth: u8,
+    table_bytes: usize,
+    config: SearchConfig,
+    audit: bool,
+) -> Option<Report> {
     let depth = depth.max(1);
     let positions = positions
         .iter()
@@ -173,6 +219,9 @@ pub fn run_suite(
             let board = Board::from_fen(&position.fen)
                 .unwrap_or_else(|e| panic!("bench position {} does not parse: {}", position.id, e));
             let mut engine = AlphaBeta::with_config(board, table_bytes, config);
+            if audit && !engine.audit_signatures() {
+                return None;
+            }
             let outcome =
                 engine.iterative_deepening_search(SearchParameters::to_depth(depth), |_, _, _| {});
             let result = match outcome {
@@ -185,7 +234,7 @@ pub fn run_suite(
             // the search says how long it took, measured over the same
             // interval as the nodes it counted
             let elapsed = result.elapsed;
-            PositionReport {
+            Some(PositionReport {
                 id: position.id.clone(),
                 play: result.best_move,
                 score: result.score,
@@ -197,16 +246,17 @@ pub fn run_suite(
                 tainted_cutoffs: engine.ghi().tainted_score_cutoffs,
                 refused_cutoffs: engine.ghi().refused_cutoffs,
                 skipped_stores: engine.ghi().skipped_stores,
+                signatures: engine.signatures(),
                 elapsed,
-            }
+            })
         })
-        .collect();
-    Report {
+        .collect::<Option<Vec<PositionReport>>>()?;
+    Some(Report {
         depth,
         table_bytes,
         config,
         positions,
-    }
+    })
 }
 
 fn share(part: u64, whole: u64) -> f64 {
@@ -321,6 +371,34 @@ impl fmt::Display for Report {
             sum(|p| p.skipped_stores),
             self.elapsed(),
         )?;
+        // one block for the whole suite, and only when the run was audited,
+        // so an ordinary report prints what it always printed. It goes above
+        // the last line because the last line is the one the match tools read
+        if let Some(counted) = self.signatures() {
+            // each figure is read against the expectation beside it, which
+            // is the comparisons over two to the width. The thirty two bit
+            // observation is a zero at this scale whether or not the
+            // instrument works, so the sixteen bit line is what says it does
+            writeln!(
+                f,
+                "signature audit: probes {}, hits {}, comparisons {}, \
+                 false accepts {} ({:.3} expected), \
+                 false accept cutoffs {}, aliased evictions {}",
+                counted.probes,
+                counted.hits,
+                counted.comparisons,
+                counted.false_accepts,
+                counted.expected_false_accepts(),
+                counted.false_accept_cutoffs,
+                counted.aliased_evictions,
+            )?;
+            writeln!(
+                f,
+                "narrow signature: sixteen bit accepts {} ({:.3} expected)",
+                counted.narrow_accepts,
+                counted.expected_narrow_accepts(),
+            )?;
+        }
         write!(f, "{} nodes {} nps", self.nodes(), self.nps())
     }
 }
@@ -484,6 +562,133 @@ mod tests {
         let report = run_suite(&suite, 0, 1 << 20, SearchConfig::default());
         assert_eq!(report.depth, 1);
         assert!(report.positions[0].nodes > 0);
+    }
+
+    /// A suite of two, enough for an audited run to have something to count
+    /// and little enough to search twice inside a test.
+    fn small_suite() -> Vec<Position> {
+        parse_epd(
+            "r1b2rk1/ppp1qppp/4pn2/6N1/Qn1P4/2NBP3/PP3PPP/R3K2R w KQ - id \"sharp\";\n\
+             r3k2r/p1ppqpb1/bn2pnp1/3PN3/1p2P3/2N2Q1p/PPPBBPPP/R3K2R w KQkq - id \"kiwipete\";",
+        )
+    }
+
+    /// The shadow keys are allocated when the bench asks for them and at no
+    /// other time, so an ordinary run has nothing to report and prints what
+    /// it always printed. Asked of both configurations, since the reference
+    /// builds its engines the same way.
+    #[test]
+    fn a_run_that_was_not_audited_keeps_no_keys() {
+        for config in [SearchConfig::default(), SearchConfig::reference()] {
+            let report = run_suite(&small_suite(), 3, 1 << 20, config);
+            assert!(report.signatures().is_none());
+            assert!(report.positions.iter().all(|p| p.signatures.is_none()));
+            assert!(!report.to_string().contains("signature audit"));
+        }
+    }
+
+    /// The audit counts and does nothing else, so the tree is the tree the
+    /// unaudited run searched. This says so at test scale; the pinned counts
+    /// below say it at the bench's.
+    #[test]
+    fn an_audited_run_searches_the_same_tree() {
+        let suite = small_suite();
+        let plain = run_suite(&suite, 4, 4 << 20, SearchConfig::default());
+        let audited =
+            run_audited_suite(&suite, 4, 4 << 20, SearchConfig::default()).expect("the keys");
+        assert_eq!(plain.nodes(), audited.nodes());
+        let played = |report: &Report| {
+            report
+                .positions
+                .iter()
+                .map(|p| (p.play, p.score, p.nodes))
+                .collect::<Vec<_>>()
+        };
+        assert_eq!(played(&plain), played(&audited));
+    }
+
+    /// The summary block, with each counter inside the one it is a part of:
+    /// a hit is a probe the slice accepted, a false accept is a hit whose
+    /// full key differed, a cutoff is a false accept a score was taken from.
+    /// The block sits above the last line, which is still the one the match
+    /// tools read.
+    ///
+    /// The false accepts are pinned at zero rather than bounded. The
+    /// expectation at this scale is about a ten thousandth of one, so a
+    /// count above zero is not the search finding a collision, it is the
+    /// instrument reading its own keys wrongly. That is the failure an
+    /// inequality here would sit through: a shadow key dropped on store, or
+    /// index arithmetic that looks a slot along, both make every probe read
+    /// as foreign and both pass a bound.
+    #[test]
+    fn an_audited_run_prints_a_summary_that_holds_together() {
+        let report =
+            run_audited_suite(&small_suite(), 4, 4 << 20, SearchConfig::default()).expect("keys");
+        let counted = report.signatures().expect("an audited run counted");
+        assert!(counted.probes > 0, "nothing was probed");
+        assert!(counted.hits <= counted.probes);
+        assert_eq!(
+            counted.false_accepts, 0,
+            "a false accept at this scale is the audit reading its own keys wrongly"
+        );
+        assert!(counted.false_accept_cutoffs <= counted.false_accepts);
+        assert!(counted.comparisons > 0, "nothing was compared");
+        let text = report.to_string();
+        let lines: Vec<&str> = text.lines().collect();
+        assert_eq!(
+            lines[lines.len() - 3],
+            format!(
+                "signature audit: probes {}, hits {}, comparisons {}, \
+                 false accepts {} ({:.3} expected), \
+                 false accept cutoffs {}, aliased evictions {}",
+                counted.probes,
+                counted.hits,
+                counted.comparisons,
+                counted.false_accepts,
+                counted.expected_false_accepts(),
+                counted.false_accept_cutoffs,
+                counted.aliased_evictions,
+            )
+        );
+        assert_eq!(
+            lines[lines.len() - 2],
+            format!(
+                "narrow signature: sixteen bit accepts {} ({:.3} expected)",
+                counted.narrow_accepts,
+                counted.expected_narrow_accepts(),
+            )
+        );
+        assert!(lines[lines.len() - 1].ends_with(" nps"));
+    }
+
+    /// The expectations are the comparisons over two to the width, which is
+    /// arithmetic rather than a measurement and is pinned as such. A narrow
+    /// signature takes a foreign entry sixty five thousand times more often
+    /// than the one the table runs, which is why its figure is large enough
+    /// at the bench's scale to be compared with its own expectation.
+    #[test]
+    fn an_expectation_is_the_comparisons_over_two_to_the_width() {
+        let counted = SignatureCounters {
+            comparisons: 1 << 32,
+            ..Default::default()
+        };
+        assert_eq!(counted.expected_false_accepts(), 1.0);
+        // the narrow width less the chance the whole slice agreed as well,
+        // which is the one case the wide signature takes for itself
+        assert_eq!(counted.expected_narrow_accepts(), 65_536.0 - 1.0);
+        let none = SignatureCounters::default();
+        assert_eq!(none.expected_false_accepts(), 0.0);
+        assert_eq!(none.expected_narrow_accepts(), 0.0);
+    }
+
+    /// The instrument is as deterministic as the search it watches, so a
+    /// figure printed today can be compared with one printed next year.
+    #[test]
+    fn two_audited_runs_count_the_same() {
+        let suite = small_suite();
+        let first = run_audited_suite(&suite, 4, 4 << 20, SearchConfig::default()).expect("keys");
+        let second = run_audited_suite(&suite, 4, 4 << 20, SearchConfig::default()).expect("keys");
+        assert_eq!(first.signatures(), second.signatures());
     }
 
     /// The search is deterministic, so how many nodes the bench visits is an

@@ -18,8 +18,9 @@ arche, a chess engine speaking uci on stdin.
 
 Usage:
   arche                 start the uci loop and read commands from stdin
-  arche bench [depth] [hash <MB>] [taint refuse|trust|skip|rule50]
-                        search a fixed suite and print what each search counted
+  arche bench [depth] [hash <MB>] [taint refuse|trust|skip|rule50] [audit]
+                        search a fixed suite and print what each search counted,
+                        with audit adding what the table's key signature cost
   arche residuals [depth] [every <n>] [taint refuse|trust|skip|rule50]
                         search the same suite, then ask the reference search
                         what the nodes the shortcuts answered were worth
@@ -31,10 +32,13 @@ Documentation: https://github.com/aywrite/arche
 ";
 
 fn main() -> ExitCode {
-    // `arche bench [depth] [hash <MB>] [taint refuse|trust|skip|rule50]`
-    // prints the bench and exits, which is how the match tools measure an
-    // engine's speed and how a commit states what its search change did to
-    // the tree. No argument starts the uci loop; anything else is a mistake,
+    // `arche bench [depth] [hash <MB>] [taint refuse|trust|skip|rule50]
+    // [audit]` prints the bench and exits, which is how the match tools
+    // measure an engine's speed and how a commit states what its search
+    // change did to the tree. The audit is the one word that adds a figure
+    // rather than changing what is searched, and it is left out of every
+    // run that is not asking about the table's key signature.
+    // No argument starts the uci loop; anything else is a mistake,
     // and a mistake that started the uci loop would sit waiting for input in
     // silence
     let args: Vec<String> = std::env::args().skip(1).collect();
@@ -50,16 +54,35 @@ fn main() -> ExitCode {
         }
         Some("bench") => match uci::bench_settings(&Params::of(&args.join(" "))) {
             Ok(settings) => {
-                println!(
-                    "{}",
-                    bench::run_suite(
-                        &bench::positions(),
+                let positions = bench::positions();
+                let report = if settings.audit {
+                    bench::run_audited_suite(
+                        &positions,
                         settings.depth,
                         settings.table_bytes,
-                        settings.config
+                        settings.config,
                     )
-                );
-                ExitCode::SUCCESS
+                } else {
+                    Some(bench::run_suite(
+                        &positions,
+                        settings.depth,
+                        settings.table_bytes,
+                        settings.config,
+                    ))
+                };
+                match report {
+                    Some(report) => {
+                        println!("{}", report);
+                        ExitCode::SUCCESS
+                    }
+                    // said and refused rather than run unaudited: the figures
+                    // are what was asked for, and a report without them
+                    // reads like a run that found nothing
+                    None => {
+                        eprintln!("no memory for the audit's keys, which are half the table again");
+                        ExitCode::from(2)
+                    }
+                }
             }
             Err(what) => {
                 eprintln!("unrecognised bench {}", what);

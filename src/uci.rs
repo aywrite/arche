@@ -508,13 +508,28 @@ impl<T: Engine, W: Write> UCI<T, W> {
     fn bench(&mut self, line: &str) {
         match bench_settings(&Params::of(line)) {
             Ok(settings) => {
-                let report = bench::run_suite(
-                    &bench::positions(),
-                    settings.depth,
-                    settings.table_bytes,
-                    settings.config,
-                );
-                self.say(format_args!("{}", report));
+                let positions = bench::positions();
+                let report = if settings.audit {
+                    bench::run_audited_suite(
+                        &positions,
+                        settings.depth,
+                        settings.table_bytes,
+                        settings.config,
+                    )
+                } else {
+                    Some(bench::run_suite(
+                        &positions,
+                        settings.depth,
+                        settings.table_bytes,
+                        settings.config,
+                    ))
+                };
+                match report {
+                    Some(report) => self.say(format_args!("{}", report)),
+                    None => self.say(format_args!(
+                        "info string no memory for the audit's keys, which are half the table again"
+                    )),
+                }
             }
             Err(what) => self.say(format_args!("info string unrecognised bench {}", what)),
         }
@@ -692,19 +707,23 @@ fn go_depth(params: &Params) -> Option<u8> {
 }
 
 /// What a bench command or argument asked for: `bench [depth] [hash <MB>]
-/// [taint refuse|trust|skip|rule50]`, each setting standing in for the
-/// bench's own when absent. The depth is for trying the command cheaply; the
-/// table and the policy are what the graph history measurements vary, and a
-/// report states all three in its header so it can be rerun from it.
+/// [taint refuse|trust|skip|rule50] [audit]`, each setting standing in for
+/// the bench's own when absent. The depth is for trying the command cheaply;
+/// the table and the policy are what the graph history measurements vary,
+/// and a report states all three in its header so it can be rerun from it.
 pub struct BenchSettings {
     pub depth: u8,
     pub table_bytes: usize,
     pub config: SearchConfig,
+    /// Whether each table keeps the full key of every entry, so the report
+    /// can say how often the entry's signature accepted another position's.
+    /// A word rather than a value: the audit is on or it is not.
+    pub audit: bool,
 }
 
 /// The words a bench takes after its depth. One of them standing where
 /// the depth would be means the depth was left out, not mistyped.
-const BENCH_KEYWORDS: [&str; 2] = ["hash", "taint"];
+const BENCH_KEYWORDS: [&str; 3] = ["hash", "taint", "audit"];
 
 /// Reads the bench settings, or says which word could not be read: the
 /// setting's name and the word, for the caller to report. Running the
@@ -732,6 +751,7 @@ pub fn bench_settings(params: &Params) -> Result<BenchSettings, String> {
         depth,
         table_bytes,
         config,
+        audit: params.flag("audit"),
     })
 }
 
@@ -1533,6 +1553,27 @@ go depth 3
             "{}",
             said
         );
+    }
+
+    #[test]
+    fn a_bench_command_takes_the_signature_audit() {
+        // a word rather than a value, so it stands where the depth would be
+        // without being read as one, and a run without it says nothing
+        // about signatures at all
+        let mut uci = uci();
+        uci.run(Cursor::new("bench 1 hash 1 audit\nbench 1 hash 1\n"));
+        let said = said(&uci);
+        assert_eq!(
+            said.matches("signature audit: probes ").count(),
+            1,
+            "{}",
+            said
+        );
+        let audited = bench_settings(&Params::of("bench audit")).expect("audit is a word");
+        assert_eq!(audited.depth, bench::DEPTH);
+        assert!(audited.audit);
+        let plain = bench_settings(&Params::of("bench 1")).expect("a depth");
+        assert!(!plain.audit);
     }
 
     #[test]
