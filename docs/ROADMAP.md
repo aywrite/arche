@@ -10,7 +10,6 @@ compare against — is in place, so each of these arrives with its numbers: a
 `Bench:` trailer always, and an `Elo:` trailer from an SPRT when it changes how
 the engine plays. Roughly in the order they look worth doing.
 
-- null move pruning
 - killer moves and a history heuristic, staged in the ordering module
 - principal variation search, and a delta margin in quiescence
 - late move reductions

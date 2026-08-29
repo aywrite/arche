@@ -55,7 +55,8 @@ material plus piece square tables, tapered between middlegame and endgame.
   quiet, since evaluating in the middle of an exchange scores a hanging
   queen as material. Also here: reverse futility pruning (answer a node
   from its evaluation when that is already far above what the opponent
-  can accept) and the check extension.
+  can accept), null move pruning (answer it from a reduced search of the
+  position left by passing the move) and the check extension.
 - **ordering.rs**: The order moves are tried in. The transposition table's
   move first, then captures by most valuable victim / least valuable
   attacker. Alpha beta prunes more the sooner a good move is found, so
@@ -67,6 +68,8 @@ material plus piece square tables, tapered between middlegame and endgame.
 - **value.rs**: A score plus a taint bit recording whether it depended on
   a repetition or fifty move draw somewhere down its line. Such a score is
   only true of the path that produced it, which the table needs to know.
+  The mate arithmetic lives here too: what scores count as a forced mate,
+  and how one is read back as moves to mate.
 - **transposition.rs**: The transposition table: a cache of positions
   searched before, keyed by zobrist hash, holding the score and best move
   found last time. Entries are 16 bytes, four to a cache line, replaced by
