@@ -59,8 +59,11 @@ material plus piece square tables, tapered between middlegame and endgame.
   position left by passing the move) and the check extension.
 - **ordering.rs**: The order moves are tried in. The transposition table's
   move first, then captures by most valuable victim / least valuable
-  attacker. Alpha beta prunes more the sooner a good move is found, so
-  ordering has an outsized effect on tree size.
+  attacker, then the quiet moves by two memories the search fills as it
+  goes: the killers, which are the quiet moves that cut off at this
+  distance from the root, and a history table of how often each quiet move
+  has cut off anywhere. Alpha beta prunes more the sooner a good move is
+  found, so ordering has an outsized effect on tree size.
 - **limits.rs**: When to stop searching. A clock, a node budget, a soft
   rule that skips starting an iteration which would get less than half
   done, and a stop flag shared with the interface thread. The flag is read
