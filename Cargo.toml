@@ -51,3 +51,21 @@ codegen-units = 1
 
 [profile.bench]
 debug = true
+
+# What the debug test run checks comes from the two flags below and not from
+# the optimisation level, so the tests can be optimised without giving any of
+# it up. They are stated rather than left to the profile's defaults, because
+# losing either of them is the one way this section could do harm.
+#
+# Unoptimised the suite takes two and a half minutes, almost all of it the
+# perft walks: tens of millions of positions, each move of them recomputing
+# the board's state to compare against what was maintained. At level one it
+# takes twenty six seconds and compiles eight seconds slower. Level two costs
+# another forty five seconds of compiling to save one second of running.
+#
+# `profile.test` inherits from this, and so does the binary the session tests
+# spawn, so this one setting covers the whole of `cargo test`.
+[profile.dev]
+opt-level = 1
+debug-assertions = true
+overflow-checks = true

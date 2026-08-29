@@ -21,10 +21,8 @@ times faster to search. Always measure with a release build.
 cargo test --workspace --release
 ```
 
-The pinned bench searches dominate the runtime, twenty two million nodes of
-them, which is why the release profile is the usual choice for a quick pass. The
-debug run is the one that checks the most, so run it before landing a change:
-the debug profile keeps the overflow checks
+The debug run is the one that checks the most, so run it before landing a
+change: the debug profile keeps the overflow checks
 and the board's state-in-step assertions, which verify the position key, the
 eval accumulators, the square array and the en passant rule against a
 recompute on every move made. Release compiles all of that out, so a green
@@ -33,6 +31,13 @@ release run alone says nothing about them.
 ```
 cargo test --workspace
 ```
+
+Both runs are a matter of seconds. The debug one took two and a half minutes
+until recently, almost all of it the perft walks: they visit tens of millions
+of positions and recompute the board's state on every move of them.
+`[profile.dev]` in the root manifest asks for optimisation level one, which
+changes nothing about what is checked, since the overflow checks and the state
+assertions come from two flags the profile states beside it.
 
 The tactical suite is not in either run. It searches three hundred positions
 and takes ten seconds or so, so it is marked ignored and asked for by name,
