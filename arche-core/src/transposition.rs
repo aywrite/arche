@@ -15,10 +15,9 @@
 //! a change to this file and to none of its callers.
 
 use crate::board::Board;
-use crate::engine::CHECKMATE_THRESHOLD;
 use crate::misc::Score;
 use crate::play::Play;
-use crate::value::Value;
+use crate::value::{Value, is_mate};
 use std::mem;
 
 pub const DEFAULT_TABLE_BYTES: usize = 256 * 1024 * 1024;
@@ -28,24 +27,24 @@ pub const DEFAULT_TABLE_BYTES: usize = 256 * 1024 * 1024;
 /// rather than relative to the root of the search, so that they remain correct
 /// when the entry is reused at a different distance from the root.
 fn score_to_tt(score: Score, line_ply: usize) -> Score {
-    if score > CHECKMATE_THRESHOLD {
-        score + line_ply as Score
-    } else if score < -CHECKMATE_THRESHOLD {
-        score - line_ply as Score
-    } else {
+    if !is_mate(score) {
         score
+    } else if score > 0 {
+        score + line_ply as Score
+    } else {
+        score - line_ply as Score
     }
 }
 
 /// The inverse of score_to_tt: convert a stored mate score back to being
 /// relative to the root of the current search.
 fn score_from_tt(score: Score, line_ply: usize) -> Score {
-    if score > CHECKMATE_THRESHOLD {
-        score - line_ply as Score
-    } else if score < -CHECKMATE_THRESHOLD {
-        score + line_ply as Score
-    } else {
+    if !is_mate(score) {
         score
+    } else if score > 0 {
+        score - line_ply as Score
+    } else {
+        score + line_ply as Score
     }
 }
 

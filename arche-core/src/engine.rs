@@ -8,13 +8,12 @@ use crate::ordering::MoveOrdering;
 use crate::play::Play;
 use crate::residual::{Sample, Sampler, Shortcut};
 use crate::transposition::{DEFAULT_TABLE_BYTES, GhiCounters, Probe, TranspositionTable};
-use crate::value::Value;
+use crate::value::{Taint, Value, below_the_mate_window, is_mate};
 use std::fmt;
 use std::sync::Arc;
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::time;
 
-const CHECKMATE_SCORE: Score = 30_000;
 /// The rail a requested depth is held to, quiescence stops at, and the
 /// reported line is walked to.
 ///
@@ -23,7 +22,7 @@ const CHECKMATE_SCORE: Score = 30_000;
 /// repetition and fifty move rules. It is bounded well inside the two
 /// things that would break if a line outran them: the history ring, which
 /// holds a thousand and twenty four plies less the fifty move window, and
-/// the mate score window, which leaves a thousand below CHECKMATE_SCORE.
+/// the mate score window, which begins a thousand under the mate score.
 /// Sixty four would have fitted as comfortably; a hundred and twenty eight
 /// is bought because moving it later is a play change with a match behind
 /// it, and this is enough that it need never move again.
@@ -32,9 +31,6 @@ pub const MAX_PLY: u8 = 128;
 // rail has to leave room for that inside a byte. A rail raised past this
 // fails the build rather than overflowing partway through a game.
 const _: () = assert!(MAX_PLY < u8::MAX);
-// Any score this close to CHECKMATE_SCORE is a forced mate. Regular evals are
-// bounded by the material on the board, which cannot come near it.
-pub(crate) const CHECKMATE_THRESHOLD: Score = CHECKMATE_SCORE - 1000;
 // How far above beta a static eval has to stand, per ply still to search,
 // before a node is answered from it instead of searched: what the opponent
 // is allowed to win back over those plies. A pawn a ply. The bench barely
@@ -578,7 +574,7 @@ impl AlphaBeta {
         // quiescence itself never reads a draw, but a search told to trust
         // tainted scores can cut on a tainted entry inside a capture tree,
         // and that taint travels up through here like anywhere else
-        let mut node_tainted = false;
+        let mut taint = Taint::default();
         let mut found_legal_move = false;
         for m in &moves {
             if self.board.make_move(m) {
@@ -588,7 +584,7 @@ impl AlphaBeta {
                 let result = self.quiescence(-beta, -alpha);
                 self.board.undo_move();
                 let value = -result?;
-                node_tainted |= value.tainted;
+                taint.absorb(value);
                 let score = value.score;
                 if score > best {
                     best = score;
@@ -596,7 +592,7 @@ impl AlphaBeta {
                 }
                 if score > alpha {
                     if score >= beta {
-                        let value = Value::with_taint(score, node_tainted);
+                        let value = taint.stamp(score);
                         if self.keeps(value) {
                             self.transpositions.record_cutoff(&self.board, *m, value, 0);
                         }
@@ -610,12 +606,10 @@ impl AlphaBeta {
         if in_check && !found_legal_move {
             // checkmate, at the end of a capture sequence: report it as the
             // search does, so the line that forces it reads as the mate it is
-            return Ok(Value::clean(
-                -CHECKMATE_SCORE + (self.board.line_ply as Score),
-            ));
+            return Ok(Value::mated(self.board.line_ply));
         }
 
-        let value = Value::with_taint(best, node_tainted);
+        let value = taint.stamp(best);
         if let Some(play) = best_move {
             if self.keeps(value) {
                 if alpha != old_alpha {
@@ -657,9 +651,7 @@ impl AlphaBeta {
             // first time it came up, so the cost stays off the lines that
             // repeat
             if in_check && !self.board.has_legal_move() {
-                return Ok(Value::clean(
-                    -CHECKMATE_SCORE + (self.board.line_ply as Score),
-                ));
+                return Ok(Value::mated(self.board.line_ply));
             }
             // where the taint starts: the draw is true of the path that
             // reached this position, not of the position itself
@@ -668,7 +660,7 @@ impl AlphaBeta {
         if self.board.has_repeated() {
             return Ok(Value::tainted(0));
         }
-        let mut node_tainted = false;
+        let mut taint = Taint::default();
         if in_check {
             depth += 1;
         }
@@ -735,7 +727,7 @@ impl AlphaBeta {
             // eval and material bounds every eval far below the threshold;
             // it stands here so the gate stays right if the eval ever grows
             // terms that reach higher
-            && beta.abs() < CHECKMATE_THRESHOLD
+            && !is_mate(beta)
         {
             let floor = self
                 .eval()
@@ -779,10 +771,10 @@ impl AlphaBeta {
         //   zugzwang happens to: there passing is better than every move
         //   there is, so what the reduced search proves is nothing about
         //   the moves;
-        // - beta inside the mate window, for the reason the margin gives:
-        //   against a beta belonging to a mate the other side is proving,
-        //   a cutoff here would leave the subtree that holds a faster mate
-        //   unsearched;
+        // - beta outside the window mates are read in, for the reason the
+        //   margin gives: against a beta belonging to a mate the other side
+        //   is proving, a cutoff here would leave the subtree that holds a
+        //   faster mate unsearched;
         // - and the eval already above beta, so what is spent is spent on
         //   proving something that looks true. The eval is one incremental
         //   read here, and it turns away the passes that were going to fail.
@@ -794,7 +786,7 @@ impl AlphaBeta {
             && depth >= NULL_MOVE_MIN_DEPTH
             && !in_check
             && self.board.has_non_pawn_material()
-            && beta.abs() < CHECKMATE_THRESHOLD
+            && !is_mate(beta)
             && self.eval() >= beta
         {
             self.board.make_null_move();
@@ -808,7 +800,7 @@ impl AlphaBeta {
                 // a move either side has, so what was proved is that the
                 // position is very good and not that it is won, and the
                 // score is held below the window a caller reads mates in
-                let score = value.score.min(CHECKMATE_THRESHOLD - 1);
+                let score = below_the_mate_window(value.score);
                 // the board is back from the pass, so what the sampler
                 // prints and evaluates here is the node itself
                 if self.sampler.is_some() {
@@ -817,7 +809,7 @@ impl AlphaBeta {
                 return Ok(Value::with_taint(score, value.tainted));
             }
             // a pass that failed still read whatever it read on the way
-            node_tainted |= value.tainted;
+            taint.absorb(value);
         }
 
         // The table's move sorts ahead of everything else below, and when there
@@ -837,7 +829,7 @@ impl AlphaBeta {
                     // generated, so it taints this node the same way any other
                     // child would
                     let value = -result?;
-                    node_tainted |= value.tainted;
+                    taint.absorb(value);
                     let tt_score = value.score;
                     if tt_score > best {
                         best = tt_score;
@@ -845,7 +837,7 @@ impl AlphaBeta {
                     }
                     if tt_score > alpha {
                         if tt_score >= beta {
-                            let value = Value::with_taint(tt_score, node_tainted);
+                            let value = taint.stamp(tt_score);
                             if self.keeps(value) {
                                 self.transpositions
                                     .record_cutoff(&self.board, tt, value, depth);
@@ -879,7 +871,7 @@ impl AlphaBeta {
                 // a value built from a tainted child is tainted, whether or not
                 // it turns out to be the best one here
                 let value = -result?;
-                node_tainted |= value.tainted;
+                taint.absorb(value);
                 let score = value.score;
                 if score > best {
                     best = score;
@@ -887,7 +879,7 @@ impl AlphaBeta {
                 }
                 if score > alpha {
                     if score >= beta {
-                        let value = Value::with_taint(score, node_tainted);
+                        let value = taint.stamp(score);
                         if self.keeps(value) {
                             self.transpositions
                                 .record_cutoff(&self.board, *m, value, depth);
@@ -903,15 +895,13 @@ impl AlphaBeta {
             // mate and stalemate are properties of the position, not of the
             // path that reached it
             if in_check {
-                return Ok(Value::clean(
-                    -CHECKMATE_SCORE + (self.board.line_ply as Score),
-                ));
+                return Ok(Value::mated(self.board.line_ply));
             }
             return Ok(Value::clean(0));
         }
 
         let play = best_move.expect("a legal move was found, so one of them is best");
-        let value = Value::with_taint(best, node_tainted);
+        let value = taint.stamp(best);
         if self.keeps(value) {
             if alpha != old_alpha {
                 self.transpositions
@@ -992,7 +982,7 @@ impl AlphaBeta {
         let beta = Score::MAX - 1;
         let mut best: Option<Play> = None;
         let mut found_legal_move = false;
-        let mut root_tainted = false;
+        let mut taint = Taint::default();
 
         // the entry here is the one the last iteration answered with, stored
         // past the depth contest, and order_moves puts the table's move ahead
@@ -1031,7 +1021,7 @@ impl AlphaBeta {
                     }
                     Ok(value) => {
                         let value = -value;
-                        root_tainted |= value.tainted;
+                        taint.absorb(value);
                         let score = value.score;
                         if score > alpha {
                             alpha = score;
@@ -1050,12 +1040,8 @@ impl AlphaBeta {
         let play = best.expect("any legal move's score beats the opening alpha of Score::MIN + 1");
         // stored past the depth contest: this is the move about to be
         // answered, and the line reported for it is read back from this slot
-        self.transpositions.record_answer(
-            &self.board,
-            play,
-            Value::with_taint(alpha, root_tainted),
-            depth,
-        );
+        self.transpositions
+            .record_answer(&self.board, play, taint.stamp(alpha), depth);
         SearchOutcome::Complete(self.result_for(play, alpha))
     }
 
@@ -1288,14 +1274,7 @@ pub struct SearchResult {
 
 impl SearchResult {
     pub fn checkmate_in(&self) -> Option<Score> {
-        if self.score.abs() > CHECKMATE_THRESHOLD {
-            let mut mate = (CHECKMATE_SCORE - self.score.abs() + 1) / 2;
-            if self.score < 0 {
-                mate = -mate;
-            };
-            return Some(mate);
-        }
-        None
+        crate::value::checkmate_in(self.score)
     }
 }
 
@@ -1305,12 +1284,13 @@ mod search {
     use super::Board;
     use super::Engine;
     use super::{
-        CHECKMATE_THRESHOLD, Limits, Play, SearchConfig, SearchOutcome, SearchParameters,
-        SearchResult, TaintPolicy, Value,
+        Limits, Play, SearchConfig, SearchOutcome, SearchParameters, SearchResult, TaintPolicy,
+        Value,
     };
     use crate::board::{fens, play_named};
     use crate::limits::Clock;
     use crate::misc::Piece;
+    use crate::value::CHECKMATE_THRESHOLD;
     use pretty_assertions::assert_eq;
     use std::sync::Arc;
     use std::sync::atomic::{AtomicBool, Ordering};
