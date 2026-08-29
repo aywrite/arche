@@ -204,6 +204,20 @@ pub struct SearchConfig {
     /// pass alone already stands above beta. The second shortcut, and a
     /// guess like the first: on in the default, off in the reference.
     pub null_move: bool,
+    /// Whether a node orders its quiet moves by what other nodes have
+    /// learned: the killers for its distance from the root, and the history
+    /// table under them. On in the default, off in the reference, which
+    /// keeps the pinned reference tree the one alpha-beta and MVV-LVA alone
+    /// produce.
+    ///
+    /// Ordering rather than pruning, so under the reference the answer is
+    /// the same either way and only the size of the tree moves. Not so
+    /// under the default: a shortcut fires against the window a node was
+    /// searched under, that window comes from what its parent had already
+    /// found, and the order the parent searched in is what decides that.
+    /// So the default's move and score may move where the reference's may
+    /// not.
+    pub move_memory: bool,
 }
 
 /// What to do with a draw tainted score: one stored by a search that read
@@ -256,6 +270,7 @@ impl SearchConfig {
             taint: TaintPolicy::Refuse,
             reverse_futility: false,
             null_move: false,
+            move_memory: false,
         }
     }
 
@@ -308,11 +323,18 @@ impl Default for SearchConfig {
     /// The pass is the third, and the same kind of guess. It buys its
     /// confidence with a reduced search where reverse futility buys it with
     /// a margin, so it prunes where a margin cannot reach.
+    ///
+    /// The quiet memories are the fourth, and no kind of guess at all.
+    /// They prune nothing. What they move is how soon a node finds the move
+    /// that cuts it off, which is most of what alpha-beta costs. The
+    /// reference keeps them off so that its tree stays the one MVV-LVA and
+    /// generation order produce.
     fn default() -> Self {
         Self {
             taint: TaintPolicy::Rule50,
             reverse_futility: true,
             null_move: true,
+            move_memory: true,
         }
     }
 }
@@ -424,6 +446,33 @@ impl AlphaBeta {
 
     fn eval(&self) -> Score {
         crate::eval::eval(&self.board)
+    }
+
+    /// The ply the quiet memories are indexed by at this node, or none when
+    /// they are not consulted: the configuration has them off, or a chain of
+    /// check extensions has carried the line past the killer table. The rail
+    /// bounds quiescence and the reported line, and it does not bound a full
+    /// width line, so nothing proves the second case unreachable, though no
+    /// measured run has crossed it. A node past the rail orders the way a
+    /// node did before the memories arrived.
+    fn memory_ply(&self) -> Option<usize> {
+        if !self.config.move_memory {
+            return None;
+        }
+        let ply = self.board.line_ply;
+        if ply >= MAX_PLY as usize {
+            return None;
+        }
+        Some(ply)
+    }
+
+    /// The move that cut this node off, offered to the quiet memories. The
+    /// move has been unmade by the time this is called, so the board says
+    /// which side played it and how far the node stands from the root.
+    fn remember_cutoff(&mut self, m: &Play, depth: u8) {
+        if let Some(ply) = self.memory_ply() {
+            self.ordering.cutoff(self.board.active_color, m, ply, depth);
+        }
     }
 
     /// Whether a result may be stored under the taint policy. A tainted
@@ -569,7 +618,10 @@ impl AlphaBeta {
         } else {
             self.board.generate_captures()
         };
-        self.ordering.order(&self.board, &mut moves, pv_play);
+        // quiescence orders captures and evasions, which is where the quiet
+        // memories have nothing to say, so it never reads them and never
+        // writes them either
+        self.ordering.order(&self.board, &mut moves, pv_play, None);
 
         // quiescence itself never reads a draw, but a search told to trust
         // tainted scores can cut on a tainted entry inside a capture tree,
@@ -837,6 +889,10 @@ impl AlphaBeta {
                     }
                     if tt_score > alpha {
                         if tt_score >= beta {
+                            // a cutoff is a cutoff wherever it is proved, so
+                            // the table's move earns its killer slot here as
+                            // any other move does in the loop below
+                            self.remember_cutoff(&tt, depth);
                             let value = taint.stamp(tt_score);
                             if self.keeps(value) {
                                 self.transpositions
@@ -855,7 +911,8 @@ impl AlphaBeta {
         } else {
             self.board.generate_moves()
         };
-        self.ordering.order(&self.board, &mut moves, pv_play);
+        let ply = self.memory_ply();
+        self.ordering.order(&self.board, &mut moves, pv_play, ply);
 
         for m in &moves {
             if tt_tried == Some(*m) {
@@ -879,6 +936,7 @@ impl AlphaBeta {
                 }
                 if score > alpha {
                     if score >= beta {
+                        self.remember_cutoff(m, depth);
                         let value = taint.stamp(score);
                         if self.keeps(value) {
                             self.transpositions
@@ -926,6 +984,7 @@ impl AlphaBeta {
     /// the game being played, and the answer must not depend on one.
     pub fn search(&mut self, depth: u8) -> SearchOutcome {
         self.transpositions.new_search();
+        self.ordering.forget();
         self.search_within(depth, Limits::unlimited())
     }
 
@@ -939,6 +998,8 @@ impl AlphaBeta {
     /// together from the next. Calling this on its own skips that, and a
     /// table whose generation never moves keeps every entry looking current:
     /// nothing goes stale and the oldest entries are never the ones given up.
+    /// The quiet memories are the caller's on the same terms, and a search
+    /// asked for through here keeps whatever the search before it learned.
     pub fn search_within(&mut self, depth: u8, limits: Limits) -> SearchOutcome {
         // nothing outside stops a search asked for directly
         self.search_root(depth, limits, None)
@@ -991,7 +1052,10 @@ impl AlphaBeta {
         // it: see the Aborted arm of iterative_deepening_search
         let pv_play = self.transpositions.ordering_play(&self.board);
         let mut moves = self.board.generate_moves();
-        self.ordering.order(&self.board, &mut moves, pv_play);
+        // the root orders as it always has: the swap below reasons about
+        // this list, and a killer moving a quiet move up it would be one
+        // more thing that reasoning has to hold for
+        self.ordering.order(&self.board, &mut moves, pv_play, None);
         // the soundness of replacing a completed answer with an aborted
         // iteration's rests on that ordering, so a change that breaks it,
         // say a root bonus outbidding the table move, fails here rather
@@ -1127,8 +1191,12 @@ impl Engine for AlphaBeta {
             None => MAX_PLY,
         };
         // one search, however many iterations: what the iterations store is
-        // one generation's, and ages together from the next go
+        // one generation's, and ages together from the next go. The quiet
+        // memories start empty for the same reason and are kept from one
+        // iteration to the next for the opposite one: a killer found at
+        // depth six is what orders depth seven
         self.transpositions.new_search();
+        self.ordering.forget();
 
         for depth in 1..=max_depth {
             // the soft bound: an iteration there is not enough of the clock
@@ -1284,12 +1352,12 @@ mod search {
     use super::Board;
     use super::Engine;
     use super::{
-        Limits, Play, SearchConfig, SearchOutcome, SearchParameters, SearchResult, TaintPolicy,
-        Value,
+        Limits, MAX_PLY, Play, SearchConfig, SearchOutcome, SearchParameters, SearchResult,
+        TaintPolicy, Value,
     };
     use crate::board::{fens, play_named};
     use crate::limits::Clock;
-    use crate::misc::Piece;
+    use crate::misc::{Color, Piece};
     use crate::value::CHECKMATE_THRESHOLD;
     use pretty_assertions::assert_eq;
     use std::sync::Arc;
@@ -1381,6 +1449,21 @@ mod search {
             TABLE_BYTES,
             SearchConfig {
                 null_move: true,
+                ..SearchConfig::reference()
+            },
+        )
+    }
+
+    /// The reference with the quiet memories switched on and nothing else
+    /// touched, the third arm beside the two above. They order rather than
+    /// prune, so whatever moves between this and `reference` is the tree
+    /// and never the answer.
+    fn remembering(board: Board) -> AlphaBeta {
+        AlphaBeta::with_config(
+            board,
+            TABLE_BYTES,
+            SearchConfig {
+                move_memory: true,
                 ..SearchConfig::reference()
             },
         )
@@ -2359,6 +2442,94 @@ mod search {
             panic!("nothing was armed to abort this search");
         };
         assert!(value.tainted, "the failed pass left no taint behind it");
+    }
+
+    #[test]
+    fn the_quiet_memories_look_at_less_of_the_tree_for_the_same_answer() {
+        // the switch has to reach the search, the way the two shortcuts'
+        // arms say it of theirs. This one owes more than they do. Nothing
+        // here prunes, so the root's full window search is worth what it
+        // was worth and only the tree that proved it may move.
+        let mut e = remembering(Board::from_fen(SHARP_MIDDLEGAME).unwrap());
+        let result = completed(e.search(6));
+        let mut cold = reference(Board::from_fen(SHARP_MIDDLEGAME).unwrap());
+        let expected = completed(cold.search(6));
+        assert_eq!(result.score, expected.score);
+        assert!(
+            e.nodes < cold.nodes,
+            "the memories searched {} nodes against the reference's {}",
+            e.nodes,
+            cold.nodes
+        );
+    }
+
+    #[test]
+    fn a_line_past_the_rail_orders_without_the_killers() {
+        // the killer table is as long as the rail, and a full width line is
+        // not held to it: a chain of check extensions keeps the depth where
+        // it was and can carry a node past. The ply is refused there rather
+        // than indexed with, and this is what says so, since a bench at
+        // depth seven never gets near it
+        let mut e = remembering(Board::new());
+        assert_eq!(e.memory_ply(), Some(0));
+        e.board.line_ply = MAX_PLY as usize - 1;
+        assert_eq!(e.memory_ply(), Some(MAX_PLY as usize - 1));
+        e.board.line_ply = MAX_PLY as usize;
+        assert_eq!(e.memory_ply(), None);
+
+        // and the configuration is asked first, so the reference reads
+        // nothing whatever the ply is
+        let mut off = reference(Board::new());
+        off.board.line_ply = 3;
+        assert_eq!(off.memory_ply(), None);
+    }
+
+    #[test]
+    fn a_cutoff_is_credited_to_the_side_that_played_it() {
+        // at depth two every full width cutoff is a black reply refuting a
+        // white root move, and from the start position every black reply is
+        // quiet, so the history must be black's alone and the killers must
+        // stand at ply one exactly. This is the search level check that the
+        // update sites read the board after the move is unmade: the wrong
+        // colour or the wrong ply lands the entries somewhere else
+        let mut e = remembering(Board::new());
+        completed(e.search(2));
+        assert_eq!(e.ordering.history_total(Color::White), 0);
+        assert!(e.ordering.history_total(Color::Black) > 0);
+        assert_eq!(e.ordering.killers_at(0), [None; 2]);
+        assert!(e.ordering.killers_at(1).iter().any(|k| k.is_some()));
+        assert_eq!(e.ordering.killers_at(2), [None; 2]);
+    }
+
+    #[test]
+    fn every_search_starts_with_the_quiet_memories_empty() {
+        // a killer from the position before would order this one, and the
+        // count would then say what the engine had been asked earlier
+        // rather than what this position costs. Both entry points empty
+        // them: the deepening loop is what a `go` runs, and `search` is
+        // what a fixed depth measurement runs
+        fn run(e: &mut AlphaBeta, deepened: bool) -> SearchResult {
+            let depth = 5;
+            if deepened {
+                let options = SearchParameters::to_depth(depth);
+                completed(e.iterative_deepening_search(options, |_, _, _| {}))
+            } else {
+                completed(e.search(depth))
+            }
+        }
+
+        for deepened in [false, true] {
+            let mut warm = remembering(Board::from_fen(SHARP_MIDDLEGAME).unwrap());
+            run(&mut warm, deepened);
+            warm.board = Board::new();
+            warm.clear_transpositions();
+            let result = run(&mut warm, deepened);
+
+            let mut cold = remembering(Board::new());
+            let expected = run(&mut cold, deepened);
+            assert_eq!(result.nodes, expected.nodes, "deepened: {deepened}");
+            assert_eq!(result.score, expected.score, "deepened: {deepened}");
+        }
     }
 
     #[test]
