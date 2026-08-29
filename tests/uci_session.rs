@@ -253,6 +253,46 @@ fn the_clear_hash_button_empties_the_table() {
     assert!(s.finished().success());
 }
 
+/// The sharp middlegame the engine's own tests search, which has enough
+/// going on at the root for a cut-short iteration to change its mind.
+const SHARP_MIDDLEGAME: &str = "r1b2rk1/ppp1qppp/4pn2/6N1/Qn1P4/2NBP3/PP3PPP/R3K2R w KQ - 9 12";
+
+#[test]
+fn the_move_a_swap_answers_with_opens_the_last_line_said() {
+    // a node budget rather than a clock, so the iteration is cut short on
+    // the same node on every machine and this is a fixture rather than a
+    // race: this budget leaves an iteration with a better move than the
+    // depth before it answered, which is the swap. Without a report of its
+    // own the last line an interface read would open with the move being
+    // given up, and fastchess calls that out on every move it happens on
+    let mut s = Session::start(&[]);
+    s.say(&format!("position fen {}", SHARP_MIDDLEGAME));
+    s.say("go nodes 39894");
+    let answer = s.wait_for(|l| l.starts_with("bestmove"));
+    let best = answer
+        .strip_prefix("bestmove ")
+        .unwrap_or_else(|| panic!("not a bestmove: {}", answer));
+    let info = s
+        .said
+        .iter()
+        .rfind(|l| l.starts_with("info depth "))
+        .unwrap_or_else(|| panic!("the search reported no depth: {:#?}", s.said))
+        .clone();
+    let first = info
+        .split(" pv ")
+        .nth(1)
+        .and_then(|line| line.split_whitespace().next())
+        .unwrap_or_else(|| panic!("no line in {}", info));
+    assert_eq!(first, best, "the last line said: {}", info);
+    assert!(
+        info.contains(" lowerbound "),
+        "a partial depth was reported as an exact score: {}",
+        info
+    );
+    s.say("quit");
+    assert!(s.finished().success());
+}
+
 #[test]
 fn the_version_and_the_help_answer_and_exit_cleanly() {
     let mut version = Session::start(&["--version"]);

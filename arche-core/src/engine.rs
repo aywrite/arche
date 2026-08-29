@@ -119,10 +119,15 @@ pub trait Engine {
     /// prints. A result's node count covers the whole deepening so far, not
     /// the one iteration, which is what the uci info convention expects and
     /// what makes it divisible by the time since the search began.
+    ///
+    /// One report is not a completed iteration: the answer an aborted
+    /// iteration replaces a completed one with is reported too, as a lower
+    /// bound, since it is what the search will be answering with and nothing
+    /// else would have named it.
     fn iterative_deepening_search(
         &mut self,
         search_options: SearchParameters,
-        on_depth: impl FnMut(u8, &SearchResult, PvLine),
+        on_depth: impl FnMut(u8, &SearchResult, PvLine, ScoreBound),
     ) -> SearchOutcome;
 }
 
@@ -1169,11 +1174,20 @@ impl AlphaBeta {
     /// board says whether a stored move is legal here, and whether the line has
     /// reached a position it would be a draw to play on from.
     pub fn pv_line(&self) -> PvLine {
+        self.pv_line_from(self.transpositions.intended_play(&self.board))
+    }
+
+    /// The same line read from a first move given rather than from the
+    /// table's. An aborted iteration stores nothing at the root, so the
+    /// entry there still holds the move the depth before it answered, and
+    /// the move the swap answers with has to be handed in.
+    fn pv_line_from(&self, first: Option<Play>) -> PvLine {
         let mut line = Vec::new();
         // Board is Copy, so the search's own board is untouched by this.
         let mut board = self.board;
+        let mut next = first;
         while line.len() < MAX_PLY as usize {
-            let Some(play) = self.transpositions.intended_play(&board) else {
+            let Some(play) = next else {
                 break;
             };
             // a probe compares thirty two bits of the key, so what gets
@@ -1193,6 +1207,7 @@ impl AlphaBeta {
             if board.fifty_move_expired() || board.has_repeated() {
                 break;
             }
+            next = self.transpositions.intended_play(&board);
         }
         PvLine { line }
     }
@@ -1234,7 +1249,7 @@ impl Engine for AlphaBeta {
     fn iterative_deepening_search(
         &mut self,
         search_options: SearchParameters,
-        mut on_depth: impl FnMut(u8, &SearchResult, PvLine),
+        mut on_depth: impl FnMut(u8, &SearchResult, PvLine, ScoreBound),
     ) -> SearchOutcome {
         let mut best: Option<SearchResult> = None;
         // each search() counts its own nodes, so the deepening totals them:
@@ -1274,8 +1289,10 @@ impl Engine for AlphaBeta {
                     // the interrupted iteration's best outranks the completed
                     // depth's whenever it has one. The root searches full
                     // window, so that score is exact over the moves it did
-                    // search, which makes it a deeper exact answer over fewer
-                    // moves rather than a bound.
+                    // search, which makes it a lower bound on the position:
+                    // a deeper answer over fewer moves, and one the moves
+                    // never reached could only raise. ScoreBound is what
+                    // says so to whoever is reading the reports.
                     //
                     // The move it replaces is one of the moves searched: the
                     // root orders by the table's entry for the position, which
@@ -1291,6 +1308,25 @@ impl Engine for AlphaBeta {
                             // its count covers the whole deepening, as a
                             // completed iteration's does
                             result.nodes += total_nodes;
+                            // no completed depth named this move, so the last
+                            // line the caller heard about opens with the one
+                            // being given up. Say this one, from the depth
+                            // that found it and as the bound it is, before it
+                            // is answered with
+                            if best.as_ref().map(|had| had.best_move) != Some(result.best_move) {
+                                let pv = self.pv_line_from(Some(result.best_move));
+                                // the line is built from the move rather than
+                                // read from the root's entry, so it opens with
+                                // it whatever the table holds. The completed
+                                // depth checks the same thing of the line it
+                                // reports
+                                debug_assert_eq!(
+                                    pv.line.first(),
+                                    Some(&result.best_move),
+                                    "the reported line disagrees with the swapped move"
+                                );
+                                on_depth(depth, &result, pv, ScoreBound::Lower);
+                            }
                             Some(result)
                         }
                         // nothing finished at this depth, so the last
@@ -1315,7 +1351,7 @@ impl Engine for AlphaBeta {
                         Some(&result.best_move),
                         "the reported line disagrees with the best move"
                     );
-                    on_depth(depth, &result, pv);
+                    on_depth(depth, &result, pv, ScoreBound::Exact);
                     best = Some(result);
                 }
             }
@@ -1374,9 +1410,25 @@ pub enum SearchOutcome {
     GameOver,
     /// A limit ran out partway through, carrying a best-so-far when the
     /// root got far enough to have one. The root searches full window, so
-    /// that score is exact over the moves it did search rather than a bound
-    /// on the position; what it leaves out is the moves it never reached.
+    /// that score is exact over the moves it did search, which makes it a
+    /// lower bound on the position: what it leaves out is the moves it
+    /// never reached, and they could only raise it. That is the
+    /// `ScoreBound::Lower` a report of one carries.
     Aborted(Option<SearchResult>),
+}
+
+/// What a reported score says about the position.
+///
+/// The deepening loop reports a completed depth and, when an aborted
+/// iteration's move replaces it, that move as well. The two are not the same
+/// claim: a completed depth searched every root move, and an aborted one
+/// searched some of them, so its score is what those are worth and the
+/// position may be worth more. Uci has a word for the second, `lowerbound`,
+/// which is what the adapter prints it as.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum ScoreBound {
+    Exact,
+    Lower,
 }
 
 /// The search hit a limit and unwound without finishing. The score of an
@@ -1411,8 +1463,8 @@ mod search {
     use super::Board;
     use super::Engine;
     use super::{
-        Limits, MAX_PLY, Play, SearchConfig, SearchOutcome, SearchParameters, SearchResult,
-        TaintPolicy, Value,
+        Limits, MAX_PLY, Play, ScoreBound, SearchConfig, SearchOutcome, SearchParameters,
+        SearchResult, TaintPolicy, Value,
     };
     use crate::board::{fens, play_named};
     use crate::limits::Clock;
@@ -1769,7 +1821,7 @@ mod search {
         let mut e = engine(Board::new());
         let options = SearchParameters::new(None, already_spent());
         let mut depths = Vec::new();
-        let outcome = e.iterative_deepening_search(options, |depth, _, _| depths.push(depth));
+        let outcome = e.iterative_deepening_search(options, |depth, _, _, _| depths.push(depth));
         assert!(
             matches!(outcome, SearchOutcome::Aborted(Some(_))),
             "expected a move from depth one, got {:?}",
@@ -1788,7 +1840,7 @@ mod search {
             let options = SearchParameters::new(None, nodes_only(limit));
             let mut completed: u64 = 0;
             let outcome =
-                e.iterative_deepening_search(options, |_, result, _| completed = result.nodes);
+                e.iterative_deepening_search(options, |_, result, _, _| completed = result.nodes);
             assert!(
                 matches!(outcome, SearchOutcome::Aborted(Some(_))),
                 "{}",
@@ -1815,7 +1867,7 @@ mod search {
             let options = SearchParameters::new(None, nodes_only(limit));
             let mut last_report = 0;
             let outcome =
-                e.iterative_deepening_search(options, |_, result, _| last_report = result.nodes);
+                e.iterative_deepening_search(options, |_, result, _, _| last_report = result.nodes);
             let SearchOutcome::Aborted(Some(result)) = outcome else {
                 panic!(
                     "expected a move under a budget of {}, got {:?}",
@@ -1843,12 +1895,12 @@ mod search {
         let mut e = engine(Board::new());
         let three = completed(e.iterative_deepening_search(
             SearchParameters::new(Some(3), Limits::unlimited()),
-            |_, _, _| {},
+            |_, _, _, _| {},
         ));
 
         let mut e = engine(Board::new());
         let options = SearchParameters::new(None, nodes_only(three.nodes));
-        let outcome = e.iterative_deepening_search(options, |_, _, _| {});
+        let outcome = e.iterative_deepening_search(options, |_, _, _, _| {});
         let SearchOutcome::Aborted(Some(result)) = outcome else {
             panic!("expected the completed depth's move, got {:?}", outcome)
         };
@@ -1904,6 +1956,66 @@ mod search {
     }
 
     #[test]
+    fn a_swapped_answer_is_reported_before_the_search_ends() {
+        // the swap is the one answer no completed depth reported, so without
+        // a report of its own the last line the caller heard opens with the
+        // move being given up. A sweep of budgets, because which of them
+        // ends an iteration on a better move is a fact about this position
+        // rather than one to work out here
+        let mut swaps = 0;
+        for limit in (500..40_000).step_by(311) {
+            let mut e = engine(Board::from_fen(SHARP_MIDDLEGAME).unwrap());
+            let options = SearchParameters::new(None, nodes_only(limit));
+            let mut reports: Vec<(Play, Option<Play>, ScoreBound)> = Vec::new();
+            let outcome = e.iterative_deepening_search(options, |_, result, pv, bound| {
+                reports.push((result.best_move, pv.line.first().copied(), bound));
+            });
+            let SearchOutcome::Aborted(Some(result)) = outcome else {
+                continue;
+            };
+            let completed = reports
+                .iter()
+                .rfind(|(_, _, bound)| *bound == ScoreBound::Exact)
+                .map(|(play, _, _)| *play);
+            if completed == Some(result.best_move) {
+                // the deepest completed depth answered, which its own report
+                // already described. Nothing may have been said after it: a
+                // bound where there was no swap would have the caller print
+                // a line for an answer it already had
+                assert_eq!(
+                    reports.last().map(|(_, _, bound)| *bound),
+                    Some(ScoreBound::Exact),
+                    "budget {}: a bound was reported where nothing was swapped",
+                    limit
+                );
+                continue;
+            }
+            swaps += 1;
+            assert_eq!(
+                reports
+                    .last()
+                    .map(|(play, first, bound)| (*play, *first, *bound)),
+                Some((result.best_move, Some(result.best_move), ScoreBound::Lower)),
+                "budget {}: the swapped move was never reported",
+                limit
+            );
+        }
+        assert!(swaps > 0, "no budget in the sweep swapped a move in");
+    }
+
+    #[test]
+    fn a_completed_depth_is_reported_as_an_exact_score() {
+        let mut e = engine(Board::new());
+        let mut bounds = Vec::new();
+        let outcome = e.iterative_deepening_search(
+            SearchParameters::new(Some(4), Limits::unlimited()),
+            |_, _, _, bound| bounds.push(bound),
+        );
+        assert!(matches!(outcome, SearchOutcome::Complete(_)));
+        assert_eq!(bounds, vec![ScoreBound::Exact; 4]);
+    }
+
+    #[test]
     fn a_node_budget_and_a_clock_stop_at_whichever_comes_first() {
         // the clock wins: a spent clock and a generous budget end after
         // depth one, which runs whatever either says
@@ -1917,7 +2029,7 @@ mod search {
             ),
         );
         let mut depths = Vec::new();
-        let outcome = e.iterative_deepening_search(options, |depth, _, _| depths.push(depth));
+        let outcome = e.iterative_deepening_search(options, |depth, _, _, _| depths.push(depth));
         assert!(matches!(outcome, SearchOutcome::Aborted(Some(_))));
         assert_eq!(depths, vec![1]);
 
@@ -1934,7 +2046,7 @@ mod search {
         );
         let mut completed: u64 = 0;
         let outcome =
-            e.iterative_deepening_search(options, |_, result, _| completed = result.nodes);
+            e.iterative_deepening_search(options, |_, result, _, _| completed = result.nodes);
         assert!(matches!(outcome, SearchOutcome::Aborted(Some(_))));
         assert_eq!(completed + e.nodes, limit);
     }
@@ -1947,7 +2059,7 @@ mod search {
         let stop = Arc::new(AtomicBool::new(true));
         let options = SearchParameters::stoppable(None, Limits::unlimited(), Arc::clone(&stop));
         let mut depths = Vec::new();
-        let outcome = e.iterative_deepening_search(options, |depth, _, _| depths.push(depth));
+        let outcome = e.iterative_deepening_search(options, |depth, _, _, _| depths.push(depth));
         assert!(matches!(outcome, SearchOutcome::Aborted(Some(_))));
         assert_eq!(
             depths,
@@ -1965,7 +2077,7 @@ mod search {
         let stop = Arc::new(AtomicBool::new(false));
         let options = SearchParameters::stoppable(None, Limits::unlimited(), Arc::clone(&stop));
         let mut deepest = 0;
-        let outcome = e.iterative_deepening_search(options, |depth, _, _| {
+        let outcome = e.iterative_deepening_search(options, |depth, _, _, _| {
             deepest = depth;
             if depth >= 3 {
                 stop.store(true, Ordering::Relaxed);
@@ -2015,7 +2127,7 @@ mod search {
         let mut e = engine(Board::new());
         let options = SearchParameters::new(None, nodes_only(0));
         let mut depths = Vec::new();
-        let outcome = e.iterative_deepening_search(options, |depth, _, _| depths.push(depth));
+        let outcome = e.iterative_deepening_search(options, |depth, _, _, _| depths.push(depth));
         assert!(matches!(outcome, SearchOutcome::Aborted(Some(_))));
         assert_eq!(depths, vec![1]);
     }
@@ -2025,14 +2137,14 @@ mod search {
         let mut e = engine(Board::new());
         let options = SearchParameters::new(Some(2), nodes_only(1_000_000));
         assert!(matches!(
-            e.iterative_deepening_search(options, |_, _, _| {}),
+            e.iterative_deepening_search(options, |_, _, _, _| {}),
             SearchOutcome::Complete(_)
         ));
 
         let mut e = engine(Board::new());
         let options = SearchParameters::new(Some(super::MAX_PLY), nodes_only(1_000));
         let mut last_depth = 0;
-        let outcome = e.iterative_deepening_search(options, |depth, _, _| last_depth = depth);
+        let outcome = e.iterative_deepening_search(options, |depth, _, _, _| last_depth = depth);
         assert!(matches!(outcome, SearchOutcome::Aborted(Some(_))));
         assert!(last_depth < super::MAX_PLY);
     }
@@ -2043,7 +2155,7 @@ mod search {
         let mut depths = Vec::new();
         let mut node_counts = Vec::new();
         let outcome =
-            e.iterative_deepening_search(SearchParameters::to_depth(3), |depth, result, _| {
+            e.iterative_deepening_search(SearchParameters::to_depth(3), |depth, result, _, _| {
                 assert!(result.nodes > 0);
                 depths.push(depth);
                 node_counts.push(result.nodes);
@@ -2078,9 +2190,10 @@ mod search {
         for fen in fens {
             let mut e = engine(Board::from_fen(fen).unwrap());
             assert!(matches!(e.search(3), SearchOutcome::GameOver), "{fen}");
-            let outcome = e.iterative_deepening_search(SearchParameters::to_depth(3), |_, _, _| {
-                panic!("a finished game has no depths to report")
-            });
+            let outcome = e
+                .iterative_deepening_search(SearchParameters::to_depth(3), |_, _, _, _| {
+                    panic!("a finished game has no depths to report")
+                });
             assert!(matches!(outcome, SearchOutcome::GameOver), "{fen}");
         }
     }
@@ -2099,7 +2212,7 @@ mod search {
             None,
             Limits::starting_now(Some(Clock::Share(time::Duration::from_millis(50))), None),
         );
-        let outcome = e.iterative_deepening_search(params, |_, _, _| {});
+        let outcome = e.iterative_deepening_search(params, |_, _, _, _| {});
         assert!(matches!(outcome, SearchOutcome::Aborted(Some(_))));
     }
 
@@ -2124,7 +2237,7 @@ mod search {
                 ),
             );
             let mut reached = Vec::new();
-            e.iterative_deepening_search(params, |depth, _, _| reached.push(depth));
+            e.iterative_deepening_search(params, |depth, _, _, _| reached.push(depth));
             assert_eq!(reached, depths, "{:?}", kind(time::Duration::from_secs(1)));
         }
     }
@@ -2132,7 +2245,7 @@ mod search {
     #[test]
     fn deepening_to_depth_zero_finds_nothing() {
         let mut e = engine(Board::new());
-        let outcome = e.iterative_deepening_search(SearchParameters::to_depth(0), |_, _, _| {});
+        let outcome = e.iterative_deepening_search(SearchParameters::to_depth(0), |_, _, _, _| {});
         assert!(matches!(outcome, SearchOutcome::Aborted(None)));
     }
 
@@ -2571,7 +2684,7 @@ mod search {
             let depth = 5;
             if deepened {
                 let options = SearchParameters::to_depth(depth);
-                completed(e.iterative_deepening_search(options, |_, _, _| {}))
+                completed(e.iterative_deepening_search(options, |_, _, _, _| {}))
             } else {
                 completed(e.search(depth))
             }
@@ -3126,7 +3239,7 @@ mod sampling {
         let run = || {
             let mut e = engine(SHARP_MIDDLEGAME);
             e.sample_shortcuts(Sampler::every(7));
-            e.iterative_deepening_search(SearchParameters::to_depth(5), |_, _, _| {});
+            e.iterative_deepening_search(SearchParameters::to_depth(5), |_, _, _, _| {});
             collected(&mut e)
         };
         assert_eq!(run(), run());
