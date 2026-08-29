@@ -8,12 +8,12 @@ A rate on its own says nothing across machines, and a single pair of runs
 says nothing on one: this box swings ten percent between runs. So the two
 binaries take turns, which side goes first alternating each round, the
 medians are compared, and the spread of the rounds is printed beside the
-change so a reader can tell a claim from noise. The node counts are printed
-too, since a search change moves them and a speed change must not, and when
-they do differ the report adds the time to depth, which is what nps cannot
-see: nps normalises for the size of the tree by construction, so a search
-that visits fewer nodes at the same cost each finishes sooner while the rate
-says nothing happened.
+change so a reader can tell a claim from noise. The node counts and the
+time to depth are printed too, since a search change moves them and a speed
+change must not, and time to depth is what nps cannot see: nps normalises
+for the size of the tree by construction, so a search that visits fewer
+nodes at the same cost each finishes sooner while the rate says nothing
+happened.
 
     speed.py <base binary> <candidate binary> [--rounds N] [--depth D]
              [--base-ref SHA]
@@ -126,30 +126,74 @@ def time_to_depth(measured: Measured) -> tuple[float, float]:
 
 # Said when the counts differ, because neither number is a claim at that point
 # and the trailer on its own would read like one.
-COUNTS_DIFFER = """the node counts differ, so this is a search change as well as a speed one:
-nps compares what a node costs, and the two sides are averaging over
-different nodes. Time to depth is what the change is worth at this depth,
-and only games say whether the tree it now searches is the right one."""
+COUNTS_DIFFER = """the node counts differ, so this is a search change as well as a speed
+one. nps only says what a node costs. Time to depth is what the change is
+worth at this depth, and whether the new tree is the right one is for
+games to say."""
 
 # Said when the change between the medians is smaller than the spread of the
 # rounds it came from, so a reader is not left to weigh the two percentages
 # against each other and read the headline anyway.
 NO_CLAIM = """the change is inside the spread, so the medians make no claim; the
-fastest rounds above are the steadier pair when the machine was not
+fastest column is the steadier comparison when the machine was not
 quiet"""
 
 
-def fastest_line(measured: Measured) -> str:
-    """The two sides at their fastest round each. Nothing that shares the
-    machine ever makes a run faster, so each side's best round is its least
-    interfered one: on a quiet box this agrees with the medians, and on a
-    loaded runner it is the comparison that survives the load."""
-    base = max(measured.base_nps)
-    candidate = max(measured.candidate_nps)
-    return (
-        f"fastest rounds: base {base} nps, candidate {candidate} nps, "
-        f"change {change(base, candidate):+.1f}%"
-    )
+def summary(measured: Measured) -> list[str]:
+    """The report's middle: one row per side and the change under each
+    column, so the percentages sit beneath the numbers they compare.
+
+    The fastest column is there because nothing that shares the machine
+    ever makes a run faster, so each side's best round is its least
+    interfered one: on a quiet box it agrees with the medians, and on a
+    loaded runner it is the comparison that survives the load.
+
+    When the counts match, the change row leaves nodes and time empty: the
+    nodes have not moved, and the time is the rate again upside down, so a
+    percentage in either cell would say nothing the nps cell does not.
+    """
+    base_seconds, candidate_seconds = time_to_depth(measured)
+    base_rate = statistics.median(measured.base_nps)
+    candidate_rate = statistics.median(measured.candidate_nps)
+    base_fastest = max(measured.base_nps)
+    candidate_fastest = max(measured.candidate_nps)
+    differ = measured.base_nodes != measured.candidate_nodes
+    columns = [
+        (
+            "nodes",
+            str(measured.base_nodes),
+            str(measured.candidate_nodes),
+            f"{change(measured.base_nodes, measured.candidate_nodes):+.1f}%"
+            if differ
+            else "",
+        ),
+        (
+            "time",
+            f"{base_seconds:.2f} s",
+            f"{candidate_seconds:.2f} s",
+            f"{change(base_seconds, candidate_seconds):+.1f}%" if differ else "",
+        ),
+        (
+            "median nps",
+            f"{base_rate:.0f}",
+            f"{candidate_rate:.0f}",
+            f"{change(base_rate, candidate_rate):+.1f}%",
+        ),
+        (
+            "fastest nps",
+            str(base_fastest),
+            str(candidate_fastest),
+            f"{change(base_fastest, candidate_fastest):+.1f}%",
+        ),
+    ]
+    labels = ["", "base", "candidate", "change"]
+    label_width = max(len(label) for label in labels)
+    widths = [max(len(cell) for cell in column) for column in columns]
+    lines = []
+    for row, label in enumerate(labels):
+        cells = (f"{column[row]:>{width}}" for column, width in zip(columns, widths))
+        lines.append((f"{label:<{label_width}}  " + "  ".join(cells)).rstrip())
+    return lines
 
 
 def trailer(base: list[int], candidate: list[int], base_ref: str) -> str:
@@ -181,26 +225,17 @@ def main(argv: list[str]) -> int:
     print(f"{'round':>5} {'base nps':>12} {'candidate nps':>14}")
     for i, (b, c) in enumerate(zip(measured.base_nps, measured.candidate_nps), 1):
         print(f"{i:>5} {b:>12} {c:>14}")
-    base_seconds, candidate_seconds = time_to_depth(measured)
-    print(
-        f"base: {measured.base_nodes} nodes in {base_seconds:.2f} s, "
-        f"candidate: {measured.candidate_nodes} nodes in {candidate_seconds:.2f} s"
-    )
-    print(fastest_line(measured))
+    print()
+    for line in summary(measured):
+        print(line)
     base_rate = statistics.median(measured.base_nps)
     candidate_rate = statistics.median(measured.candidate_nps)
     if measured.base_nodes != measured.candidate_nodes:
-        print(
-            f"nodes {change(measured.base_nodes, measured.candidate_nodes):+.1f}%, "
-            f"nps {change(base_rate, candidate_rate):+.1f}%, "
-            f"time to depth {change(base_seconds, candidate_seconds):+.1f}%"
-        )
         # set off on its own, since it is the part a reader skims past and
         # the one that says the trailer below is not the whole story. The
         # trailer stays the last line, which is what speed.sh is piped into
         print()
         print(COUNTS_DIFFER)
-        print()
     widest = max(spread(measured.base_nps), spread(measured.candidate_nps))
     # a spread of exactly zero is a perfectly repeatable measurement, where
     # any change at all is a claim. When the counts differ the block above
@@ -215,7 +250,7 @@ def main(argv: list[str]) -> int:
     ):
         print()
         print(NO_CLAIM)
-        print()
+    print()
     print(trailer(measured.base_nps, measured.candidate_nps, args.base_ref))
     return 0
 

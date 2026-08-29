@@ -122,8 +122,10 @@ def test_the_report_breaks_the_change_down_when_the_counts_differ(tmp_path, caps
         == 0
     )
     out = capsys.readouterr().out
-    assert "100 nodes" in out and "90 nodes" in out
-    assert "nodes -10.0%, nps +0.0%, time to depth -10.0%" in out
+    assert "            nodes    time  median nps  fastest nps" in out
+    assert "base          100  1.00 s         100          100" in out
+    assert "candidate      90  0.90 s         100          100" in out
+    assert "change     -10.0%  -10.0%       +0.0%        +0.0%" in out
     assert speed.COUNTS_DIFFER in out
     # and the trailer goes on saying the one thing it has always said
     assert out.strip().endswith(
@@ -138,8 +140,8 @@ def test_the_report_leaves_the_breakdown_out_when_the_counts_match(tmp_path, cap
     candidate = fake_engine(tmp_path, "candidate", [110] * 2, nodes=100)
     assert speed.main([str(base), str(candidate), "--rounds", "2"]) == 0
     out = capsys.readouterr().out
-    assert "100 nodes in" in out
-    assert "time to depth" not in out
+    assert "candidate    100  0.91 s         110          110" in out
+    assert "change                        +10.0%       +10.0%" in out
     assert speed.COUNTS_DIFFER not in out
 
 
@@ -151,7 +153,7 @@ def test_the_fastest_rounds_are_compared_beside_the_medians(tmp_path, capsys):
     candidate = fake_engine(tmp_path, "candidate", [90, 100], nodes=100)
     assert speed.main([str(base), str(candidate), "--rounds", "2"]) == 0
     out = capsys.readouterr().out
-    assert "fastest rounds: base 100 nps, candidate 100 nps, change +0.0%" in out
+    assert "change                         +5.6%        +0.0%" in out
 
 
 def test_a_change_inside_the_spread_says_it_makes_no_claim(tmp_path, capsys):
@@ -160,8 +162,8 @@ def test_a_change_inside_the_spread_says_it_makes_no_claim(tmp_path, capsys):
     assert speed.main([str(base), str(candidate), "--rounds", "2"]) == 0
     out = capsys.readouterr().out
     assert speed.NO_CLAIM in out
-    # the paragraph points at "the fastest rounds above", so they must be
-    assert out.index("fastest rounds:") < out.index(speed.NO_CLAIM)
+    # the paragraph points at the fastest column, so it must stand above
+    assert out.index("fastest nps") < out.index(speed.NO_CLAIM)
     # and the trailer stays the last line, which is what speed.sh pipes on
     assert out.strip().splitlines()[-1].startswith("Speed: ")
 
