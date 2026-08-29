@@ -675,6 +675,106 @@ impl AlphaBeta {
         Ok(value)
     }
 
+    /// What can answer a full width node before a move of it is searched:
+    /// the margin, then the pass. Each claims the position already stands
+    /// above beta, the margin from the static eval alone and the pass from
+    /// a reduced search, which is dearer and reaches where a margin
+    /// cannot. Both are guesses about the tree, so the reference makes
+    /// neither. Nothing is stored on either: a transposition entry names
+    /// the play it was reached by, and no move was searched here to name
+    /// one.
+    ///
+    /// The reasoning both stand on is quiescence's standing pat one ply
+    /// higher up: the side to move is under no obligation to make things
+    /// worse, so its static eval is a floor on what it can get. The three
+    /// gates they share are where that floor gives way. A side answering a
+    /// check cannot decline to move, so it has no floor. A side down to
+    /// pawns and a king is the material zugzwang happens to, where every
+    /// move is worse than the decline the rules refuse it. And a beta
+    /// belonging to a mate the other side is proving is cleared by every
+    /// eval, so a cutoff against one would leave the subtree holding a
+    /// faster mate unsearched; the positive half of that gate is belt and
+    /// braces, since material bounds every eval far below the window, and
+    /// it stands so the gate stays right if the eval ever grows terms that
+    /// reach higher. The eval is read once, under those gates, and serves
+    /// both shortcuts.
+    ///
+    /// A `Some` answers the node. A pass that failed answers nothing but
+    /// read whatever it read on the way, which it leaves in the node's
+    /// taint before handing back.
+    fn shortcuts(
+        &mut self,
+        beta: Score,
+        depth: u8,
+        in_check: bool,
+        can_null: bool,
+        taint: &mut Taint,
+    ) -> Result<Option<Value>, Aborted> {
+        let margin = self.config.reverse_futility && depth <= REVERSE_FUTILITY_MAX_DEPTH;
+        // a pass is refused twice in a row, or the search would be
+        // answering a position from a line neither side played anything
+        // in. Nothing reaches that gate as the eval gate below stands: a
+        // node passes only with its eval at or above beta, the pass under
+        // it is searched with the window turned round, and the eval turns
+        // round with it, so the second node never asks. The rule stands
+        // ready for the day that gate is dropped or given a margin. The
+        // depth gate leaves the reduction a search to answer with
+        let pass = self.config.null_move && can_null && depth >= NULL_MOVE_MIN_DEPTH;
+        if (!margin && !pass) || in_check || !self.board.has_non_pawn_material() || is_mate(beta) {
+            return Ok(None);
+        }
+        let eval = self.eval();
+
+        // What the margin claims is a lower bound, and `eval - margin` is
+        // it: the worst the assumption allows, and what has to clear beta
+        // for the cutoff to be one. The margin is what the opponent is
+        // allowed to win back over the plies left to search, and that part
+        // is the guess. Fail soft returns the bound that was proved rather
+        // than beta; returning `eval` would return a bound nothing here
+        // argues for, since the search never looked for a line that keeps
+        // the whole eval. The value is clean: a static eval is a fact
+        // about the position and consulted no path to reach it
+        if margin {
+            let floor = eval.saturating_sub(REVERSE_FUTILITY_MARGIN * depth as Score);
+            if floor >= beta {
+                if self.sampler.is_some() {
+                    self.sample(Shortcut::ReverseFutility, depth, floor, beta);
+                }
+                return Ok(Some(Value::clean(floor)));
+            }
+        }
+
+        // The pass spends a reduced search, so it is asked for only with
+        // the eval already above beta, where what is spent is spent on
+        // proving something that looks true. The window is a zero one: the
+        // question is only whether a pass beats beta, and that is the
+        // cheapest way to ask it
+        if pass && eval >= beta {
+            self.board.make_null_move();
+            let result = self.alpha_beta(-beta, -beta + 1, depth - 1 - NULL_MOVE_REDUCTION, false);
+            // undo before an abort can propagate, or the board would keep
+            // the passed line
+            self.board.undo_null_move();
+            let value = -result?;
+            if value.score >= beta {
+                // a mate found through a pass is not a mate. The pass is not
+                // a move either side has, so what was proved is that the
+                // position is very good and not that it is won, and the
+                // score is held below the window a caller reads mates in
+                let score = below_the_mate_window(value.score);
+                // the board is back from the pass, so what the sampler
+                // prints and evaluates here is the node itself
+                if self.sampler.is_some() {
+                    self.sample(Shortcut::NullMove, depth, score, beta);
+                }
+                return Ok(Some(Value::with_taint(score, value.tainted)));
+            }
+            // a pass that failed still read whatever it read on the way
+            taint.absorb(value);
+        }
+        Ok(None)
+    }
+
     /// One child of a full width node, or nothing when the move is not
     /// legal here: make the move, search what it leaves, and answer from
     /// this side of the board. The undo comes before the abort can
@@ -781,125 +881,9 @@ impl AlphaBeta {
             Probe::Miss => None,
         };
 
-        // Reverse futility, after the table has had its say: a position
-        // standing this far above beta by the static eval alone is taken to
-        // fail high without looking for the move that does it. The reasoning
-        // is quiescence's standing pat one ply higher up — the side to move
-        // is under no obligation to make things worse, so the eval is a floor
-        // on what it can get — with the margin as what the opponent is
-        // allowed to win back over the plies left to search. That last part
-        // is the guess, and the reference does not make it.
-        //
-        // So what is claimed is a lower bound, and `eval - margin` is it:
-        // that is the worst the assumption allows, and it is what has to
-        // clear beta for the cutoff to be one. Fail soft returns the bound
-        // that was proved rather than beta, and returning `eval` instead
-        // would return a bound nothing here argues for, since the search
-        // never looked for a line that keeps the whole eval.
-        //
-        // Nothing is stored: a transposition entry names the play it was
-        // reached by, and no move was searched here to name one. And the
-        // value is clean, since a static eval is a fact about the position
-        // and consulted no path to reach it.
-        if self.config.reverse_futility
-            && depth <= REVERSE_FUTILITY_MAX_DEPTH
-            // a side that has to answer a check cannot decline to move, so
-            // it has no static floor, exactly as in quiescence
-            && !in_check
-            // and neither has a side with nothing but pawns and a king,
-            // which is the material zugzwang happens to
-            && self.board.has_non_pawn_material()
-            // the half of this that works is the negative one: there beta
-            // belongs to a mate the other side is proving, every eval clears
-            // a beta like that, and the whole subtree would go unsearched
-            // and a faster mate inside it be missed. The positive half is
-            // unreachable belt and braces, since the floor never exceeds an
-            // eval and material bounds every eval far below the threshold;
-            // it stands here so the gate stays right if the eval ever grows
-            // terms that reach higher
-            && !is_mate(beta)
-        {
-            let floor = self
-                .eval()
-                .saturating_sub(REVERSE_FUTILITY_MARGIN * depth as Score);
-            if floor >= beta {
-                if self.sampler.is_some() {
-                    self.sample(Shortcut::ReverseFutility, depth, floor, beta);
-                }
-                return Ok(Value::clean(floor));
-            }
-        }
-
-        // The pass, after the margin has had its say and before any move is
-        // searched. If the side to move can hand the move over and a reduced
-        // search of the position that leaves still comes back above beta,
-        // then a real move here almost certainly does too, and the node is
-        // answered without searching one. Reverse futility just above claims
-        // the same thing from a margin; this claims it from a search, which
-        // is dearer and reaches where a margin cannot. It is a guess about
-        // the tree either way, so the reference makes neither.
-        //
-        // The window is a zero one. The question is only whether a pass
-        // beats beta, and that is the cheapest way to ask it.
-        //
-        // The gates, in the order they are cheapest to ask in:
-        //
-        // - not twice in a row, or the search would be answering a position
-        //   from a line neither side played anything in. Nothing reaches
-        //   that gate as the rest of them stand: a node passes only with
-        //   its eval at or above beta, the pass under it is searched with
-        //   the window turned round, and the eval turns round with it, so
-        //   the second node's eval is below its own beta and it never asks
-        //   for a pass. What holds a double pass off today is therefore the
-        //   eval gate rather than the rule, and this is the rule, standing
-        //   ready for the day that gate is dropped or given a margin;
-        // - deep enough for the reduction to leave a search behind it;
-        // - not in check, since a side that has to answer a check cannot
-        //   decline to move, the same reason the margin above is refused
-        //   there and quiescence does not stand pat;
-        // - not a side down to pawns and a king, which is the material
-        //   zugzwang happens to: there passing is better than every move
-        //   there is, so what the reduced search proves is nothing about
-        //   the moves;
-        // - beta outside the window mates are read in, for the reason the
-        //   margin gives: against a beta belonging to a mate the other side
-        //   is proving, a cutoff here would leave the subtree that holds a
-        //   faster mate unsearched;
-        // - and the eval already above beta, so what is spent is spent on
-        //   proving something that looks true. The eval is one incremental
-        //   read here, and it turns away the passes that were going to fail.
-        //
-        // Nothing is stored, exactly as reverse futility stores nothing: an
-        // entry names the play it was reached by, and a pass is not one.
-        if self.config.null_move
-            && can_null
-            && depth >= NULL_MOVE_MIN_DEPTH
-            && !in_check
-            && self.board.has_non_pawn_material()
-            && !is_mate(beta)
-            && self.eval() >= beta
-        {
-            self.board.make_null_move();
-            let result = self.alpha_beta(-beta, -beta + 1, depth - 1 - NULL_MOVE_REDUCTION, false);
-            // undo before an abort can propagate, or the board would keep
-            // the passed line
-            self.board.undo_null_move();
-            let value = -result?;
-            if value.score >= beta {
-                // a mate found through a pass is not a mate. The pass is not
-                // a move either side has, so what was proved is that the
-                // position is very good and not that it is won, and the
-                // score is held below the window a caller reads mates in
-                let score = below_the_mate_window(value.score);
-                // the board is back from the pass, so what the sampler
-                // prints and evaluates here is the node itself
-                if self.sampler.is_some() {
-                    self.sample(Shortcut::NullMove, depth, score, beta);
-                }
-                return Ok(Value::with_taint(score, value.tainted));
-            }
-            // a pass that failed still read whatever it read on the way
-            taint.absorb(value);
+        // the shortcuts, after the table has had its say
+        if let Some(value) = self.shortcuts(beta, depth, in_check, can_null, &mut taint)? {
+            return Ok(value);
         }
 
         // The table's move sorts ahead of everything else below, and when there
