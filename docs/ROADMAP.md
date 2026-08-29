@@ -10,12 +10,14 @@ compare against — is in place, so each of these arrives with its numbers: a
 `Bench:` trailer always, and an `Elo:` trailer from an SPRT when it changes how
 the engine plays. Roughly in the order they look worth doing.
 
-- null move pruning
 - killer moves and a history heuristic, staged in the ordering module
 - principal variation search, and a delta margin in quiescence
 - late move reductions
+- static exchange evaluation, so captures are ordered and pruned by what they win rather than what they grab
 - evaluate drawn positions
-- the rest of evaluation: mobility, and special cases such as the bishop pair and open files
+- the rest of evaluation: mobility, king safety, passed pawns, and special cases such as
+  the bishop pair and open files. A tuner comes before the deeper rows, so the weights are
+  fitted against games rather than guessed
 - the rest of the uci protocol
   - the only options advertised are `Hash` and a `Threads` fixed at one, so everything else an
     interface might set, `Ponder` and `Clear Hash` among them, is refused rather than acted on
