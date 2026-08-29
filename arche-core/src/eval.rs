@@ -99,6 +99,24 @@ impl Accumulator {
         }
     }
 
+    /// A piece moving between two squares, which is `count` off one square
+    /// and on to the other with the halves that cancel left out.
+    ///
+    /// It never leaves the board, so the material and the phase it counts
+    /// for are the same before and after and their two updates undo each
+    /// other exactly. What is left is the piece square score, and the pair
+    /// is added and subtracted whole either way, so a borrow between the two
+    /// halves cancels here as it does there.
+    #[inline(always)]
+    pub(crate) fn relocate(&mut self, from: u8, to: u8, piece: Piece, color: Color) {
+        let moved = PIECE_SQUARE_TABLES.get_value(to as usize, piece, color)
+            - PIECE_SQUARE_TABLES.get_value(from as usize, piece, color);
+        match color {
+            Color::White => self.psqt += moved,
+            Color::Black => self.psqt -= moved,
+        }
+    }
+
     /// The accumulator the position deserves, computed from the board rather
     /// than accumulated as pieces moved. The hosted one is meant to equal
     /// this at all times, which the board's state check asks on every move
