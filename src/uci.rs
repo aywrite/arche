@@ -10,6 +10,7 @@ use arche_core::SearchConfig;
 use arche_core::SearchOutcome;
 use arche_core::SearchParameters;
 use arche_core::bench;
+use arche_core::residual;
 use arche_core::{PvLine, SearchResult};
 use std::io::{BufRead, Stdout, Write};
 use std::sync::atomic::{AtomicBool, Ordering};
@@ -730,6 +731,49 @@ pub fn bench_settings(params: &Params) -> Result<BenchSettings, String> {
     Ok(BenchSettings {
         depth,
         table_bytes,
+        config,
+    })
+}
+
+/// What a residuals argument asked for: `residuals [depth] [every <n>]
+/// [taint refuse|trust|skip|rule50]`. The depth and the policy are the
+/// bench's own when absent, so a residual distribution is measured over the
+/// tree the bench describes; the rate is how much of that tree is sampled.
+pub struct ResidualSettings {
+    pub depth: u8,
+    pub every: u32,
+    pub config: SearchConfig,
+}
+
+/// The words a residuals run takes after its depth, read the way the bench
+/// reads its own.
+const RESIDUAL_KEYWORDS: [&str; 2] = ["every", "taint"];
+
+/// Reads the residual settings, or says which word could not be read. The
+/// same shape as `bench_settings`, and for the same reason: running the
+/// default in place of a word nobody typed would take minutes and explain
+/// nothing.
+pub fn residual_settings(params: &Params) -> Result<ResidualSettings, String> {
+    let depth = match params.parse::<u8>("residuals") {
+        Param::Absent => bench::DEPTH,
+        Param::Read(depth) => depth,
+        Param::Unreadable(word) if RESIDUAL_KEYWORDS.contains(&word) => bench::DEPTH,
+        Param::Unreadable(word) => return Err(format!("depth: {word}")),
+    };
+    let every = match params.parse::<u32>("every") {
+        Param::Absent => residual::DEFAULT_EVERY,
+        // a rate of zero records every node a shortcut answers, which is a
+        // thing to ask for rather than a mistake
+        Param::Read(every) => every,
+        Param::Unreadable(word) => return Err(format!("every: {word}")),
+    };
+    let config = match params.value("taint") {
+        None => SearchConfig::default(),
+        Some(word) => SearchConfig::with_taint(word).ok_or_else(|| format!("taint: {word}"))?,
+    };
+    Ok(ResidualSettings {
+        depth,
+        every,
         config,
     })
 }
@@ -1530,6 +1574,51 @@ go depth 3
              info string unrecognised bench hash: big\n\
              info string unrecognised bench taint: maybe\n"
         );
+    }
+
+    /// The settings alone, not a run: the argument searches the suite twice
+    /// over and reading what it was asked for is the part worth pinning.
+    #[test]
+    fn a_residuals_argument_reads_its_depth_rate_and_policy() {
+        let read = |line: &str| {
+            let settings = residual_settings(&Params::of(line)).expect(line);
+            (
+                settings.depth,
+                settings.every,
+                settings.config.taint_word().to_string(),
+            )
+        };
+        assert_eq!(
+            read("residuals"),
+            (bench::DEPTH, 1000, "rule50".to_string())
+        );
+        assert_eq!(read("residuals 4"), (4, 1000, "rule50".to_string()));
+        assert_eq!(read("residuals 4 every 50"), (4, 50, "rule50".to_string()));
+        // a word standing where the depth would be means the depth was left
+        // out rather than mistyped, the same rule the bench reads by
+        assert_eq!(
+            read("residuals every 50 taint trust"),
+            (bench::DEPTH, 50, "trust".to_string())
+        );
+        // and zero is a rate to ask for: it records every node a shortcut
+        // answers, up to the cap
+        assert_eq!(read("residuals 2 every 0"), (2, 0, "rule50".to_string()));
+    }
+
+    #[test]
+    fn an_unreadable_residuals_setting_is_named_rather_than_run() {
+        for (line, what) in [
+            ("residuals abc", "depth: abc"),
+            ("residuals 300", "depth: 300"),
+            ("residuals 4 every lots", "every: lots"),
+            ("residuals 4 taint maybe", "taint: maybe"),
+        ] {
+            assert_eq!(
+                residual_settings(&Params::of(line)).err(),
+                Some(what.to_string()),
+                "{line}"
+            );
+        }
     }
 
     #[test]

@@ -298,6 +298,47 @@ of change it carries. One that moves both counts touched the search the two
 share, move ordering or the table, say; one that moves the default's alone
 is a shortcut.
 
+## What the shortcuts cost in accuracy
+
+The bench says how much of the tree a shortcut removes. It cannot say how
+often the shortcut was wrong to remove it, and that is the question
+`arche residuals` answers:
+
+```
+target/release/arche residuals [depth] [every <n>] [taint refuse|trust|skip|rule50]
+```
+
+It searches the same suite the bench does, records every nth node a shortcut
+answered, and then asks `SearchConfig::reference()` what each of those
+positions is really worth. The residual is the reference's answer less the
+score the shortcut claimed, so a negative one is a shortcut claiming more
+than the search behind it found. Each sample is a row of `kind depth
+eval_beta claimed reference delta fen`, whitespace separated with the fen
+last so a row parses left to right, and the run ends with the count and the
+minimum, median, ninetieth, ninety-ninth and maximum of the deltas for each
+kind. The percentiles are the product and the rows are the evidence for
+them. Nothing is written to a file; redirection is the file mechanism here as
+everywhere else in the tooling.
+
+The recording and the replay never overlap. A reference search run inside the
+measured one would store reference entries in the table the measured search
+is reading and change the play being measured, so the replay waits until the
+suite is finished and runs on an engine and a table of its own. The rate
+defaults to one node in a thousand, and the buffer holds ten thousand samples
+and says in the header when it had to drop some.
+
+The known limitation is in the fen. It carries the fifty move counter and not
+the path, so the replay cannot see a repetition that needs moves made before
+the node, and the reference value is the reference's answer to the position
+as a diagram. That is the simplification every epd suite makes, and it means
+a residual from a position deep in a shuffle is read with more care than one
+from a middlegame.
+
+The command is an argument and not a uci command. Like the bench it is a
+measurement rather than a move, and unlike the bench nothing about a live
+session wants it: it searches the suite twice over and takes minutes at the
+depths worth running it at.
+
 ## Playing a match against a previous version
 
 Benchmarks measure speed, they do not measure whether the engine plays better.
