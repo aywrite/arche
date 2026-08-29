@@ -114,7 +114,7 @@ pub fn run_suite(
             );
             let mut engine = AlphaBeta::with_config(board, table_bytes, config);
             let found = match engine
-                .iterative_deepening_search(SearchParameters::to_depth(depth), |_, _, _| {})
+                .iterative_deepening_search(SearchParameters::to_depth(depth), |_, _, _, _| {})
             {
                 SearchOutcome::Complete(result) => result.best_move.to_string(),
                 other => panic!(

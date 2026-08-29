@@ -7,6 +7,7 @@ use crate::time_control::TimeControl;
 use arche_core::Color;
 use arche_core::Engine;
 use arche_core::Limits;
+use arche_core::ScoreBound;
 use arche_core::SearchConfig;
 use arche_core::SearchOutcome;
 use arche_core::SearchParameters;
@@ -415,8 +416,8 @@ impl<T: Engine, W: Write> UCI<T, W> {
         let out = &mut self.out;
         let outcome = self
             .engine
-            .iterative_deepening_search(sp, |depth, result, pv| {
-                let _ = writeln!(out, "{}", format_info(depth, result, &pv));
+            .iterative_deepening_search(sp, |depth, result, pv, bound| {
+                let _ = writeln!(out, "{}", format_info(depth, result, &pv, bound));
             });
         // an infinite search does not answer until it is told to, even when
         // it ran out of depths to search first
@@ -567,23 +568,32 @@ fn perft_depth(params: &Params) -> u8 {
         .unwrap_or(1)
 }
 
-/// One completed depth as a UCI info line. The elapsed time comes from the
-/// result rather than from a clock read here, so the rate reported divides a
-/// node count by the time that same search took; a test pins the whole line
+/// One report from the search as a UCI info line. The elapsed time comes from
+/// the result rather than from a clock read here, so the rate reported divides
+/// a node count by the time that same search took; a test pins the whole line
 /// by building the result it formats.
-fn format_info(depth: u8, result: &SearchResult, pv: &PvLine) -> String {
+///
+/// A score the search proved over some of the root moves rather than all of
+/// them is qualified as a `lowerbound`, which is the protocol's word for it.
+/// An interface that does not read the word has still been told the move and
+/// the line, which is what it needs the report for.
+fn format_info(depth: u8, result: &SearchResult, pv: &PvLine, bound: ScoreBound) -> String {
     let millis = result.elapsed.as_millis();
     // measure a search faster than a millisecond as one, so the rate stays
     // finite and the arithmetic stays whole
     let nps = (result.nodes as u128 * 1000 / millis.max(1)) as u64;
+    let qualifier = match bound {
+        ScoreBound::Exact => "",
+        ScoreBound::Lower => " lowerbound",
+    };
     match result.checkmate_in() {
         Some(mate_in) => format!(
-            "info depth {} seldepth {} nodes {} time {} nps {} score mate {} pv {}",
-            depth, result.selective_depth, result.nodes, millis, nps, mate_in, pv
+            "info depth {} seldepth {} nodes {} time {} nps {} score mate {}{} pv {}",
+            depth, result.selective_depth, result.nodes, millis, nps, mate_in, qualifier, pv
         ),
         None => format!(
-            "info depth {} seldepth {} nodes {} time {} nps {} score cp {} pv {}",
-            depth, result.selective_depth, result.nodes, millis, nps, result.score, pv
+            "info depth {} seldepth {} nodes {} time {} nps {} score cp {}{} pv {}",
+            depth, result.selective_depth, result.nodes, millis, nps, result.score, qualifier, pv
         ),
     }
 }
@@ -635,7 +645,7 @@ mod tests {
         fn iterative_deepening_search(
             &mut self,
             search_options: SearchParameters,
-            _on_depth: impl FnMut(u8, &SearchResult, PvLine),
+            _on_depth: impl FnMut(u8, &SearchResult, PvLine, ScoreBound),
         ) -> SearchOutcome {
             self.asked = Some(search_options);
             // nothing was searched, so there is no move to report
@@ -1480,7 +1490,7 @@ go depth 3
         };
         let pv = PvLine::new(vec![play_named("e2e4"), play_named("g1f3")]);
         assert_eq!(
-            format_info(5, &result, &pv),
+            format_info(5, &result, &pv, ScoreBound::Exact),
             "info depth 5 seldepth 7 nodes 2000 time 500 nps 4000 score cp 25 pv e2e4 g1f3"
         );
     }
@@ -1497,7 +1507,7 @@ go depth 3
         };
         let pv = PvLine::new(vec![play_named("e2e4")]);
         assert_eq!(
-            format_info(4, &result, &pv),
+            format_info(4, &result, &pv, ScoreBound::Exact),
             "info depth 4 seldepth 4 nodes 1500 time 20 nps 75000 score mate 2 pv e2e4"
         );
     }
@@ -1513,9 +1523,118 @@ go depth 3
         };
         let pv = PvLine::new(vec![]);
         assert_eq!(
-            format_info(1, &result, &pv),
+            format_info(1, &result, &pv, ScoreBound::Exact),
             "info depth 1 seldepth 1 nodes 300 time 0 nps 300000 score cp 0 pv "
         );
+    }
+
+    #[test]
+    fn a_score_over_some_of_the_root_moves_is_qualified_as_a_bound() {
+        // the word goes after the score and before the line, which is where
+        // the protocol has it and where an interface that reads it looks
+        let result = SearchResult {
+            nodes: 2000,
+            elapsed: Duration::from_millis(500),
+            selective_depth: 7,
+            best_move: play_named("d2d4"),
+            score: 25,
+        };
+        let pv = PvLine::new(vec![play_named("d2d4")]);
+        assert_eq!(
+            format_info(6, &result, &pv, ScoreBound::Lower),
+            "info depth 6 seldepth 7 nodes 2000 time 500 nps 4000 score cp 25 lowerbound pv d2d4"
+        );
+    }
+
+    /// An engine whose search ends the way one the clock catches does: a
+    /// depth completed and reported, and then a better move the aborted
+    /// iteration found, which is the answer the deepening loop swaps in.
+    /// Scripted rather than searched, because provoking a real swap means
+    /// timing a search to the node and the point here is what the session
+    /// says when one happens.
+    struct Swapper;
+
+    impl Swapper {
+        fn result(best_move: Play, score: arche_core::Score) -> SearchResult {
+            SearchResult {
+                nodes: 1000,
+                elapsed: Duration::from_millis(100),
+                selective_depth: 4,
+                best_move,
+                score,
+            }
+        }
+    }
+
+    impl Engine for Swapper {
+        fn iterative_deepening_search(
+            &mut self,
+            _search_options: SearchParameters,
+            mut on_depth: impl FnMut(u8, &SearchResult, PvLine, ScoreBound),
+        ) -> SearchOutcome {
+            let completed = Self::result(play_named("e2e4"), 20);
+            on_depth(
+                3,
+                &completed,
+                PvLine::new(vec![play_named("e2e4")]),
+                ScoreBound::Exact,
+            );
+            let swapped = Self::result(play_named("d2d4"), 35);
+            on_depth(
+                4,
+                &swapped,
+                PvLine::new(vec![play_named("d2d4")]),
+                ScoreBound::Lower,
+            );
+            SearchOutcome::Aborted(Some(swapped))
+        }
+
+        fn active_color(&self) -> Color {
+            Color::White
+        }
+        fn parse_fen(&mut self, _fen: &str) -> Result<(), String> {
+            Ok(())
+        }
+        fn new_game(&mut self) {}
+        fn make_move_str(&mut self, _play: &str) -> bool {
+            true
+        }
+        fn set_table_bytes(&mut self, _bytes: usize) -> bool {
+            true
+        }
+        fn clear_table(&mut self) {}
+        fn board_display(&self) -> String {
+            String::new()
+        }
+        fn perft(&mut self, _depth: u8) -> u64 {
+            0
+        }
+    }
+
+    #[test]
+    fn the_move_a_swap_answers_with_opens_the_last_line_said() {
+        // an interface reads the answer against the last line it was given,
+        // and fastchess says so out loud: a bestmove the last pv does not
+        // open with is a warning on nearly every move at a fast control
+        let mut uci = UCI::with_output(Swapper, Vec::new());
+        uci.run(Cursor::new("position startpos\ngo movetime 100\n"));
+        let said = String::from_utf8(uci.out.clone()).unwrap();
+        let lines: Vec<&str> = said.lines().collect();
+        let best = lines
+            .last()
+            .and_then(|line| line.strip_prefix("bestmove "))
+            .unwrap_or_else(|| panic!("no bestmove in {}", said));
+        let last_info = lines
+            .iter()
+            .rfind(|line| line.starts_with("info depth "))
+            .unwrap_or_else(|| panic!("no info line in {}", said));
+        let first_of_the_line = last_info
+            .split(" pv ")
+            .nth(1)
+            .and_then(|line| line.split_whitespace().next())
+            .unwrap_or_else(|| panic!("no line in {}", last_info));
+        assert_eq!(first_of_the_line, best, "{}", said);
+        assert!(last_info.contains(" lowerbound "), "{}", last_info);
     }
 
     // ---- generated sessions -------------------------------------------

@@ -526,7 +526,7 @@ pub fn record(
             .unwrap_or_else(|e| panic!("residual position {} does not parse: {}", position.id, e));
         let mut engine = AlphaBeta::with_config(board, bench::TABLE_BYTES, config);
         engine.sample_shortcuts(sampler);
-        engine.iterative_deepening_search(SearchParameters::to_depth(depth), |_, _, _| {});
+        engine.iterative_deepening_search(SearchParameters::to_depth(depth), |_, _, _, _| {});
         sampler = engine
             .take_sampler()
             .expect("the sampler just handed to the engine comes back");
@@ -575,7 +575,7 @@ pub fn replay(samples: &[Sample]) -> (Vec<Row>, usize) {
         // cold for every sample, so no sample's answer is another's
         engine.clear_transpositions();
         let outcome = engine
-            .iterative_deepening_search(SearchParameters::to_depth(sample.depth), |_, _, _| {});
+            .iterative_deepening_search(SearchParameters::to_depth(sample.depth), |_, _, _, _| {});
         let SearchOutcome::Complete(result) = outcome else {
             // the position has no move to make: mate, stalemate, or drawn
             // already by the counter its fen carries. There is no reference
@@ -1148,7 +1148,7 @@ mod tests {
         let mut engine = replay_engine();
         engine.parse_fen(fen).expect("the fen parses");
         let outcome =
-            engine.iterative_deepening_search(SearchParameters::to_depth(depth), |_, _, _| {});
+            engine.iterative_deepening_search(SearchParameters::to_depth(depth), |_, _, _, _| {});
         let SearchOutcome::Complete(result) = outcome else {
             panic!("{} at depth {} has no move to make", fen, depth);
         };

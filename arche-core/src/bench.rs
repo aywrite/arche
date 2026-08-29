@@ -222,8 +222,8 @@ fn run(
             if audit && !engine.audit_signatures() {
                 return None;
             }
-            let outcome =
-                engine.iterative_deepening_search(SearchParameters::to_depth(depth), |_, _, _| {});
+            let outcome = engine
+                .iterative_deepening_search(SearchParameters::to_depth(depth), |_, _, _, _| {});
             let result = match outcome {
                 SearchOutcome::Complete(result) => result,
                 other => panic!(

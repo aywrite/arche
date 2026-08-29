@@ -84,7 +84,7 @@ bench_engine_fen!(
     {
         engine.clear_transpositions();
     },
-    { engine.iterative_deepening_search(SearchParameters::to_depth(5), |_, _, _| {}) }
+    { engine.iterative_deepening_search(SearchParameters::to_depth(5), |_, _, _, _| {}) }
 );
 
 criterion_group!(board_benches, square_attacked, generate_moves,);
