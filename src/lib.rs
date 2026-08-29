@@ -13,6 +13,7 @@
 //! it knows what to ask for and how to report the answer.
 
 pub mod params;
+mod session;
 pub mod time_control;
 pub mod uci;
 

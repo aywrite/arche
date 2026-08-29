@@ -2,6 +2,8 @@
 // Copyright (C) 2022-2026 Andrew Wright
 
 use crate::params::{Param, Params};
+pub use crate::session::report_panics_to;
+use crate::session::{self, SessionControl, SharedWriter, first_word};
 use crate::time_control::TimeControl;
 use arche_core::Color;
 use arche_core::Engine;
@@ -13,10 +15,6 @@ use arche_core::bench;
 use arche_core::residual;
 use arche_core::{PvLine, SearchResult};
 use std::io::{BufRead, Stdout, Write};
-use std::sync::atomic::{AtomicBool, Ordering};
-use std::sync::mpsc::{Receiver, Sender, channel};
-use std::sync::{Arc, Mutex, PoisonError};
-use std::thread;
 
 /// The time part of a `go` command, from the point of view of the side to
 /// move.
@@ -79,235 +77,6 @@ fn clamp_hash(megabytes: u64) -> u64 {
     megabytes.clamp(HASH_MIN_MB, HASH_MAX_MB)
 }
 
-/// A writer two threads say things through.
-///
-/// The search speaks from the session thread and the reader thread answers
-/// `isready` for itself, so both have one of these and the lock is taken for
-/// a whole line at a time. Without that an `info` line and a `readyok` could
-/// meet halfway through each other, and an interface reads lines.
-pub struct SharedWriter<W: Write>(Arc<Mutex<W>>);
-
-impl<W: Write> SharedWriter<W> {
-    fn new(inner: W) -> Self {
-        Self(Arc::new(Mutex::new(inner)))
-    }
-}
-
-// derived Clone would want W: Clone, which is not what is being cloned
-impl<W: Write> Clone for SharedWriter<W> {
-    fn clone(&self) -> Self {
-        Self(Arc::clone(&self.0))
-    }
-}
-
-impl<W: Write> Write for SharedWriter<W> {
-    /// A poisoned lock is a panic on the other thread, which has already
-    /// been reported where it happened. There is nothing this can do about
-    /// it and an interface still wants its answer, so the buffer is taken
-    /// as it stands.
-    fn write(&mut self, buf: &[u8]) -> std::io::Result<usize> {
-        self.0
-            .lock()
-            .unwrap_or_else(PoisonError::into_inner)
-            .write(buf)
-    }
-
-    fn flush(&mut self) -> std::io::Result<()> {
-        self.0
-            .lock()
-            .unwrap_or_else(PoisonError::into_inner)
-            .flush()
-    }
-
-    /// One lock for a whole line. The default writes each piece of the
-    /// format separately, which would take the lock several times and let
-    /// the other thread in between two of them.
-    fn write_fmt(&mut self, args: std::fmt::Arguments<'_>) -> std::io::Result<()> {
-        self.0
-            .lock()
-            .unwrap_or_else(PoisonError::into_inner)
-            .write_fmt(args)
-    }
-}
-
-/// The word a line opens with, which is all a command is: the dispatcher
-/// and the reader thread both read a line by this one function, so they
-/// cannot disagree about what counts as a `stop`, and `stopwatch` is not
-/// one.
-fn first_word(line: &str) -> &str {
-    line.split_whitespace().next().unwrap_or("")
-}
-
-/// What the reader thread and the session loop share: whether a search is
-/// under way, the flag that stops it, and the thread to wake when that flag
-/// is set.
-#[derive(Clone)]
-struct SessionControl {
-    searching: Arc<AtomicBool>,
-    stop: Arc<AtomicBool>,
-    /// Whether a reader thread attends the session. A held answer waits
-    /// on a stop only a reader can send, so a session without one answers
-    /// at once: the reading the pipe closing gets, applied to a session
-    /// that never had a pipe.
-    attended: bool,
-    /// The session's own thread. A search that has run out of depths to
-    /// search sits waiting for a `stop`, and nothing else would wake it.
-    session: thread::Thread,
-}
-
-impl SessionControl {
-    /// A control whose session runs on the calling thread, with a reader
-    /// attending it.
-    fn for_this_thread() -> Self {
-        Self {
-            searching: Arc::new(AtomicBool::new(false)),
-            stop: Arc::new(AtomicBool::new(false)),
-            attended: true,
-            session: thread::current(),
-        }
-    }
-
-    /// A control for a session no reader attends, which is how the tests
-    /// drive the dispatcher one thread at a time.
-    #[cfg(test)]
-    fn unattended() -> Self {
-        Self {
-            attended: false,
-            ..Self::for_this_thread()
-        }
-    }
-
-    fn searching(&self) -> bool {
-        self.searching.load(Ordering::Acquire)
-    }
-
-    fn began_searching(&self) {
-        self.searching.store(true, Ordering::Release);
-    }
-
-    /// The search has answered: both flags come down. A `stop` read in
-    /// this gap is no longer lost either way, since the reader also passes
-    /// every `stop` down the channel and the dispatch clears the flag
-    /// again there.
-    fn answered(&self) {
-        self.searching.store(false, Ordering::Release);
-        self.stop.store(false, Ordering::Release);
-    }
-
-    /// Ask the search to stop. Set whether or not one is running: a `stop`
-    /// typed the instant after a `go` may be read before the session has
-    /// begun searching, and a flag set early stops the search that follows
-    /// rather than being lost. The session clears it once it has answered,
-    /// and the `stop` itself is passed on to clear it if it did not.
-    fn ask_to_stop(&self) {
-        self.stop.store(true, Ordering::Release);
-        self.session.unpark();
-    }
-
-    fn clear(&self) {
-        self.stop.store(false, Ordering::Release);
-    }
-
-    fn handle(&self) -> Arc<AtomicBool> {
-        Arc::clone(&self.stop)
-    }
-
-    /// Sit on a finished search's answer until a `stop` arrives, which is
-    /// what `go infinite` promises the interface. With no reader to send
-    /// one the answer is given at once instead of held for ever.
-    fn wait_for_stop(&self) {
-        if !self.attended {
-            return;
-        }
-        while !self.stop.load(Ordering::Acquire) {
-            thread::park();
-        }
-    }
-}
-
-/// Says on the interface's own channel why the engine died, before it does.
-///
-/// A panic writes its message and a backtrace to stderr, which a chess GUI
-/// reads never and discards always: the process just disappears mid game.
-/// This hook writes one `info string` to the writer given (stdout, in the
-/// binary) so the reason lands in the GUI's log, then hands over to the hook
-/// that was already installed, which keeps the backtrace on stderr for
-/// anyone running the engine by hand.
-///
-/// Takes the writer rather than assuming stdout so a test can install it
-/// against a buffer and read back what a panic would have said.
-pub fn report_panics_to<W: Write + Send + 'static>(out: W) {
-    let previous = std::panic::take_hook();
-    let out = std::sync::Mutex::new(out);
-    std::panic::set_hook(Box::new(move |panic| {
-        let message = if let Some(text) = panic.payload().downcast_ref::<&str>() {
-            text
-        } else if let Some(text) = panic.payload().downcast_ref::<String>() {
-            text.as_str()
-        } else {
-            "no message"
-        };
-        if let Ok(mut out) = out.lock() {
-            match panic.location() {
-                Some(at) => {
-                    let _ = writeln!(out, "info string panicked at {}: {}", at, message);
-                }
-                None => {
-                    let _ = writeln!(out, "info string panicked: {}", message);
-                }
-            }
-        }
-        previous(panic);
-    }));
-}
-
-/// The reader thread: every line the interface sends arrives here first.
-///
-/// While a search is running it answers what the protocol says must be
-/// answered at once and passes everything else on to be handled after the
-/// `bestmove`. Nothing is dropped: a `position` thrown away would leave the
-/// interface's idea of the game and the engine's silently apart, and the
-/// next `go` would search the wrong position.
-fn read_ahead<I, W>(input: I, mut out: W, control: &SessionControl, lines: Sender<String>)
-where
-    I: Iterator<Item = std::io::Result<String>>,
-    W: Write,
-{
-    for line in input {
-        let line = match line {
-            Ok(line) => line,
-            // there is nothing left to read and no one to tell, so leave
-            // the way the pipe closing does below
-            Err(error) => {
-                let _ = writeln!(out, "info string could not read input: {}", error);
-                break;
-            }
-        };
-        match first_word(&line) {
-            // a quit stops the search as a stop does, and is then passed
-            // on: the search still owes a bestmove, and it is emitted
-            // before we exit
-            "stop" | "quit" => control.ask_to_stop(),
-            // the one answer the protocol requires mid-search
-            "isready" if control.searching() => {
-                let _ = writeln!(out, "readyok");
-                continue;
-            }
-            _ => {}
-        }
-        if lines.send(line).is_err() {
-            // the session has gone
-            return;
-        }
-    }
-    // the pipe closing is the interface leaving. A search still running, or
-    // an answer held for a stop that can no longer come, would outlive the
-    // only party that wanted it, so the ending reads as the quit the
-    // interface did not get to send
-    control.ask_to_stop();
-    let _ = lines.send("quit".to_string());
-}
-
 pub struct UCI<T: Engine, W: Write> {
     author: String,
     name: String,
@@ -329,31 +98,17 @@ impl<T: Engine> UCI<T, SharedWriter<Stdout>> {
 }
 
 impl<T: Engine, W: Write + Send + 'static> UCI<T, SharedWriter<W>> {
-    /// Wire a session up: the input read on a thread of its own, the
-    /// session run on this one, and the two joined by the channel, the
-    /// control and the shared writer. This is the one assembly of those
-    /// parts — a test session and a stdin session differ only in the
-    /// input they hand it.
-    ///
-    /// The engine never crosses the boundary: it is searched here, on the
-    /// thread it was built on, and the reader is over there so that a
-    /// `stop` is read while the search is running rather than after it.
-    /// The input is built on the reader's thread too — stdin's lock lives
-    /// its whole life there — so what crosses is the recipe for it rather
-    /// than the thing.
+    /// Run this session over the input given: the session module owns the
+    /// threads and the loop, and every line comes back to `dispatch` here.
+    /// The engine never crosses the boundary: it is searched on this
+    /// thread, the one it was built on.
     fn wire<I, F>(&mut self, input: F)
     where
         I: Iterator<Item = std::io::Result<String>>,
         F: FnOnce() -> I + Send + 'static,
     {
-        let control = SessionControl::for_this_thread();
-        let (sender, lines) = channel();
-        let reader = control.clone();
         let out = self.out.clone();
-        thread::spawn(move || {
-            read_ahead(input(), out, &reader, sender);
-        });
-        self.session(lines, &control);
+        session::wire(out, input, |line, control| self.dispatch(line, control));
     }
 }
 
@@ -366,16 +121,6 @@ impl<T: Engine, W: Write> UCI<T, W> {
             version: env!("CARGO_PKG_VERSION").to_string(),
             engine,
             out,
-        }
-    }
-
-    /// The session loop: lines the reader thread did not answer itself,
-    /// handled here in the order they were sent.
-    fn session(&mut self, lines: Receiver<String>, control: &SessionControl) {
-        for line in lines {
-            if !self.dispatch(&line, control) {
-                return;
-            }
         }
     }
 
@@ -817,6 +562,8 @@ mod tests {
     use arche_core::{AlphaBeta, Board, Clock};
     use proptest::prelude::*;
     use std::io::Cursor;
+    use std::sync::mpsc::{Sender, channel};
+    use std::thread;
     use std::time::{Duration, Instant};
 
     /// A table small enough that a test can afford one per case, speaking
@@ -1924,8 +1671,7 @@ go depth 3
         }
 
         fn said(&self) -> String {
-            let buffer = self.said.0.lock().unwrap_or_else(PoisonError::into_inner);
-            String::from_utf8(buffer.clone()).unwrap()
+            self.said.read_back()
         }
 
         /// Everything said once `what` has been, or a failure naming what
@@ -1961,8 +1707,7 @@ go depth 3
         fn finish(self) -> String {
             drop(self.typed);
             self.session.join().expect("the session panicked");
-            let buffer = self.said.0.lock().unwrap_or_else(PoisonError::into_inner);
-            String::from_utf8(buffer.clone()).unwrap()
+            self.said.read_back()
         }
     }
 
@@ -1974,8 +1719,7 @@ go depth 3
         report_panics_to(said.clone());
         let panicked = thread::spawn(|| panic!("the search fell over")).join();
         assert!(panicked.is_err());
-        let buffer = said.0.lock().unwrap_or_else(PoisonError::into_inner);
-        let line = String::from_utf8(buffer.clone()).unwrap();
+        let line = said.read_back();
         assert!(
             line.starts_with("info string panicked at ") && line.contains("the search fell over"),
             "the panic was reported as: {}",
