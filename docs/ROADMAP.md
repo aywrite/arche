@@ -75,6 +75,17 @@ of these again without saying what is different this time.
   half-understands, and the stricter rule spends depth keeping alive games it
   then loses. Tapered evaluation has since landed and this was not re-measured
   against it; worth re-asking once king safety lands too.
+- Correcting the evaluation reverse futility reads by a table entry's
+  score and bound (a stored floor above the evaluation raised it before
+  the margin was measured). Inconclusive at the game cap, +6 ±11 over
+  1,980 games at 5+0.05 (sprt [0, 10], branch search/tt-refined-eval),
+  with four tactical positions lost for a 5.3% smaller bench tree. The
+  refinement was sound; the price was not covered. Worth re-asking once
+  the reverse futility margin is recalibrated against corrected
+  estimates rather than the raw evaluation's error, which the residual
+  harness exists to do. Refining the null move gate the same way was
+  measured separately and rejected inside the same arm: it grew the
+  tree and changed nothing the tactical suite could see.
 - Ranking the quiet moves by cutoffs per node spent, in place of the
   history table's cutoff score. Lost -53 ±26 over 420 games at 5+0.05
   (sprt [0, 10] accepted H0, branch research/cost-aware-ordering) with
