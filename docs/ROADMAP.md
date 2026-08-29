@@ -65,6 +65,16 @@ of these again without saying what is different this time.
   half-understands, and the stricter rule spends depth keeping alive games it
   then loses. Tapered evaluation has since landed and this was not re-measured
   against it; worth re-asking once king safety lands too.
+- Ranking the quiet moves by cutoffs per node spent, in place of the
+  history table's cutoff score. Lost -53 ±26 over 420 games at 5+0.05
+  (sprt [0, 10] accepted H0, branch research/cost-aware-ordering) with
+  the bench tree 1.8% larger. A one-term comparison placed the blame:
+  the cost divisor alone grew the tree, while the rest of the change
+  (smoothed plain counts in place of the depth squared bonus) shrank it
+  slightly. A try's cost spans four orders of magnitude and mostly
+  reports the depth the try ran at, so the ratio ranks by depth noise.
+  Worth re-asking only with the cost normalised by depth; the smoothed
+  counts ranking on its own is a separate small candidate.
 - Prefetching a child's transposition slot straight after `make_move`, 6.7%
   slower over six interleaved rounds. The prefetch sits immediately before the
   recursive call and the child probes the table almost first, so there is no
