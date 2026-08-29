@@ -58,6 +58,16 @@ of these again without saying what is different this time.
   stack local at every recursion frame, so inline bytes multiply by depth and
   trade against a 48KB L1D. Spilling is already negligible; there is nothing
   there to fix.
+- Holding the move lists in one arena indexed by ply rather than a `SmallVec` at
+  every recursion frame, so that consecutive plies pack against each other instead
+  of sitting a 392 byte slot apart for the 54 bytes a nine move list uses. Not
+  implemented: callgrind bounds what it could win first, and the bound is small.
+  The search misses L1D on 0.66% of its data references and 96% of those are
+  served by L2, so every data cache stall together is at most 11% of the run and
+  every write miss, the transposition table's own included, at most 5%. The move
+  lists are a minority of that. The entry above is the same finding from the other
+  side: neither term of that curve is large, which is why no inline capacity wins
+  much either.
 - Requiring the game's own two prior occurrences before a pre-root repetition
   scores as a draw, the line Stockfish draws. Lost -22 ±18 over 446 games at
   5+0.05 (sprt [0, 10] failed, PR #107): an eval this simple is better off
