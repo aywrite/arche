@@ -12,12 +12,69 @@ use crate::magic::Magic;
 use crate::zobrist::Zobrist;
 use smallvec::SmallVec;
 use std::fmt;
+use std::mem::MaybeUninit;
 
 // A list's inline capacity, and the size of the ordering module's key
 // buffer, so every list short of a spill sorts on the stack. The value is
 // measured and settled: see the roadmap before moving it.
 pub(crate) const MOVE_LIST_INLINE: usize = 64;
 pub type MoveList = SmallVec<[Play; MOVE_LIST_INLINE]>;
+
+/// The widest a generated list can be.
+///
+/// The most moves a legal position has ever been shown to offer is 218, and
+/// generation adds nothing to that: it walks the same pieces to the same
+/// squares and only declines to ask whether the mover's king is left in
+/// check. This is more than twice that, because `from_fen` bounds neither
+/// the number of pieces nor what they are — a position with nine queens is
+/// accepted and played from — so the margin is against a position no game
+/// reaches rather than against the generator. Nothing here is initialised,
+/// so the width costs stack and no instructions, and the stack it costs is
+/// one frame's: the buffer is gone before the search recurses.
+const MAX_GENERATED: usize = 512;
+
+/// A move list while it is being generated: a plain array and a length.
+///
+/// Pushing to the `SmallVec` asks whether the list has spilled, and so where
+/// its buffer is, and then whether it is full, before it can store anything.
+/// Generation pushes about twenty two times a call and a million and a half
+/// times a search, and both answers are the same every time. Here a push is
+/// a store and an increment, and the list is built once at the end.
+struct Building {
+    moves: [MaybeUninit<Play>; MAX_GENERATED],
+    len: usize,
+}
+
+impl Building {
+    #[inline(always)]
+    fn new() -> Self {
+        // nothing is written here, and that is the point: giving every entry
+        // a value first costs a store each, and `Play` has no zero value to
+        // memset — `None` for the piece a move captures is a niche rather
+        // than a zero — so an initialiser here measured slower than the
+        // pushing it replaced.
+        Self {
+            moves: [const { MaybeUninit::uninit() }; MAX_GENERATED],
+            len: 0,
+        }
+    }
+
+    #[inline(always)]
+    fn push(&mut self, play: Play) {
+        self.moves[self.len].write(play);
+        self.len += 1;
+    }
+
+    #[inline(always)]
+    fn finish(&self) -> MoveList {
+        let filled = &self.moves[..self.len];
+        // SAFETY: `push` writes an entry before it counts it, so the first
+        // `len` are all initialised, and `MaybeUninit<Play>` has the layout
+        // of `Play`.
+        let filled = unsafe { &*(filled as *const [MaybeUninit<Play>] as *const [Play]) };
+        MoveList::from_slice(filled)
+    }
+}
 
 /// Pop the lowest set bit and return its index.
 #[inline(always)]
@@ -561,7 +618,7 @@ impl Board {
     /// one masks every piece's targets with the opponent's pieces and drops
     /// the quiet-only sections, with nothing tested per move.
     fn generate<const CAPTURES_ONLY: bool>(&self) -> MoveList {
-        let mut moves = MoveList::new();
+        let mut moves = Building::new();
         let (color_mask, capture_mask) = match self.active_color {
             Color::Black => (self.black, self.white),
             Color::White => (self.white, self.black),
@@ -727,7 +784,7 @@ impl Board {
                 }
             }
         }
-        moves
+        moves.finish()
     }
 
     /// Check everything maintained a piece at a time against the position it
