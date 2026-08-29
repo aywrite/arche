@@ -223,7 +223,9 @@ anything is the one at the default. Both also take `hash <MB>` and
 `taint refuse|trust|skip|rule50`, as in `arche bench 9 hash 256 taint trust`, which are
 for measuring what the table and the draw taint policy do to a search rather
 than for pinning anything: the header states what a report ran with, so one
-can be rerun from it. The suite, depth and table are chosen once:
+can be rerun from it. A fourth word, `audit`, adds what the table's key
+signature costs and is described further down. The suite, depth and table are
+chosen once:
 changing any of them changes every number the bench has ever printed, which is
 why the depth is expected to be raised exactly once, after the search has
 learned to prune, rather than adjusted as it goes.
@@ -339,6 +341,71 @@ The command is an argument and not a uci command. Like the bench it is a
 measurement rather than a move, and unlike the bench nothing about a live
 session wants it: it searches the suite twice over and takes minutes at the
 depths worth running it at.
+
+## What the table's key signature costs
+
+An entry keeps thirty two bits of the position key rather than all sixty
+four, so two positions can agree on the bits the table compares and the
+search reads one of them as the other. The entry's comment puts that at about
+one probe in a thousand million. `audit` replaces the guess with a count:
+
+```
+target/release/arche bench 7 hash 1 audit
+```
+
+It keeps the full key of every entry beside the entries and prints two lines
+of whole-suite totals after the table:
+
+```
+signature audit: probes 2414812, hits 377238, comparisons 6092624, false accepts 0 (0.001 expected), false accept cutoffs 0, aliased evictions 0
+narrow signature: sixteen bit accepts 89 (92.965 expected)
+```
+
+The word turns the shadow keys on for the tables the bench builds and for
+nothing else, so a session that plays games never allocates them. Detection
+changes nothing: a probe that was a false accept hands back what it would
+have handed back unaudited. An audited table starts empty, because an entry
+stored before the audit began has no key on the side and every probe would
+read it as a stranger's.
+
+The two lines have two denominators. Probes, hits, comparisons and false
+accepts count keyed lookups; aliased evictions count stores. A comparison is
+one live entry a probe compared its slice against, whose full key turned out
+to belong to another position. Only the entries that probe really looked at
+are counted, so each comparison is one chance in two to the signature's width
+and the two expectations are both drawn from the total.
+
+An aliased eviction is a store that landed in a slot the slice said was its
+own and replaced another position's entry there. Landed stores only. A store
+the depth contest turns away after comparing itself against a foreign entry's
+depth is a related cost, since it compared against the wrong position and its
+own result went unstored, but nothing was evicted and it is not in the
+figure.
+
+The thirty two bit observation cannot say anything on its own. A run of this
+size expects about a thousandth of a false accept, so a zero is what a
+working instrument and a dead one both print. That is what the narrow line is
+for. It counts the comparisons a sixteen bit signature would have accepted
+and this one refused, which is the same rate scaled by sixty five thousand,
+so the figure is about a hundred instead of about zero. A narrow count
+sitting on its expectation says the rate really does scale by two to the
+minus the width on this workload. The thirty two bit expectation beside it
+can then be believed where its observation cannot, which is what makes the
+audit fit to rule a claimant out of the bit budget. The narrow figure is
+counted and never acted on: a search really running sixteen bits would have
+stopped its scan at the first such entry, which is a different tree.
+
+Read the narrow line off a small table. A table of one or two megabytes at
+the bench's depth is full by the end of the suite, so its buckets hold four
+live entries and its comparisons run to millions; at the default sixteen the
+suite fills under a tenth of the table, the comparisons are an order down and
+the narrow count is small enough to be noise. The command does not sweep
+sizes itself.
+
+The audit costs eight bytes an entry, half the table's own size again, and
+refuses to run rather than run unaudited if there is not the memory for them.
+An audited run and a plain one search the same tree, which the node counts
+say.
 
 ## Playing a match against a previous version
 

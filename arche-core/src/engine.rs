@@ -7,7 +7,9 @@ use crate::misc::{Color, Score};
 use crate::ordering::MoveOrdering;
 use crate::play::Play;
 use crate::residual::{Sample, Sampler, Shortcut};
-use crate::transposition::{DEFAULT_TABLE_BYTES, GhiCounters, Probe, TranspositionTable};
+use crate::transposition::{
+    DEFAULT_TABLE_BYTES, GhiCounters, Probe, SignatureCounters, TranspositionTable,
+};
 use crate::value::{Taint, Value, below_the_mate_window, is_mate};
 use std::fmt;
 use std::sync::Arc;
@@ -501,6 +503,24 @@ impl AlphaBeta {
     /// result: see the graph history interaction notes on the counters.
     pub fn ghi(&self) -> GhiCounters {
         self.transpositions.ghi()
+    }
+
+    /// Have the table keep the full key of every entry, so that what its
+    /// thirty two bit signature costs can be counted rather than guessed at.
+    /// The search is the same search either way, and the table starts empty:
+    /// see `TranspositionTable::audit_signatures`, which this is.
+    ///
+    /// False if there was not the memory for the keys, in which case nothing
+    /// is counted and the caller decides what to do about it.
+    #[must_use]
+    pub fn audit_signatures(&mut self) -> bool {
+        self.transpositions.audit_signatures()
+    }
+
+    /// What the signature audit counted, or none when the table was never
+    /// asked to keep the keys.
+    pub fn signatures(&self) -> Option<SignatureCounters> {
+        self.transpositions.signatures()
     }
 
     /// How many of the nodes visited so far were quiescence's, over every
@@ -1132,10 +1152,11 @@ impl AlphaBeta {
             let Some(play) = self.transpositions.intended_play(&board) else {
                 break;
             };
-            // a probe compares the whole key, so what still gets through is
-            // another position which hashed to the same one. Its move belongs
+            // a probe compares thirty two bits of the key, so what gets
+            // through is another position agreeing on those. Its move belongs
             // to that position, and playing it here would print a line the
-            // rules do not allow
+            // rules do not allow. How often that happens is what the bench's
+            // signature audit counts
             if !board.generate_moves().contains(&play) {
                 break;
             }
