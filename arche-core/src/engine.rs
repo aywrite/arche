@@ -95,6 +95,14 @@ pub trait Engine {
     #[must_use]
     fn set_table_bytes(&mut self, bytes: usize) -> bool;
 
+    /// Empty the transposition table and leave everything else as it is.
+    /// This is the protocol's `Clear Hash` button, which an interface
+    /// presses so that what comes next owes nothing to what was searched
+    /// before it. A size change empties the table too, by building another
+    /// one; this asks for the emptying alone and keeps the buckets that are
+    /// already there.
+    fn clear_table(&mut self);
+
     /// The position, printed the way the board prints itself, for the
     /// adapter to show a person. A string rather than a write to a handle:
     /// the library never prints, and the adapter owns where its bytes go
@@ -1206,6 +1214,10 @@ impl Engine for AlphaBeta {
     }
 
     fn new_game(&mut self) {
+        self.clear_transpositions();
+    }
+
+    fn clear_table(&mut self) {
         self.clear_transpositions();
     }
 

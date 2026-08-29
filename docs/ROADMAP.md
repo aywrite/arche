@@ -18,8 +18,9 @@ the engine plays. Roughly in the order they look worth doing.
   the bishop pair and open files. A tuner comes before the deeper rows, so the weights are
   fitted against games rather than guessed
 - the rest of the uci protocol
-  - the only options advertised are `Hash` and a `Threads` fixed at one, so everything else an
-    interface might set, `Ponder` and `Clear Hash` among them, is refused rather than acted on
+  - the only options advertised are `Hash`, the `Clear Hash` button and a `Threads` fixed at
+    one, so everything else an interface might set, `Ponder` among them, is refused rather
+    than acted on
   - `ponderhit`, `debug` and `register` are not handled, so pondering is still out of reach
     even though `stop` is answered now
   - a move in a `position` line that cannot be played is reported the same way whether

@@ -60,6 +60,27 @@ impl<'a> Params<'a> {
         self.words.get(at + 1).copied()
     }
 
+    /// The words between `keyword` and `until`, joined by a single space, or
+    /// everything after `keyword` when `until` is not there.
+    ///
+    /// A uci option may be named with more than one word, and `Clear Hash`
+    /// is one, so the name on a `setoption` is read as everything up to the
+    /// `value` rather than as the word after `name`. None when the keyword
+    /// is absent and when there is nothing between the two.
+    pub(crate) fn phrase(&self, keyword: &str, until: &str) -> Option<String> {
+        let at = self.words.iter().position(|word| *word == keyword)?;
+        let rest = &self.words[at + 1..];
+        let end = rest
+            .iter()
+            .position(|word| *word == until)
+            .unwrap_or(rest.len());
+        let words = &rest[..end];
+        if words.is_empty() {
+            return None;
+        }
+        Some(words.join(" "))
+    }
+
     /// A count of milliseconds or nodes, read the way the protocol's unsigned
     /// parameters have to be read.
     ///
@@ -152,6 +173,38 @@ mod tests {
         assert_eq!(params.count("movetime"), Param::Read(500));
         assert!(!params.flag("move"));
         assert!(params.flag("movetime"));
+    }
+
+    #[test]
+    fn a_phrase_is_every_word_up_to_the_one_that_ends_it() {
+        let params = Params::of("setoption name Clear Hash value 1");
+        assert_eq!(
+            params.phrase("name", "value").as_deref(),
+            Some("Clear Hash")
+        );
+        assert_eq!(
+            Params::of("setoption name Hash value 1")
+                .phrase("name", "value")
+                .as_deref(),
+            Some("Hash")
+        );
+        // a button carries no value, so the phrase runs to the end
+        assert_eq!(
+            Params::of("setoption name Clear Hash")
+                .phrase("name", "value")
+                .as_deref(),
+            Some("Clear Hash")
+        );
+    }
+
+    #[test]
+    fn a_phrase_with_no_words_in_it_is_absent() {
+        assert_eq!(Params::of("setoption").phrase("name", "value"), None);
+        assert_eq!(Params::of("setoption name").phrase("name", "value"), None);
+        assert_eq!(
+            Params::of("setoption name value 1").phrase("name", "value"),
+            None
+        );
     }
 
     #[test]

@@ -167,6 +167,9 @@ impl<T: Engine, W: Write> UCI<T, W> {
                     "option name Hash type spin default {} min {} max {}",
                     HASH_DEFAULT_MB, HASH_MIN_MB, HASH_MAX_MB
                 ));
+                // the button beside the size, since both are about the same
+                // table: this one empties it where the size rebuilds it
+                self.say(format_args!("option name Clear Hash type button"));
                 // advertised with a range of one so that an interface
                 // configuring a match reads the engine as single threaded
                 // rather than being left to find out by playing one
@@ -282,22 +285,29 @@ impl<T: Engine, W: Write> UCI<T, W> {
         }
     }
 
-    /// `setoption name <option> value <value>`. The two options the handshake
-    /// advertises are the only ones answered to; anything else is said back
-    /// rather than acted on, so that an interface sending an option meant for
-    /// another engine is told it did.
+    /// `setoption name <option> [value <value>]`. The three options the
+    /// handshake advertises are the only ones answered to; anything else is
+    /// said back rather than acted on, so that an interface sending an option
+    /// meant for another engine is told it did.
     ///
-    /// Both names here are a single word, which is what lets the name be read
-    /// as the word after `name`. An option named with two would need the words
-    /// between `name` and `value` gathered instead.
+    /// The name is every word between `name` and `value`, because an option
+    /// may be named with more than one and `Clear Hash` is.
     fn set_option(&mut self, line: &str) -> Result<(), String> {
         let params = Params::of(line);
-        let Some(name) = params.value("name") else {
+        let Some(name) = params.phrase("name", "value") else {
             return Err(format!("setoption without an option name: {}", line));
         };
-        match name {
+        match name.as_str() {
             "Hash" => self.set_hash(&params),
             "Threads" => self.set_threads(&params),
+            // a button is pressed rather than set, so there is no value to
+            // read and nothing to say back. The table is emptied and the
+            // rest of the search's memory is left alone: the killers and the
+            // history are a `go`'s own and start empty at every one of them
+            "Clear Hash" => {
+                self.engine.clear_table();
+                Ok(())
+            }
             other => Err(format!("unrecognised option: {}", other)),
         }
     }
@@ -606,11 +616,18 @@ mod tests {
     struct Recorder {
         asked: Option<SearchParameters>,
         color: Color,
+        /// How many times the table has been asked to empty, which is what a
+        /// button press reaching the engine looks like from out here.
+        cleared: usize,
     }
 
     impl Recorder {
         fn to_move(color: Color) -> Self {
-            Self { asked: None, color }
+            Self {
+                asked: None,
+                color,
+                cleared: 0,
+            }
         }
     }
 
@@ -638,6 +655,9 @@ mod tests {
         }
         fn set_table_bytes(&mut self, _bytes: usize) -> bool {
             true
+        }
+        fn clear_table(&mut self) {
+            self.cleared += 1;
         }
         fn board_display(&self) -> String {
             String::new()
@@ -771,7 +791,7 @@ mod tests {
         uci.handle("uci");
         let said = said(&uci);
         let lines: Vec<&str> = said.lines().collect();
-        assert_eq!(lines.len(), 5);
+        assert_eq!(lines.len(), 6);
         assert!(lines[0].starts_with("id name arche "));
         assert!(lines[1].starts_with("id author "));
         // the default is the engine's own, so an interface that sends no
@@ -780,11 +800,12 @@ mod tests {
             lines[2],
             "option name Hash type spin default 256 min 1 max 16384"
         );
+        assert_eq!(lines[3], "option name Clear Hash type button");
         assert_eq!(
-            lines[3],
+            lines[4],
             "option name Threads type spin default 1 min 1 max 1"
         );
-        assert_eq!(lines[4], "uciok");
+        assert_eq!(lines[5], "uciok");
     }
 
     #[test]
@@ -1006,6 +1027,35 @@ go depth 3
         let mut uci = uci();
         assert!(uci.handle("setoption name Nonsense value 1"));
         assert_eq!(said(&uci), "info string unrecognised option: Nonsense\n");
+    }
+
+    #[test]
+    fn the_clear_hash_button_reaches_the_engine_in_silence() {
+        // pressed rather than set, so an interface that sends a value with
+        // it is doing what several of them do and is not to be complained at
+        for line in [
+            "setoption name Clear Hash",
+            "setoption name Clear Hash value",
+        ] {
+            let mut uci = UCI::with_output(Recorder::to_move(Color::White), Vec::new());
+            uci.run(Cursor::new(format!("{}\n", line)));
+            assert_eq!(uci.engine.cleared, 1, "{}", line);
+            assert_eq!(
+                String::from_utf8(uci.out.clone()).unwrap(),
+                "",
+                "{} was answered",
+                line
+            );
+        }
+    }
+
+    #[test]
+    fn an_option_named_with_two_words_is_read_as_both_of_them() {
+        // the name used to be the word after `name`, which read this one as
+        // `Clear` and would have reported an option called `Clear`
+        let mut uci = uci();
+        assert!(uci.handle("setoption name Some Other value 1"));
+        assert_eq!(said(&uci), "info string unrecognised option: Some Other\n");
     }
 
     #[test]
@@ -1512,6 +1562,9 @@ go depth 3
                 "name",
                 "value",
                 "Hash",
+                // the word an option name runs over, so a generated
+                // setoption can reach the phrase the name is read as
+                "Clear",
                 "Threads",
                 "startpos",
                 "fen",
