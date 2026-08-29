@@ -675,6 +675,44 @@ impl AlphaBeta {
         Ok(value)
     }
 
+    /// One child of a full width node, or nothing when the move is not
+    /// legal here: make the move, search what it leaves, and answer from
+    /// this side of the board. The undo comes before the abort can
+    /// propagate, or the board would keep the aborted line; propagating is
+    /// what keeps the meaningless score of an aborted frame away from
+    /// every store above. The full width search enters every child through
+    /// here, so a reduction or a re-search, when one arrives, starts as an
+    /// edit here rather than at three sites.
+    fn search_child(
+        &mut self,
+        m: &Play,
+        alpha: Score,
+        beta: Score,
+        depth: u8,
+    ) -> Result<Option<Value>, Aborted> {
+        if !self.board.make_move(m) {
+            return Ok(None);
+        }
+        let result = self.alpha_beta(-beta, -alpha, depth - 1, true);
+        self.board.undo_move();
+        Ok(Some(-result?))
+    }
+
+    /// A fail high at a full width node: the move that proved it goes to
+    /// the quiet memories and, when the taint policy allows, to the table,
+    /// and what comes back is the node's answer. The one place a full
+    /// width cutoff is acted on, which is where the next thing a cutoff
+    /// should feed lands.
+    fn cutoff(&mut self, m: &Play, taint: Taint, score: Score, depth: u8) -> Value {
+        self.remember_cutoff(m, depth);
+        let value = taint.stamp(score);
+        if self.keeps(value) {
+            self.transpositions
+                .record_cutoff(&self.board, *m, value, depth);
+        }
+        value
+    }
+
     /// One full width node. `can_null` is false only under a pass, which is
     /// how two of them in a row are refused: a position neither side has
     /// moved in is not one a reduced search says anything about. A parameter
@@ -873,14 +911,11 @@ impl AlphaBeta {
         if let Some(tt) = pv_play {
             if self.board.is_pseudo_legal(&tt) {
                 tt_tried = Some(tt);
-                if self.board.make_move(&tt) {
+                if let Some(value) = self.search_child(&tt, alpha, beta, depth)? {
                     found_legal_move = true;
-                    let result = self.alpha_beta(-beta, -alpha, depth - 1, true);
-                    self.board.undo_move();
                     // the table's move is searched before the rest are even
                     // generated, so it taints this node the same way any other
                     // child would
-                    let value = -result?;
                     taint.absorb(value);
                     let tt_score = value.score;
                     if tt_score > best {
@@ -892,13 +927,7 @@ impl AlphaBeta {
                             // a cutoff is a cutoff wherever it is proved, so
                             // the table's move earns its killer slot here as
                             // any other move does in the loop below
-                            self.remember_cutoff(&tt, depth);
-                            let value = taint.stamp(tt_score);
-                            if self.keeps(value) {
-                                self.transpositions
-                                    .record_cutoff(&self.board, tt, value, depth);
-                            }
-                            return Ok(value);
+                            return Ok(self.cutoff(&tt, taint, tt_score, depth));
                         }
                         alpha = tt_score;
                     }
@@ -918,34 +947,23 @@ impl AlphaBeta {
             if tt_tried == Some(*m) {
                 continue;
             }
-            if self.board.make_move(m) {
-                found_legal_move = true;
-                // undo before an abort can propagate, or the board would keep
-                // the aborted line. Propagating also keeps the meaningless
-                // score of an aborted frame away from the stores below.
-                let result = self.alpha_beta(-beta, -alpha, depth - 1, true);
-                self.board.undo_move();
-                // a value built from a tainted child is tainted, whether or not
-                // it turns out to be the best one here
-                let value = -result?;
-                taint.absorb(value);
-                let score = value.score;
-                if score > best {
-                    best = score;
-                    best_move = Some(*m);
+            let Some(value) = self.search_child(m, alpha, beta, depth)? else {
+                continue;
+            };
+            found_legal_move = true;
+            // a value built from a tainted child is tainted, whether or not
+            // it turns out to be the best one here
+            taint.absorb(value);
+            let score = value.score;
+            if score > best {
+                best = score;
+                best_move = Some(*m);
+            }
+            if score > alpha {
+                if score >= beta {
+                    return Ok(self.cutoff(m, taint, score, depth));
                 }
-                if score > alpha {
-                    if score >= beta {
-                        self.remember_cutoff(m, depth);
-                        let value = taint.stamp(score);
-                        if self.keeps(value) {
-                            self.transpositions
-                                .record_cutoff(&self.board, *m, value, depth);
-                        }
-                        return Ok(value);
-                    }
-                    alpha = score;
-                }
+                alpha = score;
             }
         }
 
@@ -1071,26 +1089,18 @@ impl AlphaBeta {
         }
 
         for m in &moves {
-            if self.board.make_move(m) {
-                found_legal_move = true;
-                // undo before an abort can propagate, or the board would keep
-                // the aborted line
-                let result = self.alpha_beta(-beta, -alpha, depth - 1, true);
-                self.board.undo_move();
-                match result {
-                    Err(Aborted) => {
-                        return SearchOutcome::Aborted(
-                            best.map(|play| self.result_for(play, alpha)),
-                        );
-                    }
-                    Ok(value) => {
-                        let value = -value;
-                        taint.absorb(value);
-                        let score = value.score;
-                        if score > alpha {
-                            alpha = score;
-                            best = Some(*m);
-                        }
+            match self.search_child(m, alpha, beta, depth) {
+                Err(Aborted) => {
+                    return SearchOutcome::Aborted(best.map(|play| self.result_for(play, alpha)));
+                }
+                Ok(None) => {}
+                Ok(Some(value)) => {
+                    found_legal_move = true;
+                    taint.absorb(value);
+                    let score = value.score;
+                    if score > alpha {
+                        alpha = score;
+                        best = Some(*m);
                     }
                 }
             }
