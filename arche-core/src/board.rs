@@ -1818,6 +1818,64 @@ impl Board {
         board.debug_assert_state_in_step();
         Ok(board)
     }
+
+    /// The position as a fen, all six fields, which `from_fen` reads back.
+    ///
+    /// The clocks are printed as well as the pieces, so the fifty move
+    /// counter travels with the position and a board printed here is scored
+    /// for a draw the way this one is. What does not travel is the path: a
+    /// fen names the position and nothing that was played to reach it, so a
+    /// board parsed back from one has no history to find a repetition in.
+    ///
+    /// The en passant square is printed as the board holds it, which is
+    /// after `from_fen` has dropped one no pawn can capture on. So a fen
+    /// parsed and printed again may differ from the one that arrived, and
+    /// printing that one twice does not.
+    pub fn to_fen(&self) -> String {
+        let mut fen = String::new();
+        for rank in (1..=8).rev() {
+            let mut empty = 0;
+            for file in File::VARIANTS {
+                match self.get_piece(rank, file) {
+                    Some((piece, color)) => {
+                        if empty > 0 {
+                            fen.push_str(&empty.to_string());
+                            empty = 0;
+                        }
+                        let letter = char::from(piece);
+                        fen.push(match color {
+                            Color::White => letter.to_ascii_uppercase(),
+                            Color::Black => letter,
+                        });
+                    }
+                    None => empty += 1,
+                }
+            }
+            if empty > 0 {
+                fen.push_str(&empty.to_string());
+            }
+            if rank > 1 {
+                fen.push('/');
+            }
+        }
+        let active_color = match self.active_color {
+            Color::White => 'w',
+            Color::Black => 'b',
+        };
+        let en_passant = match self.en_passant {
+            Some(square) => square.to_string(),
+            None => "-".to_string(),
+        };
+        format!(
+            "{} {} {} {} {} {}",
+            fen,
+            active_color,
+            self.castle.as_fen(),
+            en_passant,
+            self.fifty_move_rule,
+            self.move_number,
+        )
+    }
 }
 
 impl fmt::Display for Board {
@@ -2610,10 +2668,55 @@ mod fen_parsing {
         );
     }
 
+    /// The printer's job: a position printed and parsed again is the same
+    /// position. Every fen here has no en passant square, which is the one
+    /// field the parser may drop, so the text comes back word for word too.
+    #[test]
+    fn a_printed_position_parses_back_to_itself() {
+        for fen in [
+            fens::START,
+            fens::KIWIPETE,
+            fens::PAWN_ENDGAME,
+            fens::PROMOTIONS,
+            fens::MIDDLEGAME,
+            fens::SHUFFLE,
+        ] {
+            let board = Board::from_fen(fen).unwrap();
+            assert_eq!(board.to_fen(), fen);
+            assert_eq!(Board::from_fen(&board.to_fen()).unwrap(), board, "{}", fen);
+        }
+    }
+
+    /// The clocks are printed as well as the pieces, so a position eighty
+    /// half moves into a shuffle comes back eighty half moves in rather than
+    /// fresh. That is what the residual sampler needs of the printer: a
+    /// position it prints is scored for the fifty move rule the way the
+    /// search that printed it scored it.
+    #[test]
+    fn the_clocks_travel_with_the_position() {
+        let fen = "8/8/4k3/8/8/4K3/8/6R1 w - - 83 62";
+        let board = Board::from_fen(fen).unwrap();
+        assert_eq!(board.to_fen(), fen);
+    }
+
     proptest! {
         #[test]
         fn random_str_doesnt_crash(s in ".*") {
             _ = Board::from_fen(&s);
+        }
+
+        /// The parser drops an en passant square no pawn can capture on, so
+        /// the first print of a parsed fen need not match the text that
+        /// arrived. Printing it again does, and that is what a caller who
+        /// prints a position and parses it back depends on.
+        #[test]
+        fn printing_a_parsed_position_is_settled_after_one_pass(fen in well_formed_fen()) {
+            if let Ok(board) = Board::from_fen(&fen) {
+                let printed = board.to_fen();
+                let parsed = Board::from_fen(&printed).expect("what we print, we parse");
+                prop_assert_eq!(parsed.to_fen(), printed);
+                prop_assert_eq!(parsed.key, board.key);
+            }
         }
 
         /// A refusal is always allowed. What is not allowed is accepting a
