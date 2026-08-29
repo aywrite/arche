@@ -230,26 +230,22 @@ impl<T: Engine, W: Write> UCI<T, W> {
         self.dispatch(line, &SessionControl::unattended())
     }
 
-    /// Dispatches input until it is exhausted or `quit` arrives, on one
-    /// thread and with nothing able to interrupt a search.
+    /// Dispatches input until it is exhausted or `quit` arrives, through
+    /// the shipped session loop: the lines go down a channel filled up
+    /// front, unattended, so nothing can interrupt a search. What differs
+    /// from the binary is the reader thread, not the loop.
     #[cfg(test)]
     fn run<R: BufRead>(&mut self, input: R) {
-        let control = SessionControl::unattended();
+        let (sender, lines) = std::sync::mpsc::channel();
         for line in input.lines() {
-            match line {
-                Ok(line) => {
-                    if !self.dispatch(&line, &control) {
-                        return;
-                    }
-                }
-                // there is nothing left to read and no one to tell, so stop
-                // rather than sitting in the loop asking again
-                Err(error) => {
-                    self.say(format_args!("info string could not read input: {}", error));
-                    return;
-                }
-            }
+            sender
+                .send(line.expect("a test script reads"))
+                .expect("the lines are read after the channel is filled");
         }
+        drop(sender);
+        session::session_loop(lines, &SessionControl::unattended(), |line, control| {
+            self.dispatch(line, control)
+        });
     }
 
     /// The same bench as the command line argument: the depth is for trying
