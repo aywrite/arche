@@ -6,8 +6,6 @@ use arche::params::Params;
 use arche::uci;
 use arche_core::AlphaBeta;
 use arche_core::Board;
-use arche_core::bench;
-use arche_core::residual;
 use std::process::ExitCode;
 
 /// What the binary takes, for whoever ran it to find out. Short because there
@@ -54,37 +52,16 @@ fn main() -> ExitCode {
             ExitCode::SUCCESS
         }
         Some("bench") => match uci::bench_settings(&Params::of(&args.join(" "))) {
-            Ok(settings) => {
-                let positions = bench::positions();
-                let report = if settings.audit {
-                    bench::run_audited_suite(
-                        &positions,
-                        settings.depth,
-                        settings.table_bytes,
-                        settings.config,
-                    )
-                } else {
-                    Some(bench::run_suite(
-                        &positions,
-                        settings.depth,
-                        settings.table_bytes,
-                        settings.config,
-                    ))
-                };
-                match report {
-                    Some(report) => {
-                        println!("{}", report);
-                        ExitCode::SUCCESS
-                    }
-                    // said and refused rather than run unaudited: the figures
-                    // are what was asked for, and a report without them
-                    // reads like a run that found nothing
-                    None => {
-                        eprintln!("no memory for the audit's keys, which are half the table again");
-                        ExitCode::from(2)
-                    }
+            Ok(settings) => match settings.run() {
+                Some(report) => {
+                    println!("{}", report);
+                    ExitCode::SUCCESS
                 }
-            }
+                None => {
+                    eprintln!("{}", uci::NO_AUDIT_MEMORY);
+                    ExitCode::from(2)
+                }
+            },
             Err(what) => {
                 eprintln!("unrecognised bench {}", what);
                 ExitCode::from(2)
@@ -96,15 +73,7 @@ fn main() -> ExitCode {
         // and nothing about a live session wants either
         Some("residuals") => match uci::residual_settings(&Params::of(&args.join(" "))) {
             Ok(settings) => {
-                print!(
-                    "{}",
-                    residual::run(
-                        &bench::positions(),
-                        settings.depth,
-                        settings.every,
-                        settings.config
-                    )
-                );
+                print!("{}", settings.run());
                 ExitCode::SUCCESS
             }
             Err(what) => {

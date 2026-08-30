@@ -310,30 +310,10 @@ impl<T: Engine, W: Write> UCI<T, W> {
     /// pinning.
     fn bench(&mut self, line: &str) {
         match bench_settings(&Params::of(line)) {
-            Ok(settings) => {
-                let positions = bench::positions();
-                let report = if settings.audit {
-                    bench::run_audited_suite(
-                        &positions,
-                        settings.depth,
-                        settings.table_bytes,
-                        settings.config,
-                    )
-                } else {
-                    Some(bench::run_suite(
-                        &positions,
-                        settings.depth,
-                        settings.table_bytes,
-                        settings.config,
-                    ))
-                };
-                match report {
-                    Some(report) => self.say(format_args!("{}", report)),
-                    None => self.say(format_args!(
-                        "info string no memory for the audit's keys, which are half the table again"
-                    )),
-                }
-            }
+            Ok(settings) => match settings.run() {
+                Some(report) => self.say(format_args!("{}", report)),
+                None => self.say(format_args!("info string {}", NO_AUDIT_MEMORY)),
+            },
             Err(what) => self.say(format_args!("info string unrecognised bench {}", what)),
         }
     }
@@ -572,6 +552,32 @@ pub fn bench_settings(params: &Params) -> Result<BenchSettings, String> {
     })
 }
 
+/// What is said when the audit's keys cannot be had. One spelling, shared
+/// by the command and the argument, because both refused the same thing:
+/// the figures were asked for, and a report without them reads like a run
+/// that found nothing.
+pub const NO_AUDIT_MEMORY: &str = "no memory for the audit's keys, which are half the table again";
+
+impl BenchSettings {
+    /// Runs the bench these settings describe, or nothing when the audit's
+    /// keys could not be allocated, which the caller reports with
+    /// `NO_AUDIT_MEMORY`. The command and the argument both come through
+    /// here, so what a bench is cannot depend on which door asked for it.
+    pub fn run(&self) -> Option<bench::Report> {
+        let positions = bench::positions();
+        if self.audit {
+            bench::run_audited_suite(&positions, self.depth, self.table_bytes, self.config)
+        } else {
+            Some(bench::run_suite(
+                &positions,
+                self.depth,
+                self.table_bytes,
+                self.config,
+            ))
+        }
+    }
+}
+
 /// What a residuals argument asked for: `residuals [depth] [every <n>]
 /// [taint refuse|trust|skip|rule50]`. The depth and the policy are the
 /// bench's own when absent, so a residual distribution is measured over the
@@ -613,6 +619,15 @@ pub fn residual_settings(params: &Params) -> Result<ResidualSettings, String> {
         every,
         config,
     })
+}
+
+impl ResidualSettings {
+    /// Runs the residual measurement these settings describe, over the
+    /// bench's own positions, so the distribution is measured over the
+    /// tree the bench describes.
+    pub fn run(&self) -> residual::Report {
+        residual::run(&bench::positions(), self.depth, self.every, self.config)
+    }
 }
 
 /// The depth asked of a perft command. A bare `perft` counts to depth one,
