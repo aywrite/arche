@@ -378,7 +378,7 @@ impl fmt::Display for Report {
             // each figure is read against the expectation beside it, which
             // is the comparisons over two to the width. The thirty two bit
             // observation is a zero at this scale whether or not the
-            // instrument works, so the sixteen bit line is what says it does
+            // instrument works, so the narrow widths are what say it does
             writeln!(
                 f,
                 "signature audit: probes {}, hits {}, comparisons {}, \
@@ -392,20 +392,31 @@ impl fmt::Display for Report {
                 counted.false_accept_cutoffs,
                 counted.aliased_evictions,
             )?;
-            writeln!(
-                f,
-                "narrow signature: sixteen bit accepts {} ({:.3} expected)",
-                counted.narrow_accepts,
-                counted.expected_narrow_accepts(),
-            )?;
+            // the widths are cumulative, so each figure is read against the
+            // expectation beside it and never added to another's
+            writeln!(f, "narrow signature: {}", narrow_widths(&counted))?;
         }
         write!(f, "{} nodes {} nps", self.nodes(), self.nps())
     }
 }
 
+/// The narrow accepts as one clause a width, joined into the audit's second
+/// line: `16 bit accepts 89 (92.965 expected), 24 bit accepts 1 (1.379
+/// expected)` and so on.
+fn narrow_widths(counted: &SignatureCounters) -> String {
+    counted
+        .narrow()
+        .map(|(width, accepts, expected)| {
+            format!("{width} bit accepts {accepts} ({expected:.3} expected)")
+        })
+        .collect::<Vec<_>>()
+        .join(", ")
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::transposition::NARROW_WIDTHS;
     use pretty_assertions::assert_eq;
 
     #[test]
@@ -633,6 +644,20 @@ mod tests {
         );
         assert!(counted.false_accept_cutoffs <= counted.false_accepts);
         assert!(counted.comparisons > 0, "nothing was compared");
+        // the widths are cumulative, so every entry a wider signature would
+        // have accepted a narrower one would have accepted too, and the
+        // counts fall as the width rises. A suite this small usually counts
+        // nothing at any width, which leaves this guarding the shape of the
+        // printed line rather than saying much; the property is checked
+        // against real counts by `the_counts_fall_as_the_width_rises`
+        assert!(
+            counted
+                .narrow_accepts
+                .windows(2)
+                .all(|widths| widths[0] >= widths[1]),
+            "a wider signature accepted more than a narrower one: {:?}",
+            counted.narrow_accepts
+        );
         let text = report.to_string();
         let lines: Vec<&str> = text.lines().collect();
         assert_eq!(
@@ -650,22 +675,30 @@ mod tests {
                 counted.aliased_evictions,
             )
         );
+        let clauses: Vec<String> = NARROW_WIDTHS
+            .into_iter()
+            .zip(counted.narrow_accepts)
+            .map(|(width, accepts)| {
+                format!(
+                    "{width} bit accepts {accepts} ({:.3} expected)",
+                    counted.expected_narrow_accepts(width)
+                )
+            })
+            .collect();
         assert_eq!(
             lines[lines.len() - 2],
-            format!(
-                "narrow signature: sixteen bit accepts {} ({:.3} expected)",
-                counted.narrow_accepts,
-                counted.expected_narrow_accepts(),
-            )
+            format!("narrow signature: {}", clauses.join(", "))
         );
         assert!(lines[lines.len() - 1].ends_with(" nps"));
     }
 
     /// The expectations are the comparisons over two to the width, which is
-    /// arithmetic rather than a measurement and is pinned as such. A narrow
-    /// signature takes a foreign entry sixty five thousand times more often
-    /// than the one the table runs, which is why its figure is large enough
-    /// at the bench's scale to be compared with its own expectation.
+    /// arithmetic rather than a measurement and is pinned as such. A sixteen
+    /// bit signature takes a foreign entry sixty five thousand times more
+    /// often than the one the table runs, which is why its figure is large
+    /// enough at the bench's scale to be compared with its own expectation;
+    /// twenty four expects two hundred and fifty six times fewer again, so
+    /// what it takes to measure that one is a longer run.
     #[test]
     fn an_expectation_is_the_comparisons_over_two_to_the_width() {
         let counted = SignatureCounters {
@@ -675,10 +708,20 @@ mod tests {
         assert_eq!(counted.expected_false_accepts(), 1.0);
         // the narrow width less the chance the whole slice agreed as well,
         // which is the one case the wide signature takes for itself
-        assert_eq!(counted.expected_narrow_accepts(), 65_536.0 - 1.0);
+        assert_eq!(counted.expected_narrow_accepts(16), 65_536.0 - 1.0);
+        assert_eq!(counted.expected_narrow_accepts(24), 256.0 - 1.0);
+        assert_eq!(counted.expected_narrow_accepts(28), 16.0 - 1.0);
+        assert_eq!(
+            counted
+                .narrow()
+                .map(|(width, _, _)| width)
+                .collect::<Vec<_>>(),
+            NARROW_WIDTHS.to_vec(),
+            "the widths are reported in the order they are declared"
+        );
         let none = SignatureCounters::default();
         assert_eq!(none.expected_false_accepts(), 0.0);
-        assert_eq!(none.expected_narrow_accepts(), 0.0);
+        assert!(none.narrow().all(|(_, _, expected)| expected == 0.0));
     }
 
     /// The instrument is as deterministic as the search it watches, so a
