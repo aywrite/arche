@@ -17,7 +17,8 @@ use std::io::Read;
 use std::process::{Command, Stdio};
 
 /// A shallow run at a rate that still records plenty: enough to have rows
-/// without spending the reference search on thousands of them.
+/// without spending the reference search on thousands of them. About one
+/// node in fifty, since the rate is a key rather than a count.
 const ARGUMENTS: [&str; 4] = ["residuals", "4", "every", "50"];
 
 #[test]
@@ -45,6 +46,16 @@ fn the_residuals_argument_prints_a_header_rows_and_a_summary() {
         "header: {}",
         header
     );
+    // the denominator, always stated: the rows below say nothing about a
+    // rate without it
+    let events: u64 = header
+        .split(' ')
+        .skip_while(|word| *word != "events")
+        .nth(1)
+        .unwrap_or_else(|| panic!("no events in header: {}", header))
+        .parse()
+        .unwrap_or_else(|e| panic!("events is not a number in {}: {}", header, e));
+    assert!(events > 0, "header: {}", header);
 
     let summary_at = lines
         .iter()
@@ -56,40 +67,63 @@ fn the_residuals_argument_prints_a_header_rows_and_a_summary() {
     assert!(!rows.is_empty(), "no rows in:\n{}", printed);
     for row in rows {
         let words: Vec<&str> = row.split(' ').collect();
-        assert!(words.len() > 7, "row: {}", row);
+        assert!(words.len() > 11, "row: {}", row);
         assert!(
             words[0] == "reverse_futility" || words[0] == "null_move",
             "row: {}",
             row
         );
-        // depth, then the four scores, each a number, with the fen after
-        // them: a row parses left to right
-        for (at, word) in words[1..6].iter().enumerate() {
-            assert!(word.parse::<i32>().is_ok(), "field {} of {}", at + 1, row);
+        assert!(words[2] == "zw" || words[2] == "open", "row: {}", row);
+        // the depth, the halfmove clock and the five scores are each a
+        // number, and the fen comes after them: a row parses left to right
+        for at in [1, 3, 4, 5, 6, 7, 8] {
+            assert!(words[at].parse::<i32>().is_ok(), "field {} of {}", at, row);
         }
-        // and the delta is the reference less the claim, worked out here
-        // rather than taken on trust
-        let claimed: i32 = words[3].parse().unwrap();
-        let reference: i32 = words[4].parse().unwrap();
+        // the delta is the reference less the claim and the crossing is the
+        // reference against beta, both worked out here rather than taken on
+        // trust
+        let beta: i32 = words[4].parse().unwrap();
+        let claimed: i32 = words[6].parse().unwrap();
+        let reference: i32 = words[7].parse().unwrap();
         assert_eq!(
-            words[5].parse::<i32>().unwrap(),
+            words[8].parse::<i32>().unwrap(),
             reference - claimed,
             "{row}"
         );
+        let crossed = if reference < beta { "crossed" } else { "clear" };
+        assert_eq!(words[9], crossed, "{row}");
     }
 
-    // a line a kind, whichever of them the run happened to record
+    // a line a kind at a depth, in kind order, with the depths a run
+    // happened to reach
     let summary = &lines[summary_at + 1..];
-    assert_eq!(summary.len(), 2, "summary: {:?}", summary);
-    assert!(
-        summary[0].starts_with("reverse_futility "),
-        "{}",
-        summary[0]
-    );
-    assert!(summary[1].starts_with("null_move "), "{}", summary[1]);
+    assert!(summary.len() >= 2, "summary: {:?}", summary);
+    let kind_at = |line: &str| {
+        if line.starts_with("reverse_futility") {
+            0
+        } else if line.starts_with("null_move") {
+            1
+        } else {
+            panic!("summary line names no kind: {}", line)
+        }
+    };
+    let mut order: Vec<usize> = summary.iter().map(|line| kind_at(line)).collect();
+    let grouped = order.clone();
+    order.dedup();
+    assert_eq!(order, vec![0, 1], "kinds out of order: {:?}", summary);
+    assert_eq!(grouped.len(), summary.len());
     assert!(
         summary.iter().any(|line| line.contains(" median ")),
         "no percentiles in: {:?}",
+        summary
+    );
+    // the crossing rate against a named depth is the headline the command
+    // exists to print
+    assert!(
+        summary.iter().any(|line| line.contains(" depth ")
+            && line.contains(" crossed ")
+            && line.contains(" mates ")),
+        "no per-depth crossing rate in: {:?}",
         summary
     );
 }

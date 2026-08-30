@@ -311,31 +311,96 @@ often the shortcut was wrong to remove it, and that is the question
 target/release/arche residuals [depth] [every <n>] [taint refuse|trust|skip|rule50]
 ```
 
-It searches the same suite the bench does, records every nth node a shortcut
+It searches the same suite the bench does, samples the nodes its shortcuts
 answered, and then asks `SearchConfig::reference()` what each of those
-positions is really worth. The residual is the reference's answer less the
-score the shortcut claimed, so a negative one is a shortcut claiming more
-than the search behind it found. Each sample is a row of `kind depth
-eval_beta claimed reference delta fen`, whitespace separated with the fen
-last so a row parses left to right, and the run ends with the count and the
-minimum, median, ninetieth, ninety-ninth and maximum of the deltas for each
-kind. The percentiles are the product and the rows are the evidence for
-them. Nothing is written to a file; redirection is the file mechanism here as
+positions is really worth.
+
+What the run is read for is the crossing. A shortcut returns a lower bound
+and claims it clears beta, so a claim well above what the position is worth
+is still a sound fail high as long as the reference agrees the node fails
+high; what is unsound is a reference answer below the beta that was cleared,
+because the node was cut off and should not have been. The crossing is
+`reference < beta`, strictly, since an answer equal to beta is a fail high
+the shortcut was entitled to. Beside it the residual, the reference's answer
+less the claim, says how large the errors the crossings come from run.
+
+Each sample is a row of `kind depth window halfmove beta eval_beta claimed
+reference delta crossed fen`, whitespace separated with the fen last so a row
+parses left to right. The window is `zw` or `open`, read from alpha and beta
+at the node: the fuller pv, cut and all classification needs the node's
+outcome, which a sample taken at a cutoff cannot know. In practice the
+column reads `open` on about ninety-six samples in a hundred, and a `zw`
+today means a node inside a null move pass, since nothing else in the search
+opens a zero width window yet; the column starts saying more the day one
+does. The halfmove column is the fifty move counter, which travels in the
+fen too and is pulled out so rows filter on it without a fen being parsed.
+Nothing is written to a file; redirection is the file mechanism here as
 everywhere else in the tooling.
+
+The run ends with a line for each kind at each depth: the count, the
+crossings and their rate, the mate references, then the minimum, median,
+ninetieth, ninety-ninth and maximum of the deltas. By depth and not pooled
+over the depths, because the margin a shortcut risks grows with the depth
+left and the depths are reached in wildly different numbers, so a pooled
+rate is the shallowest depth's rate wearing every depth's name.
+
+A mate reference is counted in the `mates` column and left out of the
+percentiles. Its delta is not a number of pawns, and the mate distance the
+replay reports counts from the replay's own root while the claim's counts
+from the root of the recorded search, so the two are not measured from the
+same place. The crossing label survives all of that and is what such a row
+is read for: a mate score is above every eval or below every eval, which is
+all the comparison with beta asks.
+
+The rate is a hash and not a counter. A node is sampled when
+`position_key ^ salt(kind) ^ depth * odd` falls in the first `1/n` of the
+range, so `every 200` takes about one node in two hundred and takes the same
+nodes whatever order the search reached them in. A counter over the stream
+picks nodes by when they were visited, and a change to the tree then moves
+the membership in ways that read as a shift in the distribution. Nothing is
+drawn: two runs of the same command still print the same rows.
+
+The header states `events`, every node the shortcuts answered, beside
+`records`, the ones the run kept. That is the denominator, and a crossing
+rate cannot be read without it: a zero over four hundred records is not the
+same statement as a zero over four hundred thousand events, and at a rate
+low enough to finish in minutes the two counts run three orders apart. A
+rate of zero at a low sampling rate is not a rate of zero. Raise the rate,
+or read the events count and say how small a rate the run could have seen.
+
+The buffer holds ten thousand samples and says in the header when it had to
+drop some. Past the cap it keeps the ten thousand smallest keys rather than
+the first ten thousand arrivals, which is a uniform draw from the whole run
+and is the same draw whichever order the run met the nodes in. That holds
+for the set of keys and not for what sits behind a repeated one: a deepening
+search revisits a position at a depth under a kind, so keys tie, and the
+samples behind a tie differ in their beta and their window because they are
+the node's first answer and its second. Which member of a tied group
+survives the cap is whichever the heap surfaces, so a run offering the same
+events in another order can keep the other member.
 
 The recording and the replay never overlap. A reference search run inside the
 measured one would store reference entries in the table the measured search
 is reading and change the play being measured, so the replay waits until the
-suite is finished and runs on an engine and a table of its own. The rate
-defaults to one node in a thousand, and the buffer holds ten thousand samples
-and says in the header when it had to drop some.
+suite is finished and runs on an engine and a table of its own. That table is
+cleared before every sample, so no sample's reference answer is read from
+another sample's entries.
 
 The known limitation is in the fen. It carries the fifty move counter and not
 the path, so the replay cannot see a repetition that needs moves made before
 the node, and the reference value is the reference's answer to the position
 as a diagram. That is the simplification every epd suite makes, and it means
 a residual from a position deep in a shuffle is read with more care than one
-from a middlegame.
+from a middlegame. The taint policy differs across the two phases as well:
+the recording runs whatever the command was given, `rule50` by default,
+while the reference refuses every tainted cutoff, so a crossing on a row with
+a high halfmove count can be the two policies disagreeing about a draw rather
+than the shortcut being wrong.
+
+Rows from before the hash sampling landed do not compare with rows from
+after it. The two runs sample different nodes, so a distribution from one is
+not a baseline for the other; rerun the command rather than reading an old
+report next to a new one.
 
 The command is an argument and not a uci command. Like the bench it is a
 measurement rather than a move, and unlike the bench nothing about a live
