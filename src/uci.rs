@@ -399,18 +399,25 @@ impl<T: Engine, W: Write> UCI<T, W> {
     /// There is no parallel search, so the only count that can be honoured is
     /// one. Any other is said back and then ignored: refusing to play because
     /// a match was configured for four threads would be worse than playing on
-    /// one, and the interface has already been told the maximum is one.
+    /// one, and the interface has already been told the maximum is one. Said
+    /// here rather than returned, because the command succeeded as far as it
+    /// can: an `Err` from a setter is a line that could not be acted on.
     fn set_threads(&mut self, params: &Params) -> Result<(), String> {
         // the word rather than the count, for the reason set_hash reads one
         match (params.value("value"), params.count("value")) {
-            (_, Param::Read(1)) => Ok(()),
-            (Some(word), Param::Read(_)) => Err(format!(
-                "Threads {} was asked for; the engine searches on one",
-                word
-            )),
-            (_, Param::Unreadable(word)) => Err(format!("unrecognised Threads value: {}", word)),
-            _ => Err("Threads was sent without a value".to_string()),
+            (_, Param::Read(1)) => {}
+            (Some(word), Param::Read(_)) => {
+                self.say(format_args!(
+                    "info string Threads {} was asked for; the engine searches on one",
+                    word
+                ));
+            }
+            (_, Param::Unreadable(word)) => {
+                return Err(format!("unrecognised Threads value: {}", word));
+            }
+            _ => return Err("Threads was sent without a value".to_string()),
         }
+        Ok(())
     }
 
     /// A move that cannot be played leaves the position at the last one that
