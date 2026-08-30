@@ -10,9 +10,10 @@ merges, and one that claims to be faster states how much faster it measured.
 
 The board is bitboards, with magic bitboards for move generation of sliding pieces and a square
 array beside them so that asking what stands on a square is a load rather than a walk down the
-boards. The search is alpha beta with a transposition table, iterative deepening,
-quiescence search, MVV-LVA move ordering and reverse futility pruning. Evaluation is material
-plus piece square tables, tapered between a middlegame and an endgame score.
+boards. The search is alpha beta with a transposition table, iterative deepening, quiescence
+search, reverse futility pruning and a null move pass. Captures are ordered by MVV-LVA and the
+quiet moves by the ones that have cut off before. Evaluation is material plus piece square
+tables, tapered between a middlegame and an endgame score.
 
 ### Background
 
@@ -40,18 +41,22 @@ The engine is something to experiment on rather than an example to copy.
 The engine does not ship with any GUI. It currently implements a subset of the UCI protocol,
 so an open source GUI such as [Arena](http://www.playwitharena.de/) can drive it.
 
-The program starts in UCI mode immediately. The argument that does anything else is
-`bench [depth] [hash <MB>] [taint refuse|trust|skip|rule50]`, which searches a fixed set of positions and
-prints what each search counted, for measuring a change to the search or the speed of a
-machine. It is a UCI command as well as an argument. `--version` and `--help` are answered too.
+The program starts in UCI mode immediately. Two arguments do anything else.
+`bench [depth] [hash <MB>] [taint refuse|trust|skip|rule50] [audit]` searches a fixed set of
+positions and prints what each search counted, for measuring a change to the search or the
+speed of a machine, and is a UCI command as well as an argument.
+`residuals [depth] [every <n>] [taint refuse|trust|skip|rule50]` searches the same positions and
+then asks a search with the shortcuts off what the nodes they answered were really worth.
+`--version` and `--help` are answered too.
 
 Binaries for linux, macos and windows are attached to each
 [release](https://github.com/aywrite/arche/releases), each with a sha256 checksum and a build
 provenance attestation. The x86-64 archives come in three builds: the plain one runs on
 anything, and `-v2` and `-v3` use progressively newer instructions — pick the newest your cpu
 supports (`-v3` wants avx2, which is most machines since about 2013). All three search the
-same tree; the newer ones just walk it faster. The checksum says a download arrived intact. The attestation says where
-it came from, and is answered for by github rather than by the page the download sits on:
+same tree; the newer ones just walk it faster. The checksum says a download arrived intact.
+The attestation says where it came from, and is answered for by github rather than by the page
+the download sits on:
 
 ```
 gh attestation verify arche-v<version>-<target>.tar.gz --repo aywrite/arche

@@ -26,13 +26,14 @@ material plus piece square tables, tapered between middlegame and endgame.
 
 - **board.rs**: The position and the rules. Holds the piece bitboards plus
   some state that could be recomputed from them but would be too slow to:
-  an array of what stands on each square, the zobrist key, running totals
-  for material and the piece square evaluation, and a ring of the last
-  ~1024 plies (used by the repetition and fifty move rules, and to undo
-  moves). All piece placement goes through one function, which is what
-  keeps the derived state in sync. Debug builds recompute the derived
-  state from scratch after every move and assert it matches, so a bug in
-  an incremental update fails tests instead of misevaluating quietly.
+  an array of what stands on each square, the zobrist key, a second key
+  over the pawns alone, running totals for material and the piece square
+  evaluation, and a ring of the last ~1024 plies (used by the repetition
+  and fifty move rules, and to undo moves). All piece placement goes
+  through one function, which is what keeps the derived state in sync.
+  Debug builds recompute the derived state from scratch after every move
+  and assert it matches, so a bug in an incremental update fails tests
+  instead of misevaluating quietly.
   Move generation also lives here. It is pseudo-legal: moves are generated
   without checking whether they leave the king in check, and `make_move`
   rejects the ones that do. When already in check the list is first
@@ -77,13 +78,16 @@ material plus piece square tables, tapered between middlegame and endgame.
   searched before, keyed by zobrist hash, holding the score and best move
   found last time. Entries are 16 bytes, four to a cache line, replaced by
   age and depth. A hit can answer a node outright or just say which move
-  to try first.
-  Tainted scores are counted and by default trusted anyway, except close
-  to the fifty move horizon where every cutoff is refused. The policies
-  were played against each other and the cautious one lost by about 45
-  elo, so the error is carried knowingly and the bench prints the taint
-  counters on every run. A `reference` configuration keeps the cautious
-  search as a baseline for classifying future changes.
+  to try first. Tainted scores are counted and by default trusted anyway,
+  except close to the fifty move horizon where every cutoff is refused.
+  The policies were played against each other and the cautious one lost
+  by about 45 elo, so the error is carried knowingly and the bench prints
+  the taint counters on every run. A `reference` configuration keeps the
+  cautious search as a baseline for classifying future changes.
+- **eval.rs**: What a position scores. The board hosts an accumulator and
+  tells it about every piece placed, removed and moved, so material and the
+  piece square score are carried rather than counted; anything too dear to
+  keep in step is computed at the leaf instead.
 - **psqt.rs**: The piece square tables. The pawn and the king have a
   second table for the endgame (they are the pieces the phases disagree
   about); both phases are packed into one integer so the taper costs one
@@ -92,13 +96,18 @@ material plus piece square tables, tapered between middlegame and endgame.
 - **bench.rs**: A fixed suite of positions searched to a fixed depth,
   printing exact node counts. This is what a commit's `Bench:` trailer
   states and what CI verifies.
+- **residual.rs**: What the shortcuts cost in accuracy. It samples the
+  nodes reverse futility and the null move pass answered, then replays
+  each one under the reference search to see whether the cutoff was one
+  the position allowed. Driven by the `residuals` argument.
 - **tactics.rs**: 300 tactical positions with a pinned pass count, gated
   in CI.
 
 ## Code map: src
 
-- **main.rs**: Argument handling. `bench` runs the suite and exits, no
-  argument starts the UCI loop.
+- **main.rs**: Argument handling. `bench` runs the suite and exits,
+  `residuals` measures the shortcuts and exits, no argument starts the
+  UCI loop.
 - **uci.rs**: The protocol: what each command means, the options the
   handshake advertises, and what a `go` may spend. Every line reaches it
   through the session loop, on the thread the engine was built on.
