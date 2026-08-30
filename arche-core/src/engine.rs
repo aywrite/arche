@@ -6,7 +6,7 @@ use crate::limits::Limits;
 use crate::misc::{Color, Score};
 use crate::ordering::MoveOrdering;
 use crate::play::Play;
-use crate::residual::{Sample, Sampler, Shortcut};
+use crate::residual::{Sample, Sampler, Shortcut, Window};
 use crate::transposition::{
     DEFAULT_TABLE_BYTES, GhiCounters, Probe, SignatureCounters, TranspositionTable,
 };
@@ -418,11 +418,14 @@ impl AlphaBeta {
 
     /// One node a shortcut has just answered, offered to the sampler.
     ///
-    /// The fen and the evaluation are built inside the closure, so an event
-    /// the countdown does not want costs a decrement and nothing else, and
-    /// an engine with no sampler costs the option check alone. Both hooks
-    /// sit on a return out of a node rather than in the loop, so neither is
-    /// on a path the search takes more than once per cutoff.
+    /// The fen is built inside the closure, so an event the key turns away
+    /// costs a hash and nothing else, and an engine with no sampler costs
+    /// the option check alone. Both hooks sit on a return out of a node
+    /// rather than in the loop, so neither is on a path the search takes
+    /// more than once per cutoff.
+    ///
+    /// The evaluation is passed in rather than taken again here, so a row
+    /// states the number the gate really read.
     // cold and out of line, and tested with a bare is_some at each call
     // site: inlining the sample body grew alpha_beta enough to move other
     // code, and the moved jump tables aliased in the branch predictor for
@@ -430,19 +433,35 @@ impl AlphaBeta {
     // callgrind; the option check is all the hot path keeps.
     #[cold]
     #[inline(never)]
-    fn sample(&mut self, kind: Shortcut, depth: u8, claimed: Score, beta: Score) {
+    fn sample(
+        &mut self,
+        kind: Shortcut,
+        depth: u8,
+        claimed: Score,
+        alpha: Score,
+        beta: Score,
+        eval: Score,
+    ) {
         // the fields are borrowed apart rather than through `self`, which is
         // what lets the closure read the board while the sampler is held
         let board = &self.board;
         let Some(sampler) = self.sampler.as_mut() else {
             return;
         };
-        sampler.event(|| Sample {
+        // after the guard, so an engine with no sampler pays for no hash.
+        // Both call sites check the option before calling, so nothing
+        // reaches the arm above today; it stays because the guard belongs
+        // here rather than in the caller's hands alone
+        let key = crate::residual::sample_key(board.key, kind, depth);
+        sampler.event(key, || Sample {
             fen: board.to_fen(),
             depth,
             kind,
             claimed,
-            eval_beta: i32::from(crate::eval::eval(board)) - i32::from(beta),
+            beta,
+            eval_beta: i32::from(eval) - i32::from(beta),
+            window: Window::of(alpha, beta),
+            halfmove: board.halfmove_clock(),
         });
     }
 
@@ -496,6 +515,13 @@ impl AlphaBeta {
     /// that does not divide by one reads back as the next size up.
     pub fn table_bytes(&self) -> usize {
         self.transpositions.bytes()
+    }
+
+    /// The policies this engine searches under. Asked by the residuals
+    /// replay's tests, which have to be able to say that the search
+    /// answering the sampled positions is the reference and not the default.
+    pub fn config(&self) -> SearchConfig {
+        self.config
     }
 
     /// How much of the search's use of the transposition table depended on
@@ -722,8 +748,13 @@ impl AlphaBeta {
     /// A `Some` answers the node. A pass that failed answers nothing but
     /// read whatever it read on the way, which it leaves in the node's
     /// taint before handing back.
+    ///
+    /// Alpha is read by neither shortcut. It is here for the sampler, which
+    /// records what kind of window the node was asked under, and it costs a
+    /// register on a call that already takes five.
     fn shortcuts(
         &mut self,
+        alpha: Score,
         beta: Score,
         depth: u8,
         in_check: bool,
@@ -758,7 +789,7 @@ impl AlphaBeta {
             let floor = eval.saturating_sub(REVERSE_FUTILITY_MARGIN * depth as Score);
             if floor >= beta {
                 if self.sampler.is_some() {
-                    self.sample(Shortcut::ReverseFutility, depth, floor, beta);
+                    self.sample(Shortcut::ReverseFutility, depth, floor, alpha, beta, eval);
                 }
                 return Ok(Some(Value::clean(floor)));
             }
@@ -782,10 +813,11 @@ impl AlphaBeta {
                 // position is very good and not that it is won, and the
                 // score is held below the window a caller reads mates in
                 let score = below_the_mate_window(value.score);
-                // the board is back from the pass, so what the sampler
-                // prints and evaluates here is the node itself
+                // the board is back from the pass, so the fen the sampler
+                // prints here is the node itself, and the eval handed to it
+                // is the one this node's gate read
                 if self.sampler.is_some() {
-                    self.sample(Shortcut::NullMove, depth, score, beta);
+                    self.sample(Shortcut::NullMove, depth, score, alpha, beta, eval);
                 }
                 return Ok(Some(Value::with_taint(score, value.tainted)));
             }
@@ -902,7 +934,7 @@ impl AlphaBeta {
         };
 
         // the shortcuts, after the table has had its say
-        if let Some(value) = self.shortcuts(beta, depth, in_check, can_null, &mut taint)? {
+        if let Some(value) = self.shortcuts(alpha, beta, depth, in_check, can_null, &mut taint)? {
             return Ok(value);
         }
 
@@ -2860,8 +2892,11 @@ mod search {
 /// answered. What the samples are worth is the residuals command's business.
 #[cfg(test)]
 mod sampling {
-    use super::{AlphaBeta, Board, Engine, SearchConfig, SearchParameters};
-    use crate::residual::{Sampler, Shortcut};
+    use super::{
+        AlphaBeta, Board, Engine, REVERSE_FUTILITY_MARGIN, Score, SearchConfig, SearchParameters,
+        Taint,
+    };
+    use crate::residual::{Sample, Sampler, Shortcut, Window, sample_key};
     use pretty_assertions::assert_eq;
 
     const TABLE_BYTES: usize = 1024 * 1024;
@@ -2869,6 +2904,30 @@ mod sampling {
 
     fn engine(fen: &str) -> AlphaBeta {
         AlphaBeta::with_table_bytes(Board::from_fen(fen).unwrap(), TABLE_BYTES)
+    }
+
+    /// The shortcut frame driven on its own, with the bounds named rather
+    /// than whatever a search happened to be carrying. What comes back is
+    /// what the sampler recorded of it.
+    ///
+    /// The only way to hold the beta column to the beta the gate read. A
+    /// sample cannot be asked: its evaluation column is measured against the
+    /// same value the beta column states, so substituting another bound
+    /// moves both together and every identity between them survives. The
+    /// bound has to come from outside, which is what this does.
+    fn shortcut_at(config: SearchConfig, alpha: Score, beta: Score, depth: u8) -> Vec<Sample> {
+        let mut e = AlphaBeta::with_config(
+            Board::from_fen(SHARP_MIDDLEGAME).unwrap(),
+            TABLE_BYTES,
+            config,
+        );
+        e.sample_shortcuts(Sampler::every(1));
+        let mut taint = Taint::default();
+        let Ok(answered) = e.shortcuts(alpha, beta, depth, false, true, &mut taint) else {
+            panic!("nothing here searches under a limit, so nothing can abort");
+        };
+        assert!(answered.is_some(), "no shortcut fired at depth {}", depth);
+        collected(&mut e).taken
     }
 
     /// The gate the whole design rests on. An engine nobody asked samples of
@@ -2912,6 +2971,124 @@ mod sampling {
         }
     }
 
+    /// The decision columns, taken from the node the shortcut answered
+    /// rather than worked out afterwards. The claim clears the beta beside
+    /// it, because that is what a shortcut fires on, and the fifty move
+    /// column agrees with the fen it was taken from.
+    ///
+    /// The identity ties the claim, the evaluation column and the depth
+    /// together: reverse futility claims `eval - margin * depth` and fires
+    /// when that clears beta, so `claimed - beta` and
+    /// `eval_beta - margin * depth` are the same number written two ways. It
+    /// catches a column built from the wrong evaluation or scaled by the
+    /// wrong depth. It cannot catch the wrong bound, since both sides are
+    /// measured against whatever the beta column states; that is what
+    /// `the_recorded_beta_is_the_one_the_gate_cleared` is for.
+    #[test]
+    fn every_sample_carries_the_decision_it_was_taken_at() {
+        let mut e = engine(SHARP_MIDDLEGAME);
+        e.sample_shortcuts(Sampler::every(1));
+        e.search(5);
+        for sample in collected(&mut e).taken {
+            assert!(sample.claimed >= sample.beta, "{:?}", sample);
+            let board = Board::from_fen(&sample.fen).expect("the fen parses");
+            assert_eq!(sample.halfmove, board.halfmove_clock(), "{:?}", sample);
+            if sample.kind == Shortcut::ReverseFutility {
+                assert_eq!(
+                    i32::from(sample.claimed) - i32::from(sample.beta),
+                    sample.eval_beta - i32::from(REVERSE_FUTILITY_MARGIN) * i32::from(sample.depth),
+                    "{:?}",
+                    sample
+                );
+            }
+        }
+    }
+
+    /// The rate is a key and not a counter: every node recorded at a rate of
+    /// four keys into the first quarter of the range, and a sample is enough
+    /// to recover the key it was drawn by.
+    #[test]
+    fn a_rate_records_only_the_nodes_its_keys_fall_under() {
+        const EVERY: u32 = 4;
+        let mut e = engine(SHARP_MIDDLEGAME);
+        e.sample_shortcuts(Sampler::every(EVERY));
+        e.search(5);
+        let taken = collected(&mut e).taken;
+        assert!(!taken.is_empty(), "the rate turned everything away");
+        for sample in taken {
+            let board = Board::from_fen(&sample.fen).expect("the fen parses");
+            assert!(
+                sample_key(board.key, sample.kind, sample.depth) <= u64::MAX / u64::from(EVERY),
+                "{:?}",
+                sample
+            );
+        }
+    }
+
+    /// The beta a row states is the beta the gate cleared, and the window
+    /// beside it is read from the alpha and the beta the node really had.
+    /// Both shortcuts, because they are two call sites and a bound can go
+    /// astray at one of them.
+    ///
+    /// The evaluation is read from the engine, so what the columns are held
+    /// to is a number the test knows before the shortcut runs: reverse
+    /// futility claims a margin under it, and the distance recorded is the
+    /// whole gap to the beta named here.
+    #[test]
+    fn the_recorded_beta_is_the_one_the_gate_cleared() {
+        let eval = engine(SHARP_MIDDLEGAME).eval();
+
+        // the margin at depth one claims `eval - 100`, which clears a beta
+        // two hundred under the evaluation
+        let beta = eval - 200;
+        let taken = shortcut_at(SearchConfig::default(), beta - 500, beta, 1);
+        assert_eq!(taken.len(), 1);
+        assert_eq!(taken[0].kind, Shortcut::ReverseFutility);
+        assert_eq!(taken[0].beta, beta);
+        assert_eq!(taken[0].eval_beta, 200);
+        assert_eq!(taken[0].claimed, eval - REVERSE_FUTILITY_MARGIN);
+        assert_eq!(taken[0].window, Window::Open);
+        // and the window follows the bounds rather than the shortcut
+        let narrow = shortcut_at(SearchConfig::default(), beta - 1, beta, 1);
+        assert_eq!(narrow[0].beta, beta);
+        assert_eq!(narrow[0].window, Window::Zero);
+
+        // the pass, with the margin switched off so that nothing answers the
+        // node before it does
+        let passing = SearchConfig {
+            reverse_futility: false,
+            ..SearchConfig::default()
+        };
+        let beta = eval - 600;
+        let taken = shortcut_at(passing, beta - 500, beta, 3);
+        assert_eq!(taken.len(), 1);
+        assert_eq!(taken[0].kind, Shortcut::NullMove);
+        assert_eq!(taken[0].beta, beta);
+        assert_eq!(taken[0].eval_beta, 600);
+        assert_eq!(taken[0].window, Window::Open);
+        let narrow = shortcut_at(passing, beta - 1, beta, 3);
+        assert_eq!(narrow[0].beta, beta);
+        assert_eq!(narrow[0].window, Window::Zero);
+    }
+
+    /// Both windows reach the hook. A search that only ever sampled one of
+    /// them would leave the column saying nothing, and it would say it
+    /// without failing anything.
+    #[test]
+    fn both_windows_are_recorded() {
+        let mut e = engine(SHARP_MIDDLEGAME);
+        e.sample_shortcuts(Sampler::every(1));
+        e.search(6);
+        let taken = collected(&mut e).taken;
+        for window in [Window::Zero, Window::Open] {
+            assert!(
+                taken.iter().any(|s| s.window == window),
+                "nothing recorded at a {} window",
+                window.word()
+            );
+        }
+    }
+
     /// Both shortcuts reach the hook, not only whichever fires first. A kind
     /// that stopped being recorded would otherwise show up as a thinner
     /// distribution rather than as a failure.
@@ -2930,8 +3107,8 @@ mod sampling {
         }
     }
 
-    /// A countdown and not a draw, so a distribution printed today is
-    /// printed again tomorrow by the same command.
+    /// A key and not a draw, so a distribution printed today is printed
+    /// again tomorrow by the same command.
     #[test]
     fn two_runs_of_the_same_search_record_the_same_samples() {
         let run = || {
@@ -2945,9 +3122,9 @@ mod sampling {
 
     /// The cap holds and says how much it dropped, which is what keeps a
     /// long run at a low rate from asking for the memory of every fen in the
-    /// tree.
+    /// tree. What survives it is the reservoir's business, tested there.
     #[test]
-    fn a_search_past_the_cap_stops_recording_and_counts_the_rest() {
+    fn a_search_past_the_cap_stops_growing_and_counts_the_rest() {
         let mut e = engine(SHARP_MIDDLEGAME);
         e.sample_shortcuts(Sampler::with_cap(1, 4));
         e.search(5);
@@ -2957,15 +3134,24 @@ mod sampling {
     }
 
     /// The margin each shortcut is betting on, recorded at the node it fired
-    /// at. Both gate on the evaluation standing at or above beta, so neither
-    /// can record a negative distance.
+    /// at. The pass gates on the evaluation standing at or above beta, so it
+    /// cannot record a negative distance; the margin gates on the evaluation
+    /// standing a whole margin above it, so it cannot record less than that.
+    /// The weaker bound would pass on a column that had lost the depth it is
+    /// scaled by.
     #[test]
     fn the_recorded_distance_is_the_evaluation_over_beta() {
         let mut e = engine(SHARP_MIDDLEGAME);
         e.sample_shortcuts(Sampler::every(1));
         e.search(5);
         for sample in collected(&mut e).taken {
-            assert!(sample.eval_beta >= 0, "{:?}", sample);
+            let floor = match sample.kind {
+                Shortcut::ReverseFutility => {
+                    i32::from(REVERSE_FUTILITY_MARGIN) * i32::from(sample.depth)
+                }
+                Shortcut::NullMove => 0,
+            };
+            assert!(sample.eval_beta >= floor, "{:?} under {}", sample, floor);
         }
     }
 }

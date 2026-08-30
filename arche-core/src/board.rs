@@ -972,6 +972,13 @@ impl Board {
             .count()
     }
 
+    /// The fifty move counter, as the fen prints it. Read by the residual
+    /// sampler, which puts it in a column of its own so that rows filter on
+    /// it without a fen being parsed to find it.
+    pub fn halfmove_clock(&self) -> usize {
+        self.fifty_move_rule
+    }
+
     /// Whether the fifty move counter has run out.
     ///
     /// Not the same as drawn: a mate delivered on the hundredth half move
