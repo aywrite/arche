@@ -322,3 +322,46 @@ fn the_bench_argument_prints_the_line_the_match_tools_read() {
     });
     assert!(s.finished().success());
 }
+
+/// Runs the binary with the arguments given and waits for it, keeping
+/// stdout and stderr apart: the measuring tools read the one and ignore
+/// the other, so a test of a refusal has to see both. The one wait here
+/// without the harness's deadline: stdin is closed, so a binary that fell
+/// through to the uci loop reads nothing and exits, and the exit code
+/// says it went wrong.
+fn run_to_end(args: &[&str]) -> std::process::Output {
+    Command::new(env!("CARGO_BIN_EXE_arche"))
+        .args(args)
+        .stdin(Stdio::null())
+        .output()
+        .expect("the binary runs")
+}
+
+#[test]
+fn a_bench_that_cannot_be_read_is_refused_on_stderr() {
+    // the refusal every measuring tool leans on: the reason goes to
+    // stderr with the failing exit code, and stdout stays empty so no
+    // tool mistakes the refusal for a report
+    let out = run_to_end(&["bench", "abc"]);
+    assert_eq!(out.status.code(), Some(2));
+    assert!(out.stdout.is_empty(), "a refused bench printed a report");
+    let said = String::from_utf8(out.stderr).unwrap();
+    assert!(
+        said.contains("unrecognised bench depth: abc"),
+        "stderr said: {}",
+        said
+    );
+}
+
+#[test]
+fn a_residuals_run_that_cannot_be_read_is_refused_the_same_way() {
+    let out = run_to_end(&["residuals", "every", "abc"]);
+    assert_eq!(out.status.code(), Some(2));
+    assert!(out.stdout.is_empty(), "a refused run printed a report");
+    let said = String::from_utf8(out.stderr).unwrap();
+    assert!(
+        said.contains("unrecognised residuals every: abc"),
+        "stderr said: {}",
+        said
+    );
+}
