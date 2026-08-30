@@ -77,6 +77,68 @@ fn clamp_hash(megabytes: u64) -> u64 {
     megabytes.clamp(HASH_MIN_MB, HASH_MAX_MB)
 }
 
+/// What kind of thing an option is, as the handshake says it.
+enum OptionKind {
+    /// A number in a range.
+    Spin { default: u64, min: u64, max: u64 },
+    /// Pressed rather than set: no value and no state to advertise.
+    Button,
+}
+
+/// One option the engine answers to.
+struct UciOption {
+    name: &'static str,
+    kind: OptionKind,
+}
+
+/// The options, in the order the handshake says them. This is the one
+/// statement of what exists: the handshake prints one line a row, and a
+/// test holds `set_option`'s arms to these names, so adding an option
+/// without its arm fails a test rather than failing an interface. An arm
+/// without a row would only serve interfaces sending options they were
+/// never offered, which is what the unrecognised reply is for.
+const OPTIONS: &[UciOption] = &[
+    UciOption {
+        name: "Hash",
+        kind: OptionKind::Spin {
+            default: HASH_DEFAULT_MB,
+            min: HASH_MIN_MB,
+            max: HASH_MAX_MB,
+        },
+    },
+    // the button beside the size, since both are about the same table:
+    // this one empties it where the size rebuilds it
+    UciOption {
+        name: "Clear Hash",
+        kind: OptionKind::Button,
+    },
+    // advertised with a range of one so that an interface configuring a
+    // match reads the engine as single threaded rather than being left to
+    // find out by playing one
+    UciOption {
+        name: "Threads",
+        kind: OptionKind::Spin {
+            default: 1,
+            min: 1,
+            max: 1,
+        },
+    },
+];
+
+impl UciOption {
+    /// The handshake line for this option, exactly as the protocol spells
+    /// one.
+    fn advert(&self) -> String {
+        match self.kind {
+            OptionKind::Spin { default, min, max } => format!(
+                "option name {} type spin default {} min {} max {}",
+                self.name, default, min, max
+            ),
+            OptionKind::Button => format!("option name {} type button", self.name),
+        }
+    }
+}
+
 pub struct UCI<T: Engine, W: Write> {
     author: String,
     name: String,
@@ -164,19 +226,9 @@ impl<T: Engine, W: Write> UCI<T, W> {
                 // and these lines also read from it
                 let _ = writeln!(self.out, "id name {} {}", self.name, self.version);
                 let _ = writeln!(self.out, "id author {}", self.author);
-                self.say(format_args!(
-                    "option name Hash type spin default {} min {} max {}",
-                    HASH_DEFAULT_MB, HASH_MIN_MB, HASH_MAX_MB
-                ));
-                // the button beside the size, since both are about the same
-                // table: this one empties it where the size rebuilds it
-                self.say(format_args!("option name Clear Hash type button"));
-                // advertised with a range of one so that an interface
-                // configuring a match reads the engine as single threaded
-                // rather than being left to find out by playing one
-                self.say(format_args!(
-                    "option name Threads type spin default 1 min 1 max 1"
-                ));
+                for option in OPTIONS {
+                    self.say(format_args!("{}", option.advert()));
+                }
                 self.say(format_args!("uciok"));
             }
             "setoption" => {
@@ -286,10 +338,10 @@ impl<T: Engine, W: Write> UCI<T, W> {
         }
     }
 
-    /// `setoption name <option> [value <value>]`. The three options the
-    /// handshake advertises are the only ones answered to; anything else is
-    /// said back rather than acted on, so that an interface sending an option
-    /// meant for another engine is told it did.
+    /// `setoption name <option> [value <value>]`. The options answered to
+    /// are `OPTIONS`' rows, and a test holds the arms here to them; anything
+    /// else is said back rather than acted on, so that an interface sending
+    /// an option meant for another engine is told it did.
     ///
     /// The name is every word between `name` and `value`, because an option
     /// may be named with more than one and `Clear Hash` is.
@@ -1037,6 +1089,29 @@ go depth 3
         let mut uci = uci();
         assert!(uci.handle("setoption name Nonsense value 1"));
         assert_eq!(said(&uci), "info string unrecognised option: Nonsense\n");
+    }
+
+    #[test]
+    fn every_advertised_option_is_answered() {
+        // a row whose name fell to the unrecognised reply would be an
+        // option the handshake offers and the engine refuses. Spins are set
+        // to their minimum, since a test has no business allocating what
+        // the Hash default advertises
+        let mut uci = uci();
+        for option in OPTIONS {
+            let line = match option.kind {
+                OptionKind::Spin { min, .. } => {
+                    format!("setoption name {} value {}", option.name, min)
+                }
+                OptionKind::Button => format!("setoption name {}", option.name),
+            };
+            assert_eq!(
+                uci.set_option(&line),
+                Ok(()),
+                "the handshake advertises {} and set_option refuses it",
+                option.name
+            );
+        }
     }
 
     #[test]
