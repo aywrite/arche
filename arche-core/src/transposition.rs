@@ -93,12 +93,14 @@ pub struct GhiCounters {
 /// observation on its own cannot tell a working instrument from a dead one.
 /// That is what `comparisons` and `narrow_accepts` are for. The first gives
 /// the expectation the observation is read against, and the second counts
-/// what a sixteen bit signature would have accepted over the same
-/// comparisons, which is large enough at this scale to be compared with its
-/// own expectation. A narrow figure sitting on its expectation says the rate
-/// really does scale by two to the minus the width on this workload, which
-/// is what lets the thirty two bit expectation be believed where the
-/// observation cannot say anything.
+/// what a narrower signature would have accepted over the same comparisons,
+/// at each of the widths in `NARROW_WIDTHS`. The narrowest of those is large
+/// enough at this scale to be compared with its own expectation. A narrow
+/// figure sitting on its expectation says the rate really does scale by two
+/// to the minus the width on this workload, which is what lets the thirty
+/// two bit expectation be believed where the observation cannot say
+/// anything, and the widths near thirty two are what a claimant on the
+/// signature's bits would be costing.
 ///
 /// The audit is off in every path a game plays, so a run that was not asked
 /// for one has nothing to report rather than zeroes.
@@ -111,7 +113,7 @@ pub struct SignatureCounters {
     /// Live entries the probes compared their slice against whose full key
     /// belonged to another position, over the entries each probe really
     /// looked at. One chance in two to the width apiece, so this is the
-    /// denominator both expectations are drawn from.
+    /// denominator every expectation is drawn from.
     pub comparisons: u64,
     /// Accepted probes whose full key differed, so the entry belonged to
     /// another position.
@@ -121,16 +123,23 @@ pub struct SignatureCounters {
     /// check and costs a little order, and a foreign score cuts a subtree
     /// that was never searched.
     pub false_accept_cutoffs: u64,
-    /// Comparisons a sixteen bit signature would have accepted and this one
-    /// refused: the low sixteen bits agree where the whole slice does not.
-    /// A narrow signature would take these and the false accepts both, so
-    /// its rate is the two added.
+    /// Comparisons a narrower signature would have accepted and this one
+    /// refused, one figure for each width in `NARROW_WIDTHS` and in that
+    /// order: the low bits of the width agree where the whole slice does
+    /// not. A signature of that width would take these and the false
+    /// accepts both, so its rate is the two added.
+    ///
+    /// The widths are counted independently, and are cumulative by
+    /// construction: an entry agreeing on twenty four low bits agrees on
+    /// sixteen as well and is counted under both. So each figure is read
+    /// against its own expectation, and the figures are not a partition to
+    /// be added up.
     ///
     /// Counted and never acted on. A search really running sixteen bits
     /// would have stopped its scan at the first of them, which is a
     /// different tree, and this measures the comparisons the search that
     /// ran actually made.
-    pub narrow_accepts: u64,
+    pub narrow_accepts: [u64; NARROW_WIDTHS.len()],
     /// Stores whose slice matched a foreign full key, so the store took
     /// another position's entry for this position's and replaced it.
     ///
@@ -142,9 +151,17 @@ pub struct SignatureCounters {
     pub aliased_evictions: u64,
 }
 
-/// The chances in which a signature of that width accepts a foreign entry.
+/// The chances in which the signature the table runs accepts a foreign
+/// entry: two to its thirty two bits.
 const WIDE: f64 = 4_294_967_296.0;
-const NARROW: f64 = 65_536.0;
+
+/// The narrower signatures the audit counts beside the one it runs, in bits
+/// and smallest first. Sixteen is the width with enough counts at the
+/// bench's scale to be read on its own; twenty four and twenty eight are
+/// what the signature would be left with if four or eight of its bits went
+/// to other metadata, and are there so the scaling claim rests on three
+/// measured points rather than one.
+pub const NARROW_WIDTHS: [u32; 3] = [16, 24, 28];
 
 impl SignatureCounters {
     /// Add another table's figures to these, for a caller totalling a suite
@@ -155,7 +172,9 @@ impl SignatureCounters {
         self.comparisons += other.comparisons;
         self.false_accepts += other.false_accepts;
         self.false_accept_cutoffs += other.false_accept_cutoffs;
-        self.narrow_accepts += other.narrow_accepts;
+        for (total, counted) in self.narrow_accepts.iter_mut().zip(other.narrow_accepts) {
+            *total += counted;
+        }
         self.aliased_evictions += other.aliased_evictions;
     }
 
@@ -166,11 +185,26 @@ impl SignatureCounters {
         self.comparisons as f64 / WIDE
     }
 
-    /// The same for the narrow counter: the low sixteen bits agreeing while
-    /// the whole slice does not, which is one chance in sixty five thousand
-    /// less the chance the whole slice agrees too.
-    pub fn expected_narrow_accepts(&self) -> f64 {
-        self.comparisons as f64 * (1.0 / NARROW - 1.0 / WIDE)
+    /// The same for a narrow counter: the low bits of the width agreeing
+    /// while the whole slice does not, which is one chance in two to the
+    /// width less the chance the whole slice agrees too.
+    pub fn expected_narrow_accepts(&self, width: u32) -> f64 {
+        // narrower than the signature the table runs, which is what makes it
+        // a narrow width. A width of thirty two or more would shift the one
+        // off the end of the u64 as well as meaning nothing
+        debug_assert!(width < 32, "a narrow width is under thirty two: {width}");
+        let narrow = (1u64 << width) as f64;
+        self.comparisons as f64 * (1.0 / narrow - 1.0 / WIDE)
+    }
+
+    /// Each narrow width with what it counted and what it expected, in the
+    /// order `NARROW_WIDTHS` gives, for a caller printing the line or
+    /// reading one figure against another.
+    pub fn narrow(&self) -> impl Iterator<Item = (u32, u64, f64)> + '_ {
+        NARROW_WIDTHS
+            .into_iter()
+            .zip(self.narrow_accepts)
+            .map(|(width, counted)| (width, counted, self.expected_narrow_accepts(width)))
     }
 }
 
@@ -552,16 +586,24 @@ impl TranspositionTable {
         // read off the probe that happened rather than assumed to be four
         let examined = found.map_or(BUCKET, |(i, _)| i + 1);
         let mut comparisons = 0;
-        let mut narrow = 0;
+        let mut narrow = [0; NARROW_WIDTHS.len()];
         for (i, entry) in bucket[..examined].iter().enumerate() {
             if entry.generation() == 0 || audit.keys[index * BUCKET + i] == key {
                 continue;
             }
             comparisons += 1;
-            // the low sixteen bits agreeing where the whole slice does not:
-            // an acceptance a narrower signature would have made and this
-            // one refused
-            narrow += u64::from(entry.key as u16 == slice as u16 && entry.key != slice);
+            // the low bits agreeing where the whole slice does not: an
+            // acceptance a narrower signature would have made and this one
+            // refused. The low bits that agree are the ones below the first
+            // that differs, so one count a width settles every width at
+            // once, and a width is counted whenever the agreement reaches
+            // it: an entry agreeing on twenty four agrees on sixteen too
+            if entry.key != slice {
+                let agreeing = (entry.key ^ slice).trailing_zeros();
+                for (count, width) in narrow.iter_mut().zip(NARROW_WIDTHS) {
+                    *count += u64::from(agreeing >= width);
+                }
+            }
         }
         let foreign = found.is_some_and(|(i, _)| audit.keys[index * BUCKET + i] != key);
         audit.count(|counters| {
@@ -569,7 +611,9 @@ impl TranspositionTable {
             counters.hits += u64::from(found.is_some());
             counters.comparisons += comparisons;
             counters.false_accepts += u64::from(foreign);
-            counters.narrow_accepts += narrow;
+            for (total, counted) in counters.narrow_accepts.iter_mut().zip(narrow) {
+                *total += counted;
+            }
         });
         (pv, foreign)
     }
@@ -807,7 +851,7 @@ fn entry(board: &Board, play: Play, value: Value, depth: u8, bound: Bound) -> Pv
 
 #[cfg(test)]
 mod tests {
-    use super::{Bound, Play, Pv, STALE_AFTER_SEARCHES, TranspositionTable, Value};
+    use super::{Bound, NARROW_WIDTHS, Play, Pv, STALE_AFTER_SEARCHES, TranspositionTable, Value};
     use crate::engine::MAX_PLY;
     use crate::misc::{Piece, PromotePiece};
     use pretty_assertions::assert_eq;
@@ -1130,6 +1174,15 @@ mod tests {
         assert_eq!(counted.hits, 1);
         assert_eq!(counted.false_accepts, 1);
         assert_eq!(counted.false_accept_cutoffs, 0, "no score was taken");
+        // the narrow counters are the acceptances a narrower signature would
+        // have made and this one refused. This one took the entry, so it
+        // belongs to the false accepts and to no width beside them: a reader
+        // adding a narrow figure to the false accepts must not count it twice
+        assert_eq!(
+            counted.narrow_accepts,
+            [0; NARROW_WIDTHS.len()],
+            "a real false accept is not a narrow accept"
+        );
         assert_eq!(
             counted.aliased_evictions, 0,
             "the first store found an empty slot"
@@ -1155,31 +1208,110 @@ mod tests {
         assert_eq!(counted.hits, 0);
         assert_eq!(counted.comparisons, 1);
         assert_eq!(counted.false_accepts, 0);
-        assert_eq!(counted.narrow_accepts, 0);
+        assert_eq!(counted.narrow_accepts, [0; NARROW_WIDTHS.len()]);
         assert_eq!(counted.aliased_evictions, 0);
     }
 
-    /// The hypothetical the contest wants: keys agreeing on the low sixteen
-    /// bits and differing above them. The probe misses, as it must, and the
-    /// counter says a sixteen bit signature would have taken the entry. The
-    /// figure is the one large enough to measure at the bench's scale, so it
-    /// is what says the rate really scales by the width.
+    /// The hypothetical the contest wants, one width at a time: keys
+    /// agreeing on the low bits of the width and differing on the first bit
+    /// above them. The probe misses, as it must, and the counter says a
+    /// signature of that width would have taken the entry. The widths are
+    /// cumulative, so such a key counts under the width it was built for
+    /// and under every narrower one, and under no wider one.
+    ///
+    /// Each width is tried from both sides. A key agreeing on exactly the
+    /// width has to be counted, and a key agreeing on one bit fewer has to
+    /// be refused, which is what puts the boundary where the width says
+    /// rather than a bit to either side of it.
     #[test]
     fn an_acceptance_a_narrower_signature_would_have_made_is_counted() {
+        for built_for in NARROW_WIDTHS {
+            let mut table = TranspositionTable::with_capacity(4).expect("a table of one bucket");
+            assert!(table.audit_signatures());
+            table.set(1, new_pv(Bound::Exact, 4));
+            // the low bits of one, and the first bit above the width set, so
+            // the slice differs and the agreement stops exactly at the width
+            let narrow_twin = 1 | (1u64 << built_for);
+            assert!(table.get(narrow_twin).is_none(), "the slice refused it");
+            let counted = table.signatures().expect("audited");
+            assert_eq!(counted.comparisons, 1);
+            assert_eq!(counted.false_accepts, 0);
+            let at_the_width: Vec<u64> = NARROW_WIDTHS
+                .iter()
+                .map(|width| u64::from(*width <= built_for))
+                .collect();
+            assert_eq!(
+                counted.narrow_accepts.to_vec(),
+                at_the_width,
+                "a key agreeing on {built_for} low bits"
+            );
+            // one bit short of the width. This width has to refuse it and
+            // every narrower one has to take it, so a counter reading one bit
+            // too few is caught here rather than overstating the whole run
+            let one_short = 1 | (1u64 << (built_for - 1));
+            assert!(table.get(one_short).is_none(), "the slice refused it");
+            let under_the_width: Vec<u64> = NARROW_WIDTHS
+                .iter()
+                .zip(&at_the_width)
+                .map(|(width, counted)| counted + u64::from(*width < built_for))
+                .collect();
+            assert_eq!(
+                table.signatures().expect("audited").narrow_accepts.to_vec(),
+                under_the_width,
+                "a key agreeing on {} low bits",
+                built_for - 1
+            );
+            // and a key sharing none of the widths is counted against none
+            assert!(table.get(0x0001_0002).is_none());
+            let after = table.signatures().expect("audited");
+            assert_eq!(after.narrow_accepts.to_vec(), under_the_width);
+            assert_eq!(after.comparisons, 3);
+        }
+    }
+
+    /// The counts fall as the width rises, on a probe sequence built to make
+    /// them fall: one key agreeing on each width in turn, so the widest is
+    /// counted once, the middle twice and the narrowest three times. The
+    /// ordering is what a reader leans on when comparing one width's figure
+    /// with another's, and three distinct counts are what it takes to say
+    /// the ordering holds rather than to watch three zeroes agree.
+    #[test]
+    fn the_counts_fall_as_the_width_rises() {
         let mut table = TranspositionTable::with_capacity(4).expect("a table of one bucket");
         assert!(table.audit_signatures());
         table.set(1, new_pv(Bound::Exact, 4));
-        // low sixteen bits of one, a whole slice of its own
-        let narrow_twin = 0x0001_0001;
-        assert!(table.get(narrow_twin).is_none(), "the slice refused it");
+        for width in NARROW_WIDTHS {
+            assert!(
+                table.get(1 | (1u64 << width)).is_none(),
+                "the slice refused it"
+            );
+        }
         let counted = table.signatures().expect("audited");
-        assert_eq!(counted.comparisons, 1);
+        assert_eq!(counted.comparisons, NARROW_WIDTHS.len() as u64);
         assert_eq!(counted.false_accepts, 0);
-        assert_eq!(counted.narrow_accepts, 1);
-        // and a key sharing neither width is counted against neither
-        assert!(table.get(0x0001_0002).is_none());
-        assert_eq!(table.signatures().expect("audited").narrow_accepts, 1);
-        assert_eq!(table.signatures().expect("audited").comparisons, 2);
+        // a width takes every probe built for it or for a wider one, which
+        // for three widths is three, two and one
+        let wanted: Vec<u64> = NARROW_WIDTHS
+            .iter()
+            .map(|width| {
+                NARROW_WIDTHS
+                    .iter()
+                    .filter(|probed| *probed >= width)
+                    .count() as u64
+            })
+            .collect();
+        assert_eq!(counted.narrow_accepts.to_vec(), wanted, "one probe a width");
+        // the counts differ, so the ordering below is read against data
+        // rather than against zeroes agreeing with each other
+        assert!(counted.narrow_accepts[0] > counted.narrow_accepts[NARROW_WIDTHS.len() - 1]);
+        assert!(
+            counted
+                .narrow_accepts
+                .windows(2)
+                .all(|widths| widths[0] >= widths[1]),
+            "a wider signature accepted more than a narrower one: {:?}",
+            counted.narrow_accepts
+        );
     }
 
     /// The dangerous half. A foreign entry deep enough to cut is a subtree

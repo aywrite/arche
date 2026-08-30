@@ -427,7 +427,7 @@ of whole-suite totals after the table:
 
 ```
 signature audit: probes 2414812, hits 377238, comparisons 6092624, false accepts 0 (0.001 expected), false accept cutoffs 0, aliased evictions 0
-narrow signature: sixteen bit accepts 89 (92.965 expected)
+narrow signature: 16 bit accepts 89 (92.965 expected), 24 bit accepts 0 (0.362 expected), 28 bit accepts 0 (0.021 expected)
 ```
 
 The word turns the shadow keys on for the tables the bench builds and for
@@ -442,7 +442,7 @@ accepts count keyed lookups; aliased evictions count stores. A comparison is
 one live entry a probe compared its slice against, whose full key turned out
 to belong to another position. Only the entries that probe really looked at
 are counted, so each comparison is one chance in two to the signature's width
-and the two expectations are both drawn from the total.
+and every expectation on either line is drawn from the total.
 
 An aliased eviction is a store that landed in a slot the slice said was its
 own and replaced another position's entry there. Landed stores only. A store
@@ -454,15 +454,38 @@ figure.
 The thirty two bit observation cannot say anything on its own. A run of this
 size expects about a thousandth of a false accept, so a zero is what a
 working instrument and a dead one both print. That is what the narrow line is
-for. It counts the comparisons a sixteen bit signature would have accepted
-and this one refused, which is the same rate scaled by sixty five thousand,
-so the figure is about a hundred instead of about zero. A narrow count
-sitting on its expectation says the rate really does scale by two to the
-minus the width on this workload. The thirty two bit expectation beside it
-can then be believed where its observation cannot, which is what makes the
-audit fit to rule a claimant out of the bit budget. The narrow figure is
-counted and never acted on: a search really running sixteen bits would have
-stopped its scan at the first such entry, which is a different tree.
+for. It counts the comparisons a narrower signature would have accepted and
+this one refused, at sixteen bits, twenty four and twenty eight. Sixteen is
+the same rate scaled by sixty five thousand, so the figure is about a hundred
+instead of about zero, and a count sitting on its expectation says the rate
+really does scale by two to the minus the width on this workload. The thirty
+two bit expectation beside it can then be believed where its observation
+cannot, which is what makes the audit fit to rule a claimant out of the bit
+budget.
+
+Twenty four and twenty eight are the widths the signature would be left with
+if four or eight of its bits went to some other piece of metadata, which is
+the question they answer: what reclaiming those bits would cost the table.
+Neither is measurable at the sizes the command runs at. At the bench's depth
+twenty four expects a third of an accept and twenty eight a fiftieth, and at
+depth eight twenty four expects about one and a third. A zero on either is
+the run being too short to have an opinion rather than a bit budget with room
+in it, so what the reader takes from those two is the expectation and not the
+count. The count bounds it, and nothing at these sizes can do more. The
+sixteen bit figure is what says the expectation was arrived at the right way.
+The same scaling then gives the expectations at the wider widths, the thirty
+two the table runs among them.
+
+The widths are cumulative by construction. An entry whose low twenty four
+bits agree agrees on sixteen as well, and is counted under both, so each
+figure is read against its own expectation and the three are never added
+together. The counts therefore fall as the width rises, which
+`the_counts_fall_as_the_width_rises` in `arche-core/src/transposition.rs`
+checks on a probe sequence built to make them fall.
+
+The narrow figures are counted and never acted on: a search really running
+sixteen bits would have stopped its scan at the first such entry, which is a
+different tree.
 
 Read the narrow line off a small table. A table of one or two megabytes at
 the bench's depth is full by the end of the suite, so its buckets hold four
