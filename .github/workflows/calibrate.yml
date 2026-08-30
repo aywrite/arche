@@ -33,7 +33,7 @@ on:
       ladder:
         description: Opponents to play, as stash tag and ccrl blitz rating — v10:1620,v11:1690
         type: string
-        default: v12:1881,v13:1966,v14:2058,v15.3:2173
+        default: v13:1966,v14:2058,v15.3:2173,v17.0:2297
   workflow_call:
     inputs:
       candidate:
@@ -47,7 +47,7 @@ on:
         default: 20+0.2
       ladder:
         type: string
-        default: v12:1881,v13:1966,v14:2058,v15.3:2173
+        default: v13:1966,v14:2058,v15.3:2173,v17.0:2297
       publish:
         description: Append the result to the release notes for this tag
         type: boolean
