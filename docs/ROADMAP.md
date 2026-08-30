@@ -78,39 +78,36 @@ of these again without saying what is different this time.
   against it; worth re-asking once king safety lands too.
 - A correction history: a table of the running error between the static
   evaluation and the search results that followed it, keyed by the pawn
-  structure, nudging the evaluation the two shortcut gates read. Two
-  SPRT runs at 5+0.05 against master both ended inconclusive at their
-  caps (sprt [0, 10], branch search/correction-history): +12 ±11 over
-  1,980 games, then +1 ±12 over another 1,980, about +6 ±8 pooled. The
-  mechanism was live and the tree 2.2% smaller with the tactical suite
-  unmoved, so the games say the corrections were nearly free rather
-  than nearly right. One suspect is on record: the correction's ±31
-  centipawn clamp is twice the fifteen the reverse futility margin was
-  sized to keep clear of a mate it can miss, so the table may spend its
-  gains inside the margin's own headroom. Re-ask with the clamp held
-  under that clearance, or the margin raised to cover it. The pawn key
-  the arm was built on landed on its own and stays.
-- Correcting the evaluation reverse futility reads by a table entry's
-  score and bound (a stored floor above the evaluation raised it before
-  the margin was measured). Inconclusive at the game cap, +6 ±11 over
-  1,980 games at 5+0.05 (sprt [0, 10], branch search/tt-refined-eval),
-  with four tactical positions lost for a 5.3% smaller bench tree. The
-  refinement was sound; the price was not covered. Worth re-asking once
-  the reverse futility margin is recalibrated against corrected
-  estimates rather than the raw evaluation's error, which the residual
-  harness exists to do. Refining the null move gate the same way was
-  measured separately and rejected inside the same arm: it grew the
-  tree and changed nothing the tactical suite could see.
-- Ranking the quiet moves by cutoffs per node spent, in place of the
-  history table's cutoff score. Lost -53 ±26 over 420 games at 5+0.05
-  (sprt [0, 10] accepted H0, branch research/cost-aware-ordering) with
-  the bench tree 1.8% larger. A one-term comparison placed the blame:
-  the cost divisor alone grew the tree, while the rest of the change
-  (smoothed plain counts in place of the depth squared bonus) shrank it
-  slightly. A try's cost spans four orders of magnitude and mostly
-  reports the depth the try ran at, so the ratio ranks by depth noise.
-  Worth re-asking only with the cost normalised by depth; the smoothed
-  counts ranking on its own is a separate small candidate.
+  structure, nudging the evaluation the two shortcut gates read. Two SPRT runs
+  at 5+0.05 against master both ended inconclusive at their caps (sprt [0, 10],
+  branch search/correction-history): +12 ±11 over 1,980 games, then +1 ±12 over
+  another 1,980, about +6 ±8 pooled. The mechanism was live and the tree 2.2%
+  smaller with the tactical suite unmoved, so the games say the corrections were
+  nearly free rather than nearly right. One suspect is on record: the
+  correction's ±31 centipawn clamp is twice the fifteen the reverse futility
+  margin was sized to keep clear of a mate it can miss, so the table may spend
+  its gains inside the margin's own headroom. Re-ask with the clamp held under
+  that clearance, or the margin raised to cover it. The pawn key the arm was
+  built on landed on its own and stays.
+- Correcting the evaluation reverse futility reads by a table entry's score and
+  bound (a stored floor above the evaluation raised it before the margin was
+  measured). Inconclusive at the game cap, +6 ±11 over 1,980 games at 5+0.05
+  (sprt [0, 10], branch search/tt-refined-eval), with four tactical positions
+  lost for a 5.3% smaller bench tree. The refinement was sound; the price was
+  not covered. Worth re-asking once the reverse futility margin is recalibrated
+  against corrected estimates rather than the raw evaluation's error, which the
+  residual harness exists to do. Refining the null move gate the same way was
+  measured separately and rejected inside the same arm: it grew the tree and
+  changed nothing the tactical suite could see.
+- Ranking the quiet moves by cutoffs per node spent, in place of the history
+  table's cutoff score. Lost -53 ±26 over 420 games at 5+0.05 (sprt [0, 10]
+  accepted H0, branch research/cost-aware-ordering) with the bench tree 1.8%
+  larger. A one-term comparison placed the blame: the cost divisor alone grew
+  the tree, while the rest of the change (smoothed plain counts in place of the
+  depth squared bonus) shrank it slightly. A try's cost spans four orders of
+  magnitude and mostly reports the depth the try ran at, so the ratio ranks by
+  depth noise. Worth re-asking only with the cost normalised by depth; the
+  smoothed counts ranking on its own is a separate small candidate.
 - Prefetching a child's transposition slot straight after `make_move`, 6.7%
   slower over six interleaved rounds. The prefetch sits immediately before the
   recursive call and the child probes the table almost first, so there is no

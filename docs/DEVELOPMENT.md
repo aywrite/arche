@@ -21,14 +21,14 @@ times faster to search. Always measure with a release build.
 cargo test --workspace --release
 ```
 
-The pinned bench searches dominate the runtime, twenty two million nodes of
-them, which is why the release profile is the usual choice for a quick pass. The
+The pinned bench searches dominate the runtime, ten million nodes of them,
+which is why the release profile is the usual choice for a quick pass. The
 debug run is the one that checks the most, so run it before landing a change:
-the debug profile keeps the overflow checks
-and the board's state-in-step assertions, which verify the position key, the
-eval accumulators, the square array and the en passant rule against a
-recompute on every move made. Release compiles all of that out, so a green
-release run alone says nothing about them.
+the debug profile keeps the overflow checks and the board's state-in-step
+assertions, which verify the position key, the pawn key, the eval
+accumulators, the square array and the en passant rule against a recompute on
+every move made. Release compiles all of that out, so a green release run
+alone says nothing about them.
 
 ```
 cargo test --workspace
@@ -155,8 +155,9 @@ a mistyped `perf(benchmark)` would otherwise be published as if the engine had
 got faster. Adding a scope means adding it to the hook arguments in
 `.pre-commit-config.yaml`, to the table above it belongs in, and to
 `cliff.toml` if it is a build one or to `scripts/check_trailers.py` if it is
-an engine one; `scripts/tests/test_scopes.py` fails until the four agree.
-Merge commits are exempt.
+an engine one that states a bench; `scripts/tests/test_scopes.py` fails until
+the four agree. One grouped by type but stating no bench, as `uci` is, goes in
+that test's `NEITHER` instead of the trailer check. Merge commits are exempt.
 
 `git-cliff --unreleased` prints what the next release would say, which is the
 quickest way to check a scope landed where it should.
@@ -229,10 +230,9 @@ for measuring what the table and the draw taint policy do to a search rather
 than for pinning anything: the header states what a report ran with, so one
 can be rerun from it. A fourth word, `audit`, adds what the table's key
 signature costs and is described further down. The suite, depth and table are
-chosen once:
-changing any of them changes every number the bench has ever printed, which is
-why the depth is expected to be raised exactly once, after the search has
-learned to prune, rather than adjusted as it goes.
+chosen once: changing any of them changes every number the bench has ever
+printed, which is why the depth is expected to be raised exactly once, after
+the search has learned to prune, rather than adjusted as it goes.
 
 Speed is measured against another build, never on its own: a rate says
 nothing across machines, and a single pair of runs says little on one.
@@ -484,8 +484,8 @@ together. The counts therefore fall as the width rises, which
 checks on a probe sequence built to make them fall.
 
 The narrow figures are counted and never acted on: a search really running
-sixteen bits would have stopped its scan at the first such entry, which is a
-different tree.
+one of these widths would have stopped its scan at the first entry it
+accepted, which is a different tree.
 
 Read the narrow line off a small table. A table of one or two megabytes at
 the bench's depth is full by the end of the suite, so its buckets hold four
@@ -768,11 +768,10 @@ git push origin vX.Y.Z
 Pushing the tag is what triggers the release workflow, which runs the tests,
 creates the github release from the changelog, and then builds and uploads
 binaries for linux, macos and windows, the x86-64 ones at three cpu levels. It
-goes on to call three workflows that
-add to the release once it exists: **Docker** publishes the lichess-bot image
-and quotes it in the notes with its digest, **Strength** plays the match and
-adds the elo estimate, and **Calibrate** plays the gauntlet and adds the ccrl
-placement.
+goes on to call three workflows that add to the release once it exists:
+**Docker** publishes the lichess-bot image and quotes it in the notes with
+its digest, **Strength** plays the match and adds the elo estimate, and
+**Calibrate** plays the gauntlet and adds the ccrl placement.
 
 All of them edit the notes by reading them and writing them back, so they share
 a concurrency group and take turns rather than one landing on top of the other.
