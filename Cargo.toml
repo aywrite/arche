@@ -45,6 +45,14 @@ arche-core = { path = "./arche-core" }
 # already the engine's, so this adds an edge rather than a package
 proptest = "1.7"
 
+# The tests are compiled optimised. What the debug run is there for is the
+# overflow checks and the board's state-in-step assertions, and cargo leaves
+# both on at any optimisation level, so nothing the run checks is given up
+# for the speed. Only `cargo test` reads this profile, so a plain
+# `cargo build` is untouched.
+[profile.test]
+opt-level = 2
+
 [profile.release]
 lto = true
 codegen-units = 1

@@ -34,6 +34,13 @@ alone says nothing about them.
 cargo test --workspace
 ```
 
+That run is compiled optimised, `opt-level = 2` on the test profile in the
+root manifest. Cargo leaves `debug-assertions` and `overflow-checks` on
+whatever the optimisation level is, so nothing the run checks is given up
+for the speed. Unoptimised it took a minute, most of that the two perft
+suites walking a hundred and twenty million checked moves; optimised it takes
+eleven seconds and costs six seconds more to compile.
+
 The tactical suite is not in either run. It searches three hundred positions
 and takes ten seconds or so, so it is marked ignored and asked for by name,
 and a job of its own runs it in ci:
