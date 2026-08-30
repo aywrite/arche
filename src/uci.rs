@@ -1331,10 +1331,13 @@ go depth 3
         // back in the header so a report says what it ran with. Each word
         // is optional, the words may come in either order, the depth may
         // be left out ahead of them, and a keyword with nothing after it
-        // is the setting left out, as a bare `go depth` is
+        // is the setting left out, as a bare `go depth` is. Every run here
+        // stays at depth one; the left-out depth is checked on the settings
+        // alone below, since running the suite at its own depth would prove
+        // the parser at the price of the search
         let mut uci = uci();
         uci.run(Cursor::new(
-            "bench 1 hash 1 taint trust\nbench 1 taint refuse hash 2\nbench hash 1 taint trust\nbench 1 taint\n",
+            "bench 1 hash 1 taint trust\nbench 1 taint refuse hash 2\nbench 1 taint\n",
         ));
         let said = said(&uci);
         let headers: Vec<&str> = said
@@ -1354,14 +1357,18 @@ go depth 3
                 "taint trust",
                 "bench depth 1 hash 2MB",
                 "taint refuse",
-                "bench depth 7 hash 1MB",
-                "taint trust",
                 "bench depth 1 hash 16MB",
                 "taint rule50",
             ],
             "{}",
             said
         );
+
+        let left_out = bench_settings(&Params::of("bench hash 1 taint trust"))
+            .expect("a left-out depth is the bench's own");
+        assert_eq!(left_out.depth, bench::DEPTH);
+        assert_eq!(left_out.table_bytes, 1024 * 1024);
+        assert_eq!(left_out.config.taint_word(), "trust");
     }
 
     #[test]
