@@ -18,8 +18,9 @@ use std::str::FromStr;
 
 /// The words of one command line.
 // pub, and its methods below are not: outside the crate the only thing
-// worth doing with one is building it and handing it to bench_settings.
-// The readers stay pub(crate) until something outside needs one
+// worth doing with one is building it and handing it to `bench_settings`
+// or `residual_settings`. The readers stay pub(crate) until something
+// outside needs one
 pub struct Params<'a> {
     words: Vec<&'a str>,
 }

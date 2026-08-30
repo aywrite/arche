@@ -109,8 +109,9 @@ pub struct PositionReport {
     pub tt_stores: u64,
     /// Entries stored with a draw tainted score, a part of the stores.
     pub tainted_stores: u64,
-    /// Cutoffs taken from a draw tainted score, which the configuration may
-    /// refuse, and the default does, so this stays at zero while it does.
+    /// Cutoffs taken from a draw tainted score. Zero under a configuration
+    /// that refuses every one of them; under the default, which refuses only
+    /// near the fifty move horizon, it counts the ones taken away from it.
     pub tainted_cutoffs: u64,
     /// Cutoffs refused for their taint and searched instead, which is what
     /// refusing costs; zero under a configuration that trusts them. Under
@@ -268,7 +269,8 @@ fn share(part: u64, whole: u64) -> f64 {
 }
 
 /// The report as the command prints it: a header naming the settings, a row
-/// a position, a total, and last the one line the match tools read, which is
+/// a position, a total, the two signature audit lines when the run was
+/// audited, and last the one line the match tools read, which is
 /// `<nodes> nodes <nps> nps` and nothing else.
 impl fmt::Display for Report {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
@@ -401,8 +403,9 @@ impl fmt::Display for Report {
 }
 
 /// The narrow accepts as one clause a width, joined into the audit's second
-/// line: `16 bit accepts 89 (92.965 expected), 24 bit accepts 1 (1.379
-/// expected)` and so on.
+/// line: `16 bit accepts 89 (92.965 expected), 24 bit accepts 0 (0.362
+/// expected)` and so on. The expectations share one denominator, so they
+/// fall by a factor of two to the difference in width.
 fn narrow_widths(counted: &SignatureCounters) -> String {
     counted
         .narrow()

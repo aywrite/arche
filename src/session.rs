@@ -5,15 +5,17 @@
 //!
 //! A session is two threads: a reader that owns the input and answers what
 //! must be answered while a search is running, and the session loop, which
-//! owns the engine and handles lines in the order they were sent. This
-//! module owns the reader, the loop, the control they share, and the writer
-//! both speak through. What a line means is none of its business: the loop
-//! hands each line to the handler it was wired with, and the reader knows
-//! only the three words it must act on before the loop would get to them.
+//! hands lines to the handler in the order they were sent. This module owns
+//! the reader, the loop, the control they share, and the writer both speak
+//! through. What a line means is none of its business: the loop hands each
+//! line to the handler it was wired with, and the reader knows only the
+//! three words it must act on before the loop would get to them. The engine
+//! stays on the caller's side of that handler and never crosses a thread.
 //!
-//! `wire` is the one assembly of the parts. The binary enters it with stdin
-//! and the tests enter it with a channel, and the two differ in nothing
-//! else.
+//! `wire` is the one assembly of both threads. The binary enters it with
+//! stdin and the driven tests enter it with a channel, and the two differ in
+//! nothing else. A test that wants no reader calls `session_loop` on its
+//! own, filling the channel up front.
 
 use std::io::Write;
 use std::sync::atomic::{AtomicBool, Ordering};
@@ -287,7 +289,7 @@ where
 
 /// Wire a session up: the input read on a thread of its own, the session
 /// loop run on this one, and the two joined by the channel, the control and
-/// the shared writer. This is the one assembly of those parts — a test
+/// the shared writer. This is the one assembly of those parts: a driven test
 /// session and a stdin session differ only in the input they hand it.
 ///
 /// The handler is called on this thread, so whatever it closes over never

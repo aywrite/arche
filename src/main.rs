@@ -11,8 +11,8 @@ use arche_core::residual;
 use std::process::ExitCode;
 
 /// What the binary takes, for whoever ran it to find out. Short because there
-/// is little to say: the engine speaks uci on stdin, and the one argument it
-/// takes is a uci command too.
+/// is little to say: the engine speaks uci on stdin, and the two arguments it
+/// takes are measurements, one of which is a uci command too.
 const USAGE: &str = "\
 arche, a chess engine speaking uci on stdin.
 
@@ -112,9 +112,10 @@ fn main() -> ExitCode {
                 ExitCode::from(2)
             }
         },
-        // asked for, so both are answered on stdout and succeed. An argument
-        // that really is unrecognised keeps stderr and the failing code
-        // below: the difference is whether anybody wanted the output
+        // `--version` and `--help` were asked for, so both are answered on
+        // stdout and succeed. An argument that really is unrecognised keeps
+        // stderr and the failing code below: the difference is whether
+        // anybody wanted the output
         Some("--version" | "-V") => {
             println!("{} {}", env!("CARGO_PKG_NAME"), env!("CARGO_PKG_VERSION"));
             ExitCode::SUCCESS

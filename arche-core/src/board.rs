@@ -458,9 +458,9 @@ pub struct Board {
     move_number: usize,
     fifty_move_rule: usize,
 
-    // the evaluation's incremental state, told about every piece placed and
-    // removed. The eval module owns what it means; the board only keeps it
-    // in step
+    // the evaluation's incremental state, told about every piece placed,
+    // removed and moved from one square to another. The eval module owns
+    // what it means; the board only keeps it in step
     pub(crate) eval: Accumulator,
 
     history: [Option<PlayState>; MAX_GAME_SIZE],
@@ -472,11 +472,12 @@ pub struct Board {
     /// and no en passant square, so it says what the pawns are and not whose
     /// turn it is.
     ///
-    /// Kept in step by `move_accumulators` beside the position key, and so
-    /// by every path that puts a pawn down or picks one up: a push, a
-    /// capture either way, en passant, and a promotion, which takes a pawn
-    /// out of the key and puts nothing back. A pass moves no piece and
-    /// leaves it alone.
+    /// Kept in step beside the position key, and so by every path that moves
+    /// a pawn or takes one off: `relocate_piece_index` for a push and for
+    /// the pawn doing the taking in a capture or en passant,
+    /// `move_accumulators` for the pawn being taken and for a promotion,
+    /// which takes a pawn out of the key and puts nothing back. A pass moves
+    /// no piece and leaves it alone.
     pub(crate) pawn_key: u64,
 }
 
@@ -867,8 +868,8 @@ impl Board {
     /// `debug_assert_state_in_step` checks on every move made.
     ///
     /// A second implementation on purpose, like the recomputes above: it
-    /// walks the pawns where the maintained key follows each one placed and
-    /// removed.
+    /// walks the pawns where the maintained key follows each one placed,
+    /// removed and relocated.
     fn recompute_pawn_key(&self) -> u64 {
         let mut key = 0;
         let mut pawns = self.pawns();
@@ -1593,8 +1594,8 @@ impl Board {
         println!();
     }
 
-    /// Put a piece on a square, with the position key, the piece square score
-    /// and the material accumulators following it on.
+    /// Put a piece on a square, with the position key, the pawn key, the
+    /// piece square score and the material accumulators following it on.
     #[inline]
     fn set_piece_index(&mut self, index: u8, piece: Piece, color: Color) {
         debug_assert!(!self.black.is_bit_set(index));
@@ -1640,7 +1641,7 @@ impl Board {
         self.squares[(to & 63) as usize] = Some(piece);
     }
 
-    /// Take a piece off a square, undoing all of the above.
+    /// Take a piece off a square, undoing everything `set_piece_index` did.
     #[inline]
     fn clear_piece_index(&mut self, index: u8, piece: Piece, color: Color) {
         debug_assert!((self.black | self.white).is_bit_set(index));

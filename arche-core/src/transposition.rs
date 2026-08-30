@@ -135,10 +135,10 @@ pub struct SignatureCounters {
     /// against its own expectation, and the figures are not a partition to
     /// be added up.
     ///
-    /// Counted and never acted on. A search really running sixteen bits
-    /// would have stopped its scan at the first of them, which is a
-    /// different tree, and this measures the comparisons the search that
-    /// ran actually made.
+    /// Counted and never acted on. A search really running one of these
+    /// widths would have stopped its scan at the first entry it accepted,
+    /// which is a different tree, and this measures the comparisons the
+    /// search that ran actually made.
     pub narrow_accepts: [u64; NARROW_WIDTHS.len()],
     /// Stores whose slice matched a foreign full key, so the store took
     /// another position's entry for this position's and replaced it.
@@ -329,9 +329,10 @@ pub enum Probe {
 /// third and the search the entry was stored in, the generation, in the top
 /// five; a generation of zero is a slot never written, which is what a
 /// cleared table is full of. Two bytes are set aside for the static
-/// evaluation, which correction history will want stored beside the score;
-/// reserving them now means the layout, and with it every node count,
-/// changes once rather than twice.
+/// evaluation, which a correction history would want stored beside the
+/// score; reserving them now means the layout, and with it every node count,
+/// changes once rather than twice. The arm that would have read them is
+/// shelved rather than dead: see the roadmap.
 #[derive(Copy, Clone, Debug)]
 #[repr(C)]
 struct Entry {

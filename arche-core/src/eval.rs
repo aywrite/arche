@@ -3,10 +3,10 @@
 
 //! The evaluation: what a position scores, and every number that opinion is
 //! built from. The board hosts an [`Accumulator`] and tells it about each
-//! piece placed and removed; the search asks [`eval`] for the score. A term
-//! cheap enough to keep incrementally belongs in the accumulator; one
-//! computed at the leaf belongs in [`eval`], reading the board — mobility
-//! lands there when it arrives.
+//! piece placed, removed and moved from one square to another; the search
+//! asks [`eval`] for the score. A term cheap enough to keep incrementally
+//! belongs in the accumulator; one computed at the leaf belongs in [`eval`],
+//! reading the board (mobility lands there when it arrives).
 
 use crate::board::Board;
 use crate::misc::{Color, Piece, Score};
@@ -46,7 +46,7 @@ pub(crate) fn eval(board: &Board) -> Score {
 }
 
 /// The evaluation's incremental state, hosted by the board and kept in step
-/// by being told about every piece placed and removed.
+/// by being told about every piece placed, removed and relocated.
 #[derive(Debug, Copy, Clone, PartialEq, Eq)]
 pub(crate) struct Accumulator {
     /// Each side's material, indexed by `Color`'s discriminant the way the

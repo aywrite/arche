@@ -17,7 +17,8 @@ use std::sync::atomic::{AtomicBool, Ordering};
 use std::time;
 
 /// The rail a requested depth is held to, quiescence stops at, and the
-/// reported line is walked to.
+/// reported line is walked to. It is also how long the killer table is, so
+/// a node past it orders its quiet moves without one.
 ///
 /// Not a bound on every line: a chain of check extensions can carry the
 /// full width search past any constant, and what really ends one is the
@@ -1113,10 +1114,10 @@ impl AlphaBeta {
         let mut taint = Taint::default();
 
         // the entry here is the one the last iteration answered with, stored
-        // past the depth contest, and order_moves puts the table's move ahead
-        // of every other. So a deepening search tries the previous depth's
-        // best first, which is what lets an aborted iteration's best replace
-        // it: see the Aborted arm of iterative_deepening_search
+        // past the depth contest, and `MoveOrdering::order` puts the table's
+        // move ahead of every other. So a deepening search tries the previous
+        // depth's best first, which is what lets an aborted iteration's best
+        // replace it: see the Aborted arm of iterative_deepening_search
         let pv_play = self.transpositions.ordering_play(&self.board);
         let mut moves = self.board.generate_moves();
         // the root orders as it always has: the swap below reasons about
@@ -2354,11 +2355,11 @@ mod search {
 
     #[test]
     fn a_search_told_to_trust_tainted_scores_takes_their_cutoffs() {
-        // the refusal is the one policy the config carries so far, and a
-        // search told to trust those scores is the control arm of the graph
-        // history experiments. The switch has to reach the probe: a field
-        // the search never reads would make every comparison against the
-        // reference a comparison of the reference with itself
+        // the refusal is what the reference carries, and a search told to
+        // trust those scores is the control arm of the graph history
+        // experiments. The switch has to reach the probe: a field the search
+        // never reads would make every comparison against the reference a
+        // comparison of the reference with itself
         let fen = "8/2p5/3p4/KP5r/1R3p1k/8/4P1P1/8 w - - 0 1";
         // the reference with the one switch flipped
         let trusting = SearchConfig {
