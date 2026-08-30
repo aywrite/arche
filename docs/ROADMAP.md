@@ -75,6 +75,20 @@ of these again without saying what is different this time.
   half-understands, and the stricter rule spends depth keeping alive games it
   then loses. Tapered evaluation has since landed and this was not re-measured
   against it; worth re-asking once king safety lands too.
+- A correction history: a table of the running error between the static
+  evaluation and the search results that followed it, keyed by the pawn
+  structure, nudging the evaluation the two shortcut gates read. Two
+  SPRT runs at 5+0.05 against master both ended inconclusive at their
+  caps (sprt [0, 10], branch search/correction-history): +12 ±11 over
+  1,980 games, then +1 ±12 over another 1,980, about +6 ±8 pooled. The
+  mechanism was live and the tree 2.2% smaller with the tactical suite
+  unmoved, so the games say the corrections were nearly free rather
+  than nearly right. One suspect is on record: the correction's ±31
+  centipawn clamp is twice the fifteen the reverse futility margin was
+  sized to keep clear of a mate it can miss, so the table may spend its
+  gains inside the margin's own headroom. Re-ask with the clamp held
+  under that clearance, or the margin raised to cover it. The pawn key
+  the arm was built on landed on its own and stays.
 - Correcting the evaluation reverse futility reads by a table entry's
   score and bound (a stored floor above the evaluation raised it before
   the margin was measured). Inconclusive at the game cap, +6 ±11 over
