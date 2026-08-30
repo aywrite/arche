@@ -1648,12 +1648,12 @@ go depth 3
     /// The keywords a generated line opens with: the ones the loop dispatches
     /// on, and near misses that fall through to the unrecognised branch.
     ///
-    /// `bench` is deliberately absent. It runs a real bench of seventeen
-    /// million nodes whoever is behind the loop, so a generated one would
-    /// take a couple of seconds a case, and it prints its report as a table
-    /// rather than as protocol. That table is fine — nothing but a person
-    /// types `bench` at an engine — but it is not a line an interface could
-    /// read, so a session containing one cannot be asked the question below.
+    /// `bench` is deliberately absent. It runs a real bench of eight million
+    /// nodes whoever is behind the loop, so a generated one would take a
+    /// couple of seconds a case, and it prints its report as a table rather
+    /// than as protocol. That table is fine (nothing but a person types
+    /// `bench` at an engine) but it is not a line an interface could read,
+    /// so a session containing one cannot be asked the question below.
     const KEYWORDS: [&str; 15] = [
         "uci",
         "isready",

@@ -58,8 +58,9 @@ const HISTORY_MAX: u32 = 7_000_000;
 const VICTIM_SCORES: [i64; 6] = [100, 250, 300, 400, 500, 1000];
 /// Least valuable attacker: what taking it with each piece is worth.
 const ATTACKER_SCORES: [i64; 6] = [6, 5, 4, 3, 2, 1];
-/// What a queen taking a defended piece gives up, which is enough to carry
-/// most of those captures behind the quiet moves.
+/// What a queen taking a defended piece gives up. Enough to carry the two
+/// smallest of them, a pawn and a knight, behind the quiet moves; a defended
+/// bishop, rook or queen still scores above one.
 const DEFENDED_QUEEN_PENALTY: i64 = 300;
 
 /// How often each quiet move has cut a node off, by the side that played
