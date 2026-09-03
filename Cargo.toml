@@ -30,7 +30,7 @@ members = [
 
 # shared so that the release tooling has a single version to bump
 [workspace.package]
-version = "0.4.0"
+version = "0.4.1-rc.1"
 edition = "2024"
 rust-version = "1.85"
 authors = [

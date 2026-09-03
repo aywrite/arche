@@ -2,6 +2,61 @@
 
 All notable changes to this project will be documented in this file.
 
+## [0.4.1-rc.1] - 2026-09-03
+
+### Features
+
+- *(search)* Answer a node from a pass that already fails high [bench 14773205] [elo +76 ±30 (sprt [0, 10] passed, 360 games, 5+0.05, vs 2db9961)]
+- *(search)* Record the nodes a shortcut answered [bench 14773205]
+- *(search)* Try the quiet moves that cut off first [bench 8182450] [elo +109 ±35 (sprt [0, 10] passed, 290 games, 5+0.05, vs 874b4f8)]
+- *(search)* Count what the table's key signature costs [bench 8182450]
+- *(board)* Give the board a key over the pawns alone [bench 8182450]
+- *(search)* Count the narrow signature at three widths [bench 8182450]
+- *(uci)* Answer the Clear Hash button [bench 8182450]
+- *(uci)* Report the move an aborted iteration swaps in [bench 8182450]
+
+### Performance
+
+- *(board)* Generate into a buffer rather than a growing list [bench 8182450] [speed +3.4%]
+- *(board)* Move a piece rather than take one off and put one on [bench 8182450] [speed +3.7%]
+- *(board)* Fold the castle keys only when the rights changed [bench 8182450] [speed +2.3%]
+
+### Refactor
+
+- *(board)* Read the colour token and count material in a loop [bench 14773205]
+- *(search)* Compare a move with the notation it prints [bench 14773205]
+- *(search)* Move the mate window and the taint fold in with the score [bench 14773205]
+- *(search)* Search a node's children in one place [bench 8182450]
+- *(search)* Ask the two shortcuts in one place [bench 8182450]
+- *(uci)* Give the session's threads a module of their own
+- *(uci)* Report panics through the session's own writer
+- *(uci)* Say the options from one table
+- *(uci)* Keep a setter's error for lines it could not act on
+- *(uci)* Run a measurement from its settings
+
+### Development
+
+- *(bench)* Add a residuals command that replays the samples
+- *(eval)* Drop the king test and the black square assertions
+- *(uci)* Drop the duplicate table resize and node limit tests
+- *(docs)* Bring the roadmap up to date after null move
+- *(docs)* Update the documentation to match the code
+- *(bench)* Lay the speed report out as a table
+- *(docs)* Record the cost-aware ordering verdict
+- *(docs)* Record what an arena for the move lists could win
+- *(uci)* Drive the scripted tests through the shipped session loop
+- *(docs)* Split the session's threads from the protocol in the code map
+- *(docs)* Record the refined evaluation verdict
+- *(docs)* Record the correction history verdict
+- *(ci)* Check a landed commit's bench against its own pins
+- *(bench)* Label a residual by the decision, not the score [bench 8182450]
+- *(docs)* Correct the comments later commits left behind
+- *(docs)* Bring the readme and the docs tree up to date
+- *(ci)* Raise the gauntlet one rung for the coming release
+- *(workspace)* Optimise the profile the debug tests run under
+- *(uci)* Check the left-out bench depth on the settings alone
+- *(uci)* Pin the refusal the measuring tools lean on
+
 ## [0.4.0] - 2026-08-28
 
 ### Features
