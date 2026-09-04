@@ -10,7 +10,6 @@ compare against — is in place, so each of these arrives with its numbers: a
 `Bench:` trailer always, and an `Elo:` trailer from an SPRT when it changes how
 the engine plays. Roughly in the order they look worth doing.
 
-- a delta margin in quiescence
 - late move reductions
 - static exchange evaluation, so captures are ordered and pruned by what they win rather than what they grab
 - evaluate drawn positions

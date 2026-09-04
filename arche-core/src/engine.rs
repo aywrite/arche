@@ -62,6 +62,13 @@ const NULL_MOVE_REDUCTION: u8 = 2;
 // floor that search is quiescence, which still answers the question asked,
 // only from the captures alone.
 const NULL_MOVE_MIN_DEPTH: u8 = NULL_MOVE_REDUCTION + 1;
+// What a capture may still fall short of alpha by and be searched in
+// quiescence, with the captured piece counted as fully won: the positional
+// ground a capture can make up besides the piece it takes. One that falls
+// further is skipped rather than searched. Two hundred is the conventional
+// figure, and these piece values are the conventional ones, so nothing
+// argues for another.
+const DELTA_MARGIN: Score = 200;
 
 /// What the protocol interface asks of an engine: positions in, answers out.
 /// How an implementation searches is its own business, which is why the
@@ -220,6 +227,12 @@ pub struct SearchConfig {
     /// pass alone already stands above beta. The second shortcut, and a
     /// guess like the first: on in the default, off in the reference.
     pub null_move: bool,
+    /// Whether quiescence may skip a capture that leaves the standing eval
+    /// a margin short of alpha with its piece counted as fully won, rather
+    /// than search it down to the answer it expects. The third shortcut,
+    /// and a guess like the other two: on in the default, off in the
+    /// reference.
+    pub delta_margin: bool,
     /// Whether a node orders its quiet moves by what other nodes have
     /// learned: the killers for its distance from the root, and the history
     /// table under them. On in the default, off in the reference, which
@@ -286,6 +299,7 @@ impl SearchConfig {
             taint: TaintPolicy::Refuse,
             reverse_futility: false,
             null_move: false,
+            delta_margin: false,
             move_memory: false,
         }
     }
@@ -340,7 +354,11 @@ impl Default for SearchConfig {
     /// confidence with a reduced search where reverse futility buys it with
     /// a margin, so it prunes where a margin cannot reach.
     ///
-    /// The quiet memories are the fourth, and no kind of guess at all.
+    /// The delta margin is the fourth, the same guess made in quiescence:
+    /// a capture that cannot reach alpha with its piece counted as fully
+    /// won is skipped rather than searched.
+    ///
+    /// The quiet memories are the fifth, and no kind of guess at all.
     /// They prune nothing. What they move is how soon a node finds the move
     /// that cuts it off, which is most of what alpha-beta costs. The
     /// reference keeps them off so that its tree stays the one MVV-LVA and
@@ -350,6 +368,7 @@ impl Default for SearchConfig {
             taint: TaintPolicy::Rule50,
             reverse_futility: true,
             null_move: true,
+            delta_margin: true,
             move_memory: true,
         }
     }
@@ -643,8 +662,10 @@ impl AlphaBeta {
         // window the position landed, and the table stores the tighter bound
         let mut best = Score::MIN + 1;
         let in_check = self.board.in_check();
-        if !in_check {
-            let score = self.eval();
+        // kept past the stand pat for the margin below: a side in check has
+        // none, which is what exempts its evasions from the margin
+        let standing = if in_check { None } else { Some(self.eval()) };
+        if let Some(score) = standing {
             if score >= beta {
                 return Ok(Value::clean(score));
             }
@@ -691,6 +712,26 @@ impl AlphaBeta {
         let mut taint = Taint::default();
         let mut found_legal_move = false;
         for m in &moves {
+            // the delta margin: a capture that leaves the standing eval
+            // short of alpha even with its piece counted as fully won is
+            // expected to be worth less than alpha, which the stand pat
+            // already said of the node, so it is skipped rather than
+            // searched. A guess about the capture tree, so the reference
+            // does not make it. Promotions are exempt, because the piece
+            // that arrives is not the pawn that left; an evasion is exempt
+            // because a side in check has no standing eval to measure
+            // from; and a mate window alpha is exempt because a static
+            // eval cannot come near it, so against one the arithmetic
+            // would skip every capture, the mating one included
+            if let (Some(standing), Some(captured)) = (standing, m.capture) {
+                if self.config.delta_margin
+                    && !is_mate(alpha)
+                    && m.promote.is_none()
+                    && standing + crate::eval::material(captured) as Score + DELTA_MARGIN < alpha
+                {
+                    continue;
+                }
+            }
             if self.board.make_move(m) {
                 found_legal_move = true;
                 // undo before an abort can propagate, or the board would keep
@@ -1806,6 +1847,86 @@ mod search {
         let mut e = engine(game);
         let result = completed(e.search(1));
         assert_ne!(format!("{}", result.best_move), "a1a8");
+    }
+
+    #[test]
+    fn a_capture_that_cannot_reach_alpha_is_not_searched() {
+        // the rook can take the pawn and nothing else can take anything,
+        // so what quiescence does with the one capture is the node count:
+        // one node when it is skipped, two when it is searched down to the
+        // stand pat below it
+        let fen = "7k/8/8/8/R3p3/8/8/7K w - - 0 1";
+        let mut e = engine(Board::from_fen(fen).unwrap());
+        let standing = e.eval();
+        let gain = crate::eval::material(Piece::Pawn) as super::Score;
+
+        // one point past what the pawn and the whole margin can make up
+        let alpha = standing + gain + super::DELTA_MARGIN + 1;
+        let Ok(value) = e.quiescence(alpha, alpha + 1) else {
+            panic!("an unlimited search aborted");
+        };
+        assert_eq!(e.nodes, 1);
+        assert_eq!(value, Value::clean(standing));
+
+        // at the edge, where the pawn and the margin reach alpha exactly,
+        // the capture is searched
+        let mut e = engine(Board::from_fen(fen).unwrap());
+        let alpha = standing + gain + super::DELTA_MARGIN;
+        assert!(e.quiescence(alpha, alpha + 1).is_ok());
+        assert_eq!(e.nodes, 2);
+    }
+
+    #[test]
+    fn an_evasion_is_searched_whatever_the_margin_says() {
+        // the queen gives check and taking it is the one evasion, at an
+        // alpha no capture could reach under the margin: a side in check
+        // has no standing eval, so the margin does not apply and the
+        // evasion is searched for what it is really worth
+        let fen = "7k/8/8/8/8/8/1q6/K7 w - - 0 1";
+        let mut b = Board::from_fen(fen).unwrap();
+        let takes = play_named(&b, "a1b2");
+        assert!(b.make_move(&takes));
+        let expected = -crate::eval::eval(&b);
+
+        let mut e = engine(Board::from_fen(fen).unwrap());
+        let Ok(value) = e.quiescence(20_000, 20_001) else {
+            panic!("an unlimited search aborted");
+        };
+        assert_eq!(e.nodes, 2);
+        assert_eq!(value, Value::clean(expected));
+    }
+
+    #[test]
+    fn a_promotion_is_searched_whatever_the_margin_says() {
+        // the pawn can promote, taking the rook or pushing, at an alpha far
+        // past what any margin allows. A promotion is exempt because the
+        // piece that arrives is not the pawn that left, so the node visits
+        // children rather than answering from its standing eval alone
+        let fen = "r6k/1P6/8/8/8/8/8/7K w - - 0 1";
+        let mut e = engine(Board::from_fen(fen).unwrap());
+        assert!(e.quiescence(10_000, 10_001).is_ok());
+        assert!(e.nodes > 1, "no promotion was searched");
+    }
+
+    #[test]
+    fn a_mating_capture_is_searched_whatever_the_margin_says() {
+        // rook takes rook and mates on the back rank, asked under an alpha
+        // inside the mate window. A static eval is bounded by the material
+        // on the board, far under any mate score, so without the exemption
+        // the margin's arithmetic would call every capture hopeless here,
+        // the mating one included, and the node would answer from its
+        // standing eval with the mate unfound
+        let fen = "3r3k/6pp/8/8/8/8/8/3R3K w - - 0 1";
+        let mut e = engine(Board::from_fen(fen).unwrap());
+        let Ok(value) = e.quiescence(29_500, 29_501) else {
+            panic!("an unlimited search aborted");
+        };
+        assert!(e.nodes > 1, "the mating capture was not searched");
+        assert!(
+            super::is_mate(value.score) && value.score > 29_500,
+            "no mate found: {}",
+            value.score
+        );
     }
 
     #[test]

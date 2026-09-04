@@ -569,7 +569,7 @@ pub fn record(
 ///
 /// The reference and not the default, which is the premise the whole module
 /// rests on: a shortcut cannot be the judge of what it cost, so the search
-/// that answers the sampled positions is the one with both shortcuts off.
+/// that answers the sampled positions is the one with every shortcut off.
 /// Built here rather than inline so a test can hold the replay to it.
 fn replay_engine() -> AlphaBeta {
     AlphaBeta::with_config(Board::new(), REPLAY_TABLE_BYTES, SearchConfig::reference())

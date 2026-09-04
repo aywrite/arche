@@ -304,13 +304,14 @@ does cold, and the tests in `arche-core/src/engine.rs` that say so build
 the reference and hold it to that for good. They are the soundness check: a
 change that claims to be sound keeps them green whatever else it moves. The
 default is what the engine plays with and what the bench prints. It parts
-company with the reference in four places today: the fifty move guard,
-reverse futility, the null move pass, and the killers and history table the
-quiet moves are ordered by. `reference_node_counts_have_not_moved` pins the
-reference's tree beside the default's, so a commit's diff says which kind
-of change it carries. One that moves both counts touched the search the two
-share, the table, say; one that moves the default's alone is a shortcut or
-an ordering the reference does not use.
+company with the reference in five places today: the fifty move guard,
+reverse futility, the null move pass, the delta margin in quiescence, and
+the killers and history table the quiet moves are ordered by.
+`reference_node_counts_have_not_moved` pins the reference's tree beside the
+default's, so a commit's diff says which kind of change it carries. One that
+moves both counts touched the search the two share, the table, say; one that
+moves the default's alone is a shortcut or an ordering the reference does
+not use.
 
 ## What the shortcuts cost in accuracy
 
