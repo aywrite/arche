@@ -348,6 +348,21 @@ fen too and is pulled out so rows filter on it without a fen being parsed.
 Nothing is written to a file; redirection is the file mechanism here as
 everywhere else in the tooling.
 
+One kind is not a shortcut. A `shadow_futility` row is a reverse futility
+candidate: a node where every gate but the margin test passed and the
+evaluation stood at or above beta, recorded whether or not the test fired.
+The fired rows alone cannot price a tighter margin, because every one of
+them stood a whole margin above beta, so the region a tighter margin would
+newly fire on is empty in them. A shadow row claims the same
+`eval - 100 * depth` the live kind records, and the two therefore agree on
+a node that fired (a pair only a run at `every 1` can show: the salts keep
+the kinds' kept sets apart at coarser rates). On a candidate the margin
+declined, the claim sits below the beta beside it, and the crossing then
+says whether a margin firing there would have been wrong. The candidates
+are the ones the margin test reads: a node answered from the table never
+reaches it, so the population is conditioned on a table miss, for the
+shadow exactly as for the live kind.
+
 The run ends with a line for each kind at each depth: the count, the
 crossings and their rate, the mate references, then the minimum, median,
 ninetieth, ninety-ninth and maximum of the deltas. By depth and not pooled
