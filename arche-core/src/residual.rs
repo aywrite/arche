@@ -248,8 +248,8 @@ pub struct Sampler {
 
 impl Sampler {
     /// What a sampler holds when nothing says otherwise. Ten thousand fens
-    /// is a megabyte or so, and a run wanting more of the tree than that
-    /// should lower its rate rather than raise this.
+    /// is a megabyte or so; a calibration run that wants more of the tree
+    /// than that asks the residuals command for a larger cap.
     pub const DEFAULT_CAP: usize = 10_000;
 
     /// Records about one node in every `every`.
@@ -467,6 +467,9 @@ impl Summary {
 pub struct Report {
     pub depth: u8,
     pub every: u32,
+    /// The most samples the run would keep. Stated in the header only when
+    /// it is not the default, the way the overflow it governs is.
+    pub cap: usize,
     pub config: SearchConfig,
     /// Positions of the suite the recording run searched.
     pub positions: usize,
@@ -506,16 +509,23 @@ pub const REPLAY_TABLE_BYTES: usize = 4 * 1024 * 1024;
 /// reference entries into the table the measured search is reading, and
 /// change the very play being measured, so the two phases never overlap and
 /// the replay owns its own engine and its own table.
-pub fn run(positions: &[Position], depth: u8, every: u32, config: SearchConfig) -> Report {
+pub fn run(
+    positions: &[Position],
+    depth: u8,
+    every: u32,
+    cap: usize,
+    config: SearchConfig,
+) -> Report {
     let depth = depth.max(1);
     // the rate the sampler will really keep to, so that the header states
     // the run that happened rather than the words it was asked in
     let every = every.max(1);
-    let sampled = record(positions, depth, every, config);
+    let sampled = record(positions, depth, every, cap, config);
     let (rows, unplayable) = replay(&sampled.taken);
     Report {
         depth,
         every,
+        cap,
         config,
         positions: positions.len(),
         events: sampled.events,
@@ -538,9 +548,10 @@ pub fn record(
     positions: &[Position],
     depth: u8,
     every: u32,
+    cap: usize,
     config: SearchConfig,
 ) -> crate::residual::Sampled {
-    let mut sampler = Sampler::with_cap(every, Sampler::DEFAULT_CAP);
+    let mut sampler = Sampler::with_cap(every, cap);
     for position in positions {
         let board = Board::from_fen(&position.fen)
             .unwrap_or_else(|e| panic!("residual position {} does not parse: {}", position.id, e));
@@ -706,11 +717,16 @@ impl Report {
 /// thing to build on the chance a column wants it.
 impl fmt::Display for Report {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        write!(f, "residuals depth {} every {}", self.depth, self.every)?;
+        // the default on every header would describe nothing; a run asked
+        // for another cap states it, so the header still says how to rerun
+        // the run it heads
+        if self.cap != Sampler::DEFAULT_CAP {
+            write!(f, " cap {}", self.cap)?;
+        }
         write!(
             f,
-            "residuals depth {} every {} taint {} positions {} events {} records {}",
-            self.depth,
-            self.every,
+            " taint {} positions {} events {} records {}",
             self.config.taint_word(),
             self.positions,
             self.events,
@@ -1050,7 +1066,13 @@ mod tests {
 
     #[test]
     fn a_run_records_and_replays_the_suite() {
-        let report = run(&suite(), 4, 25, SearchConfig::default());
+        let report = run(
+            &suite(),
+            4,
+            25,
+            Sampler::DEFAULT_CAP,
+            SearchConfig::default(),
+        );
         assert_eq!(report.positions, 2);
         assert_eq!(report.depth, 4);
         assert_eq!(report.every, 25);
@@ -1077,7 +1099,7 @@ mod tests {
     fn recording_leaves_the_measured_search_where_it_was() {
         let suite = suite();
         let plain = bench::run_suite(&suite, 4, bench::TABLE_BYTES, SearchConfig::default());
-        let sampled = run(&suite, 4, 1, SearchConfig::default());
+        let sampled = run(&suite, 4, 1, Sampler::DEFAULT_CAP, SearchConfig::default());
         let watched = bench::run_suite(&suite, 4, bench::TABLE_BYTES, SearchConfig::default());
         assert!(!sampled.rows.is_empty());
         assert_eq!(plain.nodes(), watched.nodes());
@@ -1096,10 +1118,16 @@ mod tests {
     fn a_rate_keeps_the_events_its_keys_choose() {
         const EVERY: u32 = 7;
         let suite = suite();
-        let all = record(&suite, 4, 1, SearchConfig::default());
+        let all = record(&suite, 4, 1, Sampler::DEFAULT_CAP, SearchConfig::default());
         assert_eq!(all.overflowed, 0, "the cap got in the way of the count");
         assert!(all.taken.len() > 30, "{} events", all.taken.len());
-        let sampled = record(&suite, 4, EVERY, SearchConfig::default());
+        let sampled = record(
+            &suite,
+            4,
+            EVERY,
+            Sampler::DEFAULT_CAP,
+            SearchConfig::default(),
+        );
         assert_eq!(sampled.overflowed, 0);
         let threshold = u64::MAX / u64::from(EVERY);
         // as multisets: the two runs agree on which events they kept, and
@@ -1234,7 +1262,13 @@ mod tests {
     /// two runs that behaved identically print identical headers.
     #[test]
     fn a_rate_of_zero_is_reported_as_the_rate_that_ran() {
-        let report = run(&suite(), 2, 0, SearchConfig::default());
+        let report = run(
+            &suite(),
+            2,
+            0,
+            Sampler::DEFAULT_CAP,
+            SearchConfig::default(),
+        );
         assert_eq!(report.every, 1);
         assert!(
             report.to_string().starts_with("residuals depth 2 every 1 "),
@@ -1243,9 +1277,51 @@ mod tests {
         );
     }
 
+    /// The cap the run was asked for reaches the sampler: a run capped at
+    /// two keeps two records of everything it offered and counts the rest.
+    #[test]
+    fn the_cap_asked_for_bounds_the_run() {
+        let report = run(&suite(), 3, 1, 2, SearchConfig::default());
+        assert_eq!(report.cap, 2);
+        // each kept sample is replayed into a row or counted unplayable
+        assert_eq!(report.rows.len() + report.unplayable, 2);
+        assert!(report.overflowed > 0, "{}", report);
+        assert!(report.to_string().contains(" cap 2 "), "{}", report);
+    }
+
+    /// The cap is a setting like the rate, so a header states one that is
+    /// not the default and a run can be rerun from what it printed. The
+    /// default on every header would describe nothing, the same rule the
+    /// overflow and unplayable counts follow.
+    #[test]
+    fn a_cap_off_the_default_is_stated_in_the_header() {
+        let mut report = report_of(Vec::new());
+        assert!(
+            report
+                .to_string()
+                .starts_with("residuals depth 4 every 1 taint "),
+            "{}",
+            report
+        );
+        report.cap = 25;
+        assert!(
+            report
+                .to_string()
+                .starts_with("residuals depth 4 every 1 cap 25 taint "),
+            "{}",
+            report
+        );
+    }
+
     #[test]
     fn the_report_names_its_settings_and_ends_in_a_summary() {
-        let report = run(&suite(), 3, 20, SearchConfig::default());
+        let report = run(
+            &suite(),
+            3,
+            20,
+            Sampler::DEFAULT_CAP,
+            SearchConfig::default(),
+        );
         let text = report.to_string();
         assert!(
             text.starts_with(&format!(
@@ -1296,6 +1372,7 @@ mod tests {
         let report = Report {
             depth: 4,
             every: 10,
+            cap: Sampler::DEFAULT_CAP,
             config: SearchConfig::default(),
             positions: 1,
             events: 40,
@@ -1371,6 +1448,7 @@ mod tests {
         Report {
             depth: 4,
             every: 1,
+            cap: Sampler::DEFAULT_CAP,
             config: SearchConfig::default(),
             positions: 1,
             events: 1_000,
@@ -1531,6 +1609,7 @@ mod tests {
         let mut report = Report {
             depth: 4,
             every: 1,
+            cap: Sampler::DEFAULT_CAP,
             config: SearchConfig::default(),
             positions: 1,
             events: 0,

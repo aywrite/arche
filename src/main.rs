@@ -19,7 +19,7 @@ Usage:
   arche bench [depth] [hash <MB>] [taint refuse|trust|skip|rule50] [audit]
                         search a fixed suite and print what each search counted,
                         with audit adding what the table's key signature cost
-  arche residuals [depth] [every <n>] [taint refuse|trust|skip|rule50]
+  arche residuals [depth] [every <n>] [cap <n>] [taint refuse|trust|skip|rule50]
                         search the same suite, then ask the reference search
                         what the nodes the shortcuts answered were worth
   arche --version, -V   print the version
@@ -67,10 +67,10 @@ fn main() -> ExitCode {
                 ExitCode::from(2)
             }
         },
-        // `arche residuals [depth] [every <n>] [taint <policy>]` measures
-        // what the search's shortcuts cost in accuracy. An argument and not
-        // a uci command: it takes minutes and answers a research question,
-        // and nothing about a live session wants either
+        // `arche residuals [depth] [every <n>] [cap <n>] [taint <policy>]`
+        // measures what the search's shortcuts cost in accuracy. An
+        // argument and not a uci command: it takes minutes and answers a
+        // research question, and nothing about a live session wants either
         Some("residuals") => match uci::residual_settings(&Params::of(&args.join(" "))) {
             Ok(settings) => {
                 print!("{}", settings.run());

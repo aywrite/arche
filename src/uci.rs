@@ -579,18 +579,20 @@ impl BenchSettings {
 }
 
 /// What a residuals argument asked for: `residuals [depth] [every <n>]
-/// [taint refuse|trust|skip|rule50]`. The depth and the policy are the
-/// bench's own when absent, so a residual distribution is measured over the
-/// tree the bench describes; the rate is how much of that tree is sampled.
+/// [cap <n>] [taint refuse|trust|skip|rule50]`. The depth and the policy
+/// are the bench's own when absent, so a residual distribution is measured
+/// over the tree the bench describes; the rate is how much of that tree is
+/// sampled, and the cap is the most of it the run keeps.
 pub struct ResidualSettings {
     pub depth: u8,
     pub every: u32,
+    pub cap: usize,
     pub config: SearchConfig,
 }
 
 /// The words a residuals run takes after its depth, read the way the bench
 /// reads its own.
-const RESIDUAL_KEYWORDS: [&str; 2] = ["every", "taint"];
+const RESIDUAL_KEYWORDS: [&str; 3] = ["every", "cap", "taint"];
 
 /// Reads the residual settings, or says which word could not be read. The
 /// same shape as `bench_settings`, and for the same reason: running the
@@ -610,6 +612,11 @@ pub fn residual_settings(params: &Params) -> Result<ResidualSettings, String> {
         Param::Read(every) => every,
         Param::Unreadable(word) => return Err(format!("every: {word}")),
     };
+    let cap = match params.parse::<usize>("cap") {
+        Param::Absent => residual::Sampler::DEFAULT_CAP,
+        Param::Read(cap) => cap,
+        Param::Unreadable(word) => return Err(format!("cap: {word}")),
+    };
     let config = match params.value("taint") {
         None => SearchConfig::default(),
         Some(word) => SearchConfig::with_taint(word).ok_or_else(|| format!("taint: {word}"))?,
@@ -617,6 +624,7 @@ pub fn residual_settings(params: &Params) -> Result<ResidualSettings, String> {
     Ok(ResidualSettings {
         depth,
         every,
+        cap,
         config,
     })
 }
@@ -626,7 +634,13 @@ impl ResidualSettings {
     /// bench's own positions, so the distribution is measured over the
     /// tree the bench describes.
     pub fn run(&self) -> residual::Report {
-        residual::run(&bench::positions(), self.depth, self.every, self.config)
+        residual::run(
+            &bench::positions(),
+            self.depth,
+            self.every,
+            self.cap,
+            self.config,
+        )
     }
 }
 
@@ -1509,30 +1523,47 @@ go depth 3
     /// The settings alone, not a run: the argument searches the suite twice
     /// over and reading what it was asked for is the part worth pinning.
     #[test]
-    fn a_residuals_argument_reads_its_depth_rate_and_policy() {
+    fn a_residuals_argument_reads_its_depth_rate_cap_and_policy() {
+        const CAP: usize = residual::Sampler::DEFAULT_CAP;
         let read = |line: &str| {
             let settings = residual_settings(&Params::of(line)).expect(line);
             (
                 settings.depth,
                 settings.every,
+                settings.cap,
                 settings.config.taint_word().to_string(),
             )
         };
         assert_eq!(
             read("residuals"),
-            (bench::DEPTH, 1000, "rule50".to_string())
+            (bench::DEPTH, 1000, CAP, "rule50".to_string())
         );
-        assert_eq!(read("residuals 4"), (4, 1000, "rule50".to_string()));
-        assert_eq!(read("residuals 4 every 50"), (4, 50, "rule50".to_string()));
+        assert_eq!(read("residuals 4"), (4, 1000, CAP, "rule50".to_string()));
+        assert_eq!(
+            read("residuals 4 every 50"),
+            (4, 50, CAP, "rule50".to_string())
+        );
         // a word standing where the depth would be means the depth was left
         // out rather than mistyped, the same rule the bench reads by
         assert_eq!(
             read("residuals every 50 taint trust"),
-            (bench::DEPTH, 50, "trust".to_string())
+            (bench::DEPTH, 50, CAP, "trust".to_string())
+        );
+        assert_eq!(
+            read("residuals cap 500"),
+            (bench::DEPTH, 1000, 500, "rule50".to_string())
         );
         // and zero is a rate to ask for: it records every node a shortcut
         // answers, up to the cap
-        assert_eq!(read("residuals 2 every 0"), (2, 0, "rule50".to_string()));
+        assert_eq!(
+            read("residuals 2 every 0"),
+            (2, 0, CAP, "rule50".to_string())
+        );
+        // a calibration run raises the cap rather than patching the source
+        assert_eq!(
+            read("residuals 4 every 50 cap 200000"),
+            (4, 50, 200_000, "rule50".to_string())
+        );
     }
 
     #[test]
@@ -1541,6 +1572,7 @@ go depth 3
             ("residuals abc", "depth: abc"),
             ("residuals 300", "depth: 300"),
             ("residuals 4 every lots", "every: lots"),
+            ("residuals 4 cap lots", "cap: lots"),
             ("residuals 4 taint maybe", "taint: maybe"),
         ] {
             assert_eq!(
