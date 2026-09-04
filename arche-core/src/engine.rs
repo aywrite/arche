@@ -857,21 +857,61 @@ impl AlphaBeta {
     /// propagate, or the board would keep the aborted line; propagating is
     /// what keeps the meaningless score of an aborted frame away from
     /// every store above. The full width search enters every child through
-    /// here, so a reduction or a re-search, when one arrives, starts as an
-    /// edit here rather than at three sites.
+    /// here, so the window discipline in `windowed` is written once rather
+    /// than at three sites, and every caller says only whether its move is
+    /// the node's first.
     fn search_child(
         &mut self,
         m: &Play,
         alpha: Score,
         beta: Score,
         depth: u8,
+        first: bool,
     ) -> Result<Option<Value>, Aborted> {
         if !self.board.make_move(m) {
             return Ok(None);
         }
-        let result = self.alpha_beta(-beta, -alpha, depth - 1, true);
+        let result = self.windowed(alpha, beta, depth, first);
         self.board.undo_move();
-        Ok(Some(-result?))
+        Ok(Some(result?))
+    }
+
+    /// Principal variation search: the recursion behind one made move. The
+    /// node's first move is searched with the window as it stands. Every
+    /// later move is asked a cheaper question first, a zero width search at
+    /// the same depth, which can only say whether the move beats alpha; one
+    /// that does, at a node whose own window is wider than the zero one, is
+    /// searched again with the full window for the score the node needs. A
+    /// zero width node never asks twice, since its window is the re-search
+    /// window already. Both passes negate through the same call, so a mate
+    /// score is adjusted per ply the same way on each.
+    ///
+    /// A body of its own rather than `search_child`'s so that an abort from
+    /// either pass runs through the one undo there.
+    fn windowed(
+        &mut self,
+        alpha: Score,
+        beta: Score,
+        depth: u8,
+        first: bool,
+    ) -> Result<Value, Aborted> {
+        if first {
+            return Ok(-self.alpha_beta(-beta, -alpha, depth - 1, true)?);
+        }
+        let probe = -self.alpha_beta(-alpha - 1, -alpha, depth - 1, true)?;
+        // `alpha + 1 >= beta` is the window being the zero one, spelt
+        // without the subtraction: `beta - alpha` overflows a Score when
+        // the window is the root's
+        if probe.score <= alpha || alpha + 1 >= beta {
+            return Ok(probe);
+        }
+        let proof = -self.alpha_beta(-beta, -alpha, depth - 1, true)?;
+        // the probe's fail high is what asked for the second search, so
+        // whatever the probe's answer depended on, this one does too
+        Ok(Value::with_taint(
+            proof.score,
+            proof.tainted || probe.tainted,
+        ))
     }
 
     /// A fail high at a full width node: the move that proved it goes to
@@ -971,7 +1011,7 @@ impl AlphaBeta {
         if let Some(tt) = pv_play {
             if self.board.is_pseudo_legal(&tt) {
                 tt_tried = Some(tt);
-                if let Some(value) = self.search_child(&tt, alpha, beta, depth)? {
+                if let Some(value) = self.search_child(&tt, alpha, beta, depth, true)? {
                     found_legal_move = true;
                     // the table's move is searched before the rest are even
                     // generated, so it taints this node the same way any other
@@ -1007,7 +1047,7 @@ impl AlphaBeta {
             if tt_tried == Some(*m) {
                 continue;
             }
-            let Some(value) = self.search_child(m, alpha, beta, depth)? else {
+            let Some(value) = self.search_child(m, alpha, beta, depth, !found_legal_move)? else {
                 continue;
             };
             found_legal_move = true;
@@ -1149,7 +1189,7 @@ impl AlphaBeta {
         }
 
         for m in &moves {
-            match self.search_child(m, alpha, beta, depth) {
+            match self.search_child(m, alpha, beta, depth, !found_legal_move) {
                 Err(Aborted) => {
                     return SearchOutcome::Aborted(best.map(|play| self.result_for(play, alpha)));
                 }
@@ -1648,6 +1688,87 @@ mod search {
         let takes = play_named(&e.board, "d2d5");
         assert_eq!(result.best_move, takes);
         assert_eq!(e.pv_line().line.first(), Some(&takes));
+    }
+
+    #[test]
+    fn a_fail_high_on_a_later_move_is_re_searched_once_at_the_full_window() {
+        // Three quiet moves and nothing for either side to capture, so at
+        // depth one every child visit is exactly two nodes: the full width
+        // frame and the quiescence stand pat under it. That makes the
+        // re-search countable. With the middle scoring move planted as the
+        // table's, the root searches it first with the full window, the
+        // worse move fails its zero width search, and the best move alone
+        // comes back above alpha and is searched a second time: the root's
+        // node plus four child visits. Planted with the best move instead,
+        // nothing fails high and the second search never happens.
+        const FEN: &str = "8/8/8/8/8/8/2k4P/K7 w - - 0 1";
+        let mut b = Board::from_fen(FEN).unwrap();
+        let moves = b.generate_moves();
+        let mut scored: Vec<(Play, super::Score)> = Vec::new();
+        for m in &moves {
+            // generation is pseudo legal, and the king stepping next to the
+            // other one is refused here the way the search refuses it
+            if !b.make_move(m) {
+                continue;
+            }
+            scored.push((*m, -crate::eval::eval(&b)));
+            b.undo_move();
+        }
+        assert_eq!(scored.len(), 3);
+        scored.sort_by_key(|(_, score)| *score);
+        // distinct scores, or there is no middle one to plant
+        assert!(scored[0].1 < scored[1].1 && scored[1].1 < scored[2].1);
+        let (middle, _) = scored[1];
+        let (best, best_score) = scored[2];
+
+        let mut e = engine(Board::from_fen(FEN).unwrap());
+        e.transpositions
+            .record_best(&e.board, middle, Value::clean(0), SEEDED_DEPTH);
+        let result = completed(e.search(1));
+        assert_eq!(result.best_move, best);
+        assert_eq!(result.score, best_score);
+        assert_eq!(e.nodes, 9);
+
+        let mut e = engine(Board::from_fen(FEN).unwrap());
+        e.transpositions
+            .record_best(&e.board, best, Value::clean(0), SEEDED_DEPTH);
+        let result = completed(e.search(1));
+        assert_eq!(result.best_move, best);
+        assert_eq!(result.score, best_score);
+        assert_eq!(e.nodes, 7);
+    }
+
+    #[test]
+    fn a_re_search_answers_with_its_own_score_not_the_probes() {
+        // The node count above says a re-search ran, not whose answer came
+        // back: a windowed that re-searched and then returned the probe's
+        // bound would count the same. So the probe is made to fail high
+        // short of the exact score, with a ceiling planted at the position
+        // the move leaves, one point inside the probe's window and outside
+        // the re-search's. The probe cuts on it and comes back at alpha
+        // plus one; the re-search cannot cut and has to look. The exact
+        // score comes from an engine of its own, whose table nothing here
+        // reads, and only the re-search's answer matches it.
+        const FEN: &str = "8/8/8/8/8/8/2k4P/K7 w - - 0 1";
+        let mut oracle = reference(Board::from_fen(FEN).unwrap());
+        let m = play_named(&oracle.board, "h2h4");
+        assert!(oracle.board.make_move(&m));
+        let Ok(exact) = oracle.windowed(super::Score::MIN + 2, super::Score::MAX, 2, true) else {
+            panic!("an unlimited search aborted");
+        };
+
+        let alpha = exact.score - 50;
+        let beta = exact.score + 50;
+        let mut e = reference(Board::from_fen(FEN).unwrap());
+        let m = play_named(&e.board, "h2h4");
+        assert!(e.board.make_move(&m));
+        let reply = play_named(&e.board, "c2c3");
+        e.transpositions
+            .record_ceiling(&e.board, reply, Value::clean(-alpha - 1), SEEDED_DEPTH);
+        let Ok(value) = e.windowed(alpha, beta, 2, false) else {
+            panic!("an unlimited search aborted");
+        };
+        assert_eq!(value.score, exact.score);
     }
 
     #[test]
@@ -2984,12 +3105,13 @@ mod search {
         // the old cap was twenty plies measured from the root, so no line
         // could report a selective depth past it whatever the position. A
         // sharp middlegame searched shallow reaches further than that in
-        // captures alone now. Depth five is the shallowest search that
-        // clears the old cap with room to spare; eight proved the same
-        // thing for a hundred times the nodes, two minutes of it in a
-        // debug run
+        // captures alone now. Depth five used to be the shallowest search
+        // that cleared the old cap with room to spare; principal variation
+        // search cut the tree enough that it stops at twenty exactly, and
+        // six clears by a single ply, so this asks for seven, which
+        // reaches twenty eight
         let mut e = engine(Board::from_fen(SHARP_MIDDLEGAME).unwrap());
-        let result = completed(e.search(5));
+        let result = completed(e.search(7));
         assert!(
             result.selective_depth > 20,
             "quiescence stopped at {} plies",
@@ -3325,22 +3447,21 @@ mod sampling {
         }
     }
 
-    /// Both windows reach the hook. A search that only ever sampled one of
-    /// them would leave the column saying nothing, and it would say it
-    /// without failing anything.
+    /// The window a real search hands the hook. Principal variation search
+    /// puts every child after a node's first inside a zero width window,
+    /// and at this depth that is where every sampled shortcut sits: a
+    /// search this size no longer reaches a shortcut through an open
+    /// window at all. The open column is pinned by
+    /// `the_recorded_beta_is_the_one_the_gate_cleared`, which drives the
+    /// hook directly with both windows.
     #[test]
-    fn both_windows_are_recorded() {
+    fn the_windows_a_search_records_are_the_zero_ones() {
         let mut e = engine(SHARP_MIDDLEGAME);
         e.sample_shortcuts(Sampler::every(1));
         e.search(6);
         let taken = collected(&mut e).taken;
-        for window in [Window::Zero, Window::Open] {
-            assert!(
-                taken.iter().any(|s| s.window == window),
-                "nothing recorded at a {} window",
-                window.word()
-            );
-        }
+        assert!(!taken.is_empty());
+        assert!(taken.iter().all(|s| s.window == Window::Zero));
     }
 
     /// Every kind reaches the hook, not only whichever fires first. A kind
