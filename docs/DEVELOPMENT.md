@@ -319,7 +319,7 @@ often the shortcut was wrong to remove it, and that is the question
 `arche residuals` answers:
 
 ```
-target/release/arche residuals [depth] [every <n>] [taint refuse|trust|skip|rule50]
+target/release/arche residuals [depth] [every <n>] [cap <n>] [taint refuse|trust|skip|rule50]
 ```
 
 It searches the same suite the bench does, samples the nodes its shortcuts
@@ -394,9 +394,11 @@ low enough to finish in minutes the two counts run three orders apart. A
 rate of zero at a low sampling rate is not a rate of zero. Raise the rate,
 or read the events count and say how small a rate the run could have seen.
 
-The buffer holds ten thousand samples and says in the header when it had to
-drop some. Past the cap it keeps the ten thousand smallest keys rather than
-the first ten thousand arrivals, which is a uniform draw from the whole run
+The buffer holds ten thousand samples unless `cap <n>` asks for another,
+and the header says when it had to drop some. A cap off the default is
+stated there too, so a run can be rerun from what it printed. Past the cap
+it keeps the smallest keys rather than the first arrivals, which is a
+uniform draw from the whole run
 and is the same draw whichever order the run met the nodes in. That holds
 for the set of keys and not for what sits behind a repeated one: a deepening
 search revisits a position at a depth under a kind, so keys tie, and the
@@ -404,6 +406,13 @@ samples behind a tie differ in their beta and their window because they are
 the node's first answer and its second. Which member of a tied group
 survives the cap is whichever the heap surfaces, so a run offering the same
 events in another order can keep the other member.
+
+The kinds share the one buffer. Keys are uniform whatever the kind, so past
+the cap each kind keeps a share in proportion to its volume, and the shadow
+kind's volume is the largest by construction; a calibration run that wants
+its live strata whole raises the cap rather than reasoning from a crowded
+one. The events count in the header counts offers, so a fired reverse
+futility node contributes twice, once live and once shadow.
 
 The recording and the replay never overlap. A reference search run inside the
 measured one would store reference entries in the table the measured search

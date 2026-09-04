@@ -45,7 +45,7 @@ The program starts in UCI mode immediately. Two arguments do anything else.
 `bench [depth] [hash <MB>] [taint refuse|trust|skip|rule50] [audit]` searches a fixed set of
 positions and prints what each search counted, for measuring a change to the search or the
 speed of a machine, and is a UCI command as well as an argument.
-`residuals [depth] [every <n>] [taint refuse|trust|skip|rule50]` searches the same positions and
+`residuals [depth] [every <n>] [cap <n>] [taint refuse|trust|skip|rule50]` searches the same positions and
 then asks a search with the shortcuts off what the nodes they answered were really worth.
 `--version` and `--help` are answered too.
 
