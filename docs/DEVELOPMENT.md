@@ -339,12 +339,13 @@ Each sample is a row of `kind depth window halfmove beta eval_beta claimed
 reference delta crossed fen`, whitespace separated with the fen last so a row
 parses left to right. The window is `zw` or `open`, read from alpha and beta
 at the node: the fuller pv, cut and all classification needs the node's
-outcome, which a sample taken at a cutoff cannot know. In practice the
-column reads `open` on about ninety-six samples in a hundred, and a `zw`
-today means a node inside a null move pass, since nothing else in the search
-opens a zero width window yet; the column starts saying more the day one
-does. The halfmove column is the fifty move counter, which travels in the
-fen too and is pulled out so rows filter on it without a fen being parsed.
+outcome, which a sample taken at a cutoff cannot know. In practice principal
+variation search puts every child after a node's first inside a zero width
+window, so the column reads `zw` on nearly every row, and an `open` row is a
+node still inside its window's first move, or inside the re-search a zero
+width fail high asked for. The halfmove column is the fifty move counter,
+which travels in the fen too and is pulled out so rows filter on it without
+a fen being parsed.
 Nothing is written to a file; redirection is the file mechanism here as
 everywhere else in the tooling.
 
