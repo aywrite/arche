@@ -69,7 +69,9 @@ fn the_residuals_argument_prints_a_header_rows_and_a_summary() {
         let words: Vec<&str> = row.split(' ').collect();
         assert!(words.len() > 11, "row: {}", row);
         assert!(
-            words[0] == "reverse_futility" || words[0] == "null_move",
+            words[0] == "reverse_futility"
+                || words[0] == "null_move"
+                || words[0] == "shadow_futility",
             "row: {}",
             row
         );
@@ -97,12 +99,14 @@ fn the_residuals_argument_prints_a_header_rows_and_a_summary() {
     // a line a kind at a depth, in kind order, with the depths a run
     // happened to reach
     let summary = &lines[summary_at + 1..];
-    assert!(summary.len() >= 2, "summary: {:?}", summary);
+    assert!(summary.len() >= 3, "summary: {:?}", summary);
     let kind_at = |line: &str| {
         if line.starts_with("reverse_futility") {
             0
         } else if line.starts_with("null_move") {
             1
+        } else if line.starts_with("shadow_futility") {
+            2
         } else {
             panic!("summary line names no kind: {}", line)
         }
@@ -110,7 +114,7 @@ fn the_residuals_argument_prints_a_header_rows_and_a_summary() {
     let mut order: Vec<usize> = summary.iter().map(|line| kind_at(line)).collect();
     let grouped = order.clone();
     order.dedup();
-    assert_eq!(order, vec![0, 1], "kinds out of order: {:?}", summary);
+    assert_eq!(order, vec![0, 1, 2], "kinds out of order: {:?}", summary);
     assert_eq!(grouped.len(), summary.len());
     assert!(
         summary.iter().any(|line| line.contains(" median ")),

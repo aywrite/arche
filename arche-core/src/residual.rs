@@ -29,38 +29,58 @@ use crate::misc::Score;
 use std::collections::BinaryHeap;
 use std::fmt;
 
-/// The shortcut that answered a node.
+/// The shortcut that answered a node, or the shadow lane that watched one
+/// it could have.
 ///
-/// Two of them today, which are the two the default configuration turns on.
-/// A third would be one arm here and one call at wherever it returns.
+/// The first two are the shortcuts the default configuration turns on.
+/// Another shortcut would be one arm here and one call at wherever it
+/// returns.
+///
+/// The shadow kind answers nothing. It records every reverse futility
+/// candidate, a node where the eval stood at or above beta with the other
+/// gates passed, whether or not the margin test then fired. The live rows
+/// cannot price a tighter margin on their own: every one of them stood a
+/// whole margin above beta, so the region a tighter margin would newly
+/// fire on has no data. The shadow rows are that population whole.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum Shortcut {
     /// The node stood far enough above beta by its static evaluation alone.
     ReverseFutility,
     /// A reduced search of the position left by passing came back above beta.
     NullMove,
+    /// A reverse futility candidate, fired or not.
+    ShadowFutility,
 }
 
 impl Shortcut {
     /// The kinds, for a reader summarising by them.
-    pub const KINDS: [Shortcut; 2] = [Shortcut::ReverseFutility, Shortcut::NullMove];
+    pub const KINDS: [Shortcut; 3] = [
+        Shortcut::ReverseFutility,
+        Shortcut::NullMove,
+        Shortcut::ShadowFutility,
+    ];
 
-    /// The word a row prints, which names the `SearchConfig` switch that
-    /// turns the shortcut on.
+    /// The word a row prints. For the live kinds it names the
+    /// `SearchConfig` switch that turns the shortcut on; the shadow kind
+    /// has no switch and is named for the shortcut it watches.
     pub fn word(self) -> &'static str {
         match self {
             Shortcut::ReverseFutility => "reverse_futility",
             Shortcut::NullMove => "null_move",
+            Shortcut::ShadowFutility => "shadow_futility",
         }
     }
 
-    /// What the kind contributes to a sampling key. Two arbitrary constants
-    /// far apart in their bits, so that the same position answered by both
-    /// shortcuts is two independent draws rather than one taken twice.
+    /// What the kind contributes to a sampling key. Arbitrary constants
+    /// far apart in their bits, so each kind keeps its own uniform draw
+    /// of its own events. The draws are not joint: the salts differ high
+    /// in the word, so at any rate coarser than one in four the same
+    /// position and depth is never kept under two kinds at once.
     fn salt(self) -> u64 {
         match self {
             Shortcut::ReverseFutility => 0x51ed_2701_c3f8_4d95,
             Shortcut::NullMove => 0xa24b_af09_7d16_e8c3,
+            Shortcut::ShadowFutility => 0x38c6_54da_0b9e_7f12,
         }
     }
 }
@@ -941,10 +961,13 @@ mod tests {
         assert_eq!(sampled.overflowed, 3);
     }
 
+    /// The live kinds print the switches that turn them on; the shadow
+    /// kind has no switch and prints the shortcut it watches.
     #[test]
-    fn the_kinds_print_the_switches_that_turn_them_on() {
+    fn the_kinds_print_their_words() {
         assert_eq!(Shortcut::ReverseFutility.word(), "reverse_futility");
         assert_eq!(Shortcut::NullMove.word(), "null_move");
+        assert_eq!(Shortcut::ShadowFutility.word(), "shadow_futility");
     }
 
     /// The window is read from the bounds and says which of the two
@@ -1324,6 +1347,7 @@ mod tests {
         );
         // a kind with nothing recorded says so rather than going missing
         assert!(text.contains("\nreverse_futility 0\n"));
+        assert!(text.contains("\nshadow_futility 0\n"));
     }
 
     /// A row made up, so a test can put a reference where it wants one.

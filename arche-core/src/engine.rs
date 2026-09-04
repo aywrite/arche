@@ -430,13 +430,15 @@ impl AlphaBeta {
         self.sampler.take()
     }
 
-    /// One node a shortcut has just answered, offered to the sampler.
+    /// One node a shortcut has just answered, or a shadow candidate it was
+    /// measured against, offered to the sampler.
     ///
     /// The fen is built inside the closure, so an event the key turns away
     /// costs a hash and nothing else, and an engine with no sampler costs
-    /// the option check alone. Both hooks sit on a return out of a node
+    /// the option check alone. The live hooks sit on a return out of a node
     /// rather than in the loop, so neither is on a path the search takes
-    /// more than once per cutoff.
+    /// more than once per cutoff; the shadow hook sits beside the margin
+    /// test it watches, once per node the test reads.
     ///
     /// The evaluation is passed in rather than taken again here, so a row
     /// states the number the gate really read.
@@ -463,7 +465,7 @@ impl AlphaBeta {
             return;
         };
         // after the guard, so an engine with no sampler pays for no hash.
-        // Both call sites check the option before calling, so nothing
+        // Every call site checks the option before calling, so nothing
         // reaches the arm above today; it stays because the guard belongs
         // here rather than in the caller's hands alone
         let key = crate::residual::sample_key(board.key, kind, depth);
@@ -801,6 +803,14 @@ impl AlphaBeta {
         // about the position and consulted no path to reach it
         if margin {
             let floor = eval.saturating_sub(REVERSE_FUTILITY_MARGIN * depth as Score);
+            // the shadow row: every candidate the margin test is about to
+            // read, offered whether or not it fires. The fired rows alone
+            // all stood a whole margin above beta, so the region a tighter
+            // margin would newly fire on has no data without these. Nothing
+            // is answered here; the test below runs exactly as it would have
+            if self.sampler.is_some() && eval >= beta {
+                self.sample(Shortcut::ShadowFutility, depth, floor, alpha, beta, eval);
+            }
             if floor >= beta {
                 if self.sampler.is_some() {
                     self.sample(Shortcut::ReverseFutility, depth, floor, alpha, beta, eval);
@@ -3015,12 +3025,13 @@ mod search {
 
 /// The residual sampler seen from the search: that it is off unless it is
 /// asked for, and that what it records describes the nodes the shortcuts
-/// answered. What the samples are worth is the residuals command's business.
+/// answered and the candidates the margin was measured against. What the
+/// samples are worth is the residuals command's business.
 #[cfg(test)]
 mod sampling {
     use super::{
-        AlphaBeta, Board, Engine, REVERSE_FUTILITY_MARGIN, Score, SearchConfig, SearchParameters,
-        Taint,
+        AlphaBeta, Board, Engine, REVERSE_FUTILITY_MARGIN, REVERSE_FUTILITY_MAX_DEPTH, Score,
+        SearchConfig, SearchParameters, Taint,
     };
     use crate::residual::{Sample, Sampler, Shortcut, Window, sample_key};
     use pretty_assertions::assert_eq;
@@ -3076,14 +3087,29 @@ mod sampling {
         e.take_sampler().expect("a sampler was installed").drain()
     }
 
+    /// The one sample of a kind in what was taken. Drain hands samples back
+    /// in key order, which says nothing, so a test reads a row by its kind.
+    fn one_of(taken: &[Sample], kind: Shortcut) -> &Sample {
+        let mut of_kind = taken.iter().filter(|s| s.kind == kind);
+        let sample = of_kind
+            .next()
+            .unwrap_or_else(|| panic!("nothing taken for {}", kind.word()));
+        assert!(
+            of_kind.next().is_none(),
+            "more than one {} sample",
+            kind.word()
+        );
+        sample
+    }
+
     #[test]
-    fn every_sample_describes_a_node_a_shortcut_answered() {
+    fn every_sample_describes_a_node_a_hook_offered() {
         const DEPTH: u8 = 5;
         let mut e = engine(SHARP_MIDDLEGAME);
         e.sample_shortcuts(Sampler::every(1));
         e.search(DEPTH);
         let sampled = collected(&mut e);
-        assert!(!sampled.taken.is_empty(), "the shortcuts answered nothing");
+        assert!(!sampled.taken.is_empty(), "the hooks offered nothing");
         for sample in &sampled.taken {
             // the fen is the whole point: a sample nothing can search again
             // measures nothing
@@ -3098,17 +3124,20 @@ mod sampling {
     }
 
     /// The decision columns, taken from the node the shortcut answered
-    /// rather than worked out afterwards. The claim clears the beta beside
-    /// it, because that is what a shortcut fires on, and the fifty move
+    /// rather than worked out afterwards. A live claim clears the beta
+    /// beside it, because that is what a shortcut fires on; a shadow claim
+    /// need not, which is the point of it, and its evaluation column stands
+    /// at or above beta because that is what a candidate is. The fifty move
     /// column agrees with the fen it was taken from.
     ///
     /// The identity ties the claim, the evaluation column and the depth
     /// together: reverse futility claims `eval - margin * depth` and fires
     /// when that clears beta, so `claimed - beta` and
-    /// `eval_beta - margin * depth` are the same number written two ways. It
-    /// catches a column built from the wrong evaluation or scaled by the
-    /// wrong depth. It cannot catch the wrong bound, since both sides are
-    /// measured against whatever the beta column states; that is what
+    /// `eval_beta - margin * depth` are the same number written two ways,
+    /// and a shadow row claims the same expression. It catches a column
+    /// built from the wrong evaluation or scaled by the wrong depth. It
+    /// cannot catch the wrong bound, since both sides are measured against
+    /// whatever the beta column states; that is what
     /// `the_recorded_beta_is_the_one_the_gate_cleared` is for.
     #[test]
     fn every_sample_carries_the_decision_it_was_taken_at() {
@@ -3116,10 +3145,20 @@ mod sampling {
         e.sample_shortcuts(Sampler::every(1));
         e.search(5);
         for sample in collected(&mut e).taken {
-            assert!(sample.claimed >= sample.beta, "{:?}", sample);
+            match sample.kind {
+                Shortcut::ReverseFutility | Shortcut::NullMove => {
+                    assert!(sample.claimed >= sample.beta, "{:?}", sample);
+                }
+                Shortcut::ShadowFutility => {
+                    assert!(sample.eval_beta >= 0, "{:?}", sample);
+                }
+            }
             let board = Board::from_fen(&sample.fen).expect("the fen parses");
             assert_eq!(sample.halfmove, board.halfmove_clock(), "{:?}", sample);
-            if sample.kind == Shortcut::ReverseFutility {
+            if matches!(
+                sample.kind,
+                Shortcut::ReverseFutility | Shortcut::ShadowFutility
+            ) {
                 assert_eq!(
                     i32::from(sample.claimed) - i32::from(sample.beta),
                     sample.eval_beta - i32::from(REVERSE_FUTILITY_MARGIN) * i32::from(sample.depth),
@@ -3165,19 +3204,22 @@ mod sampling {
         let eval = engine(SHARP_MIDDLEGAME).eval();
 
         // the margin at depth one claims `eval - 100`, which clears a beta
-        // two hundred under the evaluation
+        // two hundred under the evaluation. The fired node arrives under
+        // the live kind and the shadow, so the live row is picked out by
+        // its kind rather than its place
         let beta = eval - 200;
         let taken = shortcut_at(SearchConfig::default(), beta - 500, beta, 1);
-        assert_eq!(taken.len(), 1);
-        assert_eq!(taken[0].kind, Shortcut::ReverseFutility);
-        assert_eq!(taken[0].beta, beta);
-        assert_eq!(taken[0].eval_beta, 200);
-        assert_eq!(taken[0].claimed, eval - REVERSE_FUTILITY_MARGIN);
-        assert_eq!(taken[0].window, Window::Open);
+        assert_eq!(taken.len(), 2);
+        let fired = one_of(&taken, Shortcut::ReverseFutility);
+        assert_eq!(fired.beta, beta);
+        assert_eq!(fired.eval_beta, 200);
+        assert_eq!(fired.claimed, eval - REVERSE_FUTILITY_MARGIN);
+        assert_eq!(fired.window, Window::Open);
         // and the window follows the bounds rather than the shortcut
         let narrow = shortcut_at(SearchConfig::default(), beta - 1, beta, 1);
-        assert_eq!(narrow[0].beta, beta);
-        assert_eq!(narrow[0].window, Window::Zero);
+        let fired = one_of(&narrow, Shortcut::ReverseFutility);
+        assert_eq!(fired.beta, beta);
+        assert_eq!(fired.window, Window::Zero);
 
         // the pass, with the margin switched off so that nothing answers the
         // node before it does
@@ -3195,6 +3237,92 @@ mod sampling {
         let narrow = shortcut_at(passing, beta - 1, beta, 3);
         assert_eq!(narrow[0].beta, beta);
         assert_eq!(narrow[0].window, Window::Zero);
+    }
+
+    /// The seam the shadow exists for: a candidate the margin declines is
+    /// recorded all the same. The live rows cannot show one, since every
+    /// node they describe cleared the margin; only the shadow sees the
+    /// candidates a smaller margin would add.
+    #[test]
+    fn a_candidate_under_the_margin_is_shadowed_and_not_answered() {
+        let eval = engine(SHARP_MIDDLEGAME).eval();
+        // at depth one the margin claims `eval - 100`, so a beta fifty
+        // under the evaluation is a candidate the test declines
+        let beta = eval - 50;
+        let mut e = engine(SHARP_MIDDLEGAME);
+        e.sample_shortcuts(Sampler::every(1));
+        let mut taint = Taint::default();
+        let Ok(answered) = e.shortcuts(beta - 500, beta, 1, false, true, &mut taint) else {
+            panic!("nothing here searches under a limit, so nothing can abort");
+        };
+        assert!(answered.is_none(), "the margin fired under its floor");
+        let taken = collected(&mut e).taken;
+        assert_eq!(taken.len(), 1);
+        assert_eq!(taken[0].kind, Shortcut::ShadowFutility);
+        assert_eq!(taken[0].beta, beta);
+        assert_eq!(taken[0].eval_beta, 50);
+        // the claim is the margin's own expression, and here it sits under
+        // beta, which no live row's can
+        assert_eq!(taken[0].claimed, eval - REVERSE_FUTILITY_MARGIN);
+        assert!(taken[0].claimed < taken[0].beta);
+    }
+
+    /// The eval gate: a node the evaluation leaves below beta is no
+    /// candidate, because no margin schedule at or above nothing can fire
+    /// on it, and the shadow does not record it.
+    #[test]
+    fn a_node_below_beta_is_not_a_candidate() {
+        let eval = engine(SHARP_MIDDLEGAME).eval();
+        let beta = eval + 50;
+        let mut e = engine(SHARP_MIDDLEGAME);
+        e.sample_shortcuts(Sampler::every(1));
+        let mut taint = Taint::default();
+        let Ok(answered) = e.shortcuts(beta - 500, beta, 1, false, true, &mut taint) else {
+            panic!("nothing here searches under a limit, so nothing can abort");
+        };
+        assert!(answered.is_none());
+        assert!(collected(&mut e).taken.is_empty());
+    }
+
+    /// A fired candidate is two rows, the live kind's and the shadow's,
+    /// claiming the same number against the same beta. The shadow
+    /// population contains the fired nodes, so the two kinds agree
+    /// wherever they overlap and the columns keep their meanings.
+    #[test]
+    fn a_fired_candidate_is_shadowed_with_the_same_claim() {
+        let eval = engine(SHARP_MIDDLEGAME).eval();
+        let beta = eval - 200;
+        let taken = shortcut_at(SearchConfig::default(), beta - 500, beta, 1);
+        assert_eq!(taken.len(), 2);
+        let live = one_of(&taken, Shortcut::ReverseFutility);
+        let shadow = one_of(&taken, Shortcut::ShadowFutility);
+        assert_eq!(shadow.claimed, live.claimed);
+        assert_eq!(shadow.beta, live.beta);
+        assert_eq!(shadow.eval_beta, live.eval_beta);
+        assert_eq!(shadow.window, live.window);
+        assert_eq!(shadow.fen, live.fen);
+    }
+
+    /// The margin's depth gate bounds the shadow too. The node here is past
+    /// it, so the pass answers and no shadow row is taken at its depth; the
+    /// pass's reduced search runs under the same sampler, which is where
+    /// every shallower sample comes from.
+    #[test]
+    fn the_shadow_keeps_to_the_margins_depths() {
+        let eval = engine(SHARP_MIDDLEGAME).eval();
+        let beta = eval - 600;
+        let taken = shortcut_at(SearchConfig::default(), beta - 500, beta, 5);
+        assert!(
+            taken
+                .iter()
+                .any(|s| s.kind == Shortcut::NullMove && s.depth == 5),
+            "the pass did not answer the node"
+        );
+        for sample in &taken {
+            if sample.kind != Shortcut::NullMove {
+                assert!(sample.depth <= REVERSE_FUTILITY_MAX_DEPTH, "{:?}", sample);
+            }
+        }
     }
 
     /// Both windows reach the hook. A search that only ever sampled one of
@@ -3215,11 +3343,11 @@ mod sampling {
         }
     }
 
-    /// Both shortcuts reach the hook, not only whichever fires first. A kind
+    /// Every kind reaches the hook, not only whichever fires first. A kind
     /// that stopped being recorded would otherwise show up as a thinner
     /// distribution rather than as a failure.
     #[test]
-    fn both_kinds_are_recorded() {
+    fn all_kinds_are_recorded() {
         let mut e = engine(SHARP_MIDDLEGAME);
         e.sample_shortcuts(Sampler::every(1));
         e.search(6);
@@ -3275,7 +3403,9 @@ mod sampling {
                 Shortcut::ReverseFutility => {
                     i32::from(REVERSE_FUTILITY_MARGIN) * i32::from(sample.depth)
                 }
-                Shortcut::NullMove => 0,
+                // the pass and the shadow both gate on the evaluation
+                // standing at or above beta and nothing more
+                Shortcut::NullMove | Shortcut::ShadowFutility => 0,
             };
             assert!(sample.eval_beta >= floor, "{:?} under {}", sample, floor);
         }
