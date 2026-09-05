@@ -962,6 +962,7 @@ impl AlphaBeta {
     /// here, so the window discipline in `windowed` is written once rather
     /// than at three sites, and every caller says only whether its move is
     /// the node's first and whether it is scouted shallower first.
+    #[inline(always)]
     fn search_child(
         &mut self,
         m: &Play,

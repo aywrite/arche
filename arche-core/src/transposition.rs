@@ -567,6 +567,7 @@ impl TranspositionTable {
     /// which is where the search's own callers get it from, and a caller
     /// that takes a score from the entry passes it back to
     /// `count_false_accept_cutoff`.
+    #[inline(always)]
     fn get_audited(&self, key: u64) -> (Option<Pv>, bool) {
         let index = self.index_for(key);
         let slice = Entry::slice(key);
@@ -769,6 +770,7 @@ impl TranspositionTable {
     /// the caller is searching to. `refuse_tainted` is the search's, not the
     /// table's: whether to trust a score that came from a draw is a decision
     /// about the search being run, and `SearchConfig` holds it.
+    #[inline(always)]
     pub fn probe(
         &mut self,
         board: &Board,
