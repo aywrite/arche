@@ -28,9 +28,13 @@ be wrong, and which experiments have already been measured and rejected.
 Anything a reader sees (commit messages, PR bodies, docs, comments) is written
 plainly. Short declarative sentences. Parentheses rather than em dashes. Say
 what changed and why without staging it: a commit title is "Add an
-architecture overview", not "Draw the map a new reader looks for".
+architecture overview", not "Draw the map a new reader looks for". Name the
+thing rather than its kind: "Give the bench settings a run method", not "Run
+a measurement from its settings". A title that would fit two different
+changes has not said what this one did.
 
 Some things read as generated and are avoided: three-part parallel
 constructions, hype words (robust, comprehensive, powerful, seamless), clever
-closing lines, and the same idiom twice in one file. When unsure, read the
-readme and the 2022 commits in `git log` and match those.
+closing lines, the same idiom twice in one file, and one title shape repeated
+across a run of commits ("in one place", "from one table"). When unsure, read
+the readme and the 2022 commits in `git log` and match those.
