@@ -147,6 +147,73 @@ const H8: u8 = 63;
 
 static ZOBRIST: Zobrist = Zobrist::TABLE;
 
+/// What each square leaves of the castling rights, as the four bytes
+/// `CastlePermissions` is laid out in.
+///
+/// A right is lost when a king or a rook leaves its square, or when a rook
+/// is taken on one, and which right that is depends on the square alone. So
+/// the from square's entry and the to square's are masked into the rights
+/// together and no move is a case of its own. Every other square keeps all
+/// four, which is what nearly every move meets.
+///
+/// The two tables differ on e1 and e8 alone. Leaving one takes both of that
+/// side's rights; landing on one takes neither, because the piece standing
+/// there in a game that granted the rights is the king, and a move that
+/// took it would have ended the game. A fen may hand over rights with the
+/// king somewhere else, and the two then answer differently, so this stays
+/// the pair of rules it replaced rather than one rule that is right in
+/// every position a game reaches.
+static CASTLE_LEAVING: [u32; 64] = castle_masks(true);
+static CASTLE_LANDING: [u32; 64] = castle_masks(false);
+
+/// The rights as the one word they occupy. Four `bool` fields at alignment
+/// one, four bytes with nothing between them, which `misc` asserts, so each
+/// byte is one right's own zero or one and masking two words together masks
+/// the rights a pair at a time. `CastlePermissions` already compares itself
+/// this way.
+const fn castle_bits(rights: CastlePermissions) -> u32 {
+    // SAFETY: the layout above, which `misc` holds to four bytes.
+    unsafe { std::mem::transmute(rights) }
+}
+
+/// The other way round. Unsafe because only a word built by anding such
+/// words may take it: a byte that is a zero or a one stays one under an
+/// and, and any other byte is not a `bool` at all.
+///
+/// # Safety
+///
+/// Every byte of `bits` must be a zero or a one.
+const unsafe fn castle_rights(bits: u32) -> CastlePermissions {
+    // SAFETY: the layout above, and the caller's obligation for the bytes.
+    unsafe { std::mem::transmute(bits) }
+}
+
+const fn castle_masks(leaving: bool) -> [u32; 64] {
+    const fn rights(
+        black_king_side: bool,
+        black_queen_side: bool,
+        white_king_side: bool,
+        white_queen_side: bool,
+    ) -> u32 {
+        castle_bits(CastlePermissions {
+            black_king_side,
+            black_queen_side,
+            white_king_side,
+            white_queen_side,
+        })
+    }
+    let mut masks = [rights(true, true, true, true); 64];
+    masks[A1 as usize] = rights(true, true, true, false);
+    masks[H1 as usize] = rights(true, true, false, true);
+    masks[A8 as usize] = rights(true, false, true, true);
+    masks[H8 as usize] = rights(false, true, true, true);
+    if leaving {
+        masks[E1 as usize] = rights(true, true, false, false);
+        masks[E8 as usize] = rights(false, false, true, true);
+    }
+    masks
+}
+
 /// What a pass folds into the key it records in the history, so that the
 /// entry matches nothing. See `make_null_move` and `has_repeated` for why an
 /// entry a pass wrote must never answer a repetition test. Odd, so it changes
@@ -1086,16 +1153,34 @@ impl Board {
     }
 
     /// How many times this position has already appeared, not counting the
-    /// position itself.
-    fn repetition_count(&self) -> usize {
+    /// position itself, and stopping once `enough` of them have been found.
+    /// Both callers name what they need: the search asks whether there was
+    /// one at all, and the draw rule whether there were two.
+    ///
+    /// Every other ply is looked at and the ones between are not. A key
+    /// carries the side to move, and every ply hands the move over, so an
+    /// entry an odd number of plies back belongs to the other side and can
+    /// never equal this key. Stepping in twos halves the walk and changes
+    /// no answer.
+    fn prior_occurrences(&self, enough: usize) -> usize {
         // only the fifty move window can hold a repetition, since a pawn move or
         // a capture in between puts the position out of reach for good. A fen
         // can claim a fifty move count longer than the history or the game
         let window = self.fifty_move_rule.min(self.ply).min(MAX_GAME_SIZE - 1);
-        (self.ply - window..self.ply)
-            .filter_map(|ply| self.history[history_index(ply)])
-            .filter(|state| state.position_key == self.key)
-            .count()
+        let mut found = 0;
+        let mut back = 2;
+        while back <= window {
+            if let Some(state) = self.history[history_index(self.ply - back)] {
+                if state.position_key == self.key {
+                    found += 1;
+                    if found >= enough {
+                        return found;
+                    }
+                }
+            }
+            back += 2;
+        }
+        found
     }
 
     /// The fifty move counter, as the fen prints it. Read by the residual
@@ -1130,7 +1215,7 @@ impl Board {
     /// with, so it is kept rather than inlined into them.
     #[allow(dead_code)]
     pub(crate) fn is_repetition(&self) -> bool {
-        self.repetition_count() >= 2
+        self.prior_occurrences(2) >= 2
     }
 
     /// True once this position has come up before. Inside a search that is
@@ -1150,7 +1235,7 @@ impl Board {
     /// else. Engines that let a repetition be claimed through a pass differ
     /// here, and this is the divergence.
     pub fn has_repeated(&self) -> bool {
-        self.repetition_count() >= 1
+        self.prior_occurrences(1) >= 1
     }
 
     /// Whether the side to move has a legal move at all. Asked only where a
@@ -1189,32 +1274,15 @@ impl Board {
         });
 
         let opposing_color = !self.active_color;
-        // update castling permissions
+        // Update castling permissions. The from square's mask covers a king
+        // or a rook leaving, the to square's a rook being taken where it
+        // stands; a rook taken on its square is the only piece worth asking
+        // the to square about, since taking a king would have ended the game.
+        // Both squares are read from one table, so the handful of squares
+        // that take a right away cost the same as the sixty that do not.
         let old_castle = self.castle;
-        match play.from {
-            A1 => self.castle.white_queen_side = false,
-            E1 => {
-                self.castle.white_queen_side = false;
-                self.castle.white_king_side = false;
-            }
-            H1 => self.castle.white_king_side = false,
-            A8 => self.castle.black_queen_side = false,
-            E8 => {
-                self.castle.black_queen_side = false;
-                self.castle.black_king_side = false;
-            }
-            H8 => self.castle.black_king_side = false,
-            _ => (),
-        }
-        match play.to {
-            // This covers the case where a rook which hasn't moved is captured
-            // since it would end the game we don't need to check the same for king
-            A1 => self.castle.white_queen_side = false,
-            H1 => self.castle.white_king_side = false,
-            A8 => self.castle.black_queen_side = false,
-            H8 => self.castle.black_king_side = false,
-            _ => (),
-        }
+        let old_bits = castle_bits(old_castle);
+        let bits = old_bits & CASTLE_LEAVING[play.from as usize] & CASTLE_LANDING[play.to as usize];
         // XORing both the old and new castle keys removes the old permissions
         // from the position key and adds the new ones. Asked first rather
         // than folded unconditionally: the rights only change when a king or
@@ -1222,7 +1290,11 @@ impl Board {
         // handful of moves in a game, and on every other one the two keys are
         // the same key and cancel. One comparison decides that, where folding
         // both walked the four rights twice to arrive at nothing.
-        if self.castle != old_castle {
+        if bits != old_bits {
+            // SAFETY: every byte of `bits` is a byte of the old rights
+            // anded with a byte of each mask, and all three are a `bool`'s
+            // own zero or one.
+            self.castle = unsafe { castle_rights(bits) };
             self.key ^= ZOBRIST.castle_key(old_castle) ^ ZOBRIST.castle_key(self.castle);
         }
         if let Some(en_passant) = self.en_passant {
@@ -1337,6 +1409,7 @@ impl Board {
         }
     }
 
+    #[inline(always)]
     pub fn undo_move(&mut self) {
         let previous = history_index(self.ply - 1);
         let history = self.history[previous].unwrap();
@@ -1467,7 +1540,7 @@ impl Board {
         self.debug_assert_state_in_step();
     }
 
-    #[inline]
+    #[inline(always)]
     fn move_piece(
         &mut self,
         from: u8,
@@ -2450,6 +2523,77 @@ mod null_move {
         }
         assert_eq!(board.key, key, "the line did not come back to the position");
         assert_eq!(board.has_repeated(), false);
+    }
+}
+
+#[cfg(test)]
+mod castling_rights {
+    use super::{A1, A8, CASTLE_LANDING, CASTLE_LEAVING, E1, E8, H1, H8};
+    use super::{CastlePermissions, castle_bits, castle_rights};
+    use pretty_assertions::assert_eq;
+
+    /// The rule the two tables stand for, written the way make_move wrote
+    /// it before them: a match on the square the move leaves and a match on
+    /// the square it lands on. Kept here rather than deleted, so that what
+    /// the tables have to agree with is a second statement of the rule and
+    /// not the tables themselves.
+    fn by_hand(mut rights: CastlePermissions, from: u8, to: u8) -> CastlePermissions {
+        match from {
+            A1 => rights.white_queen_side = false,
+            E1 => {
+                rights.white_queen_side = false;
+                rights.white_king_side = false;
+            }
+            H1 => rights.white_king_side = false,
+            A8 => rights.black_queen_side = false,
+            E8 => {
+                rights.black_queen_side = false;
+                rights.black_king_side = false;
+            }
+            H8 => rights.black_king_side = false,
+            _ => (),
+        }
+        match to {
+            A1 => rights.white_queen_side = false,
+            H1 => rights.white_king_side = false,
+            A8 => rights.black_queen_side = false,
+            H8 => rights.black_king_side = false,
+            _ => (),
+        }
+        rights
+    }
+
+    #[test]
+    fn the_tables_take_what_the_matches_took() {
+        for held in 0..16u8 {
+            let rights = CastlePermissions {
+                black_king_side: held & 1 != 0,
+                black_queen_side: held & 2 != 0,
+                white_king_side: held & 4 != 0,
+                white_queen_side: held & 8 != 0,
+            };
+            for from in 0..64u8 {
+                for to in 0..64u8 {
+                    // SAFETY: the bytes are those of three sets of
+                    // rights anded together, so each is still a `bool`'s.
+                    let masked = unsafe {
+                        castle_rights(
+                            castle_bits(rights)
+                                & CASTLE_LEAVING[from as usize]
+                                & CASTLE_LANDING[to as usize],
+                        )
+                    };
+                    assert_eq!(
+                        masked.as_fen(),
+                        by_hand(rights, from, to).as_fen(),
+                        "{} from {} to {}",
+                        rights.as_fen(),
+                        from,
+                        to
+                    );
+                }
+            }
+        }
     }
 }
 
