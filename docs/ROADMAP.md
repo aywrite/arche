@@ -10,7 +10,10 @@ compare against — is in place, so each of these arrives with its numbers: a
 `Bench:` trailer always, and an `Elo:` trailer from an SPRT when it changes how
 the engine plays. Roughly in the order they look worth doing.
 
-- late move reductions
+- the rest of the late move reductions. The first arm reduces a late quiet move by one
+  ply, flat, and a reduction that grows with the depth and the move count is the next
+  match. Reducing the losing captures and reading the history table for the eligibility
+  come after that, each measured on its own
 - evaluate drawn positions
 - the rest of evaluation: mobility, king safety, passed pawns, and special cases such as
   the bishop pair and open files. A tuner comes before the deeper rows, so the weights are
