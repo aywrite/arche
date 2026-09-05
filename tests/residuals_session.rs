@@ -67,7 +67,7 @@ fn the_residuals_argument_prints_a_header_rows_and_a_summary() {
     assert!(!rows.is_empty(), "no rows in:\n{}", printed);
     for row in rows {
         let words: Vec<&str> = row.split(' ').collect();
-        assert!(words.len() > 11, "row: {}", row);
+        assert!(words.len() > 12, "row: {}", row);
         assert!(
             words[0] == "reverse_futility"
                 || words[0] == "null_move"
@@ -81,9 +81,9 @@ fn the_residuals_argument_prints_a_header_rows_and_a_summary() {
         for at in [1, 3, 4, 5, 6, 7, 8] {
             assert!(words[at].parse::<i32>().is_ok(), "field {} of {}", at, row);
         }
-        // the delta is the reference less the claim and the crossing is the
-        // reference against beta, both worked out here rather than taken on
-        // trust
+        // the delta is the reference less the claim, the crossing is the
+        // reference against beta and the overstatement is the claim against
+        // the reference, all worked out here rather than taken on trust
         let beta: i32 = words[4].parse().unwrap();
         let claimed: i32 = words[6].parse().unwrap();
         let reference: i32 = words[7].parse().unwrap();
@@ -94,6 +94,12 @@ fn the_residuals_argument_prints_a_header_rows_and_a_summary() {
         );
         let crossed = if reference < beta { "crossed" } else { "clear" };
         assert_eq!(words[9], crossed, "{row}");
+        let overstated = if claimed > reference {
+            "overstated"
+        } else {
+            "held"
+        };
+        assert_eq!(words[10], overstated, "{row}");
     }
 
     // a line a kind at a depth, in kind order, with the depths a run
@@ -126,6 +132,7 @@ fn the_residuals_argument_prints_a_header_rows_and_a_summary() {
     assert!(
         summary.iter().any(|line| line.contains(" depth ")
             && line.contains(" crossed ")
+            && line.contains(" overstated ")
             && line.contains(" mates ")),
         "no per-depth crossing rate in: {:?}",
         summary

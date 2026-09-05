@@ -336,17 +336,26 @@ because the node was cut off and should not have been. The crossing is
 the shortcut was entitled to. Beside it the residual, the reference's answer
 less the claim, says how large the errors the crossings come from run.
 
+The second label is the overstatement, `claimed > reference`, strictly: the
+value the shortcut handed up was more than the position is worth. It is
+distinct from the crossing. A shortcut can clear beta rightly and still
+overstate, and the cost then falls on the parent rather than at the node: a
+child's claim arrives at or below the parent's alpha and never raises it,
+but it becomes the parent's fail-soft best when no move does better, and the
+ceiling the parent stores is then one too low. The two labels are counted
+independently and a row can carry either without the other.
+
 Each sample is a row of `kind depth window halfmove beta eval_beta claimed
-reference delta crossed fen`, whitespace separated with the fen last so a row
-parses left to right. The window is `zw` or `open`, read from alpha and beta
-at the node: the fuller pv, cut and all classification needs the node's
-outcome, which a sample taken at a cutoff cannot know. In practice principal
-variation search puts every child after a node's first inside a zero width
-window, so the column reads `zw` on nearly every row, and an `open` row is a
-node still inside its window's first move, or inside the re-search a zero
-width fail high asked for. The halfmove column is the fifty move counter,
-which travels in the fen too and is pulled out so rows filter on it without
-a fen being parsed.
+reference delta crossed overstated fen`, whitespace separated with the fen
+last so a row parses left to right. The window is `zw` or `open`, read from
+alpha and beta at the node: the fuller pv, cut and all classification needs
+the node's outcome, which a sample taken at a cutoff cannot know. In practice
+principal variation search puts every child after a node's first inside a
+zero width window, so the column reads `zw` on nearly every row, and an
+`open` row is a node still inside its window's first move, or inside the
+re-search a zero width fail high asked for. The halfmove column is the fifty
+move counter, which travels in the fen too and is pulled out so rows filter
+on it without a fen being parsed.
 Nothing is written to a file; redirection is the file mechanism here as
 everywhere else in the tooling.
 
@@ -360,25 +369,29 @@ newly fire on is empty in them. A shadow row claims the same
 a node that fired (a pair only a run at `every 1` can show: the salts keep
 the kinds' kept sets apart at coarser rates). On a candidate the margin
 declined, the claim sits below the beta beside it, and the crossing then
-says whether a margin firing there would have been wrong. The candidates
+says whether a margin firing there would have been wrong. Nothing was
+handed up on a shadow row, so its overstatement reads the same way: what a
+margin firing there would have claimed too much. The candidates
 are the ones the margin test reads: a node answered from the table never
 reaches it, so the population is conditioned on a table miss, for the
 shadow exactly as for the live kind.
 
 The run ends with a line for each kind at each depth: the count, the
-crossings and their rate, the mate references, then the minimum, median,
-ninetieth, ninety-ninth and maximum of the deltas. By depth and not pooled
-over the depths, because the margin a shortcut risks grows with the depth
-left and the depths are reached in wildly different numbers, so a pooled
-rate is the shallowest depth's rate wearing every depth's name.
+crossings and their rate, the overstatements, the mate references, then the
+minimum, median, ninetieth, ninety-ninth and maximum of the deltas. By depth
+and not pooled over the depths, because the margin a shortcut risks grows
+with the depth left and the depths are reached in wildly different numbers,
+so a pooled rate is the shallowest depth's rate wearing every depth's name.
 
 A mate reference is counted in the `mates` column and left out of the
 percentiles. Its delta is not a number of pawns, and the mate distance the
 replay reports counts from the replay's own root while the claim's counts
 from the root of the recorded search, so the two are not measured from the
-same place. The crossing label survives all of that and is what such a row
-is read for: a mate score is above every eval or below every eval, which is
-all the comparison with beta asks.
+same place. The two labels survive all of that and are what such a row is
+read for: a mate score is above every eval or below every eval, which is
+all that comparing it with beta, or with the claim, asks. So a claim above
+a mated reference counts as an overstatement and a claim below a mating one
+does not.
 
 The rate is a hash and not a counter. A node is sampled when
 `position_key ^ salt(kind) ^ depth * odd` falls in the first `1/n` of the
