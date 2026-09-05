@@ -2,12 +2,18 @@
 // Copyright (C) 2022-2026 Andrew Wright
 
 //! The order the search tries moves in: the table's move ahead of
-//! everything, captures by MVV-LVA, then the quiet moves by what the
-//! search has learned about them (the defended piece penalty can carry a
-//! queen capture behind even the quiet moves, which is where it means to
-//! put one).
-//! The sort is stable and generation order breaks its ties, so the tree a
-//! search walks depends on both, and the node count tests pin the pair.
+//! everything, the captures `Board::see` prices as winning or even, the
+//! killers, the quiet moves by what the search has learned about them, and
+//! the losing captures last of all.
+//! The list is sorted in two stages. `order` keys the table's move and the
+//! captures and leaves the quiet moves in generated order between the two
+//! capture bands; `order_quiets` scores and sorts the quiet moves, and the
+//! search calls it only when it reaches the first of them, so a node its
+//! captures cut off never scores one. Both sorts are stable and generation
+//! order breaks their ties. The quiet moves are scored by the memories as
+//! they stand when the search reaches them, not when the node was entered,
+//! so the tree a search walks depends on the sort, the generation order and
+//! when the scoring happens, and the node count tests pin all three.
 //!
 //! Two memories carry across nodes. The killers are the quiet moves that
 //! cut a node off at each distance from the root, tried early by that
@@ -24,27 +30,26 @@
 
 use crate::board::{Board, MOVE_LIST_INLINE, MoveList};
 use crate::engine::MAX_PLY;
-use crate::misc::{Color, Piece};
+use crate::misc::Color;
 use crate::play::Play;
 
-/// The unit an MVV-LVA score is counted in. A quiet move scores zero
-/// without the memories, so counting every capture in these leaves room
-/// under the captures for the memories to speak in, and changes no order
-/// by itself: the old key times a positive constant sorts as the old key
-/// did.
-///
-/// How much room there is takes the defended piece penalty into account.
-/// The smallest capture score MVV-LVA still puts above a quiet move is
-/// two, a queen taking a defended bishop, so what the memories have is
-/// two units and not one. `the_bands_do_not_overlap` works that out from
-/// the tables rather than trusting this paragraph.
-const QUIET_BAND: i64 = 10_000_000;
-/// The table's move, ahead of every capture. The root depends on this
-/// being unreachable by anything else; see the module comment.
-const TABLE_MOVE_BONUS: i64 = 100_000 * QUIET_BAND;
+/// The table's move, ahead of every capture, even one whose swap loses
+/// the king's whole price. The root depends on this being unreachable by
+/// anything else; see the module comment.
+const TABLE_MOVE_BONUS: i64 = 1_000_000_000_000;
+/// Where the winning and even captures start: above the killers, ordered
+/// within the band by what `Board::see` says each wins. An even exchange
+/// still opens lines and forces replies, so it ranks with the winners
+/// rather than the losers; cheap to revisit if that reads wrong one day.
+/// A losing capture takes no base at all, and its negative SEE carries it
+/// below every quiet move, least losing first: a capture the swap already
+/// prices as losing is a worse bet than a quiet with history behind it.
+const WINNING_CAPTURE_BASE: i64 = 20_000_000;
+/// The unit a point of SEE is counted in, leaving room under one point
+/// for the MVV-LVA tiebreak between captures the swap prices alike.
+const SEE_UNIT: i64 = 2_000;
 /// The two killers, in the order they are tried. Both sit under the
-/// smallest capture MVV-LVA ranks above a quiet move, and above the quiet
-/// moves themselves.
+/// smallest even capture, and above the quiet moves themselves.
 const KILLER_BONUS: [i64; 2] = [9_000_000, 8_000_000];
 /// What a history entry may reach before the whole table is halved. It is
 /// below the second killer, so no move the history likes ever reaches the
@@ -58,10 +63,6 @@ const HISTORY_MAX: u32 = 7_000_000;
 const VICTIM_SCORES: [i64; 6] = [100, 250, 300, 400, 500, 1000];
 /// Least valuable attacker: what taking it with each piece is worth.
 const ATTACKER_SCORES: [i64; 6] = [6, 5, 4, 3, 2, 1];
-/// What a queen taking a defended piece gives up. Enough to carry the two
-/// smallest of them, a pawn and a knight, behind the quiet moves; a defended
-/// bishop, rook or queen still scores above one.
-const DEFENDED_QUEEN_PENALTY: i64 = 300;
 
 /// How often each quiet move has cut a node off, by the side that played
 /// it and the squares it moved between. The from and to squares alone,
@@ -111,7 +112,7 @@ impl MoveOrdering {
     /// gains the square of the depth, so a cutoff proved over a deeper
     /// subtree counts for more than a shallow one.
     ///
-    /// A capture is dropped. MVV-LVA orders the captures already, and a
+    /// A capture is dropped. The swap orders the captures already, and a
     /// killer slot holding one would order nothing the sort does not.
     pub(crate) fn cutoff(&mut self, color: Color, m: &Play, ply: usize, depth: u8) {
         debug_assert!(ply < MAX_PLY as usize, "no killers past the rail");
@@ -159,56 +160,86 @@ impl MoveOrdering {
         self.killers[ply]
     }
 
-    /// MVV-LVA order, with the table's move for this position, if there is
-    /// one, ahead of everything else.
+    /// The first stage of the band order the module comment describes:
+    /// the table's move for this position, if there is one, then the
+    /// winning and even captures, sorted, at the front of the list. Behind
+    /// them the quiet moves stand in the order they were generated in and
+    /// the losing captures, sorted, close the list. How many moves the
+    /// front holds is returned, and the search calls `order_quiets` when
+    /// it reaches the first move past them, so a node the front cuts off
+    /// never scores a quiet move at all.
     ///
-    /// The search may already have played that move without generating, in
-    /// which case it skips it here. The bonus still earns its keep: a table
-    /// move it declined to play early was never searched, so it is still in
-    /// this list and still has to be the first one tried.
+    /// The search may already have played the table's move without
+    /// generating, in which case it skips it here. The bonus still earns
+    /// its keep: a table move it declined to play early was never
+    /// searched, so it is still in this list and still has to be the first
+    /// one tried.
     ///
     /// `ply` is the node's distance from the root when the quiet memories
     /// are consulted, and none when they are not: quiescence and the root
     /// order without them, and so does every node under a configuration
-    /// with `move_memory` off.
+    /// with `move_memory` off. A quiet move scores zero without them, so
+    /// the first stage is the whole order and the list's length comes
+    /// back: there is no second stage to reach.
     pub(crate) fn order(
         &mut self,
         board: &Board,
         moves: &mut MoveList,
         table_move: Option<Play>,
         ply: Option<usize>,
-    ) {
-        // the fields are borrowed apart so that the keys can be written
-        // while the memories are read
-        let Self {
-            keys,
-            killers,
-            history,
-        } = self;
-        let quiet = ply.map(|ply| {
-            debug_assert!(ply < MAX_PLY as usize, "no killers past the rail");
-            Quiet {
-                killers: killers[ply],
-                history,
-            }
-        });
+    ) -> usize {
+        let keys = &mut self.keys;
         // Most lists here are short: quiescence sorts a handful of captures
         // or the evasions the filter kept, and the counts say under nine
         // moves on average. sort_by_cached_key allocates scratch on every
         // call, which at that size costs more than the sorting, so lists
         // take the stack sort instead, keeping the allocating sort only for
-        // a list that spilled the buffer. Callgrind swept smaller cutoffs
-        // and they are a wash: the mid length lists of full width nodes
-        // keep paying the allocating fallback while every call pays the
-        // extra branch.
-        if moves.len() <= MOVE_LIST_INLINE {
-            for (i, m) in moves.iter().enumerate() {
-                keys[i] = ordering_key(board, m, table_move, quiet.as_ref());
-            }
-            sort_on_the_stack(moves, keys);
-        } else {
+        // a list that spilled the buffer, which takes the whole order at
+        // once with the memories read here.
+        if moves.len() > MOVE_LIST_INLINE {
+            let quiet = ply.map(|ply| Quiet {
+                killers: self.killers[ply],
+                history: &self.history,
+            });
             moves.sort_by_cached_key(|m| ordering_key(board, m, table_move, quiet.as_ref()));
+            return moves.len();
         }
+        // a quiet move keys zero here, which sits between the front, whose
+        // keys are negative, and the losing captures, whose keys are
+        // positive; the sort is stable, so the quiet moves keep their
+        // generated order for the second stage to sort within
+        let mut front = 0;
+        for (i, m) in moves.iter().enumerate() {
+            let key = if m.capture.is_some() || table_move == Some(*m) {
+                ordering_key(board, m, table_move, None)
+            } else {
+                0
+            };
+            front += usize::from(key < 0);
+            keys[i] = key;
+        }
+        sort_on_the_stack(moves, keys);
+        if ply.is_some() { front } else { moves.len() }
+    }
+
+    /// The second stage: `rest` starts at the first move past the front,
+    /// and the quiet moves run from there to the first losing capture. They
+    /// are scored by the memories as they stand now, killers first and the
+    /// rest by history, and sorted in place; the losing captures behind
+    /// them are already in their order.
+    pub(crate) fn order_quiets(&mut self, board: &Board, rest: &mut [Play], ply: usize) {
+        debug_assert!(ply < MAX_PLY as usize, "no killers past the rail");
+        let run = rest.iter().take_while(|m| m.capture.is_none()).count();
+        let quiets = &mut rest[..run];
+        let quiet = Quiet {
+            killers: self.killers[ply],
+            history: &self.history,
+        };
+        let keys = &mut self.keys;
+        for (i, m) in quiets.iter().enumerate() {
+            keys[i] = -quiet.bonus(board.active_color, m);
+        }
+        sort_on_the_stack(quiets, keys);
     }
 }
 
@@ -223,7 +254,7 @@ impl Quiet<'_> {
     /// What a quiet move is worth here. A move nothing is known about
     /// scores zero, and nothing this returns reaches the smallest capture
     /// the sort puts above a quiet move.
-    #[inline]
+    #[inline(always)]
     fn bonus(&self, color: Color, m: &Play) -> i64 {
         if self.killers[0] == Some(*m) {
             return KILLER_BONUS[0];
@@ -235,9 +266,10 @@ impl Quiet<'_> {
     }
 }
 
-/// What a move sorts by, smaller first: its MVV-LVA score with the table's
-/// move pushed ahead of everything else and what the memories say about a
-/// quiet move under it, negated so that the best score is the smallest key.
+/// What a move sorts by, smaller first: a capture by what the swap says of
+/// it, a quiet move by what the memories say, and the table's move pushed
+/// ahead of everything else, negated so that the best score is the
+/// smallest key.
 #[inline]
 fn ordering_key(
     board: &Board,
@@ -245,16 +277,33 @@ fn ordering_key(
     table_move: Option<Play>,
     quiet: Option<&Quiet<'_>>,
 ) -> i64 {
-    let mut score = mvv_lva(board, m) * QUIET_BAND;
-    if m.capture.is_none() {
-        if let Some(quiet) = quiet {
-            score += quiet.bonus(board.active_color, m);
-        }
-    }
+    let mut score = if m.capture.is_some() {
+        capture_score(board, m)
+    } else if let Some(quiet) = quiet {
+        quiet.bonus(board.active_color, m)
+    } else {
+        0
+    };
     if table_move == Some(*m) {
         score += TABLE_MOVE_BONUS;
     }
     -score
+}
+
+/// Where a capture sorts. The swap's verdict picks the band: winning and
+/// even captures above the killers, losing ones below every quiet move.
+/// Within a band the SEE value orders, and MVV-LVA breaks the ties
+/// between captures the swap prices alike. Only moves with a victim get
+/// here, so the quiet moves never pay for a swap.
+#[inline]
+fn capture_score(board: &Board, m: &Play) -> i64 {
+    let see = i64::from(board.see(m));
+    let score = see * SEE_UNIT + mvv_lva(board, m);
+    if see >= 0 {
+        WINNING_CAPTURE_BASE + score
+    } else {
+        score
+    }
 }
 
 /// Most valuable victim, least valuable attacker: take the biggest piece
@@ -263,8 +312,7 @@ fn ordering_key(
 /// The scores index by piece rather than matching on it: the arms did
 /// different arithmetic per piece, which compiled to an indirect jump
 /// taken once per capture scored, and the pieces arrive in no order a
-/// predictor can learn. Inline because the sort computes a key per move
-/// generated, and this is most of the key.
+/// predictor can learn.
 #[inline]
 fn mvv_lva(board: &Board, m: &Play) -> i64 {
     let Some(victim) = m.capture else {
@@ -273,13 +321,7 @@ fn mvv_lva(board: &Board, m: &Play) -> i64 {
     let Some(attacker) = board.get_piece_index(m.from) else {
         return 0;
     };
-    let score = VICTIM_SCORES[victim as usize] + ATTACKER_SCORES[attacker as usize];
-    // a queen taking a defended piece is usually just losing the queen, so
-    // push it below the other captures rather than trying it first
-    if matches!(attacker, Piece::Queen) && board.square_attacked(m.to, !board.active_color) {
-        return score - DEFENDED_QUEEN_PENALTY;
-    }
-    score
+    VICTIM_SCORES[victim as usize] + ATTACKER_SCORES[attacker as usize]
 }
 
 /// What sort_by_cached_key does, minus its allocation, for a list that fits
@@ -329,7 +371,8 @@ mod order {
     fn ordered_by(fen: &str, table_move: Option<Play>, ordering: &mut MoveOrdering) -> Vec<Play> {
         let board = Board::from_fen(fen).unwrap();
         let mut moves = board.generate_moves();
-        ordering.order(&board, &mut moves, table_move, Some(0));
+        let front = ordering.order(&board, &mut moves, table_move, Some(0));
+        ordering.order_quiets(&board, &mut moves[front..], 0);
         moves.to_vec()
     }
 
@@ -352,6 +395,8 @@ mod order {
             .collect()
     }
 
+    // both takings of the queen win her clean, so their SEE agrees and
+    // MVV-LVA breaks the tie: the smaller attacker first
     #[test]
     fn the_biggest_victim_and_the_smallest_attacker_go_first() {
         let moves = ordered(CAPTURES, None);
@@ -359,10 +404,65 @@ mod order {
         assert_eq!(position_of(&moves, "h5d5"), 1);
     }
 
+    // the queen takes a pawn its king defends, which the swap prices at a
+    // pawn for a queen: behind every quiet move, history or none
     #[test]
-    fn a_queen_taking_a_defended_piece_waits_behind_the_other_captures() {
-        let moves = ordered(CAPTURES, None);
-        assert!(position_of(&moves, "h5h7") > position_of(&moves, "h5d5"));
+    fn a_losing_capture_waits_behind_the_quiet_moves() {
+        let board = Board::from_fen(CAPTURES).unwrap();
+        let taught = named(&board.generate_moves(), "g1f1");
+        // taught at another ply, so it sorts by history and not as a killer
+        let mut ordering = MoveOrdering::new();
+        ordering.cutoff(Color::White, &taught, 1, 4);
+
+        let moves = ordered_by(CAPTURES, None, &mut ordering);
+        let losing = position_of(&moves, "h5h7");
+        assert!(losing > position_of(&moves, "g1f1"));
+        for quiet in quiets(&moves) {
+            assert!(losing > position_of(&moves, &quiet.to_string()));
+        }
+    }
+
+    // a rook for a rook: an even swap ranks with the winning captures,
+    // above a killer, not with the losing ones
+    #[test]
+    fn an_even_capture_ranks_with_the_winners() {
+        const ROOKS: &str = "3rr2k/8/8/8/8/8/8/4R2K w - - 0 1";
+        let board = Board::from_fen(ROOKS).unwrap();
+        let killer = named(&board.generate_moves(), "h1g1");
+        let mut ordering = MoveOrdering::new();
+        ordering.cutoff(Color::White, &killer, 0, 4);
+
+        let moves = ordered_by(ROOKS, None, &mut ordering);
+        assert!(position_of(&moves, "e1e8") < position_of(&moves, "h1g1"));
+    }
+
+    // without the memories there is no second stage to reach, so the whole
+    // list is the front and its length comes back
+    #[test]
+    fn without_memories_the_whole_list_is_the_front() {
+        let board = Board::from_fen(CAPTURES).unwrap();
+        let mut moves = board.generate_moves();
+        let front = MoveOrdering::new().order(&board, &mut moves, None, None);
+        assert_eq!(front, moves.len());
+    }
+
+    // with them the front is the table's move and the captures the swap
+    // prices as winning or even: the two takings of the queen, plus a table
+    // move whether it is a quiet move or the losing capture itself
+    #[test]
+    fn the_front_is_the_tables_move_and_the_winning_captures() {
+        let board = Board::from_fen(CAPTURES).unwrap();
+        let generated = board.generate_moves();
+        for table_move in [None, Some("e4e5"), Some("h5h7")] {
+            let table_move = table_move.map(|name| named(&generated, name));
+            let mut moves = generated.clone();
+            let front = MoveOrdering::new().order(&board, &mut moves, table_move, Some(0));
+            assert_eq!(front, 2 + usize::from(table_move.is_some()));
+            for (i, m) in moves.iter().enumerate() {
+                let winning = m.capture.is_some() && board.see(m) >= 0;
+                assert_eq!(i < front, winning || table_move == Some(*m), "{m} at {i}");
+            }
+        }
     }
 
     #[test]
@@ -396,9 +496,8 @@ mod order {
         assert!(position_of(&moves, "e4e5") > position_of(&moves, "h5d5"));
         // ahead of every other quiet move
         assert_eq!(quiets(&moves)[0], killer);
-        // and ahead of the defended queen capture, which the penalty puts
-        // behind the quiet moves whether there is a killer among them or
-        // not
+        // and ahead of the losing capture, which the swap puts behind the
+        // quiet moves whether there is a killer among them or not
         assert!(position_of(&moves, "h5h7") > position_of(&moves, "e4e5"));
     }
 
@@ -449,8 +548,9 @@ mod order {
 
 #[cfg(test)]
 mod memory {
-    use super::{ATTACKER_SCORES, DEFENDED_QUEEN_PENALTY, HISTORY_MAX, KILLER_BONUS, MoveOrdering};
-    use super::{QUIET_BAND, TABLE_MOVE_BONUS, VICTIM_SCORES};
+    use super::{ATTACKER_SCORES, HISTORY_MAX, KILLER_BONUS, MoveOrdering, SEE_UNIT};
+    use super::{TABLE_MOVE_BONUS, VICTIM_SCORES, WINNING_CAPTURE_BASE};
+    use crate::board::SEE_VALUES;
     use crate::misc::{Color, Piece};
     use crate::play::Play;
 
@@ -458,20 +558,14 @@ mod memory {
         Play::new(from, to, None, None, false, false)
     }
 
-    /// Every score `mvv_lva` can return for a capture, worked out from the
-    /// tables it reads rather than written down, so that a table edited
-    /// later is what this test is read against. The defended piece penalty
-    /// is part of it: it is what makes the smallest capture that still
-    /// outranks a quiet move worth two rather than a hundred and one.
-    fn capture_scores() -> Vec<i64> {
+    /// Every tiebreak `mvv_lva` can return for a capture, worked out from
+    /// the tables it reads rather than written down, so that a table edited
+    /// later is what this test is read against.
+    fn tiebreaks() -> Vec<i64> {
         let mut scores = Vec::new();
         for victim in VICTIM_SCORES {
-            for (piece, attacker) in ATTACKER_SCORES.iter().enumerate() {
+            for attacker in ATTACKER_SCORES {
                 scores.push(victim + attacker);
-                // the penalty is the queen's alone
-                if piece == Piece::Queen as usize {
-                    scores.push(victim + attacker - DEFENDED_QUEEN_PENALTY);
-                }
             }
         }
         scores
@@ -479,24 +573,29 @@ mod memory {
 
     #[test]
     fn the_bands_do_not_overlap() {
-        let scores = capture_scores();
-        let best = *scores.iter().max().expect("the tables are not empty");
-        // the smallest capture the sort still puts above a quiet move. The
-        // ones below zero sort behind the quiet moves, which is where the
-        // penalty means to put them, and the memories are under no
-        // obligation to stay behind those
-        let smallest_above_a_quiet = *scores
-            .iter()
-            .filter(|score| **score > 0)
-            .min()
-            .expect("some capture outranks a quiet move");
-        assert_eq!(smallest_above_a_quiet, 2);
+        let ties = tiebreaks();
+        let biggest = *ties.iter().max().expect("the tables are not empty");
+        let smallest = *ties.iter().min().expect("the tables are not empty");
+        // the tiebreak stays inside one point of SEE and never turns a
+        // losing capture positive
+        assert!(0 < smallest && biggest < SEE_UNIT);
+        assert!(-SEE_UNIT + biggest < 0);
 
-        // the table's move ahead of the best capture there could be, which
-        // is what the root's swap rests on
-        assert!(TABLE_MOVE_BONUS > best * QUIET_BAND);
-        // and the memories under every capture that outranks a quiet move
-        assert!(smallest_above_a_quiet * QUIET_BAND > KILLER_BONUS[0]);
+        // the swap never wins more than the first victim, a queen at most,
+        // and never loses more than the king's price
+        let best_swap = i64::from(SEE_VALUES[Piece::Queen as usize]);
+        let worst_swap = -i64::from(SEE_VALUES[Piece::King as usize]);
+        let best_capture = WINNING_CAPTURE_BASE + best_swap * SEE_UNIT + biggest;
+        let worst_capture = worst_swap * SEE_UNIT + smallest;
+
+        // the table's move ahead of the best capture there could be, even
+        // when it is itself the worst, which is what the root's aborted
+        // answer swap rests on
+        assert!(TABLE_MOVE_BONUS + worst_capture > best_capture);
+        // the winning and even captures above the killers, the killers in
+        // order above the history, and every losing capture below zero,
+        // which is the least a quiet move scores
+        assert!(WINNING_CAPTURE_BASE + smallest > KILLER_BONUS[0]);
         assert!(KILLER_BONUS[0] > KILLER_BONUS[1]);
         assert!(KILLER_BONUS[1] > i64::from(HISTORY_MAX));
     }

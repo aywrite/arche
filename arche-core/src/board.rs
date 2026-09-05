@@ -413,6 +413,14 @@ impl AttackMasks {
     }
 }
 
+/// What each piece is worth to `see`, indexed by `Piece`. An ordering
+/// oracle, not the evaluation: these say which capture to try first, and
+/// `eval::material` says what a position is worth, so either can move
+/// without silently dragging the other along. The king's price only has to
+/// dwarf every exchange the swap can build, without overflowing one. The
+/// ordering module reads the table's bounds to prove its bands apart.
+pub(crate) const SEE_VALUES: [i32; 6] = [100, 300, 300, 500, 900, 10_000];
+
 /// The whole position with its history, which makes a board a little over
 /// forty kilobytes and `Copy`. Copying one is nothing next to a search and a
 /// great deal next to a node, so the search makes and unmakes moves on the one
@@ -958,6 +966,114 @@ impl Board {
         }
 
         false
+    }
+
+    /// Every piece of either colour attacking `index` on a board occupied by
+    /// `occupied`, which the swap in `see` shrinks as pieces trade off. The
+    /// sliders are probed against that occupancy, so a bishop or rook standing
+    /// behind the piece that just captured is found the moment the capturer
+    /// leaves the line.
+    fn attackers_to(&self, index: u8, occupied: u64) -> u64 {
+        let attack_masks = &ATTACK_MASKS;
+        let magic = &MAGIC;
+        let i = index as usize;
+        let mut attackers = ((attack_masks.white_pawns[i] & self.white)
+            | (attack_masks.black_pawns[i] & self.black))
+            & self.pawns();
+        attackers |= attack_masks.knights[i] & self.knights();
+        attackers |= attack_masks.kings[i] & self.kings();
+        let diagonal = self.bishops() | self.queens();
+        if attack_masks.diagonal[i] & diagonal != 0 {
+            attackers |= magic.get_diagonal_move(index, occupied) & diagonal;
+        }
+        let straight = self.rooks() | self.queens();
+        if attack_masks.straight[i] & straight != 0 {
+            attackers |= magic.get_straight_move(index, occupied) & straight;
+        }
+        attackers & occupied
+    }
+
+    /// The least valuable piece of `set`: the bit of one such piece and what
+    /// it is. `set` is a subset of one side's pieces.
+    fn least_valuable(&self, set: u64) -> Option<(u64, Piece)> {
+        for piece in Piece::PIECES {
+            let subset = set & self.pieces[piece as usize];
+            if subset != 0 {
+                return Some((subset & subset.wrapping_neg(), piece));
+            }
+        }
+        None
+    }
+
+    /// Static exchange evaluation: what this capture wins, in centipawns,
+    /// once every profitable recapture on its square has been traded through.
+    /// The swap records the least valuable attacker capturing on both sides
+    /// until one side has none left, with sliders behind the piece that just
+    /// captured joining in as the line opens; the negamax fold over the
+    /// recorded stack then lets either side stop where continuing stands
+    /// worse than what it already has.
+    ///
+    /// En passant is played exactly: the pawn taken is lifted from its own
+    /// square, not the target, so a slider it was blocking joins the swap.
+    /// A promotion is counted as the pawn it was, on both sides of the
+    /// exchange: the first capture still values the piece it takes, but the
+    /// queen that appears is worth a pawn to whoever takes it back. That
+    /// undervalues promoting captures, and the ordering promotions get is
+    /// theirs to fix. Pins are ignored: every attacker is assumed free to
+    /// capture, however its king stands. A move with no victim is worth zero
+    /// here; the callers only ask about captures.
+    pub(crate) fn see(&self, m: &Play) -> i32 {
+        let Some(victim) = m.capture else {
+            return 0;
+        };
+        // more slots than pieces that could ever join one square's swap
+        let mut gain = [0i32; 32];
+        gain[0] = SEE_VALUES[victim as usize];
+        let mut occupied = self.white | self.black;
+        occupied &= !(1u64 << m.from);
+        if m.en_passant {
+            // the pawn taken en passant does not stand on the target square
+            let taken = match self.active_color {
+                Color::White => m.to - 8,
+                Color::Black => m.to + 8,
+            };
+            occupied &= !(1u64 << taken);
+        }
+        // the piece standing on the target square, which the next capture
+        // takes
+        let mut on_square = self
+            .get_piece_index(m.from)
+            .expect("a capture moves a piece of ours");
+        let mut side = !self.active_color;
+        let mut d = 0;
+        loop {
+            let side_mask = match side {
+                Color::White => self.white,
+                Color::Black => self.black,
+            };
+            let attackers = self.attackers_to(m.to, occupied) & side_mask;
+            let Some((bit, piece)) = self.least_valuable(attackers) else {
+                break;
+            };
+            d += 1;
+            gain[d] = SEE_VALUES[on_square as usize] - gain[d - 1];
+            // taking a king ends the swap: the side whose king would be
+            // taken could not legally have captured onto this square, which
+            // the fold below reads off the king's price
+            if matches!(on_square, Piece::King) {
+                break;
+            }
+            occupied &= !bit;
+            on_square = piece;
+            side = !side;
+        }
+        // negamax over the stack: at each step the side to move keeps the
+        // better of stopping and the exchange it recorded
+        while d > 0 {
+            gain[d - 1] = -(-gain[d - 1]).max(gain[d]);
+            d -= 1;
+        }
+        gain[0]
     }
 
     /// How many times this position has already appeared, not counting the
@@ -3568,5 +3684,168 @@ mod between {
                 );
             }
         }
+    }
+}
+
+#[cfg(test)]
+mod see {
+    use super::{Board, Color, Piece, Play, SEE_VALUES, play_named};
+    use pretty_assertions::assert_eq;
+
+    fn see_of(fen: &str, name: &str) -> i32 {
+        let board = Board::from_fen(fen).unwrap();
+        board.see(&play_named(&board, name))
+    }
+
+    #[test]
+    fn a_hanging_piece_is_won_outright() {
+        assert_eq!(see_of("4k3/8/8/4p3/8/5N2/8/4K3 w - - 0 1", "f3e5"), 100);
+    }
+
+    #[test]
+    fn a_defended_pawn_costs_the_rook_that_takes_it() {
+        assert_eq!(see_of("4k3/8/4p3/3p4/8/8/8/3RK3 w - - 0 1", "d1d5"), -400);
+    }
+
+    /// Winning a piece does not end the story. The rook takes a queen a
+    /// rook defends, is taken back, and the swap prices queen for rook,
+    /// not the queen outright.
+    #[test]
+    fn a_won_piece_is_still_recaptured() {
+        assert_eq!(see_of("3r3k/3q4/8/8/8/8/8/3R3K w - - 0 1", "d1d7"), 400);
+    }
+
+    /// Doubled rooks against a defended pawn: the front rook takes, and the
+    /// one behind it joins the swap the moment the line opens. Without the
+    /// x-ray the same capture would read as losing the rook.
+    #[test]
+    fn a_rook_behind_the_capturing_rook_joins_the_exchange() {
+        assert_eq!(see_of("3rk3/8/8/3p4/8/8/3R4/3R2K1 w - - 0 1", "d2d5"), 100);
+    }
+
+    /// The pawn is defended twice. The bishop could take the recapturing
+    /// pawn, but pressing on only feeds the second defender, so the swap
+    /// prices the capture as knight for pawn and stops there.
+    #[test]
+    fn the_swap_stops_rather_than_feed_the_second_defender() {
+        assert_eq!(
+            see_of("4k3/8/3p1p2/4p3/8/5N2/1B6/4K3 w - - 0 1", "f3e5"),
+            -200
+        );
+    }
+
+    /// En passant lifts the taken pawn from its own square, not the target:
+    /// plain and defended cases first, then a rook backing the capture
+    /// through the square the taken pawn left.
+    #[test]
+    fn en_passant_opens_the_taken_pawns_square() {
+        assert_eq!(see_of("4k3/8/8/3pP3/8/8/8/4K3 w - d6 0 1", "e5d6"), 100);
+        assert_eq!(see_of("4k3/2p5/8/3pP3/8/8/8/4K3 w - d6 0 1", "e5d6"), 0);
+        assert_eq!(see_of("4k3/2p5/8/3pP3/8/8/8/3RK3 w - d6 0 1", "e5d6"), 100);
+    }
+
+    /// A capture that promotes values the piece it takes. The queen that
+    /// appears is counted as the pawn it was, the documented approximation,
+    /// so the knight takes it back at a pawn's price and the exchange comes
+    /// to rook for pawn.
+    #[test]
+    fn a_promoting_capture_values_the_piece_taken() {
+        assert_eq!(see_of("r3k3/1Pn5/8/8/8/8/8/4K3 w - - 0 1", "b7a8q"), 400);
+    }
+
+    /// A king may recapture only where nothing answers it: with a second
+    /// rook behind the first the king cannot legally take, so the pawn is
+    /// simply won; without it the same capture loses the rook.
+    #[test]
+    fn a_king_capture_ends_the_sequence() {
+        assert_eq!(see_of("8/8/2k5/3p4/8/8/3R4/3R2K1 w - - 0 1", "d2d5"), 100);
+        assert_eq!(see_of("8/8/2k5/3p4/8/8/3R4/6K1 w - - 0 1", "d2d5"), -400);
+    }
+
+    /// The model `see` answers within, played out in full: either side may
+    /// capture with any attacker or stop, and a taken king ends the line at
+    /// the king's price. Free choice of attacker, where `see` commits to the
+    /// least valuable, so agreement says the commitment loses nothing.
+    fn exhaustive(board: &Board, target: u8, occupied: u64, on_square: Piece, side: Color) -> i32 {
+        let side_mask = match side {
+            Color::White => board.white,
+            Color::Black => board.black,
+        };
+        let mut set = board.attackers_to(target, occupied) & side_mask;
+        let mut best = 0;
+        while set != 0 {
+            let bit = set & set.wrapping_neg();
+            set &= set - 1;
+            let value = if matches!(on_square, Piece::King) {
+                SEE_VALUES[Piece::King as usize]
+            } else {
+                let piece = board
+                    .get_piece_index(bit.trailing_zeros() as u8)
+                    .expect("an attacker stands on its square");
+                SEE_VALUES[on_square as usize]
+                    - exhaustive(board, target, occupied & !bit, piece, !side)
+            };
+            best = best.max(value);
+        }
+        best
+    }
+
+    /// `see`'s setup verbatim, handing the first exchange to `exhaustive`.
+    fn exhaustive_see(board: &Board, m: &Play) -> i32 {
+        let victim = m.capture.expect("only captures are priced");
+        let mut occupied = (board.white | board.black) & !(1u64 << m.from);
+        if m.en_passant {
+            let taken = match board.active_color {
+                Color::White => m.to - 8,
+                Color::Black => m.to + 8,
+            };
+            occupied &= !(1u64 << taken);
+        }
+        let mover = board
+            .get_piece_index(m.from)
+            .expect("a capture moves a piece of ours");
+        SEE_VALUES[victim as usize] - exhaustive(board, m.to, occupied, mover, !board.active_color)
+    }
+
+    fn walk(board: &mut Board, depth: usize, priced: &mut usize) {
+        let moves = board.generate_moves();
+        for m in &moves {
+            if m.capture.is_some() {
+                assert_eq!(
+                    board.see(m),
+                    exhaustive_see(board, m),
+                    "{} in {}",
+                    m,
+                    board.to_fen()
+                );
+                *priced += 1;
+            }
+        }
+        if depth == 0 {
+            return;
+        }
+        for m in &moves {
+            if board.make_move(m) {
+                walk(board, depth - 1, priced);
+                board.undo_move();
+            }
+        }
+    }
+
+    /// Every capture two plies deep from the core positions, plus the two
+    /// perft positions thick with captures and promotions, priced by `see`
+    /// and by the exhaustive negamax. The count asserts the walk really
+    /// visited the captures it was pointed at.
+    #[test]
+    fn the_swap_agrees_with_an_exhaustive_negamax() {
+        let mut priced = 0;
+        for fen in super::fens::CORE
+            .iter()
+            .chain([super::fens::KIWIPETE, super::fens::PROMOTIONS].iter())
+        {
+            let mut board = Board::from_fen(fen).unwrap();
+            walk(&mut board, 2, &mut priced);
+        }
+        assert!(priced > 2000, "only {} captures priced", priced);
     }
 }

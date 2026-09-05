@@ -236,8 +236,8 @@ pub struct SearchConfig {
     /// Whether a node orders its quiet moves by what other nodes have
     /// learned: the killers for its distance from the root, and the history
     /// table under them. On in the default, off in the reference, which
-    /// keeps the pinned reference tree the one alpha-beta and MVV-LVA alone
-    /// produce.
+    /// keeps the pinned reference tree the one alpha-beta and the capture
+    /// ordering alone produce.
     ///
     /// Ordering rather than pruning, so under the reference the answer is
     /// the same either way and only the size of the tree moves. Not so
@@ -361,8 +361,8 @@ impl Default for SearchConfig {
     /// The quiet memories are the fifth, and no kind of guess at all.
     /// They prune nothing. What they move is how soon a node finds the move
     /// that cuts it off, which is most of what alpha-beta costs. The
-    /// reference keeps them off so that its tree stays the one MVV-LVA and
-    /// generation order produce.
+    /// reference keeps them off so that its tree stays the one the capture
+    /// ordering and generation order produce.
     fn default() -> Self {
         Self {
             taint: TaintPolicy::Rule50,
@@ -1082,9 +1082,18 @@ impl AlphaBeta {
             self.board.generate_moves()
         };
         let ply = self.memory_ply();
-        self.ordering.order(&self.board, &mut moves, pv_play, ply);
+        let front = self.ordering.order(&self.board, &mut moves, pv_play, ply);
 
-        for m in &moves {
+        for i in 0..moves.len() {
+            // the front did not cut this node off, so the rest of the list
+            // is scored and sorted before the first move past it is tried
+            if i == front {
+                if let Some(ply) = ply {
+                    self.ordering
+                        .order_quiets(&self.board, &mut moves[front..], ply);
+                }
+            }
+            let m = &moves[i];
             if tt_tried == Some(*m) {
                 continue;
             }
@@ -3570,9 +3579,13 @@ mod sampling {
 
     /// The window a real search hands the hook. Principal variation search
     /// puts every child after a node's first inside a zero width window,
-    /// and at this depth that is where every sampled shortcut sits: a
-    /// search this size no longer reaches a shortcut through an open
-    /// window at all. The open column is pinned by
+    /// and at this depth that is where every shortcut that fires sits: a
+    /// search this size never answers a node through an open window. A
+    /// shadow row is the one exception, a candidate recorded whether or
+    /// not the margin test fires, so a handful arrive through open
+    /// windows, inside the re-search a zero width fail high asks for:
+    /// the proof pass reopens the window and is the one place an open
+    /// window carries a finite beta. The open column is pinned by
     /// `the_recorded_beta_is_the_one_the_gate_cleared`, which drives the
     /// hook directly with both windows.
     #[test]
@@ -3582,7 +3595,11 @@ mod sampling {
         e.search(6);
         let taken = collected(&mut e).taken;
         assert!(!taken.is_empty());
-        assert!(taken.iter().all(|s| s.window == Window::Zero));
+        for sample in &taken {
+            if sample.kind != Shortcut::ShadowFutility {
+                assert_eq!(sample.window, Window::Zero, "{sample:?}");
+            }
+        }
     }
 
     /// Every kind reaches the hook, not only whichever fires first. A kind
