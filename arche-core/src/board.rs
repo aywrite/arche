@@ -1026,9 +1026,12 @@ impl Board {
         let Some(victim) = m.capture else {
             return 0;
         };
-        // more slots than pieces that could ever join one square's swap
-        let mut gain = [0i32; 32];
-        gain[0] = SEE_VALUES[victim as usize];
+        // more slots than pieces that could ever join one square's swap.
+        // Every slot is written before it is read: `d` counts the swap up
+        // and the fold reads it down, so zero filling the array was a
+        // memset per capture ordered that nothing consumed
+        let mut gain = [const { MaybeUninit::<i32>::uninit() }; 32];
+        gain[0].write(SEE_VALUES[victim as usize]);
         let mut occupied = self.white | self.black;
         occupied &= !(1u64 << m.from);
         if m.en_passant {
@@ -1056,7 +1059,10 @@ impl Board {
                 break;
             };
             d += 1;
-            gain[d] = SEE_VALUES[on_square as usize] - gain[d - 1];
+            // SAFETY: slot `d - 1` was written before `d` reached this
+            // value, slot zero above and every later one here
+            let taken = unsafe { gain[d - 1].assume_init() };
+            gain[d].write(SEE_VALUES[on_square as usize] - taken);
             // taking a king ends the swap: the side whose king would be
             // taken could not legally have captured onto this square, which
             // the fold below reads off the king's price
@@ -1070,10 +1076,13 @@ impl Board {
         // negamax over the stack: at each step the side to move keeps the
         // better of stopping and the exchange it recorded
         while d > 0 {
-            gain[d - 1] = -(-gain[d - 1]).max(gain[d]);
+            // SAFETY: the loop above wrote every slot up to the `d` it left
+            let (stop, go_on) = unsafe { (gain[d - 1].assume_init(), gain[d].assume_init()) };
+            gain[d - 1].write(-(-stop).max(go_on));
             d -= 1;
         }
-        gain[0]
+        // SAFETY: slot zero was written before the swap began
+        unsafe { gain[0].assume_init() }
     }
 
     /// How many times this position has already appeared, not counting the
