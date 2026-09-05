@@ -2,6 +2,39 @@
 
 All notable changes to this project will be documented in this file.
 
+## [0.4.2-rc.1] - 2026-09-05
+
+### Features
+
+- *(search)* Record every reverse futility candidate, fired or not [bench 8182450]
+- *(search)* Add principal variation search [bench 7184673]
+- *(search)* Skip hopeless captures in quiescence [bench 6708286] [elo +50 ±24 (sprt [0, 10] passed, 530 games, 10+0.1, vs 24ef995)]
+- *(search)* Add static exchange evaluation [bench 6708286]
+- *(search)* Order captures by static exchange evaluation [bench 6146070] [elo +12 ±18 (sprt [-10, 0] inconclusive, 840 games, 10+0.1, vs master)]
+- *(search)* Skip losing captures in quiescence [bench 5684750] [elo +24 ±19 (sprt [-10, 0] passed, 746 games, 10+0.1, vs 6e6fdec)]
+- *(search)* Reduce late quiet moves by one ply [bench 4395471] [elo +44 ±22 (sprt [0, 10] passed, 648 games, 10+0.1, vs 899197c)]
+
+### Performance
+
+- *(search)* Score the quiet moves only when the search reaches them [bench 6146018] [speed +3.4%]
+- *(board)* Mask the castling rights, step the repetition walk in twos [bench 4395471] [speed +3.5%]
+- *(search)* Sort the keys and put the moves in order once [bench 4395471] [speed +2.1%]
+
+### Refactor
+
+- *(search)* Leave the swap's gain array uninitialised [bench 5684750]
+
+### Development
+
+- *(bench)* Let the residuals command set the reservoir cap
+- *(bench)* Score the terminal positions the replay reaches
+- *(docs)* Correct three verdicts in the experiments ledger
+- *(docs)* Record that on-demand move picking measured slower
+- *(bench)* Count the rows whose claim overstates the reference
+- *(docs)* Record the tuning that measured slower
+- *(ci)* Count how the games in a match ended
+- *(ci)* Keep the games and a manifest from every strength run
+
 ## [0.4.1] - 2026-09-04
 
 ### Features
