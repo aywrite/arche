@@ -368,7 +368,7 @@ impl Default for SearchConfig {
             taint: TaintPolicy::Rule50,
             reverse_futility: true,
             null_move: true,
-            delta_margin: true,
+            delta_margin: false,
             move_memory: true,
         }
     }
