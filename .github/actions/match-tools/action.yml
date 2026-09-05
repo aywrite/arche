@@ -7,6 +7,13 @@ inputs:
     # every fastchess release is tagged -alpha, there is no plain v1.8.2
     default: v1.8.2-alpha
 
+outputs:
+  fastchess:
+    # handed back rather than read off the built binary, so a run that records
+    # what it played on records the release that was asked for
+    description: The fastchess release that is in tools/
+    value: ${{ inputs.fastchess }}
+
 runs:
   using: composite
   steps:
