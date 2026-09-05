@@ -26,6 +26,7 @@ use crate::bench::{self, Position};
 use crate::board::Board;
 use crate::engine::{AlphaBeta, Engine, SearchConfig, SearchOutcome, SearchParameters};
 use crate::misc::Score;
+use crate::value::Value;
 use std::collections::BinaryHeap;
 use std::fmt;
 
@@ -481,9 +482,10 @@ pub struct Report {
     /// Samples the buffer had no room for.
     pub overflowed: u64,
     /// Samples the replay could not put a reference value on, because the
-    /// position as a diagram has no move to make. Counted rather than
-    /// scored, so the rows below are all comparisons and the count says how
-    /// many were not.
+    /// fen did not parse. Counted rather than scored, so the rows below are
+    /// all comparisons and the count says how many were not. A position
+    /// with no move to make is not one of these. It has a value by rule,
+    /// and it gets a row.
     pub unplayable: usize,
     pub rows: Vec<Row>,
 }
@@ -576,7 +578,7 @@ fn replay_engine() -> AlphaBeta {
 }
 
 /// What the reference search says about each sampled position, and how many
-/// of them it had nothing to say about.
+/// of them it could not read.
 ///
 /// One engine for the whole replay, with a table of its own that is cleared
 /// before every sample. A probe compares the whole key, so an entry left by
@@ -607,12 +609,27 @@ pub fn replay(samples: &[Sample]) -> (Vec<Row>, usize) {
         engine.clear_transpositions();
         let outcome = engine
             .iterative_deepening_search(SearchParameters::to_depth(sample.depth), |_, _, _, _| {});
-        let SearchOutcome::Complete(result) = outcome else {
+        let reference = match outcome {
+            SearchOutcome::Complete(result) => result.score,
             // the position has no move to make: mate, stalemate, or drawn
-            // already by the counter its fen carries. There is no reference
-            // value to compare, so it is counted instead of scored
-            unplayable += 1;
-            continue;
+            // already by the counter its fen carries. The rules fix what
+            // it is worth, so it is scored the way the search scores the
+            // same position a ply down: a mate on the hundredth half move
+            // is still a mate, and everything else is a draw. From a real
+            // run only the stalemate arrives here, since a sampled node is
+            // never in check and never past the counter
+            SearchOutcome::GameOver => {
+                if engine.board.in_check() && !engine.board.has_legal_move() {
+                    Value::mated(0).score
+                } else {
+                    0
+                }
+            }
+            // the replay runs to a depth and never on a clock, so the one
+            // abort left is a depth of zero, which the sampler never records
+            SearchOutcome::Aborted(_) => {
+                unreachable!("a sample is searched to a depth of at least one")
+            }
         };
         rows.push(Row {
             kind: sample.kind,
@@ -622,7 +639,7 @@ pub fn replay(samples: &[Sample]) -> (Vec<Row>, usize) {
             beta: sample.beta,
             eval_beta: sample.eval_beta,
             claimed: sample.claimed,
-            reference: result.score,
+            reference,
             fen: sample.fen.clone(),
         });
     }
@@ -1044,22 +1061,78 @@ mod tests {
         );
     }
 
-    /// A position with no move to make has no reference value, so it is
-    /// counted rather than scored and no row claims a comparison that was
-    /// never made.
-    #[test]
-    fn a_position_with_no_move_is_counted_and_not_scored() {
-        let mated = Sample {
-            fen: "7k/6Q1/6K1/8/8/8/8/8 b - - 0 1".to_string(),
+    /// A sample whose position is a finished game as a diagram. The search
+    /// that recorded it stood a ply short of the end, and the fen carries
+    /// only the position.
+    fn finished(fen: &str, halfmove: usize) -> Sample {
+        Sample {
+            fen: fen.to_string(),
             depth: 2,
             kind: Shortcut::NullMove,
             claimed: 0,
             beta: 0,
             eval_beta: 0,
             window: Window::Zero,
-            halfmove: 0,
-        };
-        let (rows, unplayable) = replay(&[mated]);
+            halfmove,
+        }
+    }
+
+    /// A mated root is worth the mated score, the value the search gives
+    /// the same position at an interior node. The row is a mate row like
+    /// any other the reference answers with, so it is counted under mates
+    /// and kept out of the percentiles. The second sample is mated on the
+    /// hundredth half move, which the search scores as a mate and not as
+    /// the draw the counter would claim.
+    #[test]
+    fn a_mated_root_is_scored_as_mated() {
+        let samples = [
+            finished("7k/6Q1/6K1/8/8/8/8/8 b - - 0 1", 0),
+            finished("k6R/8/1K6/8/8/8/8/8 b - - 100 100", 100),
+        ];
+        let (rows, unplayable) = replay(&samples);
+        assert_eq!(unplayable, 0);
+        assert_eq!(rows.len(), 2);
+        for row in &rows {
+            assert_eq!(row.reference, Value::mated(0).score, "{:?}", row);
+            assert!(row.reference_is_mate(), "{:?}", row);
+        }
+    }
+
+    /// A stalemated root is a draw, so its row says 0 rather than the
+    /// sample being dropped. This is the one terminal position a real run
+    /// reaches: a claim above beta on a side that turns out to have no
+    /// move, which the old count hid.
+    #[test]
+    fn a_stalemated_root_is_scored_as_a_draw() {
+        let (rows, unplayable) = replay(&[finished("k7/8/1Q6/8/8/8/8/7K b - - 0 1", 0)]);
+        assert_eq!(unplayable, 0);
+        assert_eq!(rows.len(), 1);
+        assert_eq!(rows[0].reference, 0, "{:?}", rows[0]);
+        assert!(!rows[0].reference_is_mate());
+    }
+
+    /// A root the fifty move counter has already drawn scores 0 as well.
+    /// The second sample is in check on the hundredth half move with a
+    /// square to run to, so being in check alone does not make a mate.
+    #[test]
+    fn a_root_the_fifty_move_rule_has_drawn_is_scored_as_a_draw() {
+        let samples = [
+            finished("5k2/1p3p1p/p3pK1P/P1P1P3/4bP2/8/8/8 w - - 100 112", 100),
+            finished("k6R/8/2K5/8/8/8/8/8 b - - 100 100", 100),
+        ];
+        let (rows, unplayable) = replay(&samples);
+        assert_eq!(unplayable, 0);
+        assert_eq!(rows.len(), 2);
+        for row in &rows {
+            assert_eq!(row.reference, 0, "{:?}", row);
+        }
+    }
+
+    /// The one sample the replay cannot score: a fen it cannot read. That
+    /// is what the unplayable count is, and nothing else goes into it.
+    #[test]
+    fn a_fen_that_does_not_parse_is_counted_unplayable() {
+        let (rows, unplayable) = replay(&[finished("not a position", 0)]);
         assert!(rows.is_empty());
         assert_eq!(unplayable, 1);
     }
