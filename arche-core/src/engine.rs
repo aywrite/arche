@@ -233,6 +233,12 @@ pub struct SearchConfig {
     /// and a guess like the other two: on in the default, off in the
     /// reference.
     pub delta_margin: bool,
+    /// Whether quiescence may skip a capture the swap prices as losing,
+    /// rather than search the exchange it expects to lose. The fourth
+    /// shortcut, and a guess like the margin beside it: the swap sees no
+    /// pins and nothing beyond its square. On in the default, off in the
+    /// reference.
+    pub see_pruning: bool,
     /// Whether a node orders its quiet moves by what other nodes have
     /// learned: the killers for its distance from the root, and the history
     /// table under them. On in the default, off in the reference, which
@@ -300,6 +306,7 @@ impl SearchConfig {
             reverse_futility: false,
             null_move: false,
             delta_margin: false,
+            see_pruning: false,
             move_memory: false,
         }
     }
@@ -358,7 +365,11 @@ impl Default for SearchConfig {
     /// a capture that cannot reach alpha with its piece counted as fully
     /// won is skipped rather than searched.
     ///
-    /// The quiet memories are the fifth, and no kind of guess at all.
+    /// The losing capture skip is the fifth, the same guess again: a
+    /// capture the swap prices as losing is skipped rather than searched
+    /// down to the exchange the swap already priced.
+    ///
+    /// The quiet memories are the sixth, and no kind of guess at all.
     /// They prune nothing. What they move is how soon a node finds the move
     /// that cuts it off, which is most of what alpha-beta costs. The
     /// reference keeps them off so that its tree stays the one the capture
@@ -369,6 +380,7 @@ impl Default for SearchConfig {
             reverse_futility: true,
             null_move: true,
             delta_margin: true,
+            see_pruning: true,
             move_memory: true,
         }
     }
@@ -703,33 +715,54 @@ impl AlphaBeta {
         };
         // quiescence orders captures and evasions, which is where the quiet
         // memories have nothing to say, so it never reads them and never
-        // writes them either
-        self.ordering.order(&self.board, &mut moves, pv_play, None);
+        // writes them either. What comes back is the front, the table's
+        // move and the captures the swap prices as winning or even, and
+        // every capture behind it is a losing one. Read now, because the
+        // sort's keys do not survive the recursion below
+        let front = self.ordering.order(&self.board, &mut moves, pv_play, None);
 
         // quiescence itself never reads a draw, but a search told to trust
         // tainted scores can cut on a tainted entry inside a capture tree,
         // and that taint travels up through here like anywhere else
         let mut taint = Taint::default();
         let mut found_legal_move = false;
-        for m in &moves {
-            // the delta margin: a capture that leaves the standing eval
-            // short of alpha even with its piece counted as fully won is
-            // expected to be worth less than alpha, which the stand pat
-            // already said of the node, so it is skipped rather than
-            // searched. A guess about the capture tree, so the reference
-            // does not make it. Promotions are exempt, because the piece
-            // that arrives is not the pawn that left; an evasion is exempt
-            // because a side in check has no standing eval to measure
-            // from; and a mate window alpha is exempt because a static
-            // eval cannot come near it, so against one the arithmetic
-            // would skip every capture, the mating one included
+        for (i, m) in moves.iter().enumerate() {
+            // two skips, guesses about the capture tree that the reference
+            // does not make, under one set of exemptions. Promotions are
+            // exempt, because the piece that arrives is not the pawn that
+            // left and the swap prices it as the pawn; an evasion is exempt
+            // because a side in check has no standing eval to measure from
+            // and must answer the check; and a mate window alpha is exempt
+            // because a static eval cannot come near it, so against one the
+            // margin's arithmetic would skip every capture, the mating one
+            // included. The stand pat lifts alpha to the static eval, so
+            // alpha is inside the window only when it arrived there
+            // positive: a mate is already in hand and the question is
+            // whether a capture here mates faster. That is the mate the
+            // exemption rescues from the losing capture skip; a sacrifice
+            // that would find the first mate, with alpha nowhere near one,
+            // is skipped like any other capture the swap prices as losing
             if let (Some(standing), Some(captured)) = (standing, m.capture) {
-                if self.config.delta_margin
-                    && !is_mate(alpha)
-                    && m.promote.is_none()
-                    && standing + crate::eval::material(captured) as Score + DELTA_MARGIN < alpha
-                {
-                    continue;
+                if !is_mate(alpha) && m.promote.is_none() {
+                    // the delta margin: a capture that leaves the standing
+                    // eval short of alpha even with its piece counted as
+                    // fully won is expected to be worth less than alpha,
+                    // which the stand pat already said of the node
+                    if self.config.delta_margin
+                        && standing + crate::eval::material(captured) as Score + DELTA_MARGIN
+                            < alpha
+                    {
+                        continue;
+                    }
+                    // the losing captures: every capture the sort put
+                    // behind the front is one the swap prices as losing, so
+                    // the class is read off the order rather than from a
+                    // second swap. The swap already says what the exchange
+                    // comes to, and searching it would spend nodes finding
+                    // out
+                    if self.config.see_pruning && i >= front {
+                        continue;
+                    }
                 }
             }
             if self.board.make_move(m) {
@@ -1681,6 +1714,20 @@ mod search {
         )
     }
 
+    /// The reference with the losing capture skip switched on and nothing
+    /// else touched: whatever moves between this and `reference` is the
+    /// skip, and not the delta margin the default carries beside it.
+    fn skipping(board: Board) -> AlphaBeta {
+        AlphaBeta::with_config(
+            board,
+            TABLE_BYTES,
+            SearchConfig {
+                see_pruning: true,
+                ..SearchConfig::reference()
+            },
+        )
+    }
+
     /// A tactical middlegame the cache tests search over and over: sharp
     /// enough that a wrongly reused score would move the verdict.
     const SHARP_MIDDLEGAME: &str = "r1b2rk1/ppp1qppp/4pn2/6N1/Qn1P4/2NBP3/PP3PPP/R3K2R w KQ - 9 12";
@@ -1935,6 +1982,143 @@ mod search {
             super::is_mate(value.score) && value.score > 29_500,
             "no mate found: {}",
             value.score
+        );
+    }
+
+    /// Quiescence at a window one point wide around the standing eval, so
+    /// the stand pat neither cuts the node nor leaves the captures out of
+    /// the window: what the node does with them is the node count.
+    fn quiet_nodes(mut e: AlphaBeta) -> (u64, Value) {
+        let standing = e.eval();
+        let Ok(value) = e.quiescence(standing, standing + 1) else {
+            panic!("an unlimited search aborted");
+        };
+        (e.nodes, value)
+    }
+
+    #[test]
+    fn a_losing_capture_is_not_searched() {
+        // the rook can take the pawn on e4 and the pawn on d5 takes it
+        // back: a rook for a pawn, which the swap prices as losing, and the
+        // one capture on the board. The reference searches it down to the
+        // exchange; the skip answers from the stand pat alone, in one node
+        let fen = "7k/8/8/3p4/R3p3/8/8/7K w - - 0 1";
+        let (searched, _) = quiet_nodes(reference(Board::from_fen(fen).unwrap()));
+        assert!(searched > 1, "the reference did not search the capture");
+
+        let e = skipping(Board::from_fen(fen).unwrap());
+        let standing = e.eval();
+        let (skipped, value) = quiet_nodes(e);
+        assert_eq!(skipped, 1);
+        assert_eq!(value, Value::clean(standing));
+    }
+
+    #[test]
+    fn a_winning_and_an_even_capture_are_searched_whatever_the_swap_says() {
+        // the rook takes a pawn nothing defends, and a rook takes a rook
+        // that a rook takes back: winning and even, and the skip leaves
+        // both trees exactly as the reference searches them
+        for fen in [
+            "7k/8/8/8/R3p3/8/8/7K w - - 0 1",
+            "3rr2k/8/8/8/8/8/8/4R2K w - - 0 1",
+        ] {
+            let (searched, answer) = quiet_nodes(reference(Board::from_fen(fen).unwrap()));
+            assert!(searched > 1, "the reference did not search {fen}");
+            assert_eq!(
+                quiet_nodes(skipping(Board::from_fen(fen).unwrap())),
+                (searched, answer),
+                "{fen}"
+            );
+        }
+    }
+
+    #[test]
+    fn a_side_in_check_searches_a_losing_evasion() {
+        // the knight gives check and the queen taking it is the one
+        // evasion, with the pawn on d3 taking the queen back: a losing
+        // swap, and searched all the same, because a side in check has no
+        // stand pat to answer from and the evasion path is not pruned. Three
+        // nodes: this one, the queen's capture and the pawn's recapture
+        let fen = "7k/8/8/8/8/3p4/PPn5/KQ6 w - - 0 1";
+        for mut e in [
+            reference(Board::from_fen(fen).unwrap()),
+            skipping(Board::from_fen(fen).unwrap()),
+        ] {
+            let Ok(value) = e.quiescence(-10_000, 10_000) else {
+                panic!("an unlimited search aborted");
+            };
+            assert_eq!(e.nodes, 3);
+            assert!(
+                !super::is_mate(value.score),
+                "read as mated: {}",
+                value.score
+            );
+        }
+    }
+
+    #[test]
+    fn a_promoting_capture_is_never_skipped() {
+        // the pawn takes the rook on a8 and promotes, and the rook on b8
+        // takes the queen back. The swap prices a promoting capture at
+        // its victim less a pawn, since the piece that arrives is counted
+        // as the pawn that left, so today no promoting capture prices as
+        // losing and the exemption has nothing to catch; it is there so a
+        // swap that one day prices the promotion cannot skip one. What the
+        // test holds is the promise: the capture is searched under the skip
+        let fen = "rr5k/1P6/8/8/8/8/8/7K w - - 0 1";
+        let board = Board::from_fen(fen).unwrap();
+        let promotes = play_named(&board, "b7a8q");
+        assert!(
+            board.see(&promotes) >= 0,
+            "the swap priced the promotion as losing"
+        );
+
+        let (searched, answer) = quiet_nodes(reference(Board::from_fen(fen).unwrap()));
+        assert!(searched > 1, "the reference did not search the promotion");
+        assert_eq!(
+            quiet_nodes(skipping(Board::from_fen(fen).unwrap())),
+            (searched, answer)
+        );
+    }
+
+    #[test]
+    fn the_mate_window_stands_the_skip_down() {
+        // queen takes rook on e8 and mates: the knight that could take her
+        // back is pinned to its king by the bishop, which the swap does not
+        // see, so the swap prices the capture as a queen for a rook and the
+        // skip would throw the mate away. Asked under an alpha inside the
+        // mate window, a mate already in hand that this one would beat,
+        // the exemption stands the skip down and the mate is found; asked
+        // under a window nowhere near a mate, the same capture is skipped,
+        // which is what says the exemption and not the swap saved it
+        let fen = "4r2k/5pnp/8/8/8/2B5/8/K3Q3 w - - 0 1";
+        let board = Board::from_fen(fen).unwrap();
+        assert!(board.see(&play_named(&board, "e1e8")) < 0);
+
+        let mut e = skipping(Board::from_fen(fen).unwrap());
+        let Ok(value) = e.quiescence(29_500, 29_501) else {
+            panic!("an unlimited search aborted");
+        };
+        assert!(e.nodes > 1, "the mating capture was not searched");
+        assert!(
+            super::is_mate(value.score) && value.score > 29_500,
+            "no mate found: {}",
+            value.score
+        );
+
+        // wide rather than one point around the standing eval: the even
+        // capture of the knight sorts first and wins the rook a move later,
+        // and a narrow window would cut the node off on it before either
+        // arm reached the queen's capture
+        let wide = |mut e: AlphaBeta| {
+            assert!(e.quiescence(-10_000, 10_000).is_ok());
+            e.nodes
+        };
+        let searched = wide(reference(Board::from_fen(fen).unwrap()));
+        let skipped = wide(skipping(Board::from_fen(fen).unwrap()));
+        assert!(
+            skipped < searched,
+            "nothing was skipped outside the mate window"
         );
     }
 
