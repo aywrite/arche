@@ -879,7 +879,7 @@ mod tests {
         for position in &suite() {
             let board = Board::from_fen(&position.fen).unwrap();
             let mut plain =
-                AlphaBeta::with_config(board, bench::TABLE_BYTES, SearchConfig::default());
+                AlphaBeta::with_config(board.clone(), bench::TABLE_BYTES, SearchConfig::default());
             let plain_nodes = searched_nodes(&mut plain, &position.id);
             let mut armed =
                 AlphaBeta::with_config(board, bench::TABLE_BYTES, SearchConfig::default());
