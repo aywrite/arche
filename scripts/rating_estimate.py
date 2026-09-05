@@ -29,9 +29,11 @@ MAX_IMPLIED = 1200.0
 
 # Games are read one at a time rather than by scanning the whole file for tags,
 # so that a game truncated by an interrupted match cannot pair its opponent with
-# the next game's result.
+# the next game's result. Both are also what match_terminations.py reads a pgn
+# with, so how a fastchess game is picked apart is written down once; the fit
+# here has no use for Termination.
 RECORD = re.compile(r"^\[Event ", re.MULTILINE)
-TAG = re.compile(r'^\[(White|Black|Result) "([^"]*)"\]', re.MULTILINE)
+TAG = re.compile(r'^\[(White|Black|Result|Termination) "([^"]*)"\]', re.MULTILINE)
 
 
 def expected(rating: float, opponent: float) -> float:
