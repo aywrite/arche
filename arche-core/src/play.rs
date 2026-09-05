@@ -9,22 +9,27 @@ use std::fmt;
 /// search is tuned around: a move is copied into a move list, out of it, into
 /// the history and into the transposition table, several times per node.
 /// Widening it has been measured twice and was slower both times.
+///
+/// Outside the crate a move is a value: it comes out of `generate_moves`, a
+/// search result or a pv line, goes into `try_make`, and prints in coordinate
+/// notation. The fields stay in the crate so that a move handed to the board
+/// is one this crate generated.
 #[derive(Debug, Copy, Clone, PartialEq, Eq)]
 pub struct Play {
-    pub from: u8,
-    pub to: u8,
-    pub capture: Option<Piece>,
-    pub promote: Option<PromotePiece>,
+    pub(crate) from: u8,
+    pub(crate) to: u8,
+    pub(crate) capture: Option<Piece>,
+    pub(crate) promote: Option<PromotePiece>,
 
     /// The two moves that displace a second piece, and so cannot be read off
     /// the from and to squares alone: the pawn taken en passant does not
     /// stand on the to square, and a castle moves a rook as well as the king.
-    pub en_passant: bool,
-    pub castle: bool,
+    pub(crate) en_passant: bool,
+    pub(crate) castle: bool,
 }
 
 impl Play {
-    pub fn new(
+    pub(crate) fn new(
         from: u8,
         to: u8,
         capture: Option<Piece>,
