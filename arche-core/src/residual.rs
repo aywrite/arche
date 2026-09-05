@@ -12,9 +12,12 @@
 //! what the position is worth is still a sound fail high as long as the
 //! reference agrees the node fails high. What is not sound is a reference
 //! answer below beta: the node was cut off and should not have been. That is
-//! the crossing, the primary label on every row here. The residual, the
-//! reference's answer less the claim, stays beside it as the size of the
-//! error the crossings are drawn from.
+//! the crossing, the primary label on every row here. The second label is
+//! the overstatement, a claim above the reference's answer: the value is
+//! wrong even where the decision was right, and it is read wherever a
+//! fail-soft value is read. The residual, the reference's answer less the
+//! claim, stays beside both as the size of the error the labels are drawn
+//! from.
 //!
 //! The sampler is the recording half. It hangs off an engine as an option,
 //! and an engine without one searches exactly the tree it searched before
@@ -385,10 +388,10 @@ impl Row {
     /// The residual: the reference's answer less what the shortcut claimed.
     ///
     /// Negative is the shortcut claiming more than the search behind it
-    /// found. It is the size of the error and not the error itself: a
-    /// shortcut returns a lower bound, so claiming more than the position is
-    /// worth costs nothing as long as the node still fails high. What it
-    /// costs when the node does not is `crossed`.
+    /// found, which is `overstated`. It is the size of the error and not the
+    /// error itself: a shortcut returns a lower bound, so claiming more than
+    /// the position is worth costs the node nothing as long as it still
+    /// fails high. What it costs when the node does not is `crossed`.
     pub fn delta(&self) -> i32 {
         i32::from(self.reference) - i32::from(self.claimed)
     }
@@ -409,15 +412,51 @@ impl Row {
         if self.crossed() { "crossed" } else { "clear" }
     }
 
+    /// Whether the claim is higher than the reference's answer, which is
+    /// the value the shortcut got wrong: the bound it handed the parent
+    /// was more than the position is worth.
+    ///
+    /// Independent of `crossed`. A shortcut can clear beta rightly and still
+    /// overstate, and the overstatement then costs nothing at the node. The
+    /// parent reads it: a child's claim arrives at or below the parent's
+    /// alpha, so it never raises alpha, but it is the parent's fail-soft
+    /// best when no move does better, and the ceiling the parent stores is
+    /// then one too low. A claim can also sit under a reference that still
+    /// crossed, when the cutoff was wrong and the value was not. On a
+    /// shadow row nothing was handed up, and the label says what the
+    /// margin would have overstated had it fired.
+    ///
+    /// Strictly above. A claim equal to the reference is the bound holding
+    /// exactly.
+    ///
+    /// A mate reference is labelled like any other row. The distance the
+    /// replay reports is counted from the wrong root, as `reference_is_mate`
+    /// says, but no claim is a mate score, and an eval claim is above every
+    /// mated score and below every mating score whatever the distance, so
+    /// the label survives.
+    pub fn overstated(&self) -> bool {
+        self.claimed > self.reference
+    }
+
+    /// The word a row prints for the overstatement, said either way like
+    /// the crossing: the bound held, or it did not.
+    pub fn overstating_word(&self) -> &'static str {
+        if self.overstated() {
+            "overstated"
+        } else {
+            "held"
+        }
+    }
+
     /// Whether the reference answered with a forced mate.
     ///
-    /// Such a row is a crossing question and nothing else. Its delta is not
+    /// Such a row answers the two labels and nothing else. Its delta is not
     /// a number of pawns, and the mate distance the reference reports counts
     /// from the root of the replay while the claim's counts from the root of
     /// the recorded search, so the two are not even measured from the same
-    /// place. The crossing survives all of that: a mate score is above every
-    /// eval or below every eval, and which of the two is all the comparison
-    /// with beta asks.
+    /// place. The labels survive all of that: a mate score is above every
+    /// eval or below every eval, and which of the two is all that comparing
+    /// it with beta, or with an eval claim, asks.
     pub fn reference_is_mate(&self) -> bool {
         crate::value::is_mate(self.reference)
     }
@@ -437,6 +476,10 @@ pub struct Summary {
     pub count: usize,
     /// Rows whose reference answer fell below the beta that was cleared.
     pub crossed: usize,
+    /// Rows whose claim is higher than the reference's answer. Counted over
+    /// every row of the pair, the mates included, the way the crossings
+    /// are; the two counts overlap without either containing the other.
+    pub overstated: usize,
     /// Rows the reference answered with a mate. Counted here and left out of
     /// the percentiles below, for the reasons `Row::reference_is_mate` gives.
     pub mates: usize,
@@ -681,6 +724,7 @@ impl Report {
             depth,
             count,
             crossed: of_pair().filter(|row| row.crossed()).count(),
+            overstated: of_pair().filter(|row| row.overstated()).count(),
             mates: of_pair().filter(|row| row.reference_is_mate()).count(),
             deltas: (!deltas.is_empty()).then(|| Deltas {
                 min: deltas[0],
@@ -716,9 +760,9 @@ impl Report {
 /// each kind at each depth.
 ///
 /// A row is `kind depth window halfmove beta eval_beta claimed reference
-/// delta crossed fen`, whitespace separated with the fen last, so it parses
-/// left to right and the field that can hold spaces holds the rest of the
-/// line.
+/// delta crossed overstated fen`, whitespace separated with the fen last, so
+/// it parses left to right and the field that can hold spaces holds the rest
+/// of the line.
 ///
 /// The header states the events as well as the records, always. A run that
 /// recorded no crossing has measured nothing until the reader knows how many
@@ -761,7 +805,7 @@ impl fmt::Display for Report {
         for row in &self.rows {
             writeln!(
                 f,
-                "{} {} {} {} {} {} {} {} {} {} {}",
+                "{} {} {} {} {} {} {} {} {} {} {} {}",
                 row.kind.word(),
                 row.depth,
                 row.window.word(),
@@ -772,6 +816,7 @@ impl fmt::Display for Report {
                 row.reference,
                 row.delta(),
                 row.crossing_word(),
+                row.overstating_word(),
                 row.fen,
             )?;
         }
@@ -787,12 +832,13 @@ impl fmt::Display for Report {
             for s in summaries {
                 write!(
                     f,
-                    "{} depth {} {} crossed {} rate {:.2}% mates {}",
+                    "{} depth {} {} crossed {} rate {:.2}% overstated {} mates {}",
                     kind.word(),
                     s.depth,
                     s.count,
                     s.crossed,
                     s.crossing_rate(),
+                    s.overstated,
                     s.mates,
                 )?;
                 // absent when every row of the pair was a mate, since there
@@ -1266,6 +1312,52 @@ mod tests {
         assert_eq!(at.crossing_word(), "clear");
     }
 
+    /// The overstatement, the row's second label: the claim is higher than
+    /// what the reference found. Strictly above, since a claim equal to the
+    /// reference is the bound holding exactly.
+    #[test]
+    fn a_claim_above_the_reference_overstates_it_and_one_at_or_below_does_not() {
+        let above = claiming(2, 150, 120);
+        let at = claiming(2, 120, 120);
+        let below = claiming(2, 90, 120);
+        assert!(above.overstated(), "{:?}", above);
+        assert!(!at.overstated(), "{:?}", at);
+        assert!(!below.overstated(), "{:?}", below);
+        assert_eq!(above.overstating_word(), "overstated");
+        assert_eq!(at.overstating_word(), "held");
+        assert_eq!(below.overstating_word(), "held");
+    }
+
+    /// The two labels answer different questions, so each is found with the
+    /// other absent. A claim under the reference still crosses when the
+    /// reference is under beta: the cutoff was wrong and the value was not.
+    /// A claim over a reference that clears beta overstates without
+    /// crossing: the cutoff was right and the value handed up was too high.
+    #[test]
+    fn a_row_can_cross_without_overstating_and_overstate_without_crossing() {
+        // beta is 100 in every made up row
+        let crossed_only = claiming(2, 70, 90);
+        let overstated_only = claiming(2, 150, 120);
+        let both = claiming(2, 100, 60);
+        let neither = claiming(2, 100, 140);
+        assert!(crossed_only.crossed() && !crossed_only.overstated());
+        assert!(!overstated_only.crossed() && overstated_only.overstated());
+        assert!(both.crossed() && both.overstated());
+        assert!(!neither.crossed() && !neither.overstated());
+    }
+
+    /// A mate reference is labelled like any other row. A claim above a
+    /// mated reference overstated it, and a claim below a mating reference
+    /// did not; the mate distance is counted from the wrong root, and that
+    /// moves neither answer.
+    #[test]
+    fn a_mate_reference_is_overstated_by_a_claim_above_it() {
+        let over_a_mated = claiming(2, 100, MATED);
+        let under_a_mating = claiming(2, 100, MATING);
+        assert!(over_a_mated.overstated(), "{:?}", over_a_mated);
+        assert!(!under_a_mating.overstated(), "{:?}", under_a_mating);
+    }
+
     /// What the reference search on its own says about a position at a
     /// depth, which is what every row here claims to hold.
     fn reference_answer(fen: &str, depth: u8) -> Score {
@@ -1466,7 +1558,7 @@ mod tests {
         };
         let text = report.to_string();
         let row = text.lines().nth(1).expect("a row");
-        let mut words = row.splitn(11, ' ');
+        let mut words = row.splitn(12, ' ');
         assert_eq!(words.next(), Some("null_move"));
         assert_eq!(words.next(), Some("3"));
         assert_eq!(words.next(), Some("zw"));
@@ -1477,6 +1569,8 @@ mod tests {
         assert_eq!(words.next(), Some("150"));
         assert_eq!(words.next(), Some("-50"));
         assert_eq!(words.next(), Some("crossed"));
+        // and the claim of 200 is above the reference of 150
+        assert_eq!(words.next(), Some("overstated"));
         assert_eq!(words.next(), Some("4k3/8/8/8/8/8/8/4K3 w - - 0 1"));
         // the header states the denominator whether or not anything else
         // needed saying
@@ -1489,7 +1583,7 @@ mod tests {
         );
         assert!(
             text.contains(
-                "null_move depth 3 1 crossed 1 rate 100.00% mates 0 \
+                "null_move depth 3 1 crossed 1 rate 100.00% overstated 1 mates 0 \
                  min -50 median -50 p90 -50 p99 -50 max -50"
             ),
             "{}",
@@ -1512,6 +1606,15 @@ mod tests {
             claimed: 100,
             reference,
             fen: "4k3/8/8/8/8/8/8/4K3 w - - 0 1".to_string(),
+        }
+    }
+
+    /// The same row with the claim made up as well, for the tests that put
+    /// the claim and the reference on either side of each other.
+    fn claiming(depth: u8, claimed: Score, reference: Score) -> Row {
+        Row {
+            claimed,
+            ..made_up(depth, reference)
         }
     }
 
@@ -1552,8 +1655,38 @@ mod tests {
         assert_eq!(summary.crossing_rate(), 25.0);
         assert!(
             report.to_string().contains(
-                "reverse_futility depth 2 4 crossed 1 rate 25.00% mates 0 \
+                "reverse_futility depth 2 4 crossed 1 rate 25.00% overstated 1 mates 0 \
                  min -40 median 0 p90 80 p99 80 max 80"
+            ),
+            "{}",
+            report
+        );
+    }
+
+    /// The overstatements are counted beside the crossings and not inside
+    /// them: the rows are made up so that the two counts differ, and the
+    /// line prints the count right after the crossing rate.
+    #[test]
+    fn the_summary_counts_the_overstatements_apart_from_the_crossings() {
+        // beta is 100 in every made up row: one crossed and overstated,
+        // one overstated with beta cleared, one crossed with the claim
+        // under the reference, and one neither
+        let report = report_of(vec![
+            claiming(2, 100, 60),
+            claiming(2, 150, 120),
+            claiming(2, 70, 90),
+            claiming(2, 100, 140),
+        ]);
+        let summary = report
+            .summary(Shortcut::ReverseFutility, 2)
+            .expect("four rows of the pair");
+        assert_eq!(summary.count, 4);
+        assert_eq!(summary.crossed, 2);
+        assert_eq!(summary.overstated, 2);
+        assert!(
+            report.to_string().contains(
+                "reverse_futility depth 2 4 crossed 2 rate 50.00% overstated 2 mates 0 \
+                 min -40 median -30 p90 40 p99 40 max 40"
             ),
             "{}",
             report
@@ -1588,12 +1721,14 @@ mod tests {
         assert!(report.summary(Shortcut::ReverseFutility, 2).is_none());
         let text = report.to_string();
         assert!(
-            text.contains("reverse_futility depth 1 3 crossed 0 rate 0.00% mates 0 "),
+            text.contains("reverse_futility depth 1 3 crossed 0 rate 0.00% overstated 0 mates 0 "),
             "{}",
             text
         );
         assert!(
-            text.contains("reverse_futility depth 3 1 crossed 1 rate 100.00% mates 0 "),
+            text.contains(
+                "reverse_futility depth 3 1 crossed 1 rate 100.00% overstated 1 mates 0 "
+            ),
             "{}",
             text
         );
@@ -1632,13 +1767,17 @@ mod tests {
         // mates were set aside
         assert_eq!(summary.crossed, 1);
         assert_eq!(summary.crossing_rate(), 25.0);
+        // the mated reference is the one row the claim of 100 is above,
+        // and it is counted: a mate row is set aside from the percentiles
+        // and from neither label
+        assert_eq!(summary.overstated, 1);
         // the percentiles are the two ordinary rows and nothing else
         let deltas = summary.deltas.expect("two rows that are not mates");
         assert_eq!((deltas.min, deltas.max), (40, 60));
         assert!(
-            report
-                .to_string()
-                .contains("reverse_futility depth 2 4 crossed 1 rate 25.00% mates 2 min 40 "),
+            report.to_string().contains(
+                "reverse_futility depth 2 4 crossed 1 rate 25.00% overstated 1 mates 2 min 40 "
+            ),
             "{}",
             report
         );
@@ -1657,7 +1796,9 @@ mod tests {
         assert!(summary.deltas.is_none());
         let text = report.to_string();
         assert!(
-            text.contains("\nreverse_futility depth 2 1 crossed 0 rate 0.00% mates 1\n"),
+            text.contains(
+                "\nreverse_futility depth 2 1 crossed 0 rate 0.00% overstated 0 mates 1\n"
+            ),
             "{}",
             text
         );
