@@ -417,8 +417,9 @@ impl AttackMasks {
 /// oracle, not the evaluation: these say which capture to try first, and
 /// `eval::material` says what a position is worth, so either can move
 /// without silently dragging the other along. The king's price only has to
-/// dwarf every exchange the swap can build, without overflowing one.
-const SEE_VALUES: [i32; 6] = [100, 300, 300, 500, 900, 10_000];
+/// dwarf every exchange the swap can build, without overflowing one. The
+/// ordering module reads the table's bounds to prove its bands apart.
+pub(crate) const SEE_VALUES: [i32; 6] = [100, 300, 300, 500, 900, 10_000];
 
 /// The whole position with its history, which makes a board a little over
 /// forty kilobytes and `Copy`. Copying one is nothing next to a search and a
@@ -1021,9 +1022,6 @@ impl Board {
     /// theirs to fix. Pins are ignored: every attacker is assumed free to
     /// capture, however its king stands. A move with no victim is worth zero
     /// here; the callers only ask about captures.
-    // only the tests call it so far; the allow comes off when the move
-    // ordering starts asking
-    #[allow(dead_code)]
     pub(crate) fn see(&self, m: &Play) -> i32 {
         let Some(victim) = m.capture else {
             return 0;
