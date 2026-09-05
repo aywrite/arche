@@ -11,7 +11,6 @@ compare against — is in place, so each of these arrives with its numbers: a
 the engine plays. Roughly in the order they look worth doing.
 
 - late move reductions
-- static exchange evaluation, so captures are ordered and pruned by what they win rather than what they grab
 - evaluate drawn positions
 - the rest of evaluation: mobility, king safety, passed pawns, and special cases such as
   the bishop pair and open files. A tuner comes before the deeper rows, so the weights are
