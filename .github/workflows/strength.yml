@@ -17,6 +17,12 @@ name: Strength
 # sizing it, so it can be set generously, and a match that reaches the cap, or
 # the time cap below, reports inconclusive rather than pretending the games it
 # played were enough.
+#
+# Every run keeps what it would take to look into its own result: the games with
+# the search figures behind each move, the result block, the fastchess config
+# and a manifest of what was played on what. They are uploaded as an artifact
+# named strength-<run id>. The opening order is seeded, and the seed is in the
+# manifest, so the same schedule can be played again.
 
 on:
   workflow_dispatch:
@@ -47,6 +53,9 @@ on:
         description: SPRT alternative, in elo. Accepting it (H1) means the candidate is stronger by about this much or more.
         type: number
         default: 10
+      seed:
+        description: Seed for the random opening order. Left empty it is the run id, and either way the manifest records it.
+        type: string
   workflow_call:
     inputs:
       candidate:
@@ -70,6 +79,8 @@ on:
       elo1:
         type: number
         default: 10
+      seed:
+        type: string
       publish:
         description: Append the result to the release notes for this tag
         type: boolean
@@ -154,6 +165,15 @@ jobs:
       SPRT: ${{ inputs.sprt }}
       ELO0: ${{ inputs.elo0 }}
       ELO1: ${{ inputs.elo1 }}
+      # the openings are drawn at random, so without a seed the schedule is
+      # gone the moment the run ends. The run id is one nobody has to choose
+      # and no two runs share; a seed given by hand replays an earlier run
+      SEED: ${{ inputs.seed || github.run_id }}
+      # 256MB is what the engine defaults to. Naming it here holds the two
+      # sides to the same table whatever a future default is, and puts the
+      # number in the manifest with the rest of what the match was played on
+      HASH: 256
+      CONCURRENCY: 2
       # the wall clock cap on play alone. It sits inside the job's timeout with
       # room for the builds before it and the summary after, so a match stopped
       # by the clock still reports the games it did play
@@ -168,6 +188,7 @@ jobs:
           fetch-depth: 0
 
       - uses: ./.github/actions/match-tools
+        id: tools
 
       # the cache keeps the dependencies; each side's engine is built from an
       # export of its commit, and the checkout stays on the ref this ran on
@@ -189,8 +210,9 @@ jobs:
         working-directory: tools
         run: |
           # only fastchess and the book are cached, but a rerun on the same
-          # runner would still find the last attempt's results lying here
-          rm -f result.txt config.json
+          # runner would still find the last attempt's games lying here, and
+          # fastchess appends to a pgn it is given
+          rm -f games.pgn result.txt config.json terminations.txt
           sprt=()
           if [ "$SPRT" = "true" ]; then
             # logistic keeps the bounds in the same elo the summary reports.
@@ -198,9 +220,13 @@ jobs:
             # a wrong H1 one run in twenty, a wrong H0 the same
             sprt=(-sprt "elo0=$ELO0" "elo1=$ELO1" alpha=0.05 beta=0.05 model=logistic)
           fi
-          # the engine allocates a 256MB transposition table before it answers
+          # the engine allocates its transposition table before it answers
           # uci, which four copies starting at once can take longer over than
           # the ten second default allows.
+          #
+          # The pgn carries everything fastchess can record about a move, so a
+          # game that went wrong can be read for what the search was seeing at
+          # the time. tbhits is left off; there are no tablebases here.
           #
           # INT is the signal fastchess takes as a request to stop, report the
           # games played so far and exit, and 124 is how timeout says it had to
@@ -211,23 +237,42 @@ jobs:
           timeout -k 60 -s INT "${MAX_MATCH_MINUTES}m" ./fastchess \
             -engine "name=$CANDIDATE" cmd=./new \
             -engine "name=$PREVIOUS" cmd=./old \
-            -each proto=uci "tc=$TIME_CONTROL" -startup-ms 20000 \
-            -openings file=8moves_v3.pgn format=pgn order=random \
-            -rounds "$((GAMES / 2))" -repeat -concurrency 2 -recover \
+            -each proto=uci "tc=$TIME_CONTROL" "option.Hash=$HASH" -startup-ms 20000 \
+            -openings file=8moves_v3.pgn format=pgn order=random -srand "$SEED" \
+            -rounds "$((GAMES / 2))" -repeat -concurrency "$CONCURRENCY" -recover \
             "${sprt[@]}" \
+            -pgnout file=games.pgn nodes=true seldepth=true nps=true \
+              hashfull=true timeleft=true latency=true pv=true \
             | tee result.txt || status=$?
+          # what stopped the match, for the manifest. The clock cap is the one
+          # reading a result has to know about, because it is the one that
+          # leaves the question the games were meant to settle unanswered
           if [ "$status" = "124" ]; then
+            echo "STOPPED_BY=the ${MAX_MATCH_MINUTES} minute wall clock cap" >> "$GITHUB_ENV"
             echo "::warning::The match hit the ${MAX_MATCH_MINUTES} minute cap before the game count"
           elif [ "$status" != "0" ]; then
             exit "$status"
+          else
+            echo "STOPPED_BY=fastchess, at the game count or an sprt bound" >> "$GITHUB_ENV"
           fi
 
       - name: Summarise the result
         id: summary
         run: |
-          if grep -qiE 'disconnect|stalled|loses on time' tools/result.txt; then
-            echo "::warning::An engine crashed or lost on time, the estimate is unreliable"
-          fi
+          # how the games ended, counted from the games themselves rather than
+          # guessed at from the words in the result block. The losses a crash
+          # or the clock cost stay in the estimate, because choosing what to
+          # count after seeing it is not a measurement; the counts sit beside
+          # it instead. Anything worth an alert comes back on stderr, as the
+          # rating estimate's remarks do. A count that cannot be made is a
+          # warning and not a failure: the elo line below is the run's answer,
+          # and the games go up as an artifact whatever this step does
+          python3 scripts/match_terminations.py tools/games.pgn \
+            > tools/terminations.txt 2> tools/remarks.txt \
+            || echo "::warning::The games could not be counted, the block below is incomplete"
+          while read -r remark; do
+            echo "::warning::${remark}"
+          done < tools/remarks.txt
           line="Performance compared to ${PREVIOUS} | $(python3 scripts/match_summary.py tools/result.txt)"
           echo "::notice::$line"
           echo "line=${line}" >> "$GITHUB_OUTPUT"
@@ -250,7 +295,78 @@ jobs:
             else
               echo "At ${GAMES} games only a difference of about $(python3 -c "print(int(800/(${GAMES}**0.5)))") elo can be told from none."
             fi
+            echo
+            echo "How the games ended:"
+            echo
+            echo '```'
+            cat tools/terminations.txt
+            echo '```'
+            echo
+            echo "The games, the result and a manifest of what was played are kept"
+            echo "as the \`strength-${GITHUB_RUN_ID}\` artifact. The openings came from"
+            echo "seed ${SEED}, which replays this schedule."
           } >> "$GITHUB_STEP_SUMMARY"
+
+      # What it would take to play this match again, and what it was played
+      # on. Written whether or not the match finished, since a run that ended
+      # badly is the one that gets looked into.
+      - name: Write the manifest
+        if: always()
+        env:
+          FASTCHESS: ${{ steps.tools.outputs.fastchess }}
+        run: |
+          book_sha=$(sha256sum tools/8moves_v3.pgn | cut -d' ' -f1) || book_sha=unknown
+          toolchain=$(rustc -V) || toolchain=unknown
+          {
+            echo "candidate: ${CANDIDATE}"
+            echo "candidate_sha: ${CANDIDATE_SHA}"
+            echo "baseline: ${PREVIOUS}"
+            echo "baseline_sha: ${BASELINE_SHA}"
+            echo "build: scripts/build_at.sh, cargo build --release on an export of the commit"
+            echo "fastchess: ${FASTCHESS}"
+            echo "book: 8moves_v3.pgn"
+            echo "book_sha256: ${book_sha}"
+            echo "seed: ${SEED}"
+            echo "time_control: ${TIME_CONTROL}"
+            echo "hash_mb: ${HASH}"
+            echo "concurrency: ${CONCURRENCY}"
+            if [ "$SPRT" = "true" ]; then
+              echo "games: ${GAMES} (a cap, the sprt stops the match itself)"
+              echo "sprt: elo0=${ELO0} elo1=${ELO1} alpha=0.05 beta=0.05 model=logistic"
+            else
+              echo "games: ${GAMES}"
+              echo "sprt: off"
+            fi
+            echo "wall_clock_cap_minutes: ${MAX_MATCH_MINUTES}"
+            # unset when the match step never got to the end, which is worth
+            # saying rather than leaving the games to look as if they ran out
+            echo "stopped_by: ${STOPPED_BY:-not recorded, the match did not finish}"
+            echo "runner: $(uname -a)"
+            echo "cores: $(nproc)"
+            echo "rustc: ${toolchain}"
+            echo "run_id: ${GITHUB_RUN_ID}"
+            echo "run_url: ${GITHUB_SERVER_URL}/${GITHUB_REPOSITORY}/actions/runs/${GITHUB_RUN_ID}"
+          } > tools/manifest.txt
+          # the counts the summary printed, so that one file describes the run
+          if [ -f tools/terminations.txt ]; then
+            cat tools/terminations.txt >> tools/manifest.txt
+          fi
+          cat tools/manifest.txt
+
+      # The games are the only record of what actually happened, and a rerun
+      # plays different ones. fastchess writes its own config.json beside them,
+      # which says what it was asked for; the manifest says the rest.
+      - name: Keep the games
+        if: always()
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+        with:
+          name: strength-${{ github.run_id }}
+          path: |
+            tools/games.pgn
+            tools/result.txt
+            tools/config.json
+            tools/manifest.txt
+          if-no-files-found: warn
 
   release-notes:
     needs: match

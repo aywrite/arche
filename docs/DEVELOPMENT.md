@@ -592,7 +592,10 @@ that cannot be measured:
 
 The **Strength** workflow does the same thing on a runner. Run it from the
 actions tab and it plays one version against another, reporting to the run
-summary.
+summary. Each run keeps its games as an artifact, with a manifest beside them
+saying what was played and on what, down to the seed the openings were drawn
+with. The summary counts how the games ended as well, so a result that leant on
+forfeits or crashes says so; those games stay in the estimate either way.
 
 Both sides can be named, as a branch, a tag, a commit or a pull request number:
 
