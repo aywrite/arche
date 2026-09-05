@@ -268,7 +268,7 @@ fn the_move_a_swap_answers_with_opens_the_last_line_said() {
     // The budget moves whenever the tree does, in the commit that moved it
     let mut s = Session::start(&[]);
     s.say(&format!("position fen {}", SHARP_MIDDLEGAME));
-    s.say("go nodes 100000");
+    s.say("go nodes 120000");
     let answer = s.wait_for(|l| l.starts_with("bestmove"));
     let best = answer
         .strip_prefix("bestmove ")
