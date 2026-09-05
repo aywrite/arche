@@ -178,9 +178,19 @@ impl MoveOrdering {
     /// `ply` is the node's distance from the root when the quiet memories
     /// are consulted, and none when they are not: quiescence and the root
     /// order without them, and so does every node under a configuration
-    /// with `move_memory` off. A quiet move scores zero without them, so
-    /// the first stage is the whole order and the list's length comes
-    /// back: there is no second stage to reach.
+    /// with `move_memory` off. The count comes back the same without them:
+    /// a quiet move scores zero either way, and the search asks for the
+    /// second stage only when it has a ply to score at.
+    ///
+    /// Quiescence reads the count for its losing capture skip, and what the
+    /// skip needs of it is that every capture from that index on is one the
+    /// swap priced as losing. The stack sort's count says more, that no
+    /// capture before it is losing either, the table's move aside, which
+    /// sorts ahead of everything however the swap prices it. A list that
+    /// spilled the buffer is ordered whole, memories included, and its
+    /// length comes back, which the skip reads as nothing to skip. That is
+    /// sound, and moot: quiescence orders captures and evasions, and
+    /// neither list gets that long.
     pub(crate) fn order(
         &mut self,
         board: &Board,
@@ -207,7 +217,9 @@ impl MoveOrdering {
         // a quiet move keys zero here, which sits between the front, whose
         // keys are negative, and the losing captures, whose keys are
         // positive; the sort is stable, so the quiet moves keep their
-        // generated order for the second stage to sort within
+        // generated order for the second stage to sort within. The front is
+        // counted as the keys are written, so the losing band's edge costs
+        // no search of the sorted keys afterwards
         let mut front = 0;
         for (i, m) in moves.iter().enumerate() {
             let key = if m.capture.is_some() || table_move == Some(*m) {
@@ -219,7 +231,7 @@ impl MoveOrdering {
             keys[i] = key;
         }
         sort_on_the_stack(moves, keys);
-        if ply.is_some() { front } else { moves.len() }
+        front
     }
 
     /// The second stage: `rest` starts at the first move past the front,
@@ -436,32 +448,76 @@ mod order {
         assert!(position_of(&moves, "e1e8") < position_of(&moves, "h1g1"));
     }
 
-    // without the memories there is no second stage to reach, so the whole
-    // list is the front and its length comes back
-    #[test]
-    fn without_memories_the_whole_list_is_the_front() {
-        let board = Board::from_fen(CAPTURES).unwrap();
-        let mut moves = board.generate_moves();
-        let front = MoveOrdering::new().order(&board, &mut moves, None, None);
-        assert_eq!(front, moves.len());
-    }
-
-    // with them the front is the table's move and the captures the swap
-    // prices as winning or even: the two takings of the queen, plus a table
-    // move whether it is a quiet move or the losing capture itself
+    // the front is the table's move and the captures the swap prices as
+    // winning or even: the two takings of the queen, plus a table move
+    // whether it is a quiet move or the losing capture itself. The same
+    // count with the memories and without, since neither stage scores a
+    // capture by them
     #[test]
     fn the_front_is_the_tables_move_and_the_winning_captures() {
         let board = Board::from_fen(CAPTURES).unwrap();
         let generated = board.generate_moves();
-        for table_move in [None, Some("e4e5"), Some("h5h7")] {
+        for (table_move, ply) in [
+            (None, Some(0)),
+            (None, None),
+            (Some("e4e5"), Some(0)),
+            (Some("h5h7"), Some(0)),
+            (Some("h5h7"), None),
+        ] {
             let table_move = table_move.map(|name| named(&generated, name));
             let mut moves = generated.clone();
-            let front = MoveOrdering::new().order(&board, &mut moves, table_move, Some(0));
+            let front = MoveOrdering::new().order(&board, &mut moves, table_move, ply);
             assert_eq!(front, 2 + usize::from(table_move.is_some()));
             for (i, m) in moves.iter().enumerate() {
                 let winning = m.capture.is_some() && board.see(m) >= 0;
                 assert_eq!(i < front, winning || table_move == Some(*m), "{m} at {i}");
             }
+        }
+    }
+
+    // what quiescence reads off the count is where the losing captures
+    // start: every capture from there on is one the swap prices as losing,
+    // and no capture before it is, the table's move aside. The quiet moves
+    // in between are not the skip's business. A list that spilled the
+    // buffer is ordered whole and its length comes back, so the skip has
+    // nothing to read there
+    #[test]
+    fn the_count_returned_is_where_the_losing_captures_start() {
+        // the two hundred move position with a knight added on c3, so that
+        // the pawn on a2 has a defender besides the king: taking it with
+        // the knight or the bishop then loses, where against the king alone
+        // the swap knows a defended piece cannot be taken back
+        const CROWDED: &str = "R6R/3Q4/1Q4Q1/4Q3/2Q4Q/Q1n2Q2/pp1Q4/kBNN1KB1 w - - 0 1";
+        for (fen, table_move) in [
+            (CAPTURES, None),
+            (CAPTURES, Some("h5h7")),
+            (CROWDED, None),
+            (CROWDED, Some("c1a2")),
+        ] {
+            let board = Board::from_fen(fen).unwrap();
+            let mut moves = board.generate_moves();
+            let table_move = table_move.map(|name| named(&moves, name));
+            let spilled = moves.len() > crate::board::MOVE_LIST_INLINE;
+            assert_eq!(spilled, fen == CROWDED, "{fen}");
+            let front = MoveOrdering::new().order(&board, &mut moves, table_move, None);
+            if spilled {
+                assert_eq!(front, moves.len(), "{fen}");
+                continue;
+            }
+            let captures = moves
+                .iter()
+                .enumerate()
+                .filter(|(_, m)| m.capture.is_some());
+            for (i, m) in captures {
+                let losing = board.see(m) < 0 && table_move != Some(*m);
+                assert_eq!(i >= front, losing, "{fen}: {m} at {i}");
+            }
+            // and the check above was not vacuous: something sorts ahead of
+            // the band, and without a table move taking the loser out of it
+            // the band is not empty
+            assert!(front > 0, "{fen}");
+            let band = moves[front..].iter().any(|m| m.capture.is_some());
+            assert!(table_move.is_some() || band, "{fen}");
         }
     }
 
