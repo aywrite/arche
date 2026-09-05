@@ -69,6 +69,20 @@ const NULL_MOVE_MIN_DEPTH: u8 = NULL_MOVE_REDUCTION + 1;
 // figure, and these piece values are the conventional ones, so nothing
 // argues for another.
 const DELTA_MARGIN: Score = 200;
+// How many plies shallower a late quiet move is scouted before it is
+// searched at full depth. One, and flat: the smallest reduction there is,
+// so that what the arm prices is the mechanism and not a formula. A table
+// by depth and move count is a follow-up with a match of its own.
+const LATE_MOVE_REDUCTION: u8 = 1;
+// The shallowest depth a node may reduce at, two more than the reduction
+// so that the scout keeps a full width ply under it. At the depths below
+// this the scout is quiescence, or a ply above it, and what it saves is
+// noise; the null move floor stands on the same reasoning.
+const LATE_MOVE_MIN_DEPTH: u8 = LATE_MOVE_REDUCTION + 2;
+// How many moves a node searches at full depth before a quiet move after
+// them is scouted shallower. Four is an opening value rather than a tuned
+// one, and moving it is a match rather than a bench.
+const LATE_MOVE_THRESHOLD: usize = 4;
 
 /// What the protocol interface asks of an engine: positions in, answers out.
 /// How an implementation searches is its own business, which is why the
@@ -239,6 +253,13 @@ pub struct SearchConfig {
     /// pins and nothing beyond its square. On in the default, off in the
     /// reference.
     pub see_pruning: bool,
+    /// Whether a quiet move searched late at a full width node is scouted
+    /// a ply shallower first, and searched at full depth only when the
+    /// scout comes back above alpha. The fifth shortcut, and a guess like
+    /// the four before it: a scout that fails low is trusted, and the move
+    /// it answered for is never searched at the depth the node has. On in
+    /// the default, off in the reference.
+    pub late_move_reductions: bool,
     /// Whether a node orders its quiet moves by what other nodes have
     /// learned: the killers for its distance from the root, and the history
     /// table under them. On in the default, off in the reference, which
@@ -307,6 +328,7 @@ impl SearchConfig {
             null_move: false,
             delta_margin: false,
             see_pruning: false,
+            late_move_reductions: false,
             move_memory: false,
         }
     }
@@ -369,7 +391,12 @@ impl Default for SearchConfig {
     /// capture the swap prices as losing is skipped rather than searched
     /// down to the exchange the swap already priced.
     ///
-    /// The quiet memories are the sixth, and no kind of guess at all.
+    /// The late move reductions are the sixth, the pass's guess made of a
+    /// move rather than a node: a quiet move tried late is scouted a ply
+    /// shallower, and a scout that fails low is trusted to have priced the
+    /// move.
+    ///
+    /// The quiet memories are the seventh, and no kind of guess at all.
     /// They prune nothing. What they move is how soon a node finds the move
     /// that cuts it off, which is most of what alpha-beta costs. The
     /// reference keeps them off so that its tree stays the one the capture
@@ -381,6 +408,7 @@ impl Default for SearchConfig {
             null_move: true,
             delta_margin: true,
             see_pruning: true,
+            late_move_reductions: true,
             move_memory: true,
         }
     }
@@ -933,7 +961,7 @@ impl AlphaBeta {
     /// every store above. The full width search enters every child through
     /// here, so the window discipline in `windowed` is written once rather
     /// than at three sites, and every caller says only whether its move is
-    /// the node's first.
+    /// the node's first and whether it is scouted shallower first.
     fn search_child(
         &mut self,
         m: &Play,
@@ -941,11 +969,12 @@ impl AlphaBeta {
         beta: Score,
         depth: u8,
         first: bool,
+        reduced: bool,
     ) -> Result<Option<Value>, Aborted> {
         if !self.board.make_move(m) {
             return Ok(None);
         }
-        let result = self.windowed(alpha, beta, depth, first);
+        let result = self.windowed(alpha, beta, depth, first, reduced);
         self.board.undo_move();
         Ok(Some(result?))
     }
@@ -957,35 +986,105 @@ impl AlphaBeta {
     /// that does, at a node whose own window is wider than the zero one, is
     /// searched again with the full window for the score the node needs. A
     /// zero width node never asks twice, since its window is the re-search
-    /// window already. Both passes negate through the same call, so a mate
+    /// window already. Every pass negates through the same call, so a mate
     /// score is adjusted per ply the same way on each.
     ///
+    /// A reduced move is asked the cheapest question of all before any of
+    /// that: the same zero width search, a ply shallower. A scout that
+    /// fails low answers for the move, which is the late move reduction's
+    /// guess; one that fails high has earned the full depth, and the move
+    /// goes on to the probe and the proof as an unreduced move does. The
+    /// windows are decided here and nowhere else, so the scout
+    /// is a stage in front of the probe rather than a copy of it.
+    ///
     /// A body of its own rather than `search_child`'s so that an abort from
-    /// either pass runs through the one undo there.
+    /// any pass runs through the one undo there.
     fn windowed(
         &mut self,
         alpha: Score,
         beta: Score,
         depth: u8,
         first: bool,
+        reduced: bool,
     ) -> Result<Value, Aborted> {
         if first {
+            debug_assert!(!reduced, "a node's first move is never reduced");
             return Ok(-self.alpha_beta(-beta, -alpha, depth - 1, true)?);
+        }
+        let mut tainted = false;
+        if reduced {
+            let scout =
+                -self.alpha_beta(-alpha - 1, -alpha, depth - 1 - LATE_MOVE_REDUCTION, true)?;
+            if scout.score <= alpha {
+                return Ok(scout);
+            }
+            // the scout's fail high is what asked for the full depth, so
+            // whatever it depended on, the passes below do too
+            tainted = scout.tainted;
         }
         let probe = -self.alpha_beta(-alpha - 1, -alpha, depth - 1, true)?;
         // `alpha + 1 >= beta` is the window being the zero one, spelt
         // without the subtraction: `beta - alpha` overflows a Score when
         // the window is the root's
         if probe.score <= alpha || alpha + 1 >= beta {
-            return Ok(probe);
+            return Ok(Value::with_taint(probe.score, probe.tainted || tainted));
         }
         let proof = -self.alpha_beta(-beta, -alpha, depth - 1, true)?;
         // the probe's fail high is what asked for the second search, so
         // whatever the probe's answer depended on, this one does too
         Ok(Value::with_taint(
             proof.score,
-            proof.tainted || probe.tainted,
+            proof.tainted || probe.tainted || tainted,
         ))
+    }
+
+    /// Whether a move at a full width node is scouted a ply shallower
+    /// before it is searched at the node's depth: the late move reduction.
+    /// `searched` is how many moves the node has searched already, the
+    /// table's move among them.
+    ///
+    /// The exemptions are one rule: the reduction guesses that a move the
+    /// ordering put late is worth less than alpha, and it is refused
+    /// wherever that guess has nothing to stand on. The first moves are
+    /// searched whole, since a node whose ordering is right cuts off on
+    /// them and a node whose ordering is wrong has no late moves to speak
+    /// of. A capture or a promotion changes the material, which is what
+    /// the ordering priced it on, so the reduction is not asked about it;
+    /// that takes in the losing captures too, which the ordering sorts
+    /// behind the quiets, and reducing them is a follow-up. A side in
+    /// check has evasions and not late moves. And a window at either edge
+    /// of the mate scores is the margin family's exemption, made here for
+    /// the same reason: a scout a ply short of the mate it is asked about
+    /// can only say no. The table's move is the node's first, so it is
+    /// never here.
+    ///
+    /// The root's open bounds sit inside the mate window, and a node's
+    /// first child inherits them, so no node on the leftmost line
+    /// reduces. That is a consequence of the exemption and not a
+    /// decision about principal variation nodes; an arm that wants to
+    /// reduce there has to lift it.
+    ///
+    /// A quiet move that gives check is reduced like any other. The board
+    /// has no cheap test for one, and what the scout can miss is bounded
+    /// by the re-search: a checking move that fails low a ply short is
+    /// trusted the way a quiet one is.
+    fn reduces(
+        &self,
+        m: &Play,
+        searched: usize,
+        depth: u8,
+        in_check: bool,
+        alpha: Score,
+        beta: Score,
+    ) -> bool {
+        self.config.late_move_reductions
+            && depth >= LATE_MOVE_MIN_DEPTH
+            && searched >= LATE_MOVE_THRESHOLD
+            && !in_check
+            && m.capture.is_none()
+            && m.promote.is_none()
+            && !is_mate(alpha)
+            && !is_mate(beta)
     }
 
     /// A fail high at a full width node: the move that proved it goes to
@@ -1085,7 +1184,7 @@ impl AlphaBeta {
         if let Some(tt) = pv_play {
             if self.board.is_pseudo_legal(&tt) {
                 tt_tried = Some(tt);
-                if let Some(value) = self.search_child(&tt, alpha, beta, depth, true)? {
+                if let Some(value) = self.search_child(&tt, alpha, beta, depth, true, false)? {
                     found_legal_move = true;
                     // the table's move is searched before the rest are even
                     // generated, so it taints this node the same way any other
@@ -1117,6 +1216,10 @@ impl AlphaBeta {
         let ply = self.memory_ply();
         let front = self.ordering.order(&self.board, &mut moves, pv_play, ply);
 
+        // how many moves this node has searched, which is what makes a
+        // quiet move late. The table's move, when it was searched, is the
+        // first of them
+        let mut searched = usize::from(found_legal_move);
         for i in 0..moves.len() {
             // the front did not cut this node off, so the rest of the list
             // is scored and sorted before the first move past it is tried
@@ -1130,10 +1233,14 @@ impl AlphaBeta {
             if tt_tried == Some(*m) {
                 continue;
             }
-            let Some(value) = self.search_child(m, alpha, beta, depth, !found_legal_move)? else {
+            let reduced = self.reduces(m, searched, depth, in_check, alpha, beta);
+            let Some(value) =
+                self.search_child(m, alpha, beta, depth, !found_legal_move, reduced)?
+            else {
                 continue;
             };
             found_legal_move = true;
+            searched += 1;
             // a value built from a tainted child is tainted, whether or not
             // it turns out to be the best one here
             taint.absorb(value);
@@ -1271,8 +1378,10 @@ impl AlphaBeta {
             );
         }
 
+        // the root reduces nothing, by choice: its window is the full one,
+        // and its moves are few enough to search whole
         for m in &moves {
-            match self.search_child(m, alpha, beta, depth, !found_legal_move) {
+            match self.search_child(m, alpha, beta, depth, !found_legal_move, false) {
                 Err(Aborted) => {
                     return SearchOutcome::Aborted(best.map(|play| self.result_for(play, alpha)));
                 }
@@ -1597,8 +1706,9 @@ mod search {
     use super::Board;
     use super::Engine;
     use super::{
-        Limits, MAX_PLY, Play, ScoreBound, SearchConfig, SearchOutcome, SearchParameters,
-        SearchResult, TaintPolicy, Value,
+        LATE_MOVE_MIN_DEPTH, LATE_MOVE_REDUCTION, LATE_MOVE_THRESHOLD, Limits, MAX_PLY, Play,
+        Score, ScoreBound, SearchConfig, SearchOutcome, SearchParameters, SearchResult,
+        TaintPolicy, Value,
     };
     use crate::board::{fens, play_named};
     use crate::limits::Clock;
@@ -1728,6 +1838,20 @@ mod search {
         )
     }
 
+    /// The reference with the late move reductions switched on and nothing
+    /// else touched: whatever moves between this and `reference` is the
+    /// reduction, with no memories to order the quiets it reduces.
+    fn reducing(board: Board) -> AlphaBeta {
+        AlphaBeta::with_config(
+            board,
+            TABLE_BYTES,
+            SearchConfig {
+                late_move_reductions: true,
+                ..SearchConfig::reference()
+            },
+        )
+    }
+
     /// A tactical middlegame the cache tests search over and over: sharp
     /// enough that a wrongly reused score would move the verdict.
     const SHARP_MIDDLEGAME: &str = "r1b2rk1/ppp1qppp/4pn2/6N1/Qn1P4/2NBP3/PP3PPP/R3K2R w KQ - 9 12";
@@ -1801,7 +1925,7 @@ mod search {
         const FEN: &str = "8/8/8/8/8/8/2k4P/K7 w - - 0 1";
         let mut b = Board::from_fen(FEN).unwrap();
         let moves = b.generate_moves();
-        let mut scored: Vec<(Play, super::Score)> = Vec::new();
+        let mut scored: Vec<(Play, Score)> = Vec::new();
         for m in &moves {
             // generation is pseudo legal, and the king stepping next to the
             // other one is refused here the way the search refuses it
@@ -1850,7 +1974,7 @@ mod search {
         let mut oracle = reference(Board::from_fen(FEN).unwrap());
         let m = play_named(&oracle.board, "h2h4");
         assert!(oracle.board.make_move(&m));
-        let Ok(exact) = oracle.windowed(super::Score::MIN + 2, super::Score::MAX, 2, true) else {
+        let Ok(exact) = oracle.windowed(Score::MIN + 2, Score::MAX, 2, true, false) else {
             panic!("an unlimited search aborted");
         };
 
@@ -1862,7 +1986,7 @@ mod search {
         let reply = play_named(&e.board, "c2c3");
         e.transpositions
             .record_ceiling(&e.board, reply, Value::clean(-alpha - 1), SEEDED_DEPTH);
-        let Ok(value) = e.windowed(alpha, beta, 2, false) else {
+        let Ok(value) = e.windowed(alpha, beta, 2, false, false) else {
             panic!("an unlimited search aborted");
         };
         assert_eq!(value.score, exact.score);
@@ -1914,7 +2038,7 @@ mod search {
         let fen = "7k/8/8/8/R3p3/8/8/7K w - - 0 1";
         let mut e = engine(Board::from_fen(fen).unwrap());
         let standing = e.eval();
-        let gain = crate::eval::material(Piece::Pawn) as super::Score;
+        let gain = crate::eval::material(Piece::Pawn) as Score;
 
         // one point past what the pawn and the whole margin can make up
         let alpha = standing + gain + super::DELTA_MARGIN + 1;
@@ -3062,6 +3186,320 @@ mod search {
         assert!(value.tainted, "the failed pass left no taint behind it");
     }
 
+    /// The child the reduction's seam is driven at: the pawn push from a
+    /// position with three quiet moves and nothing to capture, so every
+    /// leaf is one quiescence node and the counts below are exact.
+    const REDUCIBLE_CHILD: &str = "8/8/8/8/8/8/2k4P/K7 w - - 0 1";
+
+    /// An engine of the configuration given, stood on that child.
+    fn at_reducible_child(config: SearchConfig) -> AlphaBeta {
+        let mut e = AlphaBeta::with_config(
+            Board::from_fen(REDUCIBLE_CHILD).unwrap(),
+            TABLE_BYTES,
+            config,
+        );
+        let m = play_named(&e.board, "h2h3");
+        assert!(e.board.make_move(&m));
+        e
+    }
+
+    /// The scout on its own: the zero width search of the child a ply
+    /// shallower than the probe would be, as `windowed` asks it.
+    /// What it costs and what it answers, from the parent's side.
+    fn scout(e: &mut AlphaBeta, alpha: Score, depth: u8) -> (u64, Value) {
+        let Ok(value) = e.alpha_beta(-alpha - 1, -alpha, depth - 1 - LATE_MOVE_REDUCTION, true)
+        else {
+            panic!("an unlimited search aborted");
+        };
+        (e.nodes, -value)
+    }
+
+    #[test]
+    fn a_late_quiet_is_scouted_a_ply_shallower_and_answered_by_a_scout_that_fails_low() {
+        // `windowed` driven at the child with the reduction asked for by
+        // the flag rather than earned by a move count, so what is counted
+        // is the seam and nothing else. Alpha stands well above anything
+        // the move is worth, so the scout fails low, and the reduced call
+        // then costs exactly the scout's nodes and answers with the scout's
+        // value. The probe it stood in for is dearer, which is the saving.
+        const DEPTH: u8 = 3;
+        let mut oracle = at_reducible_child(SearchConfig::reference());
+        let Ok(exact) = oracle.windowed(Score::MIN + 2, Score::MAX, DEPTH, true, false) else {
+            panic!("an unlimited search aborted");
+        };
+        let alpha = exact.score + 500;
+        assert!(!super::is_mate(alpha));
+
+        let mut alone = at_reducible_child(SearchConfig::reference());
+        let (scout_nodes, scout_value) = scout(&mut alone, alpha, DEPTH);
+        assert!(scout_value.score <= alpha, "the scout did not fail low");
+
+        let mut e = at_reducible_child(SearchConfig::reference());
+        let Ok(value) = e.windowed(alpha, alpha + 1, DEPTH, false, true) else {
+            panic!("an unlimited search aborted");
+        };
+        assert_eq!(e.nodes, scout_nodes);
+        assert_eq!(value, scout_value);
+
+        let mut probe = at_reducible_child(SearchConfig::reference());
+        let Ok(unreduced) = probe.windowed(alpha, alpha + 1, DEPTH, false, false) else {
+            panic!("an unlimited search aborted");
+        };
+        assert!(unreduced.score <= alpha);
+        assert!(
+            probe.nodes > scout_nodes,
+            "the probe cost {} nodes against the scout's {}",
+            probe.nodes,
+            scout_nodes
+        );
+    }
+
+    #[test]
+    fn a_scout_that_fails_high_is_re_searched_at_full_depth() {
+        // The same child under a window the move sits inside, so the scout
+        // fails high and the move earns the depth it was denied. Reduced,
+        // the call costs exactly what the scout costs and then what an
+        // unreduced call costs on the table the scout left behind, which
+        // is the second engine here, and it answers what the unreduced
+        // call answers: the exact score, since the window is an open one
+        // and the proof runs at the full window.
+        const DEPTH: u8 = 3;
+        let mut oracle = at_reducible_child(SearchConfig::reference());
+        let Ok(exact) = oracle.windowed(Score::MIN + 2, Score::MAX, DEPTH, true, false) else {
+            panic!("an unlimited search aborted");
+        };
+        let alpha = exact.score - 500;
+        let beta = exact.score + 50;
+        assert!(!super::is_mate(alpha) && !super::is_mate(beta));
+
+        let mut alone = at_reducible_child(SearchConfig::reference());
+        let (scout_nodes, scout_value) = scout(&mut alone, alpha, DEPTH);
+        assert!(scout_value.score > alpha, "the scout did not fail high");
+
+        let mut then_probed = at_reducible_child(SearchConfig::reference());
+        scout(&mut then_probed, alpha, DEPTH);
+        let Ok(unreduced) = then_probed.windowed(alpha, beta, DEPTH, false, false) else {
+            panic!("an unlimited search aborted");
+        };
+        assert!(
+            then_probed.nodes > scout_nodes,
+            "nothing was searched after the scout"
+        );
+
+        let mut e = at_reducible_child(SearchConfig::reference());
+        let Ok(value) = e.windowed(alpha, beta, DEPTH, false, true) else {
+            panic!("an unlimited search aborted");
+        };
+        assert_eq!(e.nodes, then_probed.nodes);
+        assert_eq!(value.score, unreduced.score);
+        assert_eq!(value.score, exact.score);
+    }
+
+    /// A node the reduction applies to, and the two kinds of move at it:
+    /// the rook can take the pawn and has quiet moves besides. Each
+    /// exemption test moves one thing about the call and holds the rest.
+    const A_CAPTURE_AND_QUIETS: &str = "7k/8/8/8/R3p3/8/8/7K w - - 0 1";
+
+    fn a_quiet_and_a_capture() -> (AlphaBeta, Play, Play) {
+        let e = reducing(Board::from_fen(A_CAPTURE_AND_QUIETS).unwrap());
+        let quiet = play_named(&e.board, "a4a5");
+        let capture = play_named(&e.board, "a4e4");
+        assert!(quiet.capture.is_none() && capture.capture.is_some());
+        (e, quiet, capture)
+    }
+
+    #[test]
+    fn a_late_quiet_is_reduced_and_the_first_moves_are_not() {
+        // the threshold is the count of moves searched before this one,
+        // so the move after the fourth is the first reduced
+        let (e, quiet, _) = a_quiet_and_a_capture();
+        for searched in 0..LATE_MOVE_THRESHOLD {
+            assert!(
+                !e.reduces(&quiet, searched, LATE_MOVE_MIN_DEPTH, false, -100, 100),
+                "reduced with {} moves searched",
+                searched
+            );
+        }
+        assert!(e.reduces(
+            &quiet,
+            LATE_MOVE_THRESHOLD,
+            LATE_MOVE_MIN_DEPTH,
+            false,
+            -100,
+            100
+        ));
+        assert!(e.reduces(&quiet, LATE_MOVE_THRESHOLD + 10, MAX_PLY, false, -100, 100));
+        // and not under the floor, where the scout would be quiescence
+        assert!(!e.reduces(
+            &quiet,
+            LATE_MOVE_THRESHOLD,
+            LATE_MOVE_MIN_DEPTH - 1,
+            false,
+            -100,
+            100
+        ));
+        // nor under the reference, whatever else is true of the move
+        let off = reference(Board::from_fen(A_CAPTURE_AND_QUIETS).unwrap());
+        assert!(!off.reduces(
+            &quiet,
+            LATE_MOVE_THRESHOLD,
+            LATE_MOVE_MIN_DEPTH,
+            false,
+            -100,
+            100
+        ));
+    }
+
+    #[test]
+    fn a_capture_is_never_reduced() {
+        // the same call the quiet move is reduced under, with the capture
+        // in its place. Losing captures are not told apart from the rest
+        // here: this one wins a pawn, and one the swap prices as losing is
+        // still a capture to the test the reduction reads
+        let (e, quiet, capture) = a_quiet_and_a_capture();
+        assert!(e.reduces(
+            &quiet,
+            LATE_MOVE_THRESHOLD,
+            LATE_MOVE_MIN_DEPTH,
+            false,
+            -100,
+            100
+        ));
+        assert!(!e.reduces(
+            &capture,
+            LATE_MOVE_THRESHOLD,
+            LATE_MOVE_MIN_DEPTH,
+            false,
+            -100,
+            100
+        ));
+
+        // a promotion is a pawn move with no victim, and is exempt on its
+        // own account
+        let e = reducing(Board::from_fen("7k/1P6/8/8/8/8/8/7K w - - 0 1").unwrap());
+        let promotes = play_named(&e.board, "b7b8q");
+        assert!(promotes.capture.is_none() && promotes.promote.is_some());
+        assert!(!e.reduces(
+            &promotes,
+            LATE_MOVE_THRESHOLD,
+            LATE_MOVE_MIN_DEPTH,
+            false,
+            -100,
+            100
+        ));
+    }
+
+    #[test]
+    fn a_node_in_check_reduces_nothing() {
+        // the predicate first, then the search: the rook checks along the
+        // file and white has seven evasions, four king steps and three
+        // interpositions, every one of them quiet. Asked at depth two the
+        // node extends to three, the floor, so a reduction that ignored
+        // the check would scout the evasions after the fourth, while the
+        // children stand at depth two and can reduce nothing themselves.
+        // So the arm searches what the reference searches, node for node,
+        // if and only if the node in check declines to reduce
+        let (e, quiet, _) = a_quiet_and_a_capture();
+        assert!(!e.reduces(
+            &quiet,
+            LATE_MOVE_THRESHOLD,
+            LATE_MOVE_MIN_DEPTH,
+            true,
+            -100,
+            100
+        ));
+
+        let fen = "4r2k/8/8/8/8/8/2Q2N2/4K3 w - - 0 1";
+        let board = Board::from_fen(fen).unwrap();
+        assert!(board.in_check());
+        let evasions = board.evasions();
+        assert!(evasions.len() > LATE_MOVE_THRESHOLD, "{}", evasions.len());
+        assert!(evasions.iter().all(|m| m.capture.is_none()));
+
+        let mut e = reducing(Board::from_fen(fen).unwrap());
+        let Ok(value) = e.alpha_beta(-10_000, 10_000, LATE_MOVE_MIN_DEPTH - 1, true) else {
+            panic!("an unlimited search aborted");
+        };
+        let mut cold = reference(Board::from_fen(fen).unwrap());
+        let Ok(expected) = cold.alpha_beta(-10_000, 10_000, LATE_MOVE_MIN_DEPTH - 1, true) else {
+            panic!("an unlimited search aborted");
+        };
+        assert_eq!(e.nodes, cold.nodes);
+        assert_eq!(value, expected);
+    }
+
+    #[test]
+    fn the_mate_window_stands_the_reduction_down() {
+        // either edge: a mate in hand as alpha, or one being proved against
+        // the side to move as beta
+        let (e, quiet, _) = a_quiet_and_a_capture();
+        assert!(!e.reduces(
+            &quiet,
+            LATE_MOVE_THRESHOLD,
+            LATE_MOVE_MIN_DEPTH,
+            false,
+            29_500,
+            29_501
+        ));
+        assert!(!e.reduces(
+            &quiet,
+            LATE_MOVE_THRESHOLD,
+            LATE_MOVE_MIN_DEPTH,
+            false,
+            -29_501,
+            -29_500
+        ));
+
+        // and through a search: a zero width window inside the mate scores
+        // turns round at every ply, so every node of the tree stands at
+        // one edge or the other and none of them reduces. The arm then
+        // searches what the reference searches, node for node, where the
+        // same node asked under an ordinary window reduces plenty. Depth
+        // five, so that the grandchildren, which a child cutting off on
+        // its first move leaves searching every move of theirs, stand at
+        // the floor with alpha the mate in hand
+        let fen = SHARP_MIDDLEGAME;
+        let mut e = reducing(Board::from_fen(fen).unwrap());
+        let Ok(value) = e.alpha_beta(29_500, 29_501, 5, true) else {
+            panic!("an unlimited search aborted");
+        };
+        let mut cold = reference(Board::from_fen(fen).unwrap());
+        let Ok(expected) = cold.alpha_beta(29_500, 29_501, 5, true) else {
+            panic!("an unlimited search aborted");
+        };
+        assert_eq!(e.nodes, cold.nodes);
+        assert_eq!(value, expected);
+
+        let mut e = reducing(Board::from_fen(fen).unwrap());
+        assert!(e.alpha_beta(-1, 0, 5, true).is_ok());
+        let mut cold = reference(Board::from_fen(fen).unwrap());
+        assert!(cold.alpha_beta(-1, 0, 5, true).is_ok());
+        assert!(
+            e.nodes < cold.nodes,
+            "nothing was reduced outside the mate window: {} against {}",
+            e.nodes,
+            cold.nodes
+        );
+    }
+
+    #[test]
+    fn reducing_looks_at_less_of_the_tree() {
+        // the switch has to reach the search: one the search never read
+        // would make every comparison with the reference a comparison of
+        // the reference with itself, and the bench's two pinned counts
+        // would move together instead of apart
+        let mut e = reducing(Board::from_fen(SHARP_MIDDLEGAME).unwrap());
+        completed(e.search(6));
+        let mut cold = reference(Board::from_fen(SHARP_MIDDLEGAME).unwrap());
+        completed(cold.search(6));
+        assert!(
+            e.nodes < cold.nodes,
+            "the reduction searched {} nodes against the reference's {}",
+            e.nodes,
+            cold.nodes
+        );
+    }
+
     #[test]
     fn the_quiet_memories_look_at_less_of_the_tree_for_the_same_answer() {
         // the switch has to reach the search, the way the two shortcuts'
@@ -3180,10 +3618,19 @@ mod search {
         // warm as cold, and it should get there without the refusal ever
         // firing: what was never stored cannot need refusing. The root's
         // answer slot is the stated exception, and the probe's guard on it
-        // is what keeps this test honest rather than lucky
+        // is what keeps this test honest rather than lucky.
+        //
+        // The policy on the reference, as its refusing sibling above runs,
+        // since the answer is only owed there: the default's move may
+        // move with what the table holds, which `SearchConfig` says of it,
+        // and a reduction decided by the order the table produced is what
+        // made it do so here
         let near_draw = "5k2/1p3p1p/p3pK1P/P1P1P3/4bP2/2B5/8/8 w - - 96 112";
         let fresh = "5k2/1p3p1p/p3pK1P/P1P1P3/4bP2/2B5/8/8 w - - 0 1";
-        let skipping = SearchConfig::with_taint("skip").unwrap();
+        let skipping = SearchConfig {
+            taint: TaintPolicy::Skip,
+            ..SearchConfig::reference()
+        };
         let mut warm =
             AlphaBeta::with_config(Board::from_fen(near_draw).unwrap(), TABLE_BYTES, skipping);
         completed(warm.search(6));
@@ -3422,10 +3869,12 @@ mod search {
         // captures alone now. Depth five used to be the shallowest search
         // that cleared the old cap with room to spare; principal variation
         // search cut the tree enough that it stops at twenty exactly, and
-        // six clears by a single ply, so this asks for seven, which
-        // reaches twenty eight
+        // six clears by a single ply. Seven reached twenty eight until the
+        // late move reductions, under which it stops at nineteen and eight
+        // and nine clear by a single ply each, so this asks for ten, which
+        // reaches twenty seven
         let mut e = engine(Board::from_fen(SHARP_MIDDLEGAME).unwrap());
-        let result = completed(e.search(7));
+        let result = completed(e.search(10));
         assert!(
             result.selective_depth > 20,
             "quiescence stopped at {} plies",
