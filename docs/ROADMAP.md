@@ -132,3 +132,14 @@ of these again without saying what is different this time.
   latency to hide and all that is added is an index multiply on every made
   move. Inside `make_move`, after the key is finalised, is the only placement
   that could pay, and it needs the key folded up front first.
+- Picking the next best move on demand inside the tree instead of sorting the
+  whole list, so a node that cuts off early never orders the moves it never
+  reaches. Node counts identical, 8.6% slower in nps between medians over five
+  interleaved rounds with a spread near 3%, and a variant that left quiescence
+  sorting whole was still 6.1% slower. The premise does not hold here: a node
+  with a table move searches it before generating anything, so the cheap
+  cutoffs never sorted at all, and what does reach ordering mostly consumes
+  its list, where a selection per pick does about twice the compares the one
+  sort did. It also carries a row of scored keys per ply, and the two entries
+  at the top of this list already say what growing the move path's working set
+  costs.
