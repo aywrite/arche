@@ -142,4 +142,8 @@ of these again without saying what is different this time.
   its list, where a selection per pick does about twice the compares the one
   sort did. It also carries a row of scored keys per ply, and the two entries
   at the top of this list already say what growing the move path's working set
-  costs.
+  costs. The waste it aimed at is real (half the quiet keys at depth seven were
+  computed at nodes that cut off before a quiet move was tried); what lost was
+  paying a selection per move tried, and scoring the quiets in one pass when
+  the search reaches them took the saving instead, 2.7% fewer instructions per
+  node.

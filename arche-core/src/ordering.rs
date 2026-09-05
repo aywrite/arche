@@ -5,8 +5,15 @@
 //! everything, the captures `Board::see` prices as winning or even, the
 //! killers, the quiet moves by what the search has learned about them, and
 //! the losing captures last of all.
-//! The sort is stable and generation order breaks its ties, so the tree a
-//! search walks depends on both, and the node count tests pin the pair.
+//! The list is sorted in two stages. `order` keys the table's move and the
+//! captures and leaves the quiet moves in generated order between the two
+//! capture bands; `order_quiets` scores and sorts the quiet moves, and the
+//! search calls it only when it reaches the first of them, so a node its
+//! captures cut off never scores one. Both sorts are stable and generation
+//! order breaks their ties. The quiet moves are scored by the memories as
+//! they stand when the search reaches them, not when the node was entered,
+//! so the tree a search walks depends on the sort, the generation order and
+//! when the scoring happens, and the node count tests pin all three.
 //!
 //! Two memories carry across nodes. The killers are the quiet moves that
 //! cut a node off at each distance from the root, tried early by that
@@ -153,56 +160,86 @@ impl MoveOrdering {
         self.killers[ply]
     }
 
-    /// The band order the module comment describes, with the table's move
-    /// for this position, if there is one, ahead of everything else.
+    /// The first stage of the band order the module comment describes:
+    /// the table's move for this position, if there is one, then the
+    /// winning and even captures, sorted, at the front of the list. Behind
+    /// them the quiet moves stand in the order they were generated in and
+    /// the losing captures, sorted, close the list. How many moves the
+    /// front holds is returned, and the search calls `order_quiets` when
+    /// it reaches the first move past them, so a node the front cuts off
+    /// never scores a quiet move at all.
     ///
-    /// The search may already have played that move without generating, in
-    /// which case it skips it here. The bonus still earns its keep: a table
-    /// move it declined to play early was never searched, so it is still in
-    /// this list and still has to be the first one tried.
+    /// The search may already have played the table's move without
+    /// generating, in which case it skips it here. The bonus still earns
+    /// its keep: a table move it declined to play early was never
+    /// searched, so it is still in this list and still has to be the first
+    /// one tried.
     ///
     /// `ply` is the node's distance from the root when the quiet memories
     /// are consulted, and none when they are not: quiescence and the root
     /// order without them, and so does every node under a configuration
-    /// with `move_memory` off.
+    /// with `move_memory` off. A quiet move scores zero without them, so
+    /// the first stage is the whole order and the list's length comes
+    /// back: there is no second stage to reach.
     pub(crate) fn order(
         &mut self,
         board: &Board,
         moves: &mut MoveList,
         table_move: Option<Play>,
         ply: Option<usize>,
-    ) {
-        // the fields are borrowed apart so that the keys can be written
-        // while the memories are read
-        let Self {
-            keys,
-            killers,
-            history,
-        } = self;
-        let quiet = ply.map(|ply| {
-            debug_assert!(ply < MAX_PLY as usize, "no killers past the rail");
-            Quiet {
-                killers: killers[ply],
-                history,
-            }
-        });
+    ) -> usize {
+        let keys = &mut self.keys;
         // Most lists here are short: quiescence sorts a handful of captures
         // or the evasions the filter kept, and the counts say under nine
         // moves on average. sort_by_cached_key allocates scratch on every
         // call, which at that size costs more than the sorting, so lists
         // take the stack sort instead, keeping the allocating sort only for
-        // a list that spilled the buffer. Callgrind swept smaller cutoffs
-        // and they are a wash: the mid length lists of full width nodes
-        // keep paying the allocating fallback while every call pays the
-        // extra branch.
-        if moves.len() <= MOVE_LIST_INLINE {
-            for (i, m) in moves.iter().enumerate() {
-                keys[i] = ordering_key(board, m, table_move, quiet.as_ref());
-            }
-            sort_on_the_stack(moves, keys);
-        } else {
+        // a list that spilled the buffer, which takes the whole order at
+        // once with the memories read here.
+        if moves.len() > MOVE_LIST_INLINE {
+            let quiet = ply.map(|ply| Quiet {
+                killers: self.killers[ply],
+                history: &self.history,
+            });
             moves.sort_by_cached_key(|m| ordering_key(board, m, table_move, quiet.as_ref()));
+            return moves.len();
         }
+        // a quiet move keys zero here, which sits between the front, whose
+        // keys are negative, and the losing captures, whose keys are
+        // positive; the sort is stable, so the quiet moves keep their
+        // generated order for the second stage to sort within
+        let mut front = 0;
+        for (i, m) in moves.iter().enumerate() {
+            let key = if m.capture.is_some() || table_move == Some(*m) {
+                ordering_key(board, m, table_move, None)
+            } else {
+                0
+            };
+            front += usize::from(key < 0);
+            keys[i] = key;
+        }
+        sort_on_the_stack(moves, keys);
+        if ply.is_some() { front } else { moves.len() }
+    }
+
+    /// The second stage: `rest` starts at the first move past the front,
+    /// and the quiet moves run from there to the first losing capture. They
+    /// are scored by the memories as they stand now, killers first and the
+    /// rest by history, and sorted in place; the losing captures behind
+    /// them are already in their order.
+    pub(crate) fn order_quiets(&mut self, board: &Board, rest: &mut [Play], ply: usize) {
+        debug_assert!(ply < MAX_PLY as usize, "no killers past the rail");
+        let run = rest.iter().take_while(|m| m.capture.is_none()).count();
+        let quiets = &mut rest[..run];
+        let quiet = Quiet {
+            killers: self.killers[ply],
+            history: &self.history,
+        };
+        let keys = &mut self.keys;
+        for (i, m) in quiets.iter().enumerate() {
+            keys[i] = -quiet.bonus(board.active_color, m);
+        }
+        sort_on_the_stack(quiets, keys);
     }
 }
 
@@ -217,7 +254,7 @@ impl Quiet<'_> {
     /// What a quiet move is worth here. A move nothing is known about
     /// scores zero, and nothing this returns reaches the smallest capture
     /// the sort puts above a quiet move.
-    #[inline]
+    #[inline(always)]
     fn bonus(&self, color: Color, m: &Play) -> i64 {
         if self.killers[0] == Some(*m) {
             return KILLER_BONUS[0];
@@ -334,7 +371,8 @@ mod order {
     fn ordered_by(fen: &str, table_move: Option<Play>, ordering: &mut MoveOrdering) -> Vec<Play> {
         let board = Board::from_fen(fen).unwrap();
         let mut moves = board.generate_moves();
-        ordering.order(&board, &mut moves, table_move, Some(0));
+        let front = ordering.order(&board, &mut moves, table_move, Some(0));
+        ordering.order_quiets(&board, &mut moves[front..], 0);
         moves.to_vec()
     }
 
@@ -396,6 +434,35 @@ mod order {
 
         let moves = ordered_by(ROOKS, None, &mut ordering);
         assert!(position_of(&moves, "e1e8") < position_of(&moves, "h1g1"));
+    }
+
+    // without the memories there is no second stage to reach, so the whole
+    // list is the front and its length comes back
+    #[test]
+    fn without_memories_the_whole_list_is_the_front() {
+        let board = Board::from_fen(CAPTURES).unwrap();
+        let mut moves = board.generate_moves();
+        let front = MoveOrdering::new().order(&board, &mut moves, None, None);
+        assert_eq!(front, moves.len());
+    }
+
+    // with them the front is the table's move and the captures the swap
+    // prices as winning or even: the two takings of the queen, plus a table
+    // move whether it is a quiet move or the losing capture itself
+    #[test]
+    fn the_front_is_the_tables_move_and_the_winning_captures() {
+        let board = Board::from_fen(CAPTURES).unwrap();
+        let generated = board.generate_moves();
+        for table_move in [None, Some("e4e5"), Some("h5h7")] {
+            let table_move = table_move.map(|name| named(&generated, name));
+            let mut moves = generated.clone();
+            let front = MoveOrdering::new().order(&board, &mut moves, table_move, Some(0));
+            assert_eq!(front, 2 + usize::from(table_move.is_some()));
+            for (i, m) in moves.iter().enumerate() {
+                let winning = m.capture.is_some() && board.see(m) >= 0;
+                assert_eq!(i < front, winning || table_move == Some(*m), "{m} at {i}");
+            }
+        }
     }
 
     #[test]
