@@ -1082,9 +1082,18 @@ impl AlphaBeta {
             self.board.generate_moves()
         };
         let ply = self.memory_ply();
-        self.ordering.order(&self.board, &mut moves, pv_play, ply);
+        let front = self.ordering.order(&self.board, &mut moves, pv_play, ply);
 
-        for m in &moves {
+        for i in 0..moves.len() {
+            // the front did not cut this node off, so the rest of the list
+            // is scored and sorted before the first move past it is tried
+            if i == front {
+                if let Some(ply) = ply {
+                    self.ordering
+                        .order_quiets(&self.board, &mut moves[front..], ply);
+                }
+            }
+            let m = &moves[i];
             if tt_tried == Some(*m) {
                 continue;
             }
