@@ -80,24 +80,43 @@ of these again without saying what is different this time.
   structure, nudging the evaluation the two shortcut gates read. Two SPRT runs
   at 5+0.05 against master both ended inconclusive at their caps (sprt [0, 10],
   branch search/correction-history): +12 ±11 over 1,980 games, then +1 ±12 over
-  another 1,980, about +6 ±8 pooled. The mechanism was live and the tree 2.2%
-  smaller with the tactical suite unmoved, so the games say the corrections were
-  nearly free rather than nearly right. One suspect is on record: the
-  correction's ±31 centipawn clamp is twice the fifteen the reverse futility
-  margin was sized to keep clear of a mate it can miss, so the table may spend
-  its gains inside the margin's own headroom. Re-ask with the clamp held under
-  that clearance, or the margin raised to cover it. The pawn key the arm was
-  built on landed on its own and stays.
+  another 1,980. Two stopped runs do not pool into one interval, so there is no
+  combined number; a re-run of the same arm adds its likelihood ratio to
+  theirs, which is how repeated runs are read from now on. The mechanism was
+  live and the tree 2.2% smaller with the tactical suite unmoved, so the games
+  say the corrections were nearly free rather than nearly right. One suspect is
+  on record: the correction's ±31 centipawn clamp is twice the fifteen the
+  reverse futility margin was sized to keep clear of a mate it can miss, so the
+  table may spend its gains inside the margin's own headroom. That is one arm
+  of the re-ask, not the fix. The re-ask starts from the shadow sampler's
+  records: the raw evaluation's clearance of beta, the correction offset, the
+  depth, and the reference outcome, from which a corrected margin is chosen on
+  held-out positions before any games are played. Correcting the leaf and
+  correcting the gates are then measured separately, and only then together.
+  The pawn key the arm was built on landed on its own and stays.
 - Correcting the evaluation reverse futility reads by a table entry's score and
   bound (a stored floor above the evaluation raised it before the margin was
   measured). Inconclusive at the game cap, +6 ±11 over 1,980 games at 5+0.05
   (sprt [0, 10], branch search/tt-refined-eval), with four tactical positions
-  lost for a 5.3% smaller bench tree. The refinement was sound; the price was
-  not covered. Worth re-asking once the reverse futility margin is recalibrated
-  against corrected estimates rather than the raw evaluation's error, which the
-  residual harness exists to do. Refining the null move gate the same way was
-  measured separately and rejected inside the same arm: it grew the tree and
-  changed nothing the tactical suite could see.
+  lost for a 5.3% smaller bench tree. The refinement pruned in the right
+  direction, but it bought no measured strength and the tactical losses at
+  that margin are not acceptable. It is not a sound bound either: a stored
+  score is a bound at the depth it was searched to, not at the greater depth
+  the gate is asked about. Worth re-asking once the reverse futility margin is
+  recalibrated against corrected estimates rather than the raw evaluation's
+  error, which the residual harness exists to do. Refining the null move gate
+  the same way was measured separately and rejected inside the same arm: it
+  grew the tree and changed nothing the tactical suite could see.
+- The delta margin in quiescence, measured on its own. It landed in one pair
+  with principal variation search, and the pair's +50 ±24 over 530 games at
+  10+0.1 (sprt [0, 10] passed, PR #171) sits on the margin's commit. Turning
+  the margin off against that master gave +7 ±17 over 840 games at 10+0.1
+  (sprt [-10, 0] inconclusive at the time cap, final LLR 1.47, branch
+  ablate/delta-off): the games could not see the margin at all, and the pair's
+  gain is principal variation search's. The margin stays on its switch because
+  it costs nothing measurable and the quiescence SEE prune is the form it
+  converges on. One guess per run from here, unless two parts cannot be
+  measured apart.
 - Ranking the quiet moves by cutoffs per node spent, in place of the history
   table's cutoff score. Lost -53 ±26 over 420 games at 5+0.05 (sprt [0, 10]
   accepted H0, branch research/cost-aware-ordering) with the bench tree 1.8%
