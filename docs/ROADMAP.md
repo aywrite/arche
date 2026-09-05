@@ -149,3 +149,31 @@ of these again without saying what is different this time.
   paying a selection per move tried, and scoring the quiets in one pass when
   the search reaches them took the saving instead, 2.7% fewer instructions per
   node.
+- Masking a `u8` square down to six bits where it indexes a table of sixty
+  four, so that the bounds check comes off the load. On the history table's
+  two indexes that was 0.8% more instructions, on the zobrist table's 1.2%
+  more and on the castling tables 0.4% more. The check it takes away is
+  cheap and always predicted, and the and it puts in sits in the address
+  computation. It does pay on the board's square array, where it is already
+  written, so the answer is per site and measured rather than a rule. The
+  mask is worse than the check for a wrong square as well: a check panics
+  and a mask reads a different square.
+- `#[inline(always)]` on `square_attacked`, 3.7% more instructions, and on
+  `Quiet::bonus`, 3.1% more. Both are called from inside a loop the register
+  allocator then runs short in, and forcing them in is what tips it. The
+  bonus is the case worth keeping in mind, because the answer moved: that
+  3.1% was measured where the key function around it was itself always
+  inlined, and where the scoring loop calls it directly instead the
+  attribute pays and the code carries it. So the answer belongs to the call
+  site rather than to the function, and nothing about the shape of either
+  says which way it will go. Measured where it stands, the attribute does
+  pay on `move_piece`, `undo_move`, `search_child`, `ordering_key`, the
+  table's probe and the lookup behind it.
+- Comparing a `Play` as its six bytes, the way `CastlePermissions` compares
+  its four. 0.9% more instructions. The derive reads a field and branches,
+  which is the right shape here: the killers are asked about every quiet
+  move in a list and a move that differs usually differs in the from square.
+- Reading the moving piece off the square array at the top of `make_move`,
+  so that the pawn board is not consulted as well for the fifty move reset.
+  0.2% more instructions: carrying the value across the block costs more
+  than the load it saves.
