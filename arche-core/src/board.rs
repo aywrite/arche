@@ -414,10 +414,22 @@ impl AttackMasks {
 }
 
 /// The whole position with its history, which makes a board a little over
-/// forty kilobytes and `Copy`. Copying one is nothing next to a search and a
-/// great deal next to a node, so the search makes and unmakes moves on the one
-/// board; only `pv_line` and the tests take copies.
-#[derive(Debug, PartialEq, Copy, Clone, Eq)]
+/// forty kilobytes. Copying one is nothing next to a search and a great deal
+/// next to a node, so the search makes and unmakes moves on the one board;
+/// only `pv_line_from` and the tests clone, and the type is not `Copy`, so a
+/// copy has to be written as a clone.
+///
+/// Several fields restate the piece boards and are kept in step with them by
+/// every move made and unmade: `squares` says what stands where, `key` and
+/// `pawn_key` hash the position, `eval` carries the material and piece square
+/// totals, and `checkers` holds the pieces giving check. `key` also folds in
+/// the side to move, the castle rights and the en passant square, so none of
+/// those changes without it. In a debug build `debug_assert_state_in_step`
+/// recomputes the first four after every move, and `make_move` checks
+/// `checkers` beside it. The fields are written from this file and from tests
+/// that set a position up by hand; outside the crate the position is read
+/// through the accessors and moved through `try_make` and `try_undo`.
+#[derive(Debug, PartialEq, Clone, Eq)]
 pub struct Board {
     // One board per piece, indexed by `Piece`, rather than a field each.
     // `move_accumulators` picks the one it is given a piece for, and as fields
@@ -443,7 +455,7 @@ pub struct Board {
     // mailbox and one name for two things is worse than a plain one here.
     squares: [Option<Piece>; 64],
 
-    pub active_color: Color,
+    pub(crate) active_color: Color,
     castle: CastlePermissions,
     en_passant: Option<Coordinate>,
     // the pieces giving check to the side to move, maintained by make_move
@@ -454,7 +466,11 @@ pub struct Board {
     checkers: u64,
 
     ply: usize,
-    pub line_ply: usize,
+    // plies since the root of the search, counted up by every move and pass
+    // made and back down by every one unmade, and set to zero by `start_line`
+    // when a search begins. What a mate score's distance is measured in, and
+    // the depth the table adjusts such a score by
+    pub(crate) line_ply: usize,
     move_number: usize,
     fifty_move_rule: usize,
 
@@ -464,7 +480,7 @@ pub struct Board {
     pub(crate) eval: Accumulator,
 
     history: [Option<PlayState>; MAX_GAME_SIZE],
-    pub key: u64,
+    pub(crate) key: u64,
     /// The same kind of key over the pawns alone: both sides' pawns and the
     /// squares they stand on, and nothing else. Two positions with the same
     /// pawns and different pieces share it, which is what a table keyed by
@@ -492,6 +508,61 @@ impl Default for Board {
 impl Board {
     pub fn new() -> Board {
         Board::from_fen(crate::STARTING_FEN).unwrap()
+    }
+
+    pub fn active_color(&self) -> Color {
+        self.active_color
+    }
+
+    /// The position key: the zobrist hash of the pieces, the side to move,
+    /// the castle rights and the en passant square.
+    pub fn key(&self) -> u64 {
+        self.key
+    }
+
+    /// Plies since the root of the current search.
+    pub fn line_ply(&self) -> usize {
+        self.line_ply
+    }
+
+    /// Make this position the root of a search: the line ply starts from
+    /// zero here, whatever moves the board was played through to arrive.
+    pub(crate) fn start_line(&mut self) {
+        self.line_ply = 0;
+    }
+
+    /// Play a move from outside the crate, which is where a move can be one
+    /// this position never generated: a move carried over from another
+    /// position, or from this one before something else was played. Such a
+    /// move is refused rather than made, and so is a legal-looking one that
+    /// leaves the king in check. True when the move was made.
+    ///
+    /// Checked by generating, the way `make_move_str` checks a name, rather
+    /// than by `is_pseudo_legal`, which passes on castling, en passant and
+    /// promotion and leaves them to generation.
+    pub fn try_make(&mut self, play: &Play) -> bool {
+        self.generate_moves().contains(play) && self.make_move(play)
+    }
+
+    /// Take back the last move `try_make` made. False when there is no move
+    /// behind this position to take back, which is a question of the history
+    /// and not of the ply: a position read from a fen starts at the ply its
+    /// move number says, with nothing behind it. The history keeps the last
+    /// `MAX_GAME_SIZE` plies, so a line longer than that cannot be taken all
+    /// the way back. `undo_move` itself does not check, since the search
+    /// never asks with an empty history.
+    pub fn try_undo(&mut self) -> bool {
+        if self.ply == 0 {
+            return false;
+        }
+        let Some(last) = self.history[history_index(self.ply - 1)] else {
+            return false;
+        };
+        // a pass is made and unmade by the search alone, which never leaves
+        // one behind for a caller to find
+        debug_assert_ne!(last.play, NULL_PLAY, "the last ply was a pass");
+        self.undo_move();
+        true
     }
 
     /// Whether this move is one `generate_moves` would produce here.
@@ -1042,7 +1113,7 @@ impl Board {
         false
     }
 
-    pub fn make_move(&mut self, play: &Play) -> bool {
+    pub(crate) fn make_move(&mut self, play: &Play) -> bool {
         self.make_move_impl::<true>(play)
     }
 
@@ -1212,7 +1283,7 @@ impl Board {
         }
     }
 
-    pub fn undo_move(&mut self) {
+    pub(crate) fn undo_move(&mut self) {
         let previous = history_index(self.ply - 1);
         let history = self.history[previous].unwrap();
         self.history[previous] = None;
@@ -1290,7 +1361,7 @@ impl Board {
     ///
     /// The history entry's key is salted, which is what keeps a pass out of
     /// the repetition arithmetic; `has_repeated` has the reasoning.
-    pub fn make_null_move(&mut self) {
+    pub(crate) fn make_null_move(&mut self) {
         debug_assert!(!self.in_check(), "a side in check cannot pass");
         self.history[history_index(self.ply)] = Some(PlayState {
             play: NULL_PLAY,
@@ -1322,7 +1393,7 @@ impl Board {
 
     /// Take the pass back. The mirror of `make_null_move`, and the only thing
     /// that may follow one.
-    pub fn undo_null_move(&mut self) {
+    pub(crate) fn undo_null_move(&mut self) {
         let previous = history_index(self.ply - 1);
         let history = self.history[previous].unwrap();
         self.history[previous] = None;
@@ -2107,7 +2178,7 @@ mod make_move {
         for fen in fens::CORE {
             let board = Board::from_fen(fen).unwrap();
             for m in &board.generate_moves() {
-                let mut played = board;
+                let mut played = board.clone();
                 if played.make_move(m) {
                     assert_ne!(board, played, "{} in {}", m, fen);
                     played.undo_move();
@@ -2194,7 +2265,7 @@ mod make_move {
             "r4rk1/1pp1qppp/p1np1n2/2b1p1B1/2B1P1b1/P1NP1N2/1PP1QPPP/R4RK1 b - - 3 511",
         )
         .unwrap();
-        let mut board = start;
+        let mut board = start.clone();
         let cycle = [(A8, B8), (A1, B1), (B8, A8), (B1, A1)];
         for (from, to) in cycle {
             assert!(board.make_move(&Play::new(from, to, None, None, false, false)));
@@ -2254,7 +2325,7 @@ mod null_move {
         for fen in fens::CORE {
             let board = Board::from_fen(fen).unwrap();
             assert_eq!(board.in_check(), false, "{}", fen);
-            let mut passed = board;
+            let mut passed = board.clone();
             passed.make_null_move();
             assert_ne!(board, passed, "{}", fen);
             passed.undo_null_move();
@@ -2301,7 +2372,7 @@ mod null_move {
         let board = Board::from_fen("rnbqkbnr/pppp1ppp/8/8/3Pp3/8/PPP1PPPP/RNBQKBNR b KQkq d3 0 3")
             .unwrap();
         assert!(board.en_passant.is_some());
-        let mut passed = board;
+        let mut passed = board.clone();
         passed.make_null_move();
         assert_eq!(passed.en_passant, None);
         passed.undo_null_move();
@@ -2495,7 +2566,7 @@ mod pawn_key {
         ];
         for (fen, name) in cases {
             let board = Board::from_fen(fen).unwrap();
-            let mut played = board;
+            let mut played = board.clone();
             play_move(&mut played, name);
             assert_ne!(board.pawn_key, played.pawn_key, "{} in {}", name, fen);
             assert_eq!(
@@ -2516,7 +2587,7 @@ mod pawn_key {
     #[test]
     fn a_move_that_touches_no_pawn_leaves_the_key_alone() {
         let board = Board::from_fen(fens::MIDDLEGAME).unwrap();
-        let mut played = board;
+        let mut played = board.clone();
         play_move(&mut played, "c3d5");
         assert_ne!(board.key, played.key);
         assert_eq!(board.pawn_key, played.pawn_key);
@@ -2531,7 +2602,7 @@ mod pawn_key {
             let board = Board::from_fen(fen).unwrap();
             assert_eq!(board.pawn_key, board.recompute_pawn_key(), "{}", fen);
             for m in &board.generate_moves() {
-                let mut played = board;
+                let mut played = board.clone();
                 if played.make_move(m) {
                     assert_eq!(
                         played.pawn_key,
@@ -2553,7 +2624,7 @@ mod pawn_key {
     fn a_pass_leaves_the_key_alone() {
         for fen in fens::CORE {
             let board = Board::from_fen(fen).unwrap();
-            let mut passed = board;
+            let mut passed = board.clone();
             passed.make_null_move();
             assert_eq!(passed.pawn_key, board.pawn_key, "{}", fen);
             assert_eq!(passed.pawn_key, passed.recompute_pawn_key(), "{}", fen);
@@ -3513,7 +3584,7 @@ mod random_games {
                         }
                     }
                 }
-                let before = board;
+                let before = board.clone();
                 let play = moves[pick.index(moves.len())];
                 if board.make_move(&play) {
                     super::in_step::prop_assert_in_step(&board).map_err(|e| {
@@ -3568,5 +3639,63 @@ mod between {
                 );
             }
         }
+    }
+}
+
+#[cfg(test)]
+mod try_make {
+    use super::fens;
+    use super::play_named;
+    use super::{Board, Color};
+    use pretty_assertions::assert_eq;
+
+    #[test]
+    fn a_move_from_another_position_is_refused_and_changes_nothing() {
+        let foreign = play_named(&Board::from_fen(fens::KIWIPETE).unwrap(), "e2a6");
+        let mut board = Board::new();
+        let before = board.clone();
+        assert!(!board.try_make(&foreign));
+        assert_eq!(board, before);
+    }
+
+    #[test]
+    fn a_move_the_position_has_moved_on_from_is_refused() {
+        let mut board = Board::new();
+        let opening = play_named(&board, "e2e4");
+        assert!(board.try_make(&opening));
+        // the same value again: the pawn is no longer on e2
+        assert!(!board.try_make(&opening));
+        assert_eq!(board.active_color(), Color::Black);
+    }
+
+    #[test]
+    fn a_castle_is_made() {
+        // is_pseudo_legal would refuse this; try_make checks by generating
+        let mut board = Board::from_fen(fens::KIWIPETE).unwrap();
+        let castle = play_named(&board, "e1g1");
+        assert!(castle.castle);
+        assert!(board.try_make(&castle));
+        assert_eq!(board.active_color(), Color::Black);
+    }
+
+    #[test]
+    fn a_move_that_leaves_the_king_in_check_is_refused() {
+        // white's queen is pinned to the king by the rook on e8
+        let mut board = Board::from_fen("4r1k1/8/8/8/8/8/4Q3/4K3 w - - 0 1").unwrap();
+        let before = board.clone();
+        let pinned = play_named(&board, "e2a6");
+        assert!(!board.try_make(&pinned));
+        assert_eq!(board, before);
+    }
+
+    #[test]
+    fn undo_gives_back_the_position_and_refuses_an_empty_history() {
+        let mut board = Board::new();
+        assert!(!board.try_undo());
+        let start = board.clone();
+        assert!(board.try_make(&play_named(&board, "g1f3")));
+        assert!(board.try_undo());
+        assert_eq!(board, start);
+        assert!(!board.try_undo());
     }
 }

@@ -1329,7 +1329,7 @@ mod tests {
         table.record_best(&board, play, Value::clean(20), 5);
         // a key differing above the slice, which one bucket leaves sharing
         // the index as well
-        let mut twin = board;
+        let mut twin = board.clone();
         twin.key ^= 1 << 63;
         match table.probe(&twin, -10, 10, 5, true, false) {
             Probe::Cut(value) => assert_eq!(value, Value::clean(20)),

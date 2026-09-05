@@ -375,7 +375,7 @@ impl Default for SearchConfig {
 }
 
 pub struct AlphaBeta {
-    pub board: Board,
+    pub(crate) board: Board,
     config: SearchConfig,
     nodes: u64,
     transpositions: TranspositionTable,
@@ -1182,7 +1182,7 @@ impl AlphaBeta {
         self.next_check = 0;
         self.nodes = 0;
         self.selective_depth = depth;
-        self.board.line_ply = 0;
+        self.board.start_line();
 
         // the game is already drawn, there is no move to look for
         if self.board.fifty_move_expired() {
@@ -1275,8 +1275,8 @@ impl AlphaBeta {
     /// the move the swap answers with has to be handed in.
     fn pv_line_from(&self, first: Option<Play>) -> PvLine {
         let mut line = Vec::new();
-        // Board is Copy, so the search's own board is untouched by this.
-        let mut board = self.board;
+        // a clone, so the search's own board is untouched by this
+        let mut board = self.board.clone();
         let mut next = first;
         while line.len() < MAX_PLY as usize {
             let Some(play) = next else {
@@ -2569,7 +2569,7 @@ mod search {
         let fen = "7k/3q4/8/8/R5P1/8/8/K7 w - - 0 1";
         let seeded = |config: SearchConfig| {
             let mut e = AlphaBeta::with_config(Board::from_fen(fen).unwrap(), TABLE_BYTES, config);
-            let mut board = e.board;
+            let mut board = e.board.clone();
             for name in ["a1b1", "d7a4"] {
                 let play = play_named(&board, name);
                 assert!(board.make_move(&play), "failed to play {}", name);
@@ -3104,7 +3104,7 @@ mod search {
         let game = Board::from_fen(fens::SHUFFLE).unwrap();
         let mut e = engine(game);
         let cycle = ["a8b8", "a1b1", "b8a8", "b1a1"];
-        let mut board = e.board;
+        let mut board = e.board.clone();
         for name in cycle.iter().cycle().take(16) {
             let play = play_named(&board, name);
             e.transpositions
@@ -3119,7 +3119,7 @@ mod search {
     fn the_pv_line_stops_when_the_fifty_move_counter_runs_out() {
         let game = Board::from_fen("5k2/1p3p1p/p3pK1P/P1P1P3/4bP2/2B5/8/8 w - - 99 112").unwrap();
         let mut e = engine(game);
-        let mut board = e.board;
+        let mut board = e.board.clone();
         for name in ["c3d4", "f8g8"] {
             let play = play_named(&board, name);
             e.transpositions
@@ -3187,7 +3187,7 @@ mod search {
         // is what resets the counter, and the thirty two of them are spread
         // far enough through this to keep the rest of it inside the rule
         let mut e = engine(Board::new());
-        let mut board = e.board;
+        let mut board = e.board.clone();
         let wanted = super::MAX_PLY as usize + 4;
         for ply in 0..wanted {
             let moves = board.generate_moves();
