@@ -428,7 +428,7 @@ impl AttackMasks {
 /// recomputes the first four after every move, and `make_move` checks
 /// `checkers` beside it. The fields are written from this file and from tests
 /// that set a position up by hand; outside the crate the position is read
-/// through the accessors.
+/// through the accessors and moved through `try_make` and `try_undo`.
 #[derive(Debug, PartialEq, Clone, Eq)]
 pub struct Board {
     // One board per piece, indexed by `Piece`, rather than a field each.
@@ -529,6 +529,40 @@ impl Board {
     /// zero here, whatever moves the board was played through to arrive.
     pub(crate) fn start_line(&mut self) {
         self.line_ply = 0;
+    }
+
+    /// Play a move from outside the crate, which is where a move can be one
+    /// this position never generated: a move carried over from another
+    /// position, or from this one before something else was played. Such a
+    /// move is refused rather than made, and so is a legal-looking one that
+    /// leaves the king in check. True when the move was made.
+    ///
+    /// Checked by generating, the way `make_move_str` checks a name, rather
+    /// than by `is_pseudo_legal`, which passes on castling, en passant and
+    /// promotion and leaves them to generation.
+    pub fn try_make(&mut self, play: &Play) -> bool {
+        self.generate_moves().contains(play) && self.make_move(play)
+    }
+
+    /// Take back the last move `try_make` made. False when there is no move
+    /// behind this position to take back, which is a question of the history
+    /// and not of the ply: a position read from a fen starts at the ply its
+    /// move number says, with nothing behind it. The history keeps the last
+    /// `MAX_GAME_SIZE` plies, so a line longer than that cannot be taken all
+    /// the way back. `undo_move` itself does not check, since the search
+    /// never asks with an empty history.
+    pub fn try_undo(&mut self) -> bool {
+        if self.ply == 0 {
+            return false;
+        }
+        let Some(last) = self.history[history_index(self.ply - 1)] else {
+            return false;
+        };
+        // a pass is made and unmade by the search alone, which never leaves
+        // one behind for a caller to find
+        debug_assert_ne!(last.play, NULL_PLAY, "the last ply was a pass");
+        self.undo_move();
+        true
     }
 
     /// Whether this move is one `generate_moves` would produce here.
@@ -3605,5 +3639,63 @@ mod between {
                 );
             }
         }
+    }
+}
+
+#[cfg(test)]
+mod try_make {
+    use super::fens;
+    use super::play_named;
+    use super::{Board, Color};
+    use pretty_assertions::assert_eq;
+
+    #[test]
+    fn a_move_from_another_position_is_refused_and_changes_nothing() {
+        let foreign = play_named(&Board::from_fen(fens::KIWIPETE).unwrap(), "e2a6");
+        let mut board = Board::new();
+        let before = board.clone();
+        assert!(!board.try_make(&foreign));
+        assert_eq!(board, before);
+    }
+
+    #[test]
+    fn a_move_the_position_has_moved_on_from_is_refused() {
+        let mut board = Board::new();
+        let opening = play_named(&board, "e2e4");
+        assert!(board.try_make(&opening));
+        // the same value again: the pawn is no longer on e2
+        assert!(!board.try_make(&opening));
+        assert_eq!(board.active_color(), Color::Black);
+    }
+
+    #[test]
+    fn a_castle_is_made() {
+        // is_pseudo_legal would refuse this; try_make checks by generating
+        let mut board = Board::from_fen(fens::KIWIPETE).unwrap();
+        let castle = play_named(&board, "e1g1");
+        assert!(castle.castle);
+        assert!(board.try_make(&castle));
+        assert_eq!(board.active_color(), Color::Black);
+    }
+
+    #[test]
+    fn a_move_that_leaves_the_king_in_check_is_refused() {
+        // white's queen is pinned to the king by the rook on e8
+        let mut board = Board::from_fen("4r1k1/8/8/8/8/8/4Q3/4K3 w - - 0 1").unwrap();
+        let before = board.clone();
+        let pinned = play_named(&board, "e2a6");
+        assert!(!board.try_make(&pinned));
+        assert_eq!(board, before);
+    }
+
+    #[test]
+    fn undo_gives_back_the_position_and_refuses_an_empty_history() {
+        let mut board = Board::new();
+        assert!(!board.try_undo());
+        let start = board.clone();
+        assert!(board.try_make(&play_named(&board, "g1f3")));
+        assert!(board.try_undo());
+        assert_eq!(board, start);
+        assert!(!board.try_undo());
     }
 }
