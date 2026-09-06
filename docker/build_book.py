@@ -1,4 +1,6 @@
 #!/usr/bin/env python3
+# SPDX-License-Identifier: GPL-3.0-or-later
+# Copyright (C) 2022-2026 Andrew Wright
 """Build a Polyglot opening book from the lichess-org/chess-openings data set.
 
 The data set (CC0) is a list of named openings given as PGN move sequences. Every
