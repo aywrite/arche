@@ -165,14 +165,25 @@ of these again without saying what is different this time.
   the search reaches them took the saving instead, 2.7% fewer instructions per
   node.
 - Masking a `u8` square down to six bits where it indexes a table of sixty
-  four, so that the bounds check comes off the load. On the history table's
-  two indexes that was 0.8% more instructions, on the zobrist table's 1.2%
-  more and on the castling tables 0.4% more. The check it takes away is
+  four, so that the bounds check comes off the load. The answer is per site
+  and measured rather than a rule. It pays on the board's square array and
+  on the read the move sort makes of the history table, and both are
+  written that way. It is worse on the zobrist table, 1.2% more
+  instructions when it was first measured and 0.6% more on the tree as it
+  stands, and worse on the castling tables, 0.4% more. On the magic tables
+  it is worth nothing either way, though the one index there is checked
+  against four tables, which reads as the compiler already sharing those
+  checks. There is little in it at any site: the check a mask takes away is
   cheap and always predicted, and the and it puts in sits in the address
-  computation. It does pay on the board's square array, where it is already
-  written, so the answer is per site and measured rather than a rule. The
-  mask is worse than the check for a wrong square as well: a check panics
-  and a mask reads a different square.
+  computation, so the measurement is the whole answer. The history table is
+  the entry to read this one by. It was measured at 0.8% more and rejected
+  here, and on the same two indexes it is now 0.6% less, having been asked
+  again after the loop around the read was rewritten. A mask that lost once
+  is worth re-measuring when the code holding it moves, the way
+  `inline(always)` moved on `Quiet::bonus` below. Only the sort's read
+  carries it. The write in `cutoff` and the census read are cold and keep
+  their check, which is the better failure for a square that cannot be out
+  of range: a check panics where a mask reads a different square.
 - `#[inline(always)]` on `square_attacked`, 3.7% more instructions, and on
   `Quiet::bonus`, 3.1% more. Both are called from inside a loop the register
   allocator then runs short in, and forcing them in is what tips it. The
