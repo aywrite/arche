@@ -777,8 +777,11 @@ same opening. `scripts/book_slice.py` works the offsets out and the manifests
 record them, which is what makes a run replayable without depending on how
 fastchess draws its own openings. The estimate is then pooled over every
 shard's games by `scripts/match_estimate.py`, rather than taken from fastchess,
-which only ever sees the shard it ran; its interval is measured over pairs,
-since the two games of an opening are one draw and not two.
+which only ever sees the shard it ran. The figure and its interval are both
+read off pairs, since the two games of an opening are one draw and not two.
+A shard the clock stopped can leave a game with no partner, and such a game is
+in the score the shard table prints and in nothing else, so that the figure and
+the interval describe the same games.
 
 The release workflow calls the same workflow with five hundred games at 30+0.3
 across five shards, which is about ninety minutes of wall clock, and that run is

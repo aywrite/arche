@@ -179,14 +179,47 @@ class TestEstimate:
         estimate = match_estimate.Estimate(3.0, 4, [2.0, 1.0])
         assert round(estimate.elo) == 191
 
-    def test_every_pair_shared_leaves_no_spread_to_measure(self, tmp_path):
+    def test_every_pair_shared_falls_back_to_the_spread_the_model_expects(
+        self, tmp_path
+    ):
         # each round was won one way and lost the other, so every pair scored
-        # one out of two and the variance over the pairs is nought
+        # one out of two and the variance over the pairs is nought. That is
+        # no measurement of the spread rather than a measurement of none, so
+        # the interval falls back to the one unrelated games would have
         halves = pair(1, "1-0", "1-0") + pair(2, "0-1", "0-1")
         _, estimate, _ = pooled(tmp_path, [halves])
         assert estimate.score == 0.5
-        assert estimate.margin == 0.0
+        assert round(estimate.margin) == 340
         assert estimate.los == 0.5
+
+    def test_the_figure_and_the_interval_read_the_same_pairs(self):
+        # a drawn pair and one won game the pairing left over. Reading the
+        # figure off every game and the spread off the pairs alone made that
+        # +120 elo with no interval either side of it and superiority certain
+        estimate = match_estimate.Estimate(2.0, 3, [1.0])
+        assert estimate.score == 2 / 3
+        assert estimate.paired == 0.5
+        assert estimate.elo == 0.0
+        assert estimate.margin > 0
+        assert estimate.los == 0.5
+
+    def test_one_pair_on_its_own_states_the_spread_it_cannot_measure(self):
+        estimate = match_estimate.Estimate(1.5, 2, [1.5])
+        assert round(estimate.elo) == 191
+        assert round(estimate.margin) == 556
+        assert 0.5 < estimate.los < 1.0
+
+    def test_a_modelled_spread_says_it_is_one(self, tmp_path):
+        # a measured ±340 and a modelled one are not the same claim, so the
+        # paragraph the interval goes in says which it is
+        halves = pair(1, "1-0", "1-0") + pair(2, "0-1", "0-1")
+        shards, estimate, text = pooled(tmp_path, [halves])
+        assert estimate.modelled
+        assert "rather than from one these games showed" in match_estimate.report(
+            shards, estimate, text
+        )
+        _, measured, _ = pooled(tmp_path / "measured", [drawn(1) + pair(2)])
+        assert not measured.modelled
 
     def test_the_interval_narrows_as_the_pairs_pile_up(self, tmp_path):
         # the standard error goes with the square root of the number of pairs,
@@ -306,12 +339,12 @@ class TestCommandLine:
     def test_the_report_goes_to_stdout_and_nothing_else_does(self, tmp_path):
         result = self.run(tmp_path, [drawn(1) + drawn(2), drawn(1) + drawn(2)])
         assert result.returncode == 0
-        assert result.stdout.startswith("+0 ±0 Elo (8 games)")
+        assert result.stdout.startswith("+0 ±241 Elo (8 games)")
         assert result.stderr == ""
 
     def test_the_line_is_the_one_the_release_notes_carry(self, tmp_path):
         result = self.run(tmp_path, [drawn(1) + drawn(2)], "--line")
-        assert result.stdout == "+0 ±0 Elo (4 games)\n"
+        assert result.stdout == "+0 ±340 Elo (4 games)\n"
 
     def test_the_trailer_passes_the_hook(self, tmp_path):
         import check_trailers
