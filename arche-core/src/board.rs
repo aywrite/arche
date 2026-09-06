@@ -1705,6 +1705,105 @@ impl Board {
         checkers
     }
 
+    /// Whether this move checks the opponent, asked of the board before the
+    /// move is made. `checkers_given` answers the same question of the board
+    /// after it; this one is for a caller that wants the answer without
+    /// paying for make and unmake, which is what the late move reduction's
+    /// exemption asks.
+    ///
+    /// The occupancy is edited to what the move leaves: the from square
+    /// emptied, the to square filled, and the extra square a castle or an en
+    /// passant capture touches besides. A direct check is the landed piece
+    /// attacking the king from its destination, a promotion attacking as the
+    /// piece it becomes. The slider probes run from the king over the edited
+    /// occupancy against our sliders as the move leaves them, so a discovered
+    /// check needs no case of its own: the probe sees through whatever the
+    /// move vacated. En passant empties the mover's square and the taken
+    /// pawn's at once, the double vacation a discovered check can need, and
+    /// castling is asked about the rook's destination, since a king cannot
+    /// check.
+    ///
+    /// Exact for any move `generate_moves` produces here. The oracle test
+    /// holds that over the legal ones; for a move `make_move` would refuse
+    /// the construction is the same and the answer is what the made board
+    /// would say, though no test makes a refused move to ask.
+    pub fn gives_check(&self, m: &Play) -> bool {
+        let king = self.king_index(!self.active_color);
+        let attack_masks = &ATTACK_MASKS;
+        let magic = &MAGIC;
+        let from_bit = 1u64 << m.from;
+        let to_bit = 1u64 << m.to;
+        let mut occupied = ((self.white | self.black) & !from_bit) | to_bit;
+
+        let ours = match self.active_color {
+            Color::White => self.white,
+            Color::Black => self.black,
+        };
+        // our sliders as the move leaves them: the mover gone from its
+        // square, and standing on its destination when what landed there
+        // slides. The captured piece, if any, was never in these
+        let mut diagonal = (self.bishops() | self.queens()) & ours & !from_bit;
+        let mut straight = (self.rooks() | self.queens()) & ours & !from_bit;
+
+        let landed = match m.promote {
+            Some(promote) => (&promote).into(),
+            None => self
+                .get_piece_index(m.from)
+                .expect("a move moves a piece of ours"),
+        };
+        match landed {
+            Piece::Pawn => {
+                // the mask holds the squares a pawn of our colour must stand
+                // on to attack the king's square
+                let masks = match self.active_color {
+                    Color::White => &attack_masks.white_pawns,
+                    Color::Black => &attack_masks.black_pawns,
+                };
+                if masks[king as usize].is_bit_set(m.to) {
+                    return true;
+                }
+            }
+            Piece::Knight => {
+                if attack_masks.knights[king as usize].is_bit_set(m.to) {
+                    return true;
+                }
+            }
+            Piece::Bishop => diagonal |= to_bit,
+            Piece::Rook => straight |= to_bit,
+            Piece::Queen => {
+                diagonal |= to_bit;
+                straight |= to_bit;
+            }
+            Piece::King => {}
+        }
+
+        if m.en_passant {
+            let taken = match self.active_color {
+                Color::White => m.to - 8,
+                Color::Black => m.to + 8,
+            };
+            occupied &= !(1u64 << taken);
+        } else if m.castle {
+            let (rook_from, rook_to) = match m.to {
+                C1 => (A1, D1),
+                G1 => (H1, F1),
+                C8 => (A8, D8),
+                G8 => (H8, F8),
+                _ => unreachable!(),
+            };
+            occupied = (occupied & !(1u64 << rook_from)) | (1u64 << rook_to);
+            straight = (straight & !(1u64 << rook_from)) | (1u64 << rook_to);
+        }
+
+        if attack_masks.diagonal[king as usize] & diagonal != 0
+            && magic.get_diagonal_move(king, occupied) & diagonal != 0
+        {
+            return true;
+        }
+        attack_masks.straight[king as usize] & straight != 0
+            && magic.get_straight_move(king, occupied) & straight != 0
+    }
+
     /// The pieces checking the side to move, computed from the board rather
     /// than maintained as moves are made, the way `square_attacked` asks its
     /// question but keeping the attackers instead of stopping at the first.
@@ -3104,8 +3203,9 @@ mod fen_parsing {
     /// A fen the parser will usually accept. This is the one that reaches the
     /// coherence check below; a malformed fen is refused before there is a
     /// board to check, so a generator that only produced those would be
-    /// asking nothing at all.
-    fn well_formed_fen() -> impl Strategy<Value = String> {
+    /// asking nothing at all. The gives_check oracle borrows it for the same
+    /// reason it exists here: positions nobody thought to write down.
+    pub(super) fn well_formed_fen() -> impl Strategy<Value = String> {
         (
             placement(),
             prop_oneof![Just("w"), Just("b")],
@@ -4000,5 +4100,179 @@ mod see {
             walk(&mut board, 2, &mut priced);
         }
         assert!(priced > 2000, "only {} captures priced", priced);
+    }
+}
+
+#[cfg(test)]
+mod gives_check {
+    use super::{Board, Play, fens, play_named};
+
+    /// What each claim is held to: make the move, read the check the board
+    /// maintains for the side now to move, and take the move back. `None`
+    /// for a move `make_move` refuses, which the walks skip and the named
+    /// cases never offer.
+    fn made(board: &mut Board, m: &Play) -> Option<bool> {
+        if board.make_move(m) {
+            let checked = board.in_check();
+            board.undo_move();
+            Some(checked)
+        } else {
+            None
+        }
+    }
+
+    /// Every legal move of every position reached, claimed before the move
+    /// is made and held to the made board's answer. The counts say what the
+    /// walk really asked, the way the see walk counts its captures.
+    fn walk(board: &mut Board, depth: usize, asked: &mut usize, checks: &mut usize) {
+        let moves = board.generate_moves();
+        for m in &moves {
+            let claimed = board.gives_check(m);
+            if let Some(truth) = made(board, m) {
+                assert_eq!(claimed, truth, "{} in {}", m, board.to_fen());
+                *asked += 1;
+                *checks += usize::from(truth);
+            }
+        }
+        if depth == 0 {
+            return;
+        }
+        for m in &moves {
+            if board.make_move(m) {
+                walk(board, depth - 1, asked, checks);
+                board.undo_move();
+            }
+        }
+    }
+
+    /// The oracle over played positions: every legal move two plies deep
+    /// from the core positions, plus the two perft positions thick with
+    /// castling, promotions and en passant.
+    #[test]
+    fn the_claim_agrees_with_making_the_move() {
+        let mut asked = 0;
+        let mut checks = 0;
+        for fen in fens::CORE
+            .iter()
+            .chain([fens::KIWIPETE, fens::PROMOTIONS].iter())
+        {
+            let mut board = Board::from_fen(fen).unwrap();
+            walk(&mut board, 2, &mut asked, &mut checks);
+        }
+        assert!(asked > 50_000, "only {} moves asked", asked);
+        assert!(checks > 500, "only {} checks met", checks);
+    }
+
+    /// The same oracle over positions nobody played to: fens from the
+    /// parser's own generator, pieces scattered at random, one ply deep.
+    /// The runner is the deterministic one, so the corpus is the same
+    /// corpus every run.
+    ///
+    /// The castle and en passant fields are dropped before parsing. Against
+    /// a random placement either is the known limitation the roadmap
+    /// records, a right or a square the position cannot have granted, and
+    /// playing the move it licenses corrupts the board it is claimed of.
+    /// Castling and en passant are covered by the played walk above, whose
+    /// rights are real, and by the named cases below.
+    #[test]
+    fn the_claim_agrees_on_a_generated_corpus() {
+        use proptest::strategy::{Strategy, ValueTree};
+        use proptest::test_runner::TestRunner;
+        let mut runner = TestRunner::deterministic();
+        let strategy = super::fen_parsing::well_formed_fen();
+        let mut positions = 0;
+        let mut asked = 0;
+        let mut checks = 0;
+        for _ in 0..400 {
+            let fen = strategy.new_tree(&mut runner).unwrap().current();
+            let mut fields: Vec<&str> = fen.split(' ').collect();
+            fields[2] = "-";
+            fields[3] = "-";
+            let fen = fields.join(" ");
+            if let Ok(mut board) = Board::from_fen(&fen) {
+                positions += 1;
+                walk(&mut board, 1, &mut asked, &mut checks);
+            }
+        }
+        assert!(positions > 50, "only {} fens parsed", positions);
+        assert!(asked > 50_000, "only {} moves asked", asked);
+        assert!(checks > 500, "only {} checks met", checks);
+    }
+
+    fn claims(fen: &str, name: &str) -> bool {
+        let board = Board::from_fen(fen).unwrap();
+        let play = play_named(&board, name);
+        let claimed = board.gives_check(&play);
+        let mut board = board;
+        assert_eq!(
+            Some(claimed),
+            made(&mut board, &play),
+            "the claim for {} in {} disagrees with making it",
+            name,
+            fen
+        );
+        claimed
+    }
+
+    /// The cases with machinery of their own, named so a failure says which
+    /// rule broke rather than which random position found it. Each is also
+    /// held to the made board, so a wrong expectation here cannot stand.
+    #[test]
+    fn a_direct_check_is_seen_from_the_destination() {
+        // a quiet rook move to the king's file
+        assert!(claims("3k4/8/8/8/8/8/8/R4K2 w - - 0 1", "a1d1"));
+        assert!(!claims("3k4/8/8/8/8/8/8/R4K2 w - - 0 1", "a1b1"));
+        // a capture on the checking line: the rook lands on the file by
+        // taking the pawn that blocked it
+        assert!(claims("3k4/8/8/3p4/8/8/8/3R1K2 w - - 0 1", "d1d5"));
+        // a pawn's two step ends beside the king's diagonal
+        assert!(claims("8/8/8/2k5/8/8/1P6/4K3 w - - 0 1", "b2b4"));
+        assert!(!claims("8/8/8/2k5/8/8/1P6/4K3 w - - 0 1", "b2b3"));
+    }
+
+    #[test]
+    fn a_discovered_check_is_seen_through_the_vacated_square() {
+        // the knight leaves the rook's file: anywhere it goes discovers the
+        // check, and from f6 it checks on its own besides, the double check
+        assert!(claims("4k3/8/8/8/4N3/8/8/4RK2 w - - 0 1", "e4f6"));
+        assert!(claims("4k3/8/8/8/4N3/8/8/4RK2 w - - 0 1", "e4c3"));
+        // the same knight with no rook behind it checks from f6 alone
+        assert!(claims("4k3/8/8/8/4N3/8/8/5K2 w - - 0 1", "e4f6"));
+        assert!(!claims("4k3/8/8/8/4N3/8/8/5K2 w - - 0 1", "e4c3"));
+    }
+
+    #[test]
+    fn a_promotion_checks_as_the_piece_it_becomes() {
+        let fen = "4k3/P7/8/8/8/8/8/4K3 w - - 0 1";
+        assert!(claims(fen, "a7a8q"));
+        assert!(claims(fen, "a7a8r"));
+        assert!(!claims(fen, "a7a8b"));
+        assert!(!claims(fen, "a7a8n"));
+    }
+
+    #[test]
+    fn a_castle_checks_with_the_rook() {
+        // the rook lands on f1 with the black king on the f file
+        assert!(claims("5k2/8/8/8/8/8/8/4K2R w K - 0 1", "e1g1"));
+        assert!(!claims("k7/8/8/8/8/8/8/4K2R w K - 0 1", "e1g1"));
+        // and on d1 from the other side
+        assert!(claims("3k4/8/8/8/8/8/8/R3K3 w Q - 0 1", "e1c1"));
+        assert!(!claims("2k5/8/8/8/8/8/8/R3K3 w Q - 0 1", "e1c1"));
+    }
+
+    #[test]
+    fn en_passant_vacates_both_squares_at_once() {
+        // the rook's line to the king runs through the capturing pawn's
+        // square and the taken pawn's: the capture empties both, and no
+        // single vacation opens it
+        assert!(claims("8/8/8/1k2pP1R/8/8/8/4K3 w - e6 0 1", "f5e6"));
+        // the plain push empties only the mover's square and the taken
+        // pawn still blocks
+        assert!(!claims("8/8/8/1k2pP1R/8/8/8/4K3 w - e6 0 1", "f5f6"));
+        // and the taken pawn's square alone: the bishop's diagonal runs
+        // through the pawn being taken and not through the taker
+        assert!(claims("1k6/8/8/3Pp3/8/8/7B/4K3 w - e6 0 1", "d5e6"));
+        // en passant checking directly, the pawn landing beside the king
+        assert!(claims("8/2k5/8/3pP3/8/8/8/4K3 w - d6 0 1", "e5d6"));
     }
 }
