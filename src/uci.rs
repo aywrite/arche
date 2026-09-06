@@ -388,13 +388,27 @@ impl<T: Engine, W: Write> UCI<T, W> {
             .strip_prefix("position")
             .unwrap_or(line)
             .trim();
-        let (start, move_list) = match position_string.split_once("moves") {
-            Some((s, m)) => (s.trim(), Some(m)),
+        // the move list begins at the first "moves" standing as a word of its
+        // own; a fen has no such word, and startposmoves is not startpos
+        let moves_at = position_string.match_indices("moves").find(|(at, word)| {
+            let before = position_string[..*at].chars().next_back();
+            let after = position_string[at + word.len()..].chars().next();
+            before.is_none_or(char::is_whitespace) && after.is_none_or(char::is_whitespace)
+        });
+        let (start, move_list) = match moves_at {
+            Some((at, word)) => (
+                position_string[..at].trim(),
+                Some(&position_string[at + word.len()..]),
+            ),
             None => (position_string, None),
         };
-        if start.starts_with("startpos") {
+        // whole words, as the go line reads them: startposx is not startpos
+        if start == "startpos" {
             self.engine.parse_fen(arche_core::STARTING_FEN)?;
-        } else if let Some(fen) = start.strip_prefix("fen") {
+        } else if let Some(fen) = start
+            .strip_prefix("fen")
+            .filter(|rest| rest.is_empty() || rest.starts_with(char::is_whitespace))
+        {
             self.engine.parse_fen(fen.trim())?;
         } else {
             return Err(format!("unrecognised position: {}", start));
@@ -1049,6 +1063,27 @@ mod tests {
         let said = said(&uci);
         assert!(said.contains("info string unrecognised position: wibble"));
         assert!(said.contains("info string unrecognised command: wobble"));
+    }
+
+    #[test]
+    fn a_position_word_must_be_whole() {
+        // startposx used to set the starting position, the x read as nothing,
+        // where the go line takes a keyword only as a whole word
+        for line in [
+            "position startposx",
+            "position startposition moves e2e4",
+            "position startposmoves e2e4",
+            "position fenx 8/8/8/8/8/8/8/8 w - - 0 1",
+        ] {
+            let mut uci = uci();
+            let answer = uci.parse_position(line);
+            assert!(answer.is_err(), "{} was accepted", line);
+            assert!(
+                answer.unwrap_err().starts_with("unrecognised position"),
+                "{}",
+                line
+            );
+        }
     }
 
     #[test]
