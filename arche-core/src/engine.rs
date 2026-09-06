@@ -7,6 +7,7 @@ use crate::limits::Limits;
 use crate::misc::{Color, Score};
 use crate::ordering::MoveOrdering;
 use crate::play::Play;
+use crate::reduction;
 use crate::residual::{Sample, Sampler, Shortcut, Window};
 use crate::transposition::{
     DEFAULT_TABLE_BYTES, GhiCounters, Probe, SignatureCounters, TranspositionTable,
@@ -451,6 +452,16 @@ pub struct AlphaBeta {
     /// exactly: armed only by the cutoffs command, and an engine without
     /// one searches the tree it always searched.
     census: Option<Sampler<census::Event>>,
+    /// The reduction ledger's reservoir, or none, on the census's terms
+    /// exactly: armed only by the reductions command, and an engine
+    /// without one searches the tree it always searched.
+    ledger: Option<Sampler<reduction::Event>>,
+    /// The move loop's half of a ledger event: what the node knew about
+    /// the reduced move it is about to scout. Written only while the
+    /// ledger is armed, and taken by `windowed` before the scout runs, so
+    /// the reduced moves inside the scout consume their own stagings and
+    /// never this one.
+    staged: Option<reduction::Staged>,
 }
 
 impl AlphaBeta {
@@ -474,6 +485,8 @@ impl AlphaBeta {
             ordering: MoveOrdering::new(),
             sampler: None,
             census: None,
+            ledger: None,
+            staged: None,
         }
     }
 
@@ -510,6 +523,125 @@ impl AlphaBeta {
     /// describe the run.
     pub fn take_census(&mut self) -> Option<Sampler<census::Event>> {
         self.census.take()
+    }
+
+    /// Have the search record what each sampled reduced scout decided, at
+    /// the rate the sampler was built with. Off until this is called, and
+    /// the only caller is the reductions command: nothing the engine plays
+    /// or benches with turns it on.
+    pub fn sample_reductions(&mut self, sampler: Sampler<reduction::Event>) {
+        self.ledger = Some(sampler);
+    }
+
+    /// The ledger's sampler back with everything it collected, leaving the
+    /// engine recording nothing; none from an engine never given one.
+    /// Handed back rather than emptied in place, for `take_sampler`'s
+    /// reason. A staging the search never consumed, a move that turned out
+    /// illegal, goes with the arming it belonged to.
+    pub fn take_reductions(&mut self) -> Option<Sampler<reduction::Event>> {
+        self.staged = None;
+        self.ledger.take()
+    }
+
+    /// The move loop's half of a ledger event: what the node knew about
+    /// the reduced move it is about to scout, staged for `windowed` to
+    /// finish when the scout answers. Everything here is a read; the fen
+    /// is printed, and the eval taken, only if the answer is kept.
+    // cold and out of line behind a bare is_some, as `sample` is and for
+    // `sample`'s measured reason.
+    #[cold]
+    #[inline(never)]
+    fn stage_reduction(
+        &mut self,
+        m: &Play,
+        searched: usize,
+        moves: &[Play],
+        ply: Option<usize>,
+        tt: census::Table,
+    ) {
+        let board = &self.board;
+        let ordering = &self.ordering;
+        // the history columns hold to the census's line, and every
+        // reduced move is quiet, so the move's own score reads directly
+        let quiet_history = |m: &Play| {
+            if m.capture.is_none() && m.promote.is_none() {
+                Some(ordering.history_score(board.active_color, m))
+            } else {
+                None
+            }
+        };
+        let killers = ply.map_or([None, None], |ply| ordering.killers_at(ply));
+        let staged = reduction::Staged {
+            play: *m,
+            index: searched,
+            generated: moves.len(),
+            history: ordering.history_score(board.active_color, m),
+            history_max: moves.iter().filter_map(quiet_history).max().unwrap_or(0),
+            killer: killers.contains(&Some(*m)),
+            tt,
+        };
+        self.staged = Some(staged);
+    }
+
+    /// The scout's answer joining what the move loop staged: one reduced
+    /// scout, offered to the ledger. The board here is the position the
+    /// reduced move left, which is the fen the row carries and the replay
+    /// searches; the eval is the reducing node's own, taken for kept
+    /// events alone by stepping the staged move back and replaying it,
+    /// which is what keeps an eval away from every scout the sampler
+    /// turns away.
+    #[cold]
+    #[inline(never)]
+    fn ledger_event(
+        &mut self,
+        staged: reduction::Staged,
+        depth: u8,
+        alpha: Score,
+        beta: Score,
+        scout: Score,
+        entered_at: u64,
+    ) {
+        let cost = self.nodes - entered_at;
+        // the fields are borrowed apart rather than through `self`, which
+        // is what lets the closure step the board while the sampler is
+        // held
+        let board = &mut self.board;
+        let Some(ledger) = self.ledger.as_mut() else {
+            return;
+        };
+        let key = reduction::sample_key(board.key, depth);
+        ledger.event(key, || {
+            let fen = board.to_fen();
+            // make and undo are exact inverses, which the debug builds
+            // assert against a recompute on every move made
+            board.undo_move();
+            let eval = i32::from(crate::eval::eval(board));
+            assert!(
+                board.make_move(&staged.play),
+                "the staged move was made once already"
+            );
+            reduction::Event {
+                fen,
+                depth,
+                window: Window::of(alpha, beta),
+                index: staged.index,
+                searched: staged.index + 1,
+                generated: staged.generated,
+                history: staged.history,
+                history_max: staged.history_max,
+                killer: staged.killer,
+                tt: staged.tt,
+                eval_beta: eval - i32::from(beta),
+                alpha_gap: i32::from(alpha) - eval,
+                alpha,
+                scout: if scout <= alpha {
+                    reduction::Scout::Low
+                } else {
+                    reduction::Scout::High
+                },
+                cost,
+            }
+        });
     }
 
     /// One node answering out of the move loop, offered to the census:
@@ -1112,8 +1244,22 @@ impl AlphaBeta {
         }
         let mut tainted = false;
         if reduced {
+            // the ledger's staged half is taken before the scout runs, so
+            // the reduced moves inside the scout consume their own
+            // stagings and never this one
+            let staged = if self.ledger.is_some() {
+                self.staged.take()
+            } else {
+                None
+            };
+            // what the scout's cost is measured from: a read of a field,
+            // no branch, so the disarmed search is unchanged
+            let entered_at = self.nodes;
             let scout =
                 -self.alpha_beta(-alpha - 1, -alpha, depth - 1 - LATE_MOVE_REDUCTION, true)?;
+            if let Some(staged) = staged {
+                self.ledger_event(staged, depth, alpha, beta, scout.score, entered_at);
+            }
             if scout.score <= alpha {
                 return Ok(scout);
             }
@@ -1365,6 +1511,17 @@ impl AlphaBeta {
                 continue;
             }
             let reduced = self.reduces(m, searched, depth, in_check, alpha, beta);
+            // the ledger's staged half: what the node knows about the move
+            // it is about to scout, written only while the ledger is armed
+            if reduced && self.ledger.is_some() {
+                self.stage_reduction(
+                    m,
+                    searched,
+                    &moves,
+                    ply,
+                    census::Table::of(pv_play.is_some(), tt_tried.is_some()),
+                );
+            }
             let Some(value) =
                 self.search_child(m, alpha, beta, depth, !found_legal_move, reduced)?
             else {
@@ -4653,5 +4810,133 @@ mod cutoffs {
         assert_eq!(row.window, Window::Open);
         assert_eq!(row.history_max, 9);
         assert_eq!(row.tt, Table::ScoreOnly);
+    }
+}
+
+/// The reduction ledger seen from the search: that it is off unless it is
+/// asked for, and that a row reads the decision as the node made it. The
+/// two halves of the recorder are driven directly, the staging at the
+/// parent and `windowed` at the child, with the memories taught by hand
+/// for the census tests' reason. What the rows are worth is the
+/// reductions command's business.
+#[cfg(test)]
+mod reductions {
+    use super::{AlphaBeta, Board, Score};
+    use crate::census::Table;
+    use crate::reduction::Scout;
+    use crate::residual::{Sampler, Window};
+    use pretty_assertions::assert_eq;
+
+    const TABLE_BYTES: usize = 1024 * 1024;
+    const SHARP_MIDDLEGAME: &str = "r1b2rk1/ppp1qppp/4pn2/6N1/Qn1P4/2NBP3/PP3PPP/R3K2R w KQ - 9 12";
+
+    fn engine(fen: &str) -> AlphaBeta {
+        let mut e = AlphaBeta::with_table_bytes(Board::from_fen(fen).unwrap(), TABLE_BYTES);
+        e.sample_reductions(Sampler::every(1));
+        e
+    }
+
+    /// Two quiet moves of the position, for teaching the memories.
+    fn quiets(e: &AlphaBeta) -> (crate::play::Play, crate::play::Play) {
+        let moves = e.board.generate_moves();
+        let mut quiets = moves
+            .iter()
+            .filter(|m| m.capture.is_none() && m.promote.is_none());
+        let first = *quiets.next().expect("a quiet move");
+        let second = *quiets.next().expect("another quiet move");
+        (first, second)
+    }
+
+    /// The same gate the census stands behind: an engine nobody asked a
+    /// ledger of holds none, and the pinned bench counts beside this say
+    /// the search it runs is the search it ran before there was a ledger
+    /// at all.
+    #[test]
+    fn an_engine_records_no_ledger_until_it_is_asked_to() {
+        let mut e =
+            AlphaBeta::with_table_bytes(Board::from_fen(SHARP_MIDDLEGAME).unwrap(), TABLE_BYTES);
+        assert!(e.ledger.is_none());
+        e.search(4);
+        assert!(e.staged.is_none());
+        assert!(e.take_reductions().is_none());
+    }
+
+    /// A staged scout that fails low, driven through the two halves by
+    /// hand: the row carries the features the node knew, the fen of the
+    /// position the move left, and the node's own eval against its
+    /// bounds. The board comes back exactly as the recorder found it,
+    /// which is the step-back-and-replay the eval column is taken by.
+    #[test]
+    fn a_row_reads_the_decision_as_the_node_made_it() {
+        let mut e = engine(SHARP_MIDDLEGAME);
+        let (killer, cool) = quiets(&e);
+        let color = e.board.active_color;
+        // taught at another ply, so what makes the flag a killer is the
+        // slot at this one; its history entry is the larger of the two
+        e.ordering.cutoff(color, &cool, 1, 5);
+        e.ordering.cutoff(color, &killer, 0, 4);
+        let moves = e.board.generate_moves();
+        let parent_eval = i32::from(crate::eval::eval(&e.board));
+        e.stage_reduction(&killer, 5, &moves, Some(0), Table::Miss);
+        assert!(e.board.make_move(&killer));
+        let child_fen = e.board.to_fen();
+        let child_key = e.board.key;
+        // alpha stands far above anything the position is worth, and
+        // under the mate window, so the scout fails low and is trusted
+        let (alpha, beta): (Score, Score) = (5000, 5001);
+        let Ok(value) = e.windowed(alpha, beta, 3, false, true) else {
+            panic!("an unlimited search aborted");
+        };
+        assert!(value.score <= alpha, "the scout did not fail low");
+        assert_eq!(e.board.to_fen(), child_fen);
+        assert_eq!(e.board.key, child_key);
+        let sampled = e.take_reductions().expect("a ledger was installed").drain();
+        assert_eq!(sampled.events, 1);
+        assert_eq!(sampled.taken.len(), 1);
+        let row = &sampled.taken[0];
+        assert_eq!(row.fen, child_fen);
+        assert_eq!(row.depth, 3);
+        assert_eq!(row.window, Window::Zero);
+        assert_eq!(row.index, 5);
+        assert_eq!(row.searched, 6);
+        assert_eq!(row.generated, moves.len());
+        assert_eq!(row.history, 16);
+        assert_eq!(row.history_max, 25);
+        assert!(row.killer);
+        assert_eq!(row.tt, Table::Miss);
+        assert_eq!(row.eval_beta, parent_eval - i32::from(beta));
+        assert_eq!(row.alpha_gap, i32::from(alpha) - parent_eval);
+        assert_eq!(row.alpha, alpha);
+        assert_eq!(row.scout, Scout::Low);
+        assert!(row.cost >= 1);
+    }
+
+    /// The same seam under bounds the move clears: the scout fails high,
+    /// the row says so, and its cost counts the scout alone rather than
+    /// the full depth search the fail high asked for.
+    #[test]
+    fn a_scout_that_fails_high_is_recorded_as_high() {
+        let mut e = engine(SHARP_MIDDLEGAME);
+        let (m, _) = quiets(&e);
+        let moves = e.board.generate_moves();
+        e.stage_reduction(&m, 4, &moves, None, Table::Miss);
+        assert!(e.board.make_move(&m));
+        let (alpha, beta): (Score, Score) = (-5000, -4999);
+        let Ok(_) = e.windowed(alpha, beta, 3, false, true) else {
+            panic!("an unlimited search aborted");
+        };
+        let sampled = e.take_reductions().expect("a ledger was installed").drain();
+        assert_eq!(sampled.taken.len(), 1);
+        let row = &sampled.taken[0];
+        assert_eq!(row.scout, Scout::High);
+        assert_eq!(row.index, 4);
+        assert!(!row.killer);
+        assert_eq!(row.history, 0);
+        assert!(
+            row.cost < e.nodes,
+            "the cost {} counts more than the scout of a search of {}",
+            row.cost,
+            e.nodes
+        );
     }
 }

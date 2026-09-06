@@ -25,6 +25,10 @@ Usage:
   arche cutoffs [depth] [every <n>] [cap <n>]
                         search the same suite and print which move cut each
                         sampled node off, or that none did
+  arche reductions [depth] [every <n>] [cap <n>]
+                        search the same suite, sample the reduced scouts, and
+                        ask a full depth search whether each trusted fail low
+                        threw a move away
   arche --version, -V   print the version
   arche --help, -h      print this
 
@@ -97,6 +101,20 @@ fn main() -> ExitCode {
                 ExitCode::from(2)
             }
         },
+        // `arche reductions [depth] [every <n>] [cap <n>]` records what
+        // each sampled reduced scout decided and labels the fail lows
+        // from a replay. An argument for the residuals command's reason:
+        // a research question, not a move
+        Some("reductions") => match uci::reduction_settings(&Params::of(&args.join(" "))) {
+            Ok(settings) => {
+                print!("{}", settings.run());
+                ExitCode::SUCCESS
+            }
+            Err(what) => {
+                eprintln!("unrecognised reductions {}", what);
+                ExitCode::from(2)
+            }
+        },
         // `--version` and `--help` were asked for, so both are answered on
         // stdout and succeed. An argument that really is unrecognised keeps
         // stderr and the failing code below: the difference is whether
@@ -126,6 +144,7 @@ mod tests {
             "arche bench",
             "arche residuals",
             "arche cutoffs",
+            "arche reductions",
             "--version",
             "--help",
         ] {

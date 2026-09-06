@@ -528,6 +528,76 @@ position by position, which
 `arche-core/src/census.rs` asserts of the armed engines themselves. The
 pinned node counts cover the disarmed default and the reference.
 
+## What trusting a reduced scout costs
+
+The census says which moves cut. It cannot say what the late move reduction
+buried, and that is what `arche reductions` measures:
+
+```
+target/release/arche reductions [depth] [every <n>] [cap <n>]
+```
+
+It searches the same suite the bench does, under the default configuration,
+and samples the reduced scouts as they answer: one event per sampled scout,
+taken where the scout's answer comes back. A scout that fails low is
+trusted, and the move it answered for is never searched at the depth the
+node has. A scout that fails high has earned the full depth, so its cost is
+the scout it wasted rather than a wrong answer, and it is never replayed;
+the fail highs stay in the stream at the same rate all the same, because
+they are the denominator a reduction policy's propensities are read
+against.
+
+The label on a fail low comes from a replay, run after the suite on the
+residuals replay's terms exactly: the reference, with a table of its own
+cleared before every sample and no clock. The fen on a row is the position
+the reduced move left, so its side to move is the side the move was played
+against. The replay searches it to the node's depth less one, which is the
+depth the move was denied, over the full window, and the answer is negated
+to the reducing node's side before it is read. Strictly above the alpha
+the scout was read against is `harmful`: the full search would have raised
+alpha on a move the scout wrote off. Anything else is `harmless`. The fen
+carries the fifty move counter and not the path, with everything the
+residuals section says that costs.
+
+Each event is a row of `depth window index searched generated history
+history_max killer tt eval_beta alpha_gap alpha scout cost reference label
+fen`, whitespace separated with the fen last so a row parses left to
+right. `depth` is the reducing node's, its check extension included.
+`index`, `searched`, `generated`, `history` and `history_max` are the
+census's columns, read at the decision; `killer` says whether the move
+stood in a killer slot, and `tt` is the census's three-state. Every
+reduced move is quiet, so `history` is never priced by a class instead.
+`eval_beta` and `alpha_gap` are the node's own static evaluation against
+its two bounds, computed at record time for kept events alone by stepping
+the move back and replaying it, for the census's reason: an eval forced at
+every scout to fill a column is not the engine being measured. `alpha` is
+the bound the scout was asked about, `scout` is `low` or `high`, and
+`cost` is the nodes the scout spent. A fail high prints `-` in the
+`reference` and `label` columns rather than moving the others.
+
+The sampling is the census's mechanism with a salt of its own: a hash gate
+over the position key and the depth at an `every <n>` rate, in front of a
+capped reservoir that keeps the smallest keys of the whole run, so two
+runs print the same rows. The header states `events` beside `records` for
+the residuals header's reason: the rows are a share of the events, and a
+share cannot be read without its denominator.
+
+The run ends with a line per depth: the scouts, the fail low share, the
+replayed count, the harmful count and rate, and the harmful rate split by
+index band (4 to 7, 8 to 15, 16 and past) and by history fraction (zero,
+under a tenth, under half, half and up), which are the cells a reduction
+policy would be fit on. A cell under thirty replayed rows prints its
+counts in place of a rate, and the line's own rate holds to the same rule:
+a percentage over a handful of rows reads as a finding and is noise.
+
+Recording changes nothing. The ledger is armed only by the command, an
+engine without one searches exactly the tree it searched before there was
+a ledger at all, and an armed engine's node counts equal a disarmed one's
+position by position, which
+`recording_leaves_the_measured_search_where_it_was` in
+`arche-core/src/reduction.rs` asserts of the armed engines themselves. The
+pinned node counts cover the disarmed default and the reference.
+
 ## What the table's key signature costs
 
 An entry keeps thirty two bits of the position key rather than all sixty
