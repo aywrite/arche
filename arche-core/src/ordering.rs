@@ -688,14 +688,22 @@ mod order {
         }
     }
 
+    // the table's move here is a quiet one, so nothing about the move puts
+    // it in front, and a killer bonus on top of it must not move it either:
+    // the root's aborted-answer swap rests on nothing outranking the table
     #[test]
-    fn the_tables_move_goes_first_even_when_quiet() {
+    fn the_tables_move_goes_first_whether_or_not_a_killer_names_it() {
         let board = Board::from_fen(CAPTURES).unwrap();
-        let generated = board.generate_moves();
-        let push = generated[position_of(&generated, "e4e5")];
-        let moves = ordered(CAPTURES, Some(push));
-        assert_eq!(moves[0], push);
-        assert_eq!(position_of(&moves, "e4d5"), 1);
+        let push = named(&board.generate_moves(), "e4e5");
+        for killer in [false, true] {
+            let mut ordering = MoveOrdering::new();
+            if killer {
+                ordering.cutoff(Color::White, &push, 0, 4);
+            }
+            let moves = ordered_by(CAPTURES, Some(push), &mut ordering);
+            assert_eq!(moves[0], push, "killer {killer}");
+            assert_eq!(position_of(&moves, "e4d5"), 1, "killer {killer}");
+        }
     }
 
     #[test]
@@ -754,18 +762,6 @@ mod order {
         let moves = quiets(&ordered_by(CAPTURES, None, &mut ordering));
         assert_eq!(moves[0], last);
         assert_eq!(moves[1], generated[0]);
-    }
-
-    #[test]
-    fn a_killer_that_is_also_the_tables_move_sorts_by_the_table_bonus() {
-        let board = Board::from_fen(CAPTURES).unwrap();
-        let killer = named(&board.generate_moves(), "e4e5");
-        let mut ordering = MoveOrdering::new();
-        ordering.cutoff(Color::White, &killer, 0, 4);
-
-        let moves = ordered_by(CAPTURES, Some(killer), &mut ordering);
-        assert_eq!(moves[0], killer);
-        assert_eq!(position_of(&moves, "e4d5"), 1);
     }
 }
 
@@ -835,33 +831,25 @@ mod memory {
     }
 
     #[test]
-    fn a_cutoff_takes_the_first_slot_and_shifts_the_old_one_down() {
+    fn the_killer_slots_hold_the_two_most_recent_cutoffs() {
         let mut ordering = MoveOrdering::new();
         let first = quiet(8, 16);
         let second = quiet(9, 17);
-        ordering.cutoff(Color::White, &first, 3, 4);
-        assert_eq!(ordering.killers[3], [Some(first), None]);
-        ordering.cutoff(Color::White, &second, 3, 4);
-        assert_eq!(ordering.killers[3], [Some(second), Some(first)]);
+        // a cutoff takes the first slot and shifts the old one down. A move
+        // already in the first slot is not put in both, which is what the
+        // second step says, and a move promoted back out of the second does
+        // not stay in it, which is what the shift would get wrong
+        for (m, killers) in [
+            (first, [Some(first), None]),
+            (first, [Some(first), None]),
+            (second, [Some(second), Some(first)]),
+            (first, [Some(first), Some(second)]),
+        ] {
+            ordering.cutoff(Color::White, &m, 3, 4);
+            assert_eq!(ordering.killers[3], killers, "after {m}");
+        }
         // and the ply is what indexes them
         assert_eq!(ordering.killers[4], [None, None]);
-    }
-
-    #[test]
-    fn one_move_does_not_hold_both_killer_slots() {
-        let mut ordering = MoveOrdering::new();
-        let m = quiet(8, 16);
-        let other = quiet(9, 17);
-        // cutting off twice in a row leaves the second slot empty
-        ordering.cutoff(Color::White, &m, 0, 4);
-        ordering.cutoff(Color::White, &m, 0, 4);
-        assert_eq!(ordering.killers[0], [Some(m), None]);
-        // and a move promoted out of the second slot does not stay in it,
-        // which is what the shift would get wrong
-        ordering.cutoff(Color::White, &other, 0, 4);
-        assert_eq!(ordering.killers[0], [Some(other), Some(m)]);
-        ordering.cutoff(Color::White, &m, 0, 4);
-        assert_eq!(ordering.killers[0], [Some(m), Some(other)]);
     }
 
     #[test]
