@@ -7,22 +7,31 @@ name: Strength
 # can be measured before it is merged and against something other than a
 # release.
 #
-# Fifty games only separates versions that differ by a hundred elo or so. A
-# change worth a handful needs thousands, so raise the count and shorten the
-# time control when the answer matters.
+# A runner plays about three and a third games a minute at 10+0.1 and about one
+# and a tenth at 30+0.3, and play is capped at 150 minutes, so a match worth
+# reading is more games than one job can hold. The games are split across shards
+# that play at the same time and are pooled afterwards. Each shard plays a slice
+# of the opening book of its own, chosen from the seed, so no two shards play
+# the same opening and the schedule can be played again from the manifest.
+#
+# The estimate over the pooled games is worked out here rather than taken from
+# fastchess, which only ever sees the one shard it ran. Its interval is measured
+# over pairs, since the two games of an opening are one draw and not two.
 #
 # Or ask the narrower question instead: sprt runs a sequential test that stops
 # the moment the games so far settle whether the candidate is stronger, rather
 # than playing a count chosen in advance. games then caps the match instead of
 # sizing it, so it can be set generously, and a match that reaches the cap, or
-# the time cap below, reports inconclusive rather than pretending the games it
-# played were enough.
+# the time cap, reports inconclusive rather than pretending the games it played
+# were enough. A sequential test reads the games in the order they were played,
+# which jobs that cannot see each other cannot do, so an sprt run is one shard
+# whatever shards says.
 #
 # Every run keeps what it would take to look into its own result: the games with
 # the search figures behind each move, the result block, the fastchess config
-# and a manifest of what was played on what. They are uploaded as an artifact
-# named strength-<run id>-<attempt>. The opening order is seeded, and the seed
-# is in the manifest, so the same schedule can be played again.
+# and a manifest of what was played on what. They go up a shard at a time, as
+# strength-<run id>-<attempt>-shard-<i>. The opening slices come from the seed,
+# and the seed is in every manifest, so the same schedule can be played again.
 
 on:
   workflow_dispatch:
@@ -34,9 +43,13 @@ on:
         description: What to measure it against. Same forms. Defaults to the last full release.
         type: string
       games:
-        description: Games to play, rounded down to an even number. With sprt this is the cap, not the size, so set it generously.
+        description: Games to play, split between the shards and rounded down to an even number each. With sprt this is the cap, not the size, so set it generously.
         type: number
-        default: 50
+        default: 500
+      shards:
+        description: Jobs to split the games across. An sprt cannot be split and plays in one whatever this says.
+        type: number
+        default: 5
       time_control:
         description: Passed to fastchess as tc
         type: string
@@ -54,7 +67,7 @@ on:
         type: number
         default: 10
       seed:
-        description: Seed for the random opening order, an unsigned integer. Left empty it is the run id, and either way the manifest records it.
+        description: Seed for the region of the book the shards play, an unsigned integer. Left empty it is the run id, and either way the manifest records it.
         type: string
   workflow_call:
     inputs:
@@ -66,7 +79,10 @@ on:
         required: false
       games:
         type: number
-        default: 50
+        default: 500
+      shards:
+        type: number
+        default: 5
       time_control:
         type: string
         default: 10+0.1
@@ -89,9 +105,24 @@ on:
 permissions:
   contents: read
 
+env:
+  # 256MB is what the engine defaults to. Naming it here holds the two sides to
+  # the same table whatever a future default is, and puts the number in the
+  # manifest with the rest of what the match was played on.
+  HASH: 256
+  CONCURRENCY: 2
+  # The wall clock cap on play alone. It sits inside the job's timeout with room
+  # for the builds before it and the upload after it, so a shard stopped by the
+  # clock still keeps the games it did play. A hundred game shard is about
+  # ninety minutes at 30+0.3 and half an hour at 10+0.1, so this is headroom for
+  # a slow runner rather than a budget to be spent.
+  MAX_MATCH_MINUTES: 150
+
 jobs:
-  # Split out so the match job can be skipped in one place rather than every
-  # step having to ask whether there is anything to compare against.
+  # Split out so the match can be skipped in one place rather than every step
+  # having to ask whether there is anything to compare against. It also works
+  # out the matrix, because a matrix cannot be built from a number: it is a
+  # list, so the list is made here and read back with fromJSON.
   resolve:
     runs-on: ubuntu-latest
     timeout-minutes: 10
@@ -103,6 +134,9 @@ jobs:
       baseline_sha: ${{ steps.find.outputs.baseline_sha }}
       candidate_name: ${{ steps.find.outputs.candidate_name }}
       candidate_sha: ${{ steps.find.outputs.candidate_sha }}
+      shards: ${{ steps.split.outputs.shards }}
+      count: ${{ steps.split.outputs.count }}
+      pairs: ${{ steps.split.outputs.pairs }}
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
@@ -145,14 +179,56 @@ jobs:
             echo "baseline_sha=$(git rev-parse "${tag}^{commit}")" >> "$GITHUB_OUTPUT"
           fi
 
-  match:
+      - name: Work out the shards
+        id: split
+        env:
+          GAMES: ${{ inputs.games }}
+          SHARDS: ${{ inputs.shards }}
+          SPRT: ${{ inputs.sprt }}
+        run: |
+          if [ "$SHARDS" -lt 1 ]; then
+            echo "::error::shards must be at least one, got ${SHARDS}"
+            exit 1
+          fi
+          # A sequential test weighs the games in the order they were played and
+          # stops the moment they settle the question. Jobs that cannot see each
+          # other's games cannot do that, so an sprt run plays in one shard and
+          # its games stay the cap they already were.
+          if [ "$SPRT" = "true" ]; then
+            SHARDS=1
+          fi
+          # every shard plays whole pairs, since a pair is the unit the games
+          # are read in, so its games are rounded down to an even number and the
+          # run plays a little under what was asked for
+          pairs=$((GAMES / SHARDS / 2))
+          if [ "$pairs" -lt 1 ]; then
+            echo "::error::${GAMES} games across ${SHARDS} shards is under a pair each"
+            exit 1
+          fi
+          if [ "$SPRT" = "true" ]; then
+            echo "::notice::an sprt cannot be split, so this run is one shard of up to $((pairs * 2)) games"
+          elif [ "$SHARDS" = "1" ]; then
+            echo "::notice::one shard of $((pairs * 2)) games"
+          else
+            echo "::notice::$((pairs * 2)) games in each of ${SHARDS} shards, $((pairs * 2 * SHARDS)) in all"
+          fi
+          echo "pairs=${pairs}" >> "$GITHUB_OUTPUT"
+          # the list the matrix is built from, and the count of it, which is
+          # what the slices are cut for and what the summary counts against
+          echo "shards=[$(seq -s, 0 $((SHARDS - 1)))]" >> "$GITHUB_OUTPUT"
+          echo "count=${SHARDS}" >> "$GITHUB_OUTPUT"
+
+  play:
     needs: resolve
     if: needs.resolve.outputs.baseline_sha != ''
     runs-on: ubuntu-latest
-    outputs:
-      line: ${{ steps.summary.outputs.line }}
-    # enough for about five hundred games at the time control above, a run that
-    # wants more is better split up
+    strategy:
+      # one shard that fell over is a smaller sample and not a lost run, so the
+      # others play on and the summary reports what arrived
+      fail-fast: false
+      matrix:
+        shard: ${{ fromJSON(needs.resolve.outputs.shards) }}
+    # the play cap above with room for the builds before it
     timeout-minutes: 180
     defaults:
       run:
@@ -160,24 +236,21 @@ jobs:
         # that died is hidden by the tee it is piped into
         shell: bash
     env:
+      SHARD: ${{ matrix.shard }}
+      # the shards the match is actually playing, which an sprt has had cut
+      # to one
+      SHARDS: ${{ needs.resolve.outputs.count }}
+      PAIRS: ${{ needs.resolve.outputs.pairs }}
       GAMES: ${{ inputs.games }}
       TIME_CONTROL: ${{ inputs.time_control }}
       SPRT: ${{ inputs.sprt }}
       ELO0: ${{ inputs.elo0 }}
       ELO1: ${{ inputs.elo1 }}
-      # the openings are drawn at random, so without a seed the schedule is
-      # gone the moment the run ends. The run id is one nobody has to choose
-      # and no two runs share; a seed given by hand replays an earlier run
+      # the openings are taken in book order from an offset, so the seed picks
+      # the region of the book each shard plays rather than a shuffle. The run
+      # id is one nobody has to choose and no two runs share; a seed given by
+      # hand replays an earlier run
       SEED: ${{ inputs.seed || github.run_id }}
-      # 256MB is what the engine defaults to. Naming it here holds the two
-      # sides to the same table whatever a future default is, and puts the
-      # number in the manifest with the rest of what the match was played on
-      HASH: 256
-      CONCURRENCY: 2
-      # the wall clock cap on play alone. It sits inside the job's timeout with
-      # room for the builds before it and the summary after, so a match stopped
-      # by the clock still reports the games it did play
-      MAX_MATCH_MINUTES: 150
       CANDIDATE: ${{ needs.resolve.outputs.candidate_name }}
       CANDIDATE_SHA: ${{ needs.resolve.outputs.candidate_sha }}
       PREVIOUS: ${{ needs.resolve.outputs.baseline_name }}
@@ -206,13 +279,31 @@ jobs:
           scripts/build_at.sh "$CANDIDATE_SHA" tools/new
           scripts/build_at.sh "$BASELINE_SHA" tools/old
 
-      - name: Play the match
+      # Which openings this shard plays. The book is counted here rather than
+      # written down, because a book that changed size would otherwise move
+      # every shard but the first onto its neighbour's openings. An sprt run is
+      # one shard and takes a slice like any other, so it is still replayable
+      # from its seed.
+      - name: Work out the slice of the book
+        run: |
+          openings=$(grep -c '^\[Event' tools/8moves_v3.pgn) \
+            || { echo "::error::no openings in the book"; exit 1; }
+          start=$(python3 scripts/book_slice.py --openings "$openings" \
+            --pairs "$PAIRS" --shards "$SHARDS" --shard "$SHARD" --seed "$SEED" \
+            2> slice.txt) || { echo "::error::$(cat slice.txt)"; exit 1; }
+          while read -r remark; do
+            echo "::warning::${remark}"
+          done < slice.txt
+          echo "OPENINGS=${openings}" >> "$GITHUB_ENV"
+          echo "START=${start}" >> "$GITHUB_ENV"
+
+      - name: Play the shard
         working-directory: tools
         run: |
           # only fastchess and the book are cached, but a rerun on the same
           # runner would still find the last attempt's games lying here, and
           # fastchess appends to a pgn it is given
-          rm -f games.pgn result.txt config.json terminations.txt
+          rm -f games.pgn result.txt config.json
           sprt=()
           if [ "$SPRT" = "true" ]; then
             # logistic keeps the bounds in the same elo the summary reports.
@@ -230,89 +321,34 @@ jobs:
           #
           # INT is the signal fastchess takes as a request to stop, report the
           # games played so far and exit, and 124 is how timeout says it had to
-          # send it. An sprt match that never settles is stopped by the games
-          # cap or this clock, whichever arrives first; either way the summary
-          # step still runs on what was played
+          # send it. A shard stopped that way played fewer games, and the
+          # summary says so rather than losing the run
           status=0
           timeout -k 60 -s INT "${MAX_MATCH_MINUTES}m" ./fastchess \
             -engine "name=$CANDIDATE" cmd=./new \
             -engine "name=$PREVIOUS" cmd=./old \
             -each proto=uci "tc=$TIME_CONTROL" "option.Hash=$HASH" -startup-ms 20000 \
-            -openings file=8moves_v3.pgn format=pgn order=random -srand "$SEED" \
-            -rounds "$((GAMES / 2))" -repeat -concurrency "$CONCURRENCY" -recover \
+            -openings file=8moves_v3.pgn format=pgn order=sequential "start=$START" \
+            -rounds "$PAIRS" -repeat -concurrency "$CONCURRENCY" -recover \
             "${sprt[@]}" \
             -pgnout file=games.pgn nodes=true seldepth=true nps=true \
               hashfull=true timeleft=true latency=true pv=true \
             | tee result.txt || status=$?
-          # what stopped the match, for the manifest. The clock cap is the one
+          # what stopped the shard, for the manifest. The clock cap is the one
           # reading a result has to know about, because it is the one that
           # leaves the question the games were meant to settle unanswered
           if [ "$status" = "124" ]; then
             echo "STOPPED_BY=the ${MAX_MATCH_MINUTES} minute wall clock cap" >> "$GITHUB_ENV"
-            echo "::warning::The match hit the ${MAX_MATCH_MINUTES} minute cap before the game count"
+            echo "::warning::shard ${SHARD} hit the ${MAX_MATCH_MINUTES} minute cap before its game count"
           elif [ "$status" != "0" ]; then
             exit "$status"
           else
             echo "STOPPED_BY=fastchess, at the game count or an sprt bound" >> "$GITHUB_ENV"
           fi
 
-      - name: Summarise the result
-        id: summary
-        run: |
-          # how the games ended, counted from the games themselves rather than
-          # guessed at from the words in the result block. The losses a crash
-          # or the clock cost stay in the estimate, because choosing what to
-          # count after seeing it is not a measurement; the counts sit beside
-          # it instead. Anything worth an alert comes back on stderr, as the
-          # rating estimate's remarks do. A count that cannot be made is a
-          # warning and not a failure: the elo line below is the run's answer,
-          # and the games go up as an artifact whatever this step does
-          if python3 scripts/match_terminations.py tools/games.pgn \
-              > tools/terminations.txt 2> tools/remarks.txt; then
-            while read -r remark; do
-              echo "::warning::${remark}"
-            done < tools/remarks.txt
-          else
-            echo "::warning::The games could not be counted, the block below is incomplete"
-            cat tools/remarks.txt
-          fi
-          line="Performance compared to ${PREVIOUS} | $(python3 scripts/match_summary.py tools/result.txt)"
-          echo "::notice::$line"
-          echo "line=${line}" >> "$GITHUB_OUTPUT"
-          # the same result as the trailer a commit carries, ready to paste
-          trailer=$(python3 scripts/match_summary.py tools/result.txt \
-            --trailer --tc "$TIME_CONTROL" --baseline "$PREVIOUS")
-          {
-            echo "${CANDIDATE} (\`${CANDIDATE_SHA:0:8}\`) against ${PREVIOUS} (\`${BASELINE_SHA:0:8}\`)"
-            echo
-            echo "$line"
-            echo
-            echo "As the trailer for the commit that made the difference:"
-            echo
-            echo '```'
-            echo "$trailer"
-            echo '```'
-            echo
-            if [ "$SPRT" = "true" ]; then
-              echo "SPRT stops when the games settle the question at a five percent error rate each way: passed (H1 accepted) means stronger by about ${ELO1} elo or more, failed (H0 accepted) means not, and inconclusive means the cap of ${GAMES} games or ${MAX_MATCH_MINUTES} minutes arrived first."
-            else
-              echo "At ${GAMES} games only a difference of about $(python3 -c "print(int(800/(${GAMES}**0.5)))") elo can be told from none."
-            fi
-            echo
-            echo "How the games ended:"
-            echo
-            echo '```'
-            cat tools/terminations.txt
-            echo '```'
-            echo
-            echo "The games, the result and a manifest of what was played are kept"
-            echo "as the \`strength-${GITHUB_RUN_ID}-${GITHUB_RUN_ATTEMPT}\` artifact. The openings came from"
-            echo "seed ${SEED}, which replays this schedule."
-          } >> "$GITHUB_STEP_SUMMARY"
-
-      # What it would take to play this match again, and what it was played
-      # on. Written whether or not the match finished, since a run that ended
-      # badly is the one that gets looked into.
+      # What it would take to play this shard again, and what it was played on.
+      # Written whether or not it finished, since a shard that ended badly is
+      # the one that gets looked into.
       - name: Write the manifest
         if: always()
         env:
@@ -329,7 +365,11 @@ jobs:
             echo "fastchess: ${FASTCHESS}"
             echo "book: 8moves_v3.pgn"
             echo "book_sha256: ${book_sha}"
+            echo "book_openings: ${OPENINGS:-not counted, the shard did not get that far}"
             echo "seed: ${SEED}"
+            echo "shard: ${SHARD}"
+            echo "start: ${START:-not chosen, the shard did not get that far}"
+            echo "pairs: ${PAIRS}"
             echo "time_control: ${TIME_CONTROL}"
             echo "hash_mb: ${HASH}"
             echo "concurrency: ${CONCURRENCY}"
@@ -337,38 +377,32 @@ jobs:
               echo "games_asked: ${GAMES} (a cap, the sprt stops the match itself)"
               echo "sprt: elo0=${ELO0} elo1=${ELO1} alpha=0.05 beta=0.05 model=logistic"
             else
-              echo "games_asked: ${GAMES}"
+              echo "games_asked: $((PAIRS * 2))"
               echo "sprt: off"
             fi
             echo "wall_clock_cap_minutes: ${MAX_MATCH_MINUTES}"
-            # unset when the match step never got to the end, which is worth
+            # unset when the play step never got to the end, which is worth
             # saying rather than leaving the games to look as if they ran out
-            echo "stopped_by: ${STOPPED_BY:-not recorded, the match did not finish}"
+            echo "stopped_by: ${STOPPED_BY:-not recorded, the shard did not finish}"
             echo "runner: $(uname -a)"
             echo "cores: $(nproc)"
             echo "rustc: ${toolchain}"
             echo "run_id: ${GITHUB_RUN_ID}"
             echo "run_url: ${GITHUB_SERVER_URL}/${GITHUB_REPOSITORY}/actions/runs/${GITHUB_RUN_ID}"
           } > tools/manifest.txt
-          # the counts the summary printed, so that one file describes the run.
-          # Its games line is the games in the pgn, against games_asked above
-          if [ -f tools/terminations.txt ]; then
-            echo >> tools/manifest.txt
-            cat tools/terminations.txt >> tools/manifest.txt
-          fi
           cat tools/manifest.txt
 
-      # The games are the only record of what actually happened. fastchess
-      # writes its own config.json beside them, which says what it was asked
-      # for; the manifest says the rest. The attempt is in the name because an
-      # artifact cannot be uploaded twice under one name, and a rerun of the
-      # job keeps the run id: with the same seed it replays the same schedule,
-      # so both attempts are worth having
+      # The games are the only record of what actually happened, and the
+      # summary job reads them back out of here rather than from a workspace it
+      # does not share. The attempt is in the name because an artifact cannot
+      # be uploaded twice under one name, and a rerun of the job keeps the run
+      # id: with the same seed it replays the same schedule, so both attempts
+      # are worth having
       - name: Keep the games
         if: always()
         uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
         with:
-          name: strength-${{ github.run_id }}-${{ github.run_attempt }}
+          name: strength-${{ github.run_id }}-${{ github.run_attempt }}-shard-${{ matrix.shard }}
           path: |
             tools/games.pgn
             tools/result.txt
@@ -376,12 +410,121 @@ jobs:
             tools/manifest.txt
           if-no-files-found: warn
 
+  summarise:
+    needs: [resolve, play]
+    # a shard that timed out or failed leaves the others worth reading, so this
+    # runs on whatever arrived rather than only on a clean sweep. It still
+    # wants a baseline, which is what resolve says
+    if: always() && needs.resolve.result == 'success' && needs.resolve.outputs.baseline_sha != ''
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    defaults:
+      run:
+        shell: bash
+    outputs:
+      line: ${{ steps.summary.outputs.line }}
+    env:
+      GAMES: ${{ inputs.games }}
+      SHARDS: ${{ needs.resolve.outputs.count }}
+      TIME_CONTROL: ${{ inputs.time_control }}
+      SPRT: ${{ inputs.sprt }}
+      ELO1: ${{ inputs.elo1 }}
+      SEED: ${{ inputs.seed || github.run_id }}
+      CANDIDATE: ${{ needs.resolve.outputs.candidate_name }}
+      CANDIDATE_SHA: ${{ needs.resolve.outputs.candidate_sha }}
+      PREVIOUS: ${{ needs.resolve.outputs.baseline_name }}
+      BASELINE_SHA: ${{ needs.resolve.outputs.baseline_sha }}
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+
+      # one directory per artifact under shards/, which is where the estimate
+      # reads a shard's name from. A single artifact is the exception: it is
+      # extracted straight into shards/, and the find below takes it either
+      # way. The attempt is in the pattern so that a rerun reads its own games
+      # rather than counting an earlier attempt's openings twice
+      - uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v8.0.1
+        with:
+          pattern: strength-${{ github.run_id }}-${{ github.run_attempt }}-shard-*
+          path: shards
+
+      - name: Summarise the result
+        id: summary
+        run: |
+          mapfile -t games < <(find shards -name games.pgn 2>/dev/null | sort)
+          if [ "${#games[@]}" -eq 0 ]; then
+            echo "::error::no shard of attempt ${GITHUB_RUN_ATTEMPT} uploaded any games. Rerunning the failed jobs alone leaves the shards on the attempt that played them, so rerun all of them."
+            exit 1
+          fi
+          # The estimate is over every shard's games, counted from the games
+          # themselves rather than taken from a result block that only saw one
+          # of them. How the games ended is counted the same way: the losses a
+          # crash or the clock cost stay in the estimate, because choosing what
+          # to count after seeing it is not a measurement, and the counts sit
+          # beside it instead. Anything worth an alert comes back on stderr
+          estimate=(python3 scripts/match_estimate.py "${games[@]}"
+                    --candidate "$CANDIDATE" --baseline "$PREVIOUS"
+                    --tc "$TIME_CONTROL")
+          "${estimate[@]}" > report.md 2> remarks.txt \
+            || { echo "::error::the games could not be read"; cat remarks.txt; exit 1; }
+          while read -r remark; do
+            echo "::warning::${remark}"
+          done < remarks.txt
+
+          # The sequential test is fastchess's own and only the shard that ran
+          # it can report the verdict, so the bounds and the hypothesis that
+          # was accepted are read out of its result block. The trailer comes
+          # from there too, since an estimate of +58 with the test failed and
+          # one with it passed are not the same claim
+          verdict=""
+          reading=""
+          result=$(find shards -name result.txt 2>/dev/null | sort | head -1)
+          if [ "$SPRT" = "true" ] && [ -n "$result" ]; then
+            reading=$(python3 scripts/match_summary.py "$result")
+            case "$reading" in
+              *", SPRT"*) verdict=", SPRT${reading#*, SPRT}" ;;
+              *) echo "::warning::the sprt shard's result block has no verdict in it" ;;
+            esac
+            trailer=$(python3 scripts/match_summary.py "$result" \
+              --trailer --tc "$TIME_CONTROL" --baseline "$PREVIOUS")
+          else
+            if [ "$SPRT" = "true" ]; then
+              echo "::warning::the sprt shard uploaded no result block, so there is no verdict to report"
+            fi
+            trailer=$("${estimate[@]}" --trailer)
+          fi
+
+          line="Performance compared to ${PREVIOUS} | $("${estimate[@]}" --line)${verdict}"
+          echo "::notice::$line"
+          echo "line=${line}" >> "$GITHUB_OUTPUT"
+          {
+            echo "${CANDIDATE} (\`${CANDIDATE_SHA:0:8}\`) against ${PREVIOUS} (\`${BASELINE_SHA:0:8}\`),"
+            echo "over ${#games[@]} of ${SHARDS} shards at ${TIME_CONTROL}."
+            echo
+            cat report.md
+            echo
+            if [ -n "$reading" ]; then
+              echo "The sequential test as fastchess reported it: ${reading}"
+              echo
+              echo "SPRT stops when the games settle the question at a five percent error rate each way: passed (H1 accepted) means stronger by about ${ELO1} elo or more, failed (H0 accepted) means not, and inconclusive means the cap of ${GAMES} games or ${MAX_MATCH_MINUTES} minutes arrived first."
+              echo
+            fi
+            echo "As the trailer for the commit that made the difference:"
+            echo
+            echo '```'
+            echo "$trailer"
+            echo '```'
+            echo
+            echo "The games, the results and a manifest of what each shard played are kept"
+            echo "as the \`strength-${GITHUB_RUN_ID}-${GITHUB_RUN_ATTEMPT}-shard-<i>\` artifacts. The"
+            echo "openings came from seed ${SEED}, which replays this schedule."
+          } >> "$GITHUB_STEP_SUMMARY"
+
   release-notes:
-    needs: match
+    needs: summarise
     if: inputs.publish
     permissions:
       contents: write
     uses: ./.github/workflows/release-note.yml
     with:
       marker: arche:strength
-      line: ${{ needs.match.outputs.line }}
+      line: ${{ needs.summarise.outputs.line }}
