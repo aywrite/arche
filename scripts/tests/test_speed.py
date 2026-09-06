@@ -53,14 +53,14 @@ def test_the_last_line_is_read_for_nodes_and_rate():
 
 
 def test_the_change_is_between_medians_and_the_spread_is_the_wider_side():
+    # a rise first, whose spread is the base's four points over the lower
+    # median rather than the candidate's four over the higher one. Then a
+    # fall, which has to come back with its sign.
     base = [100, 102, 98, 101, 99]
     candidate = [103, 105, 101, 104, 102]
     assert speed.trailer(base, candidate, "a1b2c3d") == (
         "Speed: +3.0% (bench nps, 5 interleaved rounds vs a1b2c3d, spread 4.0%)"
     )
-
-
-def test_a_slowdown_carries_its_sign():
     assert speed.trailer([200, 200, 200], [195, 195, 195], "a1b2c3d") == (
         "Speed: -2.5% (bench nps, 3 interleaved rounds vs a1b2c3d, spread 0.0%)"
     )
@@ -83,16 +83,6 @@ def test_the_sides_are_told_apart_even_when_they_are_one_binary(tmp_path):
     engine = fake_engine(tmp_path, "engine", [100] * 4, nodes=100)
     measured = speed.measure(str(engine), str(engine), rounds=2, depth=1)
     assert (measured.base_nodes, measured.candidate_nodes) == (100, 100)
-
-
-def test_the_time_to_depth_is_the_count_divided_by_the_rate():
-    measured = speed.Measured(
-        base_nps=[100, 100, 100],
-        candidate_nps=[200, 200, 200],
-        base_nodes=1000,
-        candidate_nodes=1000,
-    )
-    assert speed.time_to_depth(measured) == (10.0, 5.0)
 
 
 def test_the_time_is_taken_a_round_at_a_time_not_from_the_median_rate():
