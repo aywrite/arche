@@ -775,6 +775,21 @@ Locally the same thing is the fastchess command from the previous section with
 more `-engine` arguments and `-tournament gauntlet`, which plays the first
 engine against all the others.
 
+On a runner a rung is a job. The pairings share nothing but the book, so they
+play at the same time rather than one after another, each against the one
+opponent and on a slice of the book of its own so that no two of them open the
+same way. A rung keeps its games, its result block, the fastchess config and a
+manifest as `calibrate-<run id>-<attempt>-<tag>`, and a job at the end puts the
+games back together, fits the rating to all of them and counts how they ended.
+The attempt is in the artifact name because an artifact cannot be uploaded twice
+under one name: a rerun of the whole run keeps the earlier attempt's games
+rather than failing when it tries to upload its own. Rerun all of the jobs
+rather than the failed ones alone, though, since the rungs that succeeded the
+first time uploaded under the attempt they ran in and the fit only reads its own.
+
+The games are the expensive part and the fit is cheap, so a ladder corrected
+afterwards can be applied to the artifacts without playing the matches again.
+
 ### Choosing the opponents
 
 `ladder` is a list of stash tags and the rating each one holds on ccrl blitz.
@@ -831,7 +846,9 @@ accident. Ten seconds runs the hundred games in about twenty minutes but leaves
 so little headroom that a runner hiccup shows up as a loss on time, and one
 forfeit in a twenty-five game pairing is worth about thirty elo of noise. Two
 minutes would match the list it is calibrated against and takes most of a day.
-Twenty seconds costs about an hour and sits closer to the list than ten does.
+Twenty seconds costs about an hour of runner time and sits closer to the list
+than ten does. The rungs play at once, so that hour is about a quarter of an
+hour of wall clock.
 
 Games run long here, a little under two hundred plies on average, so most of the
 clock a game uses is increment rather than the base time. That is why doubling
