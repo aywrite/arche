@@ -2,7 +2,7 @@
 
 All notable changes to this project will be documented in this file.
 
-## [0.4.2-rc.1] - 2026-09-05
+## [0.4.2-rc.2] - 2026-09-06
 
 ### Features
 
@@ -13,16 +13,36 @@ All notable changes to this project will be documented in this file.
 - *(search)* Order captures by static exchange evaluation [bench 6146070] [elo +12 ±18 (sprt [-10, 0] inconclusive, 840 games, 10+0.1, vs master)]
 - *(search)* Skip losing captures in quiescence [bench 5684750] [elo +24 ±19 (sprt [-10, 0] passed, 746 games, 10+0.1, vs 6e6fdec)]
 - *(search)* Reduce late quiet moves by one ply [bench 4395471] [elo +44 ±22 (sprt [0, 10] passed, 648 games, 10+0.1, vs 899197c)]
+- *(board)* Tell whether a move gives check without making it [bench 4395471]
+
+### Bug Fixes
+
+- *(board)* Drop a castle right or en passant square without its pieces [bench 4395471]
+- *(uci)* Take startpos, fen and moves as whole words
 
 ### Performance
 
 - *(search)* Score the quiet moves only when the search reaches them [bench 6146018] [speed +3.4%]
 - *(board)* Mask the castling rights, step the repetition walk in twos [bench 4395471] [speed +3.5%]
 - *(search)* Sort the keys and put the moves in order once [bench 4395471] [speed +2.1%]
+- *(search)* Sort only the keys the move ordering scored [bench 4395471] [speed +6.4%]
+- *(search)* Mask the squares the history table is read by [bench 4395471] [speed -0.9%]
 
 ### Refactor
 
 - *(search)* Leave the swap's gain array uninitialised [bench 5684750]
+- *(board)* Make Board's active_color, line_ply and key pub(crate) [bench 4395471]
+- *(board)* Add try_make and try_undo for callers outside the crate [bench 4395471]
+- *(magic)* Move the mailbox and the MAGIC static into magic.rs [bench 4395471]
+- *(uci)* Read a go line once into a Go value
+- *(uci)* Answer the three research commands through one path
+- *(board)* Write the castling rights out from a table [bench 4395471]
+- *(uci)* Move the instruments out of the protocol module
+
+### Documentation
+
+- *(board)* Say where the mailbox lives and how big it is
+- *(search)* Say what Limits::starting_at is for
 
 ### Development
 
@@ -34,6 +54,23 @@ All notable changes to this project will be documented in this file.
 - *(docs)* Record the tuning that measured slower
 - *(ci)* Count how the games in a match ended
 - *(ci)* Keep the games and a manifest from every strength run
+- *(bench)* Record which move cuts a sampled node off [bench 4395471]
+- *(deps)* Bump the actions group with 2 updates
+- *(docs)* Record the check exemption verdict
+- *(ci)* Pool the shards of a match into one estimate
+- *(ci)* Give each shard of a match its own slice of the book
+- *(ci)* Split the strength match across shards
+- *(bench)* Label each sampled reduced scout's fail low [bench 4395471]
+- *(magic)* Import the test module's names in one use
+- *(ci)* Play the calibrate rungs at the same time
+- *(workspace)* Drop or fix the checks that were already being made
+- *(workspace)* Clean up the docs, the comments and the test scaffolding [bench 4395471]
+- *(docs)* Record the tuning this round measured slower
+- *(workspace)* Hold the unsafe to the two crates that need it
+- *(workspace)* Look for the licence notice everywhere a source file is
+- *(ci)* Read a match's pairs as a sequential test
+- *(ci)* Play an sprt in batches across the shards
+- *(docs)* Correct and tidy the documentation
 
 ## [0.4.1] - 2026-09-04
 
