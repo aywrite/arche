@@ -36,18 +36,35 @@ The uci loop answers bench and perft as commands as well.
 Documentation: https://github.com/aywrite/arche
 ";
 
+/// One of the three research commands: its report on stdout, or the setting
+/// that could not be read on stderr and the code the measuring scripts check.
+///
+/// Each is an argument and not a uci command because it takes minutes and
+/// answers a research question, and nothing about a live session wants
+/// either. What each one measures is on its module.
+fn answer<S, R: std::fmt::Display>(
+    command: &str,
+    settings: Result<S, String>,
+    run: impl FnOnce(S) -> R,
+) -> ExitCode {
+    match settings {
+        Ok(settings) => {
+            print!("{}", run(settings));
+            ExitCode::SUCCESS
+        }
+        Err(what) => {
+            eprintln!("unrecognised {} {}", command, what);
+            ExitCode::from(2)
+        }
+    }
+}
+
 fn main() -> ExitCode {
-    // `arche bench [depth] [hash <MB>] [taint refuse|trust|skip|rule50]
-    // [audit]` prints the bench and exits, which is how the match tools
-    // measure an engine's speed and how a commit states what its search
-    // change did to the tree. The audit is the one word that adds a figure
-    // rather than changing what is searched, and it is left out of every
-    // run that is not asking about the table's key signature.
-    // No argument starts the uci loop; anything else is a mistake,
-    // and a mistake that started the uci loop would sit waiting for input in
-    // silence
     let args: Vec<String> = std::env::args().skip(1).collect();
+    let line = args.join(" ");
+    let params = Params::of(&line);
     match args.first().map(String::as_str) {
+        // no argument starts the uci loop, which is what an interface runs
         None => {
             let game = Board::new();
             let e = AlphaBeta::new(game);
@@ -58,7 +75,13 @@ fn main() -> ExitCode {
             uci.read_loop();
             ExitCode::SUCCESS
         }
-        Some("bench") => match uci::bench_settings(&Params::of(&args.join(" "))) {
+        // the bench prints and exits, which is how the match tools measure
+        // an engine's speed and how a commit states what its search change
+        // did to the tree. It answers its own way rather than through
+        // `answer` because it is the one command that can be given
+        // settings it understands and still have no report to make: the
+        // audit needs memory it may not get
+        Some("bench") => match uci::bench_settings(&params) {
             Ok(settings) => match settings.run() {
                 Some(report) => {
                     println!("{}", report);
@@ -74,47 +97,9 @@ fn main() -> ExitCode {
                 ExitCode::from(2)
             }
         },
-        // `arche residuals [depth] [every <n>] [cap <n>] [taint <policy>]`
-        // measures what the search's shortcuts cost in accuracy. An
-        // argument and not a uci command: it takes minutes and answers a
-        // research question, and nothing about a live session wants either
-        Some("residuals") => match uci::residual_settings(&Params::of(&args.join(" "))) {
-            Ok(settings) => {
-                print!("{}", settings.run());
-                ExitCode::SUCCESS
-            }
-            Err(what) => {
-                eprintln!("unrecognised residuals {}", what);
-                ExitCode::from(2)
-            }
-        },
-        // `arche cutoffs [depth] [every <n>] [cap <n>]` records which move
-        // cuts each sampled node off. An argument for the residuals
-        // command's reason: a research question, not a move
-        Some("cutoffs") => match uci::cutoff_settings(&Params::of(&args.join(" "))) {
-            Ok(settings) => {
-                print!("{}", settings.run());
-                ExitCode::SUCCESS
-            }
-            Err(what) => {
-                eprintln!("unrecognised cutoffs {}", what);
-                ExitCode::from(2)
-            }
-        },
-        // `arche reductions [depth] [every <n>] [cap <n>]` records what
-        // each sampled reduced scout decided and labels the fail lows
-        // from a replay. An argument for the residuals command's reason:
-        // a research question, not a move
-        Some("reductions") => match uci::reduction_settings(&Params::of(&args.join(" "))) {
-            Ok(settings) => {
-                print!("{}", settings.run());
-                ExitCode::SUCCESS
-            }
-            Err(what) => {
-                eprintln!("unrecognised reductions {}", what);
-                ExitCode::from(2)
-            }
-        },
+        Some("residuals") => answer("residuals", uci::residual_settings(&params), |s| s.run()),
+        Some("cutoffs") => answer("cutoffs", uci::cutoff_settings(&params), |s| s.run()),
+        Some("reductions") => answer("reductions", uci::reduction_settings(&params), |s| s.run()),
         // `--version` and `--help` were asked for, so both are answered on
         // stdout and succeed. An argument that really is unrecognised keeps
         // stderr and the failing code below: the difference is whether
@@ -127,6 +112,8 @@ fn main() -> ExitCode {
             print!("{}", USAGE);
             ExitCode::SUCCESS
         }
+        // said and refused rather than fallen through to the uci loop,
+        // which would sit waiting for input in silence
         Some(other) => {
             eprintln!("unrecognised argument: {}", other);
             ExitCode::from(2)
