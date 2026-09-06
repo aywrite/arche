@@ -184,6 +184,23 @@ of these again without saying what is different this time.
   carries it. The write in `cutoff` and the census read are cold and keep
   their check, which is the better failure for a square that cannot be out
   of range: a check panics where a mask reads a different square.
+- Keeping the swap's attacker set across a static exchange and adding only
+  the sliders each capture opens, rather than finding the attackers again
+  from the board. The set it builds is the same one, since taking a piece
+  off the board can only open a line onto the square and never close one,
+  so the set carried forward and masked by what still stands is what a
+  fresh lookup returns. Node counts identical and 0.2% more instructions.
+  The swap is too short to pay for it: under two captures past the first
+  on average, so the set is found again once or twice, and the two slider
+  lookups that costs each time are most of the lookup it replaces.
+- Two other shapes for putting the sorted moves back, both slower than the
+  runs the sort now copies. Walking the passed-over places one bit at a
+  time into a destination slice cut to the popcount, so that the write has
+  no bounds check, is 1.3% more instructions than walking them into the
+  whole list. Copying a run element by element instead of with
+  `copy_from_slice` is 2.1% more: a `Play` is six bytes, an awkward width
+  to move one of, and a run averages eight of them, which memcpy does in
+  one go.
 - `#[inline(always)]` on `square_attacked`, 3.7% more instructions, and on
   `Quiet::bonus`, 3.1% more. Both are called from inside a loop the register
   allocator then runs short in, and forcing them in is what tips it. The
