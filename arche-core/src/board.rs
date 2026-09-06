@@ -2444,6 +2444,12 @@ pub(crate) mod fens {
     /// shuffle rooks in: a8b8 a1b1 b8a8 b1a1 comes straight back to it.
     pub const SHUFFLE: &str =
         "r4rk1/1pp1qppp/p1np1n2/2b1p1B1/2B1P1b1/P1NP1N2/1PP1QPPP/R4RK1 b - - 3 19";
+    /// A sharp middlegame: white's knight on g5 and bishop on d3 are aimed at
+    /// the castled black king while the white king is still on e1. Sharp
+    /// enough that a wrongly reused score would move the verdict, which is
+    /// what the search tests want of it.
+    pub const SHARP_MIDDLEGAME: &str =
+        "r1b2rk1/ppp1qppp/4pn2/6N1/Qn1P4/2NBP3/PP3PPP/R3K2R w KQ - 9 12";
     /// The four positions the accumulator and reversibility suites iterate:
     /// between them promotions, castling, en passant and a bare endgame are
     /// all in reach.
@@ -2528,15 +2534,17 @@ mod make_move {
         }
     }
 
+    /// The shuffle position with its move number wound on, so the board it
+    /// parses to stands at ply 1023. That is one short of the end of the
+    /// history ring, which the two tests below play across.
+    const NEAR_THE_WRAP: &str =
+        "r4rk1/1pp1qppp/p1np1n2/2b1p1B1/2B1P1b1/P1NP1N2/1PP1QPPP/R4RK1 b - - 3 511";
+
     /// The history is a ring, so a game long enough to run past the end of it
-    /// wraps instead. This position starts at ply 1023, one short of the wrap,
-    /// so the cycle below is recorded either side of it.
+    /// wraps instead. The cycle below is recorded either side of the wrap.
     #[test]
     fn a_repetition_is_still_seen_when_the_history_wraps() {
-        let mut board = Board::from_fen(
-            "r4rk1/1pp1qppp/p1np1n2/2b1p1B1/2B1P1b1/P1NP1N2/1PP1QPPP/R4RK1 b - - 3 511",
-        )
-        .unwrap();
+        let mut board = Board::from_fen(NEAR_THE_WRAP).unwrap();
         assert_eq!(
             board.ply,
             MAX_GAME_SIZE - 1,
@@ -2558,10 +2566,7 @@ mod make_move {
     /// where the wrap put it.
     #[test]
     fn moves_can_be_unmade_across_the_wrap() {
-        let start = Board::from_fen(
-            "r4rk1/1pp1qppp/p1np1n2/2b1p1B1/2B1P1b1/P1NP1N2/1PP1QPPP/R4RK1 b - - 3 511",
-        )
-        .unwrap();
+        let start = Board::from_fen(NEAR_THE_WRAP).unwrap();
         let mut board = start.clone();
         let cycle = [(A8, B8), (A1, B1), (B8, A8), (B1, A1)];
         for (from, to) in cycle {
@@ -3906,12 +3911,18 @@ mod pseudo_legal {
         Play::new(sq(from), sq(to), Some(piece), None, false, false)
     }
 
+    /// A middlegame with the kings castled on opposite wings, where no move
+    /// can castle, take en passant or promote. The test that refuses a foreign
+    /// move names its squares.
+    const OPPOSITE_WINGS: &str =
+        "r2q1rk1/1b1nbppp/p2ppn2/1p6/3NPP2/1BN1B3/PPPQ2PP/2KR3R w - - 0 13";
+
     const POSITIONS: [&str; 5] = [
         fens::START,
         fens::KIWIPETE,
         fens::PAWN_ENDGAME,
         fens::PROMOTIONS,
-        "r2q1rk1/1b1nbppp/p2ppn2/1p6/3NPP2/1BN1B3/PPPQ2PP/2KR3R w - - 0 13",
+        OPPOSITE_WINGS,
     ];
 
     /// The point of the check is to accept what the generator produces: a move
@@ -3934,9 +3945,7 @@ mod pseudo_legal {
     /// the board if they were played.
     #[test]
     fn refuses_a_move_that_does_not_belong_to_this_position() {
-        let board =
-            Board::from_fen("r2q1rk1/1b1nbppp/p2ppn2/1p6/3NPP2/1BN1B3/PPPQ2PP/2KR3R w - - 0 13")
-                .unwrap();
+        let board = Board::from_fen(OPPOSITE_WINGS).unwrap();
 
         // d3 is empty, so there is nothing there to move
         assert!(!board.is_pseudo_legal(&quiet("d3", "d5")));
