@@ -119,6 +119,16 @@ of these again without saying what is different this time.
   it costs nothing measurable and the quiescence SEE prune is the form it
   converges on. One guess per run from here, unless two parts cannot be
   measured apart.
+- Exempting quiet moves that give check from the late move reduction. Lost
+  -18 ±18 over 860 games at 10+0.1 (sprt [0, 10] stopped at the time cap with
+  the likelihood ratio at -2.72, a fraction from accepting H0, PR #185). The
+  exemption regained seven tactical positions at fixed depth, WAC.118 among
+  them, and still lost the games: every checking quiet searched whole grew the
+  bench tree 2.6%, and at this control the depth buys more than the accuracy.
+  The board's gives-check test the arm was built on is exact, oracle-tested
+  and free when nothing calls it, and landed on its own. Re-ask only as a
+  narrower guess: a model that exempts the checking quiets whose reduction is
+  measured harmful, or an exemption near the leaves alone, each its own arm.
 - Ranking the quiet moves by cutoffs per node spent, in place of the history
   table's cutoff score. Lost -53 ±26 over 420 games at 5+0.05 (sprt [0, 10]
   accepted H0, branch research/cost-aware-ordering) with the bench tree 1.8%
