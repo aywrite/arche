@@ -85,6 +85,103 @@ const LATE_MOVE_MIN_DEPTH: u8 = LATE_MOVE_REDUCTION + 2;
 // them is scouted shallower. Four is an opening value rather than a tuned
 // one, and moving it is a match rather than a bench.
 const LATE_MOVE_THRESHOLD: usize = 4;
+// How many plies shallower the deep reduction scouts a late quiet the
+// attention model calls dead. Flat like the one above and for its reason:
+// what the arm prices is the mechanism, and the depth and move count table
+// is the next rung.
+const DEEP_REDUCTION: u8 = 2;
+// The shallowest depth a node may reduce two plies at, two more than the
+// reduction on the late move floor's reasoning: the scout keeps a full
+// width ply under it, so `depth - 1 - DEEP_REDUCTION` never falls under
+// one.
+const DEEP_REDUCTION_MIN_DEPTH: u8 = DEEP_REDUCTION + 2;
+
+// The attention model the deep reduction is gated by: a logistic
+// regression over the reduction ledger's feature columns, quantized to
+// fixed point at a scale of 1024, so the gate is an integer dot product
+// and a compare. Fitted 2026-09-06 on a depth 8 ledger run of the bench
+// suite, 193,143 rows recorded at ledger commit 5217271 and labelled by
+// the replay, split by fen-hash parity; the holdout side scored an AUC of
+// 0.927. Training on R=1 labels to gate an R=2 decision is an
+// approximation: the label says the move is dead at full depth, which is
+// R-independent; what is approximated is the weaker scout's noise, and
+// the SPRT prices the difference.
+const ATTENTION_DEPTH: i64 = 198;
+const ATTENTION_INDEX: i64 = -43;
+const ATTENTION_BAND8_15: i64 = -475;
+const ATTENTION_BAND16P: i64 = -25;
+const ATTENTION_HIST_MILLI: i64 = 1;
+const ATTENTION_KILLER: i64 = 1186;
+const ATTENTION_TT_MOVE: i64 = 6;
+const ATTENTION_TT_SCORE_ONLY: i64 = -75;
+const ATTENTION_EVAL_BETA: i64 = 4;
+const ATTENTION_ALPHA_GAP: i64 = -7;
+const ATTENTION_GENERATED: i64 = -50;
+const ATTENTION_SEARCHED: i64 = -43;
+const ATTENTION_INTERCEPT: i64 = -2503;
+// The model's 90% coverage operating point: at or under it the holdout's
+// dead region held 89.6% of the sampled reductions with an attention rate
+// of 0.077%. The training script read the dead region as strictly under
+// the threshold, whose ninetieth train percentile landed exactly on this
+// integer; at or under admits the fourteen training rows sitting exactly
+// on it and moves neither holdout figure at that precision.
+const DEEP_REDUCTION_THRESHOLD: i64 = -4637;
+
+/// What the attention model reads about a late quiet at the gate: the
+/// reduction ledger's feature columns, in the ledger's own units. The
+/// index bands and the searched count are derived in the score rather
+/// than handed in, so a caller cannot build a row the training table
+/// could not hold.
+struct AttentionFeatures {
+    /// The node's depth, the check extension included, as the ledger
+    /// records it.
+    depth: u8,
+    /// The move's place among the searched moves, the ledger's index.
+    index: usize,
+    /// The move's history score in thousandths of the node's largest
+    /// quiet history, or zero when no quiet has any.
+    hist_milli: i64,
+    /// Whether the move stands in one of the node's killer slots.
+    killer: bool,
+    /// What the node's table probe had given it.
+    tt: census::Table,
+    /// The node's static evaluation less its beta.
+    eval_beta: i64,
+    /// The node's alpha less the same evaluation.
+    alpha_gap: i64,
+    /// The moves the node generated.
+    generated: usize,
+}
+
+/// The model's score for one late quiet: the quantized dot product plus
+/// the intercept. Higher means more likely to deserve attention, a scout
+/// that fails high or a fail low the replay would call harmful; the dead
+/// side is low. The bands and the searched count are computed from the
+/// index exactly as the training table computed them, the collinear
+/// searched column included.
+fn attention_score(f: &AttentionFeatures) -> i64 {
+    let index = f.index as i64;
+    let band8_15 = i64::from((8..=15).contains(&f.index));
+    let band16p = i64::from(f.index >= 16);
+    let (tt_move, tt_score_only) = match f.tt {
+        census::Table::Miss => (0, 0),
+        census::Table::Move => (1, 0),
+        census::Table::ScoreOnly => (0, 1),
+    };
+    ATTENTION_DEPTH * i64::from(f.depth)
+        + ATTENTION_INDEX * index
+        + ATTENTION_BAND8_15 * band8_15
+        + ATTENTION_BAND16P * band16p
+        + ATTENTION_HIST_MILLI * f.hist_milli
+        + ATTENTION_KILLER * i64::from(f.killer)
+        + ATTENTION_TT_MOVE * tt_move
+        + ATTENTION_TT_SCORE_ONLY * tt_score_only
+        + ATTENTION_EVAL_BETA * f.eval_beta
+        + ATTENTION_ALPHA_GAP * f.alpha_gap
+        + ATTENTION_GENERATED * f.generated as i64
+        + ATTENTION_SEARCHED * (index + 1)
+        + ATTENTION_INTERCEPT
+}
 
 /// What the protocol interface asks of an engine: positions in, answers out.
 /// How an implementation searches is its own business, which is why the
@@ -262,6 +359,13 @@ pub struct SearchConfig {
     /// it answered for is never searched at the depth the node has. On in
     /// the default, off in the reference.
     pub late_move_reductions: bool,
+    /// Whether the scout of a late quiet the attention model prices as
+    /// dead runs two plies shallower rather than one, at nodes deep
+    /// enough for the scout to keep its full width ply, and never for a
+    /// move that gives check. The sixth shortcut, riding on the fifth: a
+    /// move the reduction never touches is never asked. On in the
+    /// default, off in the reference.
+    pub deep_reductions: bool,
     /// Whether a node orders its quiet moves by what other nodes have
     /// learned: the killers for its distance from the root, and the history
     /// table under them. On in the default, off in the reference, which
@@ -331,6 +435,7 @@ impl SearchConfig {
             delta_margin: false,
             see_pruning: false,
             late_move_reductions: false,
+            deep_reductions: false,
             move_memory: false,
         }
     }
@@ -398,7 +503,12 @@ impl Default for SearchConfig {
     /// shallower, and a scout that fails low is trusted to have priced the
     /// move.
     ///
-    /// The quiet memories are the seventh, and no kind of guess at all.
+    /// The deep reduction is the seventh, the same guess reaching further
+    /// where a model fitted on the ledger says the scout's word is
+    /// cheapest to trust: those moves are scouted two plies shallower,
+    /// and a quiet that gives check never is.
+    ///
+    /// The quiet memories are the eighth, and no kind of guess at all.
     /// They prune nothing. What they move is how soon a node finds the move
     /// that cuts it off, which is most of what alpha-beta costs. The
     /// reference keeps them off so that its tree stays the one the capture
@@ -411,6 +521,7 @@ impl Default for SearchConfig {
             delta_margin: true,
             see_pruning: true,
             late_move_reductions: true,
+            deep_reductions: true,
             move_memory: true,
         }
     }
@@ -584,10 +695,12 @@ impl AlphaBeta {
     /// turns away.
     #[cold]
     #[inline(never)]
+    #[allow(clippy::too_many_arguments)]
     fn ledger_event(
         &mut self,
         staged: reduction::Staged,
         depth: u8,
+        reduction: u8,
         alpha: Score,
         beta: Score,
         scout: Score,
@@ -632,6 +745,7 @@ impl AlphaBeta {
                     reduction::Scout::High
                 },
                 cost,
+                reduction,
             }
         });
     }
@@ -1183,7 +1297,8 @@ impl AlphaBeta {
     /// every store above. The full width search enters every child through
     /// here, so the window discipline in `windowed` is written once rather
     /// than at three sites, and every caller says only whether its move is
-    /// the node's first and whether it is scouted shallower first.
+    /// the node's first and how many plies shallower its scout runs, with
+    /// zero meaning no scout at all.
     #[inline(always)]
     fn search_child(
         &mut self,
@@ -1192,12 +1307,12 @@ impl AlphaBeta {
         beta: Score,
         depth: u8,
         first: bool,
-        reduced: bool,
+        reduction: u8,
     ) -> Result<Option<Value>, Aborted> {
         if !self.board.make_move(m) {
             return Ok(None);
         }
-        let result = self.windowed(alpha, beta, depth, first, reduced);
+        let result = self.windowed(alpha, beta, depth, first, reduction);
         self.board.undo_move();
         Ok(Some(result?))
     }
@@ -1213,12 +1328,13 @@ impl AlphaBeta {
     /// score is adjusted per ply the same way on each.
     ///
     /// A reduced move is asked the cheapest question of all before any of
-    /// that: the same zero width search, a ply shallower. A scout that
-    /// fails low answers for the move, which is the late move reduction's
-    /// guess; one that fails high has earned the full depth, and the move
-    /// goes on to the probe and the proof as an unreduced move does. The
-    /// windows are decided here and nowhere else, so the scout
-    /// is a stage in front of the probe rather than a copy of it.
+    /// that: the same zero width search, `reduction` plies shallower, one
+    /// for the flat reduction and two where the deep reduction fires. A
+    /// scout that fails low answers for the move, which is the late move
+    /// reduction's guess; one that fails high has earned the full depth,
+    /// and the move goes on to the probe and the proof as an unreduced
+    /// move does. The windows are decided here and nowhere else, so the
+    /// scout is a stage in front of the probe rather than a copy of it.
     ///
     /// A body of its own rather than `search_child`'s so that an abort from
     /// any pass runs through the one undo there.
@@ -1228,14 +1344,17 @@ impl AlphaBeta {
         beta: Score,
         depth: u8,
         first: bool,
-        reduced: bool,
+        reduction: u8,
     ) -> Result<Value, Aborted> {
         if first {
-            debug_assert!(!reduced, "a node's first move is never reduced");
+            debug_assert!(reduction == 0, "a node's first move is never reduced");
             return Ok(-self.alpha_beta(-beta, -alpha, depth - 1, true)?);
         }
         let mut tainted = false;
-        if reduced {
+        if reduction > 0 {
+            // the floors on the two reductions keep a full width ply under
+            // the scout, so the subtraction below never wraps
+            debug_assert!(depth > reduction + 1, "the scout would be quiescence");
             // the ledger's staged half is taken before the scout runs, so
             // the reduced moves inside the scout consume their own
             // stagings and never this one
@@ -1247,10 +1366,17 @@ impl AlphaBeta {
             // what the scout's cost is measured from: a read of a field,
             // no branch, so the disarmed search is unchanged
             let entered_at = self.nodes;
-            let scout =
-                -self.alpha_beta(-alpha - 1, -alpha, depth - 1 - LATE_MOVE_REDUCTION, true)?;
+            let scout = -self.alpha_beta(-alpha - 1, -alpha, depth - 1 - reduction, true)?;
             if let Some(staged) = staged {
-                self.ledger_event(staged, depth, alpha, beta, scout.score, entered_at);
+                self.ledger_event(
+                    staged,
+                    depth,
+                    reduction,
+                    alpha,
+                    beta,
+                    scout.score,
+                    entered_at,
+                );
             }
             if scout.score <= alpha {
                 return Ok(scout);
@@ -1322,6 +1448,71 @@ impl AlphaBeta {
             && m.promote.is_none()
             && !is_mate(alpha)
             && !is_mate(beta)
+    }
+
+    /// Whether a move `reduces` already accepted is scouted two plies
+    /// shallower rather than one: the deep reduction. The node must be
+    /// deep enough for the scout to keep its full width ply, the
+    /// attention model must price the move at or under the threshold, and
+    /// the move must not give check; the check test runs last because the
+    /// slider probes cost more than everything before them. The checking
+    /// exemption is part of this arm's one guess: the exemption arm
+    /// measured checks as the scout's blind spot, so the further reach is
+    /// never offered one.
+    ///
+    /// `node` carries the two features that cost something, the static
+    /// evaluation and the history denominator, computed the first time a
+    /// move gets this far at the node and read back for the rest. A node
+    /// no move gets this far at never computes either.
+    #[allow(clippy::too_many_arguments)]
+    fn reduces_deeper(
+        &self,
+        m: &Play,
+        searched: usize,
+        depth: u8,
+        alpha: Score,
+        beta: Score,
+        moves: &[Play],
+        ply: Option<usize>,
+        tt: census::Table,
+        node: &mut Option<(i64, u32)>,
+    ) -> bool {
+        if !self.config.deep_reductions || depth < DEEP_REDUCTION_MIN_DEPTH {
+            return false;
+        }
+        let (eval, history_max) = *node.get_or_insert_with(|| {
+            // the ledger's denominator: the largest history score among
+            // the generated quiets
+            let quiet_history = |m: &Play| {
+                if m.capture.is_none() && m.promote.is_none() {
+                    Some(self.ordering.history_score(self.board.active_color, m))
+                } else {
+                    None
+                }
+            };
+            (
+                i64::from(crate::eval::eval(&self.board)),
+                moves.iter().filter_map(quiet_history).max().unwrap_or(0),
+            )
+        });
+        let history = self.ordering.history_score(self.board.active_color, m);
+        let hist_milli = if history_max > 0 {
+            i64::from(history) * 1000 / i64::from(history_max)
+        } else {
+            0
+        };
+        let killer = ply.is_some_and(|ply| self.ordering.killers_at(ply).contains(&Some(*m)));
+        let score = attention_score(&AttentionFeatures {
+            depth,
+            index: searched,
+            hist_milli,
+            killer,
+            tt,
+            eval_beta: eval - i64::from(beta),
+            alpha_gap: i64::from(alpha) - eval,
+            generated: moves.len(),
+        });
+        score <= DEEP_REDUCTION_THRESHOLD && !self.board.gives_check(m)
     }
 
     /// A fail high at a full width node: the move that proved it goes to
@@ -1425,7 +1616,7 @@ impl AlphaBeta {
         if let Some(tt) = pv_play {
             if self.board.is_pseudo_legal(&tt) {
                 tt_tried = Some(tt);
-                if let Some(value) = self.search_child(&tt, alpha, beta, depth, true, false)? {
+                if let Some(value) = self.search_child(&tt, alpha, beta, depth, true, 0)? {
                     found_legal_move = true;
                     // the table's move is searched before the rest are even
                     // generated, so it taints this node the same way any other
@@ -1488,6 +1679,11 @@ impl AlphaBeta {
         // seam is a bool beside the call rather than a question the
         // ordering is asked later
         let mut quiets_scored = false;
+        // the deep reduction's dear features, the static eval and the
+        // history denominator, computed by the first move that reaches its
+        // gate here and read back for the rest: a node no move reaches the
+        // gate at pays for neither
+        let mut node_features: Option<(i64, u32)> = None;
         for i in 0..moves.len() {
             // the front did not cut this node off, so the rest of the list
             // is scored and sorted before the first move past it is tried
@@ -1503,6 +1699,23 @@ impl AlphaBeta {
                 continue;
             }
             let reduced = self.reduces(m, searched, depth, in_check, alpha, beta);
+            let reduction = if !reduced {
+                0
+            } else if self.reduces_deeper(
+                m,
+                searched,
+                depth,
+                alpha,
+                beta,
+                &moves,
+                ply,
+                census::Table::of(pv_play.is_some(), tt_tried.is_some()),
+                &mut node_features,
+            ) {
+                DEEP_REDUCTION
+            } else {
+                LATE_MOVE_REDUCTION
+            };
             // the ledger's staged half: what the node knows about the move
             // it is about to scout, written only while the ledger is armed
             if reduced && self.ledger.is_some() {
@@ -1515,7 +1728,7 @@ impl AlphaBeta {
                 );
             }
             let Some(value) =
-                self.search_child(m, alpha, beta, depth, !found_legal_move, reduced)?
+                self.search_child(m, alpha, beta, depth, !found_legal_move, reduction)?
             else {
                 continue;
             };
@@ -1702,7 +1915,7 @@ impl AlphaBeta {
         // the root reduces nothing, by choice: its window is the full one,
         // and its moves are few enough to search whole
         for m in &moves {
-            match self.search_child(m, alpha, beta, depth, !found_legal_move, false) {
+            match self.search_child(m, alpha, beta, depth, !found_legal_move, 0) {
                 Err(Aborted) => {
                     return SearchOutcome::Aborted(best.map(|play| self.result_for(play, alpha)));
                 }
@@ -2027,11 +2240,13 @@ mod search {
     use super::Board;
     use super::Engine;
     use super::{
-        LATE_MOVE_MIN_DEPTH, LATE_MOVE_REDUCTION, LATE_MOVE_THRESHOLD, Limits, MAX_PLY, Play,
-        Score, ScoreBound, SearchConfig, SearchOutcome, SearchParameters, SearchResult,
-        TaintPolicy, Value,
+        ATTENTION_KILLER, AttentionFeatures, DEEP_REDUCTION, DEEP_REDUCTION_MIN_DEPTH,
+        DEEP_REDUCTION_THRESHOLD, LATE_MOVE_MIN_DEPTH, LATE_MOVE_REDUCTION, LATE_MOVE_THRESHOLD,
+        Limits, MAX_PLY, Play, Score, ScoreBound, SearchConfig, SearchOutcome, SearchParameters,
+        SearchResult, TaintPolicy, Value, attention_score,
     };
     use crate::board::{fens, play_named};
+    use crate::census::Table;
     use crate::limits::Clock;
     use crate::misc::{Color, Piece};
     use crate::value::CHECKMATE_THRESHOLD;
@@ -2173,6 +2388,21 @@ mod search {
         )
     }
 
+    /// The reduction with the deep reduction on top and nothing else
+    /// touched: whatever moves between this and `reducing` is the model
+    /// gated two ply scout.
+    fn deep_reducing(board: Board) -> AlphaBeta {
+        AlphaBeta::with_config(
+            board,
+            TABLE_BYTES,
+            SearchConfig {
+                late_move_reductions: true,
+                deep_reductions: true,
+                ..SearchConfig::reference()
+            },
+        )
+    }
+
     /// A tactical middlegame the cache tests search over and over: sharp
     /// enough that a wrongly reused score would move the verdict.
     const SHARP_MIDDLEGAME: &str = "r1b2rk1/ppp1qppp/4pn2/6N1/Qn1P4/2NBP3/PP3PPP/R3K2R w KQ - 9 12";
@@ -2295,7 +2525,7 @@ mod search {
         let mut oracle = reference(Board::from_fen(FEN).unwrap());
         let m = play_named(&oracle.board, "h2h4");
         assert!(oracle.board.make_move(&m));
-        let Ok(exact) = oracle.windowed(Score::MIN + 2, Score::MAX, 2, true, false) else {
+        let Ok(exact) = oracle.windowed(Score::MIN + 2, Score::MAX, 2, true, 0) else {
             panic!("an unlimited search aborted");
         };
 
@@ -2307,7 +2537,7 @@ mod search {
         let reply = play_named(&e.board, "c2c3");
         e.transpositions
             .record_ceiling(&e.board, reply, Value::clean(-alpha - 1), SEEDED_DEPTH);
-        let Ok(value) = e.windowed(alpha, beta, 2, false, false) else {
+        let Ok(value) = e.windowed(alpha, beta, 2, false, 0) else {
             panic!("an unlimited search aborted");
         };
         assert_eq!(value.score, exact.score);
@@ -3545,7 +3775,7 @@ mod search {
         // value. The probe it stood in for is dearer, which is the saving.
         const DEPTH: u8 = 3;
         let mut oracle = at_reducible_child(SearchConfig::reference());
-        let Ok(exact) = oracle.windowed(Score::MIN + 2, Score::MAX, DEPTH, true, false) else {
+        let Ok(exact) = oracle.windowed(Score::MIN + 2, Score::MAX, DEPTH, true, 0) else {
             panic!("an unlimited search aborted");
         };
         let alpha = exact.score + 500;
@@ -3556,14 +3786,14 @@ mod search {
         assert!(scout_value.score <= alpha, "the scout did not fail low");
 
         let mut e = at_reducible_child(SearchConfig::reference());
-        let Ok(value) = e.windowed(alpha, alpha + 1, DEPTH, false, true) else {
+        let Ok(value) = e.windowed(alpha, alpha + 1, DEPTH, false, LATE_MOVE_REDUCTION) else {
             panic!("an unlimited search aborted");
         };
         assert_eq!(e.nodes, scout_nodes);
         assert_eq!(value, scout_value);
 
         let mut probe = at_reducible_child(SearchConfig::reference());
-        let Ok(unreduced) = probe.windowed(alpha, alpha + 1, DEPTH, false, false) else {
+        let Ok(unreduced) = probe.windowed(alpha, alpha + 1, DEPTH, false, 0) else {
             panic!("an unlimited search aborted");
         };
         assert!(unreduced.score <= alpha);
@@ -3586,7 +3816,7 @@ mod search {
         // and the proof runs at the full window.
         const DEPTH: u8 = 3;
         let mut oracle = at_reducible_child(SearchConfig::reference());
-        let Ok(exact) = oracle.windowed(Score::MIN + 2, Score::MAX, DEPTH, true, false) else {
+        let Ok(exact) = oracle.windowed(Score::MIN + 2, Score::MAX, DEPTH, true, 0) else {
             panic!("an unlimited search aborted");
         };
         let alpha = exact.score - 500;
@@ -3599,7 +3829,7 @@ mod search {
 
         let mut then_probed = at_reducible_child(SearchConfig::reference());
         scout(&mut then_probed, alpha, DEPTH);
-        let Ok(unreduced) = then_probed.windowed(alpha, beta, DEPTH, false, false) else {
+        let Ok(unreduced) = then_probed.windowed(alpha, beta, DEPTH, false, 0) else {
             panic!("an unlimited search aborted");
         };
         assert!(
@@ -3608,7 +3838,7 @@ mod search {
         );
 
         let mut e = at_reducible_child(SearchConfig::reference());
-        let Ok(value) = e.windowed(alpha, beta, DEPTH, false, true) else {
+        let Ok(value) = e.windowed(alpha, beta, DEPTH, false, LATE_MOVE_REDUCTION) else {
             panic!("an unlimited search aborted");
         };
         assert_eq!(e.nodes, then_probed.nodes);
@@ -3818,6 +4048,271 @@ mod search {
             "the reduction searched {} nodes against the reference's {}",
             e.nodes,
             cold.nodes
+        );
+    }
+
+    /// Rows ported from the training table, asserted to the exact integer
+    /// the python fit's quantized score gives them. The bands, the
+    /// searched column and the intercept are all inside the figure, so a
+    /// sign or an off by one anywhere in `attention_score` fails here
+    /// rather than in a match.
+    #[test]
+    fn the_attention_score_matches_the_training_fit_on_ported_rows() {
+        let row = |depth, index, hist_milli, killer, tt, eval_beta, alpha_gap, generated| {
+            attention_score(&AttentionFeatures {
+                depth,
+                index,
+                hist_milli,
+                killer,
+                tt,
+                eval_beta,
+                alpha_gap,
+                generated,
+            })
+        };
+        // a killer deep in a lost window: dead despite its slot
+        assert_eq!(
+            row(4, 7, 146, true, Table::ScoreOnly, -1755, 1754, 34),
+            -22097
+        );
+        // the row the threshold's percentile landed on exactly
+        assert_eq!(row(6, 13, 0, false, Table::Move, -9, 8, 32), -4637);
+        // the deadest row of the training half
+        assert_eq!(
+            row(3, 30, 0, false, Table::ScoreOnly, -1983, 1982, 33),
+            -28088
+        );
+        // the most alive attention row: an eval standing over beta
+        assert_eq!(row(4, 6, 10, false, Table::Miss, 303, -304, 16), 280);
+        // a dead row of the depths the gate fires at
+        assert_eq!(row(5, 29, 0, false, Table::ScoreOnly, -223, 222, 43), -8746);
+        // the killer weight raises a row by exactly its coefficient, and
+        // on the threshold row that is the whole distance out of the dead
+        // region. It is a weight and not an exemption: the first row
+        // above is a killer and dead all the same, so the model may deepen
+        // the reduction of a killer whose bounds bury it
+        let on_edge = row(6, 13, 0, false, Table::Move, -9, 8, 32);
+        let as_killer = row(6, 13, 0, true, Table::Move, -9, 8, 32);
+        assert_eq!(as_killer - on_edge, ATTENTION_KILLER);
+        assert!(on_edge <= DEEP_REDUCTION_THRESHOLD);
+        assert!(as_killer > DEEP_REDUCTION_THRESHOLD);
+    }
+
+    /// The gate driven directly with the bounds solved to land the score
+    /// exactly on the threshold, and one over it: at or under fires, one
+    /// over does not. Alpha moves the score by seven a point and beta by
+    /// four, so together they reach any integer.
+    #[test]
+    fn the_deep_reduction_fires_at_the_threshold_and_not_one_over_it() {
+        let e = deep_reducing(Board::from_fen(A_CAPTURE_AND_QUIETS).unwrap());
+        let quiet = play_named(&e.board, "a4a5");
+        let moves = e.board.generate_moves();
+        let eval = i64::from(crate::eval::eval(&e.board));
+        const SEARCHED: usize = 10;
+        const DEPTH: u8 = 6;
+        let score_at = |alpha: Score, beta: Score| {
+            attention_score(&AttentionFeatures {
+                depth: DEPTH,
+                index: SEARCHED,
+                hist_milli: 0,
+                killer: false,
+                tt: Table::Miss,
+                eval_beta: eval - i64::from(beta),
+                alpha_gap: i64::from(alpha) - eval,
+                generated: moves.len(),
+            })
+        };
+        let mut solved = None;
+        for beta in 100..107 {
+            let over = score_at(0, beta) - DEEP_REDUCTION_THRESHOLD;
+            if over % 7 == 0 {
+                solved = Some(((over / 7) as Score, beta));
+                break;
+            }
+        }
+        let (alpha, beta) = solved.expect("seven betas cover every residue of seven");
+        assert_eq!(score_at(alpha, beta), DEEP_REDUCTION_THRESHOLD);
+        let mut node = None;
+        assert!(e.reduces_deeper(
+            &quiet,
+            SEARCHED,
+            DEPTH,
+            alpha,
+            beta,
+            &moves,
+            None,
+            Table::Miss,
+            &mut node
+        ));
+        // a point of alpha up and two of beta down move the score one over
+        assert_eq!(score_at(alpha + 1, beta - 2), DEEP_REDUCTION_THRESHOLD + 1);
+        assert!(!e.reduces_deeper(
+            &quiet,
+            SEARCHED,
+            DEPTH,
+            alpha + 1,
+            beta - 2,
+            &moves,
+            None,
+            Table::Miss,
+            &mut node
+        ));
+    }
+
+    #[test]
+    fn a_checking_quiet_is_never_reduced_two_plies() {
+        // the rook to the eighth checks along the rank and the push to a5
+        // does not; everything else about the two calls is the same, and
+        // the bounds stand where the score is far under the threshold, so
+        // whatever tells them apart is the check test and nothing else
+        let e = deep_reducing(Board::from_fen(A_CAPTURE_AND_QUIETS).unwrap());
+        let quiet = play_named(&e.board, "a4a5");
+        let checks = play_named(&e.board, "a4a8");
+        assert!(!e.board.gives_check(&quiet));
+        assert!(e.board.gives_check(&checks));
+        assert!(checks.capture.is_none());
+        let moves = e.board.generate_moves();
+        let (alpha, beta): (Score, Score) = (20_000, 20_001);
+        assert!(!super::is_mate(alpha));
+        let mut node = None;
+        assert!(e.reduces_deeper(
+            &quiet,
+            10,
+            6,
+            alpha,
+            beta,
+            &moves,
+            None,
+            Table::Miss,
+            &mut node
+        ));
+        assert!(!e.reduces_deeper(
+            &checks,
+            10,
+            6,
+            alpha,
+            beta,
+            &moves,
+            None,
+            Table::Miss,
+            &mut node
+        ));
+    }
+
+    #[test]
+    fn the_deep_reduction_stands_down_off_switch_and_under_its_floor() {
+        // under the reference's switch nothing deepens, and the refusal
+        // comes before the node features, so a node the gate never fires
+        // at never pays for the eval or the history scan
+        let off = reducing(Board::from_fen(A_CAPTURE_AND_QUIETS).unwrap());
+        let quiet = play_named(&off.board, "a4a5");
+        let moves = off.board.generate_moves();
+        let (alpha, beta): (Score, Score) = (20_000, 20_001);
+        let mut node = None;
+        assert!(!off.reduces_deeper(
+            &quiet,
+            10,
+            6,
+            alpha,
+            beta,
+            &moves,
+            None,
+            Table::Miss,
+            &mut node
+        ));
+        assert!(node.is_none(), "the refused gate computed the features");
+        // under the floor the scout would lose its full width ply
+        let e = deep_reducing(Board::from_fen(A_CAPTURE_AND_QUIETS).unwrap());
+        assert!(!e.reduces_deeper(
+            &quiet,
+            10,
+            DEEP_REDUCTION_MIN_DEPTH - 1,
+            alpha,
+            beta,
+            &moves,
+            None,
+            Table::Miss,
+            &mut node
+        ));
+        assert!(node.is_none(), "the refused gate computed the features");
+        // and at the floor with the same bounds it fires, filling the
+        // node features for the moves after it
+        assert!(e.reduces_deeper(
+            &quiet,
+            10,
+            DEEP_REDUCTION_MIN_DEPTH,
+            alpha,
+            beta,
+            &moves,
+            None,
+            Table::Miss,
+            &mut node
+        ));
+        assert!(node.is_some(), "the fired gate left nothing to reuse");
+    }
+
+    #[test]
+    fn a_dead_quiet_is_scouted_two_plies_shallower_and_answered_by_its_scout() {
+        // the seam at the reduction the model asks for: `windowed` driven
+        // with two plies rather than one, at the deep floor, where the
+        // scout stands at depth one. Alpha is far above the position, the
+        // scout fails low and is trusted, and the reduced call costs
+        // exactly the two ply scout's nodes and answers with its value;
+        // the one ply scout beside it is dearer, which is what the model
+        // is spending its word on
+        const DEPTH: u8 = DEEP_REDUCTION_MIN_DEPTH;
+        let mut oracle = at_reducible_child(SearchConfig::reference());
+        let Ok(exact) = oracle.windowed(Score::MIN + 2, Score::MAX, DEPTH, true, 0) else {
+            panic!("an unlimited search aborted");
+        };
+        let alpha = exact.score + 500;
+        assert!(!super::is_mate(alpha));
+
+        let mut alone = at_reducible_child(SearchConfig::reference());
+        let Ok(scout_value) =
+            alone.alpha_beta(-alpha - 1, -alpha, DEPTH - 1 - DEEP_REDUCTION, true)
+        else {
+            panic!("an unlimited search aborted");
+        };
+        let scout_value = -scout_value;
+        let scout_nodes = alone.nodes;
+        assert!(scout_value.score <= alpha, "the scout did not fail low");
+
+        let mut e = at_reducible_child(SearchConfig::reference());
+        let Ok(value) = e.windowed(alpha, alpha + 1, DEPTH, false, DEEP_REDUCTION) else {
+            panic!("an unlimited search aborted");
+        };
+        assert_eq!(e.nodes, scout_nodes);
+        assert_eq!(value, scout_value);
+
+        let mut shallower = at_reducible_child(SearchConfig::reference());
+        let Ok(one_ply) = shallower.windowed(alpha, alpha + 1, DEPTH, false, LATE_MOVE_REDUCTION)
+        else {
+            panic!("an unlimited search aborted");
+        };
+        assert!(one_ply.score <= alpha);
+        assert!(
+            shallower.nodes > scout_nodes,
+            "the one ply scout cost {} nodes against the two ply scout's {}",
+            shallower.nodes,
+            scout_nodes
+        );
+    }
+
+    #[test]
+    fn the_deep_reduction_looks_at_less_of_the_tree() {
+        // the switch has to reach the search, the reduction arm's own
+        // check made of the rung above it: what stands between these two
+        // engines is the model gated two ply scout alone
+        let mut e = deep_reducing(Board::from_fen(SHARP_MIDDLEGAME).unwrap());
+        completed(e.search(6));
+        let mut one_ply = reducing(Board::from_fen(SHARP_MIDDLEGAME).unwrap());
+        completed(one_ply.search(6));
+        assert!(
+            e.nodes < one_ply.nodes,
+            "the deep reduction searched {} nodes against the flat reduction's {}",
+            e.nodes,
+            one_ply.nodes
         );
     }
 
@@ -4876,7 +5371,7 @@ mod reductions {
         // alpha stands far above anything the position is worth, and
         // under the mate window, so the scout fails low and is trusted
         let (alpha, beta): (Score, Score) = (5000, 5001);
-        let Ok(value) = e.windowed(alpha, beta, 3, false, true) else {
+        let Ok(value) = e.windowed(alpha, beta, 3, false, 1) else {
             panic!("an unlimited search aborted");
         };
         assert!(value.score <= alpha, "the scout did not fail low");
@@ -4901,6 +5396,32 @@ mod reductions {
         assert_eq!(row.alpha, alpha);
         assert_eq!(row.scout, Scout::Low);
         assert!(row.cost >= 1);
+        assert_eq!(row.reduction, 1);
+    }
+
+    /// The reduction column reads what `windowed` was handed: a scout run
+    /// two plies shallower writes a two, so the rows of a run with the
+    /// deep reduction firing say which scouts it answered for.
+    #[test]
+    fn the_row_carries_the_reduction_the_scout_ran_at() {
+        let mut e = engine(SHARP_MIDDLEGAME);
+        let (m, _) = quiets(&e);
+        let moves = e.board.generate_moves();
+        e.stage_reduction(&m, 6, &moves, None, Table::Miss);
+        assert!(e.board.make_move(&m));
+        let (alpha, beta): (Score, Score) = (5000, 5001);
+        let Ok(value) = e.windowed(alpha, beta, 4, false, 2) else {
+            panic!("an unlimited search aborted");
+        };
+        assert!(value.score <= alpha, "the scout did not fail low");
+        let sampled = e.take_reductions().expect("a ledger was installed").drain();
+        assert_eq!(sampled.taken.len(), 1);
+        let row = &sampled.taken[0];
+        assert_eq!(row.depth, 4);
+        assert_eq!(row.reduction, 2);
+        // the replay's counterfactual is unchanged: the depth the move
+        // was denied is the node's less one, however short the scout ran
+        assert_eq!(row.replay_depth(), 3);
     }
 
     /// The same seam under bounds the move clears: the scout fails high,
@@ -4914,7 +5435,7 @@ mod reductions {
         e.stage_reduction(&m, 4, &moves, None, Table::Miss);
         assert!(e.board.make_move(&m));
         let (alpha, beta): (Score, Score) = (-5000, -4999);
-        let Ok(_) = e.windowed(alpha, beta, 3, false, true) else {
+        let Ok(_) = e.windowed(alpha, beta, 3, false, 1) else {
             panic!("an unlimited search aborted");
         };
         let sampled = e.take_reductions().expect("a ledger was installed").drain();
