@@ -18,6 +18,7 @@ import sys
 from pathlib import Path
 
 import match_estimate
+import pytest
 
 SCRIPT = Path(match_estimate.__file__)
 
@@ -379,8 +380,8 @@ class TestCommandLine:
             "0",
             "--elo1",
             "10",
-            "--prior-llr",
-            "3",
+            "--prior-pairs",
+            "0,0,100,0,5",
         ).stdout
         assert line == "Elo: +191 ±321 (sprt [0, 10] passed, 4 games, 30+0.3, vs old)\n"
         message = (
@@ -406,8 +407,8 @@ class TestCommandLine:
             "0",
             "--elo1",
             "10",
-            "--prior-llr",
-            "3",
+            "--prior-pairs",
+            "0,0,100,0,4",
         ).stdout
         assert line == (
             "Elo: not measured (sprt [0, 10] passed, 4 games, 30+0.3, vs old)\n"
@@ -422,6 +423,28 @@ class TestCommandLine:
             result = self.run(tmp_path, [drawn(1)], "--elo0", elo0, "--elo1", elo1)
             assert result.returncode != 0
             assert "is an elo difference" in result.stderr
+
+    def test_pairs_carried_in_that_are_not_five_counts_are_refused(self, tmp_path):
+        # the counts are one per pair score, so a ratio typed into the box a
+        # ratio used to go in is caught rather than read as a count
+        for spec in ("1.06", "1,2,3", "1,2,3,4,5,6", "1,-2,3,4,5", "1e9,0,0,0,0"):
+            result = self.run(
+                tmp_path,
+                [drawn(1)],
+                "--elo0",
+                "0",
+                "--elo1",
+                "10",
+                "--prior-pairs",
+                spec,
+            )
+            assert result.returncode != 0
+            assert "--prior-pairs is a count for each pair score" in result.stderr
+
+    def test_pairs_carried_in_with_no_test_to_carry_them_are_refused(self, tmp_path):
+        result = self.run(tmp_path, [drawn(1)], "--prior-pairs", "1,2,3,4,5")
+        assert result.returncode != 0
+        assert "wants --elo0 and --elo1" in result.stderr
 
     def test_hypotheses_the_wrong_way_round_are_refused(self, tmp_path):
         # the ratio of a test whose ends meet is nought whatever the games
@@ -502,43 +525,76 @@ class TestSequential:
         assert match_estimate.log_likelihood_ratio([0, 0, 0, 0, 4], 0, 10) > 0
         assert match_estimate.Sprt([], 0, 10).llr == 0.0
 
-    def test_the_prior_is_this_test_added_to_the_batches_before_it(self):
-        pairs = [2.0, 1.0]
-        alone = match_estimate.Sprt(pairs, 0, 10)
-        carried = match_estimate.Sprt(pairs, 0, 10, 1.5)
-        assert carried.llr == alone.llr
-        assert math.isclose(carried.total, alone.llr + 1.5)
+    def test_a_batch_carries_the_pairs_it_played_to_the_next_one(self):
+        before = [2, 3, 14, 3, 8]
+        carried = match_estimate.Sprt([2.0, 1.0], 0, 10, before)
+        assert carried.batch == [0, 0, 1, 0, 1]
+        assert carried.counts == [2, 3, 15, 3, 9]
+        assert carried.carried == "2,3,15,3,9"
+        assert math.isclose(
+            carried.llr, match_estimate.log_likelihood_ratio(carried.counts, 0, 10)
+        )
+
+    def test_the_ratio_is_worked_out_over_the_test_and_not_added_up(self):
+        # the fit is to the pairs the ratio is read against, so each batch
+        # fitting its own distribution and the ratios then being added is a
+        # different statistic from the one the pairs together give. Two
+        # batches that disagree with each other show how far apart: a fifth
+        # of the pairs shared and the rest split evenly between a sweep each
+        # way reads as -0.03 pooled and -0.59 added
+        first, second = [10, 0, 0, 0, 10], [0, 0, 20, 0, 0]
+        together = [one + other for one, other in zip(first, second)]
+        added = sum(
+            match_estimate.log_likelihood_ratio(counts, 0, 10)
+            for counts in (first, second)
+        )
+        sprt = match_estimate.Sprt([], 0, 10, together)
+        assert math.isclose(
+            sprt.llr, match_estimate.log_likelihood_ratio(together, 0, 10)
+        )
+        assert abs(sprt.llr - added) > 0.5
+
+    def test_a_prior_that_is_not_one_count_per_score_is_refused(self):
+        # every caller reaching Sprt has five counts, and a shorter list would
+        # otherwise be zipped down to its own length and silently drop a bin
+        with pytest.raises(ValueError):
+            match_estimate.Sprt([2.0], 0, 10, [1, 2, 3])
+
+    def test_more_pairs_than_a_match_plays_are_refused(self):
+        # the fit bisects between two bounds set by the counts, and counts
+        # this far apart put the root on a bound and the division by nought
+        with pytest.raises(ValueError):
+            match_estimate.read_prior("100000000,0,0,0,0")
+        assert match_estimate.read_prior("99999999,0,0,0,0")[0] == 99999999
 
     def test_the_bounds_are_where_the_verdict_turns_over(self):
-        pairs = [2.0, 1.0]
-        batch_llr = match_estimate.Sprt(pairs, 0, 10).llr
-        upper = match_estimate.UPPER - batch_llr
-        lower = match_estimate.LOWER - batch_llr
-        verdicts = [
-            match_estimate.Sprt(pairs, 0, 10, prior).verdict
-            for prior in (upper + 0.01, upper - 0.01, lower - 0.01, lower + 0.01)
-        ]
-        assert verdicts == ["passed", "inconclusive", "failed", "inconclusive"]
+        # the pairs of the whole test are what the ratio is read from, so the
+        # verdict turns over on the pair that carries the ratio past a bound
+        def verdict(counts):
+            return match_estimate.Sprt([], 0, 10, counts).verdict
 
-    def test_the_report_states_the_two_ratios_their_sum_and_what_it_means(
-        self, tmp_path
-    ):
+        assert verdict([0, 0, 100, 0, 5]) == "inconclusive"
+        assert verdict([0, 0, 100, 0, 6]) == "passed"
+        assert verdict([0, 0, 100, 0, 0]) == "inconclusive"
+        assert verdict([1, 0, 100, 0, 0]) == "failed"
+
+    def test_the_report_states_the_ratio_the_pairs_of_the_test_give(self, tmp_path):
         shards, estimate, text = pooled(tmp_path, [drawn(1) + pair(2)])
         pairs = [score for one in shards for score in one.pairs]
-        sprt = match_estimate.Sprt(pairs, 0, 10, 1.0)
+        sprt = match_estimate.Sprt(pairs, 0, 10, [1, 0, 1, 0, 0])
         printed = match_estimate.report(shards, estimate, text, sprt)
         assert "SPRT [0, 10] inconclusive." in printed
         assert (
-            "ended on 1.00, so the sum is 1.06 against bounds of (-2.94, 2.94)"
-            in printed
+            "over the 4 pairs of the test (2 from this batch and 2 from the"
+            " batches before it) is -0.00 against bounds of (-2.94, 2.94)" in printed
         )
-        assert "Launch another batch with prior_llr set to 1.06." in printed
+        assert "Launch another batch with prior_pairs set to 1,0,2,0,1." in printed
 
     def test_a_test_that_settled_says_what_it_settled(self, tmp_path):
         shards, estimate, text = pooled(tmp_path, [drawn(1) + pair(2)])
         pairs = [score for one in shards for score in one.pairs]
         printed = match_estimate.report(
-            shards, estimate, text, match_estimate.Sprt(pairs, 0, 10, 3.0)
+            shards, estimate, text, match_estimate.Sprt(pairs, 0, 10, [0, 0, 100, 0, 5])
         )
         assert "SPRT [0, 10] passed." in printed
         assert "stronger by about 10 elo or more" in printed
