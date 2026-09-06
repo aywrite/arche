@@ -49,6 +49,8 @@ speed of a machine, and is a UCI command as well as an argument.
 then asks a search with the shortcuts off what the nodes they answered were really worth.
 `cutoffs [depth] [every <n>] [cap <n>]` searches them again and prints which move cut each
 sampled node off, or that none did, for reading what the move ordering earns.
+`reductions [depth] [every <n>] [cap <n>]` samples the scouts the late move reduction
+trusts and asks a full depth search whether each fail low threw a move away.
 `--version` and `--help` are answered too.
 
 Binaries for linux, macos and windows are attached to each
