@@ -2,6 +2,7 @@
 // Copyright (C) 2022-2026 Andrew Wright
 
 use arche::UCI;
+use arche::instruments;
 use arche::params::Params;
 use arche::uci;
 use arche_core::AlphaBeta;
@@ -97,9 +98,17 @@ fn main() -> ExitCode {
                 ExitCode::from(2)
             }
         },
-        Some("residuals") => answer("residuals", uci::residual_settings(&params), |s| s.run()),
-        Some("cutoffs") => answer("cutoffs", uci::cutoff_settings(&params), |s| s.run()),
-        Some("reductions") => answer("reductions", uci::reduction_settings(&params), |s| s.run()),
+        Some("residuals") => answer("residuals", instruments::residual_settings(&params), |s| {
+            s.run()
+        }),
+        Some("cutoffs") => answer("cutoffs", instruments::cutoff_settings(&params), |s| {
+            s.run()
+        }),
+        Some("reductions") => answer(
+            "reductions",
+            instruments::reduction_settings(&params),
+            |s| s.run(),
+        ),
         // `--version` and `--help` were asked for, so both are answered on
         // stdout and succeed. An argument that really is unrecognised keeps
         // stderr and the failing code below: the difference is whether

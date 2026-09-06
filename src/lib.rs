@@ -12,6 +12,7 @@
 //! The engine is the `arche-core` crate. Nothing here knows how to search;
 //! it knows what to ask for and how to report the answer.
 
+pub mod instruments;
 pub mod params;
 mod session;
 pub mod time_control;
