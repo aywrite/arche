@@ -23,6 +23,7 @@
 //! over, in three functions that differed by a keyword and two defaults.
 //! `sampling` is that reading, once.
 
+use crate::command::{Command, Keyword};
 use crate::params::{Param, Params};
 use arche_core::SearchConfig;
 use arche_core::bench;
@@ -38,13 +39,70 @@ struct Sampling {
     cap: usize,
 }
 
-/// The words that may stand where an instrument's depth would. One of them
-/// there means the depth was left out rather than mistyped, which is the rule
-/// the bench reads by.
-const SAMPLING_KEYWORDS: [&str; 2] = ["every", "cap"];
+/// What each instrument takes. One declaration apiece, because the same list
+/// says which words may stand where the depth would, which words are known at
+/// all, and how the usage spells the line.
+pub const RESIDUALS: Command = Command {
+    name: "residuals",
+    keywords: &[
+        Keyword {
+            word: "every",
+            value: "<n>",
+        },
+        Keyword {
+            word: "cap",
+            value: "<n>",
+        },
+        Keyword {
+            word: "taint",
+            value: "refuse|trust|skip|rule50",
+        },
+    ],
+    flags: &[],
+    summary: &[
+        "search the same suite, then ask the reference search",
+        "what the nodes the shortcuts answered were worth",
+    ],
+};
 
-/// The same, for the residual sampler, which also chooses a taint policy.
-const RESIDUAL_KEYWORDS: [&str; 3] = ["every", "cap", "taint"];
+pub const CUTOFFS: Command = Command {
+    name: "cutoffs",
+    keywords: &[
+        Keyword {
+            word: "every",
+            value: "<n>",
+        },
+        Keyword {
+            word: "cap",
+            value: "<n>",
+        },
+    ],
+    flags: &[],
+    summary: &[
+        "search the same suite and print which move cut each",
+        "sampled node off, or that none did",
+    ],
+};
+
+pub const REDUCTIONS: Command = Command {
+    name: "reductions",
+    keywords: &[
+        Keyword {
+            word: "every",
+            value: "<n>",
+        },
+        Keyword {
+            word: "cap",
+            value: "<n>",
+        },
+    ],
+    flags: &[],
+    summary: &[
+        "search the same suite, sample the reduced scouts, and",
+        "ask a full depth search whether each trusted fail low",
+        "threw a move away",
+    ],
+};
 
 /// How many rows a run keeps when it was not told. One number for all three,
 /// and the residual module's, because the thing it bounds is one thing: the
@@ -57,20 +115,14 @@ const DEFAULT_CAP: usize = residual::DEFAULT_CAP;
 /// Running the default in place of a word nobody typed would take minutes and
 /// explain nothing.
 ///
-/// `command` is the word the depth follows. `keywords` is what may stand in
-/// that depth's place, which is the two below for two of them and those plus
-/// `taint` for the residual sampler. `default_every` is the rate that
-/// instrument samples at when the line names none.
-fn sampling(
-    params: &Params,
-    command: &str,
-    keywords: &[&str],
-    default_every: u32,
-) -> Result<Sampling, String> {
-    let depth = match params.parse::<u8>(command) {
+/// `command` says both what word the depth follows and which words may stand
+/// in its place. `default_every` is the rate that instrument samples at when
+/// the line names none, which is the one thing they do not share.
+fn sampling(params: &Params, command: &Command, default_every: u32) -> Result<Sampling, String> {
+    let depth = match params.parse::<u8>(command.name) {
         Param::Absent => bench::DEPTH,
         Param::Read(depth) => depth,
-        Param::Unreadable(word) if keywords.contains(&word) => bench::DEPTH,
+        Param::Unreadable(word) if command.takes(word) => bench::DEPTH,
         Param::Unreadable(word) => return Err(format!("depth: {word}")),
     };
     let every = match params.parse::<u32>("every") {
@@ -85,6 +137,9 @@ fn sampling(
         Param::Read(cap) => cap,
         Param::Unreadable(word) => return Err(format!("cap: {word}")),
     };
+    // last, so a word that was going to be read as the depth has already
+    // been refused under the better name
+    command.claim(params)?;
     Ok(Sampling { depth, every, cap })
 }
 
@@ -101,12 +156,7 @@ pub struct ResidualSettings {
 }
 
 pub fn residual_settings(params: &Params) -> Result<ResidualSettings, String> {
-    let Sampling { depth, every, cap } = sampling(
-        params,
-        "residuals",
-        &RESIDUAL_KEYWORDS,
-        residual::DEFAULT_EVERY,
-    )?;
+    let Sampling { depth, every, cap } = sampling(params, &RESIDUALS, residual::DEFAULT_EVERY)?;
     let config = match params.value("taint") {
         None => SearchConfig::default(),
         Some(word) => SearchConfig::with_taint(word).ok_or_else(|| format!("taint: {word}"))?,
@@ -144,8 +194,7 @@ pub struct CutoffSettings {
 }
 
 pub fn cutoff_settings(params: &Params) -> Result<CutoffSettings, String> {
-    let Sampling { depth, every, cap } =
-        sampling(params, "cutoffs", &SAMPLING_KEYWORDS, census::DEFAULT_EVERY)?;
+    let Sampling { depth, every, cap } = sampling(params, &CUTOFFS, census::DEFAULT_EVERY)?;
     Ok(CutoffSettings { depth, every, cap })
 }
 
@@ -167,12 +216,7 @@ pub struct ReductionSettings {
 }
 
 pub fn reduction_settings(params: &Params) -> Result<ReductionSettings, String> {
-    let Sampling { depth, every, cap } = sampling(
-        params,
-        "reductions",
-        &SAMPLING_KEYWORDS,
-        reduction::DEFAULT_EVERY,
-    )?;
+    let Sampling { depth, every, cap } = sampling(params, &REDUCTIONS, reduction::DEFAULT_EVERY)?;
     Ok(ReductionSettings { depth, every, cap })
 }
 

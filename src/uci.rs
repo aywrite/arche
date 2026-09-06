@@ -1,6 +1,7 @@
 // SPDX-License-Identifier: GPL-3.0-or-later
 // Copyright (C) 2022-2026 Andrew Wright
 
+use crate::command::{Command, Keyword};
 use crate::params::{Param, Params};
 use crate::session::{self, SessionControl, SharedWriter, first_word, report_panics_to};
 use crate::time_control::TimeControl;
@@ -523,9 +524,26 @@ pub struct BenchSettings {
     pub audit: bool,
 }
 
-/// The words a bench takes after its depth. One of them standing where
-/// the depth would be means the depth was left out, not mistyped.
-const BENCH_KEYWORDS: [&str; 3] = ["hash", "taint", "audit"];
+/// What a bench takes, which is also how the usage spells it and which
+/// words it will refuse as unknown.
+pub const BENCH: Command = Command {
+    name: "bench",
+    keywords: &[
+        Keyword {
+            word: "hash",
+            value: "<MB>",
+        },
+        Keyword {
+            word: "taint",
+            value: "refuse|trust|skip|rule50",
+        },
+    ],
+    flags: &["audit"],
+    summary: &[
+        "search a fixed suite and print what each search counted,",
+        "with audit adding what the table's key signature cost",
+    ],
+};
 
 /// Reads the bench settings, or says which word could not be read: the
 /// setting's name and the word, for the caller to report. Running the
@@ -534,7 +552,7 @@ pub fn bench_settings(params: &Params) -> Result<BenchSettings, String> {
     let depth = match params.parse::<u8>("bench") {
         Param::Absent => bench::DEPTH,
         Param::Read(depth) => depth,
-        Param::Unreadable(word) if BENCH_KEYWORDS.contains(&word) => bench::DEPTH,
+        Param::Unreadable(word) if BENCH.takes(word) => bench::DEPTH,
         Param::Unreadable(word) => return Err(format!("depth: {word}")),
     };
     let table_bytes = match params.parse::<u64>("hash") {
@@ -549,6 +567,9 @@ pub fn bench_settings(params: &Params) -> Result<BenchSettings, String> {
         None => SearchConfig::default(),
         Some(word) => SearchConfig::with_taint(word).ok_or_else(|| format!("taint: {word}"))?,
     };
+    // last, so a word that was going to be read as the depth has already
+    // been refused under the better name
+    BENCH.claim(params)?;
     Ok(BenchSettings {
         depth,
         table_bytes,

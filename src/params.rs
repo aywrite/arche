@@ -44,6 +44,16 @@ pub(crate) enum Param<'a, T> {
 }
 
 impl<'a> Params<'a> {
+    /// The words of the line, in the order they were typed.
+    ///
+    /// The readers below ask for a word by name and do not care where it
+    /// stands. `Command::unclaimed` is the one caller that does: it has to
+    /// tell a keyword's value from a word nobody claimed, and that is a
+    /// question about position rather than about names.
+    pub(crate) fn words(&self) -> &[&'a str] {
+        &self.words
+    }
+
     pub fn of(line: &'a str) -> Self {
         Self {
             words: line.split_whitespace().collect(),
