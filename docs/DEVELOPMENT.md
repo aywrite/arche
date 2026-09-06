@@ -809,13 +809,13 @@ the accepted error rates, five percent each way.
 
 The unit of the test is a batch, which is one run of the workflow. The shards
 play their slices with nothing watching, and the summary reads all of their
-games at once: `scripts/match_estimate.py` works out the log likelihood ratio
-over the pooled pairs, under the same logistic model fastchess uses and against
-the same bounds, adds the ratio the earlier batches of the same test ended on
-and judges the sum. fastchess is not asked to run the test in ci at all,
-sharded or not. A test that stopped inside one shard would be looking after
-every game of a fifth of the evidence, and five shards each stopping themselves
-would be five tests rather than one.
+games at once: `scripts/match_estimate.py` adds the pairs they played to the
+pairs the earlier batches of the same test played and works out the log
+likelihood ratio over all of them, under the same logistic model fastchess uses
+and against the same bounds. fastchess is not asked to run the test in ci at
+all, sharded or not. A test that stopped inside one shard would be looking
+after every game of a fifth of the evidence, and five shards each stopping
+themselves would be five tests rather than one.
 
 - `elo0` and `elo1` are the hypotheses, in the same elo the summary reports.
   The defaults ask "is this worth ten elo, or nothing", about the size of
@@ -825,19 +825,29 @@ would be five tests rather than one.
   shards at 10+0.1 is about half an hour of wall clock, which is the default.
   Play is capped at 150 minutes as it is for any match, so a shard the clock
   stopped leaves a smaller batch rather than a lost one.
-- `prior_llr` is the ratio the earlier batches ended on, which the summary of
-  the last one prints. Left at zero the batch is the first of its test.
+- `prior_pairs` is the pairs the earlier batches played, by what the candidate
+  scored in them, which the summary of the last one prints. Left empty the
+  batch is the first of its test.
 
 A batch that settles the question says `passed` (stronger by about `elo1` or
 more) or `failed` (not) beside its estimate. One that does not says
-`inconclusive`, and its summary gives the sum to launch the next batch with:
-run the workflow again with the same `elo0`, `elo1`, candidate and baseline,
-and `prior_llr` set to that number. The seed is new each time, so the next
-batch plays openings of its own rather than the ones already spent. A change
-well outside the bounds on either side settles in a batch or two. One at either
-bound, or between them, takes several thousand games, which is why the
+`inconclusive`, and its summary gives the five counts to launch the next batch
+with: run the workflow again with the same `elo0`, `elo1`, candidate and
+baseline, and `prior_pairs` set to those counts. The seed is new each time, so
+the next batch plays openings of its own rather than the ones already spent. A
+change well outside the bounds on either side settles in a batch or two. One at
+either bound, or between them, takes several thousand games, which is why the
 roadmap's two null results ended inconclusive at their caps, and why that
-ledger reads repeated runs of the same arm by adding their ratios.
+ledger reads repeated runs of the same arm as one test over the pairs of both.
+
+What a batch carries forward is its pairs and not its ratio. The ratio is a
+generalized one: the distribution over the five pair scores is fitted to the
+pairs it is read against, under each hypothesis in turn, so a ratio worked out
+batch by batch fits a distribution per batch and adding those up is a different
+statistic from the ratio the pairs together give. Simulated over the default
+`[0, 10]` with a true difference between the two, eight batches of five hundred
+games reach different verdicts the two ways about one test in twenty. The
+counts add exactly, so the counts are what is carried.
 
 Looking only between batches is what keeps the error rates. Wald's bounds hold
 for a test that looks at the boundaries of blocks it fixed in advance, which is

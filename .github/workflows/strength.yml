@@ -22,11 +22,11 @@ name: Strength
 #
 # Or ask the narrower question instead: sprt reads the same pooled games as a
 # sequential test of whether the candidate is stronger. A run is one batch of
-# it. The shards play their slices with nothing watching, the summary works out
-# the log likelihood ratio over every pair they played, adds the ratio the
-# earlier batches of the same test ended on and judges the sum against the
-# bounds. A batch that settles it says passed or failed; one that does not says
-# inconclusive and the ratio to launch the next batch with. Looking at the
+# it. The shards play their slices with nothing watching, the summary adds the
+# pairs they played to the pairs the earlier batches of the same test played
+# and judges the log likelihood ratio over all of them against the bounds. A
+# batch that settles it says passed or failed; one that does not says
+# inconclusive and the pairs to launch the next batch with. Looking at the
 # batch boundaries rather than after every game is what lets the shards play at
 # once and leaves the bounds meaning what they say.
 #
@@ -69,10 +69,10 @@ on:
         description: SPRT alternative, in elo. Accepting it (H1) means the candidate is stronger by about this much or more.
         type: number
         default: 10
-      prior_llr:
-        description: The log likelihood ratio the earlier batches of this test ended on, as their summaries printed it. Left at zero this batch is the first.
+      prior_pairs:
+        description: The pairs the earlier batches of this test played, by what the candidate scored in them, as the summary of the last one printed them. Left empty this batch is the first.
         type: string
-        default: "0"
+        default: ""
       seed:
         description: Seed for the region of the book the shards play, an unsigned integer. Left empty it is the run id, and either way the manifest records it.
         type: string
@@ -102,9 +102,9 @@ on:
       elo1:
         type: number
         default: 10
-      prior_llr:
+      prior_pairs:
         type: string
-        default: "0"
+        default: ""
       seed:
         type: string
       publish:
@@ -199,7 +199,7 @@ jobs:
           ELO1: ${{ inputs.elo1 }}
           # an emptied box arrives as the empty string, which is the same
           # ask as the default: this batch is the first of its test
-          PRIOR_LLR: ${{ inputs.prior_llr || '0' }}
+          PRIOR_PAIRS: ${{ inputs.prior_pairs }}
         run: |
           if [ "$SHARDS" -lt 1 ]; then
             echo "::error::shards must be at least one, got ${SHARDS}"
@@ -210,12 +210,24 @@ jobs:
           # already been played. The boxes take free text whatever they say
           if [ "$SPRT" = "true" ]; then
             number='^-?[0-9]+(\.[0-9]+)?$'
-            for value in "$ELO0" "$ELO1" "$PRIOR_LLR"; do
+            for value in "$ELO0" "$ELO1"; do
               if ! [[ "$value" =~ $number ]]; then
-                echo "::error::elo0, elo1 and prior_llr must be numbers, got ${ELO0}, ${ELO1} and ${PRIOR_LLR}"
+                echo "::error::elo0 and elo1 must be numbers, got ${ELO0} and ${ELO1}"
                 exit 1
               fi
             done
+            # a count for each of the five scores a pair can end on, which is
+            # what the summary of the last batch printed. A ratio typed in
+            # here is the old shape of this box and is not one. The spaces a
+            # paste picks up are dropped rather than refused, as the summary
+            # drops them, and the digits are capped where the summary caps
+            # them
+            PRIOR_PAIRS="${PRIOR_PAIRS//[[:space:]]/}"
+            if [ -n "$PRIOR_PAIRS" ] \
+               && ! [[ "$PRIOR_PAIRS" =~ ^[0-9]{1,8}(,[0-9]{1,8}){4}$ ]]; then
+              echo "::error::prior_pairs is a count for each of the five pair scores, got ${PRIOR_PAIRS}"
+              exit 1
+            fi
             if ! awk -v null="$ELO0" -v alternative="$ELO1" \
                  'BEGIN { exit !(null < alternative) }'; then
               echo "::error::elo0 must be below elo1, got ${ELO0} and ${ELO1}"
@@ -272,7 +284,7 @@ jobs:
       SPRT: ${{ inputs.sprt }}
       ELO0: ${{ inputs.elo0 }}
       ELO1: ${{ inputs.elo1 }}
-      PRIOR_LLR: ${{ inputs.prior_llr || '0' }}
+      PRIOR_PAIRS: ${{ inputs.prior_pairs }}
       # the openings are taken in book order from an offset, so the seed picks
       # the region of the book each shard plays rather than a shuffle. The run
       # id is one nobody has to choose and no two runs share; a seed given by
@@ -398,7 +410,7 @@ jobs:
             echo "concurrency: ${CONCURRENCY}"
             echo "games_asked: $((PAIRS * 2))"
             if [ "$SPRT" = "true" ]; then
-              echo "sprt: judged by the summary over the pooled pairs, not by fastchess: elo0=${ELO0} elo1=${ELO1} alpha=0.05 beta=0.05 model=logistic prior_llr=${PRIOR_LLR}"
+              echo "sprt: judged by the summary over the pooled pairs, not by fastchess: elo0=${ELO0} elo1=${ELO1} alpha=0.05 beta=0.05 model=logistic prior_pairs=${PRIOR_PAIRS:-none}"
             else
               echo "sprt: off"
             fi
@@ -451,7 +463,7 @@ jobs:
       SPRT: ${{ inputs.sprt }}
       ELO0: ${{ inputs.elo0 }}
       ELO1: ${{ inputs.elo1 }}
-      PRIOR_LLR: ${{ inputs.prior_llr || '0' }}
+      PRIOR_PAIRS: ${{ inputs.prior_pairs }}
       SEED: ${{ inputs.seed || github.run_id }}
       CANDIDATE: ${{ needs.resolve.outputs.candidate_name }}
       CANDIDATE_SHA: ${{ needs.resolve.outputs.candidate_sha }}
@@ -486,15 +498,16 @@ jobs:
           # beside it instead. Anything worth an alert comes back on stderr.
           #
           # An sprt reads the same pooled pairs a second way, as this batch
-          # of a sequential test: the estimate adds the ratio the earlier
-          # batches ended on and judges the sum against the bounds. fastchess
-          # never ran the test, so there is no result block to take a verdict
-          # from and no second reading to disagree with this one
+          # of a sequential test: the estimate adds them to the pairs the
+          # earlier batches played and judges the ratio over all of them
+          # against the bounds. fastchess never ran the test, so there is no
+          # result block to take a verdict from and no second reading to
+          # disagree with this one
           estimate=(python3 scripts/match_estimate.py "${games[@]}"
                     --candidate "$CANDIDATE" --baseline "$PREVIOUS"
                     --tc "$TIME_CONTROL")
           if [ "$SPRT" = "true" ]; then
-            estimate+=(--elo0 "$ELO0" --elo1 "$ELO1" --prior-llr "$PRIOR_LLR")
+            estimate+=(--elo0 "$ELO0" --elo1 "$ELO1" --prior-pairs "$PRIOR_PAIRS")
           fi
           "${estimate[@]}" > report.md 2> remarks.txt \
             || { echo "::error::the games could not be read"; cat remarks.txt; exit 1; }

@@ -88,19 +88,21 @@ of these again without saying what is different this time.
   at 5+0.05 against master both ended inconclusive at their caps (sprt [0, 10],
   branch search/correction-history): +12 ±11 over 1,980 games, then +1 ±12 over
   another 1,980. Two stopped runs do not pool into one interval, so there is no
-  combined number; a re-run of the same arm adds its likelihood ratio to
-  theirs, which is how repeated runs are read from now on. The mechanism was
-  live and the tree 2.2% smaller with the tactical suite unmoved, so the games
-  say the corrections were nearly free rather than nearly right. One suspect is
-  on record: the correction's ±31 centipawn clamp is twice the fifteen the
-  reverse futility margin was sized to keep clear of a mate it can miss, so the
-  table may spend its gains inside the margin's own headroom. That is one arm
-  of the re-ask, not the fix. The re-ask starts from the shadow sampler's
-  records: the raw evaluation's clearance of beta, the correction offset, the
-  depth, and the reference outcome, from which a corrected margin is chosen on
-  held-out positions before any games are played. Correcting the leaf and
-  correcting the gates are then measured separately, and only then together.
-  The pawn key the arm was built on landed on its own and stays.
+  combined number; a re-run of the same arm carries the pairs of the earlier
+  ones in and is read as one test over all of them, which is how repeated runs
+  are read from now on. Neither of these two recorded its pairs, so a re-run of
+  this arm starts the test again. The mechanism was live and the tree 2.2%
+  smaller with the tactical suite unmoved, so the games say the corrections
+  were nearly free rather than nearly right. One suspect is on record: the
+  correction's ±31 centipawn clamp is twice the fifteen the reverse futility
+  margin was sized to keep clear of a mate it can miss, so the table may spend
+  its gains inside the margin's own headroom. That is one arm of the re-ask,
+  not the fix. The re-ask starts from the shadow sampler's records: the raw
+  evaluation's clearance of beta, the correction offset, the depth, and the
+  reference outcome, from which a corrected margin is chosen on held-out
+  positions before any games are played. Correcting the leaf and correcting the
+  gates are then measured separately, and only then together. The pawn key the
+  arm was built on landed on its own and stays.
 - Correcting the evaluation reverse futility reads by a table entry's score and
   bound (a stored floor above the evaluation raised it before the margin was
   measured). Inconclusive at the game cap, +6 ±11 over 1,980 games at 5+0.05

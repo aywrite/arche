@@ -22,11 +22,11 @@ it left over are counted and said, and kept out of the pair statistics.
 
 With `--elo0` and `--elo1` the same pairs are read a second way, as a
 sequential test. One run of the workflow is a batch: its shards play slices
-chosen in advance and nothing is looked at until they are all in. The log
-likelihood ratio of the batch is added to the one the earlier batches of the
-same test ended on, and the sum is judged against Wald's bounds. Looking only
-at batch boundaries is what leaves the bounds meaning what they say, and it is
-also how the roadmap has been reading repeated runs of the same arm.
+chosen in advance and nothing is looked at until they are all in. The pairs of
+the batch are added to the pairs the earlier batches of the same test played,
+and the log likelihood ratio over all of them is judged against Wald's bounds.
+Looking only at batch boundaries is what leaves the bounds meaning what they
+say.
 
 The report goes to stdout for the run summary. `--line` prints the one line the
 release notes carry and `--trailer` the trailer a commit does. Anything worth an
@@ -80,6 +80,11 @@ UPPER = math.log((1 - BETA) / ALPHA)
 # a count of nought has no logarithm, so it is nudged off nought first, which
 # is what fastchess does with the same counts
 REGULARISED = 1e-3
+# As many pairs in one bin as a carried test is allowed to claim, which is the
+# eight digits the workflow's box takes. Past about a hundred million million
+# the fit's bisection reaches the end of its interval and divides by nought,
+# and no match has played a millionth of that.
+MAX_PRIOR = 99_999_999
 # As far out as a hypothesis is worth asking about. Past a thousand elo the
 # expected score rounds to nought or one, which leaves the distribution nothing
 # to fit and the bisection no interval to run in.
@@ -281,6 +286,25 @@ def log_likelihood_ratio(counts: list[int], elo0: float, elo1: float) -> float:
     )
 
 
+def read_prior(spec: str) -> list[int]:
+    """The pairs the earlier batches of a test played, by what the candidate
+    scored in them, as the summary of the last one printed them. An empty spec
+    is a first batch, which has none behind it."""
+    if not spec.strip():
+        return [0] * len(PENTANOMIAL)
+    counts = []
+    for field in spec.split(","):
+        field = field.strip()
+        if not field.isdecimal():
+            raise ValueError(f"{spec!r} is not {len(PENTANOMIAL)} whole numbers")
+        counts.append(int(field))
+    if len(counts) != len(PENTANOMIAL):
+        raise ValueError(f"{spec!r} is not {len(PENTANOMIAL)} whole numbers")
+    if max(counts) > MAX_PRIOR:
+        raise ValueError(f"{max(counts)} pairs in one score is more than a match plays")
+    return counts
+
+
 def number(value: float) -> str:
     """A hypothesis or a bound, carrying the decimals only when it has any."""
     return str(round(value)) if float(value).is_integer() else f"{value:.2f}"
@@ -291,25 +315,45 @@ class Sprt:
 
     A batch is one run of the match: the shards play slices settled in
     advance, and the games are read once they are all in rather than as they
-    arrive. This batch's log likelihood ratio is added to the one the earlier
-    batches of the same test ended on, and the sum is what the bounds are
-    read against, so every look is at a batch boundary and the error rates the
-    bounds stand for are the ones the verdict carries.
+    arrive. The pairs of this batch are added to the pairs the earlier batches
+    of the same test played, and the ratio over all of them is what the bounds
+    are read against, so every look is at a batch boundary and the error rates
+    the bounds stand for are the ones the verdict carries.
 
-    The pair is the unit, as it is for the interval, so a game a shard left
+    What a batch carries forward is its pairs and not its ratio. The ratio is a
+    generalized one: the distribution over the five pair scores is fitted to
+    the pairs it is read against, under each hypothesis in turn, so a ratio
+    worked out per batch fits a distribution per batch and the sum of those is
+    not the ratio of the pairs together. Simulated over the default [0, 10]
+    with a true difference between the two, eight batches of 250 pairs reach
+    different verdicts the two ways about one test in twenty. The counts add
+    exactly, so the counts are what is carried.
+
+    The pair is the unit, as it is for the estimate, so a game a shard left
     without a partner is out of this too."""
 
     def __init__(
-        self, pairs: list[float], elo0: float, elo1: float, prior: float = 0.0
+        self,
+        pairs: list[float],
+        elo0: float,
+        elo1: float,
+        prior: list[int] | None = None,
     ):
-        self.elo0, self.elo1, self.prior = elo0, elo1, prior
+        self.elo0, self.elo1 = elo0, elo1
         counted = Counter(pairs)
-        self.counts = [counted[score] for score in PENTANOMIAL]
-        self.llr = log_likelihood_ratio(self.counts, elo0, elo1) if pairs else 0.0
-        self.total = self.llr + prior
-        if self.total >= UPPER:
+        self.batch = [counted[score] for score in PENTANOMIAL]
+        self.prior = list(prior) if prior else [0] * len(PENTANOMIAL)
+        if len(self.prior) != len(PENTANOMIAL):
+            raise ValueError(f"the prior is {len(PENTANOMIAL)} counts, one per score")
+        self.counts = [
+            played + before for played, before in zip(self.batch, self.prior)
+        ]
+        self.llr = (
+            log_likelihood_ratio(self.counts, elo0, elo1) if sum(self.counts) else 0.0
+        )
+        if self.llr >= UPPER:
             self.verdict = "passed"
-        elif self.total <= LOWER:
+        elif self.llr <= LOWER:
             self.verdict = "failed"
         else:
             self.verdict = "inconclusive"
@@ -322,9 +366,15 @@ class Sprt:
     def bounds(self) -> str:
         return f"({number(LOWER)}, {number(UPPER)})"
 
+    @property
+    def carried(self) -> str:
+        """The pairs of the test so far, in the shape the next batch takes
+        them in."""
+        return ",".join(str(count) for count in self.counts)
+
     def __str__(self) -> str:
         return (
-            f"SPRT {self.hypotheses} {self.verdict}, LLR {self.total:.2f} {self.bounds}"
+            f"SPRT {self.hypotheses} {self.verdict}, LLR {self.llr:.2f} {self.bounds}"
         )
 
 
@@ -341,14 +391,15 @@ def sequential(sprt: Sprt) -> str:
         ),
         "inconclusive": (
             "The games so far settle it neither way. Launch another batch with"
-            f" prior_llr set to {sprt.total:.2f}."
+            f" prior_pairs set to {sprt.carried}."
         ),
     }
     return (
-        f"SPRT {sprt.hypotheses} {sprt.verdict}. This batch's log likelihood"
-        f" ratio is {sprt.llr:.2f} and the batches before it ended on"
-        f" {sprt.prior:.2f}, so the sum is {sprt.total:.2f} against bounds of"
-        f" {sprt.bounds}. {means[sprt.verdict]}"
+        f"SPRT {sprt.hypotheses} {sprt.verdict}. The log likelihood ratio over"
+        f" the {sum(sprt.counts)} pairs of the test ({sum(sprt.batch)} from this"
+        f" batch and {sum(sprt.prior)} from the batches before it) is"
+        f" {sprt.llr:.2f} against bounds of {sprt.bounds}."
+        f" {means[sprt.verdict]}"
     )
 
 
@@ -481,11 +532,11 @@ def main() -> None:
         "--elo1", type=float, help="the sprt alternative in elo, with --elo0"
     )
     parser.add_argument(
-        "--prior-llr",
-        type=float,
-        default=0.0,
-        metavar="F",
-        help="the log likelihood ratio the earlier batches of this test ended on",
+        "--prior-pairs",
+        default="",
+        metavar="N,N,N,N,N",
+        help="the pairs the earlier batches of this test played, by score,"
+        " as the summary of the last one printed them",
     )
     printed = parser.add_mutually_exclusive_group()
     printed.add_argument(
@@ -503,6 +554,12 @@ def main() -> None:
         parser.error(
             "--elo0 and --elo1 are the two ends of one test, so both or neither"
         )
+    try:
+        prior = read_prior(args.prior_pairs)
+    except ValueError as bad:
+        parser.error(f"--prior-pairs is a count for each pair score: {bad}")
+    if args.elo0 is None and any(prior):
+        parser.error("--prior-pairs carries a test on, so it wants --elo0 and --elo1")
     if args.elo0 is not None:
         for name, elo in (("--elo0", args.elo0), ("--elo1", args.elo1)):
             # a hypothesis off the end of the model, or not a number at all,
@@ -523,11 +580,7 @@ def main() -> None:
         sys.exit(f"no games for {args.candidate} in {len(args.pgn)} shards")
     pairs = [score for shard in shards for score in shard.pairs]
     estimate = Estimate(sum(games), len(games), pairs)
-    sprt = (
-        Sprt(pairs, args.elo0, args.elo1, args.prior_llr)
-        if args.elo0 is not None
-        else None
-    )
+    sprt = Sprt(pairs, args.elo0, args.elo1, prior) if args.elo0 is not None else None
 
     if args.trailer:
         print(trailer(estimate, args.tc, args.baseline, sprt))
