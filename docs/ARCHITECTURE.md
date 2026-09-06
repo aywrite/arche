@@ -129,8 +129,8 @@ material plus piece square tables, tapered between middlegame and endgame.
   handshake advertises, and what a `go` may spend. Every line reaches it
   through the session loop, on the thread the engine was built on.
 - **instruments.rs**: What the three research commands take, and what each
-  one runs. Not the protocol — an interface cannot ask for any of them, and
-  would not wait for the answer — which is why they are here rather than
+  one runs. Not the protocol (an interface cannot ask for any of them, and
+  would not wait for the answer), which is why they are here rather than
   beside the commands they are spelled like.
 - **session.rs**: The threads a session runs on. A reader owns stdin and
   acts on the commands that cannot wait for a search to end (`stop`,
@@ -146,6 +146,4 @@ material plus piece square tables, tapered between middlegame and endgame.
 ## Measurement
 
 The engine measures itself, and most of the project's conventions hang off
-that: exact node counts pinned per commit, speed claims measured against a
-named commit, and play changes settled by matches. DEVELOPMENT.md covers
-all of it.
+that. DEVELOPMENT.md covers all of it.

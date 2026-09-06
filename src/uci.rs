@@ -1687,8 +1687,8 @@ go depth 3
     /// The keywords a generated line opens with: the ones the loop dispatches
     /// on, and near misses that fall through to the unrecognised branch.
     ///
-    /// `bench` is deliberately absent. It runs a real bench of eight million
-    /// nodes whoever is behind the loop, so a generated one would take a
+    /// `bench` is deliberately absent. It runs a real bench of several
+    /// million nodes whoever is behind the loop, so a generated one takes a
     /// couple of seconds a case, and it prints its report as a table rather
     /// than as protocol. That table is fine (nothing but a person types
     /// `bench` at an engine) but it is not a line an interface could read,
