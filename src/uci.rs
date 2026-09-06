@@ -971,25 +971,20 @@ mod tests {
     }
 
     #[test]
-    fn the_hash_option_takes_the_table_size_it_is_given() {
+    fn a_hash_size_is_taken_as_sent_or_clamped_up_to_the_smallest_offered() {
         // no uci first: an option may be set before the handshake, and every
-        // case below relies on that
-        let mut uci = uci();
-        assert!(uci.handle("setoption name Hash value 1"));
-        assert_eq!(uci.engine.table_bytes(), megabytes(1));
-        assert_eq!(
-            said(&uci),
-            "",
-            "a size we can honour is acted on in silence"
-        );
-    }
-
-    #[test]
-    fn a_hash_size_below_the_smallest_offered_is_clamped_up_to_it() {
-        let mut uci = uci();
-        assert!(uci.handle("setoption name Hash value 0"));
-        assert_eq!(uci.engine.table_bytes(), megabytes(1));
-        assert!(said(&uci).contains("info string Hash 0 is outside 1 to 16384, using 1"));
+        // case below relies on that. A size we can honour is acted on in
+        // silence, and one we cannot is said back before the nearest we do
+        // offer is used
+        for (value, said_back) in [
+            ("1", ""),
+            ("0", "info string Hash 0 is outside 1 to 16384, using 1\n"),
+        ] {
+            let mut uci = uci();
+            assert!(uci.handle(&format!("setoption name Hash value {}", value)));
+            assert_eq!(uci.engine.table_bytes(), megabytes(1), "{}", value);
+            assert_eq!(said(&uci), said_back, "{}", value);
+        }
     }
 
     #[test]
@@ -1175,72 +1170,81 @@ go depth 3
         assert_eq!(uci.engine.table_bytes(), megabytes(1));
     }
 
-    #[test]
-    fn each_colour_reads_its_own_clock() {
-        let line = "go wtime 111 btime 222 winc 333 binc 444 movestogo 5";
-        assert_eq!(
-            TimeControl::of(&Params::of(line), Color::White),
-            TimeControl {
-                time: Some(111),
-                increment: Some(333),
-                moves_to_go: Some(5),
-                move_time: None,
-                infinite: false,
-            }
-        );
-        assert_eq!(
-            TimeControl::of(&Params::of(line), Color::Black),
-            TimeControl {
-                time: Some(222),
-                increment: Some(444),
-                moves_to_go: Some(5),
-                move_time: None,
-                infinite: false,
-            }
-        );
+    /// The whole of a time control: the clock, the increment, the count of
+    /// moves, the move time and the infinite flag. A tuple rather than the
+    /// struct so a case below can be written on one line.
+    type Clocks = (Option<u64>, Option<u64>, Option<u64>, Option<u64>, bool);
+
+    /// What a line's clock words are read as for a colour.
+    fn clock_words(line: &str, color: Color) -> Clocks {
+        let control = TimeControl::of(&Params::of(line), color);
+        (
+            control.time,
+            control.increment,
+            control.moves_to_go,
+            control.move_time,
+            control.infinite,
+        )
     }
 
     #[test]
-    fn a_missing_clock_for_our_colour_is_not_taken_from_the_other() {
-        let control = TimeControl::of(&Params::of("go btime 222 binc 444"), Color::White);
-        assert_eq!(control.time, None);
-        assert_eq!(control.increment, None);
-    }
-
-    #[test]
-    fn move_time_and_infinite_are_read() {
-        assert_eq!(
-            TimeControl::of(&Params::of("go movetime 500"), Color::White).move_time,
-            Some(500)
-        );
-        assert!(TimeControl::of(&Params::of("go infinite"), Color::White).infinite);
-        assert!(!TimeControl::of(&Params::of("go wtime 1000"), Color::White).infinite);
-    }
-
-    #[test]
-    fn a_clock_too_large_to_hold_is_not_read_as_absent() {
-        let line = "go wtime 99999999999999999999999";
-        assert_eq!(
-            TimeControl::of(&Params::of(line), Color::White).time,
-            Some(u64::MAX),
-            "an unreadable clock must not turn into an unlimited search"
-        );
-    }
-
-    #[test]
-    fn a_negative_clock_is_read_as_empty() {
-        // cutechess and fastchess send a clock below zero once their time
-        // margin has been eaten into. Not reading it would leave the budget
-        // unset and search without a limit, at the moment there is the least
-        // time to spare
-        let control = TimeControl::of(&Params::of("go wtime -5 btime -5"), Color::White);
-        assert_eq!(control.time, Some(0));
-        let control = TimeControl::of(
-            &Params::of("go wtime -5 btime -5 winc -1 binc -1"),
-            Color::Black,
-        );
-        assert_eq!(control.time, Some(0));
-        assert_eq!(control.increment, Some(0));
+    fn what_the_clock_words_on_a_go_line_are_read_as() {
+        // every field of the control for each case, so what a line does not
+        // say is asserted as well as what it does
+        const BOTH: &str = "go wtime 111 btime 222 winc 333 binc 444 movestogo 5";
+        const NOTHING: Clocks = (None, None, None, None, false);
+        for (line, color, want) in [
+            // each colour reads its own clock and its own increment; the
+            // count of moves is said once and belongs to both
+            (
+                BOTH,
+                Color::White,
+                (Some(111), Some(333), Some(5), None, false),
+            ),
+            (
+                BOTH,
+                Color::Black,
+                (Some(222), Some(444), Some(5), None, false),
+            ),
+            // and a clock missing for our colour is not taken from the other
+            ("go btime 222 binc 444", Color::White, NOTHING),
+            (
+                "go movetime 500",
+                Color::White,
+                (None, None, None, Some(500), false),
+            ),
+            ("go infinite", Color::White, (None, None, None, None, true)),
+            (
+                "go wtime 1000",
+                Color::White,
+                (Some(1000), None, None, None, false),
+            ),
+            // a clock too large to hold must not turn into an unlimited search
+            (
+                "go wtime 99999999999999999999999",
+                Color::White,
+                (Some(u64::MAX), None, None, None, false),
+            ),
+            // cutechess and fastchess send a clock below zero once their time
+            // margin has been eaten into. Not reading it would leave the
+            // budget unset and search without a limit, at the moment there is
+            // the least time to spare
+            (
+                "go wtime -5 btime -5",
+                Color::White,
+                (Some(0), None, None, None, false),
+            ),
+            (
+                "go wtime -5 btime -5 winc -1 binc -1",
+                Color::Black,
+                (Some(0), Some(0), None, None, false),
+            ),
+            // the regexes this replaced had no word boundary, so a clock
+            // could be read out of the middle of another token
+            ("go xwtime 300000", Color::White, NOTHING),
+        ] {
+            assert_eq!(clock_words(line, color), want, "{} as {:?}", line, color);
+        }
     }
 
     #[test]
@@ -1257,21 +1261,25 @@ go depth 3
     }
 
     #[test]
-    fn an_unreadable_depth_is_ignored_rather_than_obeyed_as_zero() {
-        // zero would be a depth of nothing, and the search would come back
-        // without a move rather than without a limit
-        assert_eq!(
-            Go::of(&Params::of("go depth abc"), Color::White).depth,
-            None
-        );
-    }
-
-    #[test]
-    fn a_keyword_inside_a_longer_word_is_not_one() {
-        // the regexes this replaced had no word boundary, so a clock could be
-        // read out of the middle of another token
-        let control = TimeControl::of(&Params::of("go xwtime 300000"), Color::White);
-        assert_eq!(control.time, None);
+    fn a_depth_is_read_as_far_as_the_ply_rail_and_no_further() {
+        // a depth past what the engine will search is a request to go deep
+        // rather than a reason to refuse the command, so it is clamped. An
+        // unreadable one is dropped instead: zero would be a depth of
+        // nothing, and the search would come back without a move rather
+        // than without a limit
+        for (line, depth) in [
+            ("go depth 5", Some(5)),
+            ("go depth 999", Some(arche_core::MAX_PLY)),
+            ("go depth abc", None),
+            ("go infinite", None),
+        ] {
+            assert_eq!(
+                Go::of(&Params::of(line), Color::White).depth,
+                depth,
+                "{}",
+                line
+            );
+        }
     }
 
     #[test]
@@ -1292,15 +1300,34 @@ go depth 3
     }
 
     #[test]
-    fn the_clock_a_go_names_reaches_the_search() {
-        // 500 less the move overhead, which is what time_control works out
-        // and what has to arrive on the other side of the call. A named move
-        // time arrives named, so the deepening loop spends it rather than
-        // answering early and keeping the rest
-        assert_eq!(
-            asked_of_engine("go movetime 500").limits.clock(),
-            Some(Clock::Fixed(Duration::from_millis(450)))
-        );
+    fn what_a_go_line_asks_of_the_search() {
+        // the depth, the clock and the node budget that arrive on the other
+        // side of the call, for each way a line names them. A move time
+        // arrives as the 500 less the move overhead that time_control works
+        // out, and arrives named, so the deepening loop spends it rather
+        // than answering early and keeping the rest
+        let fixed = |millis| Some(Clock::Fixed(Duration::from_millis(millis)));
+        for (line, depth, clock, nodes) in [
+            ("go movetime 500", None, fixed(450), u64::MAX),
+            ("go infinite wtime 60000", None, None, u64::MAX),
+            ("go nodes 5000", None, None, 5000),
+            ("go depth 3", Some(3), None, u64::MAX),
+            ("go", None, None, u64::MAX),
+            ("go movetime 500 nodes 5000", None, fixed(450), 5000),
+            // a limit read as zero would stop the search before it had a move
+            ("go nodes abc", None, None, u64::MAX),
+            // the root deepens by one more when it is in check, so a request
+            // of the largest depth a byte holds used to overflow it and panic
+            // in a debug build. Nothing that arrives now can, because nothing
+            // past the rail arrives, and the rail itself leaves room for the
+            // extension by a build time assertion beside it
+            ("go depth 255", Some(arche_core::MAX_PLY), None, u64::MAX),
+        ] {
+            let asked = asked_of_engine(line);
+            assert_eq!(asked.depth, depth, "{}: depth", line);
+            assert_eq!(asked.limits.clock(), clock, "{}: clock", line);
+            assert_eq!(asked.limits.node_budget(), nodes, "{}: nodes", line);
+        }
     }
 
     #[test]
@@ -1323,77 +1350,6 @@ go depth 3
     }
 
     #[test]
-    fn a_go_infinite_reaches_the_search_with_no_clock_to_cut_it_short() {
-        let asked = asked_of_engine("go infinite wtime 60000");
-        assert_eq!(asked.limits.clock(), None);
-        assert_eq!(asked.limits.node_budget(), u64::MAX);
-    }
-
-    #[test]
-    fn a_node_limit_reaches_the_search() {
-        let asked = asked_of_engine("go nodes 5000");
-        assert_eq!(asked.limits.node_budget(), 5000);
-        assert_eq!(asked.limits.clock(), None, "a node limit is not a clock");
-    }
-
-    #[test]
-    fn a_depth_reaches_the_search_without_a_limit_beside_it() {
-        let asked = asked_of_engine("go depth 3");
-        assert_eq!(asked.depth, Some(3));
-        assert_eq!(asked.limits.clock(), None);
-        assert_eq!(asked.limits.node_budget(), u64::MAX);
-    }
-
-    #[test]
-    fn a_go_saying_nothing_limits_the_search_by_nothing() {
-        let asked = asked_of_engine("go");
-        assert_eq!(asked.depth, None);
-        assert_eq!(asked.limits.clock(), None);
-        assert_eq!(asked.limits.node_budget(), u64::MAX);
-    }
-
-    #[test]
-    fn a_clock_and_a_node_limit_both_reach_the_search() {
-        let asked = asked_of_engine("go movetime 500 nodes 5000");
-        assert_eq!(
-            asked.limits.clock(),
-            Some(Clock::Fixed(Duration::from_millis(450)))
-        );
-        assert_eq!(asked.limits.node_budget(), 5000);
-    }
-
-    #[test]
-    fn an_unreadable_limit_reaches_the_search_as_no_limit() {
-        // read as zero it would stop the search before it had a move
-        let asked = asked_of_engine("go nodes abc");
-        assert_eq!(asked.limits.node_budget(), u64::MAX);
-    }
-
-    #[test]
-    fn a_depth_past_the_ply_rail_is_clamped_rather_than_refused() {
-        assert_eq!(
-            Go::of(&Params::of("go depth 5"), Color::White).depth,
-            Some(5)
-        );
-        assert_eq!(
-            Go::of(&Params::of("go depth 999"), Color::White).depth,
-            Some(arche_core::MAX_PLY)
-        );
-        assert_eq!(Go::of(&Params::of("go infinite"), Color::White).depth, None);
-    }
-
-    #[test]
-    fn a_depth_of_two_hundred_and_fifty_five_reaches_the_search_clamped() {
-        // the root deepens by one more when it is in check, so a request of
-        // the largest depth a byte holds used to overflow it and panic in a
-        // debug build. Nothing that arrives now can, because nothing past
-        // the rail arrives, and the rail itself leaves room for the
-        // extension by a build time assertion beside it
-        let asked = asked_of_engine("go depth 255");
-        assert_eq!(asked.depth, Some(arche_core::MAX_PLY));
-    }
-
-    #[test]
     fn a_bench_command_ends_with_the_line_the_match_tools_read() {
         let mut uci = uci();
         uci.run(Cursor::new("bench 1\n"));
@@ -1411,15 +1367,25 @@ go depth 3
     }
 
     #[test]
-    fn an_unreadable_bench_depth_is_reported_rather_than_searched() {
-        // running the default in its place would take seconds and say
-        // nothing about why, which is the wrong answer to a typo
+    fn an_unreadable_bench_setting_is_reported_rather_than_searched() {
+        // a depth that is not a number or does not fit one, a table of no
+        // size at all, one the machine cannot hold, and a policy that does
+        // not exist are each refused by name. Running the default in their
+        // place would take seconds and say nothing about why, which is the
+        // wrong answer to a typo
         let mut uci = uci();
-        uci.run(Cursor::new("bench abc\nbench 300\n"));
+        uci.run(Cursor::new(
+            "bench abc\nbench 300\nbench 1 hash 0\nbench 1 hash 99999\n\
+             bench 1 hash big\nbench 1 taint maybe\n",
+        ));
         assert_eq!(
             said(&uci),
             "info string unrecognised bench depth: abc\n\
-             info string unrecognised bench depth: 300\n"
+             info string unrecognised bench depth: 300\n\
+             info string unrecognised bench hash: 0\n\
+             info string unrecognised bench hash: 99999\n\
+             info string unrecognised bench hash: big\n\
+             info string unrecognised bench taint: maybe\n"
         );
     }
 
@@ -1491,23 +1457,6 @@ go depth 3
     }
 
     #[test]
-    fn an_unreadable_bench_setting_is_reported_rather_than_searched() {
-        // a table of no size at all, one the machine cannot hold, and a
-        // policy that does not exist are each refused by name
-        let mut uci = uci();
-        uci.run(Cursor::new(
-            "bench 1 hash 0\nbench 1 hash 99999\nbench 1 hash big\nbench 1 taint maybe\n",
-        ));
-        assert_eq!(
-            said(&uci),
-            "info string unrecognised bench hash: 0\n\
-             info string unrecognised bench hash: 99999\n\
-             info string unrecognised bench hash: big\n\
-             info string unrecognised bench taint: maybe\n"
-        );
-    }
-
-    #[test]
     fn a_perft_command_reads_its_depth() {
         assert_eq!(perft_depth(&Params::of("perft 3")), 3);
         assert_eq!(
@@ -1540,70 +1489,60 @@ go depth 3
     }
 
     #[test]
-    fn an_info_line_reports_a_centipawn_score() {
-        let result = SearchResult {
-            nodes: 2000,
-            elapsed: Duration::from_millis(500),
-            selective_depth: 7,
+    fn a_report_is_said_as_an_info_line() {
+        // the best move is not part of the line, so it stands still and
+        // each case varies the rest
+        let result = |nodes, millis, selective_depth, score| SearchResult {
+            nodes,
+            elapsed: Duration::from_millis(millis),
+            selective_depth,
             best_move: play_named("e2e4"),
-            score: 25,
+            score,
         };
-        let pv = PvLine::new(vec![play_named("e2e4"), play_named("g1f3")]);
-        assert_eq!(
-            format_info(5, &result, &pv, ScoreBound::Exact),
-            "info depth 5 seldepth 7 nodes 2000 time 500 nps 4000 score cp 25 pv e2e4 g1f3"
-        );
-    }
-
-    #[test]
-    fn an_info_line_reports_a_mate_score_in_moves() {
-        // three plies from checkmate reads as mate in two moves
-        let result = SearchResult {
-            nodes: 1500,
-            elapsed: Duration::from_millis(20),
-            selective_depth: 4,
-            best_move: play_named("e2e4"),
-            score: 30_000 - 3,
-        };
-        let pv = PvLine::new(vec![play_named("e2e4")]);
-        assert_eq!(
-            format_info(4, &result, &pv, ScoreBound::Exact),
-            "info depth 4 seldepth 4 nodes 1500 time 20 nps 75000 score mate 2 pv e2e4"
-        );
-    }
-
-    #[test]
-    fn a_search_faster_than_a_millisecond_still_reports_a_rate() {
-        let result = SearchResult {
-            nodes: 300,
-            elapsed: Duration::ZERO,
-            selective_depth: 1,
-            best_move: play_named("e2e4"),
-            score: 0,
-        };
-        let pv = PvLine::new(vec![]);
-        assert_eq!(
-            format_info(1, &result, &pv, ScoreBound::Exact),
-            "info depth 1 seldepth 1 nodes 300 time 0 nps 300000 score cp 0 pv "
-        );
-    }
-
-    #[test]
-    fn a_score_over_some_of_the_root_moves_is_qualified_as_a_bound() {
-        // the word goes after the score and before the line, which is where
-        // the protocol has it and where an interface that reads it looks
-        let result = SearchResult {
-            nodes: 2000,
-            elapsed: Duration::from_millis(500),
-            selective_depth: 7,
-            best_move: play_named("d2d4"),
-            score: 25,
-        };
-        let pv = PvLine::new(vec![play_named("d2d4")]);
-        assert_eq!(
-            format_info(6, &result, &pv, ScoreBound::Lower),
-            "info depth 6 seldepth 7 nodes 2000 time 500 nps 4000 score cp 25 lowerbound pv d2d4"
-        );
+        for (depth, result, line, bound, expected) in [
+            (
+                5,
+                result(2000, 500, 7, 25),
+                vec!["e2e4", "g1f3"],
+                ScoreBound::Exact,
+                "info depth 5 seldepth 7 nodes 2000 time 500 nps 4000 score cp 25 pv e2e4 g1f3",
+            ),
+            // three plies from checkmate reads as mate in two moves
+            (
+                4,
+                result(1500, 20, 4, 30_000 - 3),
+                vec!["e2e4"],
+                ScoreBound::Exact,
+                "info depth 4 seldepth 4 nodes 1500 time 20 nps 75000 score mate 2 pv e2e4",
+            ),
+            // a search faster than a millisecond is measured as one, so the
+            // rate stays finite
+            (
+                1,
+                result(300, 0, 1, 0),
+                vec![],
+                ScoreBound::Exact,
+                "info depth 1 seldepth 1 nodes 300 time 0 nps 300000 score cp 0 pv ",
+            ),
+            // a score proved over some of the root moves is qualified. The
+            // word goes after the score and before the line, which is where
+            // the protocol has it and where an interface that reads it looks
+            (
+                6,
+                result(2000, 500, 7, 25),
+                vec!["d2d4"],
+                ScoreBound::Lower,
+                "info depth 6 seldepth 7 nodes 2000 time 500 nps 4000 score cp 25 lowerbound pv d2d4",
+            ),
+        ] {
+            let pv = PvLine::new(line.into_iter().map(play_named).collect());
+            assert_eq!(
+                format_info(depth, &result, &pv, bound),
+                expected,
+                "depth {}",
+                depth
+            );
+        }
     }
 
     /// An engine whose search ends the way one the clock catches does: a
@@ -2065,31 +2004,24 @@ go depth 3
     }
 
     #[test]
-    fn a_go_infinite_holds_its_move_until_a_stop_arrives() {
-        // the engine behind this one answers at once, so the deepening is
-        // over long before the stop. The bestmove still waits for it,
-        // which is what infinite means
-        let driven = Driven::instant();
-        driven.type_line("go infinite");
-        assert_eq!(
-            driven.stays_quiet_for(Duration::from_millis(50)),
-            "",
-            "an infinite search answered without being stopped"
-        );
-        driven.type_line("stop");
-        driven.wait_for("bestmove");
-        driven.finish();
-    }
-
-    #[test]
-    fn a_bare_go_holds_its_move_the_way_an_infinite_one_does() {
-        // a go with nothing to bound it is an infinite one said differently
-        let driven = Driven::instant();
-        driven.type_line("go");
-        assert_eq!(driven.stays_quiet_for(Duration::from_millis(50)), "");
-        driven.type_line("stop");
-        driven.wait_for("bestmove");
-        driven.finish();
+    fn a_go_nothing_bounds_holds_its_move_until_a_stop_arrives() {
+        // the engine behind these answers at once, so the deepening is over
+        // long before the stop. The bestmove still waits for it, which is
+        // what infinite means, and a go with nothing to bound it is an
+        // infinite one said differently
+        for line in ["go infinite", "go"] {
+            let driven = Driven::instant();
+            driven.type_line(line);
+            assert_eq!(
+                driven.stays_quiet_for(Duration::from_millis(50)),
+                "",
+                "{} answered without being stopped",
+                line
+            );
+            driven.type_line("stop");
+            driven.wait_for("bestmove");
+            driven.finish();
+        }
     }
 
     #[test]
