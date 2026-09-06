@@ -444,8 +444,8 @@ pub struct Board {
     // outside the search.
     //
     // Not called a mailbox, though that is what it is, because this crate
-    // already calls the ten by twelve padded index scheme in `misc` the
-    // mailbox and one name for two things is worse than a plain one here.
+    // already calls the ten by ten sentinel grid in `magic` the mailbox and
+    // one name for two things is worse than a plain one here.
     squares: [Option<Piece>; 64],
 
     pub(crate) active_color: Color,
