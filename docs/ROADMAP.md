@@ -5,8 +5,8 @@ See [DEVELOPMENT.md](DEVELOPMENT.md) for how to measure whether one of these hel
 
 ## Not implemented yet
 
-The measurement spine — the bench, the commit trailers, a reference search to
-compare against — is in place, so each of these arrives with its numbers: a
+The measurement spine (the bench, the commit trailers, a reference search to
+compare against) is in place, so each of these arrives with its numbers: a
 `Bench:` trailer always, and an `Elo:` trailer from an SPRT when it changes how
 the engine plays. Roughly in the order they look worth doing.
 

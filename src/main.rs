@@ -10,8 +10,8 @@ use arche_core::Board;
 use std::process::ExitCode;
 
 /// What the binary takes, for whoever ran it to find out. Short because there
-/// is little to say: the engine speaks uci on stdin, and the three arguments
-/// it takes are measurements, one of which is a uci command too.
+/// is little to say: the engine speaks uci on stdin, and four of the six
+/// arguments it takes are measurements, one of which is a uci command too.
 const USAGE: &str = "\
 arche, a chess engine speaking uci on stdin.
 
