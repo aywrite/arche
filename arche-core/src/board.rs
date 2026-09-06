@@ -2395,7 +2395,7 @@ impl fmt::Display for Board {
                     }
                     Some((piece, Color::Black)) => write!(f, " {}", char::from(piece))?,
                     None => write!(f, " .")?,
-                };
+                }
             }
             writeln!(f)?;
         }

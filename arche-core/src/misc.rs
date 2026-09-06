@@ -154,7 +154,7 @@ impl CastlePermissions {
         };
         if s == "-" {
             return Ok(perms);
-        };
+        }
         for c in s.chars() {
             match c {
                 'k' => perms.black_king_side = true,
@@ -171,23 +171,23 @@ impl CastlePermissions {
         }
         Ok(perms)
     }
+
+    /// The rights in the order a fen writes them, or a dash for none.
     pub fn as_fen(&self) -> String {
         let mut s = String::new();
-        if self.white_king_side {
-            s.push('K');
-        };
-        if self.white_queen_side {
-            s.push('Q');
-        };
-        if self.black_king_side {
-            s.push('k');
-        };
-        if self.black_queen_side {
-            s.push('q');
-        };
+        for (held, letter) in [
+            (self.white_king_side, 'K'),
+            (self.white_queen_side, 'Q'),
+            (self.black_king_side, 'k'),
+            (self.black_queen_side, 'q'),
+        ] {
+            if held {
+                s.push(letter);
+            }
+        }
         if s.is_empty() {
             s.push('-');
-        };
+        }
         s
     }
 }
