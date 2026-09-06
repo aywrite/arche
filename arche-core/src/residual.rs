@@ -36,9 +36,13 @@ use std::fmt;
 /// The shortcut that answered a node, or the shadow lane that watched one
 /// it could have.
 ///
-/// The first two are the shortcuts the default configuration turns on.
-/// Another shortcut would be one arm here and one call at wherever it
-/// returns.
+/// The first two are the shortcuts that answer a whole node, which is what
+/// gives a reference something to be asked about. The default turns on
+/// three others: the delta margin and the losing capture skip pass over a
+/// move in quiescence rather than answering a node, and what trusting the
+/// late move reduction's scout costs is the reduction ledger's question.
+/// Another shortcut answering a node would be one arm here and one call at
+/// wherever it returns.
 ///
 /// The shadow kind answers nothing. It records every reverse futility
 /// candidate, a node where the eval stood at or above beta with the other
@@ -862,8 +866,63 @@ impl fmt::Display for Report {
     }
 }
 
+/// What the three recorders' tests share: the positions they record over,
+/// and the contract each of them is held to. Here beside the sampler, the
+/// window and the key spread, which the census and the ledger already read
+/// from this module, so nothing is coupled that was not coupled already.
+#[cfg(test)]
+pub(crate) mod fixtures {
+    use super::*;
+
+    /// Two positions, enough for a run to have something to record and
+    /// little enough for a replay to finish inside a test.
+    pub(crate) fn suite() -> Vec<Position> {
+        bench::parse_epd(
+            "r1b2rk1/ppp1qppp/4pn2/6N1/Qn1P4/2NBP3/PP3PPP/R3K2R w KQ - id \"sharp\";\n\
+             r3k2r/p1ppqpb1/bn2pnp1/3PN3/1p2P3/2N2Q1p/PPPBBPPP/R3K2R w KQkq - id \"kiwipete\";",
+        )
+    }
+
+    /// Every recorder's contract: an engine with one searches the tree an
+    /// engine without one searches. Asked of the armed engine itself,
+    /// position by position, rather than of two disarmed runs either side
+    /// of it, since neither of those is the search under test.
+    ///
+    /// `arm` turns the recorder on and `take` takes it back and says how
+    /// many events it kept. The count is what says the armed runs recorded
+    /// at all, rather than agreeing with the plain ones by doing nothing.
+    pub(crate) fn recording_leaves_the_search_where_it_was(
+        arm: impl Fn(&mut AlphaBeta),
+        take: impl Fn(&mut AlphaBeta) -> usize,
+    ) {
+        let searched_nodes = |engine: &mut AlphaBeta, id: &str| {
+            let outcome =
+                engine.iterative_deepening_search(SearchParameters::to_depth(4), |_, _, _, _| {});
+            let SearchOutcome::Complete(result) = outcome else {
+                panic!("{id}: an unlimited search did not complete");
+            };
+            result.nodes
+        };
+        let mut kept = 0;
+        for position in &suite() {
+            let board = Board::from_fen(&position.fen).unwrap();
+            let mut plain =
+                AlphaBeta::with_config(board.clone(), bench::TABLE_BYTES, SearchConfig::default());
+            let plain_nodes = searched_nodes(&mut plain, &position.id);
+            let mut armed =
+                AlphaBeta::with_config(board, bench::TABLE_BYTES, SearchConfig::default());
+            arm(&mut armed);
+            let armed_nodes = searched_nodes(&mut armed, &position.id);
+            assert_eq!(armed_nodes, plain_nodes, "{}", position.id);
+            kept += take(&mut armed);
+        }
+        assert!(kept > 0, "the armed runs recorded nothing");
+    }
+}
+
 #[cfg(test)]
 mod tests {
+    use super::fixtures::{recording_leaves_the_search_where_it_was, suite};
     use super::*;
 
     fn sample(fen: &str) -> Sample {
@@ -1066,15 +1125,6 @@ mod tests {
         assert_eq!(Window::Open.word(), "open");
     }
 
-    /// Two positions, enough for a run to have something to record and
-    /// little enough for the replay to finish in a test.
-    fn suite() -> Vec<Position> {
-        bench::parse_epd(
-            "r1b2rk1/ppp1qppp/4pn2/6N1/Qn1P4/2NBP3/PP3PPP/R3K2R w KQ - id \"sharp\";\n\
-             r3k2r/p1ppqpb1/bn2pnp1/3PN3/1p2P3/2N2Q1p/PPPBBPPP/R3K2R w KQkq - id \"kiwipete\";",
-        )
-    }
-
     /// The delta's sign is the whole reading of a residual, so it is pinned
     /// against a claim made up to be wrong in a known direction. The replay
     /// is driven straight, with no recording run in front of it, which is
@@ -1205,40 +1255,20 @@ mod tests {
         }
     }
 
-    /// The sampler's contract: an engine with one searches the tree an
-    /// engine without one searches. Asked of the armed engine itself,
-    /// position by position, the way the census and the ledger ask it. Two
-    /// disarmed runs either side of a sampled one would agree whatever the
-    /// sampler did, since neither of them is the search under test.
+    /// The sampler's contract, asked the way `fixtures` asks all three.
     #[test]
     fn recording_leaves_the_measured_search_where_it_was() {
-        let searched_nodes = |engine: &mut AlphaBeta, id: &str| {
-            let outcome =
-                engine.iterative_deepening_search(SearchParameters::to_depth(4), |_, _, _, _| {});
-            let SearchOutcome::Complete(result) = outcome else {
-                panic!("{id}: an unlimited search did not complete");
-            };
-            result.nodes
-        };
-        let mut kept = 0;
-        for position in &suite() {
-            let board = Board::from_fen(&position.fen).unwrap();
-            let mut plain =
-                AlphaBeta::with_config(board.clone(), bench::TABLE_BYTES, SearchConfig::default());
-            let plain_nodes = searched_nodes(&mut plain, &position.id);
-            let mut armed =
-                AlphaBeta::with_config(board, bench::TABLE_BYTES, SearchConfig::default());
-            armed.sample_shortcuts(Sampler::with_cap(1, DEFAULT_CAP));
-            let armed_nodes = searched_nodes(&mut armed, &position.id);
-            assert_eq!(armed_nodes, plain_nodes, "{}", position.id);
-            kept += armed
-                .take_sampler()
-                .expect("the sampler comes back")
-                .drain()
-                .taken
-                .len();
-        }
-        assert!(kept > 0, "the armed runs recorded nothing");
+        recording_leaves_the_search_where_it_was(
+            |engine| engine.sample_shortcuts(Sampler::with_cap(1, DEFAULT_CAP)),
+            |engine| {
+                engine
+                    .take_sampler()
+                    .expect("the sampler comes back")
+                    .drain()
+                    .taken
+                    .len()
+            },
+        );
     }
 
     /// A rate takes a subset of what rate one takes, and takes it by the key

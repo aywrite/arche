@@ -386,8 +386,9 @@ fn mean(total: usize, over: usize) -> String {
 /// A row is `depth window check outcome generated searched index class
 /// history history_max scored tt eval_beta cost reduced fen`, whitespace
 /// separated with the fen last, so it parses left to right and the field
-/// that can hold spaces holds the rest of the line. The five fields a held
-/// row has no value for print `-` rather than moving the columns.
+/// that can hold spaces holds the rest of the line. The four fields a held
+/// row has no value for, `index`, `class`, `history` and `reduced`, print
+/// `-` rather than moving the columns.
 ///
 /// The header states the events beside the records, always, for the
 /// residuals header's reason: a distribution says nothing until the reader
@@ -486,15 +487,7 @@ mod tests {
     use super::*;
     use crate::misc::Piece;
     use crate::residual::DEFAULT_CAP;
-
-    /// The same two positions the residual tests record over: enough for a
-    /// run to have something to keep, little enough for a test.
-    fn suite() -> Vec<Position> {
-        bench::parse_epd(
-            "r1b2rk1/ppp1qppp/4pn2/6N1/Qn1P4/2NBP3/PP3PPP/R3K2R w KQ - id \"sharp\";\n\
-             r3k2r/p1ppqpb1/bn2pnp1/3PN3/1p2P3/2N2Q1p/PPPBBPPP/R3K2R w KQkq - id \"kiwipete\";",
-        )
-    }
+    use crate::residual::fixtures::{recording_leaves_the_search_where_it_was, suite};
 
     fn quiet(from: u8, to: u8) -> Play {
         Play::new(from, to, None, None, false, false)
@@ -862,38 +855,20 @@ mod tests {
         assert!(killer.1.history <= killer.0.history_max);
     }
 
-    /// The census's contract: an engine with one searches the tree an
-    /// engine without one searches. Asked of the armed engines themselves,
-    /// position by position, rather than of two disarmed runs around them.
+    /// The census's contract, asked the way `fixtures` asks all three.
     #[test]
     fn recording_leaves_the_measured_search_where_it_was() {
-        let searched_nodes = |engine: &mut AlphaBeta, id: &str| {
-            let outcome =
-                engine.iterative_deepening_search(SearchParameters::to_depth(4), |_, _, _, _| {});
-            let crate::engine::SearchOutcome::Complete(result) = outcome else {
-                panic!("{id}: an unlimited search did not complete");
-            };
-            result.nodes
-        };
-        let mut kept = 0;
-        for position in &suite() {
-            let board = Board::from_fen(&position.fen).unwrap();
-            let mut plain =
-                AlphaBeta::with_config(board.clone(), bench::TABLE_BYTES, SearchConfig::default());
-            let plain_nodes = searched_nodes(&mut plain, &position.id);
-            let mut armed =
-                AlphaBeta::with_config(board, bench::TABLE_BYTES, SearchConfig::default());
-            armed.sample_cutoffs(Sampler::with_cap(1, DEFAULT_CAP));
-            let armed_nodes = searched_nodes(&mut armed, &position.id);
-            assert_eq!(armed_nodes, plain_nodes, "{}", position.id);
-            kept += armed
-                .take_census()
-                .expect("the sampler comes back")
-                .drain()
-                .taken
-                .len();
-        }
-        assert!(kept > 0, "the armed runs recorded nothing");
+        recording_leaves_the_search_where_it_was(
+            |engine| engine.sample_cutoffs(Sampler::with_cap(1, DEFAULT_CAP)),
+            |engine| {
+                engine
+                    .take_census()
+                    .expect("the sampler comes back")
+                    .drain()
+                    .taken
+                    .len()
+            },
+        );
     }
 
     /// The rate of zero and the depth of zero are held to one, so the

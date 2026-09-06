@@ -449,12 +449,11 @@ pub struct AlphaBeta {
     /// is the claim the pinned node counts stand behind.
     sampler: Option<Sampler>,
     /// The cutoff census's reservoir, or none, on the sampler's terms
-    /// exactly: armed only by the cutoffs command, and an engine without
-    /// one searches the tree it always searched.
+    /// exactly: an engine without one searches the tree it always
+    /// searched.
     census: Option<Sampler<census::Event>>,
     /// The reduction ledger's reservoir, or none, on the census's terms
-    /// exactly: armed only by the reductions command, and an engine
-    /// without one searches the tree it always searched.
+    /// exactly.
     ledger: Option<Sampler<reduction::Event>>,
     /// The move loop's half of a ledger event: what the node knew about
     /// the reduced move it is about to scout. Written only while the
@@ -490,10 +489,10 @@ impl AlphaBeta {
         }
     }
 
-    /// Have the search record the nodes its shortcuts answer, at the rate
-    /// the sampler was built with. Off until this is called, and the only
-    /// caller is the residuals command: nothing the engine plays or benches
-    /// with turns it on.
+    /// Arm the residual sampler: have the search record the nodes its
+    /// shortcuts answer, at the rate the sampler was built with. Off until
+    /// this is called, and the callers are the residuals command and the
+    /// tests. Nothing the engine plays or benches with arms it.
     pub fn sample_shortcuts(&mut self, sampler: Sampler) {
         self.sampler = Some(sampler);
     }
@@ -508,36 +507,29 @@ impl AlphaBeta {
         self.sampler.take()
     }
 
-    /// Have the search record which move cuts each sampled full width node
-    /// off, or that none did, at the rate the sampler was built with. Off
-    /// until this is called, and the only caller is the cutoffs command:
-    /// nothing the engine plays or benches with turns it on.
+    /// Arm the cutoff census: have the search record which move cuts each
+    /// sampled full width node off, or that none did. Armed and read back
+    /// on `sample_shortcuts`' terms, the cutoffs command in place of the
+    /// residuals one.
     pub fn sample_cutoffs(&mut self, sampler: Sampler<census::Event>) {
         self.census = Some(sampler);
     }
 
-    /// The census sampler back with everything it collected, leaving the
-    /// engine recording nothing; none from an engine never given one. Handed
-    /// back rather than emptied in place, for `take_sampler`'s reason: one
-    /// sampler carried across a run of searches is what makes its cap
-    /// describe the run.
+    /// The census's sampler back, on `take_sampler`'s terms.
     pub fn take_census(&mut self) -> Option<Sampler<census::Event>> {
         self.census.take()
     }
 
-    /// Have the search record what each sampled reduced scout decided, at
-    /// the rate the sampler was built with. Off until this is called, and
-    /// the only caller is the reductions command: nothing the engine plays
-    /// or benches with turns it on.
+    /// Arm the reduction ledger: have the search record what each sampled
+    /// reduced scout decided. Armed and read back on `sample_shortcuts`'
+    /// terms, the reductions command in place of the residuals one.
     pub fn sample_reductions(&mut self, sampler: Sampler<reduction::Event>) {
         self.ledger = Some(sampler);
     }
 
-    /// The ledger's sampler back with everything it collected, leaving the
-    /// engine recording nothing; none from an engine never given one.
-    /// Handed back rather than emptied in place, for `take_sampler`'s
-    /// reason. A staging the search never consumed, a move that turned out
-    /// illegal, goes with the arming it belonged to.
+    /// The ledger's sampler back, on `take_sampler`'s terms. A staging the
+    /// search never consumed, a move that turned out illegal, goes with
+    /// the arming it belonged to.
     pub fn take_reductions(&mut self) -> Option<Sampler<reduction::Event>> {
         self.staged = None;
         self.ledger.take()

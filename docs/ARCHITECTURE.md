@@ -28,17 +28,19 @@ material plus piece square tables, tapered between middlegame and endgame.
   some state that could be recomputed from them but would be too slow to:
   an array of what stands on each square, the zobrist key, a second key
   over the pawns alone, running totals for material and the piece square
-  evaluation, and a ring of the last ~1024 plies (used by the repetition
-  and fifty move rules, and to undo moves). All piece placement goes
-  through one function, which is what keeps the derived state in sync.
-  Debug builds recompute the derived state from scratch after every move
-  and assert it matches, so a bug in an incremental update fails tests
-  instead of misevaluating quietly.
+  evaluation, the pieces giving check, and a ring of the last ~1024 plies
+  (used by the repetition and fifty move rules, and to undo moves). All
+  piece placement goes through one function, which is what keeps the
+  derived state in sync. Debug builds recompute the derived state from
+  scratch after every move and assert it matches, so a bug in an
+  incremental update fails tests instead of misevaluating quietly.
   Move generation also lives here. It is pseudo-legal: moves are generated
   without checking whether they leave the king in check, and `make_move`
   rejects the ones that do. When already in check the list is first
   filtered down to moves that could address the check, which saves sorting
-  and playing moves that would only be rejected.
+  and playing moves that would only be rejected. Two questions the search
+  asks about a move before making it are answered here as well: what a
+  swap on its square is worth, and whether it gives check.
 - **magic.rs**: Attack lookups for the sliding pieces (bishop, rook,
   queen), using magic bitboards: a table computed at compile time that maps
   "rook on this square, these pieces in the way" directly to the attacked
@@ -54,17 +56,22 @@ material plus piece square tables, tapered between middlegame and endgame.
   seeding the next through the transposition table. At the horizon,
   quiescence search keeps following captures until the position goes
   quiet, since evaluating in the middle of an exchange scores a hanging
-  queen as material. Also here: reverse futility pruning (answer a node
-  from its evaluation when that is already far above what the opponent
-  can accept), null move pruning (answer it from a reduced search of the
-  position left by passing the move) and the check extension.
+  queen as material. Also here: principal variation search (ask a move
+  after the first whether it beats the best so far before searching it
+  properly), reverse futility pruning (answer a node from its evaluation
+  when that is already far above what the opponent can accept), null move
+  pruning (answer it from a reduced search of the position left by passing
+  the move), the late move reduction (scout a quiet move tried late a ply
+  shallower and trust it when it comes back low) and the check extension.
 - **ordering.rs**: The order moves are tried in. The transposition table's
-  move first, then captures by most valuable victim / least valuable
-  attacker, then the quiet moves by two memories the search fills as it
-  goes: the killers, which are the quiet moves that cut off at this
+  move first, then the captures the swap prices as winning or even, by
+  what each wins with most valuable victim / least valuable attacker
+  breaking the ties, then the quiet moves by two memories the search fills
+  as it goes: the killers, which are the quiet moves that cut off at this
   distance from the root, and a history table of how often each quiet move
-  has cut off anywhere. Alpha beta prunes more the sooner a good move is
-  found, so ordering has an outsized effect on tree size.
+  has cut off anywhere. The losing captures close the list. Alpha beta
+  prunes more the sooner a good move is found, so ordering has an outsized
+  effect on tree size.
 - **limits.rs**: When to stop searching. A clock, a node budget, a soft
   rule that skips starting an iteration which would get less than half
   done, and a stop flag shared with the interface thread. The flag is read
@@ -97,17 +104,27 @@ material plus piece square tables, tapered between middlegame and endgame.
   printing exact node counts. This is what a commit's `Bench:` trailer
   states and what CI verifies.
 - **residual.rs**: What the shortcuts cost in accuracy. It samples the
-  nodes reverse futility and the null move pass answered, then replays
-  each one under the reference search to see whether the cutoff was one
-  the position allowed. Driven by the `residuals` argument.
+  nodes reverse futility and the null move pass answered, and the nodes
+  reverse futility could have answered and did not, then replays each one
+  under the reference search to see whether the cutoff was one the
+  position allowed. Driven by the `residuals` argument. The reservoir it
+  samples with is shared by the two recorders below.
+- **census.rs**: Which move cuts a node off, and what it cut ahead of. One
+  row per sampled full width node, whether it cut or ran out of moves, so
+  the two can be read against each other. Driven by the `cutoffs`
+  argument.
+- **reduction.rs**: What trusting a reduced scout decided. One row per
+  sampled scout, and a fail low is replayed at the depth its move was
+  denied to say whether the reduction threw a move away. Driven by the
+  `reductions` argument.
 - **tactics.rs**: 300 tactical positions with a pinned pass count, gated
   in CI.
 
 ## Code map: src
 
-- **main.rs**: Argument handling. `bench` runs the suite and exits,
-  `residuals` measures the shortcuts and exits, no argument starts the
-  UCI loop.
+- **main.rs**: Argument handling. `bench` runs the suite and exits, and so
+  do the three research commands, `residuals`, `cutoffs` and `reductions`.
+  No argument starts the UCI loop.
 - **uci.rs**: The protocol: what each command means, the options the
   handshake advertises, and what a `go` may spend. Every line reaches it
   through the session loop, on the thread the engine was built on.

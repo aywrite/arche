@@ -652,32 +652,34 @@ impl ResidualSettings {
     }
 }
 
-/// What a cutoffs argument asked for: `cutoffs [depth] [every <n>]
-/// [cap <n>]`, the residuals argument's shape without the taint word. The
-/// census records the search the engine plays with and nothing else, so
-/// there is no policy to choose.
-pub struct CutoffSettings {
-    pub depth: u8,
-    pub every: u32,
-    pub cap: usize,
+/// A depth, a rate and a cap: the residuals argument's shape without the
+/// taint word, which is what the cutoffs and reductions arguments both
+/// take. Neither instrument has a policy to choose, since each records the
+/// search the engine plays with.
+struct Sampling {
+    depth: u8,
+    every: u32,
+    cap: usize,
 }
 
-/// The words a cutoffs run takes after its depth.
-const CUTOFF_KEYWORDS: [&str; 2] = ["every", "cap"];
+/// The words either of them takes after its depth.
+const SAMPLING_KEYWORDS: [&str; 2] = ["every", "cap"];
 
-/// Reads the cutoff census settings, or says which word could not be read,
-/// under `residual_settings`' rule: running the default in place of a word
-/// nobody typed would take minutes and explain nothing.
-pub fn cutoff_settings(params: &Params) -> Result<CutoffSettings, String> {
-    let depth = match params.parse::<u8>("cutoffs") {
+/// Reads one of them, or says which word could not be read, under
+/// `residual_settings`' rule: running the default in place of a word
+/// nobody typed would take minutes and explain nothing. `command` is the
+/// word the depth follows, and `default_every` the rate that instrument
+/// samples at when the line names none.
+fn sampling(params: &Params, command: &str, default_every: u32) -> Result<Sampling, String> {
+    let depth = match params.parse::<u8>(command) {
         Param::Absent => bench::DEPTH,
         Param::Read(depth) => depth,
-        Param::Unreadable(word) if CUTOFF_KEYWORDS.contains(&word) => bench::DEPTH,
+        Param::Unreadable(word) if SAMPLING_KEYWORDS.contains(&word) => bench::DEPTH,
         Param::Unreadable(word) => return Err(format!("depth: {word}")),
     };
     let every = match params.parse::<u32>("every") {
-        Param::Absent => census::DEFAULT_EVERY,
-        // zero records every node the loop answers, up to the cap
+        Param::Absent => default_every,
+        // zero records every event the instrument offers, up to the cap
         Param::Read(every) => every,
         Param::Unreadable(word) => return Err(format!("every: {word}")),
     };
@@ -686,6 +688,20 @@ pub fn cutoff_settings(params: &Params) -> Result<CutoffSettings, String> {
         Param::Read(cap) => cap,
         Param::Unreadable(word) => return Err(format!("cap: {word}")),
     };
+    Ok(Sampling { depth, every, cap })
+}
+
+/// What a cutoffs argument asked for: `cutoffs [depth] [every <n>]
+/// [cap <n>]`.
+pub struct CutoffSettings {
+    pub depth: u8,
+    pub every: u32,
+    pub cap: usize,
+}
+
+/// Reads the cutoff census settings, or says which word could not be read.
+pub fn cutoff_settings(params: &Params) -> Result<CutoffSettings, String> {
+    let Sampling { depth, every, cap } = sampling(params, "cutoffs", census::DEFAULT_EVERY)?;
     Ok(CutoffSettings { depth, every, cap })
 }
 
@@ -698,45 +714,23 @@ impl CutoffSettings {
 }
 
 /// What a reductions argument asked for: `reductions [depth] [every <n>]
-/// [cap <n>]`, the cutoffs argument's shape. The ledger records the search
-/// the engine plays with and replays with the reference, so there is
-/// nothing else to choose.
+/// [cap <n>]`.
 pub struct ReductionSettings {
     pub depth: u8,
     pub every: u32,
     pub cap: usize,
 }
 
-/// The words a reductions run takes after its depth.
-const REDUCTION_KEYWORDS: [&str; 2] = ["every", "cap"];
-
 /// Reads the reduction ledger settings, or says which word could not be
-/// read, under `residual_settings`' rule: running the default in place of
-/// a word nobody typed would take minutes and explain nothing.
+/// read.
 pub fn reduction_settings(params: &Params) -> Result<ReductionSettings, String> {
-    let depth = match params.parse::<u8>("reductions") {
-        Param::Absent => bench::DEPTH,
-        Param::Read(depth) => depth,
-        Param::Unreadable(word) if REDUCTION_KEYWORDS.contains(&word) => bench::DEPTH,
-        Param::Unreadable(word) => return Err(format!("depth: {word}")),
-    };
-    let every = match params.parse::<u32>("every") {
-        Param::Absent => reduction::DEFAULT_EVERY,
-        // zero records every reduced scout, up to the cap
-        Param::Read(every) => every,
-        Param::Unreadable(word) => return Err(format!("every: {word}")),
-    };
-    let cap = match params.parse::<usize>("cap") {
-        Param::Absent => residual::DEFAULT_CAP,
-        Param::Read(cap) => cap,
-        Param::Unreadable(word) => return Err(format!("cap: {word}")),
-    };
+    let Sampling { depth, every, cap } = sampling(params, "reductions", reduction::DEFAULT_EVERY)?;
     Ok(ReductionSettings { depth, every, cap })
 }
 
 impl ReductionSettings {
-    /// Runs the ledger these settings describe, over the bench's own
-    /// positions, so the rows describe the tree the bench describes.
+    /// Runs the ledger these settings describe, over the same positions
+    /// and for the same reason.
     pub fn run(&self) -> reduction::Report {
         reduction::run(&bench::positions(), self.depth, self.every, self.cap)
     }
@@ -1708,73 +1702,60 @@ go depth 3
         }
     }
 
-    /// The settings alone, not a run, for the residuals test's reason.
-    #[test]
-    fn a_cutoffs_argument_reads_its_depth_rate_and_cap() {
-        let read = |line: &str| {
-            let settings = cutoff_settings(&Params::of(line)).expect(line);
-            (settings.depth, settings.every, settings.cap)
-        };
-        const CAP: usize = residual::DEFAULT_CAP;
-        assert_eq!(read("cutoffs"), (bench::DEPTH, 1000, CAP));
-        assert_eq!(read("cutoffs 4"), (4, 1000, CAP));
-        assert_eq!(read("cutoffs 4 every 50"), (4, 50, CAP));
-        // a word standing where the depth would be means the depth was
-        // left out rather than mistyped, the rule the bench reads by
-        assert_eq!(read("cutoffs every 50 cap 500"), (bench::DEPTH, 50, 500));
-        // and zero is a rate to ask for: it records every node the move
-        // loop answers, up to the cap
-        assert_eq!(read("cutoffs 2 every 0"), (2, 0, CAP));
-    }
-
-    #[test]
-    fn an_unreadable_cutoffs_setting_is_named_rather_than_run() {
-        for (line, what) in [
-            ("cutoffs abc", "depth: abc"),
-            ("cutoffs 300", "depth: 300"),
-            ("cutoffs 4 every lots", "every: lots"),
-            ("cutoffs 4 cap lots", "cap: lots"),
-        ] {
-            assert_eq!(
-                cutoff_settings(&Params::of(line)).err(),
-                Some(what.to_string()),
-                "{line}"
-            );
+    /// The depth, rate and cap a whole cutoffs or reductions line asked
+    /// for, or the word that could not be read. The two go through one
+    /// reader, so the line's first word is what says which of them to ask.
+    fn sampling_read(line: &str) -> Result<(u8, u32, usize), String> {
+        let params = Params::of(line);
+        if line.starts_with("cutoffs") {
+            cutoff_settings(&params).map(|s| (s.depth, s.every, s.cap))
+        } else {
+            reduction_settings(&params).map(|s| (s.depth, s.every, s.cap))
         }
     }
 
-    /// The settings alone, not a run, for the residuals test's reason.
+    /// Both sampling commands, asked the same questions: they are one
+    /// reader with a word and a default rate each. The settings alone, not
+    /// a run, for the residuals test's reason.
     #[test]
-    fn a_reductions_argument_reads_its_depth_rate_and_cap() {
-        let read = |line: &str| {
-            let settings = reduction_settings(&Params::of(line)).expect(line);
-            (settings.depth, settings.every, settings.cap)
-        };
+    fn a_sampling_argument_reads_its_depth_rate_and_cap() {
         const CAP: usize = residual::DEFAULT_CAP;
-        assert_eq!(read("reductions"), (bench::DEPTH, 1000, CAP));
-        assert_eq!(read("reductions 4"), (4, 1000, CAP));
-        assert_eq!(read("reductions 4 every 50"), (4, 50, CAP));
-        // a word standing where the depth would be means the depth was
-        // left out rather than mistyped, the rule the bench reads by
-        assert_eq!(read("reductions every 50 cap 500"), (bench::DEPTH, 50, 500));
-        // and zero is a rate to ask for: it records every reduced scout,
-        // up to the cap
-        assert_eq!(read("reductions 2 every 0"), (2, 0, CAP));
+        // the literals pin the values, so a changed constant fails here
+        // rather than passing through the same name on both sides
+        assert_eq!(census::DEFAULT_EVERY, 1000);
+        assert_eq!(reduction::DEFAULT_EVERY, 1000);
+        for (command, rate) in [
+            ("cutoffs", census::DEFAULT_EVERY),
+            ("reductions", reduction::DEFAULT_EVERY),
+        ] {
+            let read = |rest: &str| {
+                let line = format!("{command} {rest}");
+                sampling_read(line.trim()).expect(&line)
+            };
+            assert_eq!(read(""), (bench::DEPTH, rate, CAP));
+            assert_eq!(read("4"), (4, rate, CAP));
+            assert_eq!(read("4 every 50"), (4, 50, CAP));
+            // a word standing where the depth would be means the depth was
+            // left out rather than mistyped, the rule the bench reads by
+            assert_eq!(read("every 50 cap 500"), (bench::DEPTH, 50, 500));
+            // and zero is a rate to ask for: it records every event the
+            // instrument offers, up to the cap
+            assert_eq!(read("2 every 0"), (2, 0, CAP));
+        }
     }
 
     #[test]
-    fn an_unreadable_reductions_setting_is_named_rather_than_run() {
-        for (line, what) in [
-            ("reductions abc", "depth: abc"),
-            ("reductions 300", "depth: 300"),
-            ("reductions 4 every lots", "every: lots"),
-            ("reductions 4 cap lots", "cap: lots"),
-        ] {
-            assert_eq!(
-                reduction_settings(&Params::of(line)).err(),
-                Some(what.to_string()),
-                "{line}"
-            );
+    fn an_unreadable_sampling_setting_is_named_rather_than_run() {
+        for command in ["cutoffs", "reductions"] {
+            for (rest, what) in [
+                ("abc", "depth: abc"),
+                ("300", "depth: 300"),
+                ("4 every lots", "every: lots"),
+                ("4 cap lots", "cap: lots"),
+            ] {
+                let line = format!("{command} {rest}");
+                assert_eq!(sampling_read(&line).err(), Some(what.to_string()), "{line}");
+            }
         }
     }
 
