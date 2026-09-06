@@ -80,9 +80,10 @@ impl Limits {
         Self::starting_at(Instant::now(), clock, nodes.unwrap_or(u64::MAX))
     }
 
-    /// The same, from a stated moment rather than from now. A search whose
-    /// clock has already run out is one of these, which is how a test asks
-    /// for one without waiting for a real clock to pass.
+    /// The same, from a stated moment. The other constructors are built on
+    /// it, and a test calls it directly to start a clock in the past, which is
+    /// how a search whose clock has already run out is asked for without
+    /// waiting for a real clock to pass.
     pub fn starting_at(started: Instant, clock: Option<Clock>, nodes: u64) -> Self {
         Self {
             started,
