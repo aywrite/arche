@@ -777,10 +777,6 @@ shard's games by `scripts/match_estimate.py`, rather than taken from fastchess,
 which only ever sees the shard it ran; its interval is measured over pairs,
 since the two games of an opening are one draw and not two.
 
-An sprt is the exception and plays in one shard whatever `shards` says. The test
-weighs the games in the order they were played and stops the moment they settle
-the question, which jobs that cannot see each other's games cannot do.
-
 The release workflow calls the same workflow with five hundred games at 30+0.3
 across five shards, which is about ninety minutes of wall clock, and that run is
 the only one that appends its result to the release notes. The slower control is
@@ -799,30 +795,55 @@ it.
 
 A fixed count answers "how big is the difference", and the table above says how
 badly. The question a change usually poses is the narrower "is there one", and
-that is what the `sprt` input asks. With it enabled, fastchess runs a
+that is what the `sprt` input asks. It runs a
 [sequential probability ratio test](https://en.wikipedia.org/wiki/Sequential_probability_ratio_test):
-after every game it weighs the score so far as evidence between two hypotheses,
-and stops the moment either is accepted. A change worth well more than `elo1`
-settles in tens of games, one worth nothing settles almost as fast, and only a
-difference near the bounds needs the games a fixed match would have spent
-anyway. The verdicts are wrong at the accepted error rates, five percent each
-way.
+the games are weighed as evidence between two hypotheses, and the test ends at
+the first batch whose evidence accepts one of them. The verdicts are wrong at
+the accepted error rates, five percent each way.
+
+The unit of the test is a batch, which is one run of the workflow. The shards
+play their slices with nothing watching, and the summary reads all of their
+games at once: `scripts/match_estimate.py` works out the log likelihood ratio
+over the pooled pairs, under the same logistic model fastchess uses and against
+the same bounds, adds the ratio the earlier batches of the same test ended on
+and judges the sum. fastchess is not asked to run the test in ci at all,
+sharded or not. A test that stopped inside one shard would be looking after
+every game of a fifth of the evidence, and five shards each stopping themselves
+would be five tests rather than one.
 
 - `elo0` and `elo1` are the hypotheses, in the same elo the summary reports.
   The defaults ask "is this worth ten elo, or nothing" — about the size of
   change worth an afternoon at this engine's strength. Bounds closer together
   resolve smaller differences and pay for it in games.
-- `games` stops sizing the match and becomes its cap, so set it in the
-  hundreds or thousands: the test stops itself long before a cap it can settle
-  inside of. Play is also capped at 150 minutes of wall clock, inside the
-  job's own three hour timeout, so a test that would not have finished still
-  reports the games it played.
-- A match stopped by either cap says `inconclusive` next to its estimate,
-  which is the honest reading: the games played did not settle the question.
+- `games` is the size of one batch rather than a cap. Five hundred across five
+  shards at 10+0.1 is about half an hour of wall clock, which is the default.
+  Play is capped at 150 minutes as it is for any match, so a shard the clock
+  stopped leaves a smaller batch rather than a lost one.
+- `prior_llr` is the ratio the earlier batches ended on, which the summary of
+  the last one prints. Left at zero the batch is the first of its test.
 
-The same test can be run locally by adding
+A batch that settles the question says `passed` (stronger by about `elo1` or
+more) or `failed` (not) beside its estimate. One that does not says
+`inconclusive`, and its summary gives the sum to launch the next batch with:
+run the workflow again with the same `elo0`, `elo1`, candidate and baseline,
+and `prior_llr` set to that number. The seed is new each time, so the next
+batch plays openings of its own rather than the ones already spent. A change
+well outside the bounds on either side settles in a batch or two. One at either
+bound, or between them, takes several thousand games, which is why the
+roadmap's two null results ended inconclusive at their caps, and why that
+ledger reads repeated runs of the same arm by adding their ratios.
+
+Looking only between batches is what keeps the error rates. Wald's bounds hold
+for a test that looks at the boundaries of blocks it fixed in advance, which is
+what a batch of shards playing slices settled before they started is. The price
+is fastchess's early stop inside a batch: a change decisive enough to settle
+part way through still plays the batch out.
+
+The same test can be run locally on one machine by adding
 `-sprt elo0=0 elo1=10 alpha=0.05 beta=0.05 model=logistic` to the fastchess
-command above, with `-rounds` raised to serve as the cap.
+command above, with `-rounds` raised to serve as a cap. There fastchess sees
+every game in order, so it can stop itself, and it prints the same ratio the
+summary would.
 
 ## Placing the engine on the ccrl scale
 

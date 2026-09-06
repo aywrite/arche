@@ -18,14 +18,15 @@ name: Strength
 # fastchess, which only ever sees the one shard it ran. Its interval is measured
 # over pairs, since the two games of an opening are one draw and not two.
 #
-# Or ask the narrower question instead: sprt runs a sequential test that stops
-# the moment the games so far settle whether the candidate is stronger, rather
-# than playing a count chosen in advance. games then caps the match instead of
-# sizing it, so it can be set generously, and a match that reaches the cap, or
-# the time cap, reports inconclusive rather than pretending the games it played
-# were enough. A sequential test reads the games in the order they were played,
-# which jobs that cannot see each other cannot do, so an sprt run is one shard
-# whatever shards says.
+# Or ask the narrower question instead: sprt reads the same pooled games as a
+# sequential test of whether the candidate is stronger. A run is one batch of
+# it. The shards play their slices with nothing watching, the summary works out
+# the log likelihood ratio over every pair they played, adds the ratio the
+# earlier batches of the same test ended on and judges the sum against the
+# bounds. A batch that settles it says passed or failed; one that does not says
+# inconclusive and the ratio to launch the next batch with. Looking at the
+# batch boundaries rather than after every game is what lets the shards play at
+# once and leaves the bounds meaning what they say.
 #
 # Every run keeps what it would take to look into its own result: the games with
 # the search figures behind each move, the result block, the fastchess config
@@ -43,11 +44,11 @@ on:
         description: What to measure it against. Same forms. Defaults to the last full release.
         type: string
       games:
-        description: Games to play, split between the shards and rounded down to an even number each. With sprt this is the cap, not the size, so set it generously.
+        description: Games to play, split between the shards and rounded down to an even number each. With sprt this is one batch of the test, not a cap.
         type: number
         default: 500
       shards:
-        description: Jobs to split the games across. An sprt cannot be split and plays in one whatever this says.
+        description: Jobs to split the games across.
         type: number
         default: 5
       time_control:
@@ -55,7 +56,7 @@ on:
         type: string
         default: 10+0.1
       sprt:
-        description: Stop as soon as the games settle whether the candidate is stronger, instead of playing them all
+        description: Ask whether the candidate is stronger rather than how much. This run is one batch of a sequential test, read together with the batches before it.
         type: boolean
         default: false
       elo0:
@@ -66,6 +67,10 @@ on:
         description: SPRT alternative, in elo. Accepting it (H1) means the candidate is stronger by about this much or more.
         type: number
         default: 10
+      prior_llr:
+        description: The log likelihood ratio the earlier batches of this test ended on, as their summaries printed it. Left at zero this batch is the first.
+        type: string
+        default: "0"
       seed:
         description: Seed for the region of the book the shards play, an unsigned integer. Left empty it is the run id, and either way the manifest records it.
         type: string
@@ -95,6 +100,9 @@ on:
       elo1:
         type: number
         default: 10
+      prior_llr:
+        type: string
+        default: "0"
       seed:
         type: string
       publish:
@@ -185,17 +193,32 @@ jobs:
           GAMES: ${{ inputs.games }}
           SHARDS: ${{ inputs.shards }}
           SPRT: ${{ inputs.sprt }}
+          ELO0: ${{ inputs.elo0 }}
+          ELO1: ${{ inputs.elo1 }}
+          # an emptied box arrives as the empty string, which is the same
+          # ask as the default: this batch is the first of its test
+          PRIOR_LLR: ${{ inputs.prior_llr || '0' }}
         run: |
           if [ "$SHARDS" -lt 1 ]; then
             echo "::error::shards must be at least one, got ${SHARDS}"
             exit 1
           fi
-          # A sequential test weighs the games in the order they were played and
-          # stops the moment they settle the question. Jobs that cannot see each
-          # other's games cannot do that, so an sprt run plays in one shard and
-          # its games stay the cap they already were.
+          # The summary is the first thing that reads the sprt inputs, at the
+          # end, so a mistyped one would otherwise cost a batch that has
+          # already been played. The boxes take free text whatever they say
           if [ "$SPRT" = "true" ]; then
-            SHARDS=1
+            number='^-?[0-9]+(\.[0-9]+)?$'
+            for value in "$ELO0" "$ELO1" "$PRIOR_LLR"; do
+              if ! [[ "$value" =~ $number ]]; then
+                echo "::error::elo0, elo1 and prior_llr must be numbers, got ${ELO0}, ${ELO1} and ${PRIOR_LLR}"
+                exit 1
+              fi
+            done
+            if ! awk -v null="$ELO0" -v alternative="$ELO1" \
+                 'BEGIN { exit !(null < alternative) }'; then
+              echo "::error::elo0 must be below elo1, got ${ELO0} and ${ELO1}"
+              exit 1
+            fi
           fi
           # every shard plays whole pairs, since a pair is the unit the games
           # are read in, so its games are rounded down to an even number and the
@@ -205,12 +228,14 @@ jobs:
             echo "::error::${GAMES} games across ${SHARDS} shards is under a pair each"
             exit 1
           fi
+          batch=""
           if [ "$SPRT" = "true" ]; then
-            echo "::notice::an sprt cannot be split, so this run is one shard of up to $((pairs * 2)) games"
-          elif [ "$SHARDS" = "1" ]; then
-            echo "::notice::one shard of $((pairs * 2)) games"
+            batch=", one batch of the sprt"
+          fi
+          if [ "$SHARDS" = "1" ]; then
+            echo "::notice::one shard of $((pairs * 2)) games${batch}"
           else
-            echo "::notice::$((pairs * 2)) games in each of ${SHARDS} shards, $((pairs * 2 * SHARDS)) in all"
+            echo "::notice::$((pairs * 2)) games in each of ${SHARDS} shards, $((pairs * 2 * SHARDS)) in all${batch}"
           fi
           echo "pairs=${pairs}" >> "$GITHUB_OUTPUT"
           # the list the matrix is built from, and the count of it, which is
@@ -237,15 +262,15 @@ jobs:
         shell: bash
     env:
       SHARD: ${{ matrix.shard }}
-      # the shards the match is actually playing, which an sprt has had cut
-      # to one
+      # the shards the match is actually playing, which is what the slices are
+      # cut for
       SHARDS: ${{ needs.resolve.outputs.count }}
       PAIRS: ${{ needs.resolve.outputs.pairs }}
-      GAMES: ${{ inputs.games }}
       TIME_CONTROL: ${{ inputs.time_control }}
       SPRT: ${{ inputs.sprt }}
       ELO0: ${{ inputs.elo0 }}
       ELO1: ${{ inputs.elo1 }}
+      PRIOR_LLR: ${{ inputs.prior_llr || '0' }}
       # the openings are taken in book order from an offset, so the seed picks
       # the region of the book each shard plays rather than a shuffle. The run
       # id is one nobody has to choose and no two runs share; a seed given by
@@ -281,9 +306,7 @@ jobs:
 
       # Which openings this shard plays. The book is counted here rather than
       # written down, because a book that changed size would otherwise move
-      # every shard but the first onto its neighbour's openings. An sprt run is
-      # one shard and takes a slice like any other, so it is still replayable
-      # from its seed.
+      # every shard but the first onto its neighbour's openings.
       - name: Work out the slice of the book
         run: |
           openings=$(grep -c '^\[Event' tools/8moves_v3.pgn) \
@@ -304,13 +327,12 @@ jobs:
           # runner would still find the last attempt's games lying here, and
           # fastchess appends to a pgn it is given
           rm -f games.pgn result.txt config.json
-          sprt=()
-          if [ "$SPRT" = "true" ]; then
-            # logistic keeps the bounds in the same elo the summary reports.
-            # Alpha and beta are the error rates the verdicts are accepted at:
-            # a wrong H1 one run in twenty, a wrong H0 the same
-            sprt=(-sprt "elo0=$ELO0" "elo1=$ELO1" alpha=0.05 beta=0.05 model=logistic)
-          fi
+          # No -sprt, sharded or not. A shard that stopped itself the moment
+          # its own games settled the question would be one look per shard at a
+          # bound meant for one look, and its games would be a slice chosen by
+          # what they said. The shards play their pairs out and the summary
+          # runs the test over all of them at once.
+          #
           # the engine allocates its transposition table before it answers
           # uci, which four copies starting at once can take longer over than
           # the ten second default allows.
@@ -330,7 +352,6 @@ jobs:
             -each proto=uci "tc=$TIME_CONTROL" "option.Hash=$HASH" -startup-ms 20000 \
             -openings file=8moves_v3.pgn format=pgn order=sequential "start=$START" \
             -rounds "$PAIRS" -repeat -concurrency "$CONCURRENCY" -recover \
-            "${sprt[@]}" \
             -pgnout file=games.pgn nodes=true seldepth=true nps=true \
               hashfull=true timeleft=true latency=true pv=true \
             | tee result.txt || status=$?
@@ -343,7 +364,7 @@ jobs:
           elif [ "$status" != "0" ]; then
             exit "$status"
           else
-            echo "STOPPED_BY=fastchess, at the game count or an sprt bound" >> "$GITHUB_ENV"
+            echo "STOPPED_BY=fastchess, at the game count" >> "$GITHUB_ENV"
           fi
 
       # What it would take to play this shard again, and what it was played on.
@@ -373,11 +394,10 @@ jobs:
             echo "time_control: ${TIME_CONTROL}"
             echo "hash_mb: ${HASH}"
             echo "concurrency: ${CONCURRENCY}"
+            echo "games_asked: $((PAIRS * 2))"
             if [ "$SPRT" = "true" ]; then
-              echo "games_asked: ${GAMES} (a cap, the sprt stops the match itself)"
-              echo "sprt: elo0=${ELO0} elo1=${ELO1} alpha=0.05 beta=0.05 model=logistic"
+              echo "sprt: judged by the summary over the pooled pairs, not by fastchess: elo0=${ELO0} elo1=${ELO1} alpha=0.05 beta=0.05 model=logistic prior_llr=${PRIOR_LLR}"
             else
-              echo "games_asked: $((PAIRS * 2))"
               echo "sprt: off"
             fi
             echo "wall_clock_cap_minutes: ${MAX_MATCH_MINUTES}"
@@ -424,11 +444,12 @@ jobs:
     outputs:
       line: ${{ steps.summary.outputs.line }}
     env:
-      GAMES: ${{ inputs.games }}
       SHARDS: ${{ needs.resolve.outputs.count }}
       TIME_CONTROL: ${{ inputs.time_control }}
       SPRT: ${{ inputs.sprt }}
+      ELO0: ${{ inputs.elo0 }}
       ELO1: ${{ inputs.elo1 }}
+      PRIOR_LLR: ${{ inputs.prior_llr || '0' }}
       SEED: ${{ inputs.seed || github.run_id }}
       CANDIDATE: ${{ needs.resolve.outputs.candidate_name }}
       CANDIDATE_SHA: ${{ needs.resolve.outputs.candidate_sha }}
@@ -460,40 +481,27 @@ jobs:
           # of them. How the games ended is counted the same way: the losses a
           # crash or the clock cost stay in the estimate, because choosing what
           # to count after seeing it is not a measurement, and the counts sit
-          # beside it instead. Anything worth an alert comes back on stderr
+          # beside it instead. Anything worth an alert comes back on stderr.
+          #
+          # An sprt reads the same pooled pairs a second way, as this batch
+          # of a sequential test: the estimate adds the ratio the earlier
+          # batches ended on and judges the sum against the bounds. fastchess
+          # never ran the test, so there is no result block to take a verdict
+          # from and no second reading to disagree with this one
           estimate=(python3 scripts/match_estimate.py "${games[@]}"
                     --candidate "$CANDIDATE" --baseline "$PREVIOUS"
                     --tc "$TIME_CONTROL")
+          if [ "$SPRT" = "true" ]; then
+            estimate+=(--elo0 "$ELO0" --elo1 "$ELO1" --prior-llr "$PRIOR_LLR")
+          fi
           "${estimate[@]}" > report.md 2> remarks.txt \
             || { echo "::error::the games could not be read"; cat remarks.txt; exit 1; }
           while read -r remark; do
             echo "::warning::${remark}"
           done < remarks.txt
 
-          # The sequential test is fastchess's own and only the shard that ran
-          # it can report the verdict, so the bounds and the hypothesis that
-          # was accepted are read out of its result block. The trailer comes
-          # from there too, since an estimate of +58 with the test failed and
-          # one with it passed are not the same claim
-          verdict=""
-          reading=""
-          result=$(find shards -name result.txt 2>/dev/null | sort | head -1)
-          if [ "$SPRT" = "true" ] && [ -n "$result" ]; then
-            reading=$(python3 scripts/match_summary.py "$result")
-            case "$reading" in
-              *", SPRT"*) verdict=", SPRT${reading#*, SPRT}" ;;
-              *) echo "::warning::the sprt shard's result block has no verdict in it" ;;
-            esac
-            trailer=$(python3 scripts/match_summary.py "$result" \
-              --trailer --tc "$TIME_CONTROL" --baseline "$PREVIOUS")
-          else
-            if [ "$SPRT" = "true" ]; then
-              echo "::warning::the sprt shard uploaded no result block, so there is no verdict to report"
-            fi
-            trailer=$("${estimate[@]}" --trailer)
-          fi
-
-          line="Performance compared to ${PREVIOUS} | $("${estimate[@]}" --line)${verdict}"
+          trailer=$("${estimate[@]}" --trailer)
+          line="Performance compared to ${PREVIOUS} | $("${estimate[@]}" --line)"
           echo "::notice::$line"
           echo "line=${line}" >> "$GITHUB_OUTPUT"
           {
@@ -502,12 +510,6 @@ jobs:
             echo
             cat report.md
             echo
-            if [ -n "$reading" ]; then
-              echo "The sequential test as fastchess reported it: ${reading}"
-              echo
-              echo "SPRT stops when the games settle the question at a five percent error rate each way: passed (H1 accepted) means stronger by about ${ELO1} elo or more, failed (H0 accepted) means not, and inconclusive means the cap of ${GAMES} games or ${MAX_MATCH_MINUTES} minutes arrived first."
-              echo
-            fi
             echo "As the trailer for the commit that made the difference:"
             echo
             echo '```'
