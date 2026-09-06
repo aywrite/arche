@@ -119,6 +119,8 @@ material plus piece square tables, tapered between middlegame and endgame.
   `reductions` argument.
 - **tactics.rs**: 300 tactical positions with a pinned pass count, gated
   in CI.
+- **strategy.rs**: 1500 quiet positions, each move graded out of a
+  hundred, with a pinned point total, gated in CI beside the pass count.
 
 ## Code map: src
 

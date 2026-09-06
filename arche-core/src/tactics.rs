@@ -95,9 +95,8 @@ pub fn run_suite(
     let positions = positions
         .iter()
         .map(|position| {
-            let board = Board::from_fen(&position.fen).unwrap_or_else(|e| {
-                panic!("tactics position {} does not parse: {}", position.id, e)
-            });
+            let board = Board::from_fen(&position.fen)
+                .unwrap_or_else(|e| panic!("suite position {} does not parse: {}", position.id, e));
             // whitespace separated whole tokens rather than a fixed width:
             // the generator writes a promotion as five characters, and a
             // matcher that sliced four would read e7e8q as e7e8 and call a
@@ -109,7 +108,7 @@ pub fn run_suite(
                 .unwrap_or_default();
             assert!(
                 !wanted.is_empty(),
-                "tactics position {} has no bm operation",
+                "suite position {} has no bm operation",
                 position.id
             );
             let mut engine = AlphaBeta::with_config(board, table_bytes, config);
@@ -118,7 +117,7 @@ pub fn run_suite(
             {
                 SearchOutcome::Complete(result) => result.best_move.to_string(),
                 other => panic!(
-                    "tactics position {} did not complete: {:?}",
+                    "suite position {} did not complete: {:?}",
                     position.id, other
                 ),
             };
