@@ -1,20 +1,15 @@
 // SPDX-License-Identifier: GPL-3.0-or-later
 // Copyright (C) 2022-2026 Andrew Wright
 
-//! The residuals argument, run against the real binary.
+//! What the residuals argument prints, run against the real binary.
 //!
-//! It is an argument and not a uci command, so nothing in the protocol suite
-//! reaches it: what it prints is only ever printed by the program. This
-//! spawns the executable cargo built, reads the whole run, and asserts on the
-//! three parts a reader parses, which are the header, the rows and the
-//! summary.
-//!
-//! The wait is generous because the command searches the suite and then
-//! searches every sample it took under the reference, which is minutes at the
-//! depths the command is really used at and seconds at the depth here.
+//! The spawning and the splitting are in `report_command`; here is what the
+//! shortcuts' own header, rows and summary say. This is the slowest of the
+//! three, because the command searches the suite and then searches every
+//! sample it took under the reference: minutes at the depths the command is
+//! really used at and seconds at the depth here.
 
-use std::io::Read;
-use std::process::{Command, Stdio};
+mod report_command;
 
 /// A shallow run at a rate that still records plenty: enough to have rows
 /// without spending the reference search on thousands of them. About one
@@ -23,49 +18,17 @@ const ARGUMENTS: [&str; 4] = ["residuals", "4", "every", "50"];
 
 #[test]
 fn the_residuals_argument_prints_a_header_rows_and_a_summary() {
-    let mut child = Command::new(env!("CARGO_BIN_EXE_arche"))
-        .args(ARGUMENTS)
-        .stdin(Stdio::null())
-        .stdout(Stdio::piped())
-        .spawn()
-        .expect("the binary cargo built should start");
-    let mut printed = String::new();
-    child
-        .stdout
-        .take()
-        .expect("stdout was piped")
-        .read_to_string(&mut printed)
-        .expect("the run prints text");
-    let status = child.wait().expect("the child can be waited on");
-    assert!(status.success(), "exit {:?}: {}", status.code(), printed);
-
-    let lines: Vec<&str> = printed.lines().collect();
-    let header = lines.first().unwrap_or(&"");
+    let printed = report_command::run(&ARGUMENTS);
     assert!(
-        header.starts_with("residuals depth 4 every 50 taint rule50 positions "),
+        printed
+            .header
+            .starts_with("residuals depth 4 every 50 taint rule50 positions "),
         "header: {}",
-        header
+        printed.header
     );
-    // the denominator, always stated: the rows below say nothing about a
-    // rate without it
-    let events: u64 = header
-        .split(' ')
-        .skip_while(|word| *word != "events")
-        .nth(1)
-        .unwrap_or_else(|| panic!("no events in header: {}", header))
-        .parse()
-        .unwrap_or_else(|e| panic!("events is not a number in {}: {}", header, e));
-    assert!(events > 0, "header: {}", header);
+    assert!(printed.events() > 0, "header: {}", printed.header);
 
-    let summary_at = lines
-        .iter()
-        .position(|line| *line == "summary")
-        .unwrap_or_else(|| panic!("no summary in:\n{}", printed));
-    // the rows sit between the header and the blank line before the summary,
-    // and there is at least one or the run measured nothing
-    let rows = &lines[1..summary_at - 1];
-    assert!(!rows.is_empty(), "no rows in:\n{}", printed);
-    for row in rows {
+    for row in &printed.rows {
         let words: Vec<&str> = row.split(' ').collect();
         assert!(words.len() > 12, "row: {}", row);
         assert!(
@@ -102,9 +65,9 @@ fn the_residuals_argument_prints_a_header_rows_and_a_summary() {
         assert_eq!(words[10], overstated, "{row}");
     }
 
-    // a line a kind at a depth, in kind order, with the depths a run
-    // happened to reach
-    let summary = &lines[summary_at + 1..];
+    // a line a kind at a depth, the kinds in order and each of them
+    // together, with the depths a run happened to reach
+    let summary = &printed.summary;
     assert!(summary.len() >= 3, "summary: {:?}", summary);
     let kind_at = |line: &str| {
         if line.starts_with("reverse_futility") {
@@ -118,10 +81,8 @@ fn the_residuals_argument_prints_a_header_rows_and_a_summary() {
         }
     };
     let mut order: Vec<usize> = summary.iter().map(|line| kind_at(line)).collect();
-    let grouped = order.clone();
     order.dedup();
     assert_eq!(order, vec![0, 1, 2], "kinds out of order: {:?}", summary);
-    assert_eq!(grouped.len(), summary.len());
     assert!(
         summary.iter().any(|line| line.contains(" median ")),
         "no percentiles in: {:?}",
@@ -137,16 +98,4 @@ fn the_residuals_argument_prints_a_header_rows_and_a_summary() {
         "no per-depth crossing rate in: {:?}",
         summary
     );
-}
-
-#[test]
-fn an_unreadable_setting_fails_with_the_code_the_scripts_check() {
-    let status = Command::new(env!("CARGO_BIN_EXE_arche"))
-        .args(["residuals", "2", "every", "lots"])
-        .stdin(Stdio::null())
-        .stdout(Stdio::null())
-        .stderr(Stdio::null())
-        .status()
-        .expect("the binary cargo built should start");
-    assert_eq!(status.code(), Some(2));
 }

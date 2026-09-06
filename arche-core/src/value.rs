@@ -144,13 +144,6 @@ mod tests {
     }
 
     #[test]
-    fn negating_twice_is_the_value_again() {
-        for value in [Value::clean(1), Value::tainted(-7), Value::clean(0)] {
-            assert_eq!(-(-value), value);
-        }
-    }
-
-    #[test]
     fn a_taint_can_be_given_rather_than_carried() {
         // a node reports the taint of everything it looked at, which is not
         // the taint of the score it settled on

@@ -339,30 +339,35 @@ fn run_to_end(args: &[&str]) -> std::process::Output {
 }
 
 #[test]
-fn a_bench_that_cannot_be_read_is_refused_on_stderr() {
-    // the refusal every measuring tool leans on: the reason goes to
-    // stderr with the failing exit code, and stdout stays empty so no
-    // tool mistakes the refusal for a report
-    let out = run_to_end(&["bench", "abc"]);
-    assert_eq!(out.status.code(), Some(2));
-    assert!(out.stdout.is_empty(), "a refused bench printed a report");
-    let said = String::from_utf8(out.stderr).unwrap();
-    assert!(
-        said.contains("unrecognised bench depth: abc"),
-        "stderr said: {}",
-        said
-    );
-}
-
-#[test]
-fn a_residuals_run_that_cannot_be_read_is_refused_the_same_way() {
-    let out = run_to_end(&["residuals", "every", "abc"]);
-    assert_eq!(out.status.code(), Some(2));
-    assert!(out.stdout.is_empty(), "a refused run printed a report");
-    let said = String::from_utf8(out.stderr).unwrap();
-    assert!(
-        said.contains("unrecognised residuals every: abc"),
-        "stderr said: {}",
-        said
-    );
+fn a_setting_that_cannot_be_read_is_refused_on_stderr() {
+    // the refusal every measuring tool leans on, asked of each command
+    // that takes settings: the reason goes to stderr with the failing exit
+    // code, and stdout stays empty so no tool mistakes the refusal for a
+    // report. The reason names the setting, since a command takes several
+    // and a tool that got one wrong has to be told which
+    for (arguments, reason) in [
+        (["bench", "abc"].as_slice(), "unrecognised bench depth: abc"),
+        (
+            &["residuals", "every", "abc"],
+            "unrecognised residuals every: abc",
+        ),
+        (
+            &["cutoffs", "every", "abc"],
+            "unrecognised cutoffs every: abc",
+        ),
+        (
+            &["reductions", "every", "abc"],
+            "unrecognised reductions every: abc",
+        ),
+    ] {
+        let out = run_to_end(arguments);
+        assert_eq!(out.status.code(), Some(2), "{:?}", arguments);
+        assert!(
+            out.stdout.is_empty(),
+            "a refused run printed a report: {:?}",
+            arguments
+        );
+        let said = String::from_utf8(out.stderr).unwrap();
+        assert!(said.contains(reason), "stderr said: {}", said);
+    }
 }

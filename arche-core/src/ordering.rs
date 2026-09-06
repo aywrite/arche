@@ -5,6 +5,7 @@
 //! everything, the captures `Board::see` prices as winning or even, the
 //! killers, the quiet moves by what the search has learned about them, and
 //! the losing captures last of all.
+//!
 //! The list is sorted in two stages. `order` keys the table's move and the
 //! captures and leaves the quiet moves in generated order between the two
 //! capture bands; `order_quiets` scores and sorts the quiet moves, and the
