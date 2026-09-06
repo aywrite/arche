@@ -43,7 +43,12 @@ the engine plays. Roughly in the order they look worth doing.
   else the default does; the full reference has no command line spelling
 - a fen is only validated as far as what the search cannot survive, a king a side and the side
   not to move being out of check. A position which is illegal in other ways, such as one with
-  nine pawns or castling rights without a rook, is accepted and played from
+  nine pawns or a pawn on the back rank, is accepted and played from. The castle rights and
+  the en passant square are the exception, because the generator reads those fields rather
+  than the pieces and make_move would corrupt the board playing what they license. A right
+  whose king or rook is not standing on its square is dropped, and so is a square that is not
+  on the rank a double push crosses, is occupied, has no pawn placed to take there, or has no
+  enemy pawn behind it
 
 ## Measured and rejected
 
