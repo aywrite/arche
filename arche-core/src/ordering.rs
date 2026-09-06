@@ -352,6 +352,17 @@ impl Quiet<'_> {
     /// What a quiet move is worth here. A move nothing is known about
     /// scores zero, and nothing this returns reaches the smallest capture
     /// the sort puts above a quiet move.
+    ///
+    /// The squares are masked to the six bits they already sit in. A `Play`
+    /// holds a square as a byte and the table is sixty four rows of sixty
+    /// four, so one read of it is two bounds checks, and the mask takes
+    /// both off. The second stage makes that read for every quiet move it
+    /// sorts. Masking an index has been measured at other reads and was
+    /// slower at all of them, where one index bought one check; the
+    /// roadmap has where each stands. Only this read carries the mask. The
+    /// write in `cutoff` and the census read in `history_score` are cold,
+    /// and a check is the better failure for a square that cannot be out
+    /// of range: it panics where a mask reads a different square.
     #[inline(always)]
     fn bonus(&self, m: &Play) -> i64 {
         if self.killers[0] == Some(*m) {
@@ -360,7 +371,7 @@ impl Quiet<'_> {
         if self.killers[1] == Some(*m) {
             return KILLER_BONUS[1];
         }
-        i64::from(self.history[m.from as usize][m.to as usize])
+        i64::from(self.history[(m.from & 63) as usize][(m.to & 63) as usize])
     }
 }
 
