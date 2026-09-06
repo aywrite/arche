@@ -72,6 +72,35 @@ def rounds(drawn_pairs, decided_pairs, won=True):
     return "".join(played)
 
 
+# The pentanomial counts and the log likelihood ratio the pinned fastchess
+# printed for a real match: 60 games of the engine against itself at 1+0.01
+# under `-sprt elo0=0 elo1=10 alpha=0.05 beta=0.05 model=logistic` with
+# `-report penta=true`, which ended `Ptnml(0-2): [2, 3, 14, 3, 8]` and
+# `LLR: 0.44 (14.8%) (-2.94, 2.94) [0.00, 10.00]`.
+MATCH = [2, 3, 14, 3, 8]
+MATCH_LLR = 0.44
+
+# the two games of a pair, by what the candidate scored over them. It has
+# white in the first and black in the second, so the results below are as the
+# pgn states them rather than as the candidate reads them
+PAIRS = {
+    0.0: ("0-1", "1-0"),
+    0.5: ("0-1", "1/2-1/2"),
+    1.0: ("1/2-1/2", "1/2-1/2"),
+    1.5: ("1-0", "1/2-1/2"),
+    2.0: ("1-0", "0-1"),
+}
+
+
+def batch(counts):
+    """A shard whose pairs scored what `counts` says, in PENTANOMIAL order."""
+    played = []
+    for score, count in zip(match_estimate.PENTANOMIAL, counts):
+        for _ in range(count):
+            played.append(pair(len(played) + 1, *PAIRS[score]))
+    return "".join(played)
+
+
 def shard(tmp_path, name, text):
     """A shard as download-artifact leaves it: one directory per artifact,
     named after the artifact, with the shard's games inside."""
@@ -297,6 +326,77 @@ class TestCommandLine:
         )
         assert check_trailers.problems(message) == [], line
 
+    def test_the_line_carries_the_sprt_reading_after_the_estimate(self, tmp_path):
+        result = self.run(
+            tmp_path, [drawn(1) + pair(2)], "--line", "--elo0", "0", "--elo1", "10"
+        )
+        assert result.stdout == (
+            "+191 ±321 Elo (4 games), SPRT [0, 10] inconclusive,"
+            " LLR 0.06 (-2.94, 2.94)\n"
+        )
+
+    def test_the_sprt_trailer_names_the_verdict_and_passes_the_hook(self, tmp_path):
+        import check_trailers
+
+        line = self.run(
+            tmp_path,
+            [drawn(1) + pair(2)],
+            "--trailer",
+            "--elo0",
+            "0",
+            "--elo1",
+            "10",
+            "--prior-llr",
+            "3",
+        ).stdout
+        assert line == "Elo: +191 ±321 (sprt [0, 10] passed, 4 games, 30+0.3, vs old)\n"
+        message = (
+            f"fix(search): Stop the reduction eating the last ply\n\nBench: 1\n{line}"
+        )
+        assert check_trailers.problems(message) == [], line
+
+    def test_one_hypothesis_without_the_other_is_not_a_test(self, tmp_path):
+        result = self.run(tmp_path, [drawn(1)], "--elo0", "0")
+        assert result.returncode != 0
+        assert "both or neither" in result.stderr
+
+    def test_a_settled_test_keeps_its_verdict_with_no_estimate_to_state(self, tmp_path):
+        import check_trailers
+
+        # every pair went the same way, so the model has no elo for the score.
+        # The verdict is what the batch was run for and survives without one
+        line = self.run(
+            tmp_path,
+            [pair(1) + pair(2)],
+            "--trailer",
+            "--elo0",
+            "0",
+            "--elo1",
+            "10",
+            "--prior-llr",
+            "3",
+        ).stdout
+        assert line == (
+            "Elo: not measured (sprt [0, 10] passed, 4 games, 30+0.3, vs old)\n"
+        )
+        message = f"fix(search): Finish depth one\n\nBench: 1\n{line}"
+        assert check_trailers.problems(message) == [], line
+
+    def test_a_hypothesis_the_model_has_no_score_for_is_refused(self, tmp_path):
+        # not a number bisects forever, and past a thousand elo the expected
+        # score rounds to nought or one and there is no interval left to run in
+        for elo0, elo1 in (("nan", "10"), ("0", "6400"), ("0", "inf")):
+            result = self.run(tmp_path, [drawn(1)], "--elo0", elo0, "--elo1", elo1)
+            assert result.returncode != 0
+            assert "is an elo difference" in result.stderr
+
+    def test_hypotheses_the_wrong_way_round_are_refused(self, tmp_path):
+        # the ratio of a test whose ends meet is nought whatever the games
+        # did, so every batch of it would ask for another one
+        result = self.run(tmp_path, [drawn(1)], "--elo0", "10", "--elo1", "0")
+        assert result.returncode != 0
+        assert "--elo0 10 is not below --elo1 0" in result.stderr
+
     def test_a_match_with_no_estimate_states_none_in_the_trailer(self, tmp_path):
         line = self.run(tmp_path, [game(1, "1-0")], "--trailer").stdout
         assert line == "Elo: not measured\n"
@@ -317,3 +417,95 @@ class TestCommandLine:
         result = self.run(tmp_path, ["", ""])
         assert result.returncode != 0
         assert "no games for new" in result.stderr
+
+
+class TestSequential:
+    """The sprt reading, pinned against the numbers fastchess itself prints.
+
+    The two cases below the first are fastchess's own, from
+    `app/tests/sprt_test.cpp` at the pinned tag. Its `Stats` holds the counts
+    as (LL, LD, WL, DD, WD, WW) and its test merges WL with DD into the middle
+    bin, which is the bin a shared pair and a doubly drawn one share here. It
+    runs them at alpha and beta of 0.05, the same as ours, though the bounds
+    do not enter the ratio."""
+
+    def test_a_real_match_reads_as_the_ratio_fastchess_printed(self):
+        llr = match_estimate.log_likelihood_ratio(MATCH, 0, 10)
+        assert abs(llr - MATCH_LLR) < 0.01
+
+    def test_the_pairs_of_that_match_read_back_out_of_a_pgn(self, tmp_path):
+        # the same counts through the pairing, so a reader that put a pair in
+        # the wrong bin would fail here rather than in the arithmetic
+        shards, _, _ = pooled(tmp_path, [batch(MATCH)])
+        pairs = [score for one in shards for score in one.pairs]
+        sprt = match_estimate.Sprt(pairs, 0, 10)
+        assert sprt.counts == MATCH
+        assert abs(sprt.llr - MATCH_LLR) < 0.01
+
+    def test_the_first_of_fastchess_own_logistic_cases(self):
+        llr = match_estimate.log_likelihood_ratio(
+            [223, 9863, 21279, 10037, 246], 0.5, 2.5
+        )
+        assert abs(llr - -3.07) < 0.01
+
+    def test_the_second_of_fastchess_own_logistic_cases(self):
+        llr = match_estimate.log_likelihood_ratio([871, 26175, 55983, 26678, 821], 0, 2)
+        assert abs(llr - -4.98) < 0.01
+
+    def test_the_ratio_flips_when_the_match_and_the_question_both_do(self):
+        # swapping the wins for the losses is the same match from the other
+        # side, and negating and swapping the hypotheses is the same question
+        # asked of that side, so the evidence has to read the other way round
+        counts = [3, 11, 42, 17, 7]
+        assert math.isclose(
+            match_estimate.log_likelihood_ratio(counts, 0, 10),
+            -match_estimate.log_likelihood_ratio(list(reversed(counts)), -10, 0),
+        )
+
+    def test_a_score_no_pair_reached_is_not_divided_by(self):
+        # a short batch can easily have none of a score, and a count of nought
+        # has no logarithm, so it is nudged off nought as fastchess does
+        assert match_estimate.log_likelihood_ratio([0, 0, 4, 0, 0], 0, 10) < 0
+        assert match_estimate.log_likelihood_ratio([0, 0, 0, 0, 4], 0, 10) > 0
+        assert match_estimate.Sprt([], 0, 10).llr == 0.0
+
+    def test_the_prior_is_this_test_added_to_the_batches_before_it(self):
+        pairs = [2.0, 1.0]
+        alone = match_estimate.Sprt(pairs, 0, 10)
+        carried = match_estimate.Sprt(pairs, 0, 10, 1.5)
+        assert carried.llr == alone.llr
+        assert math.isclose(carried.total, alone.llr + 1.5)
+
+    def test_the_bounds_are_where_the_verdict_turns_over(self):
+        pairs = [2.0, 1.0]
+        batch_llr = match_estimate.Sprt(pairs, 0, 10).llr
+        upper = match_estimate.UPPER - batch_llr
+        lower = match_estimate.LOWER - batch_llr
+        verdicts = [
+            match_estimate.Sprt(pairs, 0, 10, prior).verdict
+            for prior in (upper + 0.01, upper - 0.01, lower - 0.01, lower + 0.01)
+        ]
+        assert verdicts == ["passed", "inconclusive", "failed", "inconclusive"]
+
+    def test_the_report_states_the_two_ratios_their_sum_and_what_it_means(
+        self, tmp_path
+    ):
+        shards, estimate, text = pooled(tmp_path, [drawn(1) + pair(2)])
+        pairs = [score for one in shards for score in one.pairs]
+        sprt = match_estimate.Sprt(pairs, 0, 10, 1.0)
+        printed = match_estimate.report(shards, estimate, text, sprt)
+        assert "SPRT [0, 10] inconclusive." in printed
+        assert (
+            "ended on 1.00, so the sum is 1.06 against bounds of (-2.94, 2.94)"
+            in printed
+        )
+        assert "Launch another batch with prior_llr set to 1.06." in printed
+
+    def test_a_test_that_settled_says_what_it_settled(self, tmp_path):
+        shards, estimate, text = pooled(tmp_path, [drawn(1) + pair(2)])
+        pairs = [score for one in shards for score in one.pairs]
+        printed = match_estimate.report(
+            shards, estimate, text, match_estimate.Sprt(pairs, 0, 10, 3.0)
+        )
+        assert "SPRT [0, 10] passed." in printed
+        assert "stronger by about 10 elo or more" in printed
