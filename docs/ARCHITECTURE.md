@@ -119,7 +119,8 @@ material plus piece square tables, tapered between middlegame and endgame.
   so a dead GUI cannot leave a search running.
 - **params.rs**: Reads the word/value pairs UCI commands are made of, and
   the phrases where a name runs to more than one word, as `Clear Hash` does.
-- **time_control.rs**: Turns a clock into a time budget for one move.
+- **time_control.rs**: Reads the time part of a `go` line, and turns a clock
+  into a time budget for one move.
 
 ## Measurement
 
