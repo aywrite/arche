@@ -2403,7 +2403,7 @@ mod search {
         SearchConfig, SearchOutcome, SearchParameters, SearchResult, TaintPolicy, Value,
         attention_score,
     };
-    use crate::board::{fens, play_named};
+    use crate::board::{fens, fens::SHARP_MIDDLEGAME, play_named};
     use crate::census::Table;
     use crate::limits::Clock;
     use crate::misc::{Color, Piece};
@@ -2576,10 +2576,6 @@ mod search {
             },
         )
     }
-
-    /// A tactical middlegame the cache tests search over and over: sharp
-    /// enough that a wrongly reused score would move the verdict.
-    const SHARP_MIDDLEGAME: &str = "r1b2rk1/ppp1qppp/4pn2/6N1/Qn1P4/2NBP3/PP3PPP/R3K2R w KQ - 9 12";
 
     /// Unwrap the outcome these tests expect: a search that ran to the depth
     /// asked of it.
@@ -3006,12 +3002,13 @@ mod search {
         // search of the same depth chose the rook.
         // a_warm_cache_matches_a_cold_search cannot see any of this because
         // it searches each depth directly rather than deepening to it.
-        let fens = [
-            "r3k2r/p1ppqpb1/bn2pnp1/3PN3/1p2P3/2N2Q1p/PPPBBPPP/R3K2R w KQkq - 0 1",
+        let positions = [
+            fens::KIWIPETE,
+            // the pawn endgame, with the fifty move counter wound on
             "8/2p5/3p4/KP5r/1R3p1k/8/4P1P1/8 w - - 10 10",
-            "rnbq1k1r/pp1Pbppp/2p5/8/2B5/8/PPP1NnPP/RNBQK2R w KQ - 1 8",
+            fens::PROMOTIONS,
         ];
-        for fen in fens {
+        for fen in positions {
             let mut cold = reference(Board::from_fen(fen).unwrap());
             let expected = completed(cold.search(5));
             let mut warm = reference(Board::from_fen(fen).unwrap());
@@ -3556,7 +3553,7 @@ mod search {
         // The refusal is a policy of the reference, so the reference is what
         // is built: a default told one day to trust those scores is an
         // experiment to measure, not a hole to find here.
-        let fen = "8/2p5/3p4/KP5r/1R3p1k/8/4P1P1/8 w - - 0 1";
+        let fen = fens::PAWN_ENDGAME;
         let mut e = reference(Board::from_fen(fen).unwrap());
         for depth in 1..=7 {
             completed(e.search(depth));
@@ -3654,7 +3651,7 @@ mod search {
         // experiments. The switch has to reach the probe: a field the search
         // never reads would make every comparison against the reference a
         // comparison of the reference with itself
-        let fen = "8/2p5/3p4/KP5r/1R3p1k/8/4P1P1/8 w - - 0 1";
+        let fen = fens::PAWN_ENDGAME;
         // the reference with the one switch flipped
         let trusting = SearchConfig {
             taint: TaintPolicy::Trust,
@@ -5152,11 +5149,11 @@ mod sampling {
         AlphaBeta, Board, Engine, REVERSE_FUTILITY_MARGIN, REVERSE_FUTILITY_MAX_DEPTH, Score,
         SearchConfig, SearchParameters, Taint,
     };
+    use crate::board::fens::SHARP_MIDDLEGAME;
     use crate::residual::{Sample, Sampler, Shortcut, Window, sample_key};
     use pretty_assertions::assert_eq;
 
     const TABLE_BYTES: usize = 1024 * 1024;
-    const SHARP_MIDDLEGAME: &str = "r1b2rk1/ppp1qppp/4pn2/6N1/Qn1P4/2NBP3/PP3PPP/R3K2R w KQ - 9 12";
 
     fn engine(fen: &str) -> AlphaBeta {
         AlphaBeta::with_table_bytes(Board::from_fen(fen).unwrap(), TABLE_BYTES)
@@ -5547,13 +5544,13 @@ mod sampling {
 #[cfg(test)]
 mod cutoffs {
     use super::{AlphaBeta, Board, Score, SearchConfig};
+    use crate::board::fens::SHARP_MIDDLEGAME;
     use crate::census::{Class, Cutting, Table};
     use crate::play::Play;
     use crate::residual::{Sampler, Window};
     use pretty_assertions::assert_eq;
 
     const TABLE_BYTES: usize = 1024 * 1024;
-    const SHARP_MIDDLEGAME: &str = "r1b2rk1/ppp1qppp/4pn2/6N1/Qn1P4/2NBP3/PP3PPP/R3K2R w KQ - 9 12";
 
     fn engine(fen: &str) -> AlphaBeta {
         let mut e = AlphaBeta::with_table_bytes(Board::from_fen(fen).unwrap(), TABLE_BYTES);
@@ -5727,13 +5724,13 @@ mod cutoffs {
 #[cfg(test)]
 mod reductions {
     use super::{AlphaBeta, Board, Score};
+    use crate::board::fens::SHARP_MIDDLEGAME;
     use crate::census::Table;
     use crate::reduction::Scout;
     use crate::residual::{Sampler, Window};
     use pretty_assertions::assert_eq;
 
     const TABLE_BYTES: usize = 1024 * 1024;
-    const SHARP_MIDDLEGAME: &str = "r1b2rk1/ppp1qppp/4pn2/6N1/Qn1P4/2NBP3/PP3PPP/R3K2R w KQ - 9 12";
 
     fn engine(fen: &str) -> AlphaBeta {
         let mut e = AlphaBeta::with_table_bytes(Board::from_fen(fen).unwrap(), TABLE_BYTES);
