@@ -4,11 +4,11 @@
 use super::bitboard::BitBoard;
 use super::misc::{
     CastlePermissions, Color, Coordinate, File, Piece, PromotePiece, coordinate_to_index,
-    coordinate_to_large_index, index_to_coordinate,
+    index_to_coordinate,
 };
 use super::play::Play;
 use crate::eval::{self, Accumulator};
-use crate::magic::Magic;
+use crate::magic::MAGIC;
 use crate::zobrist::Zobrist;
 use smallvec::SmallVec;
 use std::fmt;
@@ -221,13 +221,6 @@ const fn castle_masks(leaving: bool) -> [u32; 64] {
 const NULL_HISTORY_SALT: u64 = 0x9e37_79b9_7f4a_7c15;
 
 static ATTACK_MASKS: AttackMasks = AttackMasks::new();
-// a const rather than a static, so that what is built from it can be built at
-// compile time too: a const initialiser may not read a static
-pub const BASE_CONVERSIONS: BaseConversions = BaseConversions::new();
-// the lint is a guard against a const that loops forever; this one is only
-// long, a hundred thousand ray walks filling the two attack tables
-#[allow(long_running_const_eval)]
-pub(crate) static MAGIC: Magic = Magic::new();
 // the squares strictly between two aligned squares, and empty for a pair
 // that shares no line. What a piece must land on to block a slider on one
 // square checking a king on the other.
@@ -304,81 +297,6 @@ type Castle = (u64, [u8; 2], u8);
 /// generator produces them in and so part of the order the search sees.
 const WHITE_CASTLES: [Castle; 2] = [(B1_C1_D1, [C1, D1], C1), (F1_G1, [F1, G1], G1)];
 const BLACK_CASTLES: [Castle; 2] = [(B8_C8_D8, [C8, D8], C8), (F8_G8, [F8, G8], G8)];
-
-/// The sixty four squares laid out inside a ten by ten grid whose border rows
-/// and columns are sentinels, so that a step off the side of the board lands on
-/// one instead of wrapping onto the far file.
-///
-/// One row of border is enough because every walk tests a square before
-/// stepping again, so an index can never be more than one step out and always
-/// stays inside the array.
-pub struct BaseConversions {
-    base_64_to_100: [u8; 64],
-    base_100_to_64: [u8; 100],
-}
-
-impl BaseConversions {
-    const OFF_BOARD: u8 = 101;
-
-    /// One step in each direction, in this indexing.
-    pub const STRAIGHT_STEPS: [isize; 4] = [10, -10, 1, -1]; // rooks and queens
-    pub const DIAGONAL_STEPS: [isize; 4] = [9, -9, 11, -11]; // bishops and queens
-
-    /// Built at compile time, so there is nothing to build on startup and
-    /// nothing to check on the way to a step. A `const fn` has no `for`, hence
-    /// the two `while` walks over what is still a rank and a file.
-    const fn new() -> Self {
-        let mut base = BaseConversions {
-            base_100_to_64: [Self::OFF_BOARD; 100],
-            base_64_to_100: [0u8; 64],
-        };
-        let mut rank = 1;
-        while rank <= 8 {
-            let mut f = 0;
-            while f < File::VARIANTS.len() {
-                let file = File::VARIANTS[f];
-                let index = coordinate_to_large_index(rank, file);
-                let index_64 = coordinate_to_index(rank, file) as usize;
-                base.base_100_to_64[index as usize] = index_64 as u8;
-                base.base_64_to_100[index_64] = index;
-                f += 1;
-            }
-            rank += 1;
-        }
-        base
-    }
-
-    /// The square one `step` away, or `None` if the step leaves the board.
-    #[inline]
-    pub const fn step(&self, from: u8, step: isize) -> Option<u8> {
-        let index_100 = self.base_64_to_100[from as usize] as isize + step;
-        debug_assert!(
-            matches!(index_100, 0..100),
-            "one step cannot leave the mailbox"
-        );
-        let square = self.base_100_to_64[index_100 as usize];
-        if square != Self::OFF_BOARD {
-            Some(square)
-        } else {
-            None
-        }
-    }
-}
-
-/// Print the mailbox as a grid, the sentinels included, for when a walk comes
-/// out wrong. Uncalled on purpose, see `BitBoard::debug_print`.
-impl fmt::Display for BaseConversions {
-    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
-        for rank in 0..10 {
-            for file in 0..10 {
-                let index = file + (rank * 10);
-                write!(f, " {:0>3}", self.base_100_to_64[index as usize])?;
-            }
-            writeln!(f)?;
-        }
-        Ok(())
-    }
-}
 
 /// What a piece on each square attacks with nothing in the way.
 ///
