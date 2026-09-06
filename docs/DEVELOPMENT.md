@@ -7,9 +7,10 @@ cargo build --release
 ```
 
 The binary is written to `target/release/arche` (`arche.exe` on windows). It starts
-in uci mode immediately. The argument that does anything else is `bench`, with
-the depth, table and policy words described below, which prints the bench and
-exits; `--version` and `--help` are answered too.
+in uci mode immediately. Four arguments do anything else. `bench`, with the depth,
+table and policy words described below, prints the bench and exits; `residuals`,
+`cutoffs` and `reductions` measure the search and exit, and each has a section of
+its own further down. `--version` and `--help` are answered too.
 
 The release profile uses link time optimisation and a single codegen unit, so a
 release build is noticeably slower to compile than a debug one but is several
@@ -325,9 +326,14 @@ often the shortcut was wrong to remove it, and that is the question
 target/release/arche residuals [depth] [every <n>] [cap <n>] [taint refuse|trust|skip|rule50]
 ```
 
-It searches the same suite the bench does, samples the nodes its shortcuts
-answered, and then asks `SearchConfig::reference()` what each of those
-positions is really worth.
+It searches the same suite the bench does, samples the nodes reverse
+futility and the null move pass answered, and then asks
+`SearchConfig::reference()` what each of those positions is really worth.
+Those are the two of the default's five shortcuts that answer a whole
+node, which is what leaves a reference something to be asked about. The
+delta margin and the losing capture skip pass over a move in quiescence
+rather than answering a node, and what trusting the late move reduction's
+scout costs is the reduction ledger's question further down.
 
 What the run is read for is the crossing. A shortcut returns a lower bound
 and claims it clears beta, so a claim well above what the position is worth
@@ -575,12 +581,12 @@ the bound the scout was asked about, `scout` is `low` or `high`, and
 `cost` is the nodes the scout spent. A fail high prints `-` in the
 `reference` and `label` columns rather than moving the others.
 
-The sampling is the census's mechanism with a salt of its own: a hash gate
-over the position key and the depth at an `every <n>` rate, in front of a
-capped reservoir that keeps the smallest keys of the whole run, so two
-runs print the same rows. The header states `events` beside `records` for
-the residuals header's reason: the rows are a share of the events, and a
-share cannot be read without its denominator.
+The sampling is the census's, salt and header and all. What differs is
+the density. Only a late quiet move at a node deep enough to reduce
+offers a scout, so the stream runs sparser than the census's rather than
+denser, and every fail low kept costs a reference search in the replay.
+A run that wants one stratum whole lowers `every` and pays for it in
+replays.
 
 The run ends with a line per depth: the scouts, the fail low share, the
 replayed count, the harmful count and rate, and the harmful rate split by
@@ -590,13 +596,10 @@ policy would be fit on. A cell under thirty replayed rows prints its
 counts in place of a rate, and the line's own rate holds to the same rule:
 a percentage over a handful of rows reads as a finding and is noise.
 
-Recording changes nothing. The ledger is armed only by the command, an
-engine without one searches exactly the tree it searched before there was
-a ledger at all, and an armed engine's node counts equal a disarmed one's
-position by position, which
-`recording_leaves_the_measured_search_where_it_was` in
-`arche-core/src/reduction.rs` asserts of the armed engines themselves. The
-pinned node counts cover the disarmed default and the reference.
+Recording changes nothing, on the census's terms and held to them the
+same way: `recording_leaves_the_measured_search_where_it_was` in
+`arche-core/src/reduction.rs` searches each of its positions twice, once
+with the ledger armed and once without, and holds the two counts equal.
 
 ## What the table's key signature costs
 

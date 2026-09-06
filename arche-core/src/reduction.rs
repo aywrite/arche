@@ -556,14 +556,7 @@ impl fmt::Display for Report {
 mod tests {
     use super::*;
     use crate::residual::DEFAULT_CAP;
-
-    /// The same two positions the census tests record over.
-    fn suite() -> Vec<Position> {
-        bench::parse_epd(
-            "r1b2rk1/ppp1qppp/4pn2/6N1/Qn1P4/2NBP3/PP3PPP/R3K2R w KQ - id \"sharp\";\n\
-             r3k2r/p1ppqpb1/bn2pnp1/3PN3/1p2P3/2N2Q1p/PPPBBPPP/R3K2R w KQkq - id \"kiwipete\";",
-        )
-    }
+    use crate::residual::fixtures::{recording_leaves_the_search_where_it_was, suite};
 
     /// An event made up, for the tests that drive the replay and the
     /// printer on rows the test chose.
@@ -994,39 +987,20 @@ mod tests {
         assert!(report.rows.iter().any(|row| row.event.scout == Scout::High));
     }
 
-    /// The ledger's contract: an engine with one searches the tree an
-    /// engine without one searches. Asked of the armed engines
-    /// themselves, position by position, rather than of two disarmed runs
-    /// around them, the census's strengthened form.
+    /// The ledger's contract, asked the way `fixtures` asks all three.
     #[test]
     fn recording_leaves_the_measured_search_where_it_was() {
-        let searched_nodes = |engine: &mut AlphaBeta, id: &str| {
-            let outcome =
-                engine.iterative_deepening_search(SearchParameters::to_depth(4), |_, _, _, _| {});
-            let SearchOutcome::Complete(result) = outcome else {
-                panic!("{id}: an unlimited search did not complete");
-            };
-            result.nodes
-        };
-        let mut kept = 0;
-        for position in &suite() {
-            let board = Board::from_fen(&position.fen).unwrap();
-            let mut plain =
-                AlphaBeta::with_config(board.clone(), bench::TABLE_BYTES, SearchConfig::default());
-            let plain_nodes = searched_nodes(&mut plain, &position.id);
-            let mut armed =
-                AlphaBeta::with_config(board, bench::TABLE_BYTES, SearchConfig::default());
-            armed.sample_reductions(Sampler::with_cap(1, DEFAULT_CAP));
-            let armed_nodes = searched_nodes(&mut armed, &position.id);
-            assert_eq!(armed_nodes, plain_nodes, "{}", position.id);
-            kept += armed
-                .take_reductions()
-                .expect("the sampler comes back")
-                .drain()
-                .taken
-                .len();
-        }
-        assert!(kept > 0, "the armed runs recorded nothing");
+        recording_leaves_the_search_where_it_was(
+            |engine| engine.sample_reductions(Sampler::with_cap(1, DEFAULT_CAP)),
+            |engine| {
+                engine
+                    .take_reductions()
+                    .expect("the sampler comes back")
+                    .drain()
+                    .taken
+                    .len()
+            },
+        );
     }
 
     /// The rate of zero and the depth of zero are held to one, so the

@@ -11,9 +11,11 @@ merges, and one that claims to be faster states how much faster it measured.
 The board is bitboards, with magic bitboards for move generation of sliding pieces and a square
 array beside them so that asking what stands on a square is a load rather than a walk down the
 boards. The search is alpha beta with a transposition table, iterative deepening, quiescence
-search, reverse futility pruning and a null move pass. Captures are ordered by MVV-LVA and the
-quiet moves by the ones that have cut off before. Evaluation is material plus piece square
-tables, tapered between a middlegame and an endgame score.
+search, principal variation search, reverse futility pruning, a null move pass and a late move
+reduction. Captures are ordered by what a static exchange evaluation says the swap wins, with
+MVV-LVA breaking the ties between the ones it prices alike, and the quiet moves by the ones that
+have cut off before. Evaluation is material plus piece square tables, tapered between a
+middlegame and an endgame score.
 
 ### Background
 
@@ -41,7 +43,7 @@ The engine is something to experiment on rather than an example to copy.
 The engine does not ship with any GUI. It currently implements a subset of the UCI protocol,
 so an open source GUI such as [Arena](http://www.playwitharena.de/) can drive it.
 
-The program starts in UCI mode immediately. Three arguments do anything else.
+The program starts in UCI mode immediately. Four arguments do anything else.
 `bench [depth] [hash <MB>] [taint refuse|trust|skip|rule50] [audit]` searches a fixed set of
 positions and prints what each search counted, for measuring a change to the search or the
 speed of a machine, and is a UCI command as well as an argument.

@@ -44,9 +44,11 @@ fn the_residuals_argument_prints_a_header_rows_and_a_summary() {
         for at in [1, 3, 4, 5, 6, 7, 8] {
             assert!(words[at].parse::<i32>().is_ok(), "field {} of {}", at, row);
         }
-        // the delta is the reference less the claim, the crossing is the
-        // reference against beta and the overstatement is the claim against
-        // the reference, all worked out here rather than taken on trust
+        // the three derived columns against the columns they are derived
+        // from, which is the printer and not the measurement: the delta is
+        // the reference less the claim, the crossing is the reference
+        // against beta, the overstatement is the claim against the
+        // reference
         let beta: i32 = words[4].parse().unwrap();
         let claimed: i32 = words[6].parse().unwrap();
         let reference: i32 = words[7].parse().unwrap();
