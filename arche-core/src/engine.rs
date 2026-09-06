@@ -1065,10 +1065,11 @@ impl AlphaBeta {
     /// decision about principal variation nodes; an arm that wants to
     /// reduce there has to lift it.
     ///
-    /// A quiet move that gives check is reduced like any other. The board
-    /// has no cheap test for one, and what the scout can miss is bounded
-    /// by the re-search: a checking move that fails low a ply short is
-    /// trusted the way a quiet one is.
+    /// A quiet move that gives check is refused too: the reply to a check
+    /// is forced, so what the ordering priced says little about the line
+    /// the move starts. The board has the test the first arm lacked,
+    /// `gives_check` answering from the unmade move, and it is asked last
+    /// so that only a move every other gate has cleared pays its probes.
     fn reduces(
         &self,
         m: &Play,
@@ -1086,6 +1087,7 @@ impl AlphaBeta {
             && m.promote.is_none()
             && !is_mate(alpha)
             && !is_mate(beta)
+            && !self.board.gives_check(m)
     }
 
     /// A fail high at a full width node: the move that proved it goes to
@@ -3382,6 +3384,33 @@ mod search {
         assert!(promotes.capture.is_none() && promotes.promote.is_some());
         assert!(!e.reduces(
             &promotes,
+            LATE_MOVE_THRESHOLD,
+            LATE_MOVE_MIN_DEPTH,
+            false,
+            -100,
+            100
+        ));
+    }
+
+    #[test]
+    fn a_checking_quiet_is_not_reduced() {
+        // the same call the quiet move is reduced under, with a checking
+        // quiet in its place: the rook slides to the king's rank. The
+        // gives_check assert is what keeps the case from going vacuous
+        // if the position stops offering one
+        let (e, quiet, _) = a_quiet_and_a_capture();
+        let checking = play_named(&e.board, "a4a8");
+        assert!(checking.capture.is_none() && e.board.gives_check(&checking));
+        assert!(e.reduces(
+            &quiet,
+            LATE_MOVE_THRESHOLD,
+            LATE_MOVE_MIN_DEPTH,
+            false,
+            -100,
+            100
+        ));
+        assert!(!e.reduces(
+            &checking,
             LATE_MOVE_THRESHOLD,
             LATE_MOVE_MIN_DEPTH,
             false,
