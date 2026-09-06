@@ -88,8 +88,8 @@ at all. That is what makes a suite of quiet positions worth having, since a
 quiet position rarely has the one answer a tactic has.
 
 It gates the same way, on an exact total. `EXPECTED_POINTS` in
-`arche-core/src/strategy.rs` is 92693 of the 149703 on offer, 61.9% of them,
-with a top scoring move played in 531 of the 1500 positions, and the test
+`arche-core/src/strategy.rs` is 92474 of the 149703 on offer, 61.8% of them,
+with a top scoring move played in 526 of the 1500 positions, and the test
 fails on any other total. A failure prints the fifteen themes with their
 points beside each other, so it says which of them moved rather than only that
 the total did.
@@ -346,11 +346,12 @@ does cold, and the tests in `arche-core/src/engine.rs` that say so build
 the reference and hold it to that for good. They are the soundness check: a
 change that claims to be sound keeps them green whatever else it moves. The
 default is what the engine plays with and what the bench prints. It parts
-company with the reference in seven places today: the fifty move guard,
+company with the reference in eight places today: the fifty move guard,
 reverse futility, the null move pass, the delta margin and the losing
 capture skip in quiescence, the late move reduction that scouts a late
-quiet move a ply shallower, and the killers and history table the quiet
-moves are ordered by.
+quiet move a ply shallower, the deep reduction that scouts a late quiet
+its model calls dead two plies shallower instead, and the killers and
+history table the quiet moves are ordered by.
 `reference_node_counts_have_not_moved` pins the reference's tree beside the
 default's, so a commit's diff says which kind of change it carries. One that
 moves both counts touched the search the two share, the table, say; one that
@@ -608,8 +609,8 @@ residuals section says that costs.
 
 Each event is a row of `depth window index searched generated history
 history_max killer tt eval_beta alpha_gap alpha scout cost reference label
-fen`, whitespace separated with the fen last so a row parses left to
-right. `depth` is the reducing node's, its check extension included.
+reduction fen`, whitespace separated with the fen last so a row parses left
+to right. `depth` is the reducing node's, its check extension included.
 `index`, `searched`, `generated`, `history` and `history_max` are the
 census's columns, read at the decision; `killer` says whether the move
 stood in a killer slot, and `tt` is the census's three-state. Every

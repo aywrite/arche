@@ -161,6 +161,11 @@ pub struct Event {
     pub scout: Scout,
     /// The nodes the scout spent.
     pub cost: u64,
+    /// How many plies shallower the scout ran: the flat reduction's one,
+    /// or the deep reduction's two. The label logic does not read it; the
+    /// counterfactual on a fail low is the full depth answer whichever
+    /// scout was trusted instead.
+    pub reduction: u8,
 }
 
 impl Event {
@@ -455,11 +460,11 @@ fn cell(band: Band) -> String {
 /// depth.
 ///
 /// A row is `depth window index searched generated history history_max
-/// killer tt eval_beta alpha_gap alpha scout cost reference label fen`,
-/// whitespace separated with the fen last, so it parses left to right and
-/// the field that can hold spaces holds the rest of the line. The two
-/// fields a fail high has no value for print `-` rather than moving the
-/// columns.
+/// killer tt eval_beta alpha_gap alpha scout cost reference label
+/// reduction fen`, whitespace separated with the fen last, so it parses
+/// left to right and the field that can hold spaces holds the rest of the
+/// line. The two fields a fail high has no value for print `-` rather
+/// than moving the columns.
 ///
 /// The header states the events beside the records, always, for the
 /// census header's reason: a distribution says nothing until the reader
@@ -488,7 +493,7 @@ impl fmt::Display for Report {
             let e = &row.event;
             writeln!(
                 f,
-                "{} {} {} {} {} {} {} {} {} {} {} {} {} {} {} {} {}",
+                "{} {} {} {} {} {} {} {} {} {} {} {} {} {} {} {} {} {}",
                 e.depth,
                 e.window.word(),
                 e.index,
@@ -508,6 +513,7 @@ impl fmt::Display for Report {
                     None => "-".to_string(),
                 },
                 row.label_word(),
+                e.reduction,
                 e.fen,
             )?;
         }
@@ -577,6 +583,7 @@ mod tests {
             alpha,
             scout,
             cost: 12,
+            reduction: 1,
         }
     }
 
@@ -716,6 +723,7 @@ mod tests {
                 alpha: 21,
                 scout: Scout::Low,
                 cost: 214,
+                reduction: 2,
             },
             reference: Some(-40),
         };
@@ -736,13 +744,14 @@ mod tests {
                 alpha: -2,
                 scout: Scout::High,
                 cost: 9,
+                reduction: 1,
             },
             reference: None,
         };
         let report = report_of(vec![low, high]);
         let text = report.to_string();
         let row = text.lines().nth(1).expect("a replayed row");
-        let words: Vec<&str> = row.splitn(17, ' ').collect();
+        let words: Vec<&str> = row.splitn(18, ' ').collect();
         assert_eq!(
             words,
             vec![
@@ -762,11 +771,12 @@ mod tests {
                 "214",
                 "-40",
                 "harmful",
+                "2",
                 "4k3/8/8/8/8/8/8/4K3 b - - 0 1",
             ]
         );
         let row = text.lines().nth(2).expect("a fail high row");
-        let words: Vec<&str> = row.splitn(17, ' ').collect();
+        let words: Vec<&str> = row.splitn(18, ' ').collect();
         assert_eq!(
             words,
             vec![
@@ -786,6 +796,7 @@ mod tests {
                 "9",
                 "-",
                 "-",
+                "1",
                 "4k3/8/8/8/8/8/8/4K3 w - - 0 1",
             ]
         );
@@ -979,6 +990,9 @@ mod tests {
             assert!(e.history <= e.history_max, "{:?}", row);
             assert!(e.depth >= 3, "{:?}", row);
             assert!(e.cost >= 1, "{:?}", row);
+            assert!(e.reduction == 1 || e.reduction == 2, "{:?}", row);
+            // the deep reduction never fires under its depth floor
+            assert!(e.reduction == 1 || e.depth >= 4, "{:?}", row);
             assert_eq!(row.reference.is_some(), e.scout == Scout::Low, "{:?}", row);
         }
         // both answers are in the stream: the lows are what the replay
