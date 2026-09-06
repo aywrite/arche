@@ -74,6 +74,11 @@ const PLACE_MASK: i64 = (1 << PLACE_BITS) - 1;
 /// is measured and has been moved before, and moving it past this without
 /// widening the field would reorder moves quietly.
 const _: () = assert!(MOVE_LIST_INLINE <= 1 << PLACE_BITS);
+/// A place has to fit the word of bits the sort is handed as well. That is
+/// a second bound and not the same one: widening the place field would let
+/// the assert above pass at a width this one still fails, and a place past
+/// the word would fold back onto another place and reorder moves quietly.
+const _: () = assert!(MOVE_LIST_INLINE <= u64::BITS as usize);
 
 /// What the scratch buffer holds before a sort has written to it. A move
 /// from a1 to a1, which no generator produces and nothing reads: the sort
@@ -260,20 +265,28 @@ impl MoveOrdering {
         // counted as the keys are written, so the losing band's edge costs
         // no search of the sorted keys afterwards
         let mut front = 0;
+        let mut scored = 0;
+        let mut plain = 0;
         for (i, m) in moves.iter().enumerate() {
             let key = if m.capture.is_some() || table_move == Some(*m) {
                 ordering_key(board, m, table_move, None)
             } else {
                 0
             };
-            // the front is counted on the key itself, before the place
-            // goes under it. Packing leaves the sign alone, so either
-            // would give the same count; taken here it is plainly the
-            // key's own sign that is being read
-            front += usize::from(key < 0);
-            keys[i] = pack(key, i);
+            // a key of zero is handed to the sort as a bit rather than a
+            // key. The front is counted on the key itself, before the
+            // place goes under it. Packing leaves the sign alone, so
+            // either would give the same count; taken here it is plainly
+            // the key's own sign that is being read
+            if key == 0 {
+                plain |= 1 << i;
+            } else {
+                front += usize::from(key < 0);
+                keys[scored] = pack(key, i);
+                scored += 1;
+            }
         }
-        sort_on_the_stack(moves, keys, sorted);
+        sort_on_the_stack(moves, &mut keys[..scored], plain, front, sorted);
         front
     }
 
@@ -300,10 +313,27 @@ impl MoveOrdering {
         };
         let keys = &mut self.keys;
         let sorted = &mut self.sorted;
+        // a move the memories say nothing about keys zero, which the sort
+        // is told about as a place and not as a key
+        let mut front = 0;
+        let mut scored = 0;
+        let mut plain = 0;
         for (i, m) in quiets.iter().enumerate() {
-            keys[i] = pack(-quiet.bonus(m), i);
+            let key = -quiet.bonus(m);
+            if key == 0 {
+                plain |= 1 << i;
+            } else {
+                // a bonus is never negative, so the count here always
+                // comes to the same as `scored`. Reading it off the sign
+                // anyway measured 0.3% faster than handing `scored` over,
+                // and it is what the sort wants if a bonus ever goes the
+                // other way
+                front += usize::from(key < 0);
+                keys[scored] = pack(key, i);
+                scored += 1;
+            }
         }
-        sort_on_the_stack(quiets, keys, sorted);
+        sort_on_the_stack(quiets, &mut keys[..scored], plain, front, sorted);
     }
 }
 
@@ -417,20 +447,42 @@ fn pack(key: i64, place: usize) -> i64 {
 /// function to call: a key closure of any weight was a call per move rather
 /// than code in this loop, which is where most of the sorting went.
 ///
+/// Only the keys that are not zero are sorted. Five moves in six key zero
+/// at either stage, being the quiet moves the ordering knows nothing
+/// about, and a stable sort leaves every one of them in the order it was
+/// generated in between the negative keys and the positive ones. So the
+/// caller keys only the rest, and marks in `plain`
+/// which places it passed over; this puts the sorted keys either side of
+/// those places and reads the rest straight through. Sorting the whole
+/// list instead meant carrying each scored key back past every move
+/// generated before it, which is most of what a sort here used to cost:
+/// two keys a call to settle in the first stage and four in the second,
+/// against fifteen moves to walk.
+///
+/// `front` is how many of the keys are negative. They are the band that
+/// goes first, and the positive ones the band that goes last.
+///
 /// Only the keys are shifted. A move is six bytes and a key is eight, and
 /// shifting the two together cost four times what shifting the key alone
 /// does, so the moves stay where they are and the place packed into each
-/// key says which move it belongs to. The last pass reads them in that
+/// key says which move it belongs to. The last passes read them in that
 /// order.
 #[inline]
 fn sort_on_the_stack(
     moves: &mut [Play],
-    keys: &mut [i64; MOVE_LIST_INLINE],
+    keys: &mut [i64],
+    plain: u64,
+    front: usize,
     sorted: &mut [Play; MOVE_LIST_INLINE],
 ) {
     let len = moves.len();
     debug_assert!(len <= MOVE_LIST_INLINE);
-    for i in 1..len {
+    debug_assert!(
+        keys.len() + plain.count_ones() as usize == len,
+        "every move is either keyed or marked plain, and not both"
+    );
+    debug_assert!(front <= keys.len(), "the front is part of the keys");
+    for i in 1..keys.len() {
         let k = keys[i];
         let mut j = i;
         while j > 0 && keys[j - 1] > k {
@@ -440,7 +492,28 @@ fn sort_on_the_stack(
         keys[j] = k;
     }
     sorted[..len].copy_from_slice(moves);
-    for (slot, key) in moves.iter_mut().zip(&keys[..len]) {
+    for (slot, key) in moves[..front].iter_mut().zip(&keys[..front]) {
+        *slot = sorted[(key & PLACE_MASK) as usize];
+    }
+    // the places the caller passed over, lowest first, which is the order
+    // they were generated in. They come in runs, under two a list on
+    // average and eight places long, since a generator emits a piece's
+    // quiet moves together; a run is copied whole rather than a move at a
+    // time, and a Play is six bytes, an awkward width to move one of
+    let mut out = front;
+    let mut rest = plain;
+    while rest != 0 {
+        let start = rest.trailing_zeros() as usize;
+        // adding one at the run's foot carries through it and stops at
+        // the first place above it the caller keyed, which leaves the
+        // runs past this one and takes this one away
+        let past = rest & rest.wrapping_add(1 << start);
+        let run = (rest ^ past).count_ones() as usize;
+        moves[out..out + run].copy_from_slice(&sorted[start..start + run]);
+        out += run;
+        rest = past;
+    }
+    for (slot, key) in moves[out..].iter_mut().zip(&keys[front..]) {
         *slot = sorted[(key & PLACE_MASK) as usize];
     }
 }
@@ -829,35 +902,113 @@ mod memory {
 
 #[cfg(test)]
 mod stack_sort {
-    use super::{MOVE_LIST_INLINE, NOWHERE, pack, sort_on_the_stack};
+    use super::{
+        KILLER_BONUS, MOVE_LIST_INLINE, NOWHERE, SEE_UNIT, TABLE_MOVE_BONUS, WINNING_CAPTURE_BASE,
+        pack, sort_on_the_stack,
+    };
     use crate::play::Play;
     use proptest::prelude::*;
 
+    /// The stack sort put through the split its two callers make, against
+    /// the stable library sort over the same keys. Returns both orders.
+    fn both_orders(input: &[i64]) -> (Vec<Play>, Vec<Play>) {
+        let moves: Vec<Play> = (0..input.len())
+            .map(|i| Play::new(i as u8, 0, None, None, false, false))
+            .collect();
+
+        let mut expected: Vec<(i64, Play)> =
+            input.iter().copied().zip(moves.iter().copied()).collect();
+        expected.sort_by_key(|(key, _)| *key);
+        let expected: Vec<Play> = expected.into_iter().map(|(_, m)| m).collect();
+
+        // the split the callers make: a key of zero becomes a bit
+        let mut keys = [0i64; MOVE_LIST_INLINE];
+        let mut front = 0;
+        let mut scored = 0;
+        let mut plain = 0;
+        for (i, key) in input.iter().enumerate() {
+            if *key == 0 {
+                plain |= 1 << i;
+            } else {
+                front += usize::from(*key < 0);
+                keys[scored] = pack(*key, i);
+                scored += 1;
+            }
+        }
+        let mut scratch = [NOWHERE; MOVE_LIST_INLINE];
+        let mut sorted = moves;
+        sort_on_the_stack(&mut sorted, &mut keys[..scored], plain, front, &mut scratch);
+        (sorted, expected)
+    }
+
+    /// A key at the density and the width the search makes them. Five in
+    /// six are zero, which is what the sort is built around and what puts
+    /// long runs of passed-over places through the run copy; a small key
+    /// makes the ties, since sixty four draws from the whole of i64 would
+    /// never produce one; and the bands' own magnitudes go through `pack`
+    /// at full width, so a constant that outgrew the shift would show here.
+    fn a_key() -> impl Strategy<Value = i64> {
+        prop_oneof![
+            10 => Just(0i64),
+            1 => -8i64..8,
+            1 => prop::sample::select(vec![
+                TABLE_MOVE_BONUS,
+                -TABLE_MOVE_BONUS,
+                WINNING_CAPTURE_BASE + SEE_UNIT,
+                -(WINNING_CAPTURE_BASE + SEE_UNIT),
+                KILLER_BONUS[0],
+                -KILLER_BONUS[1],
+                SEE_UNIT,
+                -SEE_UNIT,
+            ]),
+        ]
+    }
+
     proptest! {
         // the claim the sort's comment makes: the stack sort and the stable
-        // library sort produce the same order for any keys, ties included.
-        // the key domain is kept small so that ties actually occur: sixty
-        // four draws from the whole of i64 would never produce one
+        // library sort produce the same order for any keys, ties included
         #[test]
-        fn agrees_with_the_stable_sort_it_replaces(input in prop::collection::vec(-8i64..8, 0..=MOVE_LIST_INLINE)) {
-            let moves: Vec<Play> = (0..input.len())
-                .map(|i| Play::new(i as u8, 0, None, None, false, false))
-                .collect();
-
-            let mut expected: Vec<(i64, Play)> =
-                input.iter().copied().zip(moves.iter().copied()).collect();
-            expected.sort_by_key(|(key, _)| *key);
-            let expected: Vec<Play> = expected.into_iter().map(|(_, m)| m).collect();
-
-            let mut keys = [0i64; MOVE_LIST_INLINE];
-            for (i, key) in input.iter().enumerate() {
-                keys[i] = pack(*key, i);
-            }
-            let mut scratch = [NOWHERE; MOVE_LIST_INLINE];
-            let mut sorted = moves;
-            sort_on_the_stack(&mut sorted, &mut keys, &mut scratch);
-
+        fn agrees_with_the_stable_sort_it_replaces(
+            input in prop::collection::vec(a_key(), 0..=MOVE_LIST_INLINE),
+        ) {
+            let (sorted, expected) = both_orders(&input);
             prop_assert_eq!(sorted, expected);
+        }
+    }
+
+    /// The shapes the run copy is built around, named rather than left to
+    /// the generator: a list with nothing to sort, one with nothing to
+    /// pass over, and one whose passed-over run reaches the last place a
+    /// word of bits holds.
+    #[test]
+    fn the_ends_of_the_run_copy_agree_too() {
+        let full = MOVE_LIST_INLINE;
+        let cases: Vec<Vec<i64>> = vec![
+            vec![],
+            vec![0],
+            vec![-1],
+            vec![0; full],
+            (0..full)
+                .map(|i| i as i64 - 32)
+                .filter(|k| *k != 0)
+                .collect(),
+            // one scored key at the foot, the rest a run to the last place
+            std::iter::once(-1)
+                .chain(std::iter::repeat_n(0, full - 1))
+                .collect(),
+            // one at the head, so the run ends one short of the last place
+            std::iter::repeat_n(0, full - 1)
+                .chain(std::iter::once(1))
+                .collect(),
+            // a run either side of a scored key in the middle
+            std::iter::repeat_n(0, 31)
+                .chain(std::iter::once(-1))
+                .chain(std::iter::repeat_n(0, 32))
+                .collect(),
+        ];
+        for input in cases {
+            let (sorted, expected) = both_orders(&input);
+            assert_eq!(sorted, expected, "keys {input:?}");
         }
     }
 }
