@@ -23,6 +23,18 @@ path = "src/lib.rs"
 name = "arche"
 path = "src/main.rs"
 
+# This crate speaks a protocol and drives an engine; it has never needed an
+# unsafe block and there is no reason it should start. Forbid rather than
+# deny, because forbid cannot be lifted by an `allow` further down: the way
+# this line stops meaning anything is somebody deleting it, which is a diff
+# a reader will see, rather than an attribute tucked over one function.
+#
+# The engine crate does carry unsafe and says so in its own manifest. The
+# boundary is deliberate: the code that reads what an interface sent us is
+# the code that should be provably free of it.
+[lints.rust]
+unsafe_code = "forbid"
+
 [workspace]
 members = [
   "arche-core"

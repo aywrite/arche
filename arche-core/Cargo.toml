@@ -12,6 +12,20 @@ publish = false
 [lib]
 bench = false #https://bheisler.github.io/criterion.rs/book/faq.html#cargo-bench-gives-unrecognized-option-errors-for-valid-command-line-options
 
+# The ten unsafe blocks here are the move list's initialised prefix, the
+# castling rights as the word they occupy, and the static exchange gain
+# array. Each carries a SAFETY note and the argument holds, but nothing
+# checked mechanically that it kept holding.
+#
+# This is the half a compiler can check. Without it the body of an
+# `unsafe fn` is unsafe throughout, so a new unsafe operation added inside
+# one needs no block and gets no SAFETY note and reads as ordinary code.
+# With it every operation says so where it happens, which is where the
+# note that justifies it belongs. Miri is the other half and needs nightly,
+# which this repository does not otherwise use; docs/ROADMAP.md carries it.
+[lints.rust]
+unsafe_op_in_unsafe_fn = "deny"
+
 [dependencies]
 smallvec = "1.15.1"
 
