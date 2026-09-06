@@ -15,6 +15,19 @@ name: Calibrate
 # are an input so they can be moved up as the engine improves: a pairing that
 # ends 25-0 says little beyond "stronger than that", so the useful opponents are
 # the ones close enough to take games off.
+#
+# A rung is a job. A runner plays about one and seven tenths games a minute at
+# 20+0.2, so the default twenty six games against one opponent take about a
+# quarter of an hour, and the rungs played one after another took most of an
+# hour of wall clock for no reason: they share nothing but the openings. Each
+# rung now plays its own match, on its own slice of the book so that no two of
+# them play the same opening, and a job at the end pools the games and fits the
+# one rating to all of them.
+#
+# Every rung keeps its games, its result block, the fastchess config and a
+# manifest as calibrate-<run id>-<attempt>-<tag>. The games are the expensive
+# part and the fit is cheap, so a ladder corrected afterwards can be applied to
+# them without playing the matches again.
 
 on:
   workflow_dispatch:
@@ -34,6 +47,9 @@ on:
         description: Opponents to play, as stash tag and ccrl blitz rating — v10:1620,v11:1690
         type: string
         default: v13:1966,v14:2058,v15.3:2173,v17.0:2297
+      seed:
+        description: Seed for the region of the book the rungs play, an unsigned integer. Left empty it is the run id, and either way the manifests record it.
+        type: string
   workflow_call:
     inputs:
       candidate:
@@ -48,6 +64,8 @@ on:
       ladder:
         type: string
         default: v13:1966,v14:2058,v15.3:2173,v17.0:2297
+      seed:
+        type: string
       publish:
         description: Append the result to the release notes for this tag
         type: boolean
@@ -56,36 +74,44 @@ on:
 permissions:
   contents: read
 
+env:
+  # 256MB is what ccrl gives an engine and what this one defaults to, so both
+  # sides of a rung hold the same number of positions. Naming it once here is
+  # what puts the number in every manifest as well as in the match.
+  HASH: 256
+  CONCURRENCY: 2
+  # The wall clock cap on play alone, inside the job's timeout with room for
+  # the two builds before it. Twenty six games at 20+0.2 is about a quarter of
+  # an hour, so this is headroom for a slow runner or a longer control rather
+  # than a budget to be spent.
+  MAX_MATCH_MINUTES: 90
+
 jobs:
-  match:
+  # The ladder is a string, and a matrix is a list, so the string is picked
+  # apart here rather than in every job that needs a piece of it. It is also
+  # where the engine's ref becomes a commit, so the rungs all measure the same
+  # build rather than each resolving the ref again.
+  resolve:
     runs-on: ubuntu-latest
-    outputs:
-      line: ${{ steps.estimate.outputs.line }}
-    # the default ladder at the default time control takes about an hour, the
-    # rest is headroom for a slower runner or a longer control
-    timeout-minutes: 150
+    timeout-minutes: 10
     defaults:
       run:
-        # naming the shell is what turns on pipefail, without it a fastchess
-        # that died is hidden by the tee it is piped into
         shell: bash
-    env:
-      GAMES: ${{ inputs.games }}
-      TIME_CONTROL: ${{ inputs.time_control }}
-      LADDER: ${{ inputs.ladder }}
-      CANDIDATE: ${{ inputs.candidate }}
+    outputs:
+      candidate_sha: ${{ steps.find.outputs.candidate_sha }}
+      rungs: ${{ steps.split.outputs.rungs }}
+      count: ${{ steps.split.outputs.count }}
+      pairs: ${{ steps.split.outputs.pairs }}
+      spec: ${{ steps.split.outputs.spec }}
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
           fetch-depth: 0
 
-      - uses: ./.github/actions/match-tools
-
-      # the cache keeps the dependencies; the engine is built from an export
-      # of its commit, and the checkout stays on the ref this ran on
-      - uses: Swatinem/rust-cache@6323deb102c322ba6fcbdcafc7e3dddab59af2b6 # v2.9.2
-
-      - name: Build the engine
+      - name: Work out what is being measured
+        id: find
+        env:
+          CANDIDATE: ${{ inputs.candidate }}
         run: |
           if [ -n "$CANDIDATE" ]; then
             sha=$(scripts/resolve_ref.sh "$CANDIDATE") \
@@ -93,75 +119,308 @@ jobs:
           else
             sha=$GITHUB_SHA
           fi
-          echo "CANDIDATE_SHA=${sha}" >> "$GITHUB_ENV"
-          scripts/build_at.sh "$sha" tools/arche
+          echo "candidate_sha=${sha}" >> "$GITHUB_OUTPUT"
 
-      # Not cached. Each one is a second of compiling and eighty kilobytes, so
-      # fetching a cache costs more than building them does.
-      - name: Build the opponents
+      - name: Work out the rungs
+        id: split
+        env:
+          GAMES: ${{ inputs.games }}
+          LADDER: ${{ inputs.ladder }}
         run: |
-          git clone -q https://github.com/mhouppin/stash-bot.git /tmp/stash
+          # every rung plays whole pairs, an opening from each side, so its
+          # games are rounded down to an even number
+          pairs=$((GAMES / 2))
+          if [ "$pairs" -lt 1 ]; then
+            echo "::error::${GAMES} games against an opponent is under a pair"
+            exit 1
+          fi
+          rungs=""
           spec=""
+          index=0
           for rung in ${LADDER//,/ }; do
+            case "$rung" in
+              *:*) ;;
+              *) echo "::error::ladder entry ${rung} is not tag:rating"; exit 1 ;;
+            esac
             tag=${rung%%:*}
-            git -C /tmp/stash checkout -q "$tag" \
-              || { echo "::error::no such stash tag ${tag}"; exit 1; }
-            # the makefile moved into src/ after v12
-            dir=/tmp/stash
-            if [ -f /tmp/stash/src/Makefile ]; then
-              dir=/tmp/stash/src
-            fi
-            make -C "$dir" -j"$(nproc)" > /dev/null
-            cp "$dir/stash-bot" "tools/stash-${tag}"
-            git -C /tmp/stash clean -qfdx
+            rating=${rung##*:}
+            case "$rating" in
+              ''|*[!0-9.]*) echo "::error::${rung} has no rating on it"; exit 1 ;;
+            esac
+            # the matrix takes a list of objects, one per rung, so a job can
+            # read the tag and the rating it is playing straight off its own
+            rungs="${rungs}${rungs:+,}"
+            rungs="${rungs}{\"tag\":\"${tag}\",\"rating\":\"${rating}\",\"index\":${index}}"
             # the engines play under a stash- prefixed name, so the ladder the
             # estimate is given has to carry the same names the games do
             spec="${spec}${spec:+,}stash-${rung}"
+            index=$((index + 1))
           done
-          echo "LADDER_SPEC=${spec}" >> "$GITHUB_ENV"
-          ls -l tools/stash-*
+          if [ "$index" -eq 0 ]; then
+            echo "::error::the ladder is empty"
+            exit 1
+          fi
+          echo "rungs=[${rungs}]" >> "$GITHUB_OUTPUT"
+          echo "count=${index}" >> "$GITHUB_OUTPUT"
+          echo "pairs=${pairs}" >> "$GITHUB_OUTPUT"
+          echo "spec=${spec}" >> "$GITHUB_OUTPUT"
+          if [ "$index" = "1" ]; then
+            echo "::notice::one rung of $((pairs * 2)) games: ${LADDER}"
+          else
+            echo "::notice::${index} rungs of $((pairs * 2)) games each: ${LADDER}"
+          fi
 
-      - name: Play the gauntlet
+  play:
+    needs: resolve
+    runs-on: ubuntu-latest
+    strategy:
+      # a rung that fell over is a rung missing from the fit and not a lost
+      # run, so the others play on and the estimate says which of them arrived
+      fail-fast: false
+      matrix:
+        rung: ${{ fromJSON(needs.resolve.outputs.rungs) }}
+    # the play cap above with room for the two builds before it
+    timeout-minutes: 120
+    defaults:
+      run:
+        # naming the shell is what turns on pipefail, without it a fastchess
+        # that died is hidden by the tee it is piped into
+        shell: bash
+    env:
+      TAG: ${{ matrix.rung.tag }}
+      RATING: ${{ matrix.rung.rating }}
+      INDEX: ${{ matrix.rung.index }}
+      RUNGS: ${{ needs.resolve.outputs.count }}
+      PAIRS: ${{ needs.resolve.outputs.pairs }}
+      TIME_CONTROL: ${{ inputs.time_control }}
+      # the openings are taken in book order from an offset, so the seed picks
+      # the region of the book each rung plays rather than a shuffle. The run
+      # id is one nobody has to choose and no two runs share; a seed given by
+      # hand replays an earlier run
+      SEED: ${{ inputs.seed || github.run_id }}
+      CANDIDATE: ${{ inputs.candidate }}
+      CANDIDATE_SHA: ${{ needs.resolve.outputs.candidate_sha }}
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          fetch-depth: 0
+
+      - uses: ./.github/actions/match-tools
+        id: tools
+
+      # the cache keeps the dependencies; the engine is built from an export
+      # of its commit, and the checkout stays on the ref this ran on
+      - uses: Swatinem/rust-cache@6323deb102c322ba6fcbdcafc7e3dddab59af2b6 # v2.9.2
+
+      - name: Build the engine
+        run: |
+          # a pull request head is not fetched by default and the resolve job
+          # ran on a different machine, so fetch it if it is not already here
+          git cat-file -e "${CANDIDATE_SHA}^{commit}" 2>/dev/null \
+            || git fetch -q origin "$CANDIDATE_SHA" \
+            || git fetch -q origin "+refs/pull/*/head:refs/remotes/pull/*"
+          scripts/build_at.sh "$CANDIDATE_SHA" tools/arche
+
+      # Not cached. It is a second of compiling and eighty kilobytes, so
+      # fetching a cache would cost more than building it does. The makefile
+      # moved into src/ after v12, which is why the directory is looked for
+      # rather than named.
+      - name: Build the opponent
+        run: |
+          git clone -q --depth 1 --branch "$TAG" \
+            https://github.com/mhouppin/stash-bot.git /tmp/stash \
+            || { echo "::error::no such stash tag ${TAG}"; exit 1; }
+          dir=/tmp/stash
+          if [ -f /tmp/stash/src/Makefile ]; then
+            dir=/tmp/stash/src
+          fi
+          make -C "$dir" -j"$(nproc)" > /dev/null
+          cp "$dir/stash-bot" "tools/stash-${TAG}"
+          ls -l "tools/stash-${TAG}"
+
+      # Which openings this rung plays. The rungs are the shards of the run:
+      # each takes a slice of its own so that no two of them open the same
+      # way, which keeps the pairings independent of each other. The book is
+      # counted here rather than written down, because a book that changed
+      # size would otherwise move every rung but the first onto its
+      # neighbour's openings.
+      - name: Work out the slice of the book
+        run: |
+          openings=$(grep -c '^\[Event' tools/8moves_v3.pgn) \
+            || { echo "::error::no openings in the book"; exit 1; }
+          start=$(python3 scripts/book_slice.py --openings "$openings" \
+            --pairs "$PAIRS" --shards "$RUNGS" --shard "$INDEX" --seed "$SEED" \
+            2> slice.txt) || { echo "::error::$(cat slice.txt)"; exit 1; }
+          while read -r remark; do
+            echo "::warning::${remark}"
+          done < slice.txt
+          echo "OPENINGS=${openings}" >> "$GITHUB_ENV"
+          echo "START=${start}" >> "$GITHUB_ENV"
+
+      - name: Play the rung
         working-directory: tools
         run: |
           # only fastchess and the book are cached, but a rerun on the same
-          # runner would still find the last attempt's games lying here
-          rm -f gauntlet.pgn result.txt config.json
-          engines=(-engine name=arche cmd=./arche)
-          for rung in ${LADDER//,/ }; do
-            tag=${rung%%:*}
-            # 256MB is what ccrl gives an engine, and what this one defaults
-            # to, so both sides of the gauntlet hold the same number of
-            # positions. Stash is told the size; arche is left at its default,
-            # which its Hash option could set instead.
-            engines+=(-engine "name=stash-${tag}" "cmd=./stash-${tag}" option.Hash=256)
-          done
-          # the engine allocates its table before it answers uci, which takes it
-          # several seconds and the ten second default does not always allow for
-          ./fastchess "${engines[@]}" \
-            -tournament gauntlet -seeds 1 \
-            -each proto=uci "tc=$TIME_CONTROL" -startup-ms 20000 \
-            -openings file=8moves_v3.pgn format=pgn order=random \
-            -rounds "$((GAMES / 2))" -repeat -concurrency 2 -recover \
-            -pgnout file=gauntlet.pgn \
-            | tee result.txt
+          # runner would still find the last attempt's games lying here, and
+          # fastchess appends to a pgn it is given
+          rm -f games.pgn result.txt config.json
+          # The table size is given to both sides at once rather than to the
+          # opponent alone, so one line says what the match was played on.
+          #
+          # The engine allocates its table before it answers uci, which takes
+          # it several seconds and the ten second default does not always
+          # allow for.
+          #
+          # The pgn carries everything fastchess can record about a move, so a
+          # game that went wrong can be read for what the search was seeing at
+          # the time. tbhits is left off; there are no tablebases here.
+          #
+          # INT is the signal fastchess takes as a request to stop, report the
+          # games played so far and exit, and 124 is how timeout says it had
+          # to send it. A rung stopped that way is a rung with fewer games in
+          # the fit, and the estimate says so rather than losing the run
+          status=0
+          timeout -k 60 -s INT "${MAX_MATCH_MINUTES}m" ./fastchess \
+            -engine name=arche cmd=./arche \
+            -engine "name=stash-${TAG}" "cmd=./stash-${TAG}" \
+            -each proto=uci "tc=$TIME_CONTROL" "option.Hash=$HASH" -startup-ms 20000 \
+            -openings file=8moves_v3.pgn format=pgn order=sequential "start=$START" \
+            -rounds "$PAIRS" -repeat -concurrency "$CONCURRENCY" -recover \
+            -pgnout file=games.pgn nodes=true seldepth=true nps=true \
+              hashfull=true timeleft=true latency=true pv=true \
+            | tee result.txt || status=$?
+          if [ "$status" = "124" ]; then
+            echo "STOPPED_BY=the ${MAX_MATCH_MINUTES} minute wall clock cap" >> "$GITHUB_ENV"
+            echo "::warning::stash-${TAG} hit the ${MAX_MATCH_MINUTES} minute cap before its game count"
+          elif [ "$status" != "0" ]; then
+            exit "$status"
+          else
+            echo "STOPPED_BY=fastchess, at the game count" >> "$GITHUB_ENV"
+          fi
+
+      # What it would take to play this rung again, and what it was played on.
+      # Written whether or not it finished, since a rung that ended badly is
+      # the one that gets looked into.
+      - name: Write the manifest
+        if: always()
+        env:
+          FASTCHESS: ${{ steps.tools.outputs.fastchess }}
+        run: |
+          book_sha=$(sha256sum tools/8moves_v3.pgn | cut -d' ' -f1) || book_sha=unknown
+          toolchain=$(rustc -V) || toolchain=unknown
+          {
+            echo "candidate: ${CANDIDATE:-${GITHUB_REF_NAME}}"
+            echo "candidate_sha: ${CANDIDATE_SHA}"
+            echo "opponent: stash-${TAG}"
+            echo "opponent_rating: ${RATING} on the ccrl blitz list"
+            echo "build: scripts/build_at.sh for arche, make for stash at its tag"
+            echo "fastchess: ${FASTCHESS}"
+            echo "book: 8moves_v3.pgn"
+            echo "book_sha256: ${book_sha}"
+            echo "book_openings: ${OPENINGS:-not counted, the rung did not get that far}"
+            echo "seed: ${SEED}"
+            echo "rung: ${INDEX} of ${RUNGS}"
+            echo "start: ${START:-not chosen, the rung did not get that far}"
+            echo "pairs: ${PAIRS}"
+            echo "games_asked: $((PAIRS * 2))"
+            echo "time_control: ${TIME_CONTROL}"
+            echo "hash_mb: ${HASH}"
+            echo "concurrency: ${CONCURRENCY}"
+            echo "wall_clock_cap_minutes: ${MAX_MATCH_MINUTES}"
+            # unset when the play step never got to the end, which is worth
+            # saying rather than leaving the games to look as if they ran out
+            echo "stopped_by: ${STOPPED_BY:-not recorded, the rung did not finish}"
+            echo "runner: $(uname -a)"
+            echo "cores: $(nproc)"
+            echo "rustc: ${toolchain}"
+            echo "run_id: ${GITHUB_RUN_ID}"
+            echo "run_url: ${GITHUB_SERVER_URL}/${GITHUB_REPOSITORY}/actions/runs/${GITHUB_RUN_ID}"
+          } > tools/manifest.txt
+          cat tools/manifest.txt
+
+      # The games are the only record of what actually happened, and the
+      # estimate reads them back out of here rather than from a workspace it
+      # does not share. The attempt is in the name because an artifact cannot
+      # be uploaded twice under one name, so a rerun of the run keeps its
+      # earlier attempt rather than failing on the upload.
+      - name: Keep the games
+        if: always()
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+        with:
+          name: calibrate-${{ github.run_id }}-${{ github.run_attempt }}-${{ matrix.rung.tag }}
+          path: |
+            tools/games.pgn
+            tools/result.txt
+            tools/config.json
+            tools/manifest.txt
+          if-no-files-found: warn
+
+  estimate:
+    needs: [resolve, play]
+    # a rung that timed out or failed leaves the others worth fitting, so this
+    # runs on whatever arrived rather than only on a clean sweep. The fit says
+    # which rungs played no games
+    if: always() && needs.resolve.result == 'success'
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    defaults:
+      run:
+        shell: bash
+    outputs:
+      line: ${{ steps.estimate.outputs.line }}
+    env:
+      TIME_CONTROL: ${{ inputs.time_control }}
+      LADDER_SPEC: ${{ needs.resolve.outputs.spec }}
+      RUNGS: ${{ needs.resolve.outputs.count }}
+      SEED: ${{ inputs.seed || github.run_id }}
+      CANDIDATE_SHA: ${{ needs.resolve.outputs.candidate_sha }}
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+
+      # one directory per artifact under rungs/, unless only one of them
+      # arrived, which is extracted straight into rungs/; the find below takes
+      # it either way. The attempt is in the pattern so that a rerun fits its
+      # own games rather than counting an earlier attempt's as well
+      - uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v8.0.1
+        with:
+          pattern: calibrate-${{ github.run_id }}-${{ github.run_attempt }}-*
+          path: rungs
 
       - name: Work out the rating
         id: estimate
         run: |
-          if grep -qiE 'disconnect|stalled|loses on time' tools/result.txt; then
-            echo "::warning::An engine crashed or lost on time, the estimate is unreliable"
+          mapfile -t games < <(find rungs -name games.pgn 2>/dev/null | sort)
+          if [ "${#games[@]}" -eq 0 ]; then
+            echo "::error::no rung of attempt ${GITHUB_RUN_ATTEMPT} uploaded any games. Rerunning the failed jobs alone leaves the games on the attempt that played them, so rerun all of them."
+            exit 1
+          fi
+          # one gauntlet again, since the rungs played disjoint openings and
+          # the fit reads a game at a time
+          cat "${games[@]}" > gauntlet.pgn
+          # how the games ended, counted from the games themselves rather than
+          # guessed at from the words in a result block. A rung that lost games
+          # to a crash or the clock still counts in the fit, because choosing
+          # what to count after seeing it is not a measurement; the counts sit
+          # beside the estimate instead
+          if python3 scripts/match_terminations.py gauntlet.pgn \
+              > terminations.txt 2> faults.txt; then
+            while read -r remark; do
+              echo "::warning::${remark}"
+            done < faults.txt
+          else
+            echo "::warning::The games could not be counted, the block below is incomplete"
+            cat faults.txt
           fi
           # anything the estimate wants to say about itself, a rung that played
           # no games or a fit the pairings disagree with, goes to stderr, so it
           # is picked up from there rather than parsed back out of the table
           python3 scripts/rating_estimate.py \
-            tools/gauntlet.pgn arche "$LADDER_SPEC" > table.md 2> notes.txt \
+            gauntlet.pgn arche "$LADDER_SPEC" > table.md 2> notes.txt \
             || { cat notes.txt >&2; exit 1; }
           # asked for again rather than cut out of the table, so that a change
           # to how the table is laid out cannot quietly change what is published
           line=$(python3 scripts/rating_estimate.py \
-            tools/gauntlet.pgn arche "$LADDER_SPEC" --line 2> /dev/null)
+            gauntlet.pgn arche "$LADDER_SPEC" --line 2> /dev/null)
           echo "line=Estimated rating | ${line}" >> "$GITHUB_OUTPUT"
           echo "::notice::${line}"
           while read -r remark; do
@@ -171,7 +430,7 @@ jobs:
             echo "### Rating estimate"
             echo
             echo "\`${CANDIDATE_SHA:0:8}\` at ${TIME_CONTROL} against ranked releases of"
-            echo "[Stash](https://github.com/mhouppin/stash-bot)."
+            echo "[Stash](https://github.com/mhouppin/stash-bot), ${#games[@]} of ${RUNGS} rungs played."
             echo
             cat table.md
             # one alert with every remark inside it, rather than one alert each,
@@ -183,29 +442,29 @@ jobs:
               sed 's/^/> /' notes.txt
             fi
             echo
+            echo "How the games ended:"
+            echo
+            echo '```'
+            cat terminations.txt
+            echo '```'
+            echo
+            echo "The games of each rung are kept as the"
+            echo "\`calibrate-${GITHUB_RUN_ID}-${GITHUB_RUN_ATTEMPT}-<tag>\` artifacts, with a manifest"
+            echo "saying what was played on what. The openings came from seed ${SEED},"
+            echo "which replays this schedule."
+            echo
             echo "The opponents were rated at 2m+1s on other hardware, so the"
             echo "placement carries a systematic error the game count does not"
             echo "describe. It is worth about a hundred points, and no number of"
             echo "games reduces it."
           } >> "$GITHUB_STEP_SUMMARY"
 
-      # The games are the expensive part and the estimate is cheap, so keeping
-      # them means a ladder corrected afterwards can be applied without playing
-      # the hour again.
-      - name: Keep the games
-        if: always()
-        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
-        with:
-          name: gauntlet-${{ github.run_id }}
-          path: tools/gauntlet.pgn
-          if-no-files-found: warn
-
   release-notes:
-    needs: match
+    needs: estimate
     if: inputs.publish
     permissions:
       contents: write
     uses: ./.github/workflows/release-note.yml
     with:
       marker: arche:rating
-      line: ${{ needs.match.outputs.line }}
+      line: ${{ needs.estimate.outputs.line }}
