@@ -12,6 +12,7 @@ use arche_core::SearchConfig;
 use arche_core::SearchOutcome;
 use arche_core::SearchParameters;
 use arche_core::bench;
+use arche_core::census;
 use arche_core::residual;
 use arche_core::{PvLine, SearchResult};
 use std::io::{BufRead, Stdout, Write};
@@ -613,7 +614,7 @@ pub fn residual_settings(params: &Params) -> Result<ResidualSettings, String> {
         Param::Unreadable(word) => return Err(format!("every: {word}")),
     };
     let cap = match params.parse::<usize>("cap") {
-        Param::Absent => residual::Sampler::DEFAULT_CAP,
+        Param::Absent => residual::DEFAULT_CAP,
         Param::Read(cap) => cap,
         Param::Unreadable(word) => return Err(format!("cap: {word}")),
     };
@@ -641,6 +642,51 @@ impl ResidualSettings {
             self.cap,
             self.config,
         )
+    }
+}
+
+/// What a cutoffs argument asked for: `cutoffs [depth] [every <n>]
+/// [cap <n>]`, the residuals argument's shape without the taint word. The
+/// census records the search the engine plays with and nothing else, so
+/// there is no policy to choose.
+pub struct CutoffSettings {
+    pub depth: u8,
+    pub every: u32,
+    pub cap: usize,
+}
+
+/// The words a cutoffs run takes after its depth.
+const CUTOFF_KEYWORDS: [&str; 2] = ["every", "cap"];
+
+/// Reads the cutoff census settings, or says which word could not be read,
+/// under `residual_settings`' rule: running the default in place of a word
+/// nobody typed would take minutes and explain nothing.
+pub fn cutoff_settings(params: &Params) -> Result<CutoffSettings, String> {
+    let depth = match params.parse::<u8>("cutoffs") {
+        Param::Absent => bench::DEPTH,
+        Param::Read(depth) => depth,
+        Param::Unreadable(word) if CUTOFF_KEYWORDS.contains(&word) => bench::DEPTH,
+        Param::Unreadable(word) => return Err(format!("depth: {word}")),
+    };
+    let every = match params.parse::<u32>("every") {
+        Param::Absent => census::DEFAULT_EVERY,
+        // zero records every node the loop answers, up to the cap
+        Param::Read(every) => every,
+        Param::Unreadable(word) => return Err(format!("every: {word}")),
+    };
+    let cap = match params.parse::<usize>("cap") {
+        Param::Absent => residual::DEFAULT_CAP,
+        Param::Read(cap) => cap,
+        Param::Unreadable(word) => return Err(format!("cap: {word}")),
+    };
+    Ok(CutoffSettings { depth, every, cap })
+}
+
+impl CutoffSettings {
+    /// Runs the census these settings describe, over the bench's own
+    /// positions, so the rows describe the tree the bench describes.
+    pub fn run(&self) -> census::Report {
+        census::run(&bench::positions(), self.depth, self.every, self.cap)
     }
 }
 
@@ -1524,7 +1570,7 @@ go depth 3
     /// over and reading what it was asked for is the part worth pinning.
     #[test]
     fn a_residuals_argument_reads_its_depth_rate_cap_and_policy() {
-        const CAP: usize = residual::Sampler::DEFAULT_CAP;
+        const CAP: usize = residual::DEFAULT_CAP;
         let read = |line: &str| {
             let settings = residual_settings(&Params::of(line)).expect(line);
             (
@@ -1577,6 +1623,41 @@ go depth 3
         ] {
             assert_eq!(
                 residual_settings(&Params::of(line)).err(),
+                Some(what.to_string()),
+                "{line}"
+            );
+        }
+    }
+
+    /// The settings alone, not a run, for the residuals test's reason.
+    #[test]
+    fn a_cutoffs_argument_reads_its_depth_rate_and_cap() {
+        let read = |line: &str| {
+            let settings = cutoff_settings(&Params::of(line)).expect(line);
+            (settings.depth, settings.every, settings.cap)
+        };
+        const CAP: usize = residual::DEFAULT_CAP;
+        assert_eq!(read("cutoffs"), (bench::DEPTH, 1000, CAP));
+        assert_eq!(read("cutoffs 4"), (4, 1000, CAP));
+        assert_eq!(read("cutoffs 4 every 50"), (4, 50, CAP));
+        // a word standing where the depth would be means the depth was
+        // left out rather than mistyped, the rule the bench reads by
+        assert_eq!(read("cutoffs every 50 cap 500"), (bench::DEPTH, 50, 500));
+        // and zero is a rate to ask for: it records every node the move
+        // loop answers, up to the cap
+        assert_eq!(read("cutoffs 2 every 0"), (2, 0, CAP));
+    }
+
+    #[test]
+    fn an_unreadable_cutoffs_setting_is_named_rather_than_run() {
+        for (line, what) in [
+            ("cutoffs abc", "depth: abc"),
+            ("cutoffs 300", "depth: 300"),
+            ("cutoffs 4 every lots", "every: lots"),
+            ("cutoffs 4 cap lots", "cap: lots"),
+        ] {
+            assert_eq!(
+                cutoff_settings(&Params::of(line)).err(),
                 Some(what.to_string()),
                 "{line}"
             );

@@ -2,6 +2,7 @@
 // Copyright (C) 2022-2026 Andrew Wright
 
 use crate::board::Board;
+use crate::census;
 use crate::limits::Limits;
 use crate::misc::{Color, Score};
 use crate::ordering::MoveOrdering;
@@ -446,6 +447,10 @@ pub struct AlphaBeta {
     /// none takes no branch a search without a sampler did not take, which
     /// is the claim the pinned node counts stand behind.
     sampler: Option<Sampler>,
+    /// The cutoff census's reservoir, or none, on the sampler's terms
+    /// exactly: armed only by the cutoffs command, and an engine without
+    /// one searches the tree it always searched.
+    census: Option<Sampler<census::Event>>,
 }
 
 impl AlphaBeta {
@@ -468,6 +473,7 @@ impl AlphaBeta {
             quiescence_nodes: 0,
             ordering: MoveOrdering::new(),
             sampler: None,
+            census: None,
         }
     }
 
@@ -487,6 +493,98 @@ impl AlphaBeta {
     /// describe the whole run rather than restarting at each search in it.
     pub fn take_sampler(&mut self) -> Option<Sampler> {
         self.sampler.take()
+    }
+
+    /// Have the search record which move cuts each sampled full width node
+    /// off, or that none did, at the rate the sampler was built with. Off
+    /// until this is called, and the only caller is the cutoffs command:
+    /// nothing the engine plays or benches with turns it on.
+    pub fn sample_cutoffs(&mut self, sampler: Sampler<census::Event>) {
+        self.census = Some(sampler);
+    }
+
+    /// The census sampler back with everything it collected, leaving the
+    /// engine recording nothing; none from an engine never given one. Handed
+    /// back rather than emptied in place, for `take_sampler`'s reason: one
+    /// sampler carried across a run of searches is what makes its cap
+    /// describe the run.
+    pub fn take_census(&mut self) -> Option<Sampler<census::Event>> {
+        self.census.take()
+    }
+
+    /// One node answering out of the move loop, offered to the census:
+    /// which move cut it off and what company that move cut ahead of, or
+    /// the same portrait with no cutting move when the loop ran out.
+    ///
+    /// `cutting` carries the move that cut and whether its answer came
+    /// through the reduced scout, or none for a held node. The killers and
+    /// the history are read before `cutoff` teaches them the move, so a row
+    /// says what the node knew when it chose and not what it learned. The
+    /// evaluation is computed here, inside the closure and so for kept
+    /// events alone: the column is exact rather than a cache read, and it
+    /// is off the measured path, where forcing an eval at every node to
+    /// fill it would change the engine.
+    // cold and out of line behind a bare is_some at each call site, as
+    // `sample` is and for `sample`'s measured reason.
+    #[cold]
+    #[inline(never)]
+    #[allow(clippy::too_many_arguments)]
+    fn census_event(
+        &mut self,
+        depth: u8,
+        alpha: Score,
+        beta: Score,
+        in_check: bool,
+        moves: &[Play],
+        searched: usize,
+        quiets_scored: bool,
+        ply: Option<usize>,
+        tt: census::Table,
+        entered_at: u64,
+        cutting: Option<census::Cutting<'_>>,
+    ) {
+        // the fields are borrowed apart rather than through `self`, which
+        // is what lets the closure read the board and the memories while
+        // the sampler is held
+        let board = &self.board;
+        let ordering = &self.ordering;
+        let cost = self.nodes - entered_at;
+        let Some(census) = self.census.as_mut() else {
+            return;
+        };
+        let key = census::sample_key(board.key, depth);
+        census.event(key, || {
+            // the memories score a quiet move and nothing else, so the
+            // history columns hold to the same line: a capture or a
+            // promotion reads 0 and is priced by its class instead
+            let quiet_history = |m: &Play| {
+                if m.capture.is_none() && m.promote.is_none() {
+                    Some(ordering.history_score(board.active_color, m))
+                } else {
+                    None
+                }
+            };
+            let killers = ply.map_or([None, None], |ply| ordering.killers_at(ply));
+            census::Event {
+                fen: board.to_fen(),
+                depth,
+                window: Window::of(alpha, beta),
+                in_check,
+                generated: moves.len(),
+                searched,
+                cut: cutting.map(|cutting| census::Cut {
+                    index: searched - 1,
+                    class: census::Class::of(cutting.play, cutting.table, killers),
+                    history: quiet_history(cutting.play).unwrap_or(0),
+                    reduced: cutting.reduced,
+                }),
+                history_max: moves.iter().filter_map(quiet_history).max().unwrap_or(0),
+                quiets_scored,
+                tt,
+                eval_beta: i32::from(crate::eval::eval(board)) - i32::from(beta),
+                cost,
+            }
+        });
     }
 
     /// One node a shortcut has just answered, or a shadow candidate it was
@@ -1118,6 +1216,10 @@ impl AlphaBeta {
         self.poll_deadline()?;
         self.selective_depth = self.selective_depth.max(self.board.line_ply as u8);
         self.nodes += 1;
+        // what the census's cost column is measured from: nodes spent under
+        // this node are the counter at its answer less the counter here. A
+        // read of a field, no branch, so the disarmed search is unchanged
+        let entered_at = self.nodes;
 
         // every node here sits below the root, which search() owns: a
         // repetition there is not a finished game because the engine still has
@@ -1198,6 +1300,29 @@ impl AlphaBeta {
                     }
                     if tt_score > alpha {
                         if tt_score >= beta {
+                            // the census sees the node before the cutoff
+                            // teaches the memories, and sees the list the
+                            // node holds, which here is none: nothing was
+                            // generated
+                            if self.census.is_some() {
+                                self.census_event(
+                                    depth,
+                                    alpha,
+                                    beta,
+                                    in_check,
+                                    &[],
+                                    1,
+                                    false,
+                                    None,
+                                    census::Table::Move,
+                                    entered_at,
+                                    Some(census::Cutting {
+                                        play: &tt,
+                                        reduced: false,
+                                        table: true,
+                                    }),
+                                );
+                            }
                             // a cutoff is a cutoff wherever it is proved, so
                             // the table's move earns its killer slot here as
                             // any other move does in the loop below
@@ -1221,6 +1346,10 @@ impl AlphaBeta {
         // quiet move late. The table's move, when it was searched, is the
         // first of them
         let mut searched = usize::from(found_legal_move);
+        // whether the second stage ever ran here, read by the census: the
+        // seam is a bool beside the call rather than a question the
+        // ordering is asked later
+        let mut quiets_scored = false;
         for i in 0..moves.len() {
             // the front did not cut this node off, so the rest of the list
             // is scored and sorted before the first move past it is tried
@@ -1228,6 +1357,7 @@ impl AlphaBeta {
                 if let Some(ply) = ply {
                     self.ordering
                         .order_quiets(&self.board, &mut moves[front..], ply);
+                    quiets_scored = true;
                 }
             }
             let m = &moves[i];
@@ -1252,10 +1382,51 @@ impl AlphaBeta {
             }
             if score > alpha {
                 if score >= beta {
+                    // before the cutoff below teaches the memories, so the
+                    // row reads the killers and the history the node chose
+                    // under
+                    if self.census.is_some() {
+                        self.census_event(
+                            depth,
+                            old_alpha,
+                            beta,
+                            in_check,
+                            &moves,
+                            searched,
+                            quiets_scored,
+                            ply,
+                            census::Table::of(pv_play.is_some(), tt_tried.is_some()),
+                            entered_at,
+                            Some(census::Cutting {
+                                play: m,
+                                reduced,
+                                table: false,
+                            }),
+                        );
+                    }
                     return Ok(self.cutoff(m, taint, score, depth));
                 }
                 alpha = score;
             }
+        }
+
+        // the loop ran out: the held half of the census, recorded at the
+        // same rate, since a cut-only stream reproduces the very censoring
+        // the census exists to measure
+        if self.census.is_some() {
+            self.census_event(
+                depth,
+                old_alpha,
+                beta,
+                in_check,
+                &moves,
+                searched,
+                quiets_scored,
+                ply,
+                census::Table::of(pv_play.is_some(), tt_tried.is_some()),
+                entered_at,
+                None,
+            );
         }
 
         if !found_legal_move {
@@ -4302,5 +4473,185 @@ mod sampling {
             };
             assert!(sample.eval_beta >= floor, "{:?} under {}", sample, floor);
         }
+    }
+}
+
+/// The cutoff census seen from the search: that it is off unless it is
+/// asked for, and that a row reads the node as it stood at the moment it
+/// answered. The recorder is driven directly here, with the memories
+/// taught by hand, which is the only way to hold a row's history column to
+/// a history the test chose. What the rows are worth is the cutoffs
+/// command's business.
+#[cfg(test)]
+mod cutoffs {
+    use super::{AlphaBeta, Board, Score, SearchConfig};
+    use crate::census::{Class, Cutting, Table};
+    use crate::play::Play;
+    use crate::residual::{Sampler, Window};
+    use pretty_assertions::assert_eq;
+
+    const TABLE_BYTES: usize = 1024 * 1024;
+    const SHARP_MIDDLEGAME: &str = "r1b2rk1/ppp1qppp/4pn2/6N1/Qn1P4/2NBP3/PP3PPP/R3K2R w KQ - 9 12";
+
+    fn engine(fen: &str) -> AlphaBeta {
+        let mut e = AlphaBeta::with_table_bytes(Board::from_fen(fen).unwrap(), TABLE_BYTES);
+        e.sample_cutoffs(Sampler::every(1));
+        e
+    }
+
+    /// Two quiet moves of the position, for teaching the memories.
+    fn quiets(e: &AlphaBeta) -> (Play, Play) {
+        let moves = e.board.generate_moves();
+        let mut quiets = moves
+            .iter()
+            .filter(|m| m.capture.is_none() && m.promote.is_none());
+        let first = *quiets.next().expect("a quiet move");
+        let second = *quiets.next().expect("another quiet move");
+        (first, second)
+    }
+
+    /// The same gate the residual sampler stands behind: an engine nobody
+    /// asked a census of holds none, and the pinned bench counts beside
+    /// this say the search it runs is the search it ran before there was
+    /// a census at all.
+    #[test]
+    fn an_engine_records_no_census_until_it_is_asked_to() {
+        let mut e =
+            AlphaBeta::with_table_bytes(Board::from_fen(SHARP_MIDDLEGAME).unwrap(), TABLE_BYTES);
+        assert!(e.census.is_none());
+        let reference =
+            AlphaBeta::with_config(Board::new(), TABLE_BYTES, SearchConfig::reference());
+        assert!(reference.census.is_none());
+        e.search(4);
+        assert!(e.take_census().is_none());
+    }
+
+    /// A killer cutting at index 1, with the memories taught by hand: the
+    /// row says index 1 and class killer, its history is the table's entry
+    /// for the move, and the largest history among the generated quiets
+    /// stands beside it as the denominator.
+    #[test]
+    fn a_row_reads_the_memories_as_they_stood_at_the_cutoff() {
+        let mut e = engine(SHARP_MIDDLEGAME);
+        let (killer, cool) = quiets(&e);
+        let color = e.board.active_color;
+        // taught at another ply, so what makes the class a killer is the
+        // slot at this one; its history entry is the larger of the two
+        e.ordering.cutoff(color, &cool, 1, 5);
+        e.ordering.cutoff(color, &killer, 0, 4);
+        let moves = e.board.generate_moves();
+        let (alpha, beta): (Score, Score) = (10, 11);
+        e.census_event(
+            3,
+            alpha,
+            beta,
+            false,
+            &moves,
+            2,
+            true,
+            Some(0),
+            Table::Miss,
+            e.nodes,
+            Some(Cutting {
+                play: &killer,
+                reduced: false,
+                table: false,
+            }),
+        );
+        let sampled = e.take_census().expect("a census was installed").drain();
+        assert_eq!(sampled.taken.len(), 1);
+        assert_eq!(sampled.events, 1);
+        let row = &sampled.taken[0];
+        let cut = row.cut.as_ref().expect("the node cut");
+        assert_eq!(cut.index, 1);
+        assert_eq!(cut.class, Class::Killer);
+        assert_eq!(cut.history, 16);
+        assert!(!cut.reduced);
+        assert_eq!(row.history_max, 25);
+        assert_eq!(row.generated, moves.len());
+        assert_eq!(row.searched, 2);
+        assert_eq!(row.window, Window::Zero);
+        assert!(!row.in_check);
+        assert!(row.quiets_scored);
+        assert_eq!(row.tt, Table::Miss);
+        assert_eq!(row.fen, e.board.to_fen());
+        // the eval column is computed at record time and exact
+        assert_eq!(
+            row.eval_beta,
+            i32::from(crate::eval::eval(&e.board)) - i32::from(beta)
+        );
+        assert_eq!(row.cost, 0);
+    }
+
+    /// The table's move cutting before anything was generated: index 0,
+    /// class table whatever the move is, and a row that says the node
+    /// holds no list.
+    #[test]
+    fn a_table_move_cutoff_is_recorded_with_nothing_generated() {
+        let mut e = engine(SHARP_MIDDLEGAME);
+        let take = *e
+            .board
+            .generate_moves()
+            .iter()
+            .find(|m| m.capture.is_some())
+            .expect("a capture");
+        e.census_event(
+            4,
+            10,
+            11,
+            false,
+            &[],
+            1,
+            false,
+            None,
+            Table::Move,
+            e.nodes,
+            Some(Cutting {
+                play: &take,
+                reduced: false,
+                table: true,
+            }),
+        );
+        let sampled = e.take_census().expect("a census was installed").drain();
+        let row = &sampled.taken[0];
+        let cut = row.cut.as_ref().expect("the node cut");
+        assert_eq!(cut.index, 0);
+        assert_eq!(cut.class, Class::Table);
+        // a capture reads no history, however it is classed
+        assert_eq!(cut.history, 0);
+        assert_eq!(row.generated, 0);
+        assert_eq!(row.searched, 1);
+        assert_eq!(row.history_max, 0);
+        assert_eq!(row.tt, Table::Move);
+    }
+
+    /// A node the loop finished: no cutting move, and the rest of the
+    /// portrait still there, the quiets' largest history included.
+    #[test]
+    fn a_held_node_records_no_cutting_move() {
+        let mut e = engine(SHARP_MIDDLEGAME);
+        let (taught, _) = quiets(&e);
+        e.ordering.cutoff(e.board.active_color, &taught, 0, 3);
+        let moves = e.board.generate_moves();
+        e.census_event(
+            2,
+            -50,
+            60,
+            false,
+            &moves,
+            moves.len(),
+            true,
+            Some(0),
+            Table::ScoreOnly,
+            e.nodes,
+            None,
+        );
+        let sampled = e.take_census().expect("a census was installed").drain();
+        let row = &sampled.taken[0];
+        assert!(row.cut.is_none());
+        assert_eq!(row.searched, moves.len());
+        assert_eq!(row.window, Window::Open);
+        assert_eq!(row.history_max, 9);
+        assert_eq!(row.tt, Table::ScoreOnly);
     }
 }

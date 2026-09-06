@@ -459,6 +459,75 @@ measurement rather than a move, and unlike the bench nothing about a live
 session wants it: it searches the suite twice over and takes minutes at the
 depths worth running it at.
 
+## Which move cuts a node off
+
+The bench says how much of the tree the move ordering saves. It cannot say
+which moves are doing the saving, and that is what `arche cutoffs` records:
+
+```
+target/release/arche cutoffs [depth] [every <n>] [cap <n>]
+```
+
+It searches the same suite the bench does, under the default configuration,
+and samples the full width nodes as they answer: one event per node, taken
+at the two places a node returns out of the move loop, the cutoff and the
+loop running out. Both outcomes are recorded at the same rate on purpose.
+A cutoff censors every move ordered after it, which is what makes a raw
+history count biased (a move ordered early gets chances a move ordered late
+never does), and a stream of cut nodes alone would reproduce exactly the
+censoring the census exists to measure. Quiescence and the root are out of
+scope: quiescence cuts on capture order, and the root searches every move.
+
+Each event is a row of `depth window check outcome generated searched index
+class history history_max scored tt eval_beta cost reduced fen`, whitespace
+separated with the fen last so a row parses left to right. A `cut` row
+names the cutting move's place among the searched moves (`index`, 0 for a
+table move searched first), its `class` (`table`, `capture`, `promotion`,
+`killer` or `quiet`, material first, so a capture that is also a killer is
+a capture), the history table's score for it (`history`, quiet moves only),
+and whether its answer came through the reduced scout (`reduced`); a `held`
+row prints `-` in those four columns rather than moving the others.
+`generated` and `searched` are what the list held and what the loop made:
+the legal count is unknowable without making every move, so the censored
+count is the reader's subtraction, and a node its table move cut before
+anything was generated says `generated 0`. `history_max` is the largest
+history score among the generated quiets, the denominator `history` is read
+against, since the raw number ages. `scored` says whether the staged
+ordering ever scored the quiet band at this node, or the front answered
+first. `tt` is what the probe gave the node: `miss`, `move`, or
+`score_only` for a hit whose move was not playable here. `eval_beta` is the
+static evaluation less beta, computed at record time for kept events alone;
+the column is exact rather than a cache read, and evaluating only the
+sampled nodes is what keeps an eval away from the nodes the measured search
+never evaluated. `cost` is the nodes spent under the node, the counter at
+its answer less the counter at its entry.
+
+The sampling is the residuals command's mechanism with a salt of its own: a
+hash gate over the position key and the depth at an `every <n>` rate, in
+front of a capped reservoir that keeps the smallest keys of the whole run.
+Two runs print the same rows, and a change that reorders the tree without
+changing what is in it samples the same nodes. The header states `events`
+beside `records` for the residuals header's reason: the rows are a share of
+the events, and a share cannot be read without its denominator. Every full
+width node the move loop answers is an event, so the stream runs far denser
+than the shortcut sampler's, and the deepest nodes are the rarest in it; a
+run that wants them well sampled lowers `every` or raises `cap` rather than
+reasoning from a handful of rows.
+
+The run ends with a line per depth: the records, the cut rate, the share of
+cuts at index 0, at 1 to 3 and past 3, the mean moves searched at cut nodes
+and at held nodes, the class shares, and the share of cut nodes whose quiet
+band was never scored. The rows are the product; the summary is a sanity
+read.
+
+Recording changes nothing. The census is armed only by the command, an
+engine without one searches exactly the tree it searched before there was
+a census at all, and an armed engine's node counts equal a disarmed one's
+position by position, which
+`recording_leaves_the_measured_search_where_it_was` in
+`arche-core/src/census.rs` asserts of the armed engines themselves. The
+pinned node counts cover the disarmed default and the reference.
+
 ## What the table's key signature costs
 
 An entry keeps thirty two bits of the position key rather than all sixty
