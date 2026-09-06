@@ -326,10 +326,10 @@ pub const DIAGONAL_MAGICS: [u64; 64] = [
 ];
 
 #[cfg(test)]
-mod magic_generation {
+mod tests {
     use super::{
-        BASE_CONVERSIONS, BaseConversions, DIAGONAL_MAGICS, MAGIC, STRAIGHT_MAGICS, attacks_from,
-        blocker_configurations, blocker_mask,
+        BASE_CONVERSIONS, BaseConversions, MAGIC, attacks_from, blocker_configurations,
+        blocker_mask,
     };
     use crate::misc::split_mix;
 
@@ -397,29 +397,13 @@ mod magic_generation {
         }
     }
 
-    /// The committed constants have to be valid, not identical to whatever the
-    /// search last happened to return. Many magics work for a given square.
-    #[test]
-    fn committed_magics_are_valid() {
-        for square in 0..64u8 {
-            let i = square as usize;
-            assert!(
-                is_valid(STRAIGHT_MAGICS[i], &cases(square, STRAIGHT)),
-                "straight magic for square {} does not work",
-                square
-            );
-            assert!(
-                is_valid(DIAGONAL_MAGICS[i], &cases(square, DIAGONAL)),
-                "diagonal magic for square {} does not work",
-                square
-            );
-        }
-    }
-
-    /// A valid magic indexes without collisions, which says nothing about the
-    /// table being filled in or read back the right way round. This walks the
-    /// rays instead and asks the lookup to agree, over every square and every
-    /// blocker configuration its mask admits.
+    /// What the committed magics are held to. A magic indexing without
+    /// collisions is the weaker half, and the assert in `SliderTables::new`
+    /// makes that one every time the crate is built, so a constant that
+    /// collides fails the compile rather than a test. What is left to ask is
+    /// whether the table was filled in and read back the right way round, so
+    /// this walks the rays and asks the lookup to agree, over every square
+    /// and every blocker configuration its mask admits.
     ///
     /// Exhaustive rather than sampled: a mask never has more than twelve bits,
     /// so the whole space is a hundred thousand or so lookups.

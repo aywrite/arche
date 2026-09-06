@@ -1205,22 +1205,40 @@ mod tests {
         }
     }
 
-    /// Where the purity argument is written down rather than where it is
-    /// tested. Each engine owns its table and there is nothing global for
-    /// one to reach the other through, so the node counts agreeing is what
-    /// the types already guarantee and this cannot fail while that holds.
-    /// It is kept because the day someone shares a table between the two
-    /// phases, this is the test whose name says what was given up. What it
-    /// really asserts is the line above the counts: the sampled run recorded
-    /// something, so the comparison is between two runs that happened.
+    /// The sampler's contract: an engine with one searches the tree an
+    /// engine without one searches. Asked of the armed engine itself,
+    /// position by position, the way the census and the ledger ask it. Two
+    /// disarmed runs either side of a sampled one would agree whatever the
+    /// sampler did, since neither of them is the search under test.
     #[test]
     fn recording_leaves_the_measured_search_where_it_was() {
-        let suite = suite();
-        let plain = bench::run_suite(&suite, 4, bench::TABLE_BYTES, SearchConfig::default());
-        let sampled = run(&suite, 4, 1, DEFAULT_CAP, SearchConfig::default());
-        let watched = bench::run_suite(&suite, 4, bench::TABLE_BYTES, SearchConfig::default());
-        assert!(!sampled.rows.is_empty());
-        assert_eq!(plain.nodes(), watched.nodes());
+        let searched_nodes = |engine: &mut AlphaBeta, id: &str| {
+            let outcome =
+                engine.iterative_deepening_search(SearchParameters::to_depth(4), |_, _, _, _| {});
+            let SearchOutcome::Complete(result) = outcome else {
+                panic!("{id}: an unlimited search did not complete");
+            };
+            result.nodes
+        };
+        let mut kept = 0;
+        for position in &suite() {
+            let board = Board::from_fen(&position.fen).unwrap();
+            let mut plain =
+                AlphaBeta::with_config(board.clone(), bench::TABLE_BYTES, SearchConfig::default());
+            let plain_nodes = searched_nodes(&mut plain, &position.id);
+            let mut armed =
+                AlphaBeta::with_config(board, bench::TABLE_BYTES, SearchConfig::default());
+            armed.sample_shortcuts(Sampler::with_cap(1, DEFAULT_CAP));
+            let armed_nodes = searched_nodes(&mut armed, &position.id);
+            assert_eq!(armed_nodes, plain_nodes, "{}", position.id);
+            kept += armed
+                .take_sampler()
+                .expect("the sampler comes back")
+                .drain()
+                .taken
+                .len();
+        }
+        assert!(kept > 0, "the armed runs recorded nothing");
     }
 
     /// A rate takes a subset of what rate one takes, and takes it by the key

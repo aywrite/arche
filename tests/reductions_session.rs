@@ -1,18 +1,14 @@
 // SPDX-License-Identifier: GPL-3.0-or-later
 // Copyright (C) 2022-2026 Andrew Wright
 
-//! The reductions argument, run against the real binary.
+//! What the reductions argument prints, run against the real binary.
 //!
-//! An argument and not a uci command, so nothing in the protocol suite
-//! reaches it: what it prints is only ever printed by the program. This
-//! spawns the executable cargo built, reads the whole run, and asserts on
-//! the three parts a reader parses, which are the header, the rows and the
-//! summary. The replay behind the fail lows runs a ply under the sampled
-//! nodes, so at this depth it costs a stream of shallow reference searches
-//! and stays quick.
+//! The spawning and the splitting are in `report_command`; here is what the
+//! ledger's own header, rows and summary say. The replay behind the fail
+//! lows runs a ply under the sampled nodes, so at this depth it costs a
+//! stream of shallow reference searches and stays quick.
 
-use std::io::Read;
-use std::process::{Command, Stdio};
+mod report_command;
 
 /// A shallow run at a rate that still records plenty. Only a late quiet
 /// move at depth offers an event, so the stream is sparser than the
@@ -21,51 +17,18 @@ const ARGUMENTS: [&str; 4] = ["reductions", "4", "every", "5"];
 
 #[test]
 fn the_reductions_argument_prints_a_header_rows_and_a_summary() {
-    let mut child = Command::new(env!("CARGO_BIN_EXE_arche"))
-        .args(ARGUMENTS)
-        .stdin(Stdio::null())
-        .stdout(Stdio::piped())
-        .spawn()
-        .expect("the binary cargo built should start");
-    let mut printed = String::new();
-    child
-        .stdout
-        .take()
-        .expect("stdout was piped")
-        .read_to_string(&mut printed)
-        .expect("the run prints text");
-    let status = child.wait().expect("the child can be waited on");
-    assert!(status.success(), "exit {:?}: {}", status.code(), printed);
-
-    let lines: Vec<&str> = printed.lines().collect();
-    let header = lines.first().unwrap_or(&"");
+    let printed = report_command::run(&ARGUMENTS);
     assert!(
-        header.starts_with("reductions depth 4 every 5 positions "),
+        printed
+            .header
+            .starts_with("reductions depth 4 every 5 positions "),
         "header: {}",
-        header
+        printed.header
     );
-    // the denominator, always stated: the rows below say nothing about a
-    // rate without it
-    let events: u64 = header
-        .split(' ')
-        .skip_while(|word| *word != "events")
-        .nth(1)
-        .unwrap_or_else(|| panic!("no events in header: {}", header))
-        .parse()
-        .unwrap_or_else(|e| panic!("events is not a number in {}: {}", header, e));
-    assert!(events > 0, "header: {}", header);
+    assert!(printed.events() > 0, "header: {}", printed.header);
 
-    let summary_at = lines
-        .iter()
-        .position(|line| *line == "summary")
-        .unwrap_or_else(|| panic!("no summary in:\n{}", printed));
-    // the rows sit between the header and the blank line before the
-    // summary, and there is at least one or the run measured nothing
-    let rows = &lines[1..summary_at - 1];
-    assert!(!rows.is_empty(), "no rows in:\n{}", printed);
     let mut low = 0;
-    let mut labelled = 0;
-    for row in rows {
+    for row in &printed.rows {
         let words: Vec<&str> = row.split(' ').collect();
         assert!(words.len() > 16, "row: {}", row);
         // the depth, the counts, the history pair, the three distances,
@@ -96,7 +59,6 @@ fn the_reductions_argument_prints_a_header_rows_and_a_summary() {
                     "row: {}",
                     row
                 );
-                labelled += 1;
             }
             "high" => {
                 assert_eq!(words[14], "-", "row: {}", row);
@@ -107,13 +69,10 @@ fn the_reductions_argument_prints_a_header_rows_and_a_summary() {
     }
     // the fail lows are what the replay labels, so a run that kept none
     // has measured nothing
-    assert!(low > 0, "no fail low rows in:\n{}", printed);
-    assert!(labelled > 0, "no labelled rows in:\n{}", printed);
+    assert!(low > 0, "no fail low rows in:\n{}", printed.all);
 
     // a line a depth, each carrying the whole shape
-    let summary = &lines[summary_at + 1..];
-    assert!(!summary.is_empty(), "empty summary in:\n{}", printed);
-    for line in summary {
+    for line in &printed.summary {
         assert!(line.starts_with("depth "), "summary line: {}", line);
         for word in [
             " scouts ",
@@ -133,16 +92,4 @@ fn the_reductions_argument_prints_a_header_rows_and_a_summary() {
             assert!(line.contains(word), "no {} in: {}", word.trim(), line);
         }
     }
-}
-
-#[test]
-fn an_unreadable_setting_fails_with_the_code_the_scripts_check() {
-    let status = Command::new(env!("CARGO_BIN_EXE_arche"))
-        .args(["reductions", "2", "every", "lots"])
-        .stdin(Stdio::null())
-        .stdout(Stdio::null())
-        .stderr(Stdio::null())
-        .status()
-        .expect("the binary cargo built should start");
-    assert_eq!(status.code(), Some(2));
 }

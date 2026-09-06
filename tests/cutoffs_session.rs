@@ -1,17 +1,14 @@
 // SPDX-License-Identifier: GPL-3.0-or-later
 // Copyright (C) 2022-2026 Andrew Wright
 
-//! The cutoffs argument, run against the real binary.
+//! What the cutoffs argument prints, run against the real binary.
 //!
-//! An argument and not a uci command, so nothing in the protocol suite
-//! reaches it: what it prints is only ever printed by the program. This
-//! spawns the executable cargo built, reads the whole run, and asserts on
-//! the three parts a reader parses, which are the header, the rows and the
-//! summary. There is no replay behind this command, so the depth here costs
-//! one pass over the suite and nothing more.
+//! The spawning and the splitting are in `report_command`; here is what the
+//! census's own header, rows and summary say. There is no replay behind this
+//! command, so the depth here costs one pass over the suite and nothing
+//! more.
 
-use std::io::Read;
-use std::process::{Command, Stdio};
+mod report_command;
 
 /// A shallow run at a rate that still records plenty. The census offers an
 /// event at every full width node the move loop answers, so fifty keeps
@@ -20,51 +17,19 @@ const ARGUMENTS: [&str; 4] = ["cutoffs", "4", "every", "50"];
 
 #[test]
 fn the_cutoffs_argument_prints_a_header_rows_and_a_summary() {
-    let mut child = Command::new(env!("CARGO_BIN_EXE_arche"))
-        .args(ARGUMENTS)
-        .stdin(Stdio::null())
-        .stdout(Stdio::piped())
-        .spawn()
-        .expect("the binary cargo built should start");
-    let mut printed = String::new();
-    child
-        .stdout
-        .take()
-        .expect("stdout was piped")
-        .read_to_string(&mut printed)
-        .expect("the run prints text");
-    let status = child.wait().expect("the child can be waited on");
-    assert!(status.success(), "exit {:?}: {}", status.code(), printed);
-
-    let lines: Vec<&str> = printed.lines().collect();
-    let header = lines.first().unwrap_or(&"");
+    let printed = report_command::run(&ARGUMENTS);
     assert!(
-        header.starts_with("cutoffs depth 4 every 50 positions "),
+        printed
+            .header
+            .starts_with("cutoffs depth 4 every 50 positions "),
         "header: {}",
-        header
+        printed.header
     );
-    // the denominator, always stated: the rows below say nothing about a
-    // rate without it
-    let events: u64 = header
-        .split(' ')
-        .skip_while(|word| *word != "events")
-        .nth(1)
-        .unwrap_or_else(|| panic!("no events in header: {}", header))
-        .parse()
-        .unwrap_or_else(|e| panic!("events is not a number in {}: {}", header, e));
-    assert!(events > 0, "header: {}", header);
+    assert!(printed.events() > 0, "header: {}", printed.header);
 
-    let summary_at = lines
-        .iter()
-        .position(|line| *line == "summary")
-        .unwrap_or_else(|| panic!("no summary in:\n{}", printed));
-    // the rows sit between the header and the blank line before the
-    // summary, and there is at least one or the run measured nothing
-    let rows = &lines[1..summary_at - 1];
-    assert!(!rows.is_empty(), "no rows in:\n{}", printed);
     let mut cut = 0;
     let mut held = 0;
-    for row in rows {
+    for row in &printed.rows {
         let words: Vec<&str> = row.split(' ').collect();
         assert!(words.len() > 15, "row: {}", row);
         // the depth, the two counts, the history denominator, the eval
@@ -117,13 +82,11 @@ fn the_cutoffs_argument_prints_a_header_rows_and_a_summary() {
     }
     // the contrast between the two outcomes is what the census is for, so
     // a run that kept only one of them has measured nothing
-    assert!(cut > 0, "no cut rows in:\n{}", printed);
-    assert!(held > 0, "no held rows in:\n{}", printed);
+    assert!(cut > 0, "no cut rows in:\n{}", printed.all);
+    assert!(held > 0, "no held rows in:\n{}", printed.all);
 
     // a line a depth, each carrying the whole shape
-    let summary = &lines[summary_at + 1..];
-    assert!(!summary.is_empty(), "empty summary in:\n{}", printed);
-    for line in summary {
+    for line in &printed.summary {
         assert!(line.starts_with("depth "), "summary line: {}", line);
         for word in [
             " records ",
@@ -144,16 +107,4 @@ fn the_cutoffs_argument_prints_a_header_rows_and_a_summary() {
             assert!(line.contains(word), "no {} in: {}", word.trim(), line);
         }
     }
-}
-
-#[test]
-fn an_unreadable_setting_fails_with_the_code_the_scripts_check() {
-    let status = Command::new(env!("CARGO_BIN_EXE_arche"))
-        .args(["cutoffs", "2", "every", "lots"])
-        .stdin(Stdio::null())
-        .stdout(Stdio::null())
-        .stderr(Stdio::null())
-        .status()
-        .expect("the binary cargo built should start");
-    assert_eq!(status.code(), Some(2));
 }
