@@ -18,31 +18,6 @@ use arche_core::residual;
 use arche_core::{PvLine, SearchResult};
 use std::io::{BufRead, Stdout, Write};
 
-/// The time part of a `go` command, from the point of view of the side to
-/// move.
-///
-/// A clock or a move time that was sent but cannot be read stands in as spent
-/// rather than being discarded, because discarding it would read as the
-/// keyword having been absent, and a `go` with no time at all searches without
-/// a limit. That trades one bad outcome for a smaller one: an unreadable move
-/// time beside a good clock spends the clock rather than reading it, and moves
-/// almost at once. Playing a weak move is recoverable and thinking for ever is
-/// not. A count of moves is left alone instead: it only divides the clock, and
-/// the time control already treats a missing one as a number to assume.
-fn time_control_from(params: &Params, color: Color) -> TimeControl {
-    let (clock, increment) = match color {
-        Color::White => ("wtime", "winc"),
-        Color::Black => ("btime", "binc"),
-    };
-    TimeControl {
-        time: params.count(clock).read_or(0),
-        increment: params.count(increment).read_or(0),
-        moves_to_go: params.count("movestogo").read(),
-        move_time: params.count("movetime").read_or(0),
-        infinite: params.flag("infinite"),
-    }
-}
-
 /// The `Hash` option's range, in megabytes, as the handshake advertises it.
 ///
 /// The top is sixteen gibibytes, more than any machine here has, and is also
@@ -439,18 +414,8 @@ impl<T: Engine, W: Write> UCI<T, W> {
     /// rides into the search, and a go that holds its answer waits here
     /// for the stop that releases it.
     fn parse_go(&mut self, line: &str, control: &SessionControl) {
-        let params = Params::of(line);
-        // the clock starts here, when the command arrived, and the search
-        // reports its elapsed time against the same start
-        let limits = Limits::starting_now(
-            time_control_from(&params, self.engine.active_color()).budget(),
-            // an unreadable node limit is ignored rather than obeyed as zero,
-            // which would stop the search before it had a move to report
-            params.count("nodes").read(),
-        );
-        let depth = go_depth(&params);
-        let holds = holds_its_answer(&params, depth, &limits);
-        let sp = SearchParameters::stoppable(depth, limits, control.handle());
+        let go = Go::of(&Params::of(line), self.engine.active_color());
+        let sp = SearchParameters::stoppable(go.depth, go.limits(), control.handle());
 
         // the closure writes while the engine is borrowed for the search, so
         // it goes to the writer directly rather than through say
@@ -462,7 +427,7 @@ impl<T: Engine, W: Write> UCI<T, W> {
             });
         // an infinite search does not answer until it is told to, even when
         // it ran out of depths to search first
-        if holds {
+        if go.holds_its_answer() {
             control.wait_for_stop();
         }
         match outcome {
@@ -480,29 +445,56 @@ impl<T: Engine, W: Write> UCI<T, W> {
     }
 }
 
-/// Whether this `go` must sit on its answer until a `stop` arrives.
-///
-/// `go infinite` says so outright. A `go` with nothing to bound it at all
-/// says the same thing by saying nothing: it used to mean a search to the
-/// old depth cap on no clock, which nothing sends deliberately, and one
-/// behaviour is worth more here than a distinction between the two.
-fn holds_its_answer(params: &Params, depth: Option<u8>, limits: &Limits) -> bool {
-    params.flag("infinite")
-        || (depth.is_none() && limits.clock().is_none() && limits.node_budget() == u64::MAX)
+/// What a `go` asked for, read once from the line. Each part is absent when
+/// the line did not name it.
+struct Go {
+    /// The depth asked for. A depth past what the engine will search is a
+    /// request to go deep, not a reason to refuse the command, so it is held
+    /// to the ply rail rather than rejected.
+    ///
+    /// The rail is also what keeps the root's check extension inside a byte: a
+    /// depth of two hundred and fifty five from a position in check used to be
+    /// deepened to two hundred and fifty six and overflow.
+    depth: Option<u8>,
+    /// The node budget. An unreadable one is ignored rather than obeyed as
+    /// zero, which would stop the search before it had a move to report.
+    nodes: Option<u64>,
+    time: TimeControl,
 }
 
-/// The depth asked of a go command, if one was. A depth past what the engine
-/// will search is a request to go deep, not a reason to refuse the command,
-/// so it is held to the ply rail rather than rejected.
-///
-/// The rail is also what keeps the root's check extension inside a byte: a
-/// depth of two hundred and fifty five from a position in check used to be
-/// deepened to two hundred and fifty six and overflow.
-fn go_depth(params: &Params) -> Option<u8> {
-    params
-        .count("depth")
-        .read()
-        .map(|depth| depth.try_into().unwrap_or(u8::MAX).min(arche_core::MAX_PLY))
+impl Go {
+    fn of(params: &Params, color: Color) -> Self {
+        Go {
+            depth: params
+                .count("depth")
+                .read()
+                .map(|depth| depth.try_into().unwrap_or(u8::MAX).min(arche_core::MAX_PLY)),
+            nodes: params.count("nodes").read(),
+            time: TimeControl::of(params, color),
+        }
+    }
+
+    /// The bounds the search runs under. The clock starts when this is
+    /// called, which `parse_go` does as the command arrives, and the search
+    /// reports its elapsed time against the same start.
+    fn limits(&self) -> Limits {
+        Limits::starting_now(self.time.budget(), self.nodes)
+    }
+
+    /// Whether this `go` must sit on its answer until a `stop` arrives.
+    ///
+    /// `go infinite` says so outright. A `go` with nothing to bound it at all
+    /// says the same thing by saying nothing: it used to mean a search to the
+    /// old depth cap on no clock, which nothing sends deliberately, and one
+    /// behaviour is worth more here than a distinction between the two.
+    fn holds_its_answer(&self) -> bool {
+        // a node count too large to hold reads as u64::MAX, which is what no
+        // budget is as well, so it bounds nothing either
+        self.time.infinite
+            || (self.depth.is_none()
+                && self.nodes.unwrap_or(u64::MAX) == u64::MAX
+                && self.time.budget().is_none())
+    }
 }
 
 /// What a bench command or argument asked for: `bench [depth] [hash <MB>]
@@ -1290,7 +1282,7 @@ go depth 3
     fn each_colour_reads_its_own_clock() {
         let line = "go wtime 111 btime 222 winc 333 binc 444 movestogo 5";
         assert_eq!(
-            time_control_from(&Params::of(line), Color::White),
+            TimeControl::of(&Params::of(line), Color::White),
             TimeControl {
                 time: Some(111),
                 increment: Some(333),
@@ -1300,7 +1292,7 @@ go depth 3
             }
         );
         assert_eq!(
-            time_control_from(&Params::of(line), Color::Black),
+            TimeControl::of(&Params::of(line), Color::Black),
             TimeControl {
                 time: Some(222),
                 increment: Some(444),
@@ -1313,7 +1305,7 @@ go depth 3
 
     #[test]
     fn a_missing_clock_for_our_colour_is_not_taken_from_the_other() {
-        let control = time_control_from(&Params::of("go btime 222 binc 444"), Color::White);
+        let control = TimeControl::of(&Params::of("go btime 222 binc 444"), Color::White);
         assert_eq!(control.time, None);
         assert_eq!(control.increment, None);
     }
@@ -1321,18 +1313,18 @@ go depth 3
     #[test]
     fn move_time_and_infinite_are_read() {
         assert_eq!(
-            time_control_from(&Params::of("go movetime 500"), Color::White).move_time,
+            TimeControl::of(&Params::of("go movetime 500"), Color::White).move_time,
             Some(500)
         );
-        assert!(time_control_from(&Params::of("go infinite"), Color::White).infinite);
-        assert!(!time_control_from(&Params::of("go wtime 1000"), Color::White).infinite);
+        assert!(TimeControl::of(&Params::of("go infinite"), Color::White).infinite);
+        assert!(!TimeControl::of(&Params::of("go wtime 1000"), Color::White).infinite);
     }
 
     #[test]
     fn a_clock_too_large_to_hold_is_not_read_as_absent() {
         let line = "go wtime 99999999999999999999999";
         assert_eq!(
-            time_control_from(&Params::of(line), Color::White).time,
+            TimeControl::of(&Params::of(line), Color::White).time,
             Some(u64::MAX),
             "an unreadable clock must not turn into an unlimited search"
         );
@@ -1344,9 +1336,9 @@ go depth 3
         // margin has been eaten into. Not reading it would leave the budget
         // unset and search without a limit, at the moment there is the least
         // time to spare
-        let control = time_control_from(&Params::of("go wtime -5 btime -5"), Color::White);
+        let control = TimeControl::of(&Params::of("go wtime -5 btime -5"), Color::White);
         assert_eq!(control.time, Some(0));
-        let control = time_control_from(
+        let control = TimeControl::of(
             &Params::of("go wtime -5 btime -5 winc -1 binc -1"),
             Color::Black,
         );
@@ -1358,7 +1350,7 @@ go depth 3
     fn a_clock_that_cannot_be_read_is_a_spent_one_rather_than_no_clock() {
         // discarding it would read as the keyword having been absent, and a
         // go with no time at all searches without a limit
-        let control = time_control_from(&Params::of("go wtime abc winc x"), Color::White);
+        let control = TimeControl::of(&Params::of("go wtime abc winc x"), Color::White);
         assert_eq!(control.time, Some(0));
         assert_eq!(control.increment, Some(0));
         assert!(
@@ -1371,14 +1363,17 @@ go depth 3
     fn an_unreadable_depth_is_ignored_rather_than_obeyed_as_zero() {
         // zero would be a depth of nothing, and the search would come back
         // without a move rather than without a limit
-        assert_eq!(go_depth(&Params::of("go depth abc")), None);
+        assert_eq!(
+            Go::of(&Params::of("go depth abc"), Color::White).depth,
+            None
+        );
     }
 
     #[test]
     fn a_keyword_inside_a_longer_word_is_not_one() {
         // the regexes this replaced had no word boundary, so a clock could be
         // read out of the middle of another token
-        let control = time_control_from(&Params::of("go xwtime 300000"), Color::White);
+        let control = TimeControl::of(&Params::of("go xwtime 300000"), Color::White);
         assert_eq!(control.time, None);
     }
 
@@ -1479,12 +1474,15 @@ go depth 3
 
     #[test]
     fn a_depth_past_the_ply_rail_is_clamped_rather_than_refused() {
-        assert_eq!(go_depth(&Params::of("go depth 5")), Some(5));
         assert_eq!(
-            go_depth(&Params::of("go depth 999")),
+            Go::of(&Params::of("go depth 5"), Color::White).depth,
+            Some(5)
+        );
+        assert_eq!(
+            Go::of(&Params::of("go depth 999"), Color::White).depth,
             Some(arche_core::MAX_PLY)
         );
-        assert_eq!(go_depth(&Params::of("go infinite")), None);
+        assert_eq!(Go::of(&Params::of("go infinite"), Color::White).depth, None);
     }
 
     #[test]
@@ -2395,33 +2393,16 @@ go depth 3
 
     #[test]
     fn what_holds_its_answer_is_what_nothing_bounds() {
-        let unbounded = Limits::starting_now(None, None);
-        assert!(holds_its_answer(
-            &Params::of("go infinite"),
-            None,
-            &unbounded
-        ));
-        assert!(holds_its_answer(&Params::of("go"), None, &unbounded));
+        let holds = |line: &str| Go::of(&Params::of(line), Color::White).holds_its_answer();
+        assert!(holds("go infinite"));
+        assert!(holds("go"));
         // infinite outranks anything sent beside it, as the protocol says
-        assert!(holds_its_answer(
-            &Params::of("go infinite depth 2"),
-            Some(2),
-            &unbounded
-        ));
-        assert!(!holds_its_answer(
-            &Params::of("go depth 2"),
-            Some(2),
-            &unbounded
-        ));
-        assert!(!holds_its_answer(
-            &Params::of("go nodes 5000"),
-            None,
-            &Limits::starting_now(None, Some(5000))
-        ));
-        assert!(!holds_its_answer(
-            &Params::of("go movetime 500"),
-            None,
-            &Limits::starting_now(Some(Clock::Fixed(Duration::from_millis(450))), None)
-        ));
+        assert!(holds("go infinite depth 2"));
+        assert!(!holds("go depth 2"));
+        assert!(!holds("go nodes 5000"));
+        // too large to hold reads as no budget, and so bounds nothing
+        assert!(holds("go nodes 99999999999999999999999"));
+        assert!(!holds("go movetime 500"));
+        assert!(!holds("go wtime 1000"));
     }
 }

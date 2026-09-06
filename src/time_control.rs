@@ -1,7 +1,9 @@
 // SPDX-License-Identifier: GPL-3.0-or-later
 // Copyright (C) 2022-2026 Andrew Wright
 
+use crate::params::Params;
 use arche_core::Clock;
+use arche_core::Color;
 use std::time::Duration;
 
 /// Held back from every budget, so that we are not still thinking when the
@@ -35,6 +37,31 @@ pub struct TimeControl {
 }
 
 impl TimeControl {
+    /// The time part of a `go` command, from the point of view of the side to
+    /// move.
+    ///
+    /// A clock or a move time that was sent but cannot be read stands in as spent
+    /// rather than being discarded, because discarding it would read as the
+    /// keyword having been absent, and a `go` with no time at all searches without
+    /// a limit. That trades one bad outcome for a smaller one: an unreadable move
+    /// time beside a good clock spends the clock rather than reading it, and moves
+    /// almost at once. Playing a weak move is recoverable and thinking for ever is
+    /// not. A count of moves is left alone instead: it only divides the clock, and
+    /// the time control already treats a missing one as a number to assume.
+    pub fn of(params: &Params, color: Color) -> Self {
+        let (clock, increment) = match color {
+            Color::White => ("wtime", "winc"),
+            Color::Black => ("btime", "binc"),
+        };
+        TimeControl {
+            time: params.count(clock).read_or(0),
+            increment: params.count(increment).read_or(0),
+            moves_to_go: params.count("movestogo").read(),
+            move_time: params.count("movetime").read_or(0),
+            infinite: params.flag("infinite"),
+        }
+    }
+
     /// How long to search for, or `None` to search without a time limit.
     ///
     /// Which kind of clock it is goes with it: a move time is a time the
