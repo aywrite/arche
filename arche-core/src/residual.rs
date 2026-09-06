@@ -127,8 +127,9 @@ impl Window {
 /// The odd multiplier the depth is spread by before it joins the key. Odd,
 /// so multiplying by it loses no bits, and the fractional part of the golden
 /// ratio, which is the usual choice for a constant with no structure the
-/// position key could share.
-const DEPTH_SPREAD: u64 = 0x9e37_79b9_7f4a_7c15;
+/// position key could share. The cutoff census keys by the same spread,
+/// which is why this is visible to the crate.
+pub(crate) const DEPTH_SPREAD: u64 = 0x9e37_79b9_7f4a_7c15;
 
 /// The key a shortcut's answer at this node is sampled by.
 ///
@@ -173,15 +174,15 @@ pub struct Sample {
     pub halfmove: usize,
 }
 
-/// A held sample and the key it was drawn by.
+/// A held record and the key it was drawn by.
 ///
-/// The key is the sampler's business rather than the node's, so it lives
-/// here and not in the `Sample` a reader gets. Ordered by the key alone,
+/// The key is the sampler's business rather than the record's, so it lives
+/// here and not in the record a reader gets. Ordered by the key alone,
 /// which is what makes a heap of these the reservoir below.
 #[derive(Clone, Debug)]
-struct Kept {
+struct Kept<T> {
     key: u64,
-    sample: Sample,
+    sample: T,
 }
 
 // The four below are key-only on purpose. The reservoir ranks records by
@@ -190,30 +191,30 @@ struct Kept {
 // of the comparison. They are written out rather than derived because a
 // derive would order by the sample too and quietly make the heap depend on
 // what a fen sorts like.
-impl Ord for Kept {
+impl<T> Ord for Kept<T> {
     fn cmp(&self, other: &Self) -> std::cmp::Ordering {
         self.key.cmp(&other.key)
     }
 }
 
-impl PartialOrd for Kept {
+impl<T> PartialOrd for Kept<T> {
     fn partial_cmp(&self, other: &Self) -> Option<std::cmp::Ordering> {
         Some(self.cmp(other))
     }
 }
 
-impl PartialEq for Kept {
+impl<T> PartialEq for Kept<T> {
     fn eq(&self, other: &Self) -> bool {
         self.key == other.key
     }
 }
 
-impl Eq for Kept {}
+impl<T> Eq for Kept<T> {}
 
 /// What a sampler collected, taken away from it.
 #[derive(Clone, Debug, Default, PartialEq, Eq)]
-pub struct Sampled {
-    pub taken: Vec<Sample>,
+pub struct Sampled<T = Sample> {
+    pub taken: Vec<T>,
     /// Every node offered to the sampler, kept or not. The denominator: a
     /// run that recorded no crossings has said nothing until this says how
     /// many chances it had to record one.
@@ -223,8 +224,10 @@ pub struct Sampled {
     pub overflowed: u64,
 }
 
-/// Records about one node in every n a shortcut answers, picked by the key
-/// of the node rather than by its place in the stream.
+/// Records about one node in every n it is offered, picked by the key of
+/// the node rather than by its place in the stream. The record type is the
+/// caller's: the shortcuts offer a `Sample` and the cutoff census its own
+/// event, and the reservoir holds either without reading it.
 ///
 /// Deterministic twice over. Two runs of the same search record the same
 /// nodes, so a distribution can be reproduced from the command that printed
@@ -232,7 +235,7 @@ pub struct Sampled {
 /// them in, so a change that reorders the tree without changing which nodes
 /// are in it samples the same nodes.
 #[derive(Clone, Debug)]
-pub struct Sampler {
+pub struct Sampler<T = Sample> {
     /// The largest key kept, which is the rate in the form the events are
     /// tested against. A key is spread over the whole range, so a share of
     /// one in `every` of them sits at or below this. The rate itself is not
@@ -244,21 +247,23 @@ pub struct Sampler {
     cap: usize,
     /// What is held, as a heap on the key so the largest is the one at hand
     /// to give up. See `event` for why the largest is the one to give up.
-    kept: BinaryHeap<Kept>,
+    kept: BinaryHeap<Kept<T>>,
     /// Every node offered, whatever became of it.
     events: u64,
     overflowed: u64,
 }
 
-impl Sampler {
-    /// What a sampler holds when nothing says otherwise. Ten thousand fens
-    /// is a megabyte or so; a calibration run that wants more of the tree
-    /// than that asks the residuals command for a larger cap.
-    pub const DEFAULT_CAP: usize = 10_000;
+/// What a sampler holds when nothing says otherwise. Ten thousand fens is a
+/// megabyte or so; a calibration run that wants more of the tree than that
+/// asks its command for a larger cap. A module constant rather than an
+/// associated one, so reading it does not mean naming a record type it
+/// does not depend on.
+pub const DEFAULT_CAP: usize = 10_000;
 
+impl<T> Sampler<T> {
     /// Records about one node in every `every`.
     pub fn every(every: u32) -> Self {
-        Self::with_cap(every, Self::DEFAULT_CAP)
+        Self::with_cap(every, DEFAULT_CAP)
     }
 
     /// The same, holding at most `cap` samples. One sampler is meant to be
@@ -300,9 +305,9 @@ impl Sampler {
     /// can keep a different member of the same tie. The set of keys is
     /// order-independent; the samples behind a tied key are not.
     ///
-    /// The sample arrives as a closure because building one prints a fen,
+    /// The record arrives as a closure because building one prints a fen,
     /// and that is not worth doing for an event that is not kept.
-    pub fn event(&mut self, key: u64, describe: impl FnOnce() -> Sample) {
+    pub fn event(&mut self, key: u64, describe: impl FnOnce() -> T) {
         self.events += 1;
         if key > self.threshold {
             return;
@@ -354,7 +359,7 @@ impl Sampler {
     /// hash of the node, so a reader gets the rows shuffled. Two records
     /// that key alike come out in no order worth relying on, which is the
     /// one thing here that is not a property of the events alone.
-    pub fn drain(&mut self) -> Sampled {
+    pub fn drain(&mut self) -> Sampled<T> {
         Sampled {
             taken: std::mem::take(&mut self.kept)
                 .into_sorted_vec()
@@ -782,7 +787,7 @@ impl fmt::Display for Report {
         // the default on every header would describe nothing; a run asked
         // for another cap states it, so the header still says how to rerun
         // the run it heads
-        if self.cap != Sampler::DEFAULT_CAP {
+        if self.cap != DEFAULT_CAP {
             write!(f, " cap {}", self.cap)?;
         }
         write!(
@@ -1185,13 +1190,7 @@ mod tests {
 
     #[test]
     fn a_run_records_and_replays_the_suite() {
-        let report = run(
-            &suite(),
-            4,
-            25,
-            Sampler::DEFAULT_CAP,
-            SearchConfig::default(),
-        );
+        let report = run(&suite(), 4, 25, DEFAULT_CAP, SearchConfig::default());
         assert_eq!(report.positions, 2);
         assert_eq!(report.depth, 4);
         assert_eq!(report.every, 25);
@@ -1218,7 +1217,7 @@ mod tests {
     fn recording_leaves_the_measured_search_where_it_was() {
         let suite = suite();
         let plain = bench::run_suite(&suite, 4, bench::TABLE_BYTES, SearchConfig::default());
-        let sampled = run(&suite, 4, 1, Sampler::DEFAULT_CAP, SearchConfig::default());
+        let sampled = run(&suite, 4, 1, DEFAULT_CAP, SearchConfig::default());
         let watched = bench::run_suite(&suite, 4, bench::TABLE_BYTES, SearchConfig::default());
         assert!(!sampled.rows.is_empty());
         assert_eq!(plain.nodes(), watched.nodes());
@@ -1237,16 +1236,10 @@ mod tests {
     fn a_rate_keeps_the_events_its_keys_choose() {
         const EVERY: u32 = 7;
         let suite = suite();
-        let all = record(&suite, 4, 1, Sampler::DEFAULT_CAP, SearchConfig::default());
+        let all = record(&suite, 4, 1, DEFAULT_CAP, SearchConfig::default());
         assert_eq!(all.overflowed, 0, "the cap got in the way of the count");
         assert!(all.taken.len() > 30, "{} events", all.taken.len());
-        let sampled = record(
-            &suite,
-            4,
-            EVERY,
-            Sampler::DEFAULT_CAP,
-            SearchConfig::default(),
-        );
+        let sampled = record(&suite, 4, EVERY, DEFAULT_CAP, SearchConfig::default());
         assert_eq!(sampled.overflowed, 0);
         let threshold = u64::MAX / u64::from(EVERY);
         // as multisets: the two runs agree on which events they kept, and
@@ -1427,13 +1420,7 @@ mod tests {
     /// two runs that behaved identically print identical headers.
     #[test]
     fn a_rate_of_zero_is_reported_as_the_rate_that_ran() {
-        let report = run(
-            &suite(),
-            2,
-            0,
-            Sampler::DEFAULT_CAP,
-            SearchConfig::default(),
-        );
+        let report = run(&suite(), 2, 0, DEFAULT_CAP, SearchConfig::default());
         assert_eq!(report.every, 1);
         assert!(
             report.to_string().starts_with("residuals depth 2 every 1 "),
@@ -1480,13 +1467,7 @@ mod tests {
 
     #[test]
     fn the_report_names_its_settings_and_ends_in_a_summary() {
-        let report = run(
-            &suite(),
-            3,
-            20,
-            Sampler::DEFAULT_CAP,
-            SearchConfig::default(),
-        );
+        let report = run(&suite(), 3, 20, DEFAULT_CAP, SearchConfig::default());
         let text = report.to_string();
         assert!(
             text.starts_with(&format!(
@@ -1537,7 +1518,7 @@ mod tests {
         let report = Report {
             depth: 4,
             every: 10,
-            cap: Sampler::DEFAULT_CAP,
+            cap: DEFAULT_CAP,
             config: SearchConfig::default(),
             positions: 1,
             events: 40,
@@ -1624,7 +1605,7 @@ mod tests {
         Report {
             depth: 4,
             every: 1,
-            cap: Sampler::DEFAULT_CAP,
+            cap: DEFAULT_CAP,
             config: SearchConfig::default(),
             positions: 1,
             events: 1_000,
@@ -1823,7 +1804,7 @@ mod tests {
         let mut report = Report {
             depth: 4,
             every: 1,
-            cap: Sampler::DEFAULT_CAP,
+            cap: DEFAULT_CAP,
             config: SearchConfig::default(),
             positions: 1,
             events: 0,

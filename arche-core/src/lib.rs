@@ -4,6 +4,7 @@
 pub mod bench;
 mod bitboard;
 mod board;
+pub mod census;
 mod engine;
 mod eval;
 mod limits;

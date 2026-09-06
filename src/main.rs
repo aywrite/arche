@@ -9,8 +9,8 @@ use arche_core::Board;
 use std::process::ExitCode;
 
 /// What the binary takes, for whoever ran it to find out. Short because there
-/// is little to say: the engine speaks uci on stdin, and the two arguments it
-/// takes are measurements, one of which is a uci command too.
+/// is little to say: the engine speaks uci on stdin, and the three arguments
+/// it takes are measurements, one of which is a uci command too.
 const USAGE: &str = "\
 arche, a chess engine speaking uci on stdin.
 
@@ -22,6 +22,9 @@ Usage:
   arche residuals [depth] [every <n>] [cap <n>] [taint refuse|trust|skip|rule50]
                         search the same suite, then ask the reference search
                         what the nodes the shortcuts answered were worth
+  arche cutoffs [depth] [every <n>] [cap <n>]
+                        search the same suite and print which move cut each
+                        sampled node off, or that none did
   arche --version, -V   print the version
   arche --help, -h      print this
 
@@ -81,6 +84,19 @@ fn main() -> ExitCode {
                 ExitCode::from(2)
             }
         },
+        // `arche cutoffs [depth] [every <n>] [cap <n>]` records which move
+        // cuts each sampled node off. An argument for the residuals
+        // command's reason: a research question, not a move
+        Some("cutoffs") => match uci::cutoff_settings(&Params::of(&args.join(" "))) {
+            Ok(settings) => {
+                print!("{}", settings.run());
+                ExitCode::SUCCESS
+            }
+            Err(what) => {
+                eprintln!("unrecognised cutoffs {}", what);
+                ExitCode::from(2)
+            }
+        },
         // `--version` and `--help` were asked for, so both are answered on
         // stdout and succeed. An argument that really is unrecognised keeps
         // stderr and the failing code below: the difference is whether
@@ -106,7 +122,13 @@ mod tests {
 
     #[test]
     fn the_usage_names_every_form_the_binary_takes() {
-        for form in ["arche bench", "arche residuals", "--version", "--help"] {
+        for form in [
+            "arche bench",
+            "arche residuals",
+            "arche cutoffs",
+            "--version",
+            "--help",
+        ] {
             assert!(USAGE.contains(form), "the usage does not mention {}", form);
         }
     }

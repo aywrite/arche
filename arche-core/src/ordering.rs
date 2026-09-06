@@ -172,8 +172,8 @@ impl MoveOrdering {
         }
     }
 
-    /// Test-only reads, for the search level checks that a cutoff is
-    /// credited to the side and the ply that earned it.
+    /// Test-only read, for the search level checks that a cutoff is
+    /// credited to the side that earned it.
     #[cfg(test)]
     pub(crate) fn history_total(&self, color: Color) -> u64 {
         self.history[color as usize]
@@ -183,9 +183,18 @@ impl MoveOrdering {
             .sum()
     }
 
-    #[cfg(test)]
+    /// The killers standing at a ply. Read by the cutoff census, which asks
+    /// before a cutoff is remembered, and by the tests that check a cutoff
+    /// is credited to the ply that earned it.
     pub(crate) fn killers_at(&self, ply: usize) -> [Option<Play>; 2] {
         self.killers[ply]
+    }
+
+    /// What the history table holds for one of `color`'s moves: the score
+    /// `order_quiets` would rank it by, read without teaching anything.
+    /// Read by the cutoff census.
+    pub(crate) fn history_score(&self, color: Color, m: &Play) -> u32 {
+        self.history[color as usize][m.from as usize][m.to as usize]
     }
 
     /// The first stage of the band order the module comment describes:
