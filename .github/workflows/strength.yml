@@ -15,8 +15,10 @@ name: Strength
 # the same opening and the schedule can be played again from the manifest.
 #
 # The estimate over the pooled games is worked out here rather than taken from
-# fastchess, which only ever sees the one shard it ran. Its interval is measured
-# over pairs, since the two games of an opening are one draw and not two.
+# fastchess, which only ever sees the one shard it ran. The figure and its
+# interval are both read off pairs, since the two games of an opening are one
+# draw and not two, and a game the pairing left over is in the score and in
+# nothing else.
 #
 # Or ask the narrower question instead: sprt reads the same pooled games as a
 # sequential test of whether the candidate is stronger. A run is one batch of

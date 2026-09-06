@@ -149,39 +149,52 @@ class Shard:
 class Estimate:
     """What the games say the difference is, and how far out that could be.
 
-    The score is turned into elo with the logistic model the rest of this
-    tooling uses, `elo = -400 log10(1/p - 1)`. The interval comes from the
-    pairs: the variance of the pair scores as a fraction of the two points a
-    pair is worth, divided by the number of pairs, is the variance of the
-    score, and its square root is the standard error of the score. The
-    derivative of the model at the score, `400 / (ln 10 p (1 - p))`, carries
-    that into elo, and 1.96 of them is the 95% interval.
+    The figure and the interval are both read off the pairs, so that the two
+    describe the same games. A shard the clock stopped can leave a game with no
+    partner, and such a game is in the score the table prints and in nothing
+    else: taking the figure from every game and the interval from the pairs
+    alone would let one won game with no partner move the estimate while
+    leaving the spread untouched, which reads as a difference measured exactly.
+
+    The pair score, as a fraction of the two points a pair is worth, is turned
+    into elo with the logistic model the rest of this tooling uses,
+    `elo = -400 log10(1/p - 1)`. The variance of the pair scores divided by the
+    number of pairs is the variance of that fraction, and its square root is
+    the standard error. The derivative of the model at the score,
+    `400 / (ln 10 p (1 - p))`, carries that into elo, and 1.96 of them is the
+    95% interval.
 
     A score of nought or of one has no elo: the model runs off to infinity
     there, so the estimate is bounded on one side and says so instead. A match
     with no complete pair has no interval either, which is the same answer as
-    not having measured."""
+    not having measured. An interval that fell back to a modelled spread is
+    marked, since it is a different claim from a measured one."""
 
     def __init__(self, points: float, games: int, pair_scores: list[float]):
         self.games = games
         self.pairs = len(pair_scores)
+        # over every game, including any the pairing left over, which is what
+        # the shard table and the score line report
         self.score = points / games if games else 0.0
+        # over the pairs, which is what the estimate is read from
+        self.paired = 0.0
         self.elo = 0.0
         self.margin: float | None = None
         self.low, self.high = -math.inf, math.inf
         self.los = 0.5
         self.bounded = ""
+        # set when the pairs showed no spread and the interval falls back to
+        # a modelled one, which is a different claim from a measured interval
+        self.modelled = False
 
         if not games or not pair_scores:
             self.bounded = "not measured"
             return
 
-        mean = sum(pair_scores) / (2 * self.pairs)
-        variance = sum((score / 2 - mean) ** 2 for score in pair_scores) / self.pairs
-        error = math.sqrt(variance / self.pairs)
+        self.paired = sum(pair_scores) / (2 * self.pairs)
 
-        if self.score <= 0.0 or self.score >= 1.0:
-            above = self.score >= 1.0
+        if self.paired <= 0.0 or self.paired >= 1.0:
+            above = self.paired >= 1.0
             self.elo = MAX_ELO if above else -MAX_ELO
             self.bounded = f"above +{MAX_ELO:.0f}" if above else f"below -{MAX_ELO:.0f}"
             self.low = self.elo if above else -math.inf
@@ -189,14 +202,24 @@ class Estimate:
             self.los = 1.0 if above else 0.0
             return
 
-        self.elo = -400 * math.log10(1 / self.score - 1)
-        slope = 400 / (LN10 * self.score * (1 - self.score))
+        variance = (
+            sum((score / 2 - self.paired) ** 2 for score in pair_scores) / self.pairs
+        )
+        # Every pair scoring the same leaves no wobble to measure, which is not
+        # the same as there being none, so fall back to the wobble the score
+        # would have if the two games of a pair were unrelated, as the rating
+        # estimate falls back to a modelled spread for the same reason. A
+        # single pair is that case too: one of anything has no spread.
+        if variance == 0.0:
+            variance = self.paired * (1 - self.paired) / 2
+            self.modelled = True
+        error = math.sqrt(variance / self.pairs)
+
+        self.elo = -400 * math.log10(1 / self.paired - 1)
+        slope = 400 / (LN10 * self.paired * (1 - self.paired))
         self.margin = CONFIDENCE * error * slope
         self.low, self.high = self.elo - self.margin, self.elo + self.margin
-        if error == 0.0:
-            self.los = 1.0 if self.score > 0.5 else 0.0 if self.score < 0.5 else 0.5
-        else:
-            self.los = 0.5 * (1 + math.erf((self.score - 0.5) / (error * math.sqrt(2))))
+        self.los = 0.5 * (1 + math.erf((self.paired - 0.5) / (error * math.sqrt(2))))
 
     def __str__(self) -> str:
         if self.bounded == "not measured":
@@ -355,10 +378,16 @@ def interval(estimate: Estimate) -> str:
             "Every pair went the same way, so the games bound the difference"
             f" from one side only, at {estimate.bounded} elo."
         )
+    modelled = (
+        " Every pair scored the same, so that interval is drawn from the spread"
+        " unrelated games would have rather than from one these games showed."
+        if estimate.modelled
+        else ""
+    )
     return (
         f"The 95% interval is {round(estimate.low):+d} to"
         f" {round(estimate.high):+d} elo, and the likelihood of superiority is"
-        f" {100 * estimate.los:.1f}%."
+        f" {100 * estimate.los:.1f}%.{modelled}"
     )
 
 
@@ -395,7 +424,7 @@ def report(
     unfinished = sum(shard.unfinished for shard in shards)
     left_over = (
         f" {unpaired} of the games had no partner, so they are in the score and"
-        " not in the interval."
+        " not in the estimate."
         if unpaired
         else ""
     )
