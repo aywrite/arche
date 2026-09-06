@@ -327,9 +327,9 @@ pub const DIAGONAL_MAGICS: [u64; 64] = [
 
 #[cfg(test)]
 mod magic_generation {
-    use super::{BASE_CONVERSIONS, BaseConversions, MAGIC};
     use super::{
-        DIAGONAL_MAGICS, STRAIGHT_MAGICS, attacks_from, blocker_configurations, blocker_mask,
+        BASE_CONVERSIONS, BaseConversions, DIAGONAL_MAGICS, MAGIC, STRAIGHT_MAGICS, attacks_from,
+        blocker_configurations, blocker_mask,
     };
     use crate::misc::split_mix;
 
