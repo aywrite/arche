@@ -37,11 +37,14 @@ SPEED = re.compile(
 )
 # an sprt names its verdict: bounds alone would leave a passed test and a
 # failed one telling the same story
+SPRT = r"sprt \[-?\d+(\.\d+)?, -?\d+(\.\d+)?\] (passed|failed|inconclusive), "
+PLAYED = r"\d+ games, [^,()]+, vs [^()]+"
+# A match with no estimate to state says so. It still carries the verdict when
+# a test reached one, since a settled test says something a missing number does
+# not, so the bare form and the one that names an sprt are both accepted.
 ELO = re.compile(
-    r"^(not measured"
-    r"|[+-]\d+ ±\d+ \((sprt \[-?\d+(\.\d+)?, -?\d+(\.\d+)?\] "
-    r"(passed|failed|inconclusive), )?"
-    r"\d+ games, [^,()]+, vs [^()]+\))$"
+    rf"^(not measured( \({SPRT}{PLAYED}\))?"
+    rf"|[+-]\d+ ±\d+ \(({SPRT})?{PLAYED}\))$"
 )
 
 

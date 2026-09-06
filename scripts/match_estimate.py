@@ -20,6 +20,14 @@ one draw and not two, and treating them as two would understate the spread. The
 pair is also what a shard that ran out of clock can leave half of, so the games
 it left over are counted and said, and kept out of the pair statistics.
 
+With `--elo0` and `--elo1` the same pairs are read a second way, as a
+sequential test. One run of the workflow is a batch: its shards play slices
+chosen in advance and nothing is looked at until they are all in. The log
+likelihood ratio of the batch is added to the one the earlier batches of the
+same test ended on, and the sum is judged against Wald's bounds. Looking only
+at batch boundaries is what leaves the bounds meaning what they say, and it is
+also how the roadmap has been reading repeated runs of the same arm.
+
 The report goes to stdout for the run summary. `--line` prints the one line the
 release notes carry and `--trailer` the trailer a commit does. Anything worth an
 alert goes to stderr, so the workflow can raise it from there rather than
@@ -58,6 +66,24 @@ SHARD = re.compile(r"shard-(\d+)")
 
 # the five scores a pair can end on, from the candidate's point of view
 PENTANOMIAL = (0.0, 0.5, 1.0, 1.5, 2.0)
+# the same five as a fraction of the two points a pair is worth, which is what
+# the sequential test weighs
+PAIR = tuple(score / 2 for score in PENTANOMIAL)
+
+# The error rates the sprt verdicts are accepted at: a wrong "passed" one run
+# in twenty, a wrong "failed" the same. They are what the verdicts mean, so
+# they are fixed here rather than asked for.
+ALPHA = BETA = 0.05
+# Wald's bounds on the log likelihood ratio at those rates, -2.94 and +2.94
+LOWER = math.log(BETA / (1 - ALPHA))
+UPPER = math.log((1 - BETA) / ALPHA)
+# a count of nought has no logarithm, so it is nudged off nought first, which
+# is what fastchess does with the same counts
+REGULARISED = 1e-3
+# As far out as a hypothesis is worth asking about. Past a thousand elo the
+# expected score rounds to nought or one, which leaves the distribution nothing
+# to fit and the bisection no interval to run in.
+MAX_HYPOTHESIS = 1000
 
 
 def read_games(text: str, candidate: str) -> tuple[dict[str, list[float]], int]:
@@ -180,16 +206,145 @@ class Estimate:
         return f"{round(self.elo):+d} ±{round(self.margin)} Elo ({self.games} games)"
 
 
-def trailer(estimate: Estimate, tc: str, baseline: str) -> str:
+def expected_score(elo: float) -> float:
+    """The score the logistic model expects from an elo difference."""
+    return 1 / (1 + 10 ** (-elo / 400))
+
+
+def likeliest(observed: list[float], mean: float) -> list[float]:
+    """The distribution over the five pair scores that is likeliest to have
+    produced `observed` while averaging `mean`.
+
+    Proposition 1.1 of Van den Bergh's note on the generalized likelihood
+    ratio, which is what fastchess solves for the same purpose: there is one
+    theta in (-1/(1 - s), 1/s) with
+    `sum_i phat_i (a_i - s) / (1 + theta (a_i - s)) = 0`, and
+    `p_i = phat_i / (1 + theta (a_i - s))` is the distribution. That sum falls
+    from plus infinity to minus infinity across the interval, so a bisection
+    finds the root. fastchess stops at 1e-3 and this runs to the last bit,
+    which changes nothing either way: the sum being solved is the derivative
+    of the ratio in theta, so the ratio is flat where the root is."""
+    low, high = -1 / (PAIR[-1] - mean), -1 / (PAIR[0] - mean)
+    while True:
+        theta = (low + high) / 2
+        if theta <= low or theta >= high:
+            break
+        slope = sum(
+            p * (a - mean) / (1 + theta * (a - mean)) for a, p in zip(PAIR, observed)
+        )
+        if slope > 0:
+            low = theta
+        else:
+            high = theta
+    return [p / (1 + theta * (a - mean)) for a, p in zip(PAIR, observed)]
+
+
+def log_likelihood_ratio(counts: list[int], elo0: float, elo1: float) -> float:
+    """How much likelier the pairs are under elo1 than under elo0.
+
+    fastchess's logistic pentanomial test, ported so that the number here is
+    the number it would print for the same pairs. The counts are the pairs by
+    what the candidate scored in them, in PENTANOMIAL order, so the shared
+    pairs and the doubly drawn ones are one bin already, which is the bin
+    fastchess merges them into."""
+    counted = [count or REGULARISED for count in counts]
+    total = sum(counted)
+    observed = [count / total for count in counted]
+    under0 = likeliest(observed, expected_score(elo0))
+    under1 = likeliest(observed, expected_score(elo1))
+    return total * sum(
+        phat * (math.log(one) - math.log(zero))
+        for phat, zero, one in zip(observed, under0, under1)
+    )
+
+
+def number(value: float) -> str:
+    """A hypothesis or a bound, carrying the decimals only when it has any."""
+    return str(round(value)) if float(value).is_integer() else f"{value:.2f}"
+
+
+class Sprt:
+    """The sequential test over the pooled pairs, and the verdict it reaches.
+
+    A batch is one run of the match: the shards play slices settled in
+    advance, and the games are read once they are all in rather than as they
+    arrive. This batch's log likelihood ratio is added to the one the earlier
+    batches of the same test ended on, and the sum is what the bounds are
+    read against, so every look is at a batch boundary and the error rates the
+    bounds stand for are the ones the verdict carries.
+
+    The pair is the unit, as it is for the interval, so a game a shard left
+    without a partner is out of this too."""
+
+    def __init__(
+        self, pairs: list[float], elo0: float, elo1: float, prior: float = 0.0
+    ):
+        self.elo0, self.elo1, self.prior = elo0, elo1, prior
+        counted = Counter(pairs)
+        self.counts = [counted[score] for score in PENTANOMIAL]
+        self.llr = log_likelihood_ratio(self.counts, elo0, elo1) if pairs else 0.0
+        self.total = self.llr + prior
+        if self.total >= UPPER:
+            self.verdict = "passed"
+        elif self.total <= LOWER:
+            self.verdict = "failed"
+        else:
+            self.verdict = "inconclusive"
+
+    @property
+    def hypotheses(self) -> str:
+        return f"[{number(self.elo0)}, {number(self.elo1)}]"
+
+    @property
+    def bounds(self) -> str:
+        return f"({number(LOWER)}, {number(UPPER)})"
+
+    def __str__(self) -> str:
+        return (
+            f"SPRT {self.hypotheses} {self.verdict}, LLR {self.total:.2f} {self.bounds}"
+        )
+
+
+def sequential(sprt: Sprt) -> str:
+    """The sprt reading for the report, and what its verdict means."""
+    means = {
+        "passed": (
+            f"The candidate is stronger by about {number(sprt.elo1)} elo or"
+            " more, at a five percent error rate each way."
+        ),
+        "failed": (
+            f"The candidate is not stronger by about {number(sprt.elo1)} elo,"
+            " at a five percent error rate each way."
+        ),
+        "inconclusive": (
+            "The games so far settle it neither way. Launch another batch with"
+            f" prior_llr set to {sprt.total:.2f}."
+        ),
+    }
+    return (
+        f"SPRT {sprt.hypotheses} {sprt.verdict}. This batch's log likelihood"
+        f" ratio is {sprt.llr:.2f} and the batches before it ended on"
+        f" {sprt.prior:.2f}, so the sum is {sprt.total:.2f} against bounds of"
+        f" {sprt.bounds}. {means[sprt.verdict]}"
+    )
+
+
+def trailer(
+    estimate: Estimate, tc: str, baseline: str, sprt: Sprt | None = None
+) -> str:
     """The result as the Elo trailer a commit carries, in the shape the
     commit-msg hook accepts. A match with no estimate to state says so rather
-    than quoting a number it does not have."""
+    than quoting a number it does not have, though it still names the sprt
+    verdict when there was one. An sprt names its verdict beside the estimate,
+    since +58 with the test failed and +58 with it passed are not the same
+    claim."""
+    test = f"sprt {sprt.hypotheses} {sprt.verdict}, " if sprt else ""
+    played = f"({test}{estimate.games} games, {tc}, vs {baseline})"
     if estimate.margin is None:
-        return "Elo: not measured"
-    return (
-        f"Elo: {round(estimate.elo):+d} ±{round(estimate.margin)}"
-        f" ({estimate.games} games, {tc}, vs {baseline})"
-    )
+        # the estimate is what is missing, not the verdict: a test that
+        # settled says something a score of nought or of one does not
+        return f"Elo: not measured {played}" if sprt else "Elo: not measured"
+    return f"Elo: {round(estimate.elo):+d} ±{round(estimate.margin)} {played}"
 
 
 def interval(estimate: Estimate) -> str:
@@ -233,7 +388,9 @@ def table(shards: list[Shard], estimate: Estimate) -> list[str]:
     return rows
 
 
-def report(shards: list[Shard], estimate: Estimate, text: str) -> str:
+def report(
+    shards: list[Shard], estimate: Estimate, text: str, sprt: Sprt | None = None
+) -> str:
     unpaired = sum(shard.unpaired for shard in shards)
     unfinished = sum(shard.unfinished for shard in shards)
     left_over = (
@@ -257,6 +414,7 @@ def report(shards: list[Shard], estimate: Estimate, text: str) -> str:
         "",
         *pentanomial([score for shard in shards for score in shard.pairs]),
         "",
+        *([sequential(sprt), ""] if sprt else []),
         *table(shards, estimate),
         "",
         "How the games ended:",
@@ -287,6 +445,19 @@ def main() -> None:
     parser.add_argument("--candidate", required=True, help="the name it played under")
     parser.add_argument("--baseline", required=True, help="what it played against")
     parser.add_argument("--tc", default="", help="the time control played")
+    parser.add_argument(
+        "--elo0", type=float, help="the sprt null hypothesis in elo, with --elo1"
+    )
+    parser.add_argument(
+        "--elo1", type=float, help="the sprt alternative in elo, with --elo0"
+    )
+    parser.add_argument(
+        "--prior-llr",
+        type=float,
+        default=0.0,
+        metavar="F",
+        help="the log likelihood ratio the earlier batches of this test ended on",
+    )
     printed = parser.add_mutually_exclusive_group()
     printed.add_argument(
         "--line",
@@ -299,6 +470,23 @@ def main() -> None:
         help="print the Elo trailer for a commit instead of the report",
     )
     args = parser.parse_args()
+    if (args.elo0 is None) != (args.elo1 is None):
+        parser.error(
+            "--elo0 and --elo1 are the two ends of one test, so both or neither"
+        )
+    if args.elo0 is not None:
+        for name, elo in (("--elo0", args.elo0), ("--elo1", args.elo1)):
+            # a hypothesis off the end of the model, or not a number at all,
+            # leaves the fit with nothing to solve for
+            if not math.isfinite(elo) or abs(elo) > MAX_HYPOTHESIS:
+                parser.error(
+                    f"{name} is an elo difference, so it is between"
+                    f" -{MAX_HYPOTHESIS} and {MAX_HYPOTHESIS}"
+                )
+        # the null is the weaker of the two, and a test whose ends meet has no
+        # evidence to weigh: its ratio is nought whatever the games did
+        if args.elo0 >= args.elo1:
+            parser.error(f"--elo0 {args.elo0:g} is not below --elo1 {args.elo1:g}")
 
     shards, text = read_shards(args.pgn, args.candidate)
     games = [score for shard in shards for score in shard.games]
@@ -306,13 +494,18 @@ def main() -> None:
         sys.exit(f"no games for {args.candidate} in {len(args.pgn)} shards")
     pairs = [score for shard in shards for score in shard.pairs]
     estimate = Estimate(sum(games), len(games), pairs)
+    sprt = (
+        Sprt(pairs, args.elo0, args.elo1, args.prior_llr)
+        if args.elo0 is not None
+        else None
+    )
 
     if args.trailer:
-        print(trailer(estimate, args.tc, args.baseline))
+        print(trailer(estimate, args.tc, args.baseline, sprt))
     elif args.line:
-        print(estimate)
+        print(f"{estimate}, {sprt}" if sprt else str(estimate))
     else:
-        print(report(shards, estimate, text))
+        print(report(shards, estimate, text, sprt))
     if fault := match_terminations.remark(*match_terminations.count(text)):
         print(fault, file=sys.stderr)
 
