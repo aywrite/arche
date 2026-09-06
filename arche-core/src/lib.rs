@@ -15,6 +15,7 @@ mod play;
 mod psqt;
 pub mod reduction;
 pub mod residual;
+pub mod strategy;
 pub mod tactics;
 mod transposition;
 mod value;
