@@ -158,11 +158,10 @@ static ZOBRIST: Zobrist = Zobrist::TABLE;
 ///
 /// The two tables differ on e1 and e8 alone. Leaving one takes both of that
 /// side's rights; landing on one takes neither, because the piece standing
-/// there in a game that granted the rights is the king, and a move that
-/// took it would have ended the game. A fen may hand over rights with the
-/// king somewhere else, and the two then answer differently, so this stays
-/// the pair of rules it replaced rather than one rule that is right in
-/// every position a game reaches.
+/// there in a position that holds the rights is the king, and a move that
+/// took it would have ended the game. That holds of a parsed position as
+/// well as of a played one: `from_fen` drops a right whose king or rook is
+/// somewhere else.
 static CASTLE_LEAVING: [u32; 64] = castle_masks(true);
 static CASTLE_LANDING: [u32; 64] = castle_masks(false);
 
@@ -893,13 +892,24 @@ impl Board {
             self.recompute_squares(),
             "squares out of step"
         );
-        // the recompute reads the en passant field as it stands, so the check
-        // above cannot tell a field set against the rule: assert the rule
-        // itself, that a recorded square is one the side to move can take on
+        // the recompute reads the castle rights and the en passant square as
+        // they stand, so the checks above cannot tell a field set against the
+        // rule: assert the rules themselves. A right belongs to a king and a
+        // rook standing where the castle moves them from, and a square to a
+        // pawn the side to move can take there. Both hold of a played
+        // position, since make_move gives up the rights of every square a
+        // king or rook leaves and records a square only for a double push
+        // that was answerable, and `from_fen` drops what a fen states past
+        // them.
+        debug_assert_eq!(
+            self.castle,
+            self.rights_the_pieces_bear_out(),
+            "a castle right without the king and rook for it"
+        );
         if let Some(en_passant) = self.en_passant {
             debug_assert!(
-                self.pawn_can_capture_on(en_passant.as_index(), self.active_color),
-                "en passant square no pawn can take"
+                self.en_passant_can_be_played(en_passant.as_index()),
+                "en passant square the position does not bear out"
             );
         }
     }
@@ -1552,6 +1562,69 @@ impl Board {
         }
     }
 
+    /// The castle rights this position has the pieces for: a right whose king
+    /// or rook is not standing on the square the castle moves it from is
+    /// dropped.
+    ///
+    /// The generator asks the right, the empty squares and the attacked
+    /// squares, and takes the king from wherever it stands, so a right held
+    /// over a king somewhere else is a castle out of that square; make_move
+    /// then relocates whatever sits on the rook's corner as though it were the
+    /// rook. Only `from_fen` can produce such a right, since a played move
+    /// gives up the rights of every square a king or rook leaves.
+    fn rights_the_pieces_bear_out(&self) -> CastlePermissions {
+        let holds = |index: u8, piece: Piece, color: Color| {
+            self.get_piece_and_color_index(index) == Some((piece, color))
+        };
+        let white_king = holds(E1, Piece::King, Color::White);
+        let black_king = holds(E8, Piece::King, Color::Black);
+        CastlePermissions {
+            white_king_side: self.castle.white_king_side
+                && white_king
+                && holds(H1, Piece::Rook, Color::White),
+            white_queen_side: self.castle.white_queen_side
+                && white_king
+                && holds(A1, Piece::Rook, Color::White),
+            black_king_side: self.castle.black_king_side
+                && black_king
+                && holds(H8, Piece::Rook, Color::Black),
+            black_queen_side: self.castle.black_queen_side
+                && black_king
+                && holds(A8, Piece::Rook, Color::Black),
+        }
+    }
+
+    /// Whether an en passant capture on this square is one this position can
+    /// actually make: the rank a double push crosses, a pawn of ours placed to
+    /// take there, the square itself empty, and the pawn the capture removes
+    /// standing behind it.
+    ///
+    /// The pawn placed to take is make_move's own rule and says whether the
+    /// square belongs in the key. The rest is what the square claims and the
+    /// generator does not check, since the capture is emitted from the square
+    /// alone. Without them make_move clears a pawn from a square holding
+    /// something else, or lands the capturer on top of a piece nothing took.
+    fn en_passant_can_be_played(&self, index: u8) -> bool {
+        let (rank, _) = index_to_coordinate(index);
+        // the rank the push crossed, which is the far side's third
+        let crossed = match self.active_color {
+            Color::White => 6,
+            Color::Black => 3,
+        };
+        if rank != crossed {
+            return false;
+        }
+        // where the pawn that pushed now stands, which is the square make_move
+        // clears. The rank above is what puts it on the board
+        let taken = match self.active_color {
+            Color::White => index - 8,
+            Color::Black => index + 8,
+        };
+        self.pawn_can_capture_on(index, self.active_color)
+            && !(self.white | self.black).is_bit_set(index)
+            && self.get_piece_and_color_index(taken) == Some((Piece::Pawn, !self.active_color))
+    }
+
     /// Whether a pawn of this colour is placed to take on this square. A mask
     /// holds the squares a pawn of that colour must stand on to attack the one
     /// indexed, which is what is being asked here.
@@ -2095,7 +2168,9 @@ impl Board {
     ///
     /// Validated only as far as what the search cannot survive: see the
     /// checks below and the known limitations in `docs/ROADMAP.md` for what
-    /// an illegal position can still get away with.
+    /// an illegal position can still get away with. A field that describes
+    /// pieces the placement does not have is cut back rather than refused,
+    /// since the position itself is playable and only the field is not.
     pub fn from_fen(fen: &str) -> Result<Self, String> {
         let mut fen_iter = fen.split(' ');
         let position = fen_iter
@@ -2217,6 +2292,12 @@ impl Board {
             return Err("Error parsing FEN: the side which is not to move is in check".to_string());
         }
 
+        // A right and an en passant square each describe pieces the rest of
+        // the fen need not agree with, and a field kept here is one the
+        // generator will play: see the two rules for what that costs. Each is
+        // cut back beside the key it belongs in, so the two never disagree.
+        board.castle = board.rights_the_pieces_bear_out();
+
         // fold the non-piece state into the position key so that keys are
         // comparable between boards parsed from FEN and boards reached by
         // playing moves
@@ -2224,10 +2305,11 @@ impl Board {
             board.key ^= ZOBRIST.side;
         }
         board.key ^= ZOBRIST.castle_key(board.castle);
-        // the same rule as make_move, or a position parsed and the same one
-        // played would not hash alike, which is worse than what is being fixed
+        // make_move's own rule is the first of these, or a position parsed and
+        // the same one played would not hash alike, which is worse than what
+        // is being fixed
         if let Some(en_passant) = board.en_passant {
-            if board.pawn_can_capture_on(en_passant.as_index(), board.active_color) {
+            if board.en_passant_can_be_played(en_passant.as_index()) {
                 board.key ^= ZOBRIST.en_passant_key(en_passant.as_index());
             } else {
                 board.en_passant = None;
@@ -2249,10 +2331,10 @@ impl Board {
     /// fen names the position and nothing that was played to reach it, so a
     /// board parsed back from one has no history to find a repetition in.
     ///
-    /// The en passant square is printed as the board holds it, which is
-    /// after `from_fen` has dropped one no pawn can capture on. So a fen
-    /// parsed and printed again may differ from the one that arrived, and
-    /// printing that one twice does not.
+    /// The castle rights and the en passant square are printed as the board
+    /// holds them, which is after `from_fen` has cut back what the pieces do
+    /// not bear out. So a fen parsed and printed again may differ from the
+    /// one that arrived, and printing that one twice does not.
     pub fn to_fen(&self) -> String {
         let mut fen = String::new();
         for rank in (1..=8).rev() {
@@ -2692,7 +2774,7 @@ mod position_key {
 
     #[test]
     #[cfg(debug_assertions)]
-    #[should_panic(expected = "en passant square no pawn can take")]
+    #[should_panic(expected = "en passant square the position does not bear out")]
     fn an_en_passant_square_no_pawn_can_take_fails_the_state_check() {
         use super::{Coordinate, ZOBRIST};
         let mut board = Board::new();
@@ -2702,6 +2784,23 @@ mod position_key {
         // the corruption the recompute comparison is blind to.
         board.en_passant = Coordinate::from_string("e6").unwrap();
         board.key ^= ZOBRIST.en_passant_key(board.en_passant.unwrap().as_index());
+        board.debug_assert_state_in_step();
+    }
+
+    /// The castle rights are held to their pieces the same way, and this is
+    /// the corruption that check exists for: the rights a fen states are the
+    /// squares the generator castles from.
+    #[test]
+    #[cfg(debug_assertions)]
+    #[should_panic(expected = "a castle right without the king and rook for it")]
+    fn a_castle_right_without_its_rook_fails_the_state_check() {
+        use super::ZOBRIST;
+        let mut board = Board::from_fen("4k3/8/8/8/8/8/8/4K3 w - - 0 1").unwrap();
+        // the right is folded into the key as well as the field, for the
+        // reason above
+        let without = board.castle;
+        board.castle.white_king_side = true;
+        board.key ^= ZOBRIST.castle_key(without) ^ ZOBRIST.castle_key(board.castle);
         board.debug_assert_state_in_step();
     }
 
@@ -2793,14 +2892,19 @@ mod position_key {
             .unwrap();
         assert_eq!(board.key, fen.key);
 
-        // moving the king drops castle rights, which must change the key
+        // moving the king drops white's castle rights, and the fen for the
+        // same position states the two black still holds
         play_move(&mut board, "e1e2");
-        let fen = Board::from_fen("rnbqkb1r/pppppppp/5n2/8/4P3/8/PPPPKPPP/RNBQ1BNR b KQkq - 2 2")
-            .unwrap();
-        assert_ne!(board.key, fen.key);
         let fen =
             Board::from_fen("rnbqkb1r/pppppppp/5n2/8/4P3/8/PPPPKPPP/RNBQ1BNR b kq - 2 2").unwrap();
         assert_eq!(board.key, fen.key);
+        // the rights are in the key, so the same pieces with black's gone as
+        // well is a different position. A fen cannot make the other half of
+        // this point any more: one claiming the rights white just gave up has
+        // them dropped again by from_fen, since the king is no longer on e1
+        let none =
+            Board::from_fen("rnbqkb1r/pppppppp/5n2/8/4P3/8/PPPPKPPP/RNBQ1BNR b - - 2 2").unwrap();
+        assert_ne!(board.key, none.key);
     }
 
     #[test]
@@ -3320,8 +3424,9 @@ mod fen_parsing {
     }
 
     /// The printer's job: a position printed and parsed again is the same
-    /// position. Every fen here has no en passant square, which is the one
-    /// field the parser may drop, so the text comes back word for word too.
+    /// position. No fen here has an en passant square, and the rights each
+    /// states have their pieces, so nothing the parser may cut back is in
+    /// one and the text comes back word for word too.
     #[test]
     fn a_printed_position_parses_back_to_itself() {
         for fen in [
@@ -3356,10 +3461,11 @@ mod fen_parsing {
             _ = Board::from_fen(&s);
         }
 
-        /// The parser drops an en passant square no pawn can capture on, so
-        /// the first print of a parsed fen need not match the text that
-        /// arrived. Printing it again does, and that is what a caller who
-        /// prints a position and parses it back depends on.
+        /// The parser cuts back a castle right and an en passant square the
+        /// pieces do not bear out, so the first print of a parsed fen need
+        /// not match the text that arrived. Printing it again does, and that
+        /// is what a caller who prints a position and parses it back depends
+        /// on.
         #[test]
         fn printing_a_parsed_position_is_settled_after_one_pass(fen in well_formed_fen()) {
             if let Ok(board) = Board::from_fen(&fen) {
@@ -3394,6 +3500,120 @@ mod fen_parsing {
                 super::in_step::prop_assert_in_step(&board)?;
             }
         }
+
+        /// The board a fen is accepted as being in step says nothing about
+        /// the moves it licenses. A castle right or an en passant square the
+        /// rest of the position does not agree with parses into a coherent
+        /// board and corrupts it one move later, when make_move reads the
+        /// right as a description of where the pieces are. So every legal
+        /// move is played and the board asked again.
+        #[test]
+        fn every_legal_move_of_a_well_formed_fen_leaves_the_board_in_step(fen in well_formed_fen()) {
+            if let Ok(mut board) = Board::from_fen(&fen) {
+                let before = board.clone();
+                for m in &board.generate_moves() {
+                    if board.make_move(m) {
+                        super::in_step::prop_assert_in_step(&board)?;
+                        board.undo_move();
+                    }
+                    // by hand rather than prop_assert_eq, which would print
+                    // two boards and the thousand plies of history each
+                    // carries
+                    prop_assert!(board == before, "{} did not unmake", m);
+                }
+            }
+        }
+    }
+
+    /// The rows `rights_the_pieces_bear_out` is there for, and the position
+    /// that found it first. A right names pieces as well as a side, and what
+    /// the generator did with one whose pieces were elsewhere is written
+    /// over that function.
+    #[test]
+    fn a_castle_right_without_the_king_and_rook_for_it_is_dropped() {
+        for (fen, left, why) in [
+            (
+                "3bn2B/Q7/P1R4K/7b/B5k1/PP1q2B1/Rb1P3R/1Prpq3 b KQkq - 51 1",
+                "-",
+                "neither king stands on its square",
+            ),
+            (
+                "1r2k2r/8/8/8/8/8/8/R3K1R1 w KQkq - 0 1",
+                "Qk",
+                "a rook stands beside its corner rather than on it",
+            ),
+            (
+                "R2pkb1R/8/8/8/8/8/8/4K3 w kq - 0 1",
+                "-",
+                "the rooks on the corners are the other colour's",
+            ),
+            (
+                "r3k2r/8/8/8/8/8/8/R3K2R w KQkq - 0 1",
+                "KQkq",
+                "every right has the pieces for it",
+            ),
+        ] {
+            let board = Board::from_fen(fen).unwrap();
+            assert_eq!(board.castle.as_fen(), left, "{}: {}", why, fen);
+        }
+    }
+
+    /// An en passant square is a claim about the pawn that has just passed
+    /// over it, and the parser only asked whether anything could capture
+    /// there. A square with no pawn behind it produced a capture whose
+    /// make_move cleared a pawn from a square holding something else.
+    #[test]
+    fn an_en_passant_square_the_position_does_not_bear_out_is_dropped() {
+        for (fen, why) in [
+            (
+                "4k3/8/8/3Pr3/8/8/8/4K3 w - e6 0 1",
+                "a rook stands where the taken pawn should",
+            ),
+            (
+                "4k3/8/8/3P4/8/8/8/4K3 w - e6 0 1",
+                "nothing stands where the taken pawn should",
+            ),
+            (
+                "4k3/8/8/3PP3/8/8/8/4K3 w - e6 0 1",
+                "the pawn behind the square is our own",
+            ),
+            (
+                "4k3/8/4b3/3Pp3/8/8/8/4K3 w - e6 0 1",
+                "the square itself is occupied",
+            ),
+            (
+                "4k3/8/4P3/3Pp3/8/8/8/4K3 w - e6 0 1",
+                "the square holds a piece of ours",
+            ),
+            (
+                "4k3/8/8/8/3p4/8/8/4K3 b - e3 0 1",
+                "black to move and nothing to take behind the square",
+            ),
+            (
+                "4k3/8/8/8/8/8/Pp6/4K3 b - a1 0 1",
+                "no double push crosses the first rank",
+            ),
+            ("4k3/pP6/8/8/8/8/8/4K3 w - a8 0 1", "nor the eighth"),
+        ] {
+            let board = Board::from_fen(fen).unwrap();
+            assert_eq!(board.en_passant, None, "{}: {}", why, fen);
+            assert!(
+                !board.generate_moves().iter().any(|m| m.en_passant),
+                "{}: {}",
+                why,
+                fen
+            );
+        }
+    }
+
+    /// The other half of the rule above: a square the position does bear out
+    /// is kept, which is what stops the check dropping every one of them.
+    #[test]
+    fn an_en_passant_square_with_the_pawn_behind_it_is_kept() {
+        let board = Board::from_fen("rnbqkbnr/ppp1pppp/8/8/3pP3/8/PPPP1PPP/RNBQKBNR b KQkq e3 0 1")
+            .unwrap();
+        assert_eq!(board.to_fen().split(' ').nth(3), Some("e3"));
+        assert!(board.generate_moves().iter().any(|m| m.en_passant));
     }
     #[test]
     fn the_wikipedia_examples_parse() -> Result<(), String> {

@@ -5,3 +5,5 @@
 # It is recommended to check this file in to source control so that
 # everyone who runs the test benefits from these saved cases.
 cc ed604ae5dd6e93761412b00ff46c37912ccca9bc0a42823cd0c6c86651405f40 # shrinks to s = "1BNNPkbnP/KpKNB1BbN/kKKbBkN1N/N1pkk1bNP/nb1p1NKnB/kbb1KbPnB/BPpbkpPpP/KpkN w - A1 1 1"
+cc 903d24ab905ee30d992e2031e919dbb6afc3ea32859d2d6e8911b716e17c3cea # shrinks to fen = "2K1k3/3p4/8/q7/8/4r3/5P2/8 w - e3 0 1"
+cc b49635db33057b5fb4b24faefea2b21b2442ec9d62c5a5dce2284fcef83781b7 # shrinks to fen = "4kq2/b1b1n1b1/8/B4r2/8/8/8/1K5Q b KQkq - 0 1"
