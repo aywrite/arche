@@ -676,9 +676,9 @@ that cannot be measured:
 
 The **Strength** workflow does the same thing on a runner. Run it from the
 actions tab and it plays one version against another, reporting to the run
-summary. Each run keeps its games as an artifact, with a manifest beside them
-saying what was played and on what, down to the seed the openings were drawn
-with. The summary counts how the games ended as well, so a result that leant on
+summary. Every shard keeps its games as an artifact, with a manifest beside them
+saying what was played and on what, down to the opening each shard started at.
+The summary counts how the games ended as well, so a result that leant on
 forfeits or crashes says so; those games stay in the estimate either way.
 
 Both sides can be named, as a branch, a tag, a commit or a pull request number:
@@ -688,13 +688,42 @@ Both sides can be named, as a branch, a tag, a commit or a pull request number:
 - `baseline` is what it is measured against, and defaults to the last full
   release, ignoring release candidates
 - `games` and `time_control` are the size and the speed of the match
+- `shards` is how many jobs it is split across
 
 So a change can be measured before it is merged by running the workflow with
 `candidate` set to the pull request number and leaving the rest alone, or two
 arbitrary commits compared by naming both.
 
-The release workflow calls the same workflow with fifty games, and that run is
-the only one that appends its result to the release notes.
+A runner plays about three and a third games a minute at 10+0.1 and about one
+and a tenth at 30+0.3, and play is capped at 150 minutes, so a match worth
+reading is more games than one job can hold. `shards` jobs play it at once
+instead. Each takes a slice of the book of its own: the openings are read in
+book order from an offset, the first shard's offset is a remainder of the seed
+and each shard after it starts a slice further along, so no two shards play the
+same opening. `scripts/book_slice.py` works the offsets out and the manifests
+record them, which is what makes a run replayable without depending on how
+fastchess draws its own openings. The estimate is then pooled over every
+shard's games by `scripts/match_estimate.py`, rather than taken from fastchess,
+which only ever sees the shard it ran; its interval is measured over pairs,
+since the two games of an opening are one draw and not two.
+
+An sprt is the exception and plays in one shard whatever `shards` says. The test
+weighs the games in the order they were played and stops the moment they settle
+the question, which jobs that cannot see each other's games cannot do.
+
+The release workflow calls the same workflow with five hundred games at 30+0.3
+across five shards, which is about ninety minutes of wall clock, and that run is
+the only one that appends its result to the release notes. The slower control is
+the point of it: a release is a batch of changes screened at 10+0.1, and a change
+that prunes or reduces can look better there than it is, because the tree it cut
+is worth more when both sides search deeper. Five hundred games at that control
+settle about twenty five elo either side. The table above puts five hundred games
+nearer thirty five, because it assumes every game is decisive; the interval
+here is measured from the spread the games actually had, which draws and paired
+openings both narrow. Twenty five is enough to see a batch that has given back
+most of what it claimed. It is not enough to settle a difference of five, so the
+release match is a check on the batch rather than a measurement of any change in
+it.
 
 ### Asking whether instead of how much
 

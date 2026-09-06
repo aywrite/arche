@@ -136,26 +136,38 @@ jobs:
     with:
       release: true
 
-  # Plays a short match against the previous release and adds the result to the
-  # release notes. Fifty games is only enough to detect a large change, the
-  # error margin is published alongside the estimate so it can be read honestly.
+  # Plays the confirmation match against the previous release and adds the
+  # result to the release notes. Five hundred games at 30+0.3, split across five
+  # shards that play at once, which is about ninety minutes of wall clock rather
+  # than the seven hours one runner would take over them.
+  #
+  # The slower control is the point of it. A release is a batch of changes that
+  # were screened at 10+0.1, and a change that prunes or reduces can look better
+  # there than it is, because the tree it cut is worth more when both sides
+  # search deeper. Five hundred games settle about twenty five elo either side,
+  # which shows a batch that has given back most of what it claimed and cannot
+  # settle a difference of five, so the estimate is published with its margin
+  # and read as a check on the batch.
   strength:
     needs: create-release
     permissions:
       contents: write
     uses: ./.github/workflows/strength.yml
     with:
-      games: 50
+      games: 500
+      shards: 5
+      time_control: 30+0.3
       publish: true
 
   # Places the release on the ccrl scale by playing rated opponents, which says
   # something the match against the previous release cannot: that one says which
   # of the two is better, this one says roughly where both of them sit.
   #
-  # After strength rather than alongside it, which costs an hour of release wall
-  # clock and buys two things: the two of them do not race to build and save the
-  # same fastchess cache from cold, and only two jobs are ever queued to edit
-  # the release notes, which is the most that queue holds without dropping one.
+  # After strength rather than alongside it, which costs the release the ninety
+  # minutes that match takes and buys two things: the two of them do not race to
+  # build and save the same fastchess cache from cold, and only two jobs are ever
+  # queued to edit the release notes, which is the most that queue holds without
+  # dropping one.
   #
   # The condition is what makes that sequencing rather than dependency. Needing
   # a job means needing it to have succeeded, and this needs nothing strength
