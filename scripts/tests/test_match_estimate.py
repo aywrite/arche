@@ -62,17 +62,6 @@ def drawn(round_id):
     return pair(round_id, "1/2-1/2", "1/2-1/2")
 
 
-def rounds(drawn_pairs, decided_pairs, won=True):
-    """A match of drawn pairs and decided ones, which is a score off a half
-    with a spread to it."""
-    played = [drawn(index) for index in range(drawn_pairs)]
-    first, second = ("1-0", "0-1") if won else ("0-1", "1-0")
-    played += [
-        pair(drawn_pairs + index, first, second) for index in range(decided_pairs)
-    ]
-    return "".join(played)
-
-
 # The pentanomial counts and the log likelihood ratio the pinned fastchess
 # printed for a real match: 60 games of the engine against itself at 1+0.01
 # under `-sprt elo0=0 elo1=10 alpha=0.05 beta=0.05 model=logistic` with
@@ -239,7 +228,8 @@ class TestEstimate:
         assert str(estimate) == "above +1200 Elo (4 games)"
 
     def test_a_match_swept_the_other_way_is_bounded_below(self, tmp_path):
-        _, estimate, _ = pooled(tmp_path, [rounds(0, 2, won=False)])
+        swept = pair(1, "0-1", "1-0") + pair(2, "0-1", "1-0")
+        _, estimate, _ = pooled(tmp_path, [swept])
         assert estimate.bounded == "below -1200"
         assert estimate.los == 0.0
 
@@ -527,15 +517,13 @@ class TestSequential:
         assert sprt.counts == MATCH
         assert abs(sprt.llr - MATCH_LLR) < 0.01
 
-    def test_the_first_of_fastchess_own_logistic_cases(self):
-        llr = match_estimate.log_likelihood_ratio(
-            [223, 9863, 21279, 10037, 246], 0.5, 2.5
-        )
-        assert abs(llr - -3.07) < 0.01
-
-    def test_the_second_of_fastchess_own_logistic_cases(self):
-        llr = match_estimate.log_likelihood_ratio([871, 26175, 55983, 26678, 821], 0, 2)
-        assert abs(llr - -4.98) < 0.01
+    def test_fastchess_own_logistic_cases(self):
+        for counts, elo0, elo1, expected in (
+            ([223, 9863, 21279, 10037, 246], 0.5, 2.5, -3.07),
+            ([871, 26175, 55983, 26678, 821], 0, 2, -4.98),
+        ):
+            llr = match_estimate.log_likelihood_ratio(counts, elo0, elo1)
+            assert abs(llr - expected) < 0.01, counts
 
     def test_the_ratio_flips_when_the_match_and_the_question_both_do(self):
         # swapping the wins for the losses is the same match from the other

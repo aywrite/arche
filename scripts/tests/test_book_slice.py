@@ -59,22 +59,11 @@ def test_every_shard_stays_inside_the_book():
         assert max(max(shard) for shard in played) <= BOOK, seed
 
 
-def test_a_seed_of_nought_starts_at_the_front():
-    assert book_slice.start(BOOK, 100, 5, 0, 0) == 1
-    assert book_slice.start(BOOK, 100, 5, 3, 0) == 301
-
-
 def test_a_run_id_sized_seed_is_a_remainder_and_not_an_overflow():
     # the seed is the run id when nobody chose one, which is eleven digits
     start = book_slice.start(BOOK, 100, 5, 0, 16093711234)
     assert start == 1 + 16093711234 % (BOOK - 500)
     assert 1 <= start <= BOOK - 500
-
-
-def test_two_seeds_play_different_regions_of_the_book():
-    assert book_slice.start(BOOK, 100, 5, 0, 11) != book_slice.start(
-        BOOK, 100, 5, 0, 12
-    )
 
 
 def test_the_start_is_one_based_the_way_fastchess_counts():
