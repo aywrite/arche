@@ -10,24 +10,31 @@ name: Calibrate
 # depending on ratings earned elsewhere, on other hardware, at a slower time
 # control. Treat it as a rough placement rather than a rating.
 #
-# The opponents are old releases of Stash, which are ranked on ccrl, build in a
-# second from a plain makefile, and are a few tens of kilobytes each. The rungs
-# are an input so they can be moved up as the engine improves: a pairing that
-# ends 25-0 says little beyond "stronger than that", so the useful opponents are
-# the ones close enough to take games off.
+# A rung names an engine, a pin of that engine and the rating it holds on ccrl.
+# The engines it can name are the ones scripts/opponent.sh knows how to build,
+# which is where a new opponent is added. The rungs are an input so they can be
+# moved up as the engine improves: a pairing that ends 25-0 says little beyond
+# "stronger than that", so the useful opponents are the ones close enough to
+# take games off.
+#
+# The default is eight rungs of five lineages, from 2168 to 2555. A gauntlet at
+# this control put the engine at 2332, and the rungs sit either side of that
+# figure rather than all below it. They were read off the complete ccrl blitz
+# list of 5 September 2026. A rating belongs to the exact version the list
+# names, which is why every rung is pinned at a released version.
 #
 # A rung is a job. A runner plays about one and seven tenths games a minute at
 # 20+0.2, so the default twenty six games against one opponent take about a
-# quarter of an hour, and the rungs played one after another took most of an
-# hour of wall clock for no reason: they share nothing but the openings. Each
-# rung now plays its own match, on its own slice of the book so that no two of
-# them play the same opening, and a job at the end pools the games and fits the
-# one rating to all of them.
+# quarter of an hour, and the rungs played one after another would take about
+# two hours of wall clock for no reason: they share nothing but the openings.
+# Each rung now plays its own match, on its own slice of the book so that no
+# two of them play the same opening, and a job at the end pools the games and
+# fits the one rating to all of them.
 #
 # Every rung keeps its games, its result block, the fastchess config and a
-# manifest as calibrate-<run id>-<attempt>-<tag>. The games are the expensive
-# part and the fit is cheap, so a ladder corrected afterwards can be applied to
-# them without playing the matches again.
+# manifest as calibrate-<run id>-<attempt>-<engine>-<pin>. The games are the
+# expensive part and the fit is cheap, so a ladder corrected afterwards can be
+# applied to them without playing the matches again.
 
 on:
   workflow_dispatch:
@@ -44,9 +51,9 @@ on:
         type: string
         default: 20+0.2
       ladder:
-        description: Opponents to play, as stash tag and ccrl blitz rating — v10:1620,v11:1690
+        description: Opponents to play, as engine, pin and ccrl blitz rating (goldfish:v2.1.1:2252,stash:v17.0:2297)
         type: string
-        default: v13:1966,v14:2058,v15.3:2173,v17.0:2297
+        default: zagreus:v5.0:2168,stash:v15.3:2173,goldfish:v2.1.1:2252,stash:v17.0:2297,sofcheck:v0.9-beta:2384,stash:v19.0:2473,stash:v20.0.1:2511,tantabus:v2.0.0:2555
       seed:
         description: Seed for the region of the book the rungs play, an unsigned integer. Left empty it is the run id, and either way the manifests record it.
         type: string
@@ -63,7 +70,7 @@ on:
         default: 20+0.2
       ladder:
         type: string
-        default: v13:1966,v14:2058,v15.3:2173,v17.0:2297
+        default: zagreus:v5.0:2168,stash:v15.3:2173,goldfish:v2.1.1:2252,stash:v17.0:2297,sofcheck:v0.9-beta:2384,stash:v19.0:2473,stash:v20.0.1:2511,tantabus:v2.0.0:2555
       seed:
         type: string
       publish:
@@ -75,9 +82,11 @@ permissions:
   contents: read
 
 env:
-  # 256MB is what ccrl gives an engine and what this one defaults to, so both
-  # sides of a rung hold the same number of positions. Naming it once here is
-  # what puts the number in every manifest as well as in the match.
+  # 256MB is what ccrl gives an engine and what this one defaults to, so a rung
+  # is played on the table its opponent was rated with. An engine that declares
+  # a smaller maximum is not sent it at all and plays on its own default, which
+  # its result block records. Naming the size once here is what puts it in every
+  # manifest as well as in the match.
   HASH: 256
   CONCURRENCY: 2
   # The wall clock cap on play alone, inside the job's timeout with room for
@@ -134,26 +143,62 @@ jobs:
             echo "::error::${GAMES} games against an opponent is under a pair"
             exit 1
           fi
+          # the engines the build table knows. A ladder that names one it does
+          # not is refused here, before a runner is asked to build anything
+          known=$(scripts/opponent.sh list | tr '\n' ' ')
           rungs=""
           spec=""
+          named=" "
           index=0
-          for rung in ${LADDER//,/ }; do
-            case "$rung" in
-              *:*) ;;
-              *) echo "::error::ladder entry ${rung} is not tag:rating"; exit 1 ;;
+          # split on the commas alone. Splitting on whitespace would let a
+          # * in the ladder become one rung per file in the checkout, and the
+          # error would name a file rather than what was typed. A ladder pasted
+          # over several lines is joined first, since read stops at a newline
+          # and would drop every rung after the first line without saying so
+          IFS=, read -r -a entries <<< "${LADDER//$'\n'/,}"
+          for rung in "${entries[@]}"; do
+            # a ladder typed with spaces after its commas is ordinary, and so
+            # is a trailing comma, which is nothing to play rather than a fault
+            rung=${rung// /}
+            [ -n "$rung" ] || continue
+            IFS=: read -r engine tag rating extra <<< "$rung"
+            if [ -z "$engine" ] || [ -z "$tag" ] || [ -z "$rating" ] \
+              || [ -n "$extra" ]; then
+              echo "::error::ladder entry ${rung} is not engine:tag:rating"
+              exit 1
+            fi
+            case " ${known} " in
+              *" ${engine} "*) ;;
+              *) echo "::error::ladder entry ${rung} names ${engine}, which is"\
+                   "not one of ${known}"; exit 1 ;;
             esac
-            tag=${rung%%:*}
-            rating=${rung##*:}
+            # the tag is part of a file name, of an artifact name and of the
+            # name the engine plays under, so it is held to what all three take
+            case "$tag" in
+              *[!A-Za-z0-9._-]*)
+                echo "::error::ladder entry ${rung} has a tag that is not a name"
+                exit 1 ;;
+            esac
             case "$rating" in
-              ''|*[!0-9.]*) echo "::error::${rung} has no rating on it"; exit 1 ;;
+              *[!0-9.]*|*.*.*|.)
+                echo "::error::${rung} has no rating on it"; exit 1 ;;
             esac
+            # two rungs of one engine and pin would play the same opponent
+            # twice, upload twice under one artifact name and be counted once
+            case "$named" in
+              *" ${engine}-${tag} "*)
+                echo "::error::${engine}-${tag} is in the ladder twice"; exit 1 ;;
+            esac
+            named="${named}${engine}-${tag} "
             # the matrix takes a list of objects, one per rung, so a job can
-            # read the tag and the rating it is playing straight off its own
+            # read the engine, the pin and the rating it is playing straight
+            # off its own
             rungs="${rungs}${rungs:+,}"
-            rungs="${rungs}{\"tag\":\"${tag}\",\"rating\":\"${rating}\",\"index\":${index}}"
-            # the engines play under a stash- prefixed name, so the ladder the
+            rungs="${rungs}{\"engine\":\"${engine}\",\"tag\":\"${tag}\""
+            rungs="${rungs},\"rating\":\"${rating}\",\"index\":${index}}"
+            # the engines play under their engine and pin, so the ladder the
             # estimate is given has to carry the same names the games do
-            spec="${spec}${spec:+,}stash-${rung}"
+            spec="${spec}${spec:+,}${engine}-${tag}:${rating}"
             index=$((index + 1))
           done
           if [ "$index" -eq 0 ]; then
@@ -179,6 +224,9 @@ jobs:
       fail-fast: false
       matrix:
         rung: ${{ fromJSON(needs.resolve.outputs.rungs) }}
+    # without this a job is named for every value in its matrix entry, which
+    # reads as play (bbc, 2, 1.1, 2018) and says nothing at a glance
+    name: play ${{ matrix.rung.engine }}-${{ matrix.rung.tag }}
     # the play cap above with room for the two builds before it
     timeout-minutes: 120
     defaults:
@@ -187,7 +235,12 @@ jobs:
         # that died is hidden by the tee it is piped into
         shell: bash
     env:
+      ENGINE: ${{ matrix.rung.engine }}
       TAG: ${{ matrix.rung.tag }}
+      # what the opponent is called everywhere downstream: in the match, in the
+      # games, in the artifact and in the ladder the estimate is fitted with.
+      # The engine is in it because two engines can share a version string
+      OPPONENT: ${{ matrix.rung.engine }}-${{ matrix.rung.tag }}
       RATING: ${{ matrix.rung.rating }}
       INDEX: ${{ matrix.rung.index }}
       RUNGS: ${{ needs.resolve.outputs.count }}
@@ -221,22 +274,15 @@ jobs:
             || git fetch -q origin "+refs/pull/*/head:refs/remotes/pull/*"
           scripts/build_at.sh "$CANDIDATE_SHA" tools/arche
 
-      # Not cached. It is a second of compiling and eighty kilobytes, so
-      # fetching a cache would cost more than building it does. The makefile
-      # moved into src/ after v12, which is why the directory is looked for
-      # rather than named.
+      # Not cached. The engines in the table take from a second to about half
+      # a minute to compile, so fetching a cache would cost more than building
+      # one does. Where each comes from and how it is built is in
+      # scripts/opponent.sh, which is also what a new opponent is added to.
       - name: Build the opponent
         run: |
-          git clone -q --depth 1 --branch "$TAG" \
-            https://github.com/mhouppin/stash-bot.git /tmp/stash \
-            || { echo "::error::no such stash tag ${TAG}"; exit 1; }
-          dir=/tmp/stash
-          if [ -f /tmp/stash/src/Makefile ]; then
-            dir=/tmp/stash/src
-          fi
-          make -C "$dir" -j"$(nproc)" > /dev/null
-          cp "$dir/stash-bot" "tools/stash-${TAG}"
-          ls -l "tools/stash-${TAG}"
+          scripts/opponent.sh build "$ENGINE" "$TAG" "tools/${OPPONENT}" \
+            || { echo "::error::cannot build ${OPPONENT}"; exit 1; }
+          ls -l "tools/${OPPONENT}"
 
       # Which openings this rung plays. The rungs are the shards of the run:
       # each takes a slice of its own so that no two of them open the same
@@ -266,6 +312,9 @@ jobs:
           rm -f games.pgn result.txt config.json
           # The table size is given to both sides at once rather than to the
           # opponent alone, so one line says what the match was played on.
+          # fastchess will not send a size an engine declares itself unable to
+          # take, so such an opponent plays on its own default and the warning
+          # saying so is in the result block.
           #
           # The engine allocates its table before it answers uci, which takes
           # it several seconds and the ten second default does not always
@@ -282,7 +331,7 @@ jobs:
           status=0
           timeout -k 60 -s INT "${MAX_MATCH_MINUTES}m" ./fastchess \
             -engine name=arche cmd=./arche \
-            -engine "name=stash-${TAG}" "cmd=./stash-${TAG}" \
+            -engine "name=${OPPONENT}" "cmd=./${OPPONENT}" \
             -each proto=uci "tc=$TIME_CONTROL" "option.Hash=$HASH" -startup-ms 20000 \
             -openings file=8moves_v3.pgn format=pgn order=sequential "start=$START" \
             -rounds "$PAIRS" -repeat -concurrency "$CONCURRENCY" -recover \
@@ -291,7 +340,7 @@ jobs:
             | tee result.txt || status=$?
           if [ "$status" = "124" ]; then
             echo "STOPPED_BY=the ${MAX_MATCH_MINUTES} minute wall clock cap" >> "$GITHUB_ENV"
-            echo "::warning::stash-${TAG} hit the ${MAX_MATCH_MINUTES} minute cap before its game count"
+            echo "::warning::${OPPONENT} hit the ${MAX_MATCH_MINUTES} minute cap before its game count"
           elif [ "$status" != "0" ]; then
             exit "$status"
           else
@@ -308,12 +357,15 @@ jobs:
         run: |
           book_sha=$(sha256sum tools/8moves_v3.pgn | cut -d' ' -f1) || book_sha=unknown
           toolchain=$(rustc -V) || toolchain=unknown
+          repository=$(scripts/opponent.sh repository "$ENGINE") || repository=unknown
           {
             echo "candidate: ${CANDIDATE:-${GITHUB_REF_NAME}}"
             echo "candidate_sha: ${CANDIDATE_SHA}"
-            echo "opponent: stash-${TAG}"
+            echo "opponent: ${OPPONENT}"
+            echo "opponent_repository: ${repository}"
+            echo "opponent_pin: ${TAG}"
             echo "opponent_rating: ${RATING} on the ccrl blitz list"
-            echo "build: scripts/build_at.sh for arche, make for stash at its tag"
+            echo "build: scripts/build_at.sh for arche, scripts/opponent.sh for ${ENGINE}"
             echo "fastchess: ${FASTCHESS}"
             echo "book: 8moves_v3.pgn"
             echo "book_sha256: ${book_sha}"
@@ -324,7 +376,10 @@ jobs:
             echo "pairs: ${PAIRS}"
             echo "games_asked: $((PAIRS * 2))"
             echo "time_control: ${TIME_CONTROL}"
-            echo "hash_mb: ${HASH}"
+            # what both sides were asked for. An engine that declares a
+            # smaller maximum is not sent this and plays on its own default,
+            # which is why the name says asked rather than given
+            echo "hash_mb_asked: ${HASH}"
             echo "concurrency: ${CONCURRENCY}"
             echo "wall_clock_cap_minutes: ${MAX_MATCH_MINUTES}"
             # unset when the play step never got to the end, which is worth
@@ -347,7 +402,7 @@ jobs:
         if: always()
         uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
         with:
-          name: calibrate-${{ github.run_id }}-${{ github.run_attempt }}-${{ matrix.rung.tag }}
+          name: calibrate-${{ github.run_id }}-${{ github.run_attempt }}-${{ matrix.rung.engine }}-${{ matrix.rung.tag }}
           path: |
             tools/games.pgn
             tools/result.txt
@@ -429,8 +484,9 @@ jobs:
           {
             echo "### Rating estimate"
             echo
-            echo "\`${CANDIDATE_SHA:0:8}\` at ${TIME_CONTROL} against ranked releases of"
-            echo "[Stash](https://github.com/mhouppin/stash-bot), ${#games[@]} of ${RUNGS} rungs played."
+            echo "\`${CANDIDATE_SHA:0:8}\` at ${TIME_CONTROL} against engines with a"
+            echo "rating on the [ccrl](https://computerchess.org.uk/) blitz list,"
+            echo "${#games[@]} of ${RUNGS} rungs played."
             echo
             cat table.md
             # one alert with every remark inside it, rather than one alert each,
@@ -449,7 +505,7 @@ jobs:
             echo '```'
             echo
             echo "The games of each rung are kept as the"
-            echo "\`calibrate-${GITHUB_RUN_ID}-${GITHUB_RUN_ATTEMPT}-<tag>\` artifacts, with a manifest"
+            echo "\`calibrate-${GITHUB_RUN_ID}-${GITHUB_RUN_ATTEMPT}-<engine>-<pin>\` artifacts, with a manifest"
             echo "saying what was played on what. The openings came from seed ${SEED},"
             echo "which replays this schedule."
             echo

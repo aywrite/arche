@@ -943,14 +943,12 @@ say where either of them sits, because both sides of it are this engine. For a
 number that means something next to other engines, the opponents have to be
 engines that already have a rating.
 
-The **Calibrate** workflow plays a gauntlet against old releases of
-[Stash](https://github.com/mhouppin/stash-bot), which are ranked on the
-[ccrl](https://computerchess.org.uk/) blitz list, build in about a second from a
-plain makefile and are eighty kilobytes each. It holds each opponent at its
-published rating and fits the one number that is unknown, which is ours:
+The **Calibrate** workflow plays a gauntlet against engines that are ranked on
+the [ccrl](https://computerchess.org.uk/) blitz list. It holds each opponent at
+its published rating and fits the one number that is unknown, which is ours:
 
 ```
-python3 scripts/rating_estimate.py gauntlet.pgn arche stash-v13:1966,stash-v14:2058
+python3 scripts/rating_estimate.py gauntlet.pgn arche stash-v15.3:2173,stash-v17.0:2297
 ```
 
 Locally the same thing is the fastchess command from the previous section with
@@ -961,28 +959,119 @@ On a runner a rung is a job. The pairings share nothing but the book, so they
 play at the same time rather than one after another, each against the one
 opponent and on a slice of the book of its own so that no two of them open the
 same way. A rung keeps its games, its result block, the fastchess config and a
-manifest as `calibrate-<run id>-<attempt>-<tag>`, and a job at the end puts the
-games back together, fits the rating to all of them and counts how they ended.
-The attempt is in the artifact name because an artifact cannot be uploaded twice
-under one name: a rerun of the whole run keeps the earlier attempt's games
-rather than failing when it tries to upload its own. Rerun all of the jobs
-rather than the failed ones alone, though, since the rungs that succeeded the
-first time uploaded under the attempt they ran in and the fit only reads its own.
+manifest as `calibrate-<run id>-<attempt>-<engine>-<pin>`, and a job at the end
+puts the games back together, fits the rating to all of them and counts how
+they ended. The attempt is in the artifact name because an artifact cannot be
+uploaded twice under one name: a rerun of the whole run keeps the earlier
+attempt's games rather than failing when it tries to upload its own. Rerun all
+of the jobs rather than the failed ones alone, though, since the rungs that
+succeeded the first time uploaded under the attempt they ran in and the fit only
+reads its own.
 
 The games are the expensive part and the fit is cheap, so a ladder corrected
 afterwards can be applied to the artifacts without playing the matches again.
 
 ### Choosing the opponents
 
-`ladder` is a list of stash tags and the rating each one holds on ccrl blitz.
+`ladder` is a list of rungs, and a rung is an engine, a pin of that engine and
+the rating it holds on ccrl blitz: `stash:v17.0:2297,goldfish:v2.1.1:2252`. The
+engine is
+a name from the table in `scripts/opponent.sh`, which holds where each one is
+cloned from, how it is built and what the build leaves its binary called. A rung
+naming an engine the table does not know, or one that is not those three fields,
+or one whose pin holds anything but letters, digits, dots, dashes and
+underscores, stops the run in the resolve job before a match is played. The pin
+is held to those characters because it is part of a file name and of an artifact
+name as well as of the fetch.
+
+The pin is a tag or a whole commit sha. A pin of forty hex digits is fetched as
+it is and anything else as `refs/tags/<pin>`, so a branch cannot be pinned by
+name: `bbc:master:2018` is refused by the fetch rather than built, because a
+branch would move under a rating that belongs to a release. That check is in
+`scripts/opponent.sh` and not in the ladder, which cannot tell a tag from a
+branch without asking the remote, so a pin that is neither fails the rung's
+build rather than the run's resolve. A tag can still be moved by whoever owns
+the repository, and nothing here would see that.
+
+Adding an opponent is adding a block to that table and then naming it in a
+ladder with its rating. The block is proved here by building it and playing it.
+The rating cannot be: it has to be read off the ccrl list, and a rung carrying a
+number from anywhere else moves the estimate by whatever that number is out by,
+with nothing to say it has.
+
+A rating belongs to the exact version the list names, so the pin is part of the
+figure. BBC 1.1 is rated and the commit after it is not, and pairing a rating
+with a later build is a mistake nothing downstream can catch: the games would be
+played, the fit would converge and the number would be wrong. Pin at the version
+the list names or leave the engine out.
+
 The rungs that are worth playing are the ones close enough to trade games with:
 a pairing that ends 25-0 puts no upper bound on the winner, so it contributes
 almost nothing however many games it is given. The list is an input so it can be
 moved up as the engine improves.
 
-These are the versions around the range the engine is in, and whether ccrl
-ranked the version itself or the figure is a community estimate from the games
-around it. The default plays v13 through v17.0:
+The default plays eight of them, and they sit either side of the engine rather
+than under it. A gauntlet at 20+0.2 put it at 2332 over 440 games, and the
+panel runs from 2168 to 2555, four rungs below that figure and four above:
+
+| rung | ccrl blitz | |
+| --- | --- | --- |
+| zagreus:v5.0 | 2168 ±16 | Zagreus 5.0 64-bit |
+| stash:v15.3 | 2173 ±19 | Stash 15.3 |
+| goldfish:v2.1.1 | 2252 ±16 | Goldfish 2.1.1 64-bit |
+| stash:v17.0 | 2297 ±19 | Stash 17.0 |
+| sofcheck:v0.9-beta | 2384 ±17 | SoFCheck 0.9 beta 64-bit |
+| stash:v19.0 | 2473 ±18 | Stash 19.0 |
+| stash:v20.0.1 | 2511 ±23 | Stash 20.0.1 |
+| tantabus:v2.0.0 | 2555 ±13 | Tantabus 2.0.0 64-bit |
+
+Five lineages, of which four rungs are Stash, which is what this started as. A
+ladder of one lineage measures partly how this engine does against that
+lineage: a blind spot the two share, or an opening a family handles the same
+way, moves the number without anything about the strength behind it having
+changed, and rungs that are related to each other agree with each other for
+reasons the fit cannot see. The rungs here still disagree by about ninety elo
+more than their game counts explain, and that scatter does not shrink as games
+are added, so it is an offset per opponent rather than noise. More lineages
+dilute it.
+
+The figures are from the complete ccrl blitz list of 5 September 2026, computed
+with Bayeselo over 2,106,571 games at a control equivalent to 2'+1". The name
+beside each is the version the list rates, which is the version its pin points
+at; Stash does not spell its tags the way the list names its releases, which is
+why both are given. A list is redone as games arrive, so a figure here can
+drift from the published one; the date is what says how old these are.
+
+Every one of the eight was cloned at its pin, built and played against this
+engine before it was named in the ladder, twenty games apiece at 20+0.2 and
+eighty for four of them. All of them ended normally, with no illegal move, no
+loss on time and nothing dropping the connection. Goldfish, SoFCheck and
+Tantabus do print principal variations fastchess will not follow, lines that
+walk on past a repetition or the fifty move rule, so those rungs fill their
+logs with warnings about moves nobody played. All eight take the 256MB both
+sides are asked for.
+
+fastchess will not send a size an engine declares itself unable to take, and
+such an engine plays on its own default instead. None of the eight is one, but
+BBC, which still has a block, declares a maximum of 128MB against the 256MB
+asked. A refusal like that is in the rung's result block, and the manifest
+calls the figure `hash_mb_asked` because that is what it is.
+
+Rungs far below the engine were dropped rather than kept for the range they
+cover. BadChessEngine 0.4.4 at 1926 took 11.7% of sixty games, and more games
+of that would have narrowed nothing; Stash 13 at 1966 and BBC 1.1 at 2018 sit
+below it. Their blocks are still in `scripts/opponent.sh`, so a ladder can name
+them again.
+
+Cinnamon 2.4 at 2326 and FoxSEE 8.2 at 2471 have blocks and are not in the
+default. Both were built at their pin and played twenty games, so either can be
+named in a ladder without proving its block first. Cinnamon prints an illegal
+move at the end of a principal variation.
+
+The stash releases a ladder can pick from, with whether ccrl ranked the version
+itself or the figure is a community estimate from the games around it.
+Everything from v13 up was read off the 5 September list, and v21.0 at 2713 is
+where the ladder goes next:
 
 | tag | ccrl blitz | |
 | --- | --- | --- |
@@ -991,9 +1080,12 @@ around it. The default plays v13 through v17.0:
 | v11 | 1690 | ranked |
 | v12 | 1881 | ranked |
 | v13 | 1966 | ranked |
-| v14 | 2058 | ranked |
+| v14 | 2057 | ranked |
 | v15.3 | 2173 | ranked |
 | v17.0 | 2297 | ranked |
+| v19.0 | 2473 | ranked |
+| v20.0.1 | 2511 | ranked |
+| v21.0 | 2713 | ranked |
 
 ### Reading the result
 
@@ -1024,18 +1116,20 @@ that either. Every rung in the default is ranked, so that is a risk a ladder
 moved by hand takes on rather than one the default carries.
 
 The time control is a compromise rather than a default worth keeping by
-accident. Ten seconds runs the hundred games in about twenty minutes but leaves
-so little headroom that a runner hiccup shows up as a loss on time, and one
-forfeit in a twenty-five game pairing is worth about thirty elo of noise. Two
-minutes would match the list it is calibrated against and takes most of a day.
-Twenty seconds costs about an hour of runner time and sits closer to the list
-than ten does. The rungs play at once, so that hour is about a quarter of an
-hour of wall clock.
+accident. Ten seconds runs a rung in under ten minutes but leaves so little
+headroom that a runner hiccup shows up as a loss on time, and one forfeit in a
+twenty-five game pairing is worth about thirty elo of noise. Two minutes would
+match the list it is calibrated against and takes most of a day. Twenty seconds
+costs about a quarter of an hour a rung, which over the eight of them is about
+two hours of runner, and sits closer to the list than ten does. The rungs
+play at once, so those hours are about a quarter of an hour of wall clock.
 
 Games run long here, a little under two hundred plies on average, so most of the
-clock a game uses is increment rather than the base time. That is why doubling
-the base from ten to twenty costs closer to three times the wall clock than
-twice it, and worth remembering before raising it again.
+clock a game uses is increment rather than the base time, and raising the base
+on its own buys less thinking than it looks. Both are doubled here instead, and
+both halve the rate: a runner plays about three and a third games a minute at
+10+0.1 and about one and seven tenths at 20+0.2. Worth remembering before
+raising it again.
 
 ## Cutting a release
 
