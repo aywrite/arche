@@ -554,34 +554,48 @@ The census says which moves cut. It cannot say what the late move reduction
 buried, and that is what `arche reductions` measures:
 
 ```
-target/release/arche reductions [depth] [every <n>] [cap <n>]
+target/release/arche reductions [depth] [every <n>] [cap <n>] [epd <file>]
 ```
 
-It searches the same suite the bench does, under the default configuration,
+It searches the same suite the bench does unless `epd` names another file,
+under the default configuration,
 and samples the reduced scouts as they answer: one event per sampled scout,
 taken where the scout's answer comes back. A scout that fails low is
 trusted, and the move it answered for is never searched at the depth the
 node has. A scout that fails high has earned the full depth, so its cost is
-the scout it wasted rather than a wrong answer, and it is never replayed;
-the fail highs stay in the stream at the same rate all the same, because
-they are the denominator a reduction policy's propensities are read
-against.
+the scout it wasted rather than a wrong answer. The fail highs stay in the
+stream at the same rate all the same, because they are the denominator a
+reduction policy's propensities are read against, and because the
+reductions the search did not take do write those moves off.
 
-The label on a fail low comes from a replay, run after the suite on the
-residuals replay's terms exactly: the reference, with a table of its own
+The label comes from a replay, run after the suite on the residuals
+replay's terms exactly: the reference, with a table of its own
 cleared before every sample and no clock. The fen on a row is the position
 the reduced move left, so its side to move is the side the move was played
 against. The replay searches it to the node's depth less one, which is the
 depth the move was denied, over the full window, and the answer is negated
 to the reducing node's side before it is read. Strictly above the alpha
-the scout was read against is `harmful`: the full search would have raised
-alpha on a move the scout wrote off. Anything else is `harmless`. The fen
+the scout was read against is a move the full search would have raised
+alpha on. A fail low there is `harmful`: the scout wrote the move off and
+the search trusted it. Anything else a fail low is `harmless`. A fail high
+carries no label at all, because the search trusted nothing on it. The fen
 carries the fifty move counter and not the path, with everything the
 residuals section says that costs.
 
+The label prices the reduction the search took and no other. A row records
+one ply and the reference records what the move was worth, and between
+them sits every reduction the search did not take, which is what a policy
+that reduces further would be chosen on. So the replay asks those too: the
+same zero width question at the same alpha, from the same position, at each
+reduction the node's depth leaves room for, under the configuration the
+engine plays with rather than the reference. That is the `trials` column.
+The room is the live reduction's own floor, a full width ply under the
+scout, so a node of depth `d` offers the reductions from none up to
+`d - 2`; five are tried and the shallow rows fill fewer of them.
+
 Each event is a row of `depth window index searched generated history
 history_max killer tt eval_beta alpha_gap alpha scout cost reference label
-fen`, whitespace separated with the fen last so a row parses left to
+trials fen`, whitespace separated with the fen last so a row parses left to
 right. `depth` is the reducing node's, its check extension included.
 `index`, `searched`, `generated`, `history` and `history_max` are the
 census's columns, read at the decision; `killer` says whether the move
@@ -592,23 +606,53 @@ its two bounds, computed at record time for kept events alone by stepping
 the move back and replaying it, for the census's reason: an eval forced at
 every scout to fill a column is not the engine being measured. `alpha` is
 the bound the scout was asked about, `scout` is `low` or `high`, and
-`cost` is the nodes the scout spent. A fail high prints `-` in the
-`reference` and `label` columns rather than moving the others.
+`cost` is the nodes the scout spent. `trials` is one word a reduction,
+comma separated so the column holds no space, with a `-` for a reduction
+the node had no room for. A fail high prints `-` in the `label` column
+rather than moving the others.
+
+The trials are replays and read as replays. They run on a cold table from
+a bare position, where the scout each stands for ran inside a search with
+its killers, its history and its table warm, so a trial is the same
+question asked with less to answer it from. The column at the reduction the
+search really took is what says how much that costs, because the `scout`
+column beside it is that question answered in the tree, and the two disagree
+on some share of the rows. Read a trial's rate against that share.
 
 The sampling is the census's, salt and header and all. What differs is
 the density. Only a late quiet move at a node deep enough to reduce
 offers a scout, so the stream runs sparser than the census's rather than
-denser, and every fail low kept costs a reference search in the replay.
-A run that wants one stratum whole lowers `every` and pays for it in
-replays.
+denser, and every row kept costs a reference search and a trial for each
+reduction in the replay. A run that wants one stratum whole lowers `every`
+and pays for it in replays.
 
-The run ends with a line per depth: the scouts, the fail low share, the
+`epd <file>` searches a suite of its own instead of the bench's, on the
+residuals argument's terms exactly and for its reason: a reduction fitted
+on the bench's eighteen positions and then reported as an improvement to
+the bench is circular. The header names the file the way it names a cap off
+the default, and a file that will not open, holds no position, or holds one
+the board will not take is refused rather than searched.
+
+The run ends with two blocks. The first is a line per depth: the scouts,
+the fail low share, the
 replayed count, the harmful count and rate, and the harmful rate split by
 index band (4 to 7, 8 to 15, 16 and past) and by history fraction (zero,
 under a tenth, under half, half and up), which are the cells a reduction
 policy would be fit on. A cell under thirty replayed rows prints its
 counts in place of a rate, and the line's own rate holds to the same rule:
 a percentage over a handful of rows reads as a finding and is noise.
+
+The second is a line per reduction per depth: the rows the depth offered
+that reduction, the ones its trial wrote off with their share, the harmful
+ones among those with their rate, and then the band. The band is the rows
+this reduction writes off that one ply less does not, and the harmful rows
+in it. That distinction is the whole point of the block. A reduction's own
+rate is pooled over every row it writes off, and the great majority of
+those are rows any reduction writes off at all; they are safe, they
+dominate the denominator, and they say nothing about a step from one
+reduction to the next. What prices that step is the rate in the band it
+newly reaches. The residuals section's shadow lane exists for the same
+reason and the reverse futility margin was settled on it.
 
 Recording changes nothing, on the census's terms and held to them the
 same way: `recording_leaves_the_measured_search_where_it_was` in

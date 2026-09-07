@@ -53,8 +53,8 @@ positions, or the ones an epd file names, and then asks a search with the shortc
 nodes they answered were really worth.
 `cutoffs [depth] [every <n>] [cap <n>]` searches them again and prints which move cut each
 sampled node off, or that none did, for reading what the move ordering earns.
-`reductions [depth] [every <n>] [cap <n>]` samples the scouts the late move reduction
-trusts and asks a full depth search whether each fail low threw a move away.
+`reductions [depth] [every <n>] [cap <n>] [epd <file>]` samples the scouts the late move
+reduction trusts and asks a full depth search what each reduction would have thrown away.
 `--version` and `--help` are answered too.
 
 Binaries for linux, macos and windows are attached to each

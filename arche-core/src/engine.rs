@@ -542,6 +542,36 @@ impl AlphaBeta {
         self.ledger.take()
     }
 
+    /// One reduced scout asked again, from the position on the board: the
+    /// zero width question a node standing at `alpha` puts to a move it
+    /// has just made, at the depth given. The answer is negated to that
+    /// node's side, the way `windowed` negates the scout it runs, so it is
+    /// read against `alpha` directly.
+    ///
+    /// The ledger's counterfactual and nothing else. A row records the one
+    /// reduction the search took, and what a deeper or shallower one would
+    /// have answered is not in it; this is the only way to ask. Nothing in
+    /// the search calls it, so an engine measuring nothing is the engine it
+    /// was.
+    ///
+    /// `alpha` is never a mate score on a recorded row, since `reduces`
+    /// refuses a window at either edge, so the negation below cannot
+    /// overflow. The board is left where it stood.
+    pub fn scout_again(&mut self, alpha: Score, depth: u8) -> Score {
+        debug_assert!(!is_mate(alpha), "a scout is never asked about a mate");
+        self.nodes = 0;
+        self.quiescence_nodes = 0;
+        self.selective_depth = 0;
+        self.next_check = 0;
+        self.stop = None;
+        self.limits = Limits::unlimited();
+        self.board.start_line();
+        match self.alpha_beta(-alpha - 1, -alpha, depth, true) {
+            Ok(value) => -value.score,
+            Err(Aborted) => unreachable!("a search under no limit and no flag is never aborted"),
+        }
+    }
+
     /// The move loop's half of a ledger event: what the node knew about
     /// the reduced move it is about to scout, staged for `windowed` to
     /// finish when the scout answers. Everything here is a read; the fen

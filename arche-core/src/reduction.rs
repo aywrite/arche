@@ -20,11 +20,21 @@
 //! over the full window. The row is `harmful` when that answer, seen from
 //! the node that reduced, stands above the alpha the scout was read
 //! against: the full search would have raised alpha on a move the scout
-//! wrote off. A fail high needs no replay, because the mechanism already
-//! re-searched the move; its cost is the wasted scout, which the row
-//! prices in nodes. The high rows stay in the stream at the same rate all
-//! the same: they are the denominator a policy's propensities are read
-//! against, and the wasted-cost column.
+//! wrote off. A fail high is not a decision the search trusted, so it
+//! carries no label; its cost is the wasted scout, which the row prices in
+//! nodes. The high rows stay in the stream at the same rate all the same:
+//! they are the denominator a policy's propensities are read against.
+//!
+//! What the label alone cannot price is another reduction. A row says what
+//! one ply decided and the reference says what the move was worth, and
+//! between them sits every reduction the search did not take. So the
+//! replay asks those too: the same zero width question, from the same
+//! position, at each reduction the node's depth leaves room for, under the
+//! configuration the engine plays with. That is the trials column, and it
+//! turns a row from one observation into the whole action-to-outcome table
+//! at the node. A reduction's harm is then read off the rows it writes off,
+//! and the band a deeper reduction newly reaches is read off the rows it
+//! writes off that the shallower one does not.
 //!
 //! The recorder hangs off an engine the way the census does, and an engine
 //! without one searches exactly the tree it searched before there was a
@@ -64,6 +74,13 @@ pub const DEFAULT_EVERY: u32 = 1_000;
 /// percentage over a handful of rows reads as a finding and is noise.
 const THIN: usize = 30;
 
+/// How many reductions the replay tries on a row, counted from none at
+/// all. Five, so a row at the bench's deepest reducing node still has a
+/// trial past the reduction its policy would choose; a node has room for
+/// the reduction `r` only where its depth is at least `r + 2`, the floor
+/// the live reduction keeps, so the shallow rows fill fewer of them.
+pub const TRIALS: usize = 5;
+
 /// What the zero width scout answered, against the alpha it was asked
 /// about.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -82,6 +99,16 @@ impl Scout {
         match self {
             Scout::Low => "low",
             Scout::High => "high",
+        }
+    }
+
+    /// How a scout's answer reads against the alpha it was asked about.
+    /// At or under alpha is the fail low, as `windowed` reads it.
+    pub fn of(score: Score, alpha: Score) -> Self {
+        if score <= alpha {
+            Scout::Low
+        } else {
+            Scout::High
         }
     }
 }
@@ -170,38 +197,86 @@ impl Event {
     pub fn replay_depth(&self) -> u8 {
         self.depth.saturating_sub(1).max(1)
     }
+
+    /// The depth a trial at this reduction searches the fen to, or none
+    /// where the node has no room for it. The room is the live
+    /// reduction's own floor, a full width ply under the scout, so a node
+    /// of depth `d` offers the reductions up to `d - 2`. A reduction of
+    /// none is the move searched whole and is offered wherever the row is.
+    pub fn trial_depth(&self, reduction: usize) -> Option<u8> {
+        let reduction = u8::try_from(reduction).ok()?;
+        if self.depth < reduction + 2 {
+            return None;
+        }
+        Some(self.depth - 1 - reduction)
+    }
 }
 
-/// An event with the replay's answer beside it, or without one on a fail
-/// high, which is never replayed.
+/// An event with the replay's answers beside it: what the move was really
+/// worth, and how the same scout would have answered at each reduction the
+/// node had room for.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct Row {
     pub event: Event,
     /// The reference's answer to the fen at the full depth, from the side
     /// to move in the fen, so it is negated before it is read beside the
-    /// event's alpha. None on a fail high.
+    /// event's alpha. None where the replay was not run.
     pub reference: Option<Score>,
+    /// What a scout at each reduction answered, the index the reduction in
+    /// plies. None where the node's depth had no room for it, and none
+    /// throughout where the replay was not run.
+    pub trials: [Option<Scout>; TRIALS],
 }
 
 impl Row {
-    /// Whether trusting the scout threw a move away: the reference's
-    /// answer, seen from the node that reduced, stands above the alpha the
-    /// scout was read against, strictly. An answer equal to alpha is a
-    /// fail low the scout was right about. None where nothing was
-    /// replayed.
-    pub fn harmful(&self) -> Option<bool> {
+    /// Whether the move the scout was asked about really beats the alpha
+    /// it was read against: the reference's answer, seen from the node
+    /// that reduced, stands above that alpha, strictly. An answer equal to
+    /// alpha raises nothing. This is the oracle every trial is read
+    /// against, and it does not depend on which reduction is being
+    /// priced. None where nothing was replayed.
+    pub fn raises_alpha(&self) -> Option<bool> {
         self.reference
             .map(|reference| -i32::from(reference) > i32::from(self.event.alpha))
     }
 
-    /// The word a row prints for the label, or a `-` on a row with no
-    /// replay behind it.
+    /// Whether trusting the scout the search ran threw a move away: it
+    /// failed low and the move raises alpha. A fail high was never
+    /// trusted, so it carries no label however the replay answered.
+    pub fn harmful(&self) -> Option<bool> {
+        if self.event.scout == Scout::High {
+            return None;
+        }
+        self.raises_alpha()
+    }
+
+    /// Whether a reduction of this many plies would have thrown the move
+    /// away: its trial failed low and the move raises alpha. None where
+    /// the node had no room for the reduction or nothing was replayed.
+    pub fn harmful_at(&self, reduction: usize) -> Option<bool> {
+        let trial = (*self.trials.get(reduction)?)?;
+        Some(trial == Scout::Low && self.raises_alpha()?)
+    }
+
+    /// The word a row prints for the label, or a `-` on a row the search
+    /// trusted nothing on.
     pub fn label_word(&self) -> &'static str {
         match self.harmful() {
             Some(true) => "harmful",
             Some(false) => "harmless",
             None => "-",
         }
+    }
+
+    /// The trials as a row prints them: one word a reduction, comma
+    /// separated so the column holds no space, and a `-` for a reduction
+    /// the node had no room for.
+    pub fn trials_word(&self) -> String {
+        self.trials
+            .iter()
+            .map(|trial| trial.map_or("-", Scout::word))
+            .collect::<Vec<&str>>()
+            .join(",")
     }
 }
 
@@ -214,6 +289,11 @@ pub struct Report {
     /// The most events the run would keep. Stated in the header only when
     /// it is not the default, the way the census header states its own.
     pub cap: usize,
+    /// The file the positions were read from, or none when they are the
+    /// bench's own. Stated in the header for the cap's reason, and on the
+    /// residuals report's: a policy fitted on the bench's positions and
+    /// read back on the same positions has checked nothing.
+    pub suite: Option<String>,
     /// Positions of the suite the recording run searched.
     pub positions: usize,
     /// Every scout offered, kept or not: the denominator the rows are read
@@ -221,9 +301,9 @@ pub struct Report {
     pub events: u64,
     /// Events the buffer had no room for.
     pub overflowed: u64,
-    /// Fail lows the replay could not put an answer on, because the fen
-    /// did not parse. Counted rather than labelled, so every label below
-    /// has a search behind it.
+    /// Events the replay could not put an answer on, because the fen did
+    /// not parse. Counted rather than labelled, so every label below has a
+    /// search behind it.
     pub unplayable: usize,
     pub rows: Vec<Row>,
 }
@@ -232,7 +312,17 @@ pub struct Report {
 /// inside the measured one would write into the table the measured search
 /// is reading, so the replay waits for the suite and owns an engine and a
 /// table of its own.
-pub fn run(positions: &[Position], depth: u8, every: u32, cap: usize) -> Report {
+///
+/// `suite` names the file the positions came from, for the header alone.
+/// None is the bench's own suite, and nothing here reads the positions any
+/// differently either way.
+pub fn run(
+    positions: &[Position],
+    suite: Option<&str>,
+    depth: u8,
+    every: u32,
+    cap: usize,
+) -> Report {
     let depth = depth.max(1);
     // the rate the sampler will really keep to, so the header states the
     // run that happened
@@ -254,6 +344,7 @@ pub fn run(positions: &[Position], depth: u8, every: u32, cap: usize) -> Report 
         depth,
         every,
         cap,
+        suite: suite.map(str::to_string),
         positions: positions.len(),
         events: sampled.events,
         overflowed: sampled.overflowed,
@@ -262,38 +353,52 @@ pub fn run(positions: &[Position], depth: u8, every: u32, cap: usize) -> Report 
     }
 }
 
-/// The counterfactual on every fail low: what the full search would have
-/// said about the move the scout wrote off.
+/// The counterfactual on every row: what the full search would have said
+/// about the move, and how a scout at each reduction the node had room for
+/// would have answered.
 ///
-/// The engine is the residuals replay's exactly: the reference, with a
-/// table of its own cleared before every sample and no clock, for the
-/// reasons `residual::replay` gives. The fen carries the fifty move
-/// counter and not the path, with everything that section says that
-/// costs. A fail high is passed through unreplayed: the mechanism
-/// re-searched the move itself, so there is no trusted answer to check.
+/// Two engines, because the two questions are asked of two searches. The
+/// oracle is the residuals replay's exactly: the reference, with a table of
+/// its own cleared before every sample and no clock, for the reasons
+/// `residual::replay` gives. The trials are the default, since what they
+/// price is the scout the engine itself would run, and they put its own
+/// zero width question at the alpha the row carries.
+///
+/// Every row is replayed now, the fail highs among them. A fail high is
+/// still no decision the search trusted, so it takes no label; what it is
+/// replayed for is the trials, where a reduction deeper than the one the
+/// search took writes off moves the search did not. Those rows are the band
+/// a deeper reduction newly reaches, and without the oracle on them the
+/// band cannot be priced at all.
+///
+/// The fen carries the fifty move counter and not the path, with everything
+/// the residuals section says that costs. The trials carry one thing more:
+/// they run on a cold table from a bare position, where the scout they
+/// stand for ran inside a search with its killers, its history and its
+/// table warm. The `trials` column at the reduction the search really took
+/// is what says how much that costs, since the `scout` column beside it is
+/// the same question answered in the tree.
 pub fn replay(events: &[Event]) -> (Vec<Row>, usize) {
-    let mut engine = AlphaBeta::with_config(
+    let mut oracle = AlphaBeta::with_config(
         Board::new(),
         residual::REPLAY_TABLE_BYTES,
         SearchConfig::reference(),
     );
+    let mut trialist = AlphaBeta::with_config(
+        Board::new(),
+        residual::REPLAY_TABLE_BYTES,
+        SearchConfig::default(),
+    );
     let mut rows = Vec::with_capacity(events.len());
     let mut unplayable = 0;
     for event in events {
-        if event.scout == Scout::High {
-            rows.push(Row {
-                event: event.clone(),
-                reference: None,
-            });
-            continue;
-        }
-        if engine.parse_fen(&event.fen).is_err() {
+        if oracle.parse_fen(&event.fen).is_err() {
             unplayable += 1;
             continue;
         }
         // cold for every sample, so no sample's answer is another's
-        engine.clear_transpositions();
-        let outcome = engine.iterative_deepening_search(
+        oracle.clear_transpositions();
+        let outcome = oracle.iterative_deepening_search(
             SearchParameters::to_depth(event.replay_depth()),
             |_, _, _, _| {},
         );
@@ -302,7 +407,7 @@ pub fn replay(events: &[Event]) -> (Vec<Row>, usize) {
             // no move to make: the rules fix what the position is worth,
             // as the residuals replay scores the same case
             SearchOutcome::GameOver => {
-                if engine.board.in_check() && !engine.board.has_legal_move() {
+                if oracle.board.in_check() && !oracle.board.has_legal_move() {
                     Value::mated(0).score
                 } else {
                     0
@@ -312,9 +417,24 @@ pub fn replay(events: &[Event]) -> (Vec<Row>, usize) {
                 unreachable!("a replay is searched to a depth of at least one")
             }
         };
+        let mut trials = [None; TRIALS];
+        for (reduction, trial) in trials.iter_mut().enumerate() {
+            let Some(depth) = event.trial_depth(reduction) else {
+                continue;
+            };
+            trialist
+                .parse_fen(&event.fen)
+                .expect("the oracle read this fen already");
+            trialist.clear_transpositions();
+            *trial = Some(Scout::of(
+                trialist.scout_again(event.alpha, depth),
+                event.alpha,
+            ));
+        }
         rows.push(Row {
             event: event.clone(),
             reference: Some(reference),
+            trials,
         });
     }
     (rows, unplayable)
@@ -326,6 +446,33 @@ pub fn replay(events: &[Event]) -> (Vec<Row>, usize) {
 pub struct Band {
     pub harmful: usize,
     pub replayed: usize,
+}
+
+/// One reduction priced over the rows of one depth: what it would write
+/// off, what that would cost, and the band it reaches that a reduction a
+/// ply shallower does not.
+///
+/// The band is the whole of why the trials are run. A reduction's own
+/// harmful rate is pooled over every row it writes off, and the great
+/// majority of those are rows any reduction writes off; the rate that
+/// prices a step from one reduction to the next is the rate in the rows
+/// the step newly writes off.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub struct Trial {
+    /// The reduction in plies, none at all being the move searched whole.
+    pub reduction: usize,
+    /// Rows whose depth left room for this reduction: the denominator.
+    pub offered: usize,
+    /// Of those, the ones whose trial failed low, which are the moves this
+    /// reduction writes off.
+    pub low: usize,
+    /// Of those, the ones the reference would have raised alpha on.
+    pub harmful: usize,
+    /// Rows this reduction writes off that a ply less does not, among the
+    /// rows offered both.
+    pub band: usize,
+    /// The harmful rows in that band.
+    pub band_harmful: usize,
 }
 
 /// The scouts of one depth, counted the way the summary line prints them.
@@ -349,6 +496,10 @@ pub struct Summary {
     /// `history_max`: exactly zero, under a tenth, under half, and half
     /// and up.
     pub history_bands: [Band; 4],
+    /// Each reduction the replay tried, priced over every row of this
+    /// depth rather than over the fail lows alone: a reduction the search
+    /// did not take is asked of the whole population.
+    pub trials: [Trial; TRIALS],
 }
 
 /// Which index band a row falls in.
@@ -397,7 +548,31 @@ impl Report {
             harmful: 0,
             index_bands: [Band::default(); 3],
             history_bands: [Band::default(); 4],
+            trials: [Trial::default(); TRIALS],
         };
+        for (reduction, trial) in counted.trials.iter_mut().enumerate() {
+            trial.reduction = reduction;
+        }
+        for row in &rows {
+            for (reduction, trial) in counted.trials.iter_mut().enumerate() {
+                let Some(harmful) = row.harmful_at(reduction) else {
+                    continue;
+                };
+                trial.offered += 1;
+                if row.trials[reduction] != Some(Scout::Low) {
+                    continue;
+                }
+                trial.low += 1;
+                trial.harmful += usize::from(harmful);
+                // the band is what this reduction writes off and a ply
+                // less does not, so a row the shallower reduction was
+                // never offered stands in neither
+                if reduction > 0 && row.trials[reduction - 1] == Some(Scout::High) {
+                    trial.band += 1;
+                    trial.band_harmful += usize::from(harmful);
+                }
+            }
+        }
         for row in rows {
             if row.event.scout == Scout::Low {
                 counted.low += 1;
@@ -450,16 +625,28 @@ fn cell(band: Band) -> String {
     }
 }
 
+/// A rate over a denominator, held to the same rule as a cell: past thirty
+/// rows a percentage, under it a `-`, since a percentage over a handful of
+/// rows reads as a finding and is noise.
+fn rate(part: usize, of: usize) -> String {
+    if of >= THIN {
+        share(part, of)
+    } else {
+        "-".to_string()
+    }
+}
+
 /// The report as the command prints it: a header naming what the run was
 /// asked for and what it collected, a row an event, and a summary line a
 /// depth.
 ///
 /// A row is `depth window index searched generated history history_max
-/// killer tt eval_beta alpha_gap alpha scout cost reference label fen`,
-/// whitespace separated with the fen last, so it parses left to right and
-/// the field that can hold spaces holds the rest of the line. The two
-/// fields a fail high has no value for print `-` rather than moving the
-/// columns.
+/// killer tt eval_beta alpha_gap alpha scout cost reference label trials
+/// fen`, whitespace separated with the fen last, so it parses left to right
+/// and the field that can hold spaces holds the rest of the line. The label
+/// a fail high has no value for prints `-` rather than moving the columns,
+/// and the trials column holds one word a reduction, comma separated, with
+/// a `-` where the node had no room for one.
 ///
 /// The header states the events beside the records, always, for the
 /// census header's reason: a distribution says nothing until the reader
@@ -469,6 +656,12 @@ impl fmt::Display for Report {
         write!(f, "reductions depth {} every {}", self.depth, self.every)?;
         if self.cap != residual::DEFAULT_CAP {
             write!(f, " cap {}", self.cap)?;
+        }
+        // the bench's own suite is the default and reads as absent, the
+        // way the cap does, and the residuals header names one for the
+        // same reason
+        if let Some(suite) = &self.suite {
+            write!(f, " epd {suite}")?;
         }
         write!(
             f,
@@ -488,7 +681,7 @@ impl fmt::Display for Report {
             let e = &row.event;
             writeln!(
                 f,
-                "{} {} {} {} {} {} {} {} {} {} {} {} {} {} {} {} {}",
+                "{} {} {} {} {} {} {} {} {} {} {} {} {} {} {} {} {} {}",
                 e.depth,
                 e.window.word(),
                 e.index,
@@ -508,6 +701,7 @@ impl fmt::Display for Report {
                     None => "-".to_string(),
                 },
                 row.label_word(),
+                row.trials_word(),
                 e.fen,
             )?;
         }
@@ -548,6 +742,32 @@ impl fmt::Display for Report {
             }
             writeln!(f)?;
         }
+        writeln!(f)?;
+        writeln!(f, "trials")?;
+        for s in self.summaries() {
+            for trial in s.trials {
+                // a reduction no row of this depth had room for is left
+                // out rather than printed as a row of zeroes
+                if trial.offered == 0 {
+                    continue;
+                }
+                writeln!(
+                    f,
+                    "depth {} r {} offered {} low {} share {} harmful {} rate {} \
+                     band {} bandharmful {} bandrate {}",
+                    s.depth,
+                    trial.reduction,
+                    trial.offered,
+                    trial.low,
+                    share(trial.low, trial.offered),
+                    trial.harmful,
+                    rate(trial.harmful, trial.low),
+                    trial.band,
+                    trial.band_harmful,
+                    rate(trial.band_harmful, trial.band),
+                )?;
+            }
+        }
         Ok(())
     }
 }
@@ -580,11 +800,23 @@ mod tests {
         }
     }
 
+    /// A row with the reference given and no trial on it: the printer and
+    /// the summary tests choose their labels, and the trials are driven by
+    /// the tests that run the replay.
+    fn row_of(event: Event, reference: Option<Score>) -> Row {
+        Row {
+            event,
+            reference,
+            trials: [None; TRIALS],
+        }
+    }
+
     fn report_of(rows: Vec<Row>) -> Report {
         Report {
             depth: 5,
             every: 10,
             cap: DEFAULT_CAP,
+            suite: None,
             positions: 1,
             events: 300,
             overflowed: 0,
@@ -645,41 +877,50 @@ mod tests {
     /// harmless: the label is strict, as the crossing is in residuals.
     #[test]
     fn an_answer_landing_on_alpha_is_harmless() {
-        let row = Row {
-            event: made_up("7k/8/8/8/8/8/8/Q6K b - - 0 1", 3, 25, Scout::Low),
-            reference: Some(-25),
-        };
+        let row = row_of(
+            made_up("7k/8/8/8/8/8/8/Q6K b - - 0 1", 3, 25, Scout::Low),
+            Some(-25),
+        );
         assert_eq!(row.harmful(), Some(false));
-        let raised = Row {
-            event: made_up("7k/8/8/8/8/8/8/Q6K b - - 0 1", 3, 24, Scout::Low),
-            reference: Some(-25),
-        };
+        let raised = row_of(
+            made_up("7k/8/8/8/8/8/8/Q6K b - - 0 1", 3, 24, Scout::Low),
+            Some(-25),
+        );
         assert_eq!(raised.harmful(), Some(true));
     }
 
-    /// A fail high is kept and never replayed. Its fen is one no engine
-    /// could search, so a replay that touched it would say so in the
-    /// unplayable count; the row comes back with no reference and no
-    /// label.
+    /// A fail high is replayed for its trials and takes no label. The
+    /// search never trusted it, so there is no decision of its own to
+    /// check; what the row is replayed for is the reductions deeper than
+    /// the one that answered, which do write the move off.
     #[test]
-    fn a_fail_high_is_recorded_and_not_replayed() {
-        let events = vec![made_up("not a position", 3, 0, Scout::High)];
+    fn a_fail_high_is_replayed_and_takes_no_label() {
+        let events = vec![made_up("7k/8/8/8/8/8/8/1Q5K b - - 0 1", 4, 0, Scout::High)];
         let (rows, unplayable) = replay(&events);
         assert_eq!(unplayable, 0);
         assert_eq!(rows.len(), 1);
-        assert_eq!(rows[0].reference, None);
+        assert!(rows[0].reference.is_some(), "{:?}", rows[0]);
+        assert_eq!(rows[0].raises_alpha(), Some(true));
         assert_eq!(rows[0].harmful(), None);
         assert_eq!(rows[0].label_word(), "-");
+        // a depth of four leaves room for a reduction of none, one and
+        // two, and none for the two past them
+        assert!(rows[0].trials[0].is_some(), "{:?}", rows[0]);
+        assert!(rows[0].trials[2].is_some(), "{:?}", rows[0]);
+        assert_eq!(rows[0].trials[3], None);
     }
 
-    /// A fail low whose fen does not parse is counted rather than
-    /// labelled, the residuals rule.
+    /// A row whose fen does not parse is counted rather than labelled, the
+    /// residuals rule, and a fail high is no exception now that one is
+    /// replayed.
     #[test]
-    fn an_unreadable_fail_low_is_counted_not_labelled() {
-        let events = vec![made_up("not a position", 3, 0, Scout::Low)];
-        let (rows, unplayable) = replay(&events);
-        assert!(rows.is_empty());
-        assert_eq!(unplayable, 1);
+    fn an_unreadable_row_is_counted_not_labelled() {
+        for scout in [Scout::Low, Scout::High] {
+            let events = vec![made_up("not a position", 3, 0, scout)];
+            let (rows, unplayable) = replay(&events);
+            assert!(rows.is_empty());
+            assert_eq!(unplayable, 1);
+        }
     }
 
     /// A position with no move to make is scored by rule, as the residuals
@@ -695,11 +936,18 @@ mod tests {
     }
 
     /// The row's fields in the order the printer's comment names them,
-    /// with the fen last, and a fail high printing `-` where a replayed
-    /// row has values rather than moving the columns.
+    /// with the fen last, and a fail high printing `-` for the label
+    /// rather than moving the columns.
     #[test]
     fn a_row_reads_left_to_right_with_the_fen_last() {
         let low = Row {
+            trials: [
+                Some(Scout::High),
+                Some(Scout::Low),
+                Some(Scout::Low),
+                Some(Scout::Low),
+                None,
+            ],
             event: Event {
                 fen: "4k3/8/8/8/8/8/8/4K3 b - - 0 1".to_string(),
                 depth: 6,
@@ -720,6 +968,7 @@ mod tests {
             reference: Some(-40),
         };
         let high = Row {
+            trials: [Some(Scout::High), Some(Scout::High), None, None, None],
             event: Event {
                 fen: "4k3/8/8/8/8/8/8/4K3 w - - 0 1".to_string(),
                 depth: 4,
@@ -737,12 +986,12 @@ mod tests {
                 scout: Scout::High,
                 cost: 9,
             },
-            reference: None,
+            reference: Some(3),
         };
         let report = report_of(vec![low, high]);
         let text = report.to_string();
         let row = text.lines().nth(1).expect("a replayed row");
-        let words: Vec<&str> = row.splitn(17, ' ').collect();
+        let words: Vec<&str> = row.splitn(18, ' ').collect();
         assert_eq!(
             words,
             vec![
@@ -762,11 +1011,12 @@ mod tests {
                 "214",
                 "-40",
                 "harmful",
+                "high,low,low,low,-",
                 "4k3/8/8/8/8/8/8/4K3 b - - 0 1",
             ]
         );
         let row = text.lines().nth(2).expect("a fail high row");
-        let words: Vec<&str> = row.splitn(17, ' ').collect();
+        let words: Vec<&str> = row.splitn(18, ' ').collect();
         assert_eq!(
             words,
             vec![
@@ -784,8 +1034,9 @@ mod tests {
                 "-2",
                 "high",
                 "9",
+                "3",
                 "-",
-                "-",
+                "high,high,-,-,-",
                 "4k3/8/8/8/8/8/8/4K3 w - - 0 1",
             ]
         );
@@ -804,12 +1055,9 @@ mod tests {
         event.searched = index + 1;
         event.history = history;
         event.history_max = 40;
-        Row {
-            event,
-            // alpha is 0, so a positive answer negated stays under it and
-            // a negative one crosses it
-            reference: Some(if harmful { -50 } else { 50 }),
-        }
+        // alpha is 0, so a positive answer negated stays under it and a
+        // negative one crosses it
+        row_of(event, Some(if harmful { -50 } else { 50 }))
     }
 
     /// The summary's counts, pinned against rows made up to land one in
@@ -824,10 +1072,7 @@ mod tests {
             replayed(5, 9, 3, false),
             replayed(5, 17, 8, false),
             replayed(5, 5, 30, true),
-            Row {
-                event: high,
-                reference: None,
-            },
+            row_of(high, None),
         ]);
         let summary = report.summary(5).expect("five rows at depth five");
         assert_eq!(summary.scouts, 5);
@@ -932,6 +1177,98 @@ mod tests {
         assert!(report.summary(4).is_none());
     }
 
+    /// A row with the trials given, for the trial summary's tests: the
+    /// oracle says whether the move raises alpha and each trial says
+    /// whether that reduction would have written it off.
+    fn tried(depth: u8, raises: bool, trials: [Option<Scout>; TRIALS]) -> Row {
+        Row {
+            event: made_up("4k3/8/8/8/8/8/8/4K3 b - - 0 1", depth, 0, Scout::Low),
+            reference: Some(if raises { -50 } else { 50 }),
+            trials,
+        }
+    }
+
+    /// A reduction is priced over every row its depth offered it, and the
+    /// band beside it over the rows it writes off that a ply less does
+    /// not. The pooled rate and the band rate are different numbers, and
+    /// the band is the one a step from one reduction to the next is read
+    /// by.
+    #[test]
+    fn a_trial_prices_a_reduction_and_the_band_it_reaches() {
+        let low = Some(Scout::Low);
+        let high = Some(Scout::High);
+        let report = report_of(vec![
+            // written off at both, and harmless: the bulk of the
+            // population, and what a pooled rate is mostly made of
+            tried(4, false, [low, low, low, None, None]),
+            tried(4, false, [low, low, low, None, None]),
+            // held at one ply and written off at two, on a move the full
+            // search would have raised alpha on: the band, and the harm
+            // in it
+            tried(4, true, [high, high, low, None, None]),
+            // held at every reduction the depth allows
+            tried(4, false, [high, high, high, None, None]),
+            // a shallower node, which offers no reduction of two at all
+            tried(3, true, [low, low, None, None, None]),
+        ]);
+        let summary = report.summary(4).expect("four rows at depth four");
+        assert_eq!(
+            summary.trials[1],
+            Trial {
+                reduction: 1,
+                offered: 4,
+                low: 2,
+                harmful: 0,
+                band: 0,
+                band_harmful: 0,
+            }
+        );
+        assert_eq!(
+            summary.trials[2],
+            Trial {
+                reduction: 2,
+                offered: 4,
+                low: 3,
+                harmful: 1,
+                band: 1,
+                band_harmful: 1,
+            }
+        );
+        // the depth three rows offer the first two reductions and no more
+        let shallow = report.summary(3).expect("a row at depth three");
+        assert_eq!(shallow.trials[1].offered, 1);
+        assert_eq!(shallow.trials[2].offered, 0);
+
+        let text = report.to_string();
+        assert!(
+            text.contains(
+                "depth 4 r 2 offered 4 low 3 share 75.00% harmful 1 rate - \
+                 band 1 bandharmful 1 bandrate -"
+            ),
+            "{}",
+            text
+        );
+        // a reduction no row of the depth had room for is left out rather
+        // than printed as a row of zeroes
+        assert!(!text.contains("depth 3 r 2 "), "{}", text);
+    }
+
+    /// The header states a suite of its own, the way the residuals header
+    /// does, so a distribution measured over other positions is never read
+    /// as the bench's.
+    #[test]
+    fn the_header_names_a_suite_that_is_not_the_benchs() {
+        let mut report = report_of(Vec::new());
+        report.suite = Some("held_out.epd".to_string());
+        assert!(
+            report
+                .to_string()
+                .starts_with("reductions depth 5 every 10 epd held_out.epd positions 1"),
+            "{}",
+            report
+        );
+    }
+
     /// The header states a cap off the default, an overflow and an
     /// unplayable count, the way the residuals header does, and none of
     /// them on an ordinary run.
@@ -961,11 +1298,12 @@ mod tests {
 
     /// A run over the suite: every row holds together. The fen parses,
     /// the index is past the late move threshold and inside the searched
-    /// and generated counts, the history fits its denominator, and a fail
-    /// low carries an answer where a fail high carries none.
+    /// and generated counts, the history fits its denominator, every row
+    /// carries the replay's answer, and the trials fill exactly the
+    /// reductions the node's depth left room for.
     #[test]
     fn a_run_records_rows_that_hold_together() {
-        let report = run(&suite(), 5, 1, DEFAULT_CAP);
+        let report = run(&suite(), None, 5, 1, DEFAULT_CAP);
         assert_eq!(report.positions, 2);
         assert!(!report.rows.is_empty(), "nothing was recorded");
         assert!(report.events >= report.rows.len() as u64);
@@ -979,7 +1317,19 @@ mod tests {
             assert!(e.history <= e.history_max, "{:?}", row);
             assert!(e.depth >= 3, "{:?}", row);
             assert!(e.cost >= 1, "{:?}", row);
-            assert_eq!(row.reference.is_some(), e.scout == Scout::Low, "{:?}", row);
+            assert!(row.reference.is_some(), "{:?}", row);
+            for (reduction, trial) in row.trials.iter().enumerate() {
+                assert_eq!(
+                    trial.is_some(),
+                    e.trial_depth(reduction).is_some(),
+                    "reduction {} of {:?}",
+                    reduction,
+                    row
+                );
+            }
+            // the label is the search's own decision, so a fail high
+            // keeps none of it however the replay answered
+            assert_eq!(row.harmful().is_some(), e.scout == Scout::Low, "{:?}", row);
         }
         // both answers are in the stream: the lows are what the replay
         // labels and the highs are the propensity denominator
@@ -1007,7 +1357,7 @@ mod tests {
     /// header states the run that happened.
     #[test]
     fn a_rate_of_zero_is_reported_as_the_rate_that_ran() {
-        let report = run(&suite(), 0, 0, 50);
+        let report = run(&suite(), None, 0, 0, 50);
         assert_eq!(report.depth, 1);
         assert_eq!(report.every, 1);
         assert!(
