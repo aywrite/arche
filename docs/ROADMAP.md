@@ -114,6 +114,40 @@ of these again without saying what is different this time.
   error, which the residual harness exists to do. Refining the null move gate
   the same way was measured separately and rejected inside the same arm: it
   grew the tree and changed nothing the tactical suite could see.
+- Tightening the reverse futility margin under a hundred centipawns a ply.
+  The shadow lane prices a margin with no game played. A candidate row
+  carries the evaluation's clearance of beta and the reference's answer at
+  the node's own depth; a rule with margin `m` fires on that row exactly when
+  the clearance is at least `m` times the depth, and whether the reference
+  came back under beta does not depend on `m` at all. One run therefore
+  scores every margin over the same rows. `residuals 7 every 1 cap 400000`
+  keeps all 347,946 events of the bench's tree, and at the shipped margin the
+  shadow rows reproduce the live gate depth by depth, 143,917 firings and 29
+  crossings; that agreement is what says the offline reading is the live one.
+  The margin turns out not to be spare. Its pooled crossing rate of 0.02%
+  belongs to the three quarters of the candidates that clear beta by more
+  than five pawns a ply and would fire at any margin at all. What a
+  tightening buys is the band beside the boundary, and that band is the dear
+  one. Over the three hundred held-out positions of `tactics.epd`, which
+  `epd <file>` on the residuals argument exists to reach, the band from a
+  hundred down to ninety five crosses at 0.47% and the band from a hundred
+  down to ninety nine at 1.39%, against 0.04% over everything already firing.
+  Two of the ten crossings those five points buy are forced mates against the
+  side that would have cut off, one at depth four with the evaluation
+  standing 399 above beta, which is a centipawn of margin between the
+  shortcut and a lost position. The bench's own eighteen positions put the
+  same band at 0.10% and its halves cannot resolve it at all, so the size of
+  this number is read off the corpus and not off the bench. Downstream the
+  two gates say the same. Nine margins from ninety one to ninety nine move
+  the bench between 0.6% and 1.9% smaller with no order to the sizes, and the
+  tactical count over the same nine runs 227 to 229, unordered as well: 227
+  at ninety nine and 229 at ninety five. A count at any one of them is the
+  tree being reshuffled rather than the search answering better. Under ninety
+  one the depth four mate in two goes. Nothing here was played, and nothing
+  here needs to be: there is no margin in the range to put in front of an
+  sprt. Re-ask this with the correction the correction history arm is about,
+  which is what would move the clearance the rows are read by; the margin
+  against a raw evaluation is where it should be.
 - The delta margin in quiescence, measured on its own. It landed in one pair
   with principal variation search, and the pair's +50 ±24 over 530 games at
   10+0.1 (sprt [0, 10] passed, PR #171) sits on the margin's commit. Turning
