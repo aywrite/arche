@@ -26,6 +26,14 @@
 //! the same: they are the denominator a policy's propensities are read
 //! against, and the wasted-cost column.
 //!
+//! Late move pruning adds a third outcome. A move it drops is never
+//! scouted at all, so a sampled skip is recorded where the loop passes
+//! it over: the same features, no cost, and the outcome word `skipped`.
+//! The search never makes a skipped move, so one that turns out illegal
+//! when the recorder makes it is not recorded, since the skip denied it
+//! nothing. The replay treats a skipped row as it treats a fail low:
+//! the counterfactual is the full depth search the skip denied.
+//!
 //! The recorder hangs off an engine the way the census does, and an engine
 //! without one searches exactly the tree it searched before there was a
 //! ledger at all, which is what the pinned bench counts say.
@@ -65,7 +73,7 @@ pub const DEFAULT_EVERY: u32 = 1_000;
 const THIN: usize = 30;
 
 /// What the zero width scout answered, against the alpha it was asked
-/// about.
+/// about, or that no scout was asked at all.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum Scout {
     /// At or under alpha: the answer the reduction trusts, and the one the
@@ -74,6 +82,11 @@ pub enum Scout {
     /// Above alpha: the move earned the full depth and was re-searched, so
     /// there is no decision left to check, only the scout's cost.
     High,
+    /// Never asked: late move pruning dropped the move from the node.
+    /// The most censored decision the search makes, and the replay
+    /// checks it exactly as it checks a fail low, since what was denied
+    /// is the same full depth search.
+    Skipped,
 }
 
 impl Scout {
@@ -82,6 +95,7 @@ impl Scout {
         match self {
             Scout::Low => "low",
             Scout::High => "high",
+            Scout::Skipped => "skipped",
         }
     }
 }
@@ -132,9 +146,9 @@ pub struct Event {
     /// The move's place among the searched moves. Never under the late
     /// move threshold, which is what made the move late.
     pub index: usize,
-    /// The moves searched with this one among them: `index + 1` by
-    /// construction, recorded beside it all the same, so a row is read
-    /// without re-deriving it.
+    /// The moves searched: `index + 1` on a scouted row, whose move is
+    /// among them, and `index` on a skipped row, whose move never was.
+    /// Recorded rather than re-derived, so a row says which it is.
     pub searched: usize,
     /// The moves the node generated.
     pub generated: usize,
@@ -159,12 +173,14 @@ pub struct Event {
     pub alpha: Score,
     /// What the scout answered.
     pub scout: Scout,
-    /// The nodes the scout spent.
+    /// The nodes the scout spent: zero on a skipped row, where no scout
+    /// ran.
     pub cost: u64,
     /// How many plies shallower the scout ran: the flat reduction's one,
-    /// or the deep reduction's two. The label logic does not read it; the
-    /// counterfactual on a fail low is the full depth answer whichever
-    /// scout was trusted instead.
+    /// the deep reduction's two, or zero on a skipped row. The label
+    /// logic does not read it; the counterfactual on a fail low or a
+    /// skip is the full depth answer whichever decision was trusted
+    /// instead.
     pub reduction: u8,
 }
 
@@ -267,8 +283,8 @@ pub fn run(positions: &[Position], depth: u8, every: u32, cap: usize) -> Report 
     }
 }
 
-/// The counterfactual on every fail low: what the full search would have
-/// said about the move the scout wrote off.
+/// The counterfactual on every fail low and every skip: what the full
+/// search would have said about the move the search wrote off.
 ///
 /// The engine is the residuals replay's exactly: the reference, with a
 /// table of its own cleared before every sample and no clock, for the
@@ -339,12 +355,15 @@ pub struct Band {
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub struct Summary {
     pub depth: u8,
-    /// Every row at this depth: one scout each.
+    /// The scouted rows at this depth: a fail low or a fail high each.
     pub scouts: usize,
     /// The fail lows among them, which is the share the reduction trusts.
     pub low: usize,
-    /// Fail lows with a reference answer, the denominator of every rate
-    /// below.
+    /// The skipped rows beside the scouted ones: no scout ran, and every
+    /// one of them is replayed.
+    pub skipped: usize,
+    /// Rows with a reference answer, the fail lows and the skips, the
+    /// denominator of every rate below.
     pub replayed: usize,
     pub harmful: usize,
     /// The replayed rows split by the move's index: 4 to 7, 8 to 15, and
@@ -396,16 +415,22 @@ impl Report {
         }
         let mut counted = Summary {
             depth,
-            scouts: rows.len(),
+            scouts: 0,
             low: 0,
+            skipped: 0,
             replayed: 0,
             harmful: 0,
             index_bands: [Band::default(); 3],
             history_bands: [Band::default(); 4],
         };
         for row in rows {
-            if row.event.scout == Scout::Low {
-                counted.low += 1;
+            match row.event.scout {
+                Scout::Low => {
+                    counted.scouts += 1;
+                    counted.low += 1;
+                }
+                Scout::High => counted.scouts += 1,
+                Scout::Skipped => counted.skipped += 1,
             }
             let Some(harmful) = row.harmful() else {
                 continue;
@@ -464,7 +489,9 @@ fn cell(band: Band) -> String {
 /// reduction fen`, whitespace separated with the fen last, so it parses
 /// left to right and the field that can hold spaces holds the rest of the
 /// line. The two fields a fail high has no value for print `-` rather
-/// than moving the columns.
+/// than moving the columns. A skipped row prints `skipped` in the scout
+/// column, zero for its cost and its reduction, and carries a reference
+/// and a label the way a fail low does.
 ///
 /// The header states the events beside the records, always, for the
 /// census header's reason: a distribution says nothing until the reader
@@ -527,11 +554,12 @@ impl fmt::Display for Report {
         for s in summaries {
             write!(
                 f,
-                "depth {} scouts {} low {} share {} replayed {} harmful {} rate {}",
+                "depth {} scouts {} low {} share {} skipped {} replayed {} harmful {} rate {}",
                 s.depth,
                 s.scouts,
                 s.low,
                 share(s.low, s.scouts),
+                s.skipped,
                 s.replayed,
                 s.harmful,
                 if s.replayed >= THIN {
@@ -664,6 +692,42 @@ mod tests {
         assert_eq!(raised.harmful(), Some(true));
     }
 
+    /// A skipped move is replayed on the fail low's terms: the search
+    /// wrote it off without even a scout, so the counterfactual is the
+    /// same full depth answer. The bare queen fens are the two fail low
+    /// tests', and the labels land the same way.
+    #[test]
+    fn a_skipped_move_the_full_search_would_raise_alpha_on_is_harmful() {
+        let mut event = made_up("7k/8/8/8/8/8/8/1Q5K b - - 0 1", 4, 0, Scout::Skipped);
+        event.cost = 0;
+        event.reduction = 0;
+        event.searched = event.index;
+        let (rows, unplayable) = replay(&[event]);
+        assert_eq!(unplayable, 0);
+        assert_eq!(rows.len(), 1);
+        let reference = rows[0].reference.expect("a skip is replayed");
+        assert!(reference < 0, "the side to move is lost: {}", reference);
+        assert_eq!(rows[0].harmful(), Some(true));
+        assert_eq!(rows[0].label_word(), "harmful");
+    }
+
+    /// The same ask where the skip was right: the full search agrees the
+    /// move raises nothing, and the row is harmless.
+    #[test]
+    fn a_skipped_move_the_full_search_agrees_with_is_harmless() {
+        let events = vec![made_up(
+            "7k/8/8/8/8/8/1q6/7K b - - 0 1",
+            4,
+            0,
+            Scout::Skipped,
+        )];
+        let (rows, _) = replay(&events);
+        let reference = rows[0].reference.expect("a skip is replayed");
+        assert!(reference > 0, "the side to move is winning: {}", reference);
+        assert_eq!(rows[0].harmful(), Some(false));
+        assert_eq!(rows[0].label_word(), "harmless");
+    }
+
     /// A fail high is kept and never replayed. Its fen is one no engine
     /// could search, so a replay that touched it would say so in the
     /// unplayable count; the row comes back with no reference and no
@@ -748,7 +812,28 @@ mod tests {
             },
             reference: None,
         };
-        let report = report_of(vec![low, high]);
+        let skipped = Row {
+            event: Event {
+                fen: "4k3/8/8/8/8/8/8/4K3 b - - 0 1".to_string(),
+                depth: 5,
+                window: Window::Zero,
+                index: 9,
+                searched: 9,
+                generated: 28,
+                history: 0,
+                history_max: 12,
+                killer: false,
+                tt: census::Table::Miss,
+                eval_beta: -210,
+                alpha_gap: 185,
+                alpha: 30,
+                scout: Scout::Skipped,
+                cost: 0,
+                reduction: 0,
+            },
+            reference: Some(-31),
+        };
+        let report = report_of(vec![low, high, skipped]);
         let text = report.to_string();
         let row = text.lines().nth(1).expect("a replayed row");
         let words: Vec<&str> = row.splitn(18, ' ').collect();
@@ -800,8 +885,33 @@ mod tests {
                 "4k3/8/8/8/8/8/8/4K3 w - - 0 1",
             ]
         );
+        let row = text.lines().nth(3).expect("a skipped row");
+        let words: Vec<&str> = row.splitn(18, ' ').collect();
+        assert_eq!(
+            words,
+            vec![
+                "5",
+                "zw",
+                "9",
+                "9",
+                "28",
+                "0",
+                "12",
+                "plain",
+                "miss",
+                "-210",
+                "185",
+                "30",
+                "skipped",
+                "0",
+                "-31",
+                "harmful",
+                "0",
+                "4k3/8/8/8/8/8/8/4K3 b - - 0 1",
+            ]
+        );
         assert!(
-            text.starts_with("reductions depth 5 every 10 positions 1 events 300 records 2\n"),
+            text.starts_with("reductions depth 5 every 10 positions 1 events 300 records 3\n"),
             "{}",
             text
         );
@@ -890,7 +1000,7 @@ mod tests {
         // every cell is thin, so the line prints counts and no rate
         assert!(
             report.to_string().contains(
-                "depth 5 scouts 5 low 4 share 80.00% replayed 4 harmful 2 rate - \
+                "depth 5 scouts 5 low 4 share 80.00% skipped 0 replayed 4 harmful 2 rate - \
                  index4-7 2/2 index8-15 0/1 index16+ 0/1 \
                  hist0 1/1 hist<0.1 0/1 hist<0.5 0/1 hist0.5+ 1/1"
             ),
@@ -912,11 +1022,42 @@ mod tests {
         let text = report.to_string();
         assert!(
             text.contains(
-                "depth 4 scouts 41 low 41 share 100.00% replayed 41 harmful 11 rate 26.83% \
+                "depth 4 scouts 41 low 41 share 100.00% skipped 0 replayed 41 harmful 11 rate 26.83% \
                  index4-7 25.00% index8-15 1/1 index16+ 0/0"
             ),
             "{}",
             text
+        );
+    }
+
+    /// A skipped row is counted beside the scouts rather than among
+    /// them: no scout ran, so the low share's denominator leaves it out,
+    /// and its replay lands in the same bands a fail low's does.
+    #[test]
+    fn a_skipped_row_is_counted_beside_the_scouts() {
+        let mut skip = made_up("4k3/8/8/8/8/8/8/4K3 b - - 0 1", 5, 0, Scout::Skipped);
+        skip.cost = 0;
+        skip.reduction = 0;
+        skip.searched = skip.index;
+        let report = report_of(vec![
+            replayed(5, 4, 0, false),
+            Row {
+                event: skip,
+                reference: Some(-50),
+            },
+        ]);
+        let summary = report.summary(5).expect("two rows at depth five");
+        assert_eq!(summary.scouts, 1);
+        assert_eq!(summary.low, 1);
+        assert_eq!(summary.skipped, 1);
+        assert_eq!(summary.replayed, 2);
+        assert_eq!(summary.harmful, 1);
+        assert!(
+            report
+                .to_string()
+                .contains("depth 5 scouts 1 low 1 share 100.00% skipped 1 replayed 2 harmful 1"),
+            "{}",
+            report
         );
     }
 
@@ -985,36 +1126,61 @@ mod tests {
             let e = &row.event;
             assert!(Board::from_fen(&e.fen).is_ok(), "{} does not parse", e.fen);
             assert!(e.index >= 4, "{:?}", row);
-            assert_eq!(e.searched, e.index + 1, "{:?}", row);
             assert!(e.searched <= e.generated + 1, "{:?}", row);
             assert!(e.history <= e.history_max, "{:?}", row);
             assert!(e.depth >= 3, "{:?}", row);
-            assert!(e.cost >= 1, "{:?}", row);
-            assert!(e.reduction == 1 || e.reduction == 2, "{:?}", row);
-            // the deep reduction never fires under its depth floor
-            assert!(e.reduction == 1 || e.depth >= 4, "{:?}", row);
-            assert_eq!(row.reference.is_some(), e.scout == Scout::Low, "{:?}", row);
+            if e.scout == Scout::Skipped {
+                // no scout ran and the move is not among the searched,
+                // and the skip never fires under the model gate's floor
+                assert_eq!(e.searched, e.index, "{:?}", row);
+                assert_eq!(e.cost, 0, "{:?}", row);
+                assert_eq!(e.reduction, 0, "{:?}", row);
+                assert!(e.depth >= 4, "{:?}", row);
+            } else {
+                assert_eq!(e.searched, e.index + 1, "{:?}", row);
+                assert!(e.cost >= 1, "{:?}", row);
+                assert!(e.reduction == 1 || e.reduction == 2, "{:?}", row);
+                // the deep reduction never fires under its depth floor
+                assert!(e.reduction == 1 || e.depth >= 4, "{:?}", row);
+            }
+            assert_eq!(row.reference.is_some(), e.scout != Scout::High, "{:?}", row);
         }
-        // both answers are in the stream: the lows are what the replay
-        // labels and the highs are the propensity denominator
+        // all three answers are in the stream: the lows and the skips are
+        // what the replay labels and the highs are the propensity
+        // denominator
         assert!(report.rows.iter().any(|row| row.event.scout == Scout::Low));
         assert!(report.rows.iter().any(|row| row.event.scout == Scout::High));
+        assert!(
+            report
+                .rows
+                .iter()
+                .any(|row| row.event.scout == Scout::Skipped)
+        );
     }
 
-    /// The ledger's contract, asked the way `fixtures` asks all three.
+    /// The ledger's contract, asked the way `fixtures` asks all three, at
+    /// depth five so the armed runs reach skip events: the recorder makes
+    /// and unmakes a skipped move on the live board, and this is the test
+    /// that says the search did not notice.
     #[test]
     fn recording_leaves_the_measured_search_where_it_was() {
+        let skipped = std::cell::Cell::new(0usize);
         recording_leaves_the_search_where_it_was(
+            5,
             |engine| engine.sample_reductions(Sampler::with_cap(1, DEFAULT_CAP)),
             |engine| {
-                engine
+                let taken = engine
                     .take_reductions()
                     .expect("the sampler comes back")
                     .drain()
-                    .taken
-                    .len()
+                    .taken;
+                skipped.set(
+                    skipped.get() + taken.iter().filter(|e| e.scout == Scout::Skipped).count(),
+                );
+                taken.len()
             },
         );
+        assert!(skipped.get() > 0, "the armed runs never reached a skip");
     }
 
     /// The rate of zero and the depth of zero are held to one, so the

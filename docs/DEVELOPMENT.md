@@ -88,7 +88,7 @@ at all. That is what makes a suite of quiet positions worth having, since a
 quiet position rarely has the one answer a tactic has.
 
 It gates the same way, on an exact total. `EXPECTED_POINTS` in
-`arche-core/src/strategy.rs` is 92474 of the 149703 on offer, 61.8% of them,
+`arche-core/src/strategy.rs` is 92502 of the 149703 on offer, 61.8% of them,
 with a top scoring move played in 526 of the 1500 positions, and the test
 fails on any other total. A failure prints the fifteen themes with their
 points beside each other, so it says which of them moved rather than only that
@@ -346,12 +346,14 @@ does cold, and the tests in `arche-core/src/engine.rs` that say so build
 the reference and hold it to that for good. They are the soundness check: a
 change that claims to be sound keeps them green whatever else it moves. The
 default is what the engine plays with and what the bench prints. It parts
-company with the reference in eight places today: the fifty move guard,
+company with the reference in nine places today: the fifty move guard,
 reverse futility, the null move pass, the delta margin and the losing
 capture skip in quiescence, the late move reduction that scouts a late
 quiet move a ply shallower, the deep reduction that scouts a late quiet
-its model calls dead two plies shallower instead, and the killers and
-history table the quiet moves are ordered by.
+its model calls dead two plies shallower instead, the late move pruning
+that drops a late quiet the model puts in its deadest band without
+searching it at all, and the killers and history table the quiet moves
+are ordered by.
 `reference_node_counts_have_not_moved` pins the reference's tree beside the
 default's, so a commit's diff says which kind of change it carries. One that
 moves both counts touched the search the two share, the table, say; one that
@@ -371,11 +373,12 @@ target/release/arche residuals [depth] [every <n>] [cap <n>] [taint refuse|trust
 It searches the same suite the bench does, samples the nodes reverse
 futility and the null move pass answered, and then asks
 `SearchConfig::reference()` what each of those positions is really worth.
-Those are the two of the default's five shortcuts that answer a whole
+Those are the two of the default's shortcuts that answer a whole
 node, which is what leaves a reference something to be asked about. The
 delta margin and the losing capture skip pass over a move in quiescence
 rather than answering a node, and what trusting the late move reduction's
-scout costs is the reduction ledger's question further down.
+scout costs, like what late move pruning's skip writes off, is the
+reduction ledger's question further down.
 
 What the run is read for is the crossing. A shortcut returns a lower bound
 and claims it clears beta, so a claim well above what the position is worth
@@ -619,9 +622,21 @@ reduced move is quiet, so `history` is never priced by a class instead.
 its two bounds, computed at record time for kept events alone by stepping
 the move back and replaying it, for the census's reason: an eval forced at
 every scout to fill a column is not the engine being measured. `alpha` is
-the bound the scout was asked about, `scout` is `low` or `high`, and
-`cost` is the nodes the scout spent. A fail high prints `-` in the
-`reference` and `label` columns rather than moving the others.
+the bound the scout was asked about, `scout` is `low`, `high` or
+`skipped`, and `cost` is the nodes the scout spent. A fail high prints
+`-` in the `reference` and `label` columns rather than moving the others.
+
+The third outcome word is late move pruning's. A move the model prices
+in its deadest band is never scouted at all, so a sampled skip is
+recorded where the loop passes it over: the same features, a cost of
+zero, a reduction of zero, and a `searched` count that equals the index
+rather than standing one past it, because the move is not among the
+searched. The replay treats a skipped row as it treats a fail low,
+since what was denied is the same full depth search. The search never
+makes a skipped move, so its legality is unknown at the decision;
+the recorder makes and unmakes it around the record alone, and a move
+that turns out illegal is not recorded, because the skip denied it
+nothing.
 
 The sampling is the census's, salt and header and all. What differs is
 the density. Only a late quiet move at a node deep enough to reduce
@@ -630,8 +645,10 @@ denser, and every fail low kept costs a reference search in the replay.
 A run that wants one stratum whole lowers `every` and pays for it in
 replays.
 
-The run ends with a line per depth: the scouts, the fail low share, the
-replayed count, the harmful count and rate, and the harmful rate split by
+The run ends with a line per depth: the scouts (the skipped rows are
+counted apart, so the fail low share keeps its denominator), the skipped
+count, the fail low share, the replayed count, the harmful count and
+rate, and the harmful rate split by
 index band (4 to 7, 8 to 15, 16 and past) and by history fraction (zero,
 under a tenth, under half, half and up), which are the cells a reduction
 policy would be fit on. A cell under thirty replayed rows prints its

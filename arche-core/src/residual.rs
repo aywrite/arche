@@ -892,12 +892,13 @@ pub(crate) mod fixtures {
     /// many events it kept. The count is what says the armed runs recorded
     /// at all, rather than agreeing with the plain ones by doing nothing.
     pub(crate) fn recording_leaves_the_search_where_it_was(
+        depth: u8,
         arm: impl Fn(&mut AlphaBeta),
         take: impl Fn(&mut AlphaBeta) -> usize,
     ) {
         let searched_nodes = |engine: &mut AlphaBeta, id: &str| {
-            let outcome =
-                engine.iterative_deepening_search(SearchParameters::to_depth(4), |_, _, _, _| {});
+            let outcome = engine
+                .iterative_deepening_search(SearchParameters::to_depth(depth), |_, _, _, _| {});
             let SearchOutcome::Complete(result) = outcome else {
                 panic!("{id}: an unlimited search did not complete");
             };
@@ -1259,6 +1260,7 @@ mod tests {
     #[test]
     fn recording_leaves_the_measured_search_where_it_was() {
         recording_leaves_the_search_where_it_was(
+            4,
             |engine| engine.sample_shortcuts(Sampler::with_cap(1, DEFAULT_CAP)),
             |engine| {
                 engine
