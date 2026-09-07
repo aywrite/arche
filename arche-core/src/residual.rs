@@ -523,6 +523,11 @@ pub struct Report {
     /// The most samples the run would keep. Stated in the header only when
     /// it is not the default, the way the overflow it governs is.
     pub cap: usize,
+    /// The file the positions were read from, or none when they are the
+    /// bench's own. Stated in the header for the cap's reason: a report
+    /// says how to run it again, and a distribution measured over another
+    /// suite is not the bench's.
+    pub suite: Option<String>,
     pub config: SearchConfig,
     /// Positions of the suite the recording run searched.
     pub positions: usize,
@@ -563,8 +568,13 @@ pub const REPLAY_TABLE_BYTES: usize = 4 * 1024 * 1024;
 /// reference entries into the table the measured search is reading, and
 /// change the very play being measured, so the two phases never overlap and
 /// the replay owns its own engine and its own table.
+///
+/// `suite` names the file the positions came from, for the header alone.
+/// None is the bench's own suite, and nothing here reads the positions any
+/// differently either way.
 pub fn run(
     positions: &[Position],
+    suite: Option<&str>,
     depth: u8,
     every: u32,
     cap: usize,
@@ -580,6 +590,7 @@ pub fn run(
         depth,
         every,
         cap,
+        suite: suite.map(str::to_string),
         config,
         positions: positions.len(),
         events: sampled.events,
@@ -793,6 +804,13 @@ impl fmt::Display for Report {
         // the run it heads
         if self.cap != DEFAULT_CAP {
             write!(f, " cap {}", self.cap)?;
+        }
+        // the bench's own suite is the default and reads as absent, the way
+        // the cap does. A run over another suite says so, because a
+        // distribution measured over other positions is another
+        // distribution
+        if let Some(suite) = &self.suite {
+            write!(f, " epd {}", suite)?;
         }
         write!(
             f,
@@ -1240,7 +1258,7 @@ mod tests {
 
     #[test]
     fn a_run_records_and_replays_the_suite() {
-        let report = run(&suite(), 4, 25, DEFAULT_CAP, SearchConfig::default());
+        let report = run(&suite(), None, 4, 25, DEFAULT_CAP, SearchConfig::default());
         assert_eq!(report.positions, 2);
         assert_eq!(report.depth, 4);
         assert_eq!(report.every, 25);
@@ -1468,7 +1486,7 @@ mod tests {
     /// two runs that behaved identically print identical headers.
     #[test]
     fn a_rate_of_zero_is_reported_as_the_rate_that_ran() {
-        let report = run(&suite(), 2, 0, DEFAULT_CAP, SearchConfig::default());
+        let report = run(&suite(), None, 2, 0, DEFAULT_CAP, SearchConfig::default());
         assert_eq!(report.every, 1);
         assert!(
             report.to_string().starts_with("residuals depth 2 every 1 "),
@@ -1477,11 +1495,41 @@ mod tests {
         );
     }
 
+    /// A run over a suite of its own says so in the header, so a
+    /// distribution measured over other positions is never read as the
+    /// bench's.
+    #[test]
+    fn the_header_names_a_suite_that_is_not_the_benchs() {
+        let named = run(
+            &suite(),
+            Some("held_out.epd"),
+            2,
+            0,
+            DEFAULT_CAP,
+            SearchConfig::default(),
+        );
+        assert!(
+            named
+                .to_string()
+                .starts_with("residuals depth 2 every 1 epd held_out.epd taint"),
+            "{}",
+            named
+        );
+        let bench = run(&suite(), None, 2, 0, DEFAULT_CAP, SearchConfig::default());
+        assert!(
+            bench
+                .to_string()
+                .starts_with("residuals depth 2 every 1 taint"),
+            "{}",
+            bench
+        );
+    }
+
     /// The cap the run was asked for reaches the sampler: a run capped at
     /// two keeps two records of everything it offered and counts the rest.
     #[test]
     fn the_cap_asked_for_bounds_the_run() {
-        let report = run(&suite(), 3, 1, 2, SearchConfig::default());
+        let report = run(&suite(), None, 3, 1, 2, SearchConfig::default());
         assert_eq!(report.cap, 2);
         // each kept sample is replayed into a row or counted unplayable
         assert_eq!(report.rows.len() + report.unplayable, 2);
@@ -1515,7 +1563,7 @@ mod tests {
 
     #[test]
     fn the_report_names_its_settings_and_ends_in_a_summary() {
-        let report = run(&suite(), 3, 20, DEFAULT_CAP, SearchConfig::default());
+        let report = run(&suite(), None, 3, 20, DEFAULT_CAP, SearchConfig::default());
         let text = report.to_string();
         assert!(
             text.starts_with(&format!(
@@ -1567,6 +1615,7 @@ mod tests {
             depth: 4,
             every: 10,
             cap: DEFAULT_CAP,
+            suite: None,
             config: SearchConfig::default(),
             positions: 1,
             events: 40,
@@ -1654,6 +1703,7 @@ mod tests {
             depth: 4,
             every: 1,
             cap: DEFAULT_CAP,
+            suite: None,
             config: SearchConfig::default(),
             positions: 1,
             events: 1_000,
@@ -1853,6 +1903,7 @@ mod tests {
             depth: 4,
             every: 1,
             cap: DEFAULT_CAP,
+            suite: None,
             config: SearchConfig::default(),
             positions: 1,
             events: 0,
