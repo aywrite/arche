@@ -859,6 +859,7 @@ mod tests {
     #[test]
     fn recording_leaves_the_measured_search_where_it_was() {
         recording_leaves_the_search_where_it_was(
+            4,
             |engine| engine.sample_cutoffs(Sampler::with_cap(1, DEFAULT_CAP)),
             |engine| {
                 engine

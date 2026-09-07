@@ -53,7 +53,8 @@ then asks a search with the shortcuts off what the nodes they answered were real
 `cutoffs [depth] [every <n>] [cap <n>]` searches them again and prints which move cut each
 sampled node off, or that none did, for reading what the move ordering earns.
 `reductions [depth] [every <n>] [cap <n>]` samples the scouts the late move reduction
-trusts and asks a full depth search whether each fail low threw a move away.
+trusts, and the moves the pruning skipped, and asks a full depth search whether
+each fail low or skip threw a move away.
 `--version` and `--help` are answered too.
 
 Binaries for linux, macos and windows are attached to each
