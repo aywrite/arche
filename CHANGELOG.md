@@ -2,7 +2,7 @@
 
 All notable changes to this project will be documented in this file.
 
-## [0.4.2-rc.2] - 2026-09-06
+## [0.4.2] - 2026-09-07
 
 ### Features
 
@@ -14,11 +14,15 @@ All notable changes to this project will be documented in this file.
 - *(search)* Skip losing captures in quiescence [bench 5684750] [elo +24 ±19 (sprt [-10, 0] passed, 746 games, 10+0.1, vs 6e6fdec)]
 - *(search)* Reduce late quiet moves by one ply [bench 4395471] [elo +44 ±22 (sprt [0, 10] passed, 648 games, 10+0.1, vs 899197c)]
 - *(board)* Tell whether a move gives check without making it [bench 4395471]
+- *(search)* Add a model gated two ply reduction [bench 4186515] [elo +11 ±12 (sprt [-10, 0] passed, 2000 games, 10+0.1, vs master)]
+- *(search)* Add late move pruning under the model gate [bench 4162584] [elo +18 ±11 (sprt [0, 10] passed, 2000 games, 10+0.1, vs master)]
+- *(uci)* Let the residuals argument search a suite of its own [bench 4395471]
 
 ### Bug Fixes
 
 - *(board)* Drop a castle right or en passant square without its pieces [bench 4395471]
 - *(uci)* Take startpos, fen and moves as whole words
+- *(uci)* Refuse an argument word nobody recognises, and spell them once
 
 ### Performance
 
@@ -71,6 +75,16 @@ All notable changes to this project will be documented in this file.
 - *(ci)* Read a match's pairs as a sequential test
 - *(ci)* Play an sprt in batches across the shards
 - *(docs)* Correct and tidy the documentation
+- *(ci)* Read the elo figure and its interval off the same pairs
+- *(ci)* Carry an sprt's pairs between batches rather than its ratio
+- *(tactics)* Convert the Strategic Test Suite to epd
+- *(tactics)* Score the strategic suite beside the tactical one
+- *(ci)* State the whole test in an sprt's trailer
+- *(ci)* Drop the script tests that restate what another pins
+- *(board)* Name the positions the tests repeat
+- *(search)* Put the move ordering's repeated cases in tables
+- *(uci)* Read the go line and the option cases from tables
+- *(docs)* Record that the reverse futility margin is where it should be [bench 4395471]
 
 ## [0.4.1] - 2026-09-04
 
