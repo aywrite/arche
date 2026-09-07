@@ -84,9 +84,9 @@ ignored.
 
 ## Strength
 
-Each release plays a short match against its predecessor, and a gauntlet against old releases
-of [Stash](https://github.com/mhouppin/stash-bot) which are ranked on the
-[ccrl](https://computerchess.org.uk/) blitz list. Both results are added to the release notes.
+Each release plays a short match against its predecessor, and a gauntlet against engines of
+several lineages which are ranked on the [ccrl](https://computerchess.org.uk/) blitz list.
+Both results are added to the release notes.
 The estimate is only as good as the number of games behind it, which is why the error bar is
 published alongside it.
 
