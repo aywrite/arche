@@ -179,6 +179,32 @@ of these again without saying what is different this time.
   magnitude and mostly reports the depth the try ran at, so the ratio ranks by
   depth noise. Worth re-asking only with the cost normalised by depth; the
   smoothed counts ranking on its own is a separate small candidate.
+- Lowering the deep reduction's depth floor, so that the model gate reaches
+  the depth three nodes where most of the reduced scouts are. The population
+  is real and the value is not. `reductions 7 every 1 cap 200000` keeps all
+  75,091 of the bench's scouts, and 50,394 of them stand at depth three, 67%,
+  with depths three and four together 89%; `reductions 7 every 50 cap 400000
+  epd arche-core/strategy.epd` puts depth three at 68% of 228,033 over the
+  held-out positions. The floor is `DEEP_REDUCTION + 2`, so none of that two
+  thirds is reachable by the deeper scout or by the skip. But a depth three
+  scout is a depth one search, and against a warm table it is mostly one node
+  answered from it: all 50,394 of them together cost 88,259 nodes of a
+  4,162,584 node tree, 2.1%, a mean of 1.8 nodes each. Counting scouts is the
+  wrong denominator. What prices a reduction is the nodes it removes, and
+  reading a population share as a cost is the reverse futility entry's error
+  in another shape. Measured against master as it stood before the pruning
+  band widened, with the two halves of the floor asked apart. The deeper
+  scout at depth three is quiescence, and it grows the bench tree by 0.17%
+  while the strategic suite falls 813 points (92502 to 91689) and the
+  tactical count rises two (221 to 223). The skip at depth three leaves the
+  suites where they were (221, and 8 points down) and saves 0.70% at the
+  bench's depth, 0.43% at eight, 0.13% at nine and -0.04% at ten: what it
+  takes off the shallowest nodes is given back as the tree around them
+  widens, so nothing of it is left at the depths a game reaches. Both
+  together are 1.18% of the bench tree, 223 tactical and 91625 strategic.
+  Re-ask only with a reason the depth three nodes have become expensive,
+  which is a change to what a depth one search costs rather than a change to
+  the reduction.
 - Prefetching a child's transposition slot straight after `make_move`, 6.7%
   slower over six interleaved rounds. The prefetch sits immediately before the
   recursive call and the child probes the table almost first, so there is no
