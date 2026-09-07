@@ -11,9 +11,9 @@ compare against) is in place, so each of these arrives with its numbers: a
 the engine plays. Roughly in the order they look worth doing.
 
 - the rest of the late move reductions. The first arm reduces a late quiet move by one
-  ply, flat, and a reduction that grows with the depth and the move count is the next
-  match. Reducing the losing captures and reading the history table for the eligibility
-  come after that, each measured on its own
+  ply, flat. A reduction that grows with the depth and the move count was the next match
+  and was measured and rejected below, so what is left is reducing the losing captures
+  and reading the history table for the eligibility, each measured on its own
 - evaluate drawn positions
 - the rest of evaluation: mobility, king safety, passed pawns, and special cases such as
   the bishop pair and open files. A tuner comes before the deeper rows, so the weights are
@@ -148,6 +148,52 @@ of these again without saying what is different this time.
   sprt. Re-ask this with the correction the correction history arm is about,
   which is what would move the clearance the rows are read by; the margin
   against a raw evaluation is where it should be.
+- A reduction that grows with the depth and the move count, in place of the
+  flat one ply. The table is the conventional `0.75 + ln(depth) * ln(moves) /
+  2.25` rounded down, clamped so the scout keeps a full width ply, which is
+  the floor the flat reduction already keeps. The ledger's trials price it
+  with no game played. A row carries the answer a scout gives at every
+  reduction the node's depth had room for and the reference's answer at the
+  depth the move was denied, so one run scores every table over the same rows,
+  the way the shadow lane scores every reverse futility margin. The offline
+  scout is a fair stand-in for the live one: at the reduction the search
+  really took the two agree on 99.96% of the rows at depth seven and 99.97% at
+  depth nine. The accuracy is not what stops it. `reductions 7 every 25 cap
+  100000 epd arche-core/tactics.epd` keeps 58,756 of the 1,463,084 scouts the
+  three hundred held-out positions of `tactics.epd` offer, and `reductions 9
+  every 200 cap 100000` on the same file keeps 39,712 of 7,900,455. At depth
+  seven the shipped one ply writes off 58,640 of the 58,756 and 84 of those
+  are moves the full search would have raised alpha on, 0.143%. The table
+  takes that to 91, 0.155%. At depth nine it is 43 against 47, 0.108% against
+  0.119%. The band beside the boundary is dear as it always is (the rows a
+  second ply writes off that the first does not cross at 26.9% at depth seven
+  and 30.8% at depth nine, against a pooled 0.127% over everything the second
+  ply writes off) but the band is 26 rows of 18,962 and 13 of 16,508, so what
+  it adds is small. What stops it is that the table has nowhere to grow. The
+  reduction floor and the population sit at the same depth. Depth three holds
+  68% of the reduced scouts at depth seven and 58% at depth nine, and a depth
+  three node has room for one ply and no more. Left alone the table would give
+  two plies to 73% of the rows; the floor holds it to 26% at depth seven and
+  32% at depth nine, and the rest keeps the ply it already had. So the tree it
+  saves is small and gets smaller as the search goes deeper: 6.6% at depth
+  seven, 6.1% at depth eight, 4.7% at depth nine and 3.2% at depth ten. The
+  last of those is about two hundredths of a ply at an effective branching
+  factor of 4.35, and the depths a game reaches are deeper still. Against that
+  the tactical suite falls from 229 to 219. The depth four cell is both halves
+  of the loss. Deepening from depth five and up instead leaves the tactical
+  count at 228 and the tree 2.5% smaller at depth ten, which says the nine
+  positions and most of the shallow saving are the same cell. That cell is
+  where the ledger puts the extra harm too: a second ply takes depth four from
+  0.094% to 0.138% at depth seven and from 0.127% to 0.147% at depth nine, and
+  the cells past it move by a row or two each and say nothing. The depth five
+  floor is not a threshold to fit all the same, since the suite it would be
+  fitted on is the corpus the harm was read off, and 2.5% of the tree is not
+  worth an sprt either. Nothing here was played. Re-ask it against a lower
+  reduction floor, which is the arm that would let the table reach the depth
+  three nodes where the population is, and which puts the scout into
+  quiescence and is a guess of its own. The mate window gate was not touched,
+  so the leftmost chain still reduces nothing and that is not what any of this
+  measures.
 - The delta margin in quiescence, measured on its own. It landed in one pair
   with principal variation search, and the pair's +50 ±24 over 530 games at
   10+0.1 (sprt [0, 10] passed, PR #171) sits on the margin's commit. Turning
