@@ -484,7 +484,9 @@ eighteen and then reported as an improvement to the bench is circular, and
 a held-out file is the answer. `arche-core/tactics.epd` is three hundred
 positions the bench does not hold. A file that will not open, holds no
 position, or holds one the board will not take is refused rather than
-searched, and the other two instruments take no such word.
+searched. The reduction ledger takes the same word, for the same reason;
+the cutoff census does not, because a census describes a tree rather than
+choosing a number off it.
 
 The kinds share the one buffer. Keys are uniform whatever the kind, so past
 the cap each kind keeps a share in proportion to its volume, and the shadow
@@ -596,7 +598,7 @@ The census says which moves cut. It cannot say what the late move reduction
 buried, and that is what `arche reductions` measures:
 
 ```
-target/release/arche reductions [depth] [every <n>] [cap <n>]
+target/release/arche reductions [depth] [every <n>] [cap <n>] [epd <file>]
 ```
 
 It searches the same suite the bench does, under the default configuration,
@@ -655,6 +657,16 @@ offers a scout, so the stream runs sparser than the census's rather than
 denser, and every fail low kept costs a reference search in the replay.
 A run that wants one stratum whole lowers `every` and pays for it in
 replays.
+
+`epd <file>` searches a suite of its own instead of the bench's, on the
+residuals argument's terms exactly, and the header names the file the way
+it names a cap off the default. A threshold chosen off these rows and then
+reported as an improvement to the same positions has checked nothing, and
+the ledger's own thresholds are the case in point: the attention model was
+fitted on a bench run, so a candidate for either of its operating points is
+read on `arche-core/tactics.epd` or `arche-core/strategy.epd` rather than
+on the eighteen. A file that will not open, holds no position, or holds one
+the board will not take is refused rather than searched.
 
 The run ends with a line per depth: the scouts (the skipped rows are
 counted apart, so the fail low share keeps its denominator), the skipped
