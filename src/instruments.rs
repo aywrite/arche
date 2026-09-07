@@ -25,6 +25,7 @@
 
 use crate::command::{Command, Keyword};
 use crate::params::{Param, Params};
+use arche_core::Board;
 use arche_core::SearchConfig;
 use arche_core::bench;
 use arche_core::census;
@@ -54,14 +55,19 @@ pub const RESIDUALS: Command = Command {
             value: "<n>",
         },
         Keyword {
+            word: "epd",
+            value: "<file>",
+        },
+        Keyword {
             word: "taint",
             value: "refuse|trust|skip|rule50",
         },
     ],
     flags: &[],
     summary: &[
-        "search the same suite, then ask the reference search",
-        "what the nodes the shortcuts answered were worth",
+        "search the bench's suite, or the one named, then ask the",
+        "reference search what the nodes the shortcuts answered",
+        "were worth",
     ],
 };
 
@@ -144,15 +150,27 @@ fn sampling(params: &Params, command: &Command, default_every: u32) -> Result<Sa
 }
 
 /// What a residuals argument asked for: `residuals [depth] [every <n>]
-/// [cap <n>] [taint refuse|trust|skip|rule50]`. The depth and the policy
-/// are the bench's own when absent, so a residual distribution is measured
-/// over the tree the bench describes; the rate is how much of that tree is
-/// sampled, and the cap is the most of it the run keeps.
+/// [cap <n>] [epd <file>] [taint refuse|trust|skip|rule50]`. The depth, the
+/// suite and the policy are the bench's own when absent, so a residual
+/// distribution is measured over the tree the bench describes; the rate is
+/// how much of that tree is sampled, and the cap is the most of it the run
+/// keeps.
+///
+/// The suite is a setting here and not on the other two instruments, the
+/// way the taint policy is. What wants it is a margin chosen off these rows:
+/// a rule fitted on the bench's positions and then read back on the same
+/// positions has checked nothing, so the fit and the check are given
+/// separate files.
 pub struct ResidualSettings {
     pub depth: u8,
     pub every: u32,
     pub cap: usize,
     pub config: SearchConfig,
+    /// The file the suite was read from, or none for the bench's own.
+    pub epd: Option<String>,
+    /// The positions themselves, read while the settings are, so a file
+    /// that is no suite is refused before the minutes are spent.
+    pub positions: Vec<bench::Position>,
 }
 
 pub fn residual_settings(params: &Params) -> Result<ResidualSettings, String> {
@@ -161,21 +179,53 @@ pub fn residual_settings(params: &Params) -> Result<ResidualSettings, String> {
         None => SearchConfig::default(),
         Some(word) => SearchConfig::with_taint(word).ok_or_else(|| format!("taint: {word}"))?,
     };
+    let epd = params.value("epd").map(str::to_string);
+    let positions = match &epd {
+        None => bench::positions(),
+        Some(path) => read_epd(path)?,
+    };
     Ok(ResidualSettings {
         depth,
         every,
         cap,
         config,
+        epd,
+        positions,
     })
+}
+
+/// The positions of an epd file, or the path that could not be read as a
+/// suite.
+///
+/// Three failures read alike, because none of them leaves a suite to search:
+/// a file that will not open, one that holds no position, and one that holds
+/// a position the board will not take. The third is answered here rather
+/// than left to the run, which panics on it partway through a search that
+/// has already cost minutes.
+fn read_epd(path: &str) -> Result<Vec<bench::Position>, String> {
+    let refused = || format!("epd: {path}");
+    let text = std::fs::read_to_string(path).map_err(|_| refused())?;
+    let positions = bench::parse_epd(&text);
+    if positions.is_empty() {
+        return Err(refused());
+    }
+    if positions
+        .iter()
+        .any(|position| Board::from_fen(&position.fen).is_err())
+    {
+        return Err(refused());
+    }
+    Ok(positions)
 }
 
 impl ResidualSettings {
     /// Runs the residual measurement these settings describe, over the
-    /// bench's own positions, so the distribution is measured over the
-    /// tree the bench describes.
+    /// bench's own positions unless the line named a file, so the
+    /// distribution is measured over the tree the header names.
     pub fn run(&self) -> residual::Report {
         residual::run(
-            &bench::positions(),
+            &self.positions,
+            self.epd.as_deref(),
             self.depth,
             self.every,
             self.cap,
@@ -276,6 +326,47 @@ mod tests {
             read("residuals 4 every 50 cap 200000"),
             (4, 50, 200_000, "rule50".to_string())
         );
+    }
+
+    /// The suite is the bench's own unless the line names a file, and a
+    /// named one is read while the settings are rather than at the run.
+    #[test]
+    fn a_residuals_argument_reads_the_suite_it_was_given() {
+        let bench = residual_settings(&Params::of("residuals")).expect("residuals");
+        assert_eq!(bench.epd, None);
+        assert_eq!(bench.positions, bench::positions());
+
+        let path = concat!(env!("CARGO_MANIFEST_DIR"), "/arche-core/bench.epd");
+        let line = format!("residuals 4 epd {path}");
+        let named = residual_settings(&Params::of(&line)).expect(&line);
+        assert_eq!(named.depth, 4);
+        assert_eq!(named.epd.as_deref(), Some(path));
+        // the same file the bench compiles in, so the two agree
+        assert_eq!(named.positions, bench::positions());
+    }
+
+    /// A file that is no suite is named rather than searched, and the file
+    /// that is not epd at all is the case worth pinning: it opens and
+    /// parses into positions whose fens no board will take.
+    #[test]
+    fn a_residuals_suite_that_is_no_suite_is_named_rather_than_run() {
+        let manifest = concat!(env!("CARGO_MANIFEST_DIR"), "/Cargo.toml");
+        for (line, what) in [
+            (
+                "residuals 4 epd no/such/file.epd".to_string(),
+                "epd: no/such/file.epd".to_string(),
+            ),
+            (
+                format!("residuals 4 epd {manifest}"),
+                format!("epd: {manifest}"),
+            ),
+        ] {
+            assert_eq!(
+                residual_settings(&Params::of(&line)).err(),
+                Some(what),
+                "{line}"
+            );
+        }
     }
 
     #[test]

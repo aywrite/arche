@@ -367,10 +367,11 @@ often the shortcut was wrong to remove it, and that is the question
 `arche residuals` answers:
 
 ```
-target/release/arche residuals [depth] [every <n>] [cap <n>] [taint refuse|trust|skip|rule50]
+target/release/arche residuals [depth] [every <n>] [cap <n>] [epd <file>] [taint refuse|trust|skip|rule50]
 ```
 
-It searches the same suite the bench does, samples the nodes reverse
+It searches the same suite the bench does unless `epd` names another file,
+samples the nodes reverse
 futility and the null move pass answered, and then asks
 `SearchConfig::reference()` what each of those positions is really worth.
 Those are the two of the default's shortcuts that answer a whole
@@ -474,6 +475,16 @@ samples behind a tie differ in their beta and their window because they are
 the node's first answer and its second. Which member of a tied group
 survives the cap is whichever the heap surfaces, so a run offering the same
 events in another order can keep the other member.
+
+`epd <file>` searches a suite of its own instead of the bench's, in the
+format `bench.epd` is written in, and the header names the file the way it
+names a cap off the default. That is what lets a threshold be chosen on one
+set of positions and read back on another: a margin fitted on the bench's
+eighteen and then reported as an improvement to the bench is circular, and
+a held-out file is the answer. `arche-core/tactics.epd` is three hundred
+positions the bench does not hold. A file that will not open, holds no
+position, or holds one the board will not take is refused rather than
+searched, and the other two instruments take no such word.
 
 The kinds share the one buffer. Keys are uniform whatever the kind, so past
 the cap each kind keeps a share in proportion to its volume, and the shadow

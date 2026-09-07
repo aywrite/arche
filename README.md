@@ -48,8 +48,9 @@ measurements.
 `bench [depth] [hash <MB>] [taint refuse|trust|skip|rule50] [audit]` searches a fixed set of
 positions and prints what each search counted, for measuring a change to the search or the
 speed of a machine, and is a UCI command as well as an argument.
-`residuals [depth] [every <n>] [cap <n>] [taint refuse|trust|skip|rule50]` searches the same positions and
-then asks a search with the shortcuts off what the nodes they answered were really worth.
+`residuals [depth] [every <n>] [cap <n>] [epd <file>] [taint refuse|trust|skip|rule50]` searches the same
+positions, or the ones an epd file names, and then asks a search with the shortcuts off what the
+nodes they answered were really worth.
 `cutoffs [depth] [every <n>] [cap <n>]` searches them again and prints which move cut each
 sampled node off, or that none did, for reading what the move ordering earns.
 `reductions [depth] [every <n>] [cap <n>]` samples the scouts the late move reduction
