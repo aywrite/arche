@@ -236,6 +236,8 @@ pub struct Report {
     /// The most events the run would keep. Stated in the header only when
     /// it is not the default, the way the census header states its own.
     pub cap: usize,
+    /// The file the positions came from, or none for the bench's own.
+    pub suite: Option<String>,
     /// Positions of the suite the recording run searched.
     pub positions: usize,
     /// Every scout offered, kept or not: the denominator the rows are read
@@ -254,7 +256,17 @@ pub struct Report {
 /// inside the measured one would write into the table the measured search
 /// is reading, so the replay waits for the suite and owns an engine and a
 /// table of its own.
-pub fn run(positions: &[Position], depth: u8, every: u32, cap: usize) -> Report {
+///
+/// `suite` names the file the positions came from, for the header alone,
+/// on the residual run's terms. None is the bench's own suite and nothing
+/// here reads the positions any differently either way.
+pub fn run(
+    positions: &[Position],
+    suite: Option<&str>,
+    depth: u8,
+    every: u32,
+    cap: usize,
+) -> Report {
     let depth = depth.max(1);
     // the rate the sampler will really keep to, so the header states the
     // run that happened
@@ -265,6 +277,7 @@ pub fn run(positions: &[Position], depth: u8, every: u32, cap: usize) -> Report 
         depth,
         every,
         cap,
+        suite: suite.map(str::to_string),
         positions: positions.len(),
         events: sampled.events,
         overflowed: sampled.overflowed,
@@ -492,6 +505,13 @@ impl fmt::Display for Report {
         if self.cap != recorder::DEFAULT_CAP {
             write!(f, " cap {}", self.cap)?;
         }
+        // the bench's own suite reads as absent, the way the cap does. A
+        // run over another suite says so, because a threshold chosen on
+        // one set of positions and read back on the same set has checked
+        // nothing
+        if let Some(suite) = &self.suite {
+            write!(f, " epd {}", suite)?;
+        }
         write!(
             f,
             " positions {} events {} records {}",
@@ -610,6 +630,7 @@ mod tests {
             depth: 5,
             every: 10,
             cap: DEFAULT_CAP,
+            suite: None,
             positions: 1,
             events: 300,
             overflowed: 0,
@@ -1107,7 +1128,7 @@ mod tests {
     /// low carries an answer where a fail high carries none.
     #[test]
     fn a_run_records_rows_that_hold_together() {
-        let report = run(&suite(), 5, 1, DEFAULT_CAP);
+        let report = run(&suite(), None, 5, 1, DEFAULT_CAP);
         assert_eq!(report.positions, 2);
         assert!(!report.rows.is_empty(), "nothing was recorded");
         assert!(report.events >= report.rows.len() as u64);
@@ -1177,7 +1198,7 @@ mod tests {
     /// header states the run that happened.
     #[test]
     fn a_rate_of_zero_is_reported_as_the_rate_that_ran() {
-        let report = run(&suite(), 0, 0, 50);
+        let report = run(&suite(), None, 0, 0, 50);
         assert_eq!(report.depth, 1);
         assert_eq!(report.every, 1);
         assert!(
@@ -1186,6 +1207,28 @@ mod tests {
                 .starts_with("reductions depth 1 every 1 cap 50 "),
             "{}",
             report
+        );
+    }
+
+    /// A run over a suite of its own says so in the header, so rows
+    /// recorded over other positions are never read as the bench's.
+    #[test]
+    fn the_header_names_a_suite_that_is_not_the_benchs() {
+        let named = run(&suite(), Some("held_out.epd"), 2, 0, DEFAULT_CAP);
+        assert!(
+            named
+                .to_string()
+                .starts_with("reductions depth 2 every 1 epd held_out.epd positions"),
+            "{}",
+            named
+        );
+        let bench = run(&suite(), None, 2, 0, DEFAULT_CAP);
+        assert!(
+            bench
+                .to_string()
+                .starts_with("reductions depth 2 every 1 positions"),
+            "{}",
+            bench
         );
     }
 }

@@ -102,12 +102,16 @@ pub const REDUCTIONS: Command = Command {
             word: "cap",
             value: "<n>",
         },
+        Keyword {
+            word: "epd",
+            value: "<file>",
+        },
     ],
     flags: &[],
     summary: &[
-        "search the same suite, sample the reduced scouts, and",
-        "ask a full depth search whether each trusted fail low",
-        "threw a move away",
+        "search the bench's suite, or the one named, sample the",
+        "reduced scouts, and ask a full depth search whether each",
+        "trusted fail low threw a move away",
     ],
 };
 
@@ -157,9 +161,10 @@ fn sampling(params: &Params, command: &Command, default_every: u32) -> Result<Sa
 /// how much of that tree is sampled, and the cap is the most of it the run
 /// keeps.
 ///
-/// The suite is a setting here and not on the other two instruments, the
-/// way the taint policy is. What wants it is a margin chosen off these rows:
-/// a rule fitted on the bench's positions and then read back on the same
+/// The suite is a setting here and on the reduction ledger, which is the
+/// other instrument a number gets chosen off; the taint policy is this
+/// one's alone. What wants the suite is a margin chosen off these rows: a
+/// rule fitted on the bench's positions and then read back on the same
 /// positions has checked nothing, so the fit and the check are given
 /// separate files.
 pub struct ResidualSettings {
@@ -258,24 +263,52 @@ impl CutoffSettings {
 }
 
 /// What a reductions argument asked for: `reductions [depth] [every <n>]
-/// [cap <n>]`. The ledger records the search the engine plays with and
-/// replays it with the reference, so there is nothing else to choose.
+/// [cap <n>] [epd <file>]`. The ledger records the search the engine plays
+/// with and replays it with the reference, so there is no policy to choose.
+///
+/// The suite is a setting here for the residual sampler's reason. A
+/// reduction threshold chosen off these rows and then read back on the
+/// same positions has checked nothing, so the fit and the check are given
+/// separate files.
 pub struct ReductionSettings {
     pub depth: u8,
     pub every: u32,
     pub cap: usize,
+    /// The file the suite was read from, or none for the bench's own.
+    pub epd: Option<String>,
+    /// The positions themselves, read while the settings are, so a file
+    /// that is no suite is refused before the minutes are spent.
+    pub positions: Vec<bench::Position>,
 }
 
 pub fn reduction_settings(params: &Params) -> Result<ReductionSettings, String> {
     let Sampling { depth, every, cap } = sampling(params, &REDUCTIONS, reduction::DEFAULT_EVERY)?;
-    Ok(ReductionSettings { depth, every, cap })
+    let epd = params.value("epd").map(str::to_string);
+    let positions = match &epd {
+        None => bench::positions(),
+        Some(path) => read_epd(path)?,
+    };
+    Ok(ReductionSettings {
+        depth,
+        every,
+        cap,
+        epd,
+        positions,
+    })
 }
 
 impl ReductionSettings {
     /// Runs the ledger these settings describe, over the bench's own
-    /// positions, so the rows describe the tree the bench describes.
+    /// positions unless the line named a file, so the rows describe the
+    /// tree the header names.
     pub fn run(&self) -> reduction::Report {
-        reduction::run(&bench::positions(), self.depth, self.every, self.cap)
+        reduction::run(
+            &self.positions,
+            self.epd.as_deref(),
+            self.depth,
+            self.every,
+            self.cap,
+        )
     }
 }
 
@@ -439,6 +472,47 @@ mod tests {
         // and zero is a rate to ask for: it records every reduced scout,
         // up to the cap
         assert_eq!(read("reductions 2 every 0"), (2, 0, CAP));
+    }
+
+    /// The ledger's own suite word, on the residuals test's terms: the
+    /// bench's positions when none is named, and the named file's when one
+    /// is.
+    #[test]
+    fn a_reductions_argument_reads_the_suite_it_was_given() {
+        let bench = reduction_settings(&Params::of("reductions")).expect("reductions");
+        assert_eq!(bench.epd, None);
+        assert_eq!(bench.positions, bench::positions());
+
+        let path = concat!(env!("CARGO_MANIFEST_DIR"), "/arche-core/bench.epd");
+        let line = format!("reductions 4 epd {path}");
+        let named = reduction_settings(&Params::of(&line)).expect(&line);
+        assert_eq!(named.depth, 4);
+        assert_eq!(named.epd.as_deref(), Some(path));
+        // the same file the bench compiles in, so the two agree
+        assert_eq!(named.positions, bench::positions());
+    }
+
+    /// A file that is no suite is refused before the run, the way the
+    /// residual sampler refuses one.
+    #[test]
+    fn a_reductions_suite_that_is_no_suite_is_named_rather_than_run() {
+        let manifest = concat!(env!("CARGO_MANIFEST_DIR"), "/Cargo.toml");
+        for (line, what) in [
+            (
+                "reductions 4 epd no/such/file.epd".to_string(),
+                "epd: no/such/file.epd".to_string(),
+            ),
+            (
+                format!("reductions 4 epd {manifest}"),
+                format!("epd: {manifest}"),
+            ),
+        ] {
+            assert_eq!(
+                reduction_settings(&Params::of(&line)).err(),
+                Some(what),
+                "{line}"
+            );
+        }
     }
 
     #[test]
