@@ -367,6 +367,22 @@ class Sprt:
         return f"({number(LOWER)}, {number(UPPER)})"
 
     @property
+    def estimate(self) -> Estimate:
+        """What the pairs of the whole test say the difference is.
+
+        The report states the batch's own estimate, since the batch is the
+        match that was just played, and the trailer states this one, so that
+        its figure, its interval and its game count are all read from the
+        pairs the verdict rests on. On a first batch the two are the same
+        measurement."""
+        scores = [
+            score
+            for score, count in zip(PENTANOMIAL, self.counts)
+            for _ in range(count)
+        ]
+        return Estimate(sum(scores), 2 * len(scores), scores)
+
+    @property
     def carried(self) -> str:
         """The pairs of the test so far, in the shape the next batch takes
         them in."""
@@ -394,11 +410,25 @@ def sequential(sprt: Sprt) -> str:
             f" prior_pairs set to {sprt.carried}."
         ),
     }
+    # the table above is this batch, so a test carrying earlier batches has a
+    # second figure, and the trailer states that one rather than the table's
+    pooled = sprt.estimate
+    carried = (
+        ""
+        if not sum(sprt.prior)
+        else (
+            f" Over all of them the difference is"
+            f" {round(pooled.elo):+d} ±{round(pooled.margin)} elo,"
+            " which is the figure the trailer carries."
+            if pooled.margin is not None
+            else " The pairs of the test together leave no interval to state."
+        )
+    )
     return (
         f"SPRT {sprt.hypotheses} {sprt.verdict}. The log likelihood ratio over"
         f" the {sum(sprt.counts)} pairs of the test ({sum(sprt.batch)} from this"
         f" batch and {sum(sprt.prior)} from the batches before it) is"
-        f" {sprt.llr:.2f} against bounds of {sprt.bounds}."
+        f" {sprt.llr:.2f} against bounds of {sprt.bounds}.{carried}"
         f" {means[sprt.verdict]}"
     )
 
@@ -411,8 +441,16 @@ def trailer(
     than quoting a number it does not have, though it still names the sprt
     verdict when there was one. An sprt names its verdict beside the estimate,
     since +58 with the test failed and +58 with it passed are not the same
-    claim."""
-    test = f"sprt {sprt.hypotheses} {sprt.verdict}, " if sprt else ""
+    claim.
+
+    An sprt states the whole test and not the batch that ended it, because a
+    line quoting the spread of one batch beside the game count of several
+    would claim a precision its own numbers deny."""
+    if sprt:
+        test = f"sprt {sprt.hypotheses} {sprt.verdict}, "
+        estimate = sprt.estimate
+    else:
+        test = ""
     played = f"({test}{estimate.games} games, {tc}, vs {baseline})"
     if estimate.margin is None:
         # the estimate is what is missing, not the verdict: a test that

@@ -383,11 +383,39 @@ class TestCommandLine:
             "--prior-pairs",
             "0,0,100,0,5",
         ).stdout
-        assert line == "Elo: +191 ±321 (sprt [0, 10] passed, 4 games, 30+0.3, vs old)\n"
+        # the 105 pairs carried in and the 2 this batch played. The figure,
+        # the interval and the count are all the test's: the batch on its own
+        # reads +191 ±321 over 4 games, which is no claim about 214 of them
+        assert line == (
+            "Elo: +20 ±15 (sprt [0, 10] passed, 214 games, 30+0.3, vs old)\n"
+        )
         message = (
             f"fix(search): Stop the reduction eating the last ply\n\nBench: 1\n{line}"
         )
         assert check_trailers.problems(message) == [], line
+
+    def test_a_first_batch_is_the_whole_test_it_has(self, tmp_path):
+        line = self.run(
+            tmp_path, [drawn(1) + pair(2)], "--trailer", "--elo0", "0", "--elo1", "10"
+        ).stdout
+        assert line == (
+            "Elo: +191 ±321 (sprt [0, 10] inconclusive, 4 games, 30+0.3, vs old)\n"
+        )
+
+    def test_the_trailer_counts_the_paired_games_of_a_cut_off_shard(self, tmp_path):
+        # three games, so one round is a pair and the other is half of one.
+        # The odd game is out of the counts the ratio is read from, so it is
+        # out of the games the trailer states
+        line = self.run(
+            tmp_path,
+            [drawn(1) + game(2, "1-0")],
+            "--trailer",
+            "--elo0",
+            "0",
+            "--elo1",
+            "10",
+        ).stdout
+        assert line.endswith("(sprt [0, 10] inconclusive, 2 games, 30+0.3, vs old)\n")
 
     def test_one_hypothesis_without_the_other_is_not_a_test(self, tmp_path):
         result = self.run(tmp_path, [drawn(1)], "--elo0", "0")
@@ -397,8 +425,9 @@ class TestCommandLine:
     def test_a_settled_test_keeps_its_verdict_with_no_estimate_to_state(self, tmp_path):
         import check_trailers
 
-        # every pair went the same way, so the model has no elo for the score.
-        # The verdict is what the batch was run for and survives without one
+        # every pair of the test went the same way, so the model has no elo
+        # for the score. The verdict is what the batches were run for and
+        # survives without one
         line = self.run(
             tmp_path,
             [pair(1) + pair(2)],
@@ -408,10 +437,10 @@ class TestCommandLine:
             "--elo1",
             "10",
             "--prior-pairs",
-            "0,0,100,0,4",
+            "0,0,0,0,110",
         ).stdout
         assert line == (
-            "Elo: not measured (sprt [0, 10] passed, 4 games, 30+0.3, vs old)\n"
+            "Elo: not measured (sprt [0, 10] passed, 224 games, 30+0.3, vs old)\n"
         )
         message = f"fix(search): Finish depth one\n\nBench: 1\n{line}"
         assert check_trailers.problems(message) == [], line

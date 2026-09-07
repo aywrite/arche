@@ -889,12 +889,20 @@ A batch that settles the question says `passed` (stronger by about `elo1` or
 more) or `failed` (not) beside its estimate. One that does not says
 `inconclusive`, and its summary gives the five counts to launch the next batch
 with: run the workflow again with the same `elo0`, `elo1`, candidate and
-baseline, and `prior_pairs` set to those counts. The seed is new each time, so
-the next batch plays openings of its own rather than the ones already spent. A
-change well outside the bounds on either side settles in a batch or two. One at
+baseline, and `prior_pairs` set to those counts. The seed is new each time, so the next
+batch plays openings of its own rather than the ones already spent. A change
+well outside the bounds on either side settles in a batch or two. One at
 either bound, or between them, takes several thousand games, which is why the
 roadmap's two null results ended inconclusive at their caps, and why that
 ledger reads repeated runs of the same arm as one test over the pairs of both.
+
+The estimate a batch reports is its own, since the batch is the match that was
+just played, but the `Elo:` trailer it prints is the whole test: its figure,
+its interval and its game count are all read from the pairs the verdict rests
+on, so a test settled on its third batch says what all three batches measured
+rather than what the third did. Those are the paired games, so a game a shard
+left without a partner is not among them, and the summary states both figures
+when they differ.
 
 What a batch carries forward is its pairs and not its ratio. The ratio is a
 generalized one: the distribution over the five pair scores is fitted to the
