@@ -29,6 +29,7 @@ use arche_core::Board;
 use arche_core::SearchConfig;
 use arche_core::bench;
 use arche_core::census;
+use arche_core::recorder;
 use arche_core::reduction;
 use arche_core::residual;
 
@@ -111,10 +112,10 @@ pub const REDUCTIONS: Command = Command {
 };
 
 /// How many rows a run keeps when it was not told. One number for all three,
-/// and the residual module's, because the thing it bounds is one thing: the
-/// census and the ledger both record through the sampler that module defines,
-/// so the cap is the sampler's rather than any one instrument's.
-const DEFAULT_CAP: usize = residual::DEFAULT_CAP;
+/// and the recorder's, because the thing it bounds is one thing: all three
+/// record through the reservoir that module defines, so the cap is the
+/// reservoir's rather than any one instrument's.
+const DEFAULT_CAP: usize = recorder::DEFAULT_CAP;
 
 /// Reads the three settings the instruments share, or says which word could
 /// not be read: the setting's name and the word, for the caller to report.
@@ -286,7 +287,7 @@ mod tests {
     /// over and reading what it was asked for is the part worth pinning.
     #[test]
     fn a_residuals_argument_reads_its_depth_rate_cap_and_policy() {
-        const CAP: usize = residual::DEFAULT_CAP;
+        const CAP: usize = recorder::DEFAULT_CAP;
         let read = |line: &str| {
             let settings = residual_settings(&Params::of(line)).expect(line);
             (
@@ -393,7 +394,7 @@ mod tests {
             let settings = cutoff_settings(&Params::of(line)).expect(line);
             (settings.depth, settings.every, settings.cap)
         };
-        const CAP: usize = residual::DEFAULT_CAP;
+        const CAP: usize = recorder::DEFAULT_CAP;
         assert_eq!(read("cutoffs"), (bench::DEPTH, 1000, CAP));
         assert_eq!(read("cutoffs 4"), (4, 1000, CAP));
         assert_eq!(read("cutoffs 4 every 50"), (4, 50, CAP));
@@ -428,7 +429,7 @@ mod tests {
             let settings = reduction_settings(&Params::of(line)).expect(line);
             (settings.depth, settings.every, settings.cap)
         };
-        const CAP: usize = residual::DEFAULT_CAP;
+        const CAP: usize = recorder::DEFAULT_CAP;
         assert_eq!(read("reductions"), (bench::DEPTH, 1000, CAP));
         assert_eq!(read("reductions 4"), (4, 1000, CAP));
         assert_eq!(read("reductions 4 every 50"), (4, 50, CAP));

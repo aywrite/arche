@@ -38,13 +38,14 @@
 //! without one searches exactly the tree it searched before there was a
 //! ledger at all, which is what the pinned bench counts say.
 
-use crate::bench::{self, Position};
+use crate::bench::Position;
 use crate::board::Board;
 use crate::census;
 use crate::engine::{AlphaBeta, Engine, SearchConfig, SearchOutcome, SearchParameters};
 use crate::misc::Score;
 use crate::play::Play;
-use crate::residual::{self, DEPTH_SPREAD, Sampler, Window};
+use crate::recorder::{self, DEPTH_SPREAD, Window};
+use crate::residual;
 use crate::value::Value;
 use std::fmt;
 
@@ -258,18 +259,7 @@ pub fn run(positions: &[Position], depth: u8, every: u32, cap: usize) -> Report 
     // the rate the sampler will really keep to, so the header states the
     // run that happened
     let every = every.max(1);
-    let mut sampler = Sampler::with_cap(every, cap);
-    for position in positions {
-        let board = Board::from_fen(&position.fen)
-            .unwrap_or_else(|e| panic!("ledger position {} does not parse: {}", position.id, e));
-        let mut engine = AlphaBeta::with_config(board, bench::TABLE_BYTES, SearchConfig::default());
-        engine.sample_reductions(sampler);
-        engine.iterative_deepening_search(SearchParameters::to_depth(depth), |_, _, _, _| {});
-        sampler = engine
-            .take_reductions()
-            .expect("the sampler just handed to the engine comes back");
-    }
-    let sampled = sampler.drain();
+    let sampled = recorder::record(positions, depth, every, cap, SearchConfig::default());
     let (rows, unplayable) = replay(&sampled.taken);
     Report {
         depth,
@@ -499,7 +489,7 @@ fn cell(band: Band) -> String {
 impl fmt::Display for Report {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         write!(f, "reductions depth {} every {}", self.depth, self.every)?;
-        if self.cap != residual::DEFAULT_CAP {
+        if self.cap != recorder::DEFAULT_CAP {
             write!(f, " cap {}", self.cap)?;
         }
         write!(
@@ -589,8 +579,8 @@ impl fmt::Display for Report {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::residual::DEFAULT_CAP;
-    use crate::residual::fixtures::{recording_leaves_the_search_where_it_was, suite};
+    use crate::recorder::fixtures::{recording_leaves_the_search_where_it_was, suite};
+    use crate::recorder::{DEFAULT_CAP, Sampler};
 
     /// An event made up, for the tests that drive the replay and the
     /// printer on rows the test chose.
@@ -1167,10 +1157,10 @@ mod tests {
         let skipped = std::cell::Cell::new(0usize);
         recording_leaves_the_search_where_it_was(
             5,
-            |engine| engine.sample_reductions(Sampler::with_cap(1, DEFAULT_CAP)),
+            |engine| engine.arm(Sampler::<Event>::with_cap(1, DEFAULT_CAP)),
             |engine| {
                 let taken = engine
-                    .take_reductions()
+                    .disarm::<Event>()
                     .expect("the sampler comes back")
                     .drain()
                     .taken;

@@ -7,8 +7,9 @@ use crate::limits::Limits;
 use crate::misc::{Color, Score};
 use crate::ordering::MoveOrdering;
 use crate::play::Play;
+use crate::recorder::{Sampler, Window};
 use crate::reduction;
-use crate::residual::{Sample, Sampler, Shortcut, Window};
+use crate::residual::{Sample, Shortcut};
 use crate::transposition::{
     DEFAULT_TABLE_BYTES, GhiCounters, Probe, SignatureCounters, TranspositionTable,
 };
@@ -607,7 +608,7 @@ pub struct AlphaBeta {
     /// builds and what the engine plays and benches with. An engine with
     /// none takes no branch a search without a sampler did not take, which
     /// is the claim the pinned node counts stand behind.
-    sampler: Option<Sampler>,
+    sampler: Option<Sampler<Sample>>,
     /// The cutoff census's reservoir, or none, on the sampler's terms
     /// exactly: an engine without one searches the tree it always
     /// searched.
@@ -621,6 +622,60 @@ pub struct AlphaBeta {
     /// the reduced moves inside the scout consume their own stagings and
     /// never this one.
     staged: Option<reduction::Staged>,
+}
+
+/// What a search can be armed to record: the residual's sample, the cutoff
+/// census's event or the reduction ledger's.
+///
+/// The implementations are here and not beside the three event types,
+/// because what they name is a field of the engine and the fields are this
+/// module's. The word each run goes by rides along with them, being of no
+/// use anywhere the slot is not also known.
+pub(crate) trait Recorded: Sized {
+    /// What the shared recording loop calls a run of this kind, which is
+    /// how it names a position it cannot read.
+    const WHAT: &'static str;
+
+    /// The engine's slot for a reservoir of this kind.
+    fn slot(engine: &mut AlphaBeta) -> &mut Option<Sampler<Self>>;
+
+    /// The reservoir back, leaving the engine recording nothing. A kind
+    /// that leaves half written state of its own behind overrides this to
+    /// drop that as well.
+    fn disarm(engine: &mut AlphaBeta) -> Option<Sampler<Self>> {
+        Self::slot(engine).take()
+    }
+}
+
+impl Recorded for Sample {
+    const WHAT: &'static str = "residual";
+
+    fn slot(engine: &mut AlphaBeta) -> &mut Option<Sampler<Self>> {
+        &mut engine.sampler
+    }
+}
+
+impl Recorded for census::Event {
+    const WHAT: &'static str = "census";
+
+    fn slot(engine: &mut AlphaBeta) -> &mut Option<Sampler<Self>> {
+        &mut engine.census
+    }
+}
+
+impl Recorded for reduction::Event {
+    const WHAT: &'static str = "ledger";
+
+    fn slot(engine: &mut AlphaBeta) -> &mut Option<Sampler<Self>> {
+        &mut engine.ledger
+    }
+
+    fn disarm(engine: &mut AlphaBeta) -> Option<Sampler<Self>> {
+        // a staging the search never consumed, a move that turned out
+        // illegal, goes with the arming it belonged to
+        engine.staged = None;
+        Self::slot(engine).take()
+    }
 }
 
 impl AlphaBeta {
@@ -649,50 +704,23 @@ impl AlphaBeta {
         }
     }
 
-    /// Arm the residual sampler: have the search record the nodes its
-    /// shortcuts answer, at the rate the sampler was built with. Off until
-    /// this is called, and the callers are the residuals command and the
-    /// tests. Nothing the engine plays or benches with arms it.
-    pub fn sample_shortcuts(&mut self, sampler: Sampler) {
-        self.sampler = Some(sampler);
+    /// Arm a reservoir: have the search record what it does at the nodes
+    /// the reservoir's key picks, at the rate the reservoir was built with.
+    /// Off until this is called, and the callers are the three recorders
+    /// and the tests. Nothing the engine plays or benches with arms one.
+    pub(crate) fn arm<T: Recorded>(&mut self, sampler: Sampler<T>) {
+        *T::slot(self) = Some(sampler);
     }
 
-    /// The sampler back with everything it collected, leaving the engine
-    /// recording nothing. None from an engine that was never given one.
+    /// The reservoir back with everything it collected, leaving the engine
+    /// recording nothing. None from an engine that was never armed.
     ///
-    /// Handed back rather than emptied in place, so that one sampler can be
-    /// carried across a run of searches and its countdown and its cap then
-    /// describe the whole run rather than restarting at each search in it.
-    pub fn take_sampler(&mut self) -> Option<Sampler> {
-        self.sampler.take()
-    }
-
-    /// Arm the cutoff census: have the search record which move cuts each
-    /// sampled full width node off, or that none did. Armed and read back
-    /// on `sample_shortcuts`' terms, the cutoffs command in place of the
-    /// residuals one.
-    pub fn sample_cutoffs(&mut self, sampler: Sampler<census::Event>) {
-        self.census = Some(sampler);
-    }
-
-    /// The census's sampler back, on `take_sampler`'s terms.
-    pub fn take_census(&mut self) -> Option<Sampler<census::Event>> {
-        self.census.take()
-    }
-
-    /// Arm the reduction ledger: have the search record what each sampled
-    /// reduced scout decided. Armed and read back on `sample_shortcuts`'
-    /// terms, the reductions command in place of the residuals one.
-    pub fn sample_reductions(&mut self, sampler: Sampler<reduction::Event>) {
-        self.ledger = Some(sampler);
-    }
-
-    /// The ledger's sampler back, on `take_sampler`'s terms. A staging the
-    /// search never consumed, a move that turned out illegal, goes with
-    /// the arming it belonged to.
-    pub fn take_reductions(&mut self) -> Option<Sampler<reduction::Event>> {
-        self.staged = None;
-        self.ledger.take()
+    /// Handed back rather than emptied in place, so that one reservoir can
+    /// be carried across a run of searches and its countdown and its cap
+    /// then describe the whole run rather than restarting at each search
+    /// in it.
+    pub(crate) fn disarm<T: Recorded>(&mut self) -> Option<Sampler<T>> {
+        T::disarm(self)
     }
 
     /// The move loop's half of a ledger event: what the node knew about
@@ -5157,7 +5185,8 @@ mod sampling {
         SearchConfig, SearchParameters, Taint,
     };
     use crate::board::fens::SHARP_MIDDLEGAME;
-    use crate::residual::{Sample, Sampler, Shortcut, Window, sample_key};
+    use crate::recorder::{Sampled, Sampler, Window};
+    use crate::residual::{Sample, Shortcut, sample_key};
     use pretty_assertions::assert_eq;
 
     const TABLE_BYTES: usize = 1024 * 1024;
@@ -5181,7 +5210,7 @@ mod sampling {
             TABLE_BYTES,
             config,
         );
-        e.sample_shortcuts(Sampler::every(1));
+        e.arm(Sampler::<Sample>::every(1));
         let mut taint = Taint::default();
         let Ok(answered) = e.shortcuts(alpha, beta, depth, false, true, &mut taint) else {
             panic!("nothing here searches under a limit, so nothing can abort");
@@ -5201,13 +5230,15 @@ mod sampling {
             AlphaBeta::with_config(Board::new(), TABLE_BYTES, SearchConfig::reference());
         assert!(reference.sampler.is_none());
         e.search(5);
-        assert!(e.take_sampler().is_none());
+        assert!(e.disarm::<Sample>().is_none());
     }
 
     /// What every test below asks of an engine once it has searched: the
     /// sampler back, emptied into what it collected.
-    fn collected(e: &mut AlphaBeta) -> crate::residual::Sampled {
-        e.take_sampler().expect("a sampler was installed").drain()
+    fn collected(e: &mut AlphaBeta) -> Sampled<Sample> {
+        e.disarm::<Sample>()
+            .expect("a sampler was installed")
+            .drain()
     }
 
     /// The one sample of a kind in what was taken. Drain hands samples back
@@ -5229,7 +5260,7 @@ mod sampling {
     fn every_sample_describes_a_node_a_hook_offered() {
         const DEPTH: u8 = 5;
         let mut e = engine(SHARP_MIDDLEGAME);
-        e.sample_shortcuts(Sampler::every(1));
+        e.arm(Sampler::<Sample>::every(1));
         e.search(DEPTH);
         let sampled = collected(&mut e);
         assert!(!sampled.taken.is_empty(), "the hooks offered nothing");
@@ -5265,7 +5296,7 @@ mod sampling {
     #[test]
     fn every_sample_carries_the_decision_it_was_taken_at() {
         let mut e = engine(SHARP_MIDDLEGAME);
-        e.sample_shortcuts(Sampler::every(1));
+        e.arm(Sampler::<Sample>::every(1));
         e.search(5);
         for sample in collected(&mut e).taken {
             match sample.kind {
@@ -5299,7 +5330,7 @@ mod sampling {
     fn a_rate_records_only_the_nodes_its_keys_fall_under() {
         const EVERY: u32 = 4;
         let mut e = engine(SHARP_MIDDLEGAME);
-        e.sample_shortcuts(Sampler::every(EVERY));
+        e.arm(Sampler::<Sample>::every(EVERY));
         e.search(5);
         let taken = collected(&mut e).taken;
         assert!(!taken.is_empty(), "the rate turned everything away");
@@ -5373,7 +5404,7 @@ mod sampling {
         // under the evaluation is a candidate the test declines
         let beta = eval - 50;
         let mut e = engine(SHARP_MIDDLEGAME);
-        e.sample_shortcuts(Sampler::every(1));
+        e.arm(Sampler::<Sample>::every(1));
         let mut taint = Taint::default();
         let Ok(answered) = e.shortcuts(beta - 500, beta, 1, false, true, &mut taint) else {
             panic!("nothing here searches under a limit, so nothing can abort");
@@ -5398,7 +5429,7 @@ mod sampling {
         let eval = engine(SHARP_MIDDLEGAME).eval();
         let beta = eval + 50;
         let mut e = engine(SHARP_MIDDLEGAME);
-        e.sample_shortcuts(Sampler::every(1));
+        e.arm(Sampler::<Sample>::every(1));
         let mut taint = Taint::default();
         let Ok(answered) = e.shortcuts(beta - 500, beta, 1, false, true, &mut taint) else {
             panic!("nothing here searches under a limit, so nothing can abort");
@@ -5462,7 +5493,7 @@ mod sampling {
     #[test]
     fn the_windows_a_search_records_are_the_zero_ones() {
         let mut e = engine(SHARP_MIDDLEGAME);
-        e.sample_shortcuts(Sampler::every(1));
+        e.arm(Sampler::<Sample>::every(1));
         e.search(6);
         let taken = collected(&mut e).taken;
         assert!(!taken.is_empty());
@@ -5479,7 +5510,7 @@ mod sampling {
     #[test]
     fn all_kinds_are_recorded() {
         let mut e = engine(SHARP_MIDDLEGAME);
-        e.sample_shortcuts(Sampler::every(1));
+        e.arm(Sampler::<Sample>::every(1));
         e.search(6);
         let sampled = collected(&mut e);
         for kind in Shortcut::KINDS {
@@ -5497,7 +5528,7 @@ mod sampling {
     fn two_runs_of_the_same_search_record_the_same_samples() {
         let run = || {
             let mut e = engine(SHARP_MIDDLEGAME);
-            e.sample_shortcuts(Sampler::every(7));
+            e.arm(Sampler::<Sample>::every(7));
             e.iterative_deepening_search(SearchParameters::to_depth(5), |_, _, _, _| {});
             collected(&mut e)
         };
@@ -5510,7 +5541,7 @@ mod sampling {
     #[test]
     fn a_search_past_the_cap_stops_growing_and_counts_the_rest() {
         let mut e = engine(SHARP_MIDDLEGAME);
-        e.sample_shortcuts(Sampler::with_cap(1, 4));
+        e.arm(Sampler::<Sample>::with_cap(1, 4));
         e.search(5);
         let sampled = collected(&mut e);
         assert_eq!(sampled.taken.len(), 4);
@@ -5526,7 +5557,7 @@ mod sampling {
     #[test]
     fn the_recorded_distance_is_the_evaluation_over_beta() {
         let mut e = engine(SHARP_MIDDLEGAME);
-        e.sample_shortcuts(Sampler::every(1));
+        e.arm(Sampler::<Sample>::every(1));
         e.search(5);
         for sample in collected(&mut e).taken {
             let floor = match sample.kind {
@@ -5552,16 +5583,16 @@ mod sampling {
 mod cutoffs {
     use super::{AlphaBeta, Board, Score, SearchConfig};
     use crate::board::fens::SHARP_MIDDLEGAME;
-    use crate::census::{Class, Cutting, Table};
+    use crate::census::{self, Class, Cutting, Table};
     use crate::play::Play;
-    use crate::residual::{Sampler, Window};
+    use crate::recorder::{Sampler, Window};
     use pretty_assertions::assert_eq;
 
     const TABLE_BYTES: usize = 1024 * 1024;
 
     fn engine(fen: &str) -> AlphaBeta {
         let mut e = AlphaBeta::with_table_bytes(Board::from_fen(fen).unwrap(), TABLE_BYTES);
-        e.sample_cutoffs(Sampler::every(1));
+        e.arm(Sampler::<census::Event>::every(1));
         e
     }
 
@@ -5589,7 +5620,7 @@ mod cutoffs {
             AlphaBeta::with_config(Board::new(), TABLE_BYTES, SearchConfig::reference());
         assert!(reference.census.is_none());
         e.search(4);
-        assert!(e.take_census().is_none());
+        assert!(e.disarm::<census::Event>().is_none());
     }
 
     /// A killer cutting at index 1, with the memories taught by hand: the
@@ -5624,7 +5655,10 @@ mod cutoffs {
                 table: false,
             }),
         );
-        let sampled = e.take_census().expect("a census was installed").drain();
+        let sampled = e
+            .disarm::<census::Event>()
+            .expect("a census was installed")
+            .drain();
         assert_eq!(sampled.taken.len(), 1);
         assert_eq!(sampled.events, 1);
         let row = &sampled.taken[0];
@@ -5678,7 +5712,10 @@ mod cutoffs {
                 table: true,
             }),
         );
-        let sampled = e.take_census().expect("a census was installed").drain();
+        let sampled = e
+            .disarm::<census::Event>()
+            .expect("a census was installed")
+            .drain();
         let row = &sampled.taken[0];
         let cut = row.cut.as_ref().expect("the node cut");
         assert_eq!(cut.index, 0);
@@ -5712,7 +5749,10 @@ mod cutoffs {
             e.nodes,
             None,
         );
-        let sampled = e.take_census().expect("a census was installed").drain();
+        let sampled = e
+            .disarm::<census::Event>()
+            .expect("a census was installed")
+            .drain();
         let row = &sampled.taken[0];
         assert!(row.cut.is_none());
         assert_eq!(row.searched, moves.len());
@@ -5733,16 +5773,36 @@ mod reductions {
     use super::{AlphaBeta, Board, Score};
     use crate::board::fens::SHARP_MIDDLEGAME;
     use crate::census::Table;
-    use crate::reduction::Scout;
-    use crate::residual::{Sampler, Window};
+    use crate::recorder::{Sampler, Window};
+    use crate::reduction::{self, Scout};
     use pretty_assertions::assert_eq;
 
     const TABLE_BYTES: usize = 1024 * 1024;
 
     fn engine(fen: &str) -> AlphaBeta {
         let mut e = AlphaBeta::with_table_bytes(Board::from_fen(fen).unwrap(), TABLE_BYTES);
-        e.sample_reductions(Sampler::every(1));
+        e.arm(Sampler::<reduction::Event>::every(1));
         e
+    }
+
+    /// A staging goes with the arming it belonged to. One outlives the move
+    /// that made it where the search never reached the scout, an illegal
+    /// move for instance, and the next arming must not inherit it.
+    #[test]
+    fn disarming_takes_a_staging_the_search_never_used() {
+        let mut e = engine(SHARP_MIDDLEGAME);
+        let (quiet, _) = quiets(&e);
+        e.staged = Some(reduction::Staged {
+            play: quiet,
+            index: 3,
+            generated: 30,
+            history: 0,
+            history_max: 0,
+            killer: false,
+            tt: Table::of(false, false),
+        });
+        assert!(e.disarm::<reduction::Event>().is_some());
+        assert!(e.staged.is_none(), "the staging outlived the arming");
     }
 
     /// Two quiet moves of the position, for teaching the memories.
@@ -5767,7 +5827,7 @@ mod reductions {
         assert!(e.ledger.is_none());
         e.search(4);
         assert!(e.staged.is_none());
-        assert!(e.take_reductions().is_none());
+        assert!(e.disarm::<reduction::Event>().is_none());
     }
 
     /// A staged scout that fails low, driven through the two halves by
@@ -5799,7 +5859,10 @@ mod reductions {
         assert!(value.score <= alpha, "the scout did not fail low");
         assert_eq!(e.board.to_fen(), child_fen);
         assert_eq!(e.board.key, child_key);
-        let sampled = e.take_reductions().expect("a ledger was installed").drain();
+        let sampled = e
+            .disarm::<reduction::Event>()
+            .expect("a ledger was installed")
+            .drain();
         assert_eq!(sampled.events, 1);
         assert_eq!(sampled.taken.len(), 1);
         let row = &sampled.taken[0];
@@ -5836,7 +5899,10 @@ mod reductions {
             panic!("an unlimited search aborted");
         };
         assert!(value.score <= alpha, "the scout did not fail low");
-        let sampled = e.take_reductions().expect("a ledger was installed").drain();
+        let sampled = e
+            .disarm::<reduction::Event>()
+            .expect("a ledger was installed")
+            .drain();
         assert_eq!(sampled.taken.len(), 1);
         let row = &sampled.taken[0];
         assert_eq!(row.depth, 4);
@@ -5860,7 +5926,10 @@ mod reductions {
         let Ok(_) = e.windowed(alpha, beta, 3, false, 1) else {
             panic!("an unlimited search aborted");
         };
-        let sampled = e.take_reductions().expect("a ledger was installed").drain();
+        let sampled = e
+            .disarm::<reduction::Event>()
+            .expect("a ledger was installed")
+            .drain();
         assert_eq!(sampled.taken.len(), 1);
         let row = &sampled.taken[0];
         assert_eq!(row.scout, Scout::High);
