@@ -258,53 +258,30 @@ jobs:
           echo "START=${start}" >> "$GITHUB_ENV"
 
       - name: Play the rung
-        working-directory: tools
-        run: |
-          # only fastchess and the book are cached, but a rerun on the same
-          # runner would still find the last attempt's games lying here, and
-          # fastchess appends to a pgn it is given
-          rm -f games.pgn result.txt config.json
-          # The table size is given to both sides at once rather than to the
-          # opponent alone, so one line says what the match was played on.
-          #
-          # The engine allocates its table before it answers uci, which takes
-          # it several seconds and the ten second default does not always
-          # allow for.
-          #
-          # The pgn carries everything fastchess can record about a move, so a
-          # game that went wrong can be read for what the search was seeing at
-          # the time. tbhits is left off; there are no tablebases here.
-          #
-          # INT is the signal fastchess takes as a request to stop, report the
-          # games played so far and exit, and 124 is how timeout says it had
-          # to send it. A rung stopped that way is a rung with fewer games in
-          # the fit, and the estimate says so rather than losing the run
-          status=0
-          timeout -k 60 -s INT "${MAX_MATCH_MINUTES}m" ./fastchess \
-            -engine name=arche cmd=./arche \
-            -engine "name=stash-${TAG}" "cmd=./stash-${TAG}" \
-            -each proto=uci "tc=$TIME_CONTROL" "option.Hash=$HASH" -startup-ms 20000 \
-            -openings file=8moves_v3.pgn format=pgn order=sequential "start=$START" \
-            -rounds "$PAIRS" -repeat -concurrency "$CONCURRENCY" -recover \
-            -pgnout file=games.pgn nodes=true seldepth=true nps=true \
-              hashfull=true timeleft=true latency=true pv=true \
-            | tee result.txt || status=$?
-          if [ "$status" = "124" ]; then
-            echo "STOPPED_BY=the ${MAX_MATCH_MINUTES} minute wall clock cap" >> "$GITHUB_ENV"
-            echo "::warning::stash-${TAG} hit the ${MAX_MATCH_MINUTES} minute cap before its game count"
-          elif [ "$status" != "0" ]; then
-            exit "$status"
-          else
-            echo "STOPPED_BY=fastchess, at the game count" >> "$GITHUB_ENV"
-          fi
+        id: play
+        uses: ./.github/actions/play-match
+        with:
+          first_name: arche
+          first_command: ./arche
+          second_name: stash-${{ env.TAG }}
+          second_command: ./stash-${{ env.TAG }}
+          time_control: ${{ env.TIME_CONTROL }}
+          hash: ${{ env.HASH }}
+          start: ${{ env.START }}
+          pairs: ${{ env.PAIRS }}
+          concurrency: ${{ env.CONCURRENCY }}
+          cap_minutes: ${{ env.MAX_MATCH_MINUTES }}
+          subject: stash-${{ env.TAG }}
 
       # What it would take to play this rung again, and what it was played on.
       # Written whether or not it finished, since a rung that ended badly is
-      # the one that gets looked into.
+      # the one that gets looked into. What stopped the play step is empty when
+      # it never got to the end, which the fallback below covers.
       - name: Write the manifest
         if: always()
         env:
           FASTCHESS: ${{ steps.tools.outputs.fastchess }}
+          STOPPED_BY: ${{ steps.play.outputs.stopped_by }}
         run: |
           book_sha=$(sha256sum tools/8moves_v3.pgn | cut -d' ' -f1) || book_sha=unknown
           toolchain=$(rustc -V) || toolchain=unknown

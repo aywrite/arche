@@ -1,0 +1,125 @@
+name: Play a match
+description: Play one engine against another with fastchess, out of tools/.
+
+# Both workflows that play games play them the same way: the same book read in
+# order from a given opening, the same table on both sides, the same pgn fields
+# and the same wall clock cap. What differs is who is playing, which is what the
+# four engine inputs are for.
+#
+# Holding the flags in one place is the point of the action. Strength measures a
+# version against a version and Calibrate places the engine against rated
+# opponents, and the two are only read next to each other because the games were
+# played on the same terms. Two copies of these flags that drifted apart would
+# quietly end that, and no test here would catch it.
+#
+# Nothing asks fastchess to stop the match early. Both callers pool the games
+# and read them afterwards, and the strength workflow's play step says what
+# stopping early would cost a sequential test.
+
+inputs:
+  first_name:
+    description: What to call the first engine in the pgn
+    required: true
+  first_command:
+    description: How to run it, from tools/
+    required: true
+  second_name:
+    description: What to call the second engine in the pgn
+    required: true
+  second_command:
+    description: How to run it, from tools/
+    required: true
+  time_control:
+    description: Passed to fastchess as tc
+    required: true
+  hash:
+    description: Transposition table in megabytes, given to both sides at once
+    required: true
+  start:
+    description: The opening to begin at, one based
+    required: true
+  pairs:
+    description: Openings to play, each of them twice with the colours reversed
+    required: true
+  concurrency:
+    description: Games to play at the same time
+    required: true
+  cap_minutes:
+    description: Wall clock cap on play alone
+    required: true
+  subject:
+    description: What to call this pairing in the warning about the cap
+    required: true
+
+outputs:
+  stopped_by:
+    description: What ended the match, for the manifest. Empty when it did not get that far.
+    value: ${{ steps.play.outputs.stopped_by }}
+
+runs:
+  using: composite
+  steps:
+    - id: play
+      shell: bash
+      working-directory: tools
+      env:
+        FIRST_NAME: ${{ inputs.first_name }}
+        FIRST_COMMAND: ${{ inputs.first_command }}
+        SECOND_NAME: ${{ inputs.second_name }}
+        SECOND_COMMAND: ${{ inputs.second_command }}
+        TIME_CONTROL: ${{ inputs.time_control }}
+        HASH: ${{ inputs.hash }}
+        START: ${{ inputs.start }}
+        PAIRS: ${{ inputs.pairs }}
+        CONCURRENCY: ${{ inputs.concurrency }}
+        CAP_MINUTES: ${{ inputs.cap_minutes }}
+        SUBJECT: ${{ inputs.subject }}
+      run: |
+        # The opening to start at is the one input a caller works out in a step
+        # rather than holds in its env, so it is the one that can arrive empty.
+        # An empty one starts every shard at the top of the book, which reads as
+        # a smaller sample rather than as a fault, so it is refused here.
+        if [ -z "$START" ]; then
+          echo "::error::${SUBJECT} was given no opening to start at"
+          exit 1
+        fi
+        # only fastchess and the book are cached, but a rerun on the same
+        # runner would still find the last attempt's games lying here, and
+        # fastchess appends to a pgn it is given
+        rm -f games.pgn result.txt config.json
+        # The table size is given to both sides at once rather than to one of
+        # them, so a single line says what the match was played on.
+        #
+        # The engine allocates its transposition table before it answers uci,
+        # which several copies starting at once can take longer over than the
+        # ten second default allows.
+        #
+        # The pgn carries everything fastchess can record about a move, so a
+        # game that went wrong can be read for what the search was seeing at
+        # the time. tbhits is left off; there are no tablebases here.
+        #
+        # INT is the signal fastchess takes as a request to stop, report the
+        # games played so far and exit, and 124 is how timeout says it had to
+        # send it. A pairing stopped that way played fewer games, and the caller
+        # says so rather than losing the run
+        status=0
+        timeout -k 60 -s INT "${CAP_MINUTES}m" ./fastchess \
+          -engine "name=$FIRST_NAME" "cmd=$FIRST_COMMAND" \
+          -engine "name=$SECOND_NAME" "cmd=$SECOND_COMMAND" \
+          -each proto=uci "tc=$TIME_CONTROL" "option.Hash=$HASH" -startup-ms 20000 \
+          -openings file=8moves_v3.pgn format=pgn order=sequential "start=$START" \
+          -rounds "$PAIRS" -repeat -concurrency "$CONCURRENCY" -recover \
+          -pgnout file=games.pgn nodes=true seldepth=true nps=true \
+            hashfull=true timeleft=true latency=true pv=true \
+          | tee result.txt || status=$?
+        # what stopped the match, for the manifest. The clock cap is the one
+        # reading a result has to know about, because it is the one that leaves
+        # the question the games were meant to settle unanswered
+        if [ "$status" = "124" ]; then
+          echo "stopped_by=the ${CAP_MINUTES} minute wall clock cap" >> "$GITHUB_OUTPUT"
+          echo "::warning::${SUBJECT} hit the ${CAP_MINUTES} minute cap before its game count"
+        elif [ "$status" != "0" ]; then
+          exit "$status"
+        else
+          echo "stopped_by=fastchess, at the game count" >> "$GITHUB_OUTPUT"
+        fi
