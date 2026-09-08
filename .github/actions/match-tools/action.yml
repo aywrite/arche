@@ -1,5 +1,5 @@
 name: Match tools
-description: Build fastchess and fetch the opening book, into tools/, cached between runs.
+description: Build fastchess and fetch the opening books, into tools/, cached between runs.
 
 inputs:
   fastchess:
@@ -28,9 +28,15 @@ runs:
         path: |
           tools/fastchess
           tools/8moves_v3.pgn
-        # the version belongs to the input rather than to the key, so that
-        # bumping it cannot leave the key naming a build it no longer describes
-        key: match-tools-${{ inputs.fastchess }}-8moves-v3
+          tools/UHO_4060_v2.epd
+        # The version belongs to the input rather than to the key, so that
+        # bumping it cannot leave the key naming a build it no longer describes.
+        # The books are pinned at a commit of the books repository, and that pin
+        # is here for the same reason: without it a changed pin would restore
+        # the file fetched at the old one under the new one's name. It is
+        # written out rather than read from scripts/book.sh, because the key is
+        # wanted before a step has run, and test_book.py holds the two equal.
+        key: match-tools-${{ inputs.fastchess }}-books-65815cc
 
     - name: Build the match tools
       if: steps.cache.outputs.cache-hit != 'true'
@@ -43,6 +49,24 @@ runs:
           https://github.com/Disservin/fastchess.git /tmp/fastchess
         make -C /tmp/fastchess -j"$(nproc)"
         cp /tmp/fastchess/fastchess tools/
-        curl -sSLf -o /tmp/book.zip \
-          https://raw.githubusercontent.com/official-stockfish/books/master/8moves_v3.pgn.zip
-        unzip -qo /tmp/book.zip -d tools
+        # Every book in the table, rather than the one a run asked for. Both of
+        # them together are about four and a half megabytes, which is less than
+        # an input to choose between them would be worth, and it keeps the cache
+        # to one entry whichever book a run plays. Each is fetched at the pin
+        # and checked against the sha256 the table names.
+        while read -r book; do
+          scripts/book.sh fetch "$book" tools \
+            || { echo "::error::cannot fetch the ${book} book"; exit 1; }
+        done < <(scripts/book.sh list)
+
+    - name: Check the books against the table
+      shell: bash
+      run: |
+        # However they got here. The fetch checks what it downloaded, but the
+        # step above is skipped on a cache hit, and a restored file is what
+        # most runs play: without this the pin would be checked on the rare
+        # path and taken on trust on the usual one.
+        while read -r book; do
+          scripts/book.sh verify "$book" tools \
+            || { echo "::error::the ${book} book is not the one it should be"; exit 1; }
+        done < <(scripts/book.sh list)

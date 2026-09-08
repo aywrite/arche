@@ -864,6 +864,51 @@ most of what it claimed. It is not enough to settle a difference of five, so the
 release match is a check on the batch rather than a measurement of any change in
 it.
 
+### Which openings are played
+
+Strength and Calibrate both take a `book` input, and the books it can name are
+the blocks in `scripts/book.sh`, which is where a new one is added. A block is
+the file the book plays as, the format fastchess reads that file in, how many
+openings it holds and the sha256 of the unzipped file. A name with no block
+behind it stops the run in the resolve job rather than at the count:
+
+| book | openings | |
+| --- | --- | --- |
+| `8moves_v3` | 34,700 | eight moves of a real game apiece, balanced |
+| `UHO_4060_v2` | 242,201 | one position a line, unbalanced on purpose |
+
+The default is `8moves_v3` in both workflows and stays there. Every figure in
+the ledger and in the release notes was played on it, so a figure on the other
+book is not comparable with any of them and a default changed by accident
+would make new numbers quietly incomparable with old ones. The second book is
+asked for.
+
+What the second book is for is telling an opening-set effect from a strength
+effect. Every figure either workflow has produced comes from the one opening
+set, so the two cannot be told apart at all, and the panel of opponents shows
+how large an offset of that kind can be: those rungs disagree with the fit by
+about ninety elo more than their game counts explain. Play the same match on
+both books and the difference between the two results is the openings.
+`UHO_4060_v2` is unbalanced by construction where `8moves_v3` is balanced, and
+under `-repeat` both engines play both colours of an opening, so that does not
+bias who wins. It raises how often a game is decided, which is what makes the
+pair a contrast.
+
+Counting openings is not one question. A pgn holds a game per opening and an
+epd holds a position a line, which is why the workflows ask `book.sh count` for
+the figure their slices are cut from rather than grepping for a tag pair.
+
+Both books are fetched at a pinned commit of `official-stockfish/books` and
+checked against the sha256 the block names, and a file that arrives as anything
+else fails the run rather than being played. The action fetched from the
+repository's default branch, which is a branch, and a branch moves under the
+run that names it: the manifest's `book_sha256` would record the change with
+nothing failing. It is the reason `scripts/opponent.sh` refuses a branch for an
+engine. The pin is part of the match-tools cache key as well, so moving it
+cannot leave a cache handing back the old file under the new one's name. Both
+books are fetched whether or not a run plays them, since four and a half
+megabytes between them is less than an input to choose would be worth.
+
 ### Asking whether instead of how much
 
 A fixed count answers "how big is the difference", and the table above says how

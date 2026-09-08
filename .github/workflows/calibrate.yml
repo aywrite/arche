@@ -50,6 +50,10 @@ on:
         description: Passed to fastchess as tc
         type: string
         default: 20+0.2
+      book:
+        description: The opening set the run plays, one of the books in scripts/book.sh. Figures on different books are not comparable.
+        type: string
+        default: 8moves_v3
       ladder:
         description: Opponents to play, as engine, pin and ccrl blitz rating (goldfish:v2.1.1:2252,stash:v17.0:2297)
         type: string
@@ -68,6 +72,9 @@ on:
       time_control:
         type: string
         default: 20+0.2
+      book:
+        type: string
+        default: 8moves_v3
       ladder:
         type: string
         default: zagreus:v5.0:2168,stash:v15.3:2173,goldfish:v2.1.1:2252,stash:v17.0:2297,sofcheck:v0.9-beta:2384,stash:v19.0:2473,stash:v20.0.1:2511,tantabus:v2.0.0:2555
@@ -112,6 +119,7 @@ jobs:
       count: ${{ steps.split.outputs.count }}
       pairs: ${{ steps.split.outputs.pairs }}
       spec: ${{ steps.split.outputs.spec }}
+      book: ${{ steps.book.outputs.book }}
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
@@ -215,6 +223,27 @@ jobs:
             echo "::notice::${index} rungs of $((pairs * 2)) games each: ${LADDER}"
           fi
 
+      # The book the rungs play. The names are the blocks in scripts/book.sh,
+      # which is also where the file, the format and the sha256 come from, and
+      # a name it does not know is refused here rather than by a rung that has
+      # already built an opponent.
+      - name: Work out the book
+        id: book
+        env:
+          BOOK: ${{ inputs.book }}
+        run: |
+          # the list is held rather than piped into grep, so that grep -q
+          # leaving early cannot fail the step under pipefail. -F and -x, so a
+          # box holding a metacharacter or nothing at all is a name the table
+          # does not have rather than a pattern
+          known=$(scripts/book.sh list)
+          if ! grep -Fxq -- "$BOOK" <<< "$known"; then
+            echo "::error::book ${BOOK} is not one of $(tr '\n' ' ' <<< "$known")"
+            exit 1
+          fi
+          echo "::notice::playing the ${BOOK} book"
+          echo "book=${BOOK}" >> "$GITHUB_OUTPUT"
+
   play:
     needs: resolve
     runs-on: ubuntu-latest
@@ -246,6 +275,9 @@ jobs:
       RUNGS: ${{ needs.resolve.outputs.count }}
       PAIRS: ${{ needs.resolve.outputs.pairs }}
       TIME_CONTROL: ${{ inputs.time_control }}
+      # the book the resolve job accepted rather than the input it read, so a
+      # rung plays what was checked
+      BOOK: ${{ needs.resolve.outputs.book }}
       # the openings are taken in book order from an offset, so the seed picks
       # the region of the book each rung plays rather than a shuffle. The run
       # id is one nobody has to choose and no two runs share; a seed given by
@@ -289,10 +321,15 @@ jobs:
       # way, which keeps the pairings independent of each other. The book is
       # counted here rather than written down, because a book that changed
       # size would otherwise move every rung but the first onto its
-      # neighbour's openings.
+      # neighbour's openings. What counting means depends on the book, a game
+      # for a pgn and a line for an epd, which is why scripts/book.sh is asked
+      # rather than grep. The file and the format are carried on from here
+      # because the match runs in tools/, where the script is not.
       - name: Work out the slice of the book
         run: |
-          openings=$(grep -c '^\[Event' tools/8moves_v3.pgn) \
+          book_file=$(scripts/book.sh file "$BOOK")
+          book_format=$(scripts/book.sh format "$BOOK")
+          openings=$(scripts/book.sh count "$BOOK" "tools/${book_file}") \
             || { echo "::error::no openings in the book"; exit 1; }
           start=$(python3 scripts/book_slice.py --openings "$openings" \
             --pairs "$PAIRS" --shards "$RUNGS" --shard "$INDEX" --seed "$SEED" \
@@ -300,6 +337,8 @@ jobs:
           while read -r remark; do
             echo "::warning::${remark}"
           done < slice.txt
+          echo "BOOK_FILE=${book_file}" >> "$GITHUB_ENV"
+          echo "BOOK_FORMAT=${book_format}" >> "$GITHUB_ENV"
           echo "OPENINGS=${openings}" >> "$GITHUB_ENV"
           echo "START=${start}" >> "$GITHUB_ENV"
 
@@ -333,7 +372,7 @@ jobs:
             -engine name=arche cmd=./arche \
             -engine "name=${OPPONENT}" "cmd=./${OPPONENT}" \
             -each proto=uci "tc=$TIME_CONTROL" "option.Hash=$HASH" -startup-ms 20000 \
-            -openings file=8moves_v3.pgn format=pgn order=sequential "start=$START" \
+            -openings "file=$BOOK_FILE" "format=$BOOK_FORMAT" order=sequential "start=$START" \
             -rounds "$PAIRS" -repeat -concurrency "$CONCURRENCY" -recover \
             -pgnout file=games.pgn nodes=true seldepth=true nps=true \
               hashfull=true timeleft=true latency=true pv=true \
@@ -355,7 +394,10 @@ jobs:
         env:
           FASTCHESS: ${{ steps.tools.outputs.fastchess }}
         run: |
-          book_sha=$(sha256sum tools/8moves_v3.pgn | cut -d' ' -f1) || book_sha=unknown
+          # asked for again rather than read from the step that worked out the
+          # slice, since this is written whether or not that step ran
+          book_file=$(scripts/book.sh file "$BOOK") || book_file=unknown
+          book_sha=$(sha256sum "tools/${book_file}" | cut -d' ' -f1) || book_sha=unknown
           toolchain=$(rustc -V) || toolchain=unknown
           repository=$(scripts/opponent.sh repository "$ENGINE") || repository=unknown
           {
@@ -367,7 +409,7 @@ jobs:
             echo "opponent_rating: ${RATING} on the ccrl blitz list"
             echo "build: scripts/build_at.sh for arche, scripts/opponent.sh for ${ENGINE}"
             echo "fastchess: ${FASTCHESS}"
-            echo "book: 8moves_v3.pgn"
+            echo "book: ${book_file}"
             echo "book_sha256: ${book_sha}"
             echo "book_openings: ${OPENINGS:-not counted, the rung did not get that far}"
             echo "seed: ${SEED}"
