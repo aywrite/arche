@@ -192,8 +192,8 @@ of these again without saying what is different this time.
   4,162,584 node tree, 2.1%, a mean of 1.8 nodes each. Counting scouts is the
   wrong denominator. What prices a reduction is the nodes it removes, and
   reading a population share as a cost is the reverse futility entry's error
-  in another shape. Measured against master as it stood before the pruning
-  band widened, with the two halves of the floor asked apart. The deeper
+  in another shape. Measured against master at `ce8b662`, with the two
+  halves of the floor asked apart. The deeper
   scout at depth three is quiescence, and it grows the bench tree by 0.17%
   while the strategic suite falls 813 points (92502 to 91689) and the
   tactical count rises two (221 to 223). The skip at depth three leaves the
@@ -205,6 +205,36 @@ of these again without saying what is different this time.
   Re-ask only with a reason the depth three nodes have become expensive,
   which is a change to what a depth one search costs rather than a change to
   the reduction.
+- Widening the late move pruning band, so that a late quiet the attention
+  model prices at or under -6000 is skipped where the threshold stood at
+  -7954. The offline reading was favourable and the games could not see it.
+  What prices the move is the rate in the band the wider threshold newly
+  reaches, since the moves already skipped are skipped either way and the
+  moves the reduced scout writes off are written off either way. Over the
+  fifteen hundred held-out positions of `strategy.epd` that band hands back
+  0.114% of 18,442 rows for a full search (95% upper bound 0.163%), against
+  the 0.16% at depth four, 0.21% at five and 0.46% at six that the reduction
+  already gets wrong, so -6000 is the last point on the grid under all
+  three. The tree came out 1.68% smaller at the bench's depth, and 14.6%
+  smaller at depth nine over the sixteen bench positions the skip can reach.
+  Two sprt batches at 10+0.1 against master at `ce8b662` (sprt [0, 10]) then
+  put it at nothing: -13 ±24 over 500 games with the likelihood ratio at
+  -1.18, and +1 ±17 over a further 1,000 at -0.47. The first batch's -13
+  sits inside its own interval and the second contradicted it, so the number
+  to read is the 1,500 games together, which are centred near zero. The
+  batches ran from different seeds and neither carried the other's pairs in,
+  so their ratios were added by hand rather than read as one continued test.
+  That is weaker than a run that carries them, and -1.65 against a -2.94
+  bound falls short of accepting H0 either way. The suites dissented from
+  the start and were right to. The tactical count went 221 to 220 and the
+  strategic total 92502 to 92456, both small enough to read as the tree
+  being reshuffled, and neither suite is given the depth the smaller tree
+  buys. The band reading was sound about what the skip costs in accuracy. It
+  says nothing about what the nodes the skip saves are worth, and at this
+  control they are worth nothing a game can see. Re-ask only at a control
+  long enough for 1.7% of the tree to show, or with the skip moved to where
+  it takes more than that. The `epd <file>` word on the reductions argument
+  the band was read with landed on its own and stays.
 - Prefetching a child's transposition slot straight after `make_move`, 6.7%
   slower over six interleaved rounds. The prefetch sits immediately before the
   recursive call and the child probes the table almost first, so there is no
