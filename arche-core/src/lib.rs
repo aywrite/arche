@@ -13,6 +13,7 @@ mod misc;
 mod ordering;
 mod play;
 mod psqt;
+pub mod recorder;
 pub mod reduction;
 pub mod residual;
 pub mod strategy;

@@ -103,12 +103,16 @@ material plus piece square tables, tapered between middlegame and endgame.
 - **bench.rs**: A fixed suite of positions searched to a fixed depth,
   printing exact node counts. This is what a commit's `Bench:` trailer
   states and what CI verifies.
+- **recorder.rs**: What the three recorders below share. The reservoir
+  that hangs off an engine and keeps one node in every n, the loop that
+  searches a suite with one armed, the spread the three key by, and the
+  window a sample reads off the node. An engine with nothing armed
+  searches the tree it searched before there was a reservoir at all.
 - **residual.rs**: What the shortcuts cost in accuracy. It samples the
   nodes reverse futility and the null move pass answered, and the nodes
   reverse futility could have answered and did not, then replays each one
   under the reference search to see whether the cutoff was one the
-  position allowed. Driven by the `residuals` argument. The reservoir it
-  samples with is shared by the two recorders below.
+  position allowed. Driven by the `residuals` argument.
 - **census.rs**: Which move cuts a node off, and what it cut ahead of. One
   row per sampled full width node, whether it cut or ran out of moves, so
   the two can be read against each other. Driven by the `cutoffs`

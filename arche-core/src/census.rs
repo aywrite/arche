@@ -24,15 +24,14 @@
 //! that contrast honest; a cut-only stream reproduces the very censoring
 //! the census exists to measure.
 //!
-//! The recorder hangs off an engine the way the residual sampler does, and
-//! an engine without one searches exactly the tree it searched before there
-//! was a census at all, which is what the pinned bench counts say.
+//! The recorder hangs off an engine on the reservoir's terms, and an engine
+//! without one searches exactly the tree it searched before there was a
+//! census at all, which is what the pinned bench counts say.
 
-use crate::bench::{self, Position};
-use crate::board::Board;
-use crate::engine::{AlphaBeta, Engine, SearchConfig, SearchParameters};
+use crate::bench::Position;
+use crate::engine::SearchConfig;
 use crate::play::Play;
-use crate::residual::{DEPTH_SPREAD, Sampler, Window};
+use crate::recorder::{self, DEPTH_SPREAD, Window};
 use std::fmt;
 
 /// What the census contributes to a sampling key: an arbitrary constant far
@@ -250,27 +249,14 @@ pub struct Report {
 /// there is no replay, because an event is a portrait of a decision and not
 /// a claim a reference could check.
 ///
-/// One sampler for the whole suite, carried from each position's engine to
-/// the next, so the cap describes the run and not each position of it; the
-/// configuration is the default, since the ordering under census is the
+/// The configuration is the default, since the ordering under census is the
 /// ordering the engine plays with.
 pub fn run(positions: &[Position], depth: u8, every: u32, cap: usize) -> Report {
     let depth = depth.max(1);
     // the rate the sampler will really keep to, so the header states the
     // run that happened
     let every = every.max(1);
-    let mut sampler = Sampler::with_cap(every, cap);
-    for position in positions {
-        let board = Board::from_fen(&position.fen)
-            .unwrap_or_else(|e| panic!("census position {} does not parse: {}", position.id, e));
-        let mut engine = AlphaBeta::with_config(board, bench::TABLE_BYTES, SearchConfig::default());
-        engine.sample_cutoffs(sampler);
-        engine.iterative_deepening_search(SearchParameters::to_depth(depth), |_, _, _, _| {});
-        sampler = engine
-            .take_census()
-            .expect("the sampler just handed to the engine comes back");
-    }
-    let sampled = sampler.drain();
+    let sampled = recorder::record(positions, depth, every, cap, SearchConfig::default());
     Report {
         depth,
         every,
@@ -396,7 +382,7 @@ fn mean(total: usize, over: usize) -> String {
 impl fmt::Display for Report {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         write!(f, "cutoffs depth {} every {}", self.depth, self.every)?;
-        if self.cap != crate::residual::DEFAULT_CAP {
+        if self.cap != recorder::DEFAULT_CAP {
             write!(f, " cap {}", self.cap)?;
         }
         write!(
@@ -485,9 +471,10 @@ impl fmt::Display for Report {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::board::Board;
     use crate::misc::Piece;
-    use crate::residual::DEFAULT_CAP;
-    use crate::residual::fixtures::{recording_leaves_the_search_where_it_was, suite};
+    use crate::recorder::fixtures::{recording_leaves_the_search_where_it_was, suite};
+    use crate::recorder::{DEFAULT_CAP, Sampler};
 
     fn quiet(from: u8, to: u8) -> Play {
         Play::new(from, to, None, None, false, false)
@@ -860,10 +847,10 @@ mod tests {
     fn recording_leaves_the_measured_search_where_it_was() {
         recording_leaves_the_search_where_it_was(
             4,
-            |engine| engine.sample_cutoffs(Sampler::with_cap(1, DEFAULT_CAP)),
+            |engine| engine.arm(Sampler::<Event>::with_cap(1, DEFAULT_CAP)),
             |engine| {
                 engine
-                    .take_census()
+                    .disarm::<Event>()
                     .expect("the sampler comes back")
                     .drain()
                     .taken
