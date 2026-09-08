@@ -412,6 +412,148 @@ impl Bucket {
     };
 }
 
+/// Asking the kernel to back the table with huge pages.
+///
+/// The table is the search's one large random access, and every probe that
+/// misses the translation buffer pays a page walk before it pays a cache
+/// miss. A 256MB table is 65,536 pages of 4KiB against a second level
+/// buffer holding on the order of fifteen hundred entries, so nearly every
+/// probe walks; at 2MiB a page the same table is 128 entries and the walks
+/// mostly stop. The commit that added this has the measurements, which
+/// grow with the table. Nothing is issued in the search: the advice is
+/// given once, when the table is allocated.
+///
+/// Linux only. macOS has no advice for this and Windows wants a privilege
+/// the process does not hold, so `advise` is nothing there and the table
+/// is allocated as before.
+#[cfg(target_os = "linux")]
+mod huge_pages {
+    use super::Bucket;
+    use std::ffi::c_void;
+    use std::mem;
+
+    /// A huge page on a kernel with 4KiB base pages, which is what the linux
+    /// builds here run on. A kernel with larger base pages has larger huge
+    /// pages too; the advice still lands there, since the start is base page
+    /// aligned, and only the trimming below is at the wrong granularity.
+    const HUGE_PAGE: usize = 2 * 1024 * 1024;
+
+    /// The reservation the advice is not given below. glibc answers a request
+    /// under its mmap threshold out of the general heap, and that threshold
+    /// rises as far as 32MB on its own as large blocks are freed. Advising a
+    /// table served from the heap marks the heap, which stays marked after
+    /// the table is dropped. Above the threshold the table has a mapping of
+    /// its own. An operator who raises the threshold by hand can put a larger
+    /// table on the heap, and the advice then marks heap memory the process
+    /// still maps, which is untidy and not unsound. The bound gives up
+    /// nothing measurable: the change at 16MB was inside the spread, and the
+    /// table an engine plays with is `DEFAULT_TABLE_BYTES`.
+    const ADVISE_ABOVE: usize = 32 * 1024 * 1024;
+
+    /// The advice, declared here rather than through the `libc` crate: std
+    /// already links libc on linux, the signature is POSIX, and the value is
+    /// `asm-generic/mman-common.h`'s, which every architecture rust targets
+    /// uses (parisc had its own until 6.2, and rust has no parisc target).
+    const MADV_HUGEPAGE: i32 = 14;
+    unsafe extern "C" {
+        fn madvise(addr: *mut c_void, length: usize, advice: i32) -> i32;
+    }
+
+    /// The huge page aligned interior of a range starting at `address` and
+    /// running `bytes`, as an offset from that address and a length, or
+    /// none when the range holds no whole huge page. `madvise` reads an
+    /// unaligned start as the page it falls in, so the whole range would
+    /// name a page the table does not own; a `Vec`'s buffer is aligned to
+    /// its element and to nothing the kernel cares about. A 256MB table
+    /// gives up under 2MiB of itself this way.
+    fn interior(address: usize, bytes: usize) -> Option<(usize, usize)> {
+        let first = address.checked_next_multiple_of(HUGE_PAGE)?;
+        let end = address.checked_add(bytes)? / HUGE_PAGE * HUGE_PAGE;
+        (end > first).then(|| (first - address, end - first))
+    }
+
+    /// Advise the reservation at `buffer`, `buckets` long. Called after the
+    /// buffer is reserved and before it is written, so the pages fault in
+    /// huge rather than being collapsed later. Failure is not an error: a
+    /// kernel built without transparent huge pages, or one with them set to
+    /// `never`, refuses the advice and nothing changes. With `defrag` set to
+    /// `madvise` as well a fragmented host may compact before the fault, so
+    /// a large table can be slower to come up there.
+    pub(super) fn advise(buffer: *mut Bucket, buckets: usize) {
+        let bytes = buckets * mem::size_of::<Bucket>();
+        if bytes <= ADVISE_ABOVE {
+            return;
+        }
+        let Some((offset, length)) = interior(buffer.addr(), bytes) else {
+            return;
+        };
+        // SAFETY: the offset and the length stay inside the `bytes` the
+        // caller reserved, which the test
+        // `the_advised_range_stays_inside_the_allocation` holds, so `add`
+        // stays inside one allocation. `madvise`
+        // neither reads nor writes the range and cannot move it, so the
+        // buffer is the same buffer afterwards and the `Vec` still owns it.
+        // A refused advice leaves the mapping alone, so the answer is not
+        // read.
+        unsafe {
+            madvise(
+                buffer.cast::<u8>().add(offset).cast(),
+                length,
+                MADV_HUGEPAGE,
+            );
+        }
+    }
+
+    #[cfg(test)]
+    mod tests {
+        use super::{HUGE_PAGE, interior};
+
+        /// The arithmetic the advice is built on, which is the half of it
+        /// a test can check.
+        #[test]
+        fn the_advised_range_is_the_aligned_interior() {
+            // an aligned range of whole huge pages is asked for entire
+            assert_eq!(interior(HUGE_PAGE, 4 * HUGE_PAGE), Some((0, 4 * HUGE_PAGE)));
+            // an unaligned one gives up the part page at each end
+            assert_eq!(
+                interior(HUGE_PAGE + 64, 4 * HUGE_PAGE),
+                Some((HUGE_PAGE - 64, 3 * HUGE_PAGE))
+            );
+            // a range too short to hold a whole page has no interior,
+            // aligned or not
+            assert_eq!(interior(HUGE_PAGE, HUGE_PAGE - 1), None);
+            assert_eq!(interior(HUGE_PAGE + 64, HUGE_PAGE), None);
+            assert_eq!(interior(0, 0), None);
+            // and neither end is allowed to wrap
+            assert_eq!(interior(usize::MAX - 63, 64), None);
+            assert_eq!(interior(HUGE_PAGE, usize::MAX), None);
+        }
+
+        /// What the SAFETY note on the call claims: every advised range lies
+        /// inside the range it was asked about, and starts on a huge page.
+        #[test]
+        fn the_advised_range_stays_inside_the_allocation() {
+            for address in [0, 1, 64, HUGE_PAGE - 1, HUGE_PAGE, 3 * HUGE_PAGE + 4096] {
+                for bytes in [0, 1, 4096, HUGE_PAGE, 5 * HUGE_PAGE + 17] {
+                    let Some((offset, length)) = interior(address, bytes) else {
+                        continue;
+                    };
+                    assert!(
+                        offset + length <= bytes,
+                        "{address}+{bytes} advised {offset}+{length}"
+                    );
+                    assert_eq!((address + offset) % HUGE_PAGE, 0);
+                }
+            }
+        }
+    }
+}
+
+#[cfg(not(target_os = "linux"))]
+mod huge_pages {
+    pub(super) fn advise(_buffer: *mut super::Bucket, _buckets: usize) {}
+}
+
 #[derive(Debug)]
 pub struct TranspositionTable {
     table: Vec<Bucket>,
@@ -432,6 +574,7 @@ impl TranspositionTable {
         let buckets = capacity.div_ceil(BUCKET).max(1);
         let mut table = Vec::new();
         table.try_reserve_exact(buckets).ok()?;
+        huge_pages::advise(table.as_mut_ptr(), table.capacity());
         table.resize(buckets, Bucket::EMPTY);
         Some(Self {
             table,

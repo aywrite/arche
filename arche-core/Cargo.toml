@@ -12,8 +12,9 @@ publish = false
 [lib]
 bench = false #https://bheisler.github.io/criterion.rs/book/faq.html#cargo-bench-gives-unrecognized-option-errors-for-valid-command-line-options
 
-# The unsafe here is the move list's initialised prefix and the static
-# exchange gain array. Each carries a SAFETY note; nothing checks
+# The unsafe here is the move list's initialised prefix, the static
+# exchange gain array and the `madvise` that asks for the transposition
+# table's huge pages. Each carries a SAFETY note; nothing checks
 # mechanically that the argument keeps holding. This lint is the half a
 # compiler can check: without it the body of an `unsafe fn` is unsafe
 # throughout, so a new unsafe operation inside one needs no block and gets
