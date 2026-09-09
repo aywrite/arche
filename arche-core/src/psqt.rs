@@ -268,6 +268,52 @@ mod tests {
         eg_value(packed_at(piece, color, file, rank))
     }
 
+    /// A whole table the way white reads it, square by square, for the tests
+    /// that are about where a piece's best and worst squares are rather than
+    /// about what any one of them scores.
+    fn white_table(piece: Piece, half: fn(i32) -> i32) -> Vec<(File, u8, i32)> {
+        let mut squares = Vec::with_capacity(64);
+        for rank in 1..=8 {
+            for file in File::VARIANTS {
+                squares.push((file, rank, half(packed_at(piece, Color::White, file, rank))));
+            }
+        }
+        squares
+    }
+
+    /// Squares, in the order `white_table` walks them.
+    type Squares = Vec<(File, u8)>;
+
+    /// The squares a table scores worst and best, as sets, so a test can name
+    /// them rather than name the numbers they hold.
+    fn extremes(piece: Piece, half: fn(i32) -> i32) -> (Squares, Squares) {
+        let squares = white_table(piece, half);
+        let least = squares
+            .iter()
+            .map(|(_, _, v)| *v)
+            .min()
+            .expect("64 squares");
+        let most = squares
+            .iter()
+            .map(|(_, _, v)| *v)
+            .max()
+            .expect("64 squares");
+        let at = |want: i32| {
+            squares
+                .iter()
+                .filter(|(_, _, v)| *v == want)
+                .map(|(file, rank, _)| (*file, *rank))
+                .collect()
+        };
+        (at(least), at(most))
+    }
+
+    const CORNERS: [(File, u8); 4] = [(File::A, 1), (File::H, 1), (File::A, 8), (File::H, 8)];
+
+    fn on_the_edge(file: File, rank: u8) -> bool {
+        rank == 1 || rank == 8 || file == File::A || file == File::H
+    }
+
     /// The tables are written with the eighth rank first and the board indexes
     /// a1 as zero, so it is easy to hand each colour the other one's table. Both
     /// colours are then wrong together, which leaves the two of them still
@@ -275,53 +321,119 @@ mod tests {
     /// assertion about which way up a table is will notice, so these name the
     /// squares rather than compare the colours.
     ///
+    /// They name the squares and not the numbers. What a square is worth is
+    /// something a fit may move, and a pin on the number would fail every
+    /// re-tune while saying nothing about whether the table still meant what
+    /// it used to. What each table is for is the durable statement, and it is
+    /// the one worth failing on.
+    ///
     /// White's squares alone: `the_two_colours_are_reflections_of_each_other`
     /// walks every piece on every square, so black's follow from white's and
     /// naming them here would only say the same thing twice.
     #[test]
     fn a_white_pawn_is_worth_more_the_closer_it_gets_to_promoting() {
-        assert_eq!(value(Piece::Pawn, Color::White, File::E, 2), -20);
-        assert_eq!(value(Piece::Pawn, Color::White, File::E, 4), 20);
-        assert_eq!(value(Piece::Pawn, Color::White, File::E, 7), 50);
+        let e = |rank| value(Piece::Pawn, Color::White, File::E, rank);
+        assert!(e(7) > e(4) && e(4) > e(2), "{}, {}, {}", e(2), e(4), e(7));
+    }
+
+    /// A pawn cannot stand on either back rank, so neither table says
+    /// anything about those sixteen squares and both leave them at nothing.
+    /// Sixteen of the five hundred and twelve table entries have no support
+    /// in any corpus, and this is which ones.
+    #[test]
+    fn a_pawn_scores_nothing_on_a_rank_it_cannot_stand_on() {
+        for file in File::VARIANTS {
+            for rank in [1, 8] {
+                assert_eq!(value(Piece::Pawn, Color::White, file, rank), 0);
+                assert_eq!(eg(Piece::Pawn, Color::White, file, rank), 0);
+            }
+        }
     }
 
     #[test]
     fn a_rook_belongs_on_the_seventh_rank() {
-        // the seventh rank row is 5 at the edges and 10 across the middle
-        assert_eq!(value(Piece::Rook, Color::White, File::D, 7), 10);
-        assert_eq!(value(Piece::Rook, Color::White, File::A, 7), 5);
-        assert_eq!(value(Piece::Rook, Color::White, File::A, 2), -5);
-        // and the square it lands on castling short is worth a little
-        assert_eq!(value(Piece::Rook, Color::White, File::D, 1), 5);
+        for file in File::VARIANTS {
+            let seventh = value(Piece::Rook, Color::White, file, 7);
+            for rank in [2, 4, 6] {
+                let below = value(Piece::Rook, Color::White, file, rank);
+                assert!(
+                    seventh > below,
+                    "{:?}7 is {} and {:?}{} is {}",
+                    file,
+                    seventh,
+                    file,
+                    rank,
+                    below
+                );
+            }
+        }
+        // and the centre files of the back rank beat its corners, which is
+        // the open file the rook is put on before there is a seventh to take
+        assert!(
+            value(Piece::Rook, Color::White, File::D, 1)
+                > value(Piece::Rook, Color::White, File::A, 1)
+        );
     }
 
     #[test]
-    fn a_knight_is_worth_least_in_the_corners() {
-        for (file, rank) in [(File::A, 1), (File::H, 1), (File::A, 8), (File::H, 8)] {
-            assert_eq!(value(Piece::Knight, Color::White, file, rank), -50);
-        }
-        assert_eq!(value(Piece::Knight, Color::White, File::E, 4), 20);
+    fn a_knight_is_worth_least_in_the_corners_and_most_in_the_middle() {
+        let (least, most) = extremes(Piece::Knight, mg_value);
+        assert_eq!(least, CORNERS, "the worst squares are {:?}", least);
+        assert_eq!(
+            most,
+            vec![(File::D, 4), (File::E, 4), (File::D, 5), (File::E, 5)],
+            "the best squares are {:?}",
+            most
+        );
     }
 
     /// The bishop and the queen are the two the reflection test below cannot
     /// tell apart: both tables are symmetric about the centre, so reading one
-    /// into the other's row passes it and every other test here. The squares
-    /// named are ones the two disagree on, which is what pins each table to
-    /// its own row rather than to a shape they share.
+    /// into the other's row passes it and every other test here. Each has a
+    /// shape of its own below, and the test after them is what says the two
+    /// shapes belong to two tables.
     #[test]
-    fn a_bishop_is_worth_most_on_the_long_diagonals() {
-        assert_eq!(value(Piece::Bishop, Color::White, File::B, 3), 10);
-        assert_eq!(value(Piece::Bishop, Color::White, File::C, 4), 10);
-        assert_eq!(value(Piece::Bishop, Color::White, File::A, 1), -20);
+    fn a_bishop_is_worth_least_in_the_corners_and_most_on_the_long_diagonals() {
+        let (least, _) = extremes(Piece::Bishop, mg_value);
+        assert_eq!(least, CORNERS, "the worst squares are {:?}", least);
+        // the fianchetto squares, which are on a long diagonal and next to a
+        // corner that is the table's worst
+        for (file, corner) in [(File::B, File::A), (File::G, File::H)] {
+            assert!(
+                value(Piece::Bishop, Color::White, file, 2)
+                    > value(Piece::Bishop, Color::White, corner, 1),
+                "{:?}2 against {:?}1",
+                file,
+                corner
+            );
+        }
     }
 
     #[test]
     fn a_queen_is_kept_off_the_edges_but_not_pushed_out() {
-        // the same squares a bishop scores 10 on, which is what tells the two
-        // tables apart
-        assert_eq!(value(Piece::Queen, Color::White, File::B, 3), 5);
-        assert_eq!(value(Piece::Queen, Color::White, File::C, 4), 5);
-        assert_eq!(value(Piece::Queen, Color::White, File::A, 1), -20);
+        let (least, most) = extremes(Piece::Queen, mg_value);
+        assert_eq!(least, CORNERS, "the worst squares are {:?}", least);
+        // not pushed out: nowhere on the edge is the best a queen can do,
+        // and the corners are the only squares the table really refuses
+        for (file, rank) in &most {
+            assert!(
+                !on_the_edge(*file, *rank),
+                "{:?}{} is the best square",
+                file,
+                rank
+            );
+        }
+    }
+
+    /// The two are different tables, which nothing above says: each of the
+    /// shapes named for them holds of the other's table as well, and the
+    /// reflection test walks both colours of one piece rather than two pieces.
+    #[test]
+    fn a_bishop_and_a_queen_do_not_read_one_table() {
+        assert_ne!(
+            white_table(Piece::Bishop, mg_value),
+            white_table(Piece::Queen, mg_value)
+        );
     }
 
     /// Weaker than the tests above, since it holds whether or not the tables are
@@ -359,14 +471,28 @@ mod tests {
     /// middlegame, in the middle of the board in the ending.
     #[test]
     fn a_king_hides_in_the_middlegame_and_comes_out_in_the_ending() {
-        // the squares castling short puts it on score best of any
-        assert_eq!(value(Piece::King, Color::White, File::G, 1), 30);
-        assert_eq!(value(Piece::King, Color::White, File::E, 1), 0);
-        assert_eq!(value(Piece::King, Color::White, File::E, 4), -40);
-
-        assert_eq!(eg(Piece::King, Color::White, File::E, 4), 40);
-        assert_eq!(eg(Piece::King, Color::White, File::G, 1), -30);
-        assert_eq!(eg(Piece::King, Color::White, File::A, 1), -50);
+        let castled = |half: fn(i32) -> i32| half(packed_at(Piece::King, Color::White, File::G, 1));
+        let centre = |half: fn(i32) -> i32| half(packed_at(Piece::King, Color::White, File::E, 4));
+        // the two halves disagree about the same two squares, which is what
+        // the taper exists to say
+        assert!(castled(mg_value) > centre(mg_value));
+        assert!(centre(eg_value) > castled(eg_value));
+        // and the ending's worst square is a corner, which is where a king
+        // has least of the board in reach
+        let (least, most) = extremes(Piece::King, eg_value);
+        assert!(
+            least.contains(&(File::A, 1)),
+            "the worst squares are {:?}",
+            least
+        );
+        for (file, rank) in &most {
+            assert!(
+                !on_the_edge(*file, *rank),
+                "{:?}{} is the best square",
+                file,
+                rank
+            );
+        }
     }
 
     /// The endgame pawn table is a ramp and the midgame one is not, which is
@@ -374,14 +500,29 @@ mod tests {
     /// shelter a king is the square that shows it.
     #[test]
     fn a_pawn_is_scored_by_rank_alone_in_the_ending() {
-        for file in File::VARIANTS {
-            assert_eq!(eg(Piece::Pawn, Color::White, file, 7), 80);
-            assert_eq!(eg(Piece::Pawn, Color::White, file, 5), 30);
-            assert_eq!(eg(Piece::Pawn, Color::White, file, 2), 0);
+        for rank in 2..=7 {
+            let ramp = eg(Piece::Pawn, Color::White, File::A, rank);
+            for file in File::VARIANTS {
+                assert_eq!(
+                    eg(Piece::Pawn, Color::White, file, rank),
+                    ramp,
+                    "{:?}{}",
+                    file,
+                    rank
+                );
+            }
+            // and it rises toward promotion rather than being flat
+            if rank > 2 {
+                assert!(ramp > eg(Piece::Pawn, Color::White, File::A, rank - 1));
+            }
         }
-        // shelter in the middlegame, nothing either way in the ending
-        assert_eq!(value(Piece::Pawn, Color::White, File::D, 2), -20);
-        assert_eq!(eg(Piece::Pawn, Color::White, File::D, 2), 0);
+        // shelter in the middlegame, where the same rank is not one number:
+        // a pawn on d2 is held back to cover a castled king and one on a2 is
+        // not, so the midgame table is not a ramp
+        assert_ne!(
+            value(Piece::Pawn, Color::White, File::D, 2),
+            value(Piece::Pawn, Color::White, File::A, 2)
+        );
     }
 
     /// A pair packs and unpacks to itself, negative halves included: a black
