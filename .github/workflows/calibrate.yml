@@ -91,6 +91,26 @@ on:
         description: The name the engine being measured plays under
         type: string
         default: arche
+      # What the rungs are played on rather than what they play. These are
+      # workflow_call inputs for the reason engine_name is: what a person
+      # running this from the actions tab comes to change is the ladder or
+      # the games. A workflow calling this can name them.
+      hash_mb:
+        description: The table both sides are given, in MB
+        type: number
+        default: 256
+      concurrency:
+        description: Games a rung plays at once
+        type: number
+        default: 2
+      max_match_minutes:
+        description: The wall clock cap on play alone
+        type: number
+        default: 90
+      startup_ms:
+        description: How long fastchess waits for an engine to answer uci
+        type: number
+        default: 20000
 
 permissions:
   contents: read
@@ -106,18 +126,25 @@ env:
   # A workflow_call default is not applied to a run started from the actions
   # tab, so the default is here as well as on the input.
   ENGINE_NAME: ${{ inputs.engine_name || 'arche' }}
+  # What the rungs are played on, from the inputs above and with their
+  # defaults written here for the same reason.
+  #
   # 256MB is what ccrl gives an engine and what this one defaults to, so a rung
   # is played on the table its opponent was rated with. An engine that declares
   # a smaller maximum is not sent it at all and plays on its own default, which
   # its result block records. Naming the size once here is what puts it in every
   # manifest as well as in the match.
-  HASH: 256
-  CONCURRENCY: 2
-  # The wall clock cap on play alone, inside the job's timeout with room for
-  # the two builds before it. Twenty six games at 20+0.2 is about a quarter of
-  # an hour, so this is headroom for a slow runner or a longer control rather
-  # than a budget to be spent.
-  MAX_MATCH_MINUTES: 90
+  HASH: ${{ inputs.hash_mb || 256 }}
+  CONCURRENCY: ${{ inputs.concurrency || 2 }}
+  # The wall clock cap on play alone. The play job's timeout is worked out from
+  # it with half an hour over, which is what the two builds before the match
+  # run in. Twenty six games at 20+0.2 is about a quarter of an hour, so this
+  # is headroom for a slow runner or a longer control rather than a budget to
+  # be spent.
+  MAX_MATCH_MINUTES: ${{ inputs.max_match_minutes || 90 }}
+  # The engine allocates its table before it answers uci, which takes it
+  # several seconds and the ten second default does not always allow for.
+  STARTUP_MS: ${{ inputs.startup_ms || 20000 }}
 
 jobs:
   # The ladder is a string, and a matrix is a list, so the string is picked
@@ -137,6 +164,7 @@ jobs:
       pairs: ${{ steps.split.outputs.pairs }}
       spec: ${{ steps.split.outputs.spec }}
       book: ${{ steps.book.outputs.book }}
+      play_timeout: ${{ steps.timeout.outputs.minutes }}
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
@@ -261,6 +289,13 @@ jobs:
           echo "::notice::playing the ${BOOK} book"
           echo "book=${BOOK}" >> "$GITHUB_OUTPUT"
 
+      # How long a rung is given. A job timeout takes an expression but
+      # expressions have no arithmetic, so the cap and the half hour over it
+      # are added up here.
+      - name: Work out how long a rung is given
+        id: timeout
+        run: echo "minutes=$((MAX_MATCH_MINUTES + 30))" >> "$GITHUB_OUTPUT"
+
   play:
     needs: resolve
     runs-on: ubuntu-latest
@@ -273,8 +308,9 @@ jobs:
     # without this a job is named for every value in its matrix entry, which
     # reads as play (bbc, 2, 1.1, 2018) and says nothing at a glance
     name: play ${{ matrix.rung.engine }}-${{ matrix.rung.tag }}
-    # the play cap above with room for the two builds before it
-    timeout-minutes: 120
+    # the play cap with room for the two builds before it, worked out in
+    # resolve
+    timeout-minutes: ${{ fromJSON(needs.resolve.outputs.play_timeout) }}
     defaults:
       run:
         # naming the shell is what turns on pipefail, without it a fastchess
@@ -372,10 +408,6 @@ jobs:
           # take, so such an opponent plays on its own default and the warning
           # saying so is in the result block.
           #
-          # The engine allocates its table before it answers uci, which takes
-          # it several seconds and the ten second default does not always
-          # allow for.
-          #
           # The pgn carries everything fastchess can record about a move, so a
           # game that went wrong can be read for what the search was seeing at
           # the time. tbhits is left off; there are no tablebases here.
@@ -388,7 +420,8 @@ jobs:
           timeout -k 60 -s INT "${MAX_MATCH_MINUTES}m" ./fastchess \
             -engine "name=${ENGINE_NAME}" "cmd=./${ENGINE_NAME}" \
             -engine "name=${OPPONENT}" "cmd=./${OPPONENT}" \
-            -each proto=uci "tc=$TIME_CONTROL" "option.Hash=$HASH" -startup-ms 20000 \
+            -each proto=uci "tc=$TIME_CONTROL" "option.Hash=$HASH" \
+            -startup-ms "$STARTUP_MS" \
             -openings "file=$BOOK_FILE" "format=$BOOK_FORMAT" order=sequential "start=$START" \
             -rounds "$PAIRS" -repeat -concurrency "$CONCURRENCY" -recover \
             -pgnout file=games.pgn nodes=true seldepth=true nps=true \
@@ -440,6 +473,7 @@ jobs:
             # which is why the name says asked rather than given
             echo "hash_mb_asked: ${HASH}"
             echo "concurrency: ${CONCURRENCY}"
+            echo "startup_ms: ${STARTUP_MS}"
             echo "wall_clock_cap_minutes: ${MAX_MATCH_MINUTES}"
             # unset when the play step never got to the end, which is worth
             # saying rather than leaving the games to look as if they ran out

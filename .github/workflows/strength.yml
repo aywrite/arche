@@ -118,22 +118,50 @@ on:
         description: Append the result to the release notes for this tag
         type: boolean
         default: false
+      # What the match is played on rather than what it plays. None of these
+      # are boxes above: the form is already long, and these are not the
+      # questions the person running a match came to answer. A workflow
+      # calling this can name them.
+      hash_mb:
+        description: The table both sides are given, in MB
+        type: number
+        default: 256
+      concurrency:
+        description: Games a shard plays at once
+        type: number
+        default: 2
+      max_match_minutes:
+        description: The wall clock cap on play alone
+        type: number
+        default: 150
+      startup_ms:
+        description: How long fastchess waits for an engine to answer uci
+        type: number
+        default: 20000
 
 permissions:
   contents: read
 
 env:
+  # What the match is played on, from the inputs above. A workflow_call
+  # default is not applied to a run started from the actions tab, so each
+  # default is written here as well.
+  #
   # 256MB is what the engine defaults to. Naming it here holds the two sides to
   # the same table whatever a future default is, and puts the number in the
   # manifest with the rest of what the match was played on.
-  HASH: 256
-  CONCURRENCY: 2
-  # The wall clock cap on play alone. It sits inside the job's timeout with room
-  # for the builds before it and the upload after it, so a shard stopped by the
-  # clock still keeps the games it did play. A hundred game shard is about
-  # ninety minutes at 30+0.3 and half an hour at 10+0.1, so this is headroom for
-  # a slow runner rather than a budget to be spent.
-  MAX_MATCH_MINUTES: 150
+  HASH: ${{ inputs.hash_mb || 256 }}
+  CONCURRENCY: ${{ inputs.concurrency || 2 }}
+  # The wall clock cap on play alone. The play job's timeout is worked out from
+  # it with half an hour over, so a shard stopped by the clock still keeps the
+  # games it did play. A hundred game shard is about ninety minutes at 30+0.3
+  # and half an hour at 10+0.1, so this is headroom for a slow runner rather
+  # than a budget to be spent.
+  MAX_MATCH_MINUTES: ${{ inputs.max_match_minutes || 150 }}
+  # The engine allocates its transposition table before it answers uci, which
+  # four copies starting at once can take longer over than the ten second
+  # default allows.
+  STARTUP_MS: ${{ inputs.startup_ms || 20000 }}
 
 jobs:
   # Split out so the match can be skipped in one place rather than every step
@@ -155,6 +183,7 @@ jobs:
       count: ${{ steps.split.outputs.count }}
       pairs: ${{ steps.split.outputs.pairs }}
       book: ${{ steps.book.outputs.book }}
+      play_timeout: ${{ steps.timeout.outputs.minutes }}
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
@@ -286,6 +315,14 @@ jobs:
           echo "::notice::playing the ${BOOK} book"
           echo "book=${BOOK}" >> "$GITHUB_OUTPUT"
 
+      # How long the play job is given. A job timeout takes an expression but
+      # expressions have no arithmetic, so the cap and the half hour over it
+      # are added up here. The half hour is what the builds before the match
+      # and the upload after it run in.
+      - name: Work out how long a shard is given
+        id: timeout
+        run: echo "minutes=$((MAX_MATCH_MINUTES + 30))" >> "$GITHUB_OUTPUT"
+
   play:
     needs: resolve
     if: needs.resolve.outputs.baseline_sha != ''
@@ -296,8 +333,8 @@ jobs:
       fail-fast: false
       matrix:
         shard: ${{ fromJSON(needs.resolve.outputs.shards) }}
-    # the play cap above with room for the builds before it
-    timeout-minutes: 180
+    # the play cap with room for the builds before it, worked out in resolve
+    timeout-minutes: ${{ fromJSON(needs.resolve.outputs.play_timeout) }}
     defaults:
       run:
         # naming the shell is what turns on pipefail, without it a fastchess
@@ -387,10 +424,6 @@ jobs:
           # what they said. The shards play their pairs out and the summary
           # runs the test over all of them at once.
           #
-          # the engine allocates its transposition table before it answers
-          # uci, which four copies starting at once can take longer over than
-          # the ten second default allows.
-          #
           # The pgn carries everything fastchess can record about a move, so a
           # game that went wrong can be read for what the search was seeing at
           # the time. tbhits is left off; there are no tablebases here.
@@ -403,7 +436,8 @@ jobs:
           timeout -k 60 -s INT "${MAX_MATCH_MINUTES}m" ./fastchess \
             -engine "name=$CANDIDATE" cmd=./new \
             -engine "name=$PREVIOUS" cmd=./old \
-            -each proto=uci "tc=$TIME_CONTROL" "option.Hash=$HASH" -startup-ms 20000 \
+            -each proto=uci "tc=$TIME_CONTROL" "option.Hash=$HASH" \
+            -startup-ms "$STARTUP_MS" \
             -openings "file=$BOOK_FILE" "format=$BOOK_FORMAT" order=sequential "start=$START" \
             -rounds "$PAIRS" -repeat -concurrency "$CONCURRENCY" -recover \
             -pgnout file=games.pgn nodes=true seldepth=true nps=true \
@@ -451,6 +485,7 @@ jobs:
             echo "time_control: ${TIME_CONTROL}"
             echo "hash_mb: ${HASH}"
             echo "concurrency: ${CONCURRENCY}"
+            echo "startup_ms: ${STARTUP_MS}"
             echo "games_asked: $((PAIRS * 2))"
             if [ "$SPRT" = "true" ]; then
               echo "sprt: judged by the summary over the pooled pairs, not by fastchess: elo0=${ELO0} elo1=${ELO1} alpha=0.05 beta=0.05 model=logistic prior_pairs=${PRIOR_PAIRS:-none}"
