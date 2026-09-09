@@ -1167,6 +1167,31 @@ impl AlphaBeta {
         }
     }
 
+    /// What a capture search makes of the position this engine holds, over
+    /// the open window.
+    ///
+    /// A door for the laboratory and not for the search. The tuner's quiet
+    /// test is the one caller: a position is kept when this comes back at
+    /// the static evaluation, so the side to move has nothing to win by
+    /// capturing. `quiescence` itself stays private, because a caller free
+    /// to choose the window could be handed a bound and read it as a value.
+    ///
+    /// The window is open and the limits unlimited, so what comes back is a
+    /// value and the search behind it cannot be interrupted. Whether the
+    /// shortcuts inside it are on is the engine's configuration, which is
+    /// the caller's to choose and the reference's in the one caller here.
+    pub(crate) fn quiescence_value(&mut self) -> Score {
+        self.limits = Limits::unlimited();
+        self.stop = None;
+        self.next_check = 0;
+        self.nodes = 0;
+        self.board.start_line();
+        match self.quiescence(Score::MIN + 1, Score::MAX - 1) {
+            Ok(value) => value.score,
+            Err(Aborted) => unreachable!("an unlimited capture search runs to the end"),
+        }
+    }
+
     fn quiescence(&mut self, mut alpha: Score, beta: Score) -> Result<Value, Aborted> {
         // quiescence looks at captures and promotions, and evasions when in
         // check, and never checks for a repetition: a capture cannot repeat a

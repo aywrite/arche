@@ -122,6 +122,13 @@ material plus piece square tables, tapered between middlegame and endgame.
   sampled scout, and a fail low is replayed at the depth its move was
   denied to say whether the reduction threw a move away. Driven by the
   `reductions` argument.
+- **tune.rs**: What a position's evaluation is made of. The evaluation is
+  linear in the tables and the material values, so a position's score is a
+  dot product, and this writes down the coefficients: one per weight the
+  position touches, in the side to move's frame. `reconstruct` folds a row
+  back against the live tables and has to give the evaluation exactly,
+  which is asserted on every row printed as well as over three suites in a
+  test. Driven by the `terms` argument.
 - **tactics.rs**: 300 tactical positions with a pinned pass count, gated
   in CI.
 - **strategy.rs**: 1500 quiet positions, each move graded out of a
@@ -130,12 +137,12 @@ material plus piece square tables, tapered between middlegame and endgame.
 ## Code map: src
 
 - **main.rs**: Argument handling. `bench` runs the suite and exits, and so
-  do the three research commands, `residuals`, `cutoffs` and `reductions`.
-  No argument starts the UCI loop.
+  do the four research commands, `residuals`, `cutoffs`, `reductions` and
+  `terms`. No argument starts the UCI loop.
 - **uci.rs**: The protocol: what each command means, the options the
   handshake advertises, and what a `go` may spend. Every line reaches it
   through the session loop, on the thread the engine was built on.
-- **instruments.rs**: What the three research commands take, and what each
+- **instruments.rs**: What the four research commands take, and what each
   one runs. Not the protocol (an interface cannot ask for any of them, and
   would not wait for the answer), which is why they are here rather than
   beside the commands they are spelled like.
@@ -154,5 +161,5 @@ material plus piece square tables, tapered between middlegame and endgame.
 
 The engine measures itself, and most of the project's conventions hang off
 that. DEVELOPMENT.md covers the bench and the matches, and
-[INSTRUMENTS.md](INSTRUMENTS.md) covers the four measurements of the search
-itself.
+[INSTRUMENTS.md](INSTRUMENTS.md) covers the measurements of the search itself
+and of the evaluation.

@@ -10,14 +10,15 @@ use arche_core::AlphaBeta;
 use arche_core::Board;
 use std::process::ExitCode;
 
-/// The arguments the binary takes, in the order the usage lists them. Four of
-/// the six are measurements, one of which is a uci command too; the other two
-/// are the flags below, which take no words and so are not commands.
-const COMMANDS: [&Command; 4] = [
+/// The arguments the binary takes, in the order the usage lists them. Five of
+/// the seven are measurements, one of which is a uci command too; the other
+/// two are the flags below, which take no words and so are not commands.
+const COMMANDS: [&Command; 5] = [
     &uci::BENCH,
     &instruments::RESIDUALS,
     &instruments::CUTOFFS,
     &instruments::REDUCTIONS,
+    &instruments::TERMS,
 ];
 
 /// Where a summary starts, so they line up under each other whatever the
@@ -58,7 +59,7 @@ fn usage() -> String {
     out
 }
 
-/// One of the three research commands: its report on stdout, or the setting
+/// One of the four research commands: its report on stdout, or the setting
 /// that could not be read on stderr and the code the measuring scripts check.
 ///
 /// Each is an argument and not a uci command because it takes minutes and
@@ -130,6 +131,7 @@ fn main() -> ExitCode {
             instruments::reduction_settings(&params),
             |s| s.run(),
         ),
+        Some("terms") => answer("terms", instruments::term_settings(&params), |s| s.run()),
         // `--version` and `--help` were asked for, so both are answered on
         // stdout and succeed. An argument that really is unrecognised keeps
         // stderr and the failing code below: the difference is whether
@@ -195,6 +197,7 @@ mod tests {
         assert!(instruments::residual_settings(&Params::of(instruments::RESIDUALS.name)).is_ok());
         assert!(instruments::cutoff_settings(&Params::of(instruments::CUTOFFS.name)).is_ok());
         assert!(instruments::reduction_settings(&Params::of(instruments::REDUCTIONS.name)).is_ok());
+        assert!(instruments::term_settings(&Params::of(instruments::TERMS.name)).is_ok());
     }
 
     #[test]
