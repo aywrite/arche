@@ -4,7 +4,7 @@
 
 # Build the engine as it was at a commit, and put the binary where asked:
 #
-#     build_at.sh <ref> <binary>
+#     build_at.sh <ref> <binary> [built [build command...]]
 #
 # The commit is exported with git archive into <target>/at/src, where
 # <target> is CARGO_TARGET_DIR or target/, and built with <target>/at as its
@@ -12,6 +12,25 @@
 # moves the branch, the index or a file someone is half way through, and a
 # script building one commit to measure against another has nothing to put
 # back afterwards.
+#
+# How the export is built, and where that build leaves its binary, are the
+# last two arguments. Both default to what this repository builds with, so a
+# caller naming neither gets what this script has always done. They are
+# arguments rather than a table keyed by engine, because the command belongs
+# to whoever is calling rather than to a list this script would have to be
+# told about, and the command is the rest of the line rather than one string
+# so that nothing here has to split or eval it.
+#
+# The build is given CARGO_TARGET_DIR, so a cargo command lands in the
+# export's target directory whether or not it says --target-dir. The default
+# command says it as well, which is one directory named twice and not two. A
+# build that is not cargo ignores the variable and has to leave its binary
+# where <built> says.
+#
+# <built> is read from the root of the export, which is where the build runs.
+# A build writing into the target directory names it from there rather than
+# by an absolute path nobody outside this script can compose: that directory
+# is the export's parent, which is what the default ../release/arche says.
 #
 # The export has a target directory of its own, and its files are stamped
 # with the time they were extracted rather than the commit's. Both are what
@@ -23,13 +42,16 @@
 # tree. The engine is built afresh for every commit; what the target
 # directory keeps across calls is the dependencies.
 #
-# No --locked: a baseline old enough that its lock file predates a registry
-# change would refuse to build, and the pull request's own tree is held to
-# its lock file by the Rust workflow.
+# No --locked in the default command: a baseline old enough that its lock
+# file predates a registry change would refuse to build, and the pull
+# request's own tree is held to its lock file by the Rust workflow. A caller
+# naming a command of its own answers that for itself.
 set -euo pipefail
 
-ref=${1:?usage: build_at.sh <ref> <binary>}
-binary=${2:?usage: build_at.sh <ref> <binary>}
+ref=${1:?usage: build_at.sh <ref> <binary> [built [build command...]]}
+binary=${2:?usage: build_at.sh <ref> <binary> [built [build command...]]}
+built=${3:-../release/arche}
+build=("${@:4}")
 
 sha=$(git rev-parse --verify "${ref}^{commit}") \
     || { echo "build_at.sh: ${ref} is not a commit" >&2; exit 1; }
@@ -37,9 +59,20 @@ sha=$(git rev-parse --verify "${ref}^{commit}") \
 target=$(realpath -m "${CARGO_TARGET_DIR:-target}")/at
 src="${target}/src"
 
+# The build command's default is taken here rather than beside its argument,
+# because the target directory it names is only known once CARGO_TARGET_DIR
+# has been read. An argument left empty is an argument nobody gave.
+if [ "${#build[@]}" -eq 0 ]; then
+    build=(cargo build --release --quiet --target-dir "$target")
+fi
+
 rm -rf "$src"
 mkdir -p "$src"
 git archive "$sha" | tar -xm -C "$src"
-(cd "$src" && cargo build --release --quiet --target-dir "$target")
+(cd "$src" && CARGO_TARGET_DIR="$target" "${build[@]}")
+# A build that put its binary somewhere else says so here rather than as
+# whatever cp makes of a path that is not there.
+[ -f "${src}/${built}" ] \
+    || { echo "build_at.sh: the build left no ${built}" >&2; exit 1; }
 mkdir -p "$(dirname "$binary")"
-cp "${target}/release/arche" "$binary"
+cp "${src}/${built}" "$binary"
