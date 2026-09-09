@@ -84,11 +84,28 @@ on:
         description: Append the result to the release notes for this tag
         type: boolean
         default: false
+      # Not a box above. A run from the actions tab is a run of this
+      # repository's engine, and the name it plays under is only a question
+      # for a workflow calling this from somewhere else.
+      engine_name:
+        description: The name the engine being measured plays under
+        type: string
+        default: arche
 
 permissions:
   contents: read
 
 env:
+  # What the engine being measured plays under. The estimate is fitted by
+  # reading the games for a player of this name, so the name it plays under
+  # and the name the estimate is told to look for have to be the one value.
+  # The binary is built under it too, which keeps what is on disk and what is
+  # in the pgn the same. ENGINE in the play job is the opponent's, which is a
+  # different thing.
+  #
+  # A workflow_call default is not applied to a run started from the actions
+  # tab, so the default is here as well as on the input.
+  ENGINE_NAME: ${{ inputs.engine_name || 'arche' }}
   # 256MB is what ccrl gives an engine and what this one defaults to, so a rung
   # is played on the table its opponent was rated with. An engine that declares
   # a smaller maximum is not sent it at all and plays on its own default, which
@@ -304,7 +321,7 @@ jobs:
           git cat-file -e "${CANDIDATE_SHA}^{commit}" 2>/dev/null \
             || git fetch -q origin "$CANDIDATE_SHA" \
             || git fetch -q origin "+refs/pull/*/head:refs/remotes/pull/*"
-          scripts/build_at.sh "$CANDIDATE_SHA" tools/arche
+          scripts/build_at.sh "$CANDIDATE_SHA" "tools/${ENGINE_NAME}"
 
       # Not cached. The engines in the table take from a second to about half
       # a minute to compile, so fetching a cache would cost more than building
@@ -369,7 +386,7 @@ jobs:
           # the fit, and the estimate says so rather than losing the run
           status=0
           timeout -k 60 -s INT "${MAX_MATCH_MINUTES}m" ./fastchess \
-            -engine name=arche cmd=./arche \
+            -engine "name=${ENGINE_NAME}" "cmd=./${ENGINE_NAME}" \
             -engine "name=${OPPONENT}" "cmd=./${OPPONENT}" \
             -each proto=uci "tc=$TIME_CONTROL" "option.Hash=$HASH" -startup-ms 20000 \
             -openings "file=$BOOK_FILE" "format=$BOOK_FORMAT" order=sequential "start=$START" \
@@ -407,7 +424,7 @@ jobs:
             echo "opponent_repository: ${repository}"
             echo "opponent_pin: ${TAG}"
             echo "opponent_rating: ${RATING} on the ccrl blitz list"
-            echo "build: scripts/build_at.sh for arche, scripts/opponent.sh for ${ENGINE}"
+            echo "build: scripts/build_at.sh for ${ENGINE_NAME}, scripts/opponent.sh for ${ENGINE}"
             echo "fastchess: ${FASTCHESS}"
             echo "book: ${book_file}"
             echo "book_sha256: ${book_sha}"
@@ -512,12 +529,12 @@ jobs:
           # no games or a fit the pairings disagree with, goes to stderr, so it
           # is picked up from there rather than parsed back out of the table
           python3 scripts/rating_estimate.py \
-            gauntlet.pgn arche "$LADDER_SPEC" > table.md 2> notes.txt \
+            gauntlet.pgn "$ENGINE_NAME" "$LADDER_SPEC" > table.md 2> notes.txt \
             || { cat notes.txt >&2; exit 1; }
           # asked for again rather than cut out of the table, so that a change
           # to how the table is laid out cannot quietly change what is published
           line=$(python3 scripts/rating_estimate.py \
-            gauntlet.pgn arche "$LADDER_SPEC" --line 2> /dev/null)
+            gauntlet.pgn "$ENGINE_NAME" "$LADDER_SPEC" --line 2> /dev/null)
           echo "line=Estimated rating | ${line}" >> "$GITHUB_OUTPUT"
           echo "::notice::${line}"
           while read -r remark; do
