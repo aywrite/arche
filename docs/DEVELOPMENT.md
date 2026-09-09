@@ -373,8 +373,9 @@ not use.
 
 [INSTRUMENTS.md](INSTRUMENTS.md) has the four measurements of the search:
 `residuals`, `cutoffs`, `reductions` and the bench's `audit` word. It also has
-`terms`, which measures the evaluation instead. None of them is needed to
-build, test or commit a change.
+`terms`, which measures the evaluation instead, and the loss harness under
+`scripts/` that reads what `terms` prints. None of them is needed to build,
+test or commit a change.
 
 ## Playing a match against a previous version
 

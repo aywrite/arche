@@ -30,16 +30,20 @@ dependencies = []
 # the thing being held still is the major version whose behaviour the tests
 # were written against.
 #
-# Two of the three are for tests of code that is not in this package. pyyaml
+# Three of the four are for tests of code that is not in this package. pyyaml
 # serves the scope and workflow input tests, and chess reads and writes the
 # epd the tactical suite is generated from, which is the same release the
-# lichess image builds the opening book with. They are here because this is
+# lichess image builds the opening book with. numpy is the tuner's arithmetic:
+# the whole corpus is one sparse matrix and the fit is a matrix-vector product
+# a step, which is what makes the loss harness a triage instrument rather than
+# a batch job. There is no sklearn beside it, because the fit is a gradient and
+# a line search and both are written out. All three are here because this is
 # the one file the tests are installed from, and they leave with the tests
 # that want them.
 #
 # The linting is pinned separately, by .pre-commit-config.yaml, which manages
 # its own environments.
-test = ["pytest~=9.1", "pyyaml~=6.0", "chess~=1.11"]
+test = ["pytest~=9.1", "pyyaml~=6.0", "chess~=1.11", "numpy~=2.5"]
 
 [tool.setuptools.dynamic]
 version = { attr = "match_tools.__version__" }
