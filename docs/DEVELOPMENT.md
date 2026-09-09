@@ -88,8 +88,8 @@ at all. That is what makes a suite of quiet positions worth having, since a
 quiet position rarely has the one answer a tactic has.
 
 It gates the same way, on an exact total. `EXPECTED_POINTS` in
-`arche-core/src/strategy.rs` is 92502 of the 149703 on offer, 61.8% of them,
-with a top scoring move played in 526 of the 1500 positions, and the test
+`arche-core/src/strategy.rs` is 89968 of the 149703 on offer, 60.1% of them,
+with a top scoring move played in 492 of the 1500 positions, and the test
 fails on any other total. A failure prints the fifteen themes with their
 points beside each other, so it says which of them moved rather than only that
 the total did.

@@ -27,7 +27,7 @@ fn the_reductions_argument_prints_a_header_rows_and_a_summary() {
     );
     assert!(printed.events() > 0, "header: {}", printed.header);
 
-    let mut low = 0;
+    let mut labelled = 0;
     for row in &printed.rows {
         let words: Vec<&str> = row.split(' ').collect();
         assert!(words.len() > 16, "row: {}", row);
@@ -47,12 +47,14 @@ fn the_reductions_argument_prints_a_header_rows_and_a_summary() {
         // a late move is what the ledger records, so no index is under
         // the threshold
         assert!(words[2].parse::<usize>().unwrap() >= 4, "row: {}", row);
-        // a fail low carries the replay's answer and its label; a fail
+        // a fail low carries the replay's answer and its label, and a
+        // skipped move carries the same pair, since what the replay asks
+        // about a skip is the full depth search the skip denied; a fail
         // high carries neither, said with dashes so the columns stand
         // still
         match words[12] {
-            "low" => {
-                low += 1;
+            "low" | "skipped" => {
+                labelled += 1;
                 assert!(words[14].parse::<i64>().is_ok(), "row: {}", row);
                 assert!(
                     words[15] == "harmful" || words[15] == "harmless",
@@ -67,9 +69,9 @@ fn the_reductions_argument_prints_a_header_rows_and_a_summary() {
             other => panic!("scout {} in: {}", other, row),
         }
     }
-    // the fail lows are what the replay labels, so a run that kept none
-    // has measured nothing
-    assert!(low > 0, "no fail low rows in:\n{}", printed.all);
+    // the labelled rows are what the replay answers, so a run that kept
+    // none has measured nothing
+    assert!(labelled > 0, "no labelled rows in:\n{}", printed.all);
 
     // a line a depth, each carrying the whole shape
     for line in &printed.summary {

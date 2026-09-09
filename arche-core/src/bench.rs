@@ -509,8 +509,11 @@ mod tests {
         // policy costs, so all three are columns of the report: two bench
         // outputs diffed say whether the root moved, not only the tree.
         // The same suite searched trusting tainted scores states that
-        // policy in its header, refuses nothing, and may choose otherwise
-        let suite = parse_epd("8/2p5/3p4/KP5r/1R3p1k/8/4P1P1/8 w - - id \"rook and pawns\";");
+        // policy in its header, refuses nothing, and may choose otherwise.
+        // The position is a rook ending because that is where a draw
+        // tainted score is reached often enough to have both to say, and
+        // which ending that is moves when the evaluation does
+        let suite = parse_epd("r5k1/5ppp/P7/8/8/8/5PPP/3R1K2 w - - id \"tarrasch\";");
         let refusing = run_suite(&suite, 7, 1 << 20, SearchConfig::reference());
         let text = refusing.to_string();
         let position = &refusing.positions[0];
@@ -526,7 +529,7 @@ mod tests {
         let header = columns(text.lines().nth(1).unwrap());
         let row = columns(
             text.lines()
-                .find(|line| line.starts_with("rook and pawns"))
+                .find(|line| line.starts_with("tarrasch"))
                 .unwrap(),
         );
         let column = |name: &str| {
@@ -534,8 +537,8 @@ mod tests {
                 .iter()
                 .position(|h| h == name)
                 .unwrap_or_else(|| panic!("no {name} column"));
-            // the name is three words; the header has one word a column
-            row[at + 2].clone()
+            // the name is one word, as the header's columns are
+            row[at].clone()
         };
         assert_eq!(column("move"), position.play.to_string());
         assert_eq!(column("score"), position.score.to_string());
@@ -759,24 +762,24 @@ mod tests {
         assert_eq!(
             counted,
             vec![
-                ("start", 45_249),
-                ("italian", 136_683),
-                ("ruy lopez", 104_592),
-                ("kiwipete", 269_551),
-                ("perft 4", 118_110),
-                ("promotions", 61_592),
-                ("middlegame", 113_760),
-                ("sharp middlegame", 275_102),
-                ("bratko kopec 1", 744_846),
-                ("wac 4", 2_040_065),
-                ("rook and pawns", 31_630),
-                ("tarrasch", 25_775),
-                ("lucena", 16_225),
-                ("philidor", 62_794),
-                ("minor endgame", 36_610),
-                ("queen endgame", 74_548),
-                ("king and pawn", 3_054),
-                ("trebuchet", 2_398),
+                ("start", 67_731),
+                ("italian", 205_591),
+                ("ruy lopez", 132_203),
+                ("kiwipete", 260_616),
+                ("perft 4", 141_656),
+                ("promotions", 70_696),
+                ("middlegame", 115_927),
+                ("sharp middlegame", 214_848),
+                ("bratko kopec 1", 694_842),
+                ("wac 4", 2_017_544),
+                ("rook and pawns", 38_320),
+                ("tarrasch", 70_970),
+                ("lucena", 41_675),
+                ("philidor", 62_003),
+                ("minor endgame", 27_601),
+                ("queen endgame", 156_806),
+                ("king and pawn", 5_623),
+                ("trebuchet", 5_037),
             ]
         );
     }
@@ -807,24 +810,24 @@ mod tests {
         assert_eq!(
             counted,
             vec![
-                ("start", 22_097),
-                ("italian", 138_358),
-                ("ruy lopez", 95_062),
-                ("kiwipete", 193_791),
-                ("perft 4", 187_027),
-                ("promotions", 102_489),
-                ("middlegame", 164_022),
-                ("sharp middlegame", 430_540),
-                ("bratko kopec 1", 57_172),
-                ("wac 4", 90_264),
-                ("rook and pawns", 25_096),
-                ("tarrasch", 25_225),
-                ("lucena", 18_695),
-                ("philidor", 38_672),
-                ("minor endgame", 22_628),
-                ("queen endgame", 96_646),
-                ("king and pawn", 1_570),
-                ("trebuchet", 708),
+                ("start", 22_275),
+                ("italian", 125_764),
+                ("ruy lopez", 102_926),
+                ("kiwipete", 181_080),
+                ("perft 4", 480_155),
+                ("promotions", 112_499),
+                ("middlegame", 169_744),
+                ("sharp middlegame", 278_802),
+                ("bratko kopec 1", 47_779),
+                ("wac 4", 89_454),
+                ("rook and pawns", 30_031),
+                ("tarrasch", 59_638),
+                ("lucena", 26_096),
+                ("philidor", 61_085),
+                ("minor endgame", 29_882),
+                ("queen endgame", 220_332),
+                ("king and pawn", 1_938),
+                ("trebuchet", 1_247),
             ]
         );
     }

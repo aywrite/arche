@@ -449,7 +449,13 @@ mod tests {
     /// divide by twenty four evenly, which is what the two tests below need
     /// to tell two readings of the arithmetic apart. A knight a side would
     /// leave the phase at nothing and the numerator a multiple of the taper.
-    const UNEVEN: &str = "4k3/8/8/8/8/8/4P3/1N2K3 w - - 0 1";
+    ///
+    /// Which square the pawn stands on is a property of the weights rather
+    /// than of the arithmetic, so a re-tune can leave the numerator dividing
+    /// evenly and the two tests below with nothing to say. Each says so and
+    /// fails rather than passing, and the fix is another square: the fit that
+    /// landed the tables moved this pawn from e2 to c2.
+    const UNEVEN: &str = "4k3/8/8/8/8/8/2P5/1N2K3 w - - 0 1";
 
     /// The divide is Rust's, which truncates toward zero, where a floor would
     /// take a negative numerator the other way, so the two differ by a
@@ -572,18 +578,24 @@ mod tests {
     ///
     /// A slot's entry is a square as black sees it, because black is the
     /// colour that reads the tables as they are written.
+    ///
+    /// The numbers here are psqt.rs's own and move with every fit, which the
+    /// shape pins there deliberately do not. That is the point of them: what
+    /// this says is that a slot and a square name the same weight, and a
+    /// number copied out of the table is the shortest way to say it.
     #[test]
     fn a_slot_names_the_table_entry_it_stands_for() {
         let entry = |file: File, rank: u8| usize::from(coordinate_to_index(rank, file));
-        // a black pawn on a2 is a square from promoting, which is fifty
-        assert_eq!(weight(Piece::Pawn as usize * 64 + entry(File::A, 2)), 50);
-        // and the same square in the endgame table is eighty
-        assert_eq!(weight(MIDGAME_SLOTS + entry(File::A, 2)), 80);
+        // a black pawn on a2 is a square from promoting, which is
+        // fifty seven
+        assert_eq!(weight(Piece::Pawn as usize * 64 + entry(File::A, 2)), 57);
+        // and the same square in the endgame table is eighty three
+        assert_eq!(weight(MIDGAME_SLOTS + entry(File::A, 2)), 83);
         // a knight in the corner, which is the same weight at either end
-        assert_eq!(weight(Piece::Knight as usize * 64 + entry(File::A, 1)), -50);
+        assert_eq!(weight(Piece::Knight as usize * 64 + entry(File::A, 1)), -51);
         // the king hides in the middlegame and comes out in the ending
-        assert_eq!(weight(Piece::King as usize * 64 + entry(File::E, 5)), -40);
-        assert_eq!(weight(MIDGAME_SLOTS + 64 + entry(File::E, 5)), 40);
+        assert_eq!(weight(Piece::King as usize * 64 + entry(File::E, 5)), -31);
+        assert_eq!(weight(MIDGAME_SLOTS + 64 + entry(File::E, 5)), 15);
         for (piece, value) in [
             (Piece::Pawn, 100),
             (Piece::Knight, 310),
