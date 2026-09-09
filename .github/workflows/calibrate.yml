@@ -111,6 +111,15 @@ on:
         description: How long fastchess waits for an engine to answer uci
         type: number
         default: 20000
+      # What the release note this run writes is marked with, so a rerun
+      # replaces its own line rather than adding a second one. The job below
+      # repeats the default, as the env lines that read the other call inputs
+      # do, so the marker holds if publish is ever a box on the actions tab
+      # as well.
+      marker:
+        description: Identifies this workflow's line in the release notes
+        type: string
+        default: arche:rating
 
 permissions:
   contents: read
@@ -615,5 +624,5 @@ jobs:
       contents: write
     uses: ./.github/workflows/release-note.yml
     with:
-      marker: arche:rating
+      marker: ${{ inputs.marker || 'arche:rating' }}
       line: ${{ needs.estimate.outputs.line }}
