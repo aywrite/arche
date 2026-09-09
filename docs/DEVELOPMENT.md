@@ -777,6 +777,89 @@ The argument arms no reservoir and searches no suite, so there is no
 recording-neutrality claim to make: it cannot move a node count, because
 nothing about it runs inside a measured search.
 
+## The loss of a weight vector
+
+The rows above are the input to `scripts/tune.py`, which scores a weight
+vector against the games the positions came from and fits a new one:
+
+```
+python3 scripts/tune.py loss --terms rows.txt --corpus corpus.epd
+python3 scripts/tune.py fit --terms rows.txt --corpus corpus.epd --out fit.json
+```
+
+`scripts/build_corpus.py` builds the corpus from archived strength-run pgns,
+carrying each position's game result from the side to move's point of view and
+how many games it appeared in:
+
+```
+python3 scripts/build_corpus.py runs/*/games.pgn --out corpus.epd
+```
+
+The book is dropped off the front of every game, so the corpus starts where the
+book stops, and a game that ended in anything but play is dropped whole. The
+known caveat is that these are the engine's own games, so the positions it
+never reaches are unlabelled and its mistakes are labelled as if they were
+normal play. Mixing in positions from stronger engines' games would answer a
+different question, and a loss change measured on a corpus of two sources
+cannot be attributed to either.
+
+The split is by fen-hash parity, sha256 of the fen and the low bit of the first
+byte, which is the house pattern: rows that share a fen land on the same side
+by construction, so the split leaks no position across itself.
+
+The loss is Texel's, the mean squared error between the game result and a
+logistic of the evaluation, with log loss printed beside it. The two are
+different scoring rules and if they disagree about a candidate that is worth
+seeing, which is the only reason both are printed. The scaling constant K is
+fitted once on the training split at the shipped weights and held there,
+because K and the overall scale of the weights are one degree of freedom and
+the scale is not free: `REVERSE_FUTILITY_MARGIN` at 100 a ply, `DELTA_MARGIN`
+at 200 and the ledger's `eval_beta` column all read the evaluation on the
+assumption that a pawn is about a hundred.
+
+Nothing in the script knows how to evaluate a position. It folds each row's
+coefficients back against the weights the run printed and has to get the
+integer the row says the engine got, which it checks on every row read, so a
+file it cannot rebuild stops the run rather than being fitted around.
+
+What makes the number worth having is that scoring a weight vector over
+hundreds of thousands of positions is one matrix-vector product. A hundred
+thousand rows are read, joined and scored in a couple of seconds, and a
+candidate evaluation term would be one appended column whose held-out loss can
+be read before a line of engine code exists for it. That is a triage instrument
+and not a verdict.
+
+A meaningful move in the number is one larger than its own interval. Two weight
+vectors are scored on the same held-out positions, so the difference in
+per-position squared error is a paired sample; the run prints its mean with a
+standard error and marks a difference that sits inside its own interval. There
+is no loss-to-elo mapping here and the run does not print one. Its job is to
+rank candidates and to reject the ones that cannot help. The sprt says elo.
+
+Three more figures are printed because a loss on its own hides what a fit
+did. The loss is stratified by the three phase buckets, so a fit that improves
+the endings by hurting the middlegame is visible rather than averaged away. The
+per-slot support counts say how many rows each weight is fitted on, so a weight
+the corpus barely constrains says so before it ships. And each vector's table
+scale is printed beside a K refitted for that vector alone, which is the
+diagnostic for the one thing the fit can do that is not an improvement: with K
+held, a fit given enough licence spends the loss on growing the tables rather
+than on their shape, and a vector whose loss only falls at its own K bought
+scale.
+
+The fit itself is ridge toward the shipped weights rather than toward zero.
+That makes a re-tune literally what it does; it leaves alone the one direction
+the corpus cannot see, which is a constant added to both king tables and
+cancelling between the colours; and it holds the slots with no support at all,
+the two back ranks of the pawn tables, at exactly the zeroes they already are.
+The ridge strength is chosen on the held-out split from a grid, and a fit whose
+tables have grown past what the packed halves can carry is refused whatever it
+scores. `MATERIAL` is held for a first fit, because `eval::material` is read by
+the delta margin in quiescence, so moving it changes which captures quiescence
+skips, which changes the tree for a reason that has nothing to do with the
+evaluation's accuracy. `--free-material` lets it move, for the run that reports
+what holding it cost.
+
 ## What the table's key signature costs
 
 An entry keeps thirty two bits of the position key rather than all sixty

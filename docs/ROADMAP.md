@@ -16,8 +16,11 @@ the engine plays. Roughly in the order they look worth doing.
   come after that, each measured on its own
 - evaluate drawn positions
 - the rest of evaluation: mobility, king safety, passed pawns, and special cases such as
-  the bishop pair and open files. A tuner comes before the deeper rows, so the weights are
-  fitted against games rather than guessed
+  the bishop pair and open files. The tuner that sentence asked for is built: `arche terms`
+  states what each position's evaluation is made of and `scripts/tune.py` fits and scores a
+  weight vector against the games, so a candidate term is one appended column whose
+  held-out loss can be read before there is engine code for it. What is not settled is
+  whether a fit on our own games buys strength, which is the re-tune's own sprt
 - the rest of the uci protocol
   - the only options advertised are `Hash`, the `Clear Hash` button and a `Threads` fixed at
     one, so everything else an interface might set, `Ponder` among them, is refused rather

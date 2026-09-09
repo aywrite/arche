@@ -13,3 +13,8 @@ pyyaml~=6.0
 # reads and writes the epd the tactical suite is generated from, and is the
 # same release the lichess image builds the opening book with
 chess~=1.11
+# the tuner's arithmetic. The whole corpus is one sparse matrix and the fit is
+# a matrix-vector product a step, which is what makes the loss harness a
+# triage instrument rather than a batch job. No sklearn: the fit is a gradient
+# and a line search, and both are written out
+numpy~=2.5
