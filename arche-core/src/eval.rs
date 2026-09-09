@@ -21,7 +21,7 @@ static PIECE_SQUARE_TABLES: PieceSquareTables = PieceSquareTables::TABLES;
 /// because an ending is an ending whether or not there are pawns in it.
 static PHASE_WEIGHTS: [i32; 6] = [0, 1, 1, 2, 4, 0];
 /// What the opening's pieces add up to under `PHASE_WEIGHTS`.
-const TOTAL_PHASE: i32 = 24;
+pub(crate) const TOTAL_PHASE: i32 = 24;
 
 /// A table rather than a match. The match compiled to a jump table, and
 /// once the piece arrives as a load from the board's square array the
@@ -34,6 +34,14 @@ const MATERIAL: [u32; 6] = [100, 310, 320, 500, 900, 10000];
 /// The material weight of one piece, for the board's own seeding walk.
 pub(crate) fn material(piece: Piece) -> u32 {
     MATERIAL[piece as usize]
+}
+
+/// What one piece leaves on the board, on the scale the taper is read at.
+/// The tuner's walk asks, because a position's phase decides what its
+/// coefficients are and a copy of the table there would be a second opinion
+/// about the taper.
+pub(crate) fn phase_weight(piece: Piece) -> i32 {
+    PHASE_WEIGHTS[piece as usize]
 }
 
 /// The score of the position from the side to move's point of view.

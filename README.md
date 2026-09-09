@@ -43,7 +43,7 @@ The engine is something to experiment on rather than an example to copy.
 The engine does not ship with any GUI. It currently implements a subset of the UCI protocol,
 so an open source GUI such as [Arena](http://www.playwitharena.de/) can drive it.
 
-The program starts in UCI mode immediately. Six arguments do anything else, four of them
+The program starts in UCI mode immediately. Seven arguments do anything else, five of them
 measurements.
 `bench [depth] [hash <MB>] [taint refuse|trust|skip|rule50] [audit]` searches a fixed set of
 positions and prints what each search counted, for measuring a change to the search or the
@@ -57,6 +57,8 @@ sampled node off, or that none did, for reading what the move ordering earns.
 reduction trusts over the same positions, or the ones an epd file names, along with the moves
 the pruning skipped, and asks a full depth search whether each fail low or skip threw a move
 away.
+`terms [epd <file>]` prints what each quiet position's evaluation is made of, one coefficient
+per weight the position touches, which is what an offline fit of those weights reads.
 `--version` and `--help` are answered too.
 
 Binaries for linux, macos and windows are attached to each

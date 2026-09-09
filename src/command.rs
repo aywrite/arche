@@ -33,6 +33,15 @@ pub struct Keyword {
 /// One argument the binary takes: `<name> [depth] [<keyword> <value>]... [<flag>]...`.
 pub struct Command {
     pub name: &'static str,
+    /// Whether a bare number after the name is a depth.
+    ///
+    /// An argument that runs no search has none to give, and saying so here
+    /// is what keeps the usage and the parser agreeing: the spelling leaves
+    /// `[depth]` out, and a word standing where the depth would is refused
+    /// rather than read as one. Without it the help would describe a word
+    /// the parser does not take, which is the drift this module exists to
+    /// prevent.
+    pub depth: bool,
     /// The words that take a value after them, in the order the usage spells
     /// them.
     pub keywords: &'static [Keyword],
@@ -75,9 +84,11 @@ impl Command {
                 // claims a word that is not there, which leaves the setting
                 // absent and at its default, the reading it already had
                 at += 2;
-            } else if self.flags.contains(&word) || at == 1 {
+            } else if self.flags.contains(&word) || (self.depth && at == 1) {
                 // a flag stands alone, and the second word is the depth,
-                // which the caller's own parse judges
+                // which the caller's own parse judges. An argument that takes
+                // no depth has nothing standing there, so the word is judged
+                // here like any other
                 at += 1;
             } else {
                 return Some(word);
@@ -98,7 +109,10 @@ impl Command {
 
     /// How the line is spelled, for the usage.
     pub fn spelling(&self) -> String {
-        let mut out = format!("{} [depth]", self.name);
+        let mut out = self.name.to_string();
+        if self.depth {
+            out.push_str(" [depth]");
+        }
         for keyword in self.keywords {
             out.push_str(&format!(" [{} {}]", keyword.word, keyword.value));
         }
@@ -115,6 +129,7 @@ mod tests {
 
     const TAKES: Command = Command {
         name: "probe",
+        depth: true,
         keywords: &[
             Keyword {
                 word: "every",
@@ -127,6 +142,18 @@ mod tests {
         ],
         flags: &["audit"],
         summary: &["a command that exists to be parsed"],
+    };
+
+    /// The same, with no search to run to a depth.
+    const DEPTHLESS: Command = Command {
+        name: "read",
+        depth: false,
+        keywords: &[Keyword {
+            word: "epd",
+            value: "<file>",
+        }],
+        flags: &[],
+        summary: &["a command that takes no depth"],
     };
 
     fn unclaimed(line: &str) -> Option<String> {
@@ -188,6 +215,26 @@ mod tests {
             TAKES.spelling(),
             "probe [depth] [every <n>] [cap <n>] [audit]"
         );
+    }
+
+    /// An argument with no search to run has no depth to take, so the usage
+    /// leaves the word out rather than describing one the parser refuses.
+    #[test]
+    fn an_argument_that_runs_no_search_spells_no_depth() {
+        assert_eq!(DEPTHLESS.spelling(), "read [epd <file>]");
+    }
+
+    /// And nothing may stand in the depth's place, because there is no place.
+    /// A number there is a word the argument does not know, which is the same
+    /// refusal any other unknown word gets.
+    #[test]
+    fn a_depthless_argument_refuses_a_word_where_the_depth_would_be() {
+        assert_eq!(
+            DEPTHLESS.claim(&Params::of("read 4")).unwrap_err(),
+            "word: 4"
+        );
+        assert!(DEPTHLESS.claim(&Params::of("read")).is_ok());
+        assert!(DEPTHLESS.claim(&Params::of("read epd suite.epd")).is_ok());
     }
 
     #[test]

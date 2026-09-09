@@ -7,11 +7,11 @@ cargo build --release
 ```
 
 The binary is written to `target/release/arche` (`arche.exe` on windows). It starts
-in uci mode immediately. Six arguments do anything else, four of them
+in uci mode immediately. Seven arguments do anything else, five of them
 measurements. `bench`, with the depth, table and policy words described below,
 prints the bench and exits; `residuals`, `cutoffs` and `reductions` measure the
-search and exit, and each has a section of its own further down. `--version`
-and `--help` are answered too.
+search and `terms` measures the evaluation, each with a section of its own
+further down. `--version` and `--help` are answered too.
 
 The release profile uses link time optimisation and a single codegen unit, so a
 release build is noticeably slower to compile than a debug one but is several
@@ -682,6 +682,100 @@ Recording changes nothing, on the census's terms and held to them the
 same way: `recording_leaves_the_measured_search_where_it_was` in
 `arche-core/src/reduction.rs` searches each of its positions twice, once
 with the ledger armed and once without, and holds the two counts equal.
+
+## What a position's evaluation is made of
+
+The three instruments above measure the search. This one measures the
+evaluation, and it is the engine's half of the tuner:
+
+```
+target/release/arche terms [epd <file>]
+```
+
+It searches nothing to a depth, so it takes no depth. It reads the bench's
+suite, or the one named, keeps the positions that are quiet, and prints what
+each one's evaluation is made of.
+
+The evaluation is material plus a tapered piece square score, and it is
+linear in the numbers those are read from. So a position's score is a dot
+product of the position against the weights, and a row is the position's half
+of it: for every weight the position touches, the integer that weight is
+multiplied by. The weights are a flat vector of 518, in this order: the 384
+midgame table entries, the 128 endgame ones (the pawn's table then the king's,
+since the other four pieces read one array at both ends of the taper), then
+the six material values. A slot's entry is a square as black sees it, because
+black is the colour that reads the tables as they are written.
+
+The line after the header is `weights 518 <w0> <w1> ...`, the vector itself as
+the live tables hold it, so that nothing reading these rows transcribes
+psqt.rs. A transcription is the same failure as a reimplemented evaluation and
+quieter: a table copied out and left behind fits weights against a position it
+scores differently from the engine, and nothing says so.
+
+Each row after that is `id eval phase n slot:coefficient... fen`, whitespace
+separated with the fen last so a row parses left to right. `n` is how many
+coefficients follow, so a reader knows where they stop without counting back
+from the fen. The coefficients are in the side to move's frame, so the row's
+own arithmetic is the evaluation with nothing further to do:
+
+```
+eval = mat . w_mat + trunc((psqt . w_psqt) / 24)
+```
+
+Three things in that line are load bearing, and each is a way to be wrong by a
+centipawn. The divide truncates toward zero, where python's `//` floors, and
+on a negative numerator that does not divide evenly the two differ. The
+material is added outside the divide rather than scaled into it:
+`trunc((24 * 1 + -5) / 24)` is 0 where `1 + trunc(-5 / 24)` is 1. And the
+phase is capped at 24 before the coefficients are written, because promotions
+can leave more on the board than the opening had. Each has a test of its own
+in `arche-core/src/tune.rs`.
+
+Nothing outside the engine is told how to evaluate a position, which is why
+the argument exists at all. A second implementation of the evaluation in
+another language diverges quietly: one wrong by a little still produces
+plausible weights, and nothing says when. So `reconstruct` folds a row back
+against the live tables and has to give what `eval` gives, exactly.
+`a_positions_terms_reconstruct_its_evaluation` asks that over the shared fens,
+the bench's suite and the strategic suite, which is 1522 positions of three
+different shapes; the run asserts it on every row it prints and panics rather
+than dropping one, so a corpus cannot hold a row the engine disagrees with.
+
+A position is kept when three things hold. The side to move is not in check,
+since a checked position's static evaluation is not a thing to fit and
+quiescence treats it differently anyway. A capture search comes back at the
+static evaluation, so the side to move has nothing to win by capturing. And
+the same holds after a pass, so the opponent has nothing to win either. The
+pass is what makes the test two sided: a one sided test keeps the position
+where the side to move is about to lose a hanging queen, and labels an
+evaluation that misses it with the result of a game that did not.
+
+The capture search is the reference's, with every shortcut off, for the reason
+the residual replay uses the reference. The default's quiescence has the delta
+margin and the losing capture skip on, so it passes over captures it prices as
+hopeless, and those skips are guesses. A corpus whose quietness was decided by
+a guess would carry the guess into every weight fitted on it, and would move
+when the guess moved.
+
+The header states what the run turned away beside what it kept:
+
+```
+terms positions 18 in_check 1 unsettled 8 kept 9
+```
+
+which is the recorders' rule that a share cannot be read without its
+denominator. If the yield ever leaves too few positions to fit 512 weights,
+dropping the pass is the fallback, and the header is what makes that a
+decision rather than a discovery.
+
+`epd <file>` reads a suite of its own instead of the bench's, on the residuals
+argument's terms, and the header names the file. A file that will not open,
+holds no position, or holds one the board will not take is refused rather than
+read.
+
+The argument arms no reservoir and searches no suite, so there is no
+recording-neutrality claim to make: it cannot move a node count, because
+nothing about it runs inside a measured search.
 
 ## What the table's key signature costs
 

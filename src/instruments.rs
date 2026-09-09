@@ -3,9 +3,11 @@
 
 //! The measurement instruments, as a command line asks for them.
 //!
-//! Three of them: the residual sampler, the cutoff census and the reduction
-//! ledger. Each searches the bench's positions, records a sample of what the
-//! search did, and prints a report. What each one measures is on its module in
+//! Four of them: the residual sampler, the cutoff census, the reduction
+//! ledger and the term extraction. The first three search the bench's
+//! positions, record a sample of what the search did, and print a report;
+//! the fourth searches nothing and writes down what each position's
+//! evaluation is made of. What each one measures is on its module in
 //! `arche-core`; what is here is only how a command line spells it.
 //!
 //! Their own module rather than `uci`, because none of them is the protocol.
@@ -19,9 +21,10 @@
 //! `bench` stays in `uci`, because the engine really does answer it as a
 //! command as well as as an argument.
 //!
-//! All three take the same three settings and used to read them three times
-//! over, in three functions that differed by a keyword and two defaults.
-//! `sampling` is that reading, once.
+//! The three that search take the same three settings and used to read them
+//! three times over, in three functions that differed by a keyword and two
+//! defaults. `sampling` is that reading, once. `terms` shares none of it:
+//! there is no depth to search to and nothing to sample.
 
 use crate::command::{Command, Keyword};
 use crate::params::{Param, Params};
@@ -32,6 +35,7 @@ use arche_core::census;
 use arche_core::recorder;
 use arche_core::reduction;
 use arche_core::residual;
+use arche_core::tune;
 
 /// A depth, a rate and a cap: what all three arguments take, and the whole of
 /// what the cutoffs and reductions arguments take.
@@ -46,6 +50,7 @@ struct Sampling {
 /// all, and how the usage spells the line.
 pub const RESIDUALS: Command = Command {
     name: "residuals",
+    depth: true,
     keywords: &[
         Keyword {
             word: "every",
@@ -74,6 +79,7 @@ pub const RESIDUALS: Command = Command {
 
 pub const CUTOFFS: Command = Command {
     name: "cutoffs",
+    depth: true,
     keywords: &[
         Keyword {
             word: "every",
@@ -93,6 +99,7 @@ pub const CUTOFFS: Command = Command {
 
 pub const REDUCTIONS: Command = Command {
     name: "reductions",
+    depth: true,
     keywords: &[
         Keyword {
             word: "every",
@@ -112,6 +119,22 @@ pub const REDUCTIONS: Command = Command {
         "search the bench's suite, or the one named, sample the",
         "reduced scouts, and ask a full depth search whether each",
         "trusted fail low threw a move away",
+    ],
+};
+
+pub const TERMS: Command = Command {
+    name: "terms",
+    // there is no search to run to one: the walk reads the board and the
+    // quiet test runs a capture search, which has no depth to be given
+    depth: false,
+    keywords: &[Keyword {
+        word: "epd",
+        value: "<file>",
+    }],
+    flags: &[],
+    summary: &[
+        "print what each quiet position of the bench's suite, or",
+        "the one named, makes its evaluation out of",
     ],
 };
 
@@ -309,6 +332,38 @@ impl ReductionSettings {
             self.every,
             self.cap,
         )
+    }
+}
+
+/// What a terms argument asked for: `terms [epd <file>]`. The suite is the
+/// bench's own when absent, on the residual sampler's terms exactly.
+///
+/// No depth, no rate and no cap. Nothing here is sampled: a run states every
+/// quiet position of the suite it was given, because a corpus is the thing
+/// being built and a share of one would only be a smaller corpus.
+pub struct TermSettings {
+    /// The file the suite was read from, or none for the bench's own.
+    pub epd: Option<String>,
+    /// The positions themselves, read while the settings are, so a file that
+    /// is no suite is refused before the minutes are spent.
+    pub positions: Vec<bench::Position>,
+}
+
+pub fn term_settings(params: &Params) -> Result<TermSettings, String> {
+    TERMS.claim(params)?;
+    let epd = params.value("epd").map(str::to_string);
+    let positions = match &epd {
+        None => bench::positions(),
+        Some(path) => read_epd(path)?,
+    };
+    Ok(TermSettings { epd, positions })
+}
+
+impl TermSettings {
+    /// Extracts the terms these settings describe, over the bench's own
+    /// positions unless the line named a file.
+    pub fn run(&self) -> tune::Report {
+        tune::run(&self.positions, self.epd.as_deref())
     }
 }
 

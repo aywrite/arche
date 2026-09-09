@@ -19,6 +19,7 @@ pub mod residual;
 pub mod strategy;
 pub mod tactics;
 mod transposition;
+pub mod tune;
 mod value;
 mod zobrist;
 

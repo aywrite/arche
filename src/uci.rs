@@ -528,6 +528,7 @@ pub struct BenchSettings {
 /// words it will refuse as unknown.
 pub const BENCH: Command = Command {
     name: "bench",
+    depth: true,
     keywords: &[
         Keyword {
             word: "hash",
