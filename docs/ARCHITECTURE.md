@@ -128,7 +128,7 @@ material plus piece square tables, tapered between middlegame and endgame.
   position touches, in the side to move's frame. `reconstruct` folds a row
   back against the live tables and has to give the evaluation exactly,
   which is asserted on every row printed as well as over three suites in a
-  test. Driven by the `terms` argument.
+  test. Driven by the `terms` argument, and read by `scripts/tune.py`.
 - **tactics.rs**: 300 tactical positions with a pinned pass count, gated
   in CI.
 - **strategy.rs**: 1500 quiet positions, each move graded out of a
@@ -156,6 +156,23 @@ material plus piece square tables, tapered between middlegame and endgame.
   the phrases where a name runs to more than one word, as `Clear Hash` does.
 - **time_control.rs**: Reads the time part of a `go` line, and turns a clock
   into a time budget for one move.
+
+## Code map: scripts
+
+Most of `scripts/` is measurement plumbing, described in DEVELOPMENT.md
+where each measurement is. Two of them are the offline half of the
+evaluation tuner, and they have tests under `scripts/tests` gated by the
+Scripts workflow:
+
+- **build_corpus.py**: Archived strength-run pgns in, an epd of unique
+  post-book positions out, each carrying the game result from the side to
+  move's point of view and how many games it appeared in.
+- **tune.py**: The loss harness and the fit. Reads an `arche terms` run and
+  the corpus above, rebuilds every row against the weights the run printed,
+  and either scores weight vectors on a held-out split or fits new ones.
+  Nothing here knows how to evaluate a position: the engine states the
+  coefficients and states the weights, and a row this cannot rebuild stops
+  the run.
 
 ## Measurement
 
