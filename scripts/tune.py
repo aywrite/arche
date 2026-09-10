@@ -12,13 +12,17 @@ two things that pair is for:
     python3 scripts/tune.py loss --terms rows.txt --corpus corpus.epd
     python3 scripts/tune.py cv   --terms rows.txt --corpus corpus.epd
     python3 scripts/tune.py fit  --terms rows.txt --corpus corpus.epd --out fit.json
+    python3 scripts/tune.py final --terms rows.txt --corpus corpus.epd \
+        --weights fit.json --log final.log
 
 `loss` is the triage instrument. A weight vector is scored over the whole
 corpus in one matrix-vector product, which is milliseconds, so a candidate can
 be killed before it costs a match. `cv` is how one way of fitting is compared
 with another: it refits over five folds of whole games and scores every row
 under the fold that held its game out. `fit` is the tuner, and it chooses its
-ridge on the selection group.
+ridge on the selection group. `final` opens the sealed group: it scores a
+frozen vector there once, and the log it appends to is what refuses a second
+opening of the same games.
 
 The unit of all of it is the game and not the position. Positions inside one
 game share a label and are a move apart, so a split that separates positions
@@ -35,10 +39,16 @@ a later coverage claim mean anything: a group a fit has been ranked against
 has already had the labels influence it, so the claim has to be made on a group
 nothing has looked at. That is not a rule to remember. The calibration rows are
 not in the matrices the loss and the fit read, so the three commands cannot
-reach a calibration row.
+reach a calibration row. `final` can, by design and once: it takes a vector
+already quantized to the integers that would ship, writes the corpus, its
+sealed games, the extraction and the vector it was given into a log by
+checksum before it reads anything, and refuses a corpus or a set of sealed
+games the log already names. A vector revised after that reading needs sealed
+games this corpus did not hold, and the same games under a new filename or a
+re-extraction are not that.
 
-No command here reads a sealed row, and no sealed game's result reaches a label
-a fit sees. The rows are held apart because they are not in the matrices at
+No command but `final` reads a sealed row, and no sealed game's result reaches
+a label a fit sees. The rows are held apart because they are not in the matrices at
 all, and the labels because `build_corpus.py` labels a position from its own
 group's games alone: a position that games in different groups reached belongs
 to the group of the lowest key, its result and its count are that group's
@@ -72,6 +82,8 @@ help. The sprt says elo.
 """
 
 import argparse
+import datetime
+import hashlib
 import json
 import math
 import sys
@@ -341,7 +353,7 @@ def parse_corpus(lines):
 
 
 class Sealed:
-    """The calibration group, which nothing here reads.
+    """The calibration group, which nothing here reads but `final`.
 
     Its rows are held apart rather than masked out. A mask is a convention: it
     works while every caller remembers it, and the one that forgets is the one
@@ -351,8 +363,9 @@ class Sealed:
     corpus file changes nothing any of the three prints, and a test says so.
 
     What a run may say about it is how big it is, which is what the header
-    prints and what says the group exists. `unseal` is the door the arm that
-    holds final weights walks through, and nothing in this file calls it.
+    prints and what says the group exists. `unseal` is what the arm that holds
+    final weights calls, through `final`, once per set of sealed games, with
+    the log to say so.
 
     The labels are held apart as well, and upstream of here. A position that a
     training game and a calibration game both reached is labelled by whichever
@@ -361,9 +374,10 @@ class Sealed:
     appearances, which `build_corpus.py` counts.
     """
 
-    def __init__(self, rows, labels):
+    def __init__(self, rows, labels, weights):
         self._rows = rows
         self._labels = labels
+        self._weights = weights
 
     @property
     def positions(self):
@@ -377,13 +391,29 @@ class Sealed:
     def pairs(self):
         return len({self._labels[row.id].pair for row in self._rows})
 
+    def checksum(self):
+        """The sha256 of the sealed pair keys, sorted: what names the sealed
+        games apart from the file they came in, so a re-extraction that adds
+        a run is still the same sealed games."""
+        keys = sorted({self._labels[row.id].pair for row in self._rows})
+        return hashlib.sha256("\n".join(keys).encode("utf-8")).hexdigest()
+
     @property
     def appearances(self):
         return sum(self._labels[row.id].count for row in self._rows)
 
     def unseal(self):
-        """The rows, for the arm whose weights are final."""
-        return list(self._rows)
+        """The rows, loaded the way the corpus loads its own so they can be
+        scored, for the arm whose weights are final."""
+        opened = Corpus.__new__(Corpus)
+        opened.sealed = None
+        opened._load(
+            self._weights,
+            list(self._rows),
+            self._labels,
+            dict.fromkeys((row.id for row in self._rows), CALIBRATION),
+        )
+        return opened
 
 
 class Corpus:
@@ -405,7 +435,7 @@ class Corpus:
     the extraction.
 
     The calibration group is not here. It is in `sealed`, which holds its rows
-    and no way to score them.
+    apart and scores them for `final` alone.
     """
 
     def __init__(self, weights, rows, labels):
@@ -427,9 +457,14 @@ class Corpus:
                 )
         groups = {row.id: group_of(labels[row.id].pair) for row in joined}
         self.sealed = Sealed(
-            [row for row in joined if groups[row.id] == CALIBRATION], labels
+            [row for row in joined if groups[row.id] == CALIBRATION], labels, weights
         )
         kept = [row for row in joined if groups[row.id] != CALIBRATION]
+        self._load(weights, kept, labels, groups)
+
+    def _load(self, weights, kept, labels, groups):
+        """The arrays over one set of rows: the corpus's own, or the sealed
+        group's the once it is opened."""
         self.rows = kept
         self.weights = np.array(weights, dtype=np.float64)
         self.evals = np.array([row.eval for row in kept], dtype=np.float64)
@@ -575,6 +610,17 @@ def squared_errors(scores, results, k):
     """The per-position squared error, which is what a paired difference
     between two weight vectors is taken over."""
     return (results - sigmoid(scores, k)) ** 2
+
+
+def weighted_quantile(values, weights, quantile):
+    """The smallest value with at least the given share of the weight at or
+    under it, the weight being the appearances, so a position the corpus
+    reached often counts for what it is. No interpolation: the value returned
+    is one the corpus holds."""
+    order = np.argsort(values)
+    cumulative = np.cumsum(weights[order])
+    index = int(np.searchsorted(cumulative, quantile * cumulative[-1]))
+    return float(values[order][min(index, len(values) - 1)])
 
 
 def paired_difference(first, second, counts, games):
@@ -1193,14 +1239,139 @@ def command_fit(args):
     return 0
 
 
+def sha256_of(path):
+    return hashlib.sha256(Path(path).read_bytes()).hexdigest()
+
+
+def opened_before(log, corpus_sha, sealed_sha):
+    """The log line that says these sealed games were opened, if one is
+    there. A line is `opened <when> corpus <sha256> sealed <sha256> ...`, and
+    both checksums are read: the corpus's, so a renamed file is the same
+    corpus, and the sealed games', so a re-extraction with a run appended is
+    the same sealed group."""
+    if not log.is_file():
+        return None
+    for line in log.read_text(encoding="utf-8").splitlines():
+        words = line.split()
+        named = dict(zip(words[2::2], words[3::2])) if words[:1] == ["opened"] else {}
+        if named.get("corpus") == corpus_sha or named.get("sealed") == sealed_sha:
+            return line
+    return None
+
+
+def command_final(args):
+    """Open the sealed group once, against a frozen vector.
+
+    The order matters. The vector is checked to be the integers that would
+    ship, the log is checked for this corpus and these sealed games and the
+    line is written, and only then is a sealed row loaded, so a run that
+    opened the group and then failed has still said so. What it prints is the
+    frozen vector against the shipped one on the sealed rows, with the
+    interval clustered on the game, and the residual quantiles the tail claim
+    is made from. A second reading of the same sealed games is refused,
+    whatever file they arrive in.
+    """
+    corpus = load(args)
+    frozen = read_weights(args.weights)
+    if np.any(frozen != np.rint(frozen)):
+        raise SystemExit(
+            "tune.py: the frozen vector is not the integers that would ship; "
+            "quantize it first"
+        )
+    frozen = frozen.astype(np.int64)
+    holds, worst = bounds_hold(frozen)
+    if not holds:
+        raise SystemExit(f"tune.py: the frozen vector's boardful is {worst} of 32767")
+    corpus_sha = sha256_of(args.corpus)
+    sealed_sha = corpus.sealed.checksum()
+    log = Path(args.log)
+    before = opened_before(log, corpus_sha, sealed_sha)
+    if before is not None:
+        raise SystemExit(
+            f"tune.py: these sealed games were opened before ({before}); "
+            "a second reading needs sealed games this corpus did not hold"
+        )
+    if not corpus.sealed.positions:
+        raise SystemExit("tune.py: no row of the extraction is in the sealed group")
+    k = args.k or fit_k(
+        corpus.scores(corpus.weights)[corpus.train],
+        corpus.results[corpus.train],
+        corpus.counts[corpus.train],
+    )
+    # the line goes in before a sealed row is loaded, and the sizes it
+    # carries are the ones the header may print without opening the group
+    when = datetime.datetime.now(datetime.timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ")
+    with log.open("a", encoding="utf-8", newline="\n") as handle:
+        handle.write(
+            f"opened {when} corpus {corpus_sha} sealed {sealed_sha} "
+            f"terms {sha256_of(args.terms)} weights {sha256_of(args.weights)} "
+            f"k {k:.4f} positions {corpus.sealed.positions} "
+            f"games {corpus.sealed.games} appearances {corpus.sealed.appearances}\n"
+        )
+    opened = corpus.sealed.unseal()
+    print(
+        f"calibration positions {len(opened)} games {len(np.unique(opened.games))} "
+        f"pairs {len(np.unique(opened.pairs))} appearances {int(opened.counts.sum())} "
+        f"opened, logged to {log}"
+    )
+    print(f"k {k:.4f}")
+    everything = np.ones(len(opened), dtype=bool)
+    errors = {}
+    for name, weights in (("shipped", corpus.weights), ("frozen", frozen)):
+        numbers = scored(opened, weights, everything, k)
+        print(
+            f"{name} calibration mse {numbers['mse']:.6f} log {numbers['log']:.6f} "
+            f"quantized_mse {numbers['quantized_mse']:.6f} "
+            f"quantized_log {numbers['quantized_log']:.6f}"
+        )
+        # the integer scores, which are the evaluation the engine would give
+        errors[name] = squared_errors(numbers["integers"], opened.results, k)
+        for bucket in BUCKETS:
+            inside = opened.buckets == bucket
+            if not inside.any():
+                continue
+            print(
+                f"{name} calibration pieces {bucket} "
+                f"{int(opened.counts[inside].sum())} quantized_mse "
+                f"{mean_squared_error(numbers['integers'][inside], opened.results[inside], opened.counts[inside], k):.6f}"
+            )
+    mean, error, naive, design = paired_difference(
+        errors["shipped"], errors["frozen"], opened.counts, opened.games
+    )
+    print(
+        f"frozen against shipped calibration quantized_mse {mean:+.6f} "
+        f"se {error:.6f} per position {naive:.6f} design {design:.1f} "
+        "(clustered on the game)"
+        + ("" if abs(mean) > 2 * error else " (inside its interval)")
+    )
+    integers = scored(opened, frozen, everything, k)["integers"]
+    residual = opened.results - sigmoid(integers, k)
+    signed = " ".join(
+        f"p{int(100 * q)} {weighted_quantile(residual, opened.counts, q):+.4f}"
+        for q in (0.5, 0.9, 0.95, 0.99)
+    )
+    absolute = " ".join(
+        f"p{int(100 * q)} {weighted_quantile(np.abs(residual), opened.counts, q):.4f}"
+        for q in (0.5, 0.9, 0.95, 0.99)
+    )
+    print(f"frozen residual signed {signed}")
+    print(f"frozen residual absolute {absolute}")
+    print(
+        "residuals are result less predicted, weighted by appearances, each "
+        "quantile the smallest residual with at least that share at or under "
+        "it: an empirical diagnostic, not a coverage claim"
+    )
+    return 0
+
+
 def main(argv=None):
     parser = argparse.ArgumentParser(description=__doc__)
     commands = parser.add_subparsers(dest="command", required=True)
-    for name in ("loss", "cv", "fit"):
+    for name in ("loss", "cv", "fit", "final"):
         command = commands.add_parser(name)
         command.add_argument("--terms", required=True, help="an arche terms run")
         command.add_argument("--corpus", required=True, help="the epd it was run over")
-    for name in ("loss", "fit"):
+    for name in ("loss", "fit", "final"):
         # cv fits K per fold on that fold's training games, so there is no one
         # constant for a caller to name
         commands.choices[name].add_argument(
@@ -1225,10 +1396,24 @@ def main(argv=None):
         )
     fit = commands.choices["fit"]
     fit.add_argument("--out", help="where to write the fitted vector")
-    args = parser.parse_args(argv)
-    return {"loss": command_loss, "cv": command_cv, "fit": command_fit}[args.command](
-        args
+    final = commands.choices["final"]
+    final.add_argument(
+        "--weights",
+        required=True,
+        help="the frozen vector, as a json array of integers",
     )
+    final.add_argument(
+        "--log",
+        required=True,
+        help="the access log, appended to before any sealed row is read",
+    )
+    args = parser.parse_args(argv)
+    return {
+        "loss": command_loss,
+        "cv": command_cv,
+        "fit": command_fit,
+        "final": command_final,
+    }[args.command](args)
 
 
 if __name__ == "__main__":
