@@ -10,12 +10,43 @@ the games those positions came from ended in. This joins the two and does the
 two things that pair is for:
 
     python3 scripts/tune.py loss --terms rows.txt --corpus corpus.epd
+    python3 scripts/tune.py cv   --terms rows.txt --corpus corpus.epd
     python3 scripts/tune.py fit  --terms rows.txt --corpus corpus.epd --out fit.json
 
 `loss` is the triage instrument. A weight vector is scored over the whole
 corpus in one matrix-vector product, which is milliseconds, so a candidate can
-be killed before it costs a match. `fit` is the tuner, and it exists so that
-the loss has something to be measured against.
+be killed before it costs a match. `cv` is how one way of fitting is compared
+with another: it refits over five folds of whole games and scores every row
+under the fold that held its game out. `fit` is the tuner, and it chooses its
+ridge on the selection group.
+
+The unit of all of it is the game and not the position. Positions inside one
+game share a label and are a move apart, so a split that separates positions
+still leaves a held-out row's answer sitting beside it in the training set, and
+an interval taken over positions counts a game's worth of rows as a game's
+worth of evidence. Neither is a detail. Splitting on the position rather than
+the game left 1,805 of the corpus's 1,809 games with rows on both sides and
+made the interval about four times too narrow, and it chose a ridge two orders
+of magnitude off the one whole games choose.
+
+There are three groups and not two. Three fifths of the games train, a fifth
+chooses the ridge, and a fifth is not read here at all. The last is what makes
+a later coverage claim mean anything: a group a fit has been ranked against
+has already had the labels influence it, so the claim has to be made on a group
+nothing has looked at. That is not a rule to remember. The calibration rows are
+not in the matrices the loss and the fit read, so the three commands cannot
+reach a calibration row.
+
+The seal is on the rows and not on the labels, and the difference is worth
+stating. `build_corpus.py` merges a position two games reached into one row
+whose label is the mean of their results, so where a training game and a
+calibration game both reached a position, a little of the sealed game's result
+is in the label the fit reads, and a little of the training game's is in the
+label that stays sealed. That is the spec's own duplicate rule and not an
+oversight here. Its size is small: 3.92% of the positions a run scores repeat
+at all, and a calibration game is a fifth of the games, so about a fifth of
+those repeats have a sealed game among them. A coverage claim made on the group
+carries that much and should say so.
 
 Nothing here knows how to evaluate a position. The engine states the
 coefficients and states the weights, and `reconstruct` below folds one row back
@@ -36,7 +67,6 @@ help. The sprt says elo.
 """
 
 import argparse
-import hashlib
 import json
 import math
 import sys
@@ -60,6 +90,23 @@ PIECES_COUNTED = "nbrqNBRQ"
 
 # The buckets the game-corpus report stratified by, and the harness after it.
 BUCKETS = ("0-6", "7-12", "13+")
+
+# How many folds a cross validated comparison uses. Five, so each fit reads
+# four fifths of the games and every row is scored once.
+FOLDS = 5
+
+# The five slices of a game key, and which group each one is. Three fifths
+# train, a fifth chooses the ridge, and a fifth is sealed.
+SLICES = (
+    "train",
+    "train",
+    "train",
+    "selection",
+    "calibration",
+)
+
+# The group that is not read until the weights are final.
+CALIBRATION = "calibration"
 
 
 def trunc_div(numerator, denominator):
@@ -88,15 +135,48 @@ def reconstruct(coefficients, weights):
     return material + trunc_div(numerator, TOTAL_PHASE)
 
 
-def held_out(fen):
-    """Which side of the split a position falls on: sha256 of the fen, the low
-    bit of the first byte. Odd is held out.
+def group_of(key):
+    """Which group a game falls in: the first byte of its key, modulo five.
 
-    The house pattern, and its property is the one that matters: rows that
-    share a fen land on the same side by construction, so the split leaks no
-    position across itself.
+    The key is the sha256 of the game's movetext, which `build_corpus.py`
+    writes into every row's `game` operand. The game is the unit because the
+    label is. Every position of a game carries that game's result, and
+    consecutive positions are one move apart, so a row held out while its
+    neighbours are trained on is a row whose answer the fit has already been
+    shown. Splitting on the position rather than the game hides that rather
+    than preventing it: measured on the corpus this was written for, 1,805 of
+    1,809 games had rows on both sides and 53.1% of the held-out rows had the
+    position a ply away, same game and same label, in the training set. What
+    the loss then reports is interpolation inside games the fit has seen, which
+    is not what a held-out loss is read as.
+
+    Three groups rather than two, because a fifth of the games is worth more
+    unread than read. The ridge is ranked on the selection group, which makes
+    the loss reported there the fit's own best case; a distribution-free
+    coverage claim needs a group that no ranking has touched, and the
+    calibration group is it. Retrofitting one later cannot work, so it is
+    assigned by construction from the first run.
     """
-    return hashlib.sha256(fen.encode("utf-8")).digest()[0] & 1 == 1
+    if len(key) < 2:
+        raise ValueError(f"a game key that is no sha256: {key!r}")
+    try:
+        first = int(key[:2], 16)
+    except ValueError:
+        raise ValueError(f"a game key that is no sha256: {key!r}") from None
+    return SLICES[first % len(SLICES)]
+
+
+def fold_of(key, folds=FOLDS):
+    """Which fold a game falls in, by the second byte of its key. Whole games,
+    for the same reason the groups are whole games.
+
+    The second byte and not the first, because the first is what put the game
+    in its group. Folding on it would make one fold the selection group and
+    leave another empty.
+    """
+    if len(key) < 4:
+        raise ValueError(f"a game key that is no sha256: {key!r}")
+    return int(key[2:4], 16) % folds
 
 
 def phase_bucket(fen):
@@ -113,7 +193,12 @@ def phase_bucket(fen):
 
 
 class Row:
-    """One position: what the engine said it scored, and what of."""
+    """One position: what the engine said it scored, and what of.
+
+    Which game it belongs to is not here. The extraction knows the position and
+    the corpus knows the game, and reading a game out of a row's name would be
+    reading it from the file that does not hold it.
+    """
 
     def __init__(self, identifier, evaluation, phase, coefficients, fen):
         self.id = identifier
@@ -168,13 +253,29 @@ def parse_terms(lines):
     return weights, rows
 
 
+class Label:
+    """What the corpus says about one position: the game result from the side
+    to move's point of view, how many times the corpus reached it, and which
+    game it belongs to."""
+
+    def __init__(self, result, count, game):
+        self.result = result
+        self.count = count
+        self.game = game
+
+
 def parse_corpus(lines):
-    """The label of each position: the game result from the side to move's
-    point of view, and how many games it came from, by id.
+    """The label of each position, by id.
 
     Read the way the engine reads epd, which is the point of reading it here
     at all: the first four words are the position and what follows them is
     operations, each an opcode and its operands, ended by a semicolon.
+
+    A row with no `game` operand is refused rather than given a game of its
+    own. That operand is what the three groups are assigned from, and a corpus
+    built before it existed would be split into one game per position, which is
+    the leak the game split was written to close arriving quietly through the
+    back door.
     """
     labels = {}
     for line in lines:
@@ -190,11 +291,57 @@ def parse_corpus(lines):
                 operations[opcode] = operands.strip().strip('"')
         if "id" not in operations or "result" not in operations:
             continue
-        labels[operations["id"]] = (
+        if "game" not in operations:
+            raise ValueError(
+                f"the corpus row {operations['id']} names no game to split on"
+            )
+        labels[operations["id"]] = Label(
             float(operations["result"]),
             int(operations.get("count", 1)),
+            operations["game"],
         )
     return labels
+
+
+class Sealed:
+    """The calibration group, which nothing here reads.
+
+    Its rows are held apart rather than masked out. A mask is a convention: it
+    works while every caller remembers it, and the one that forgets is the one
+    that spends the group. These rows are not in the corpus's matrices at all,
+    so `loss`, `cv` and `fit` are handed a corpus that does not contain them
+    and cannot reach them by accident. Deleting the calibration rows from the
+    corpus file changes nothing any of the three prints, and a test says so.
+
+    What a run may say about it is how big it is, which is what the header
+    prints and what says the group exists. `unseal` is the door the arm that
+    holds final weights walks through, and nothing in this file calls it.
+
+    What is held apart is the rows. A label can still cross, on a position a
+    training game and a calibration game both reached, because the corpus merges
+    those into one row and means their results. The module docstring says how
+    much of the corpus that is.
+    """
+
+    def __init__(self, rows, labels):
+        self._rows = rows
+        self._labels = labels
+
+    @property
+    def positions(self):
+        return len(self._rows)
+
+    @property
+    def games(self):
+        return len({self._labels[row.id].game for row in self._rows})
+
+    @property
+    def appearances(self):
+        return sum(self._labels[row.id].count for row in self._rows)
+
+    def unseal(self):
+        """The rows, for the arm whose weights are final."""
+        return list(self._rows)
 
 
 class Corpus:
@@ -209,16 +356,48 @@ class Corpus:
     The piece square coefficients and the material ones are kept apart, because
     the two enter the evaluation differently: the piece square half divides by
     the taper and the material half does not.
+
+    The rows also carry which game each came from, because the game is the unit
+    the split and every interval are taken over, and it is the corpus that says
+    so rather than the extraction.
+
+    The calibration group is not here. It is in `sealed`, which holds its rows
+    and no way to score them.
     """
 
     def __init__(self, weights, rows, labels):
-        kept = [row for row in rows if row.id in labels]
+        joined = [row for row in rows if row.id in labels]
+        # a position appears in exactly one row, because build_corpus.py
+        # deduplicates by fen before it labels and gives the row the lowest key
+        # of the games that reached it, so no position is in two groups. a
+        # corpus that was not deduplicated could be, and would be the leak the
+        # fen split had in a new place, so it is refused rather than fitted
+        # around. checked over every row and not only the ones that are kept,
+        # because a fen in both a training game and the sealed group is the
+        # same fault
+        first = {}
+        for row in joined:
+            owner = first.setdefault(row.fen, labels[row.id].game)
+            if owner != labels[row.id].game:
+                raise ValueError(
+                    f"the position {row.fen} is in {owner} and in {labels[row.id].game}"
+                )
+        groups = {row.id: group_of(labels[row.id].game) for row in joined}
+        self.sealed = Sealed(
+            [row for row in joined if groups[row.id] == CALIBRATION], labels
+        )
+        kept = [row for row in joined if groups[row.id] != CALIBRATION]
         self.rows = kept
         self.weights = np.array(weights, dtype=np.float64)
         self.evals = np.array([row.eval for row in kept], dtype=np.float64)
-        self.results = np.array([labels[row.id][0] for row in kept], dtype=np.float64)
-        self.counts = np.array([labels[row.id][1] for row in kept], dtype=np.float64)
-        self.holdout = np.array([held_out(row.fen) for row in kept], dtype=bool)
+        self.results = np.array(
+            [labels[row.id].result for row in kept], dtype=np.float64
+        )
+        self.counts = np.array([labels[row.id].count for row in kept], dtype=np.float64)
+        self.games = np.array([labels[row.id].game for row in kept])
+        self.groups = np.array([groups[row.id] for row in kept])
+        self.train = self.groups == "train"
+        self.selection = self.groups == "selection"
         self.buckets = np.array([phase_bucket(row.fen) for row in kept])
         psqt, material = [], []
         for index, row in enumerate(kept):
@@ -354,21 +533,44 @@ def squared_errors(scores, results, k):
     return (results - sigmoid(scores, k)) ** 2
 
 
-def paired_difference(first, second, counts):
-    """The mean difference between two weight vectors' per-position errors, and
-    its standard error.
+def paired_difference(first, second, counts, games):
+    """The mean difference between two weight vectors' per-position errors, its
+    standard error taken over the games, the one a reader would get over the
+    positions, and the ratio of the two.
 
     The two are scored on the same positions, so the difference is a paired
     sample and its mean has an interval. A loss difference whose interval
     covers zero is not a difference, which is why this never returns a bare
     delta.
+
+    The interval is taken over games and not over positions. A game's hundred
+    odd positions share a result and differ by a move, so they move together,
+    and treating them as a hundred independent draws counts one game's evidence
+    a hundred times. The sum of each game's contributions to the mean is what
+    varies from game to game, so that is what the spread is taken of, which is
+    the usual cluster-robust interval with the game as the cluster.
+
+    Both are returned, because the naive one is worth printing rather than
+    describing. Their ratio is the design factor: it says what treating the
+    positions as independent would have claimed, and if it ever comes back near
+    one then the games were carrying no more dependence than the positions and
+    holding them out cost more than it bought.
     """
     weight = counts / np.sum(counts)
     difference = second - first
     mean = float(np.sum(weight * difference))
+    slack = weight * (difference - mean)
+    index = np.unique(games, return_inverse=True)[1]
+    played = int(index.max()) + 1 if len(index) else 0
+    if played < 2:
+        return mean, float("nan"), float("nan"), float("nan")
+    per_game = np.bincount(index, slack, minlength=played)
+    clustered = math.sqrt(float(per_game @ per_game) * played / (played - 1))
     variance = float(np.sum(weight * (difference - mean) ** 2))
     effective = float(np.sum(counts) ** 2 / np.sum(counts**2))
-    return mean, math.sqrt(variance / effective) if effective > 1 else float("nan")
+    naive = math.sqrt(variance / effective) if effective > 1 else float("nan")
+    design = clustered / naive if naive > 0 else float("nan")
+    return mean, clustered, naive, design
 
 
 def line_search(objective, x, direction, value, slope, length):
@@ -592,14 +794,30 @@ def scored(corpus, weights, mask, k):
 
 
 def report(corpus, named, k, out=None):
-    """The loss table: each weight vector on each side of the split, pooled and
-    stratified, with a paired difference against the first."""
+    """The loss table: each weight vector on each group it may be scored on,
+    pooled and stratified, with a paired difference against the first.
+
+    Two groups are scored and the third is named and left alone. Naming it is
+    what says it exists and how big it is, which is the whole of what a run may
+    say about a group whose value is that nothing has read it.
+    """
     out = sys.stdout if out is None else out
-    train = ~corpus.holdout
-    holdout = corpus.holdout
+    train, selection = corpus.train, corpus.selection
     print(
         f"corpus positions {len(corpus)} train {int(train.sum())} "
-        f"holdout {int(holdout.sum())} games {int(corpus.counts.sum())}",
+        f"selection {int(selection.sum())} appearances {int(corpus.counts.sum())}",
+        file=out,
+    )
+    print(
+        f"games {len(np.unique(corpus.games)) + corpus.sealed.games} "
+        f"train {len(np.unique(corpus.games[train]))} "
+        f"selection {len(np.unique(corpus.games[selection]))} "
+        f"calibration {corpus.sealed.games}",
+        file=out,
+    )
+    print(
+        f"calibration positions {corpus.sealed.positions} "
+        f"appearances {corpus.sealed.appearances} sealed, not read here",
         file=out,
     )
     wins = float(np.sum(corpus.counts * corpus.results) / np.sum(corpus.counts))
@@ -629,11 +847,11 @@ def report(corpus, named, k, out=None):
         )
         print(
             f"{name} scale {table_scale(weights, corpus.weights):.3f} own_k {own:.4f} "
-            f"holdout mse at own_k "
-            f"{mean_squared_error(corpus.scores(np.asarray(weights, dtype=np.float64))[holdout], corpus.results[holdout], corpus.counts[holdout], own):.6f}",
+            f"selection mse at own_k "
+            f"{mean_squared_error(corpus.scores(np.asarray(weights, dtype=np.float64))[selection], corpus.results[selection], corpus.counts[selection], own):.6f}",
             file=out,
         )
-        for side, mask in (("train", train), ("holdout", holdout)):
+        for side, mask in (("train", train), ("selection", selection)):
             numbers = scored(corpus, weights, mask, k)
             print(
                 f"{name} {side} mse {numbers['mse']:.6f} log {numbers['log']:.6f} "
@@ -641,13 +859,13 @@ def report(corpus, named, k, out=None):
                 f"quantized_log {numbers['quantized_log']:.6f}",
                 file=out,
             )
-            if side == "holdout":
+            if side == "selection":
                 for bucket in BUCKETS:
                     inside = corpus.buckets[mask] == bucket
                     if not inside.any():
                         continue
                     print(
-                        f"{name} holdout pieces {bucket} {int(inside.sum())} mse "
+                        f"{name} selection pieces {bucket} {int(inside.sum())} mse "
                         f"{mean_squared_error(numbers['scores'][inside], corpus.results[mask][inside], corpus.counts[mask][inside], k):.6f}",
                         file=out,
                     )
@@ -655,12 +873,15 @@ def report(corpus, named, k, out=None):
                 if baseline is None:
                     baseline = (name, errors)
                 else:
-                    mean, error = paired_difference(
-                        baseline[1], errors, corpus.counts[mask]
+                    mean, error, naive, design = paired_difference(
+                        baseline[1],
+                        errors,
+                        corpus.counts[mask],
+                        corpus.games[mask],
                     )
                     print(
-                        f"{name} against {baseline[0]} holdout mse {mean:+.6f} "
-                        f"se {error:.6f}"
+                        f"{name} against {baseline[0]} selection mse {mean:+.6f} "
+                        f"se {error:.6f} per position {naive:.6f} design {design:.1f}"
                         + ("" if abs(mean) > 2 * error else " (inside its interval)"),
                         file=out,
                     )
@@ -673,6 +894,159 @@ def report(corpus, named, k, out=None):
     )
 
 
+def cross_validate(corpus, penalties, start, frozen, iterations, out=None):
+    """Cross validation with whole games held out, which is how one way of
+    fitting is compared with another.
+
+    Five folds of the games the run may read, which is the training and
+    selection groups and not the sealed one: the corpus this is handed does not
+    hold the calibration rows, so no fold can contain one. Each fold refits on
+    four fifths of those games and is scored on the fifth, so every row is
+    scored by a fit that never read its game, and every row is scored once
+    rather than half of them being scored at all. K is fitted per fold on that
+    fold's training games at the shipped weights and held for the vectors
+    scored in it, which is the rule a single split already follows.
+
+    This is not what the fit chooses its ridge on. The selection group is, and
+    it is a fifth of the games set aside for it. This answers the wider
+    question, which is whether a way of fitting is worth anything at all over
+    the corpus the run may read, and it answers it with every row scored rather
+    than a fifth of them.
+
+    Returns the per-row squared error each recipe earned on the fold that held
+    its game out, keyed by penalty, with the shipped weights under `shipped`,
+    and the penalties whose fits outgrew what the engine's arithmetic carries.
+    """
+    out = sys.stdout if out is None else out
+    which = np.array([fold_of(game) for game in corpus.games])
+    errors = {name: np.zeros(len(corpus)) for name in ("shipped", *penalties)}
+    outside = set()
+    for index in range(FOLDS):
+        held = which == index
+        train = ~held
+        if not held.any() or not train.any():
+            raise SystemExit(f"tune.py: fold {index} is empty, so the corpus is small")
+        k = fit_k(
+            corpus.scores(corpus.weights)[train],
+            corpus.results[train],
+            corpus.counts[train],
+        )
+        # a fold is a fit for every penalty on the grid, so the line says what
+        # is starting rather than what has finished
+        print(
+            f"fold {index} games {len(np.unique(corpus.games[held]))} "
+            f"positions {int(held.sum())} k {k:.4f}",
+            file=out,
+            flush=True,
+        )
+        results = corpus.results[held]
+        errors["shipped"][held] = squared_errors(
+            corpus.scores(corpus.weights)[held], results, k
+        )
+        for penalty in penalties:
+            fitted, _ = lbfgs(
+                objective_for(corpus, train, k, start, penalty, frozen),
+                start,
+                iterations,
+            )
+            if not bounds_hold(quantize(fitted))[0]:
+                outside.add(penalty)
+            errors[penalty][held] = squared_errors(
+                corpus.scores(fitted)[held], results, k
+            )
+    return errors, outside
+
+
+def cross_validated(corpus, errors, outside, out=None):
+    """The cross validated loss of each recipe, and what it bought over the
+    shipped weights, with the interval taken over the games.
+
+    Returns the penalty that scored best among those the engine's arithmetic
+    can carry, or none if that is all of them.
+    """
+    out = sys.stdout if out is None else out
+    weight = corpus.counts / np.sum(corpus.counts)
+    print(f"shipped cv mse {float(weight @ errors['shipped']):.6f}", file=out)
+    best = None
+    for penalty in (name for name in errors if name != "shipped"):
+        loss = float(weight @ errors[penalty])
+        mean, error, naive, design = paired_difference(
+            errors["shipped"], errors[penalty], corpus.counts, corpus.games
+        )
+        refused = penalty in outside
+        print(
+            f"penalty {penalty:g} cv mse {loss:.6f} vs shipped {mean:+.6f} "
+            f"se {error:.6f} per position {naive:.6f} design {design:.1f}"
+            + ("" if abs(mean) > 2 * error else " (inside its interval)")
+            + (" (outside the packed halves)" if refused else ""),
+            file=out,
+        )
+        # a vector the engine's arithmetic cannot carry is no candidate,
+        # whatever it scores
+        if not refused and (best is None or loss < best[0]):
+            best = (loss, penalty)
+    return None if best is None else best[1]
+
+
+def choose_penalty(corpus, penalties, start, frozen, iterations, k, out=None):
+    """The ridge, chosen on the selection group.
+
+    Every penalty on the grid is fitted on the training games alone and scored
+    on the selection games, which no fit read. The lowest selection loss wins,
+    and a fit whose tables outgrew what the packed halves carry is no candidate
+    whatever it scores.
+
+    The selection group and never the calibration group. Ranking a grid is
+    model selection, and a group the labels have already influenced cannot
+    carry a distribution-free coverage claim afterwards. That is not enforced
+    here by remembering it: the calibration rows are not in this corpus at all.
+
+    What it costs is that the loss reported on the selection group afterwards
+    is the fit's own best case, since it is the number the grid was ranked on.
+    The sealed group is what an honest interval on a final vector comes from.
+
+    Returns the chosen penalty and the vector it fitted, or none and none if
+    the grid left nothing the engine can carry.
+    """
+    out = sys.stdout if out is None else out
+    shipped = squared_errors(
+        corpus.scores(corpus.weights)[corpus.selection],
+        corpus.results[corpus.selection],
+        k,
+    )
+    counts = corpus.counts[corpus.selection]
+    weight = counts / np.sum(counts)
+    print(f"shipped selection mse {float(weight @ shipped):.6f}", file=out)
+    best = None
+    for penalty in penalties:
+        fitted, _ = lbfgs(
+            objective_for(corpus, corpus.train, k, start, penalty, frozen),
+            start,
+            iterations,
+        )
+        errors = squared_errors(
+            corpus.scores(fitted)[corpus.selection],
+            corpus.results[corpus.selection],
+            k,
+        )
+        loss = float(weight @ errors)
+        mean, error, naive, design = paired_difference(
+            shipped, errors, counts, corpus.games[corpus.selection]
+        )
+        refused = not bounds_hold(quantize(fitted))[0]
+        print(
+            f"penalty {penalty:g} selection mse {loss:.6f} vs shipped {mean:+.6f} "
+            f"se {error:.6f} per position {naive:.6f} design {design:.1f}"
+            + ("" if abs(mean) > 2 * error else " (inside its interval)")
+            + (" (outside the packed halves)" if refused else ""),
+            file=out,
+            flush=True,
+        )
+        if not refused and (best is None or loss < best[0]):
+            best = (loss, penalty, fitted)
+    return (None, None) if best is None else (best[1], best[2])
+
+
 def load(args):
     weights, rows = parse_terms(
         Path(args.terms).read_text(encoding="utf-8").splitlines()
@@ -681,16 +1055,18 @@ def load(args):
     corpus = Corpus(weights, rows, labels)
     if not len(corpus):
         raise SystemExit("tune.py: no row of the extraction is in the corpus")
+    for name, mask in (("train", corpus.train), ("selection", corpus.selection)):
+        if not mask.any():
+            raise SystemExit(f"tune.py: no game of the corpus is in the {name} group")
     return corpus
 
 
 def command_loss(args):
     corpus = load(args)
-    train = ~corpus.holdout
     k = args.k or fit_k(
-        corpus.scores(corpus.weights)[train],
-        corpus.results[train],
-        corpus.counts[train],
+        corpus.scores(corpus.weights)[corpus.train],
+        corpus.results[corpus.train],
+        corpus.counts[corpus.train],
     )
     named = [("shipped", corpus.weights)]
     for path in args.weights or []:
@@ -699,51 +1075,58 @@ def command_loss(args):
     return 0
 
 
+def frozen_slots(free_material):
+    """Which weights a fit holds where they are.
+
+    Material is held for a first fit. `eval::material` is read by the delta
+    margin in quiescence, so moving a material value changes which captures
+    quiescence skips, which changes the tree for a reason that has nothing to
+    do with the evaluation's accuracy.
+    """
+    frozen = np.zeros(SLOTS, dtype=bool)
+    if not free_material:
+        frozen[MATERIAL_SLOT:] = True
+    return frozen
+
+
+def command_cv(args):
+    corpus = load(args)
+    start = corpus.weights.copy()
+    frozen = frozen_slots(args.free_material)
+    errors, outside = cross_validate(
+        corpus, args.penalties, start, frozen, args.iterations
+    )
+    chosen = cross_validated(corpus, errors, outside)
+    # named so a reader cannot paste it into `fit --penalties` and think it is
+    # the ridge the fit would have picked: this is best over the folds, and the
+    # fit ranks the same grid on the selection games instead
+    print(
+        "no penalty on the grid left the tables small enough"
+        if chosen is None
+        else f"best penalty over the folds {chosen:g} "
+        "(fit chooses on the selection group instead)"
+    )
+    return 0
+
+
 def command_fit(args):
     corpus = load(args)
-    train = ~corpus.holdout
-    holdout = corpus.holdout
-    k = args.k or fit_k(
-        corpus.scores(corpus.weights)[train],
-        corpus.results[train],
-        corpus.counts[train],
-    )
     start = corpus.weights.copy()
-    # material is held for the first fit. `eval::material` is read by the delta
-    # margin in quiescence, so moving it changes which captures quiescence
-    # skips, which changes the tree for a reason that has nothing to do with
-    # the evaluation's accuracy
-    frozen = np.zeros(SLOTS, dtype=bool)
-    if not args.free_material:
-        frozen[MATERIAL_SLOT:] = True
-    best = None
-    for penalty in args.penalties:
-        fitted, _ = lbfgs(
-            objective_for(corpus, train, k, start, penalty, frozen),
-            start,
-            args.iterations,
-        )
-        loss = mean_squared_error(
-            corpus.scores(fitted)[holdout],
-            corpus.results[holdout],
-            corpus.counts[holdout],
-            k,
-        )
-        inside, worst = bounds_hold(quantize(fitted))
-        print(
-            f"penalty {penalty:g} holdout mse {loss:.6f} "
-            f"scale {table_scale(fitted, corpus.weights):.3f} boardful {worst}"
-            + ("" if inside else " (outside the packed halves)"),
-            file=sys.stderr,
-        )
-        # a vector the engine's arithmetic cannot carry is no candidate,
-        # whatever it scores
-        if inside and (best is None or loss < best[0]):
-            best = (loss, penalty, fitted)
-    if best is None:
+    frozen = frozen_slots(args.free_material)
+    k = args.k or fit_k(
+        corpus.scores(corpus.weights)[corpus.train],
+        corpus.results[corpus.train],
+        corpus.counts[corpus.train],
+    )
+    # the vector that ships is fitted on the training games alone and the ridge
+    # above it is ranked on the selection games, so neither has read the third
+    # group. that is what the third group is for
+    penalty, fitted = choose_penalty(
+        corpus, args.penalties, start, frozen, args.iterations, k
+    )
+    if penalty is None:
         raise SystemExit("tune.py: every penalty on the grid left the tables too large")
-    _, penalty, fitted = best
-    print(f"chose penalty {penalty:g}", file=sys.stderr)
+    print(f"chose penalty {penalty:g}")
     rounded = quantize(fitted)
     _, worst = bounds_hold(rounded)
     if args.out:
@@ -765,32 +1148,39 @@ def command_fit(args):
 def main(argv=None):
     parser = argparse.ArgumentParser(description=__doc__)
     commands = parser.add_subparsers(dest="command", required=True)
-    for name in ("loss", "fit"):
+    for name in ("loss", "cv", "fit"):
         command = commands.add_parser(name)
         command.add_argument("--terms", required=True, help="an arche terms run")
         command.add_argument("--corpus", required=True, help="the epd it was run over")
-        command.add_argument(
+    for name in ("loss", "fit"):
+        # cv fits K per fold on that fold's training games, so there is no one
+        # constant for a caller to name
+        commands.choices[name].add_argument(
             "--k", type=float, help="the scaling constant, if it is known"
         )
     loss = commands.choices["loss"]
     loss.add_argument("--weights", nargs="*", help="candidate vectors, as json arrays")
+    for name in ("cv", "fit"):
+        command = commands.choices[name]
+        command.add_argument("--iterations", type=int, default=300)
+        command.add_argument(
+            "--penalties",
+            type=float,
+            nargs="+",
+            default=[0.0, 1e-8, 1e-7, 1e-6, 1e-5, 1e-4],
+            help="the ridge grid, ranked on the selection games",
+        )
+        command.add_argument(
+            "--free-material",
+            action="store_true",
+            help="let the six material values move, which the first fit does not",
+        )
     fit = commands.choices["fit"]
     fit.add_argument("--out", help="where to write the fitted vector")
-    fit.add_argument("--iterations", type=int, default=300)
-    fit.add_argument(
-        "--penalties",
-        type=float,
-        nargs="+",
-        default=[0.0, 1e-8, 1e-7, 1e-6, 1e-5, 1e-4],
-        help="the ridge grid, chosen on the held-out split",
-    )
-    fit.add_argument(
-        "--free-material",
-        action="store_true",
-        help="let the six material values move, which the first fit does not",
-    )
     args = parser.parse_args(argv)
-    return command_loss(args) if args.command == "loss" else command_fit(args)
+    return {"loss": command_loss, "cv": command_cv, "fit": command_fit}[args.command](
+        args
+    )
 
 
 if __name__ == "__main__":
