@@ -554,6 +554,28 @@ score, exchangeability, quantile rule and target named before the group is
 opened, which no command can do for the person making it. A vector revised
 after the reading needs a sealed group of games the corpus did not hold.
 
+Whether the corpus is big enough is `curve`:
+
+```
+python3 scripts/tune.py curve --terms rows.txt --corpus corpus.epd --out curve.json
+```
+
+It refits at an eighth, a quarter, a half, three quarters and the whole of the
+training pairs, five independent draws at each size below the whole, and reads
+every fit on the same selection group. The draw is by pair, because the pair
+is the independent unit. The ridge, the weighting and the scaling constant are
+the fit's, and the constant is one number for every fit. Each fit prints its
+size, its penalty, its selection loss at real weights and at the integers that
+would ship, and the paired difference against the shipped weights with the
+interval clustered on the game. The summary prints, per size, the draws that
+fitted and the draws refused, the mean loss, the least and the most, and the
+mean interval. The spread between draws says whether the curve has a shape.
+A curve flat between a half and the whole says more games will not lower the
+held-out loss at this parameter count. One still climbing says they would, and
+a number read past the corpus's size is an extrapolation. The json keeps every
+fit with the pairs it drew, so a run can be replayed. The reasoning is in
+`learning_curve`'s docstring in `scripts/tune.py`.
+
 `build_corpus.py`'s counters open with `runs`, the archives the games came
 from, carry `pairs` and `unpaired`, the rounds that made a pair of more than
 one game and the games that stood alone, and end with `repeated`, the

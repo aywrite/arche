@@ -6,14 +6,15 @@
 
 `arche terms` prints, for each quiet position of a corpus, the coefficient
 every evaluation weight is multiplied by. `scripts/build_corpus.py` prints what
-the games those positions came from ended in. This joins the two and does the
-two things that pair is for:
+the games those positions came from ended in. This joins the two and does what
+that pair is for:
 
     python3 scripts/tune.py loss --terms rows.txt --corpus corpus.epd
     python3 scripts/tune.py cv   --terms rows.txt --corpus corpus.epd
     python3 scripts/tune.py fit  --terms rows.txt --corpus corpus.epd --out fit.json
     python3 scripts/tune.py final --terms rows.txt --corpus corpus.epd \
         --weights fit.json --log final.log
+    python3 scripts/tune.py curve --terms rows.txt --corpus corpus.epd --out curve.json
 
 `loss` is the triage instrument. A weight vector is scored over the whole
 corpus in one matrix-vector product, which is milliseconds, so a candidate can
@@ -22,7 +23,9 @@ with another: it refits over five folds of whole games and scores every row
 under the fold that held its game out. `fit` is the tuner, and it chooses its
 ridge on the selection group. `final` opens the sealed group: it scores a
 frozen vector there once, and the log it appends to is what refuses a second
-opening of the same games.
+opening of the same games. `curve` asks whether the corpus is big enough, by
+refitting on draws of the training pairs at five sizes and reading every fit
+on the same selection group.
 
 The unit of all of it is the game and not the position. Positions inside one
 game share a label and are a move apart, so a split that separates positions
@@ -38,8 +41,8 @@ chooses the ridge, and a fifth is not read here at all. The last is what makes
 a later coverage claim mean anything: a group a fit has been ranked against
 has already had the labels influence it, so the claim has to be made on a group
 nothing has looked at. That is not a rule to remember. The calibration rows are
-not in the matrices the loss and the fit read, so the three commands cannot
-reach a calibration row. `final` can, by design and once: it takes a vector
+not in the matrices the loss and the fit read, so no command that fits or
+scores can reach a calibration row. `final` can, by design and once: it takes a vector
 already quantized to the integers that would ship, writes the corpus, its
 sealed games, the extraction and the vector it was given into a log by
 checksum before it reads anything, and refuses a corpus or a set of sealed
@@ -84,6 +87,7 @@ help. The sprt says elo.
 import argparse
 import datetime
 import hashlib
+import io
 import json
 import math
 import sys
@@ -1082,13 +1086,17 @@ def cross_validated(corpus, errors, outside, out=None):
     return None if best is None else best[1]
 
 
-def choose_penalty(corpus, penalties, start, frozen, iterations, k, out=None):
+def choose_penalty(
+    corpus, penalties, start, frozen, iterations, k, out=None, train=None
+):
     """The ridge, chosen on the selection group.
 
     Every penalty on the grid is fitted on the training games alone and scored
     on the selection games, which no fit read. The lowest selection loss wins,
     and a fit whose tables outgrew what the packed halves carry is no candidate
-    whatever it scores.
+    whatever it scores. `train` is the rows to fit on in place of the training
+    group, which is what the learning curve moves; the rows scored are the
+    selection group's whichever rows were fitted.
 
     The selection group and never the calibration group. Ranking a grid is
     model selection, and a group the labels have already influenced cannot
@@ -1103,6 +1111,7 @@ def choose_penalty(corpus, penalties, start, frozen, iterations, k, out=None):
     the grid left nothing the engine can carry.
     """
     out = sys.stdout if out is None else out
+    train = corpus.train if train is None else train
     shipped = squared_errors(
         corpus.scores(corpus.weights)[corpus.selection],
         corpus.results[corpus.selection],
@@ -1114,7 +1123,7 @@ def choose_penalty(corpus, penalties, start, frozen, iterations, k, out=None):
     best = None
     for penalty in penalties:
         fitted, _ = lbfgs(
-            objective_for(corpus, corpus.train, k, start, penalty, frozen),
+            objective_for(corpus, train, k, start, penalty, frozen),
             start,
             iterations,
         )
@@ -1139,6 +1148,186 @@ def choose_penalty(corpus, penalties, start, frozen, iterations, k, out=None):
         if not refused and (best is None or loss < best[0]):
             best = (loss, penalty, fitted)
     return (None, None) if best is None else (best[1], best[2])
+
+
+# The sizes the learning curve fits at, as shares of the training pairs, and
+# how many independent draws each size below the whole gets. One draw is one
+# sample of a random variable, and the spread between draws is what says
+# whether the curve's shape is real.
+CURVE_SHARES = (0.125, 0.25, 0.5, 0.75, 1.0)
+CURVE_DRAWS = 5
+
+
+def curve_shares(shares, draws):
+    """The shares a curve fits at, sorted and deduplicated, each in (0, 1].
+    Refused rather than clamped: a share past the whole would fit the whole
+    again under another name, and one at or under nothing would draw nothing."""
+    kept = sorted({float(share) for share in shares})
+    if not kept or kept[0] <= 0.0 or kept[-1] > 1.0:
+        raise SystemExit(
+            "tune.py: a share is a fraction of the training pairs in (0, 1]"
+        )
+    if draws < 1:
+        raise SystemExit("tune.py: a curve needs at least one draw at each share")
+    return kept
+
+
+def learning_curve(
+    corpus,
+    shares,
+    draws,
+    penalties,
+    start,
+    frozen,
+    iterations,
+    k,
+    seed,
+    out=None,
+):
+    """Held-out loss against the number of pairs it was fitted on.
+
+    The training pool is drawn by pair and never by position. The pair is the
+    independent unit: the two games of an opening share their first moves,
+    and a game's positions share a result. Each draw is taken afresh from the
+    whole pool, so a smaller draw is not a prefix of a larger one. The
+    selection group is fixed and every fit is read on it, which is what makes
+    the points comparable. The whole is fitted once, since there is nothing
+    to draw.
+
+    Nothing else moves. The ridge is ranked on the selection group as `fit`
+    ranks it, the weighting is by appearances, and K is one number for every
+    fit: the one given, or the one fitted on the whole training group at the
+    shipped weights. A K refitted per draw would let a smaller draw change the
+    scale as well as the tables.
+
+    Each fit is recorded with the pairs it drew, its chosen penalty, its
+    selection loss at real weights and at the integers that would ship, and
+    the paired difference against the shipped weights with the interval
+    clustered on the game. The summary per share carries the mean loss over
+    the draws, the least and the most, and the mean interval. The spread
+    between draws says whether the shape is real; the interval within a draw
+    says whether that draw beat the shipped weights. They are different
+    questions. What the curve does not say is anything about elo.
+    """
+    out = sys.stdout if out is None else out
+    pairs = np.unique(corpus.pairs[corpus.train])
+    generator = np.random.default_rng(seed)
+    selection = corpus.selection
+    shipped = squared_errors(
+        corpus.scores(corpus.weights)[selection], corpus.results[selection], k
+    )
+    counts = corpus.counts[selection]
+    weight = counts / np.sum(counts)
+    print(
+        f"curve training pairs {len(pairs)} games "
+        f"{len(np.unique(corpus.games[corpus.train]))} positions "
+        f"{int(corpus.train.sum())} selection positions {int(selection.sum())} "
+        f"k {k:.4f} seed {seed}",
+        file=out,
+    )
+    print(f"shipped selection mse {float(weight @ shipped):.6f}", file=out)
+    fits = []
+    for share in shares:
+        size = len(pairs) if share >= 1.0 else max(1, round(len(pairs) * share))
+        for draw in range(1 if share >= 1.0 else draws):
+            chosen = (
+                pairs if share >= 1.0 else generator.choice(pairs, size, replace=False)
+            )
+            train = corpus.train & np.isin(corpus.pairs, chosen)
+            penalty, fitted = choose_penalty(
+                corpus,
+                penalties,
+                start,
+                frozen,
+                iterations,
+                k,
+                out=io.StringIO(),
+                train=train,
+            )
+            record = {
+                "share": share,
+                "draw": draw,
+                "pairs": int(size),
+                "games": len(np.unique(corpus.games[train])),
+                "positions": int(train.sum()),
+                "appearances": int(corpus.counts[train].sum()),
+                "chosen": sorted(str(pair) for pair in chosen),
+            }
+            heading = (
+                f"share {share:g} draw {draw} pairs {size} games {record['games']} "
+                f"positions {record['positions']}"
+            )
+            if penalty is None:
+                record["refused"] = True
+                print(f"{heading} every penalty outgrew the packed halves", file=out)
+                fits.append(record)
+                continue
+            errors = squared_errors(
+                corpus.scores(fitted)[selection], corpus.results[selection], k
+            )
+            integers = corpus.integer_scores(quantize(fitted))[selection]
+            mean, error, naive, design = paired_difference(
+                shipped, errors, counts, corpus.games[selection]
+            )
+            record.update(
+                {
+                    "penalty": float(penalty),
+                    "selection_mse": float(weight @ errors),
+                    "quantized_mse": mean_squared_error(
+                        integers.astype(np.float64),
+                        corpus.results[selection],
+                        counts,
+                        k,
+                    ),
+                    "vs_shipped": mean,
+                    "se": error,
+                    "per_position": naive,
+                    "design": design,
+                }
+            )
+            fits.append(record)
+            print(
+                f"{heading} penalty {penalty:g} selection mse "
+                f"{record['selection_mse']:.6f} quantized_mse "
+                f"{record['quantized_mse']:.6f} vs shipped {mean:+.6f} "
+                f"se {error:.6f} design {design:.1f}",
+                file=out,
+                flush=True,
+            )
+    summary = []
+    for share in shares:
+        drawn = [fit for fit in fits if fit["share"] == share]
+        scored_fits = [fit for fit in drawn if "selection_mse" in fit]
+        row = {
+            "share": share,
+            "pairs": drawn[0]["pairs"],
+            "draws": len(scored_fits),
+            "refused": len(drawn) - len(scored_fits),
+        }
+        if scored_fits:
+            losses = [fit["selection_mse"] for fit in scored_fits]
+            row.update(
+                {
+                    "mean_mse": float(np.mean(losses)),
+                    "least_mse": float(min(losses)),
+                    "most_mse": float(max(losses)),
+                    "mean_se": float(np.mean([fit["se"] for fit in scored_fits])),
+                }
+            )
+        summary.append(row)
+    print("share pairs draws refused mean_mse least_mse most_mse mean_se", file=out)
+    for row in summary:
+        numbers = (
+            f"{row['mean_mse']:.6f} {row['least_mse']:.6f} {row['most_mse']:.6f} "
+            f"{row['mean_se']:.6f}"
+            if "mean_mse" in row
+            else "- - - -"
+        )
+        print(
+            f"{row['share']:g} {row['pairs']} {row['draws']} {row['refused']} {numbers}",
+            file=out,
+        )
+    return fits, summary
 
 
 def load(args):
@@ -1259,6 +1448,45 @@ def opened_before(log, corpus_sha, sealed_sha):
     return None
 
 
+def command_curve(args):
+    corpus = load(args)
+    shares = curve_shares(args.shares, args.draws)
+    start = corpus.weights.copy()
+    frozen = frozen_slots(args.free_material)
+    k = args.k or fit_k(
+        corpus.scores(corpus.weights)[corpus.train],
+        corpus.results[corpus.train],
+        corpus.counts[corpus.train],
+    )
+    fits, summary = learning_curve(
+        corpus,
+        shares,
+        args.draws,
+        args.penalties,
+        start,
+        frozen,
+        args.iterations,
+        k,
+        args.seed,
+    )
+    if args.out:
+        Path(args.out).write_text(
+            json.dumps(
+                {
+                    "k": k,
+                    "seed": args.seed,
+                    "penalties": args.penalties,
+                    "fits": fits,
+                    "summary": summary,
+                },
+                indent=1,
+            ),
+            encoding="utf-8",
+            newline="\n",
+        )
+    return 0
+
+
 def command_final(args):
     """Open the sealed group once, against a frozen vector.
 
@@ -1367,11 +1595,11 @@ def command_final(args):
 def main(argv=None):
     parser = argparse.ArgumentParser(description=__doc__)
     commands = parser.add_subparsers(dest="command", required=True)
-    for name in ("loss", "cv", "fit", "final"):
+    for name in ("loss", "cv", "fit", "final", "curve"):
         command = commands.add_parser(name)
         command.add_argument("--terms", required=True, help="an arche terms run")
         command.add_argument("--corpus", required=True, help="the epd it was run over")
-    for name in ("loss", "fit", "final"):
+    for name in ("loss", "fit", "final", "curve"):
         # cv fits K per fold on that fold's training games, so there is no one
         # constant for a caller to name
         commands.choices[name].add_argument(
@@ -1379,7 +1607,7 @@ def main(argv=None):
         )
     loss = commands.choices["loss"]
     loss.add_argument("--weights", nargs="*", help="candidate vectors, as json arrays")
-    for name in ("cv", "fit"):
+    for name in ("cv", "fit", "curve"):
         command = commands.choices[name]
         command.add_argument("--iterations", type=int, default=300)
         command.add_argument(
@@ -1396,6 +1624,24 @@ def main(argv=None):
         )
     fit = commands.choices["fit"]
     fit.add_argument("--out", help="where to write the fitted vector")
+    curve = commands.choices["curve"]
+    curve.add_argument(
+        "--shares",
+        type=float,
+        nargs="+",
+        default=list(CURVE_SHARES),
+        help="the sizes to fit at, as shares of the training pairs",
+    )
+    curve.add_argument(
+        "--draws",
+        type=int,
+        default=CURVE_DRAWS,
+        help="independent draws at each share below the whole",
+    )
+    curve.add_argument(
+        "--seed", type=int, default=0, help="what the draws are drawn with"
+    )
+    curve.add_argument("--out", help="where to write every fit's numbers as json")
     final = commands.choices["final"]
     final.add_argument(
         "--weights",
@@ -1413,6 +1659,7 @@ def main(argv=None):
         "cv": command_cv,
         "fit": command_fit,
         "final": command_final,
+        "curve": command_curve,
     }[args.command](args)
 
 

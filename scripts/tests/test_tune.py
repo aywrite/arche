@@ -869,6 +869,139 @@ def test_final_refuses_a_vector_that_is_not_integers(tmp_path):
     assert not log.exists()
 
 
+def paired(labels):
+    """The fixture's games keyed two to a pair, consecutive games together, so
+    a draw by pair and a draw by game can be told apart."""
+    keys = list(dict.fromkeys(game for (_, _, game) in labels.values()))
+    partner = {}
+    for index in range(0, len(keys) - 1, 2):
+        partner[keys[index]] = keys[index]
+        partner[keys[index + 1]] = keys[index]
+    return {
+        name: (result, count, game, partner.get(game, game))
+        for name, (result, count, game) in labels.items()
+    }
+
+
+def fixture_run_paired(tmp_path, vector, rows, labels, name="corpus.epd"):
+    terms = tmp_path / "rows.txt"
+    terms.write_text("\n".join(extraction(rows, vector)) + "\n", encoding="utf-8")
+    corpus = tmp_path / name
+    corpus.write_text(
+        "\n".join(
+            f'4k3/8/8/8/8/8/8/4K3 w - - id "{identifier}"; game "{game}"; '
+            f'pair "{pair}"; result "{result}"; count "{count}";'
+            for identifier, (result, count, game, pair) in labels.items()
+        )
+        + "\n",
+        encoding="utf-8",
+    )
+    return terms, corpus
+
+
+def test_the_learning_curve_draws_pairs_and_holds_the_selection_group(tmp_path, capsys):
+    """A draw takes whole pairs, the draws below the whole differ from each
+    other, every fit is read on the selection group `fit` reads, the whole is
+    fitted once, and the same seed draws the same curve."""
+    vector = weights({0: 20, 64: -30})
+    rows, labels = sample(vector, count=40)
+    labels = paired(labels)
+    terms, corpus = fixture_run_paired(tmp_path, vector, rows, labels)
+    out = tmp_path / "curve.json"
+    run = [
+        "curve",
+        "--terms",
+        str(terms),
+        "--corpus",
+        str(corpus),
+        "--shares",
+        "0.5",
+        "1.0",
+        "--draws",
+        "3",
+        "--penalties",
+        "1e-6",
+        "--iterations",
+        "20",
+        "--k",
+        "1.0",
+        "--out",
+        str(out),
+    ]
+    assert tune.main(run) == 0
+    capsys.readouterr()
+    written = json.loads(out.read_text(encoding="utf-8"))
+    fits = written["fits"]
+    # three draws at a half and one at the whole
+    assert [fit["share"] for fit in fits] == [0.5, 0.5, 0.5, 1.0]
+    # the training games are keyed two to a pair, and a draw takes both
+    # games of a pair or neither: eight positions a pair in this fixture
+    train_pairs = {
+        pair
+        for (_, _, game, pair) in labels.values()
+        if groups.group_of(pair) == "train"
+    }
+    whole = fits[-1]
+    assert whole["pairs"] == len(train_pairs)
+    assert set(whole["chosen"]) == train_pairs
+    for fit in fits[:-1]:
+        assert fit["pairs"] == len(train_pairs) // 2
+        assert set(fit["chosen"]) < train_pairs
+        assert fit["games"] == 2 * fit["pairs"]
+        assert fit["positions"] == 8 * fit["pairs"]
+    # the draws differ from each other
+    assert len({tuple(fit["chosen"]) for fit in fits[:-1]}) == 3
+    # the whole share is the fit `fit` makes, read on the same selection group
+    assert (
+        tune.main(
+            [
+                "fit",
+                "--terms",
+                str(terms),
+                "--corpus",
+                str(corpus),
+                "--penalties",
+                "1e-6",
+                "--iterations",
+                "20",
+                "--k",
+                "1.0",
+            ]
+        )
+        == 0
+    )
+    fitted = next(
+        line
+        for line in capsys.readouterr().out.splitlines()
+        if line.startswith("fitted selection mse ")
+    )
+    assert f"fitted selection mse {whole['selection_mse']:.6f}" in fitted
+    assert written["summary"][0]["draws"] == 3
+    assert written["summary"][1]["draws"] == 1
+    # and the same seed draws the same curve
+    assert tune.main(run) == 0
+    capsys.readouterr()
+    assert json.loads(out.read_text(encoding="utf-8")) == written
+
+
+def test_the_learning_curve_refuses_a_share_it_cannot_draw(tmp_path):
+    vector = weights({0: 20})
+    rows, labels = sample(vector)
+    terms, corpus = fixture_run(tmp_path, vector, rows, labels)
+    for shares in (["0"], ["1.5"], ["-0.5", "1"]):
+        with pytest.raises(SystemExit, match="in \\(0, 1\\]"):
+            tune.main(
+                ["curve", "--terms", str(terms), "--corpus", str(corpus), "--shares"]
+                + shares
+            )
+    with pytest.raises(SystemExit, match="at least one draw"):
+        tune.main(
+            ["curve", "--terms", str(terms), "--corpus", str(corpus), "--draws", "0"]
+        )
+    # shares given twice or out of order are one sorted set
+    assert tune.curve_shares([0.5, 0.25, 0.5], 1) == [0.25, 0.5]
+
+
 def test_the_calibration_group_is_not_read_by_a_fit(tmp_path, capsys):
     """What "not read until the weights are final" means, rather than what it
     promises.
