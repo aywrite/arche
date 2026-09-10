@@ -38,17 +38,17 @@ the engine plays. Roughly in the order they look worth doing.
 
 ## Known limitations
 
-- a fit of the piece square tables on our own games does not beat the tables psqt.rs
-  already holds by more than its own interval. Measured 2026-09-10 over 1,814 archived
-  games, 100,726 quiet positions across 1,807 of them: the shipped weights score 0.093562
-  on the selection games, and the ridge the selection group picks beats them by 0.000413
-  against a standard error of 0.000331. The harness reads a difference as real when it is
-  larger than twice its standard error, and twice this one is 0.000662, so the fit does
-  not clear it. Five-fold cross validation of whole games says the same about the grid's
-  best there, 1e-7: 0.000526 better against a standard error of 0.000482, and twice that
-  is 0.000964. The corpus is the engine's own play, so the positions it never reaches are
-  unlabelled, and that is the ceiling on what any fit of it can say. Whether a re-tune
-  buys strength is the sprt's question and not this one
+- a held-out loss on our own games cannot resolve a fit of the piece square tables one way
+  or the other, so an sprt is what decides a re-tune. Measured 2026-09-10 over 1,812
+  archived games, 100,726 quiet positions across 1,807 of them: the shipped weights score
+  0.093561 on the selection games and the fit psqt.rs now holds beats them by 0.000618
+  against a standard error of 0.000627, which is inside its own interval. The sealed third
+  of the games, opened once after the vector was frozen, reads the same fit 0.001754 better
+  against 0.000674, which is outside it. The two readings differ by 1.23 standard errors,
+  so they are one corpus disagreeing with itself rather than two findings, and the games
+  settled it at +54 ±13 over 2,000 at 10+0.1. The corpus is the engine's own play, so the
+  positions it never reaches are unlabelled, and that is the ceiling on what any fit of it
+  can say
 - the harness said otherwise until 2026-09-10, and why is worth keeping. It split the
   corpus on the fen, and 1,805 of the corpus's 1,809 games had rows on both sides: 53.1% of
   the held-out rows had the position a ply away, from the same game and carrying the same
