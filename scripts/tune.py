@@ -82,11 +82,15 @@ from groups import CALIBRATION, group_of
 
 # The weight vector, as `arche-core/src/tune.rs` lays it out: 384 midgame table
 # entries, then 384 endgame ones in the same order, then the six material
-# values. A square's two weights are MIDGAME_SLOTS apart.
+# values, then four midgame mobility weights and the same four at the endgame
+# end. A square's two weights are MIDGAME_SLOTS apart and a piece kind's two
+# mobility weights MOBILITY_SLOTS apart.
 MIDGAME_SLOTS = 6 * 64
 ENDGAME_SLOTS = 6 * 64
 MATERIAL_SLOT = MIDGAME_SLOTS + ENDGAME_SLOTS
-SLOTS = MATERIAL_SLOT + 6
+MOBILITY_SLOT = MATERIAL_SLOT + 6
+MOBILITY_SLOTS = 4
+SLOTS = MOBILITY_SLOT + 2 * MOBILITY_SLOTS
 
 # The layout before a knight, a bishop, a rook and a queen were given an
 # endgame table of their own: the same 384 midgame entries, the pawn's endgame
@@ -94,6 +98,16 @@ SLOTS = MATERIAL_SLOT + 6
 # or a fitted vector written against it is turned away by what it is rather
 # than by its length alone.
 SHARED_TABLE_SLOTS = 6 * 64 + 2 * 64 + 6
+
+# The layout before mobility: both halves of the tables and the material, and
+# nothing after them. Named for the same reason SHARED_TABLE_SLOTS is, since
+# every slot it holds still exists here and holds the same weight.
+NO_MOBILITY_SLOTS = MOBILITY_SLOT
+
+# The most one knight, one bishop, one rook and one queen can each cover, which
+# is what a mobility weight is priced against in bounds_hold. A queen in the
+# middle of an empty board is the twenty seven.
+MAX_COUNT = np.array([8, 13, 14, 27])
 
 # What the opening's pieces come to on the scale the taper is read at, which is
 # what the piece square half of a row divides by.
@@ -123,11 +137,11 @@ HEADERS = ("terms positions ", "terms epd ")
 
 def check_layout(count, what):
     """Refuse a vector of any length but this file's, and say what changed when
-    it is the length the layout had before.
+    it is a length the layout had before.
 
     The layout is a contract between this file and `arche-core/src/tune.rs`,
-    and the two are edited together. A vector of the old length is the one
-    wrong length a bare count would not explain: it parses, every slot it names
+    and the two are edited together. A vector of an earlier length is the wrong
+    length a bare count would not explain: it parses, every slot it names
     exists here, and its numbers land on weights they were not fitted for.
     """
     if count == SLOTS:
@@ -136,6 +150,11 @@ def check_layout(count, what):
         raise ValueError(
             f"{what} of {count}, which is the layout from before a knight, a "
             f"bishop, a rook and a queen were given an endgame table. The "
+            f"vector is {SLOTS} now, so extract the rows again and refit"
+        )
+    if count == NO_MOBILITY_SLOTS:
+        raise ValueError(
+            f"{what} of {count}, which is the layout from before mobility. The "
             f"vector is {SLOTS} now, so extract the rows again and refit"
         )
     raise ValueError(f"{what} of {count}, expected {SLOTS}")
@@ -149,6 +168,14 @@ def trunc_div(numerator, denominator):
     return quotient if numerator >= 0 else -quotient
 
 
+def is_material(slot):
+    """Whether a slot is one of the six material values, which are the only
+    weights added outside the taper's divide. Everything else is inside it,
+    mobility as well as the tables, which is what `Accumulator::score` does
+    with them."""
+    return MATERIAL_SLOT <= slot < MOBILITY_SLOT
+
+
 def reconstruct(coefficients, weights):
     """The evaluation a row states, folded back against the weights.
 
@@ -160,7 +187,7 @@ def reconstruct(coefficients, weights):
     numerator = 0
     for slot, coefficient in coefficients:
         product = coefficient * weights[slot]
-        if slot >= MATERIAL_SLOT:
+        if is_material(slot):
             material += product
         else:
             numerator += product
@@ -434,13 +461,15 @@ class Corpus:
         self.train = self.groups == "train"
         self.selection = self.groups == "selection"
         self.buckets = np.array([phase_bucket(row.fen) for row in kept])
-        psqt, material = [], []
+        # the two sides of the taper's divide. Material is added outside it
+        # and every other weight, mobility included, is inside
+        tapered, material = [], []
         for index, row in enumerate(kept):
             for slot, coefficient in row.coefficients:
-                (material if slot >= MATERIAL_SLOT else psqt).append(
+                (material if is_material(slot) else tapered).append(
                     (index, slot, coefficient)
                 )
-        self.psqt = self._arrays(psqt)
+        self.tapered = self._arrays(tapered)
         self.material = self._arrays(material)
 
     @staticmethod
@@ -468,7 +497,7 @@ class Corpus:
         the fit is not sensitive to it, and `integer_scores` is what puts it
         back for the measurement that has to match the engine.
         """
-        rows, slots, values = self.psqt
+        rows, slots, values = self.tapered
         numerator = np.bincount(rows, values * weights[slots], minlength=len(self))
         rows, slots, values = self.material
         material = np.bincount(rows, values * weights[slots], minlength=len(self))
@@ -484,7 +513,7 @@ class Corpus:
         """
         weights = np.asarray(weights, dtype=np.int64)
         totals = []
-        for rows, slots, values in (self.psqt, self.material):
+        for rows, slots, values in (self.tapered, self.material):
             products = values.astype(np.int64) * weights[slots]
             totals.append(
                 np.bincount(
@@ -497,7 +526,7 @@ class Corpus:
     def scatter(self, per_row):
         """A per-row quantity spread back over the slots, which is the gradient
         of anything that reads the corpus through `scores`."""
-        rows, slots, values = self.psqt
+        rows, slots, values = self.tapered
         gradient = np.bincount(
             slots, values * per_row[rows] / TOTAL_PHASE, minlength=SLOTS
         )
@@ -508,7 +537,7 @@ class Corpus:
         """How many of the rows each slot appears in. A weight the corpus
         barely constrains says so here rather than after it has shipped."""
         counts = np.zeros(SLOTS, dtype=np.int64)
-        for rows, slots, _ in (self.psqt, self.material):
+        for rows, slots, _ in (self.tapered, self.material):
             picked = slots if mask is None else slots[mask[rows]]
             counts += np.bincount(picked, minlength=SLOTS).astype(np.int64)
         return counts
@@ -642,7 +671,7 @@ def lbfgs(objective, start, iterations=300, history=10, tolerance=1e-12):
     """L-BFGS on the closed-form gradient.
 
     The classic Texel local search walks one weight at a time over the whole
-    corpus per step, which for 774 weights is a great many passes. The
+    corpus per step, which for a vector this long is a great many passes. The
     evaluation is linear in its weights, so the gradient is closed form and
     none of that is needed.
     """
@@ -707,12 +736,12 @@ def objective_for(corpus, mask, k, start, penalty, frozen):
     counts = corpus.counts[mask]
     total = np.sum(counts)
     scale = k * math.log(10.0) / 400.0
-    rows, slots, values = corpus.psqt
+    rows, slots, values = corpus.tapered
     material_rows, material_slots, material_values = corpus.material
     picked = mask[rows]
     material_picked = mask[material_rows]
     renumber = np.cumsum(mask) - 1
-    psqt_part = (renumber[rows[picked]], slots[picked], values[picked])
+    tapered_part = (renumber[rows[picked]], slots[picked], values[picked])
     material_part = (
         renumber[material_rows[material_picked]],
         material_slots[material_picked],
@@ -722,7 +751,7 @@ def objective_for(corpus, mask, k, start, penalty, frozen):
 
     def scores_of(weights):
         numerator = np.bincount(
-            psqt_part[0], psqt_part[2] * weights[psqt_part[1]], minlength=size
+            tapered_part[0], tapered_part[2] * weights[tapered_part[1]], minlength=size
         )
         material = np.bincount(
             material_part[0],
@@ -740,8 +769,8 @@ def objective_for(corpus, mask, k, start, penalty, frozen):
         value += penalty * float(slack[~frozen] @ slack[~frozen])
         per_row = -2.0 * counts * residual * scale * predicted * (1 - predicted) / total
         gradient = np.bincount(
-            psqt_part[1],
-            psqt_part[2] * per_row[psqt_part[0]] / TOTAL_PHASE,
+            tapered_part[1],
+            tapered_part[2] * per_row[tapered_part[0]] / TOTAL_PHASE,
             minlength=SLOTS,
         ) + np.bincount(
             material_part[1],
@@ -770,11 +799,22 @@ def bounds_hold(weights):
 
     A one-sided boardful, both colours, against the sixteen bits the halves
     have to stay inside.
+
+    Mobility is in the same sum, so it is priced here too rather than left out
+    of a figure that reads as the whole vector. A piece of each kind at its
+    widest is the price, which is a screen rather than a proof: a side that
+    promoted could cover more, and the worst a board can be arranged into comes
+    to 313 squares against the 62 this charges. Over the 1,809 positions of the
+    three suites the largest one-sided difference was 37, so at the centipawn
+    weights a fit produces neither figure is near the sixteen bits. What this
+    catches is a vector that has gone somewhere else entirely.
     """
     tables = np.abs(np.asarray(weights)[:MATERIAL_SLOT])
     midgame = tables[:MIDGAME_SLOTS].reshape(6, 64)
     endgame = tables[MIDGAME_SLOTS:MATERIAL_SLOT].reshape(6, 64)
     worst = 2 * max(int(midgame.max(axis=0).sum()), int(endgame.max(axis=0).sum()))
+    mobility = np.abs(np.asarray(weights)[MOBILITY_SLOT:]).reshape(2, MOBILITY_SLOTS)
+    worst += 2 * int((mobility * MAX_COUNT).sum(axis=1).max())
     return worst < 32767, worst
 
 
@@ -1113,11 +1153,12 @@ def frozen_slots(free_material):
     Material is held for a first fit. `eval::material` is read by the delta
     margin in quiescence, so moving a material value changes which captures
     quiescence skips, which changes the tree for a reason that has nothing to
-    do with the evaluation's accuracy.
+    do with the evaluation's accuracy. The material block alone: nothing else
+    after it is read by the search.
     """
     frozen = np.zeros(SLOTS, dtype=bool)
     if not free_material:
-        frozen[MATERIAL_SLOT:] = True
+        frozen[MATERIAL_SLOT:MOBILITY_SLOT] = True
     return frozen
 
 
