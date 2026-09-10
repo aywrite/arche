@@ -91,8 +91,8 @@ def test_a_ply_the_book_played_is_dropped_wherever_it_stands():
     assert len(entries) == 3
 
 
-def moves_pgn(moves, result="1-0", termination="normal"):
-    return pgn(moves=moves, result=result, termination=termination)
+def moves_pgn(moves, result="1-0", termination="normal", round_=None):
+    return pgn(moves=moves, result=result, termination=termination, round_=round_)
 
 
 def test_a_result_is_read_from_the_side_to_move():
@@ -270,8 +270,10 @@ def test_a_line_is_the_epd_the_engine_parses():
     fen, name = position.rsplit(" id ", 1)
     assert len(fen.split(" ")) == 4
     assert name.startswith('"g00001p008')
+    # a game with no partner is a pair of one, so its pair key is its own
     assert operations == [
         f'game "{key}"',
+        f'pair "{key}"',
         'run "-"',
         'round "-"',
         'result "1.0000"',
@@ -360,6 +362,89 @@ def test_a_positions_run_and_round_are_the_owning_games():
     entries, _ = build(text, book_plies=4)
     entry = next(iter(entries.values()))
     assert entry.played.round == keys[min(keys)]
+
+
+def test_the_two_games_of_a_round_are_one_pair():
+    """A strength run plays every opening twice with the colours reversed,
+    and the two games are one opening's evidence, so they key together and
+    land in one group. The pair's key is the two games' keys sorted, so it is
+    the same whichever the archive lists first."""
+    first = moves_pgn("1. e4 e5 2. Nf3 Nc6", round_="1")
+    # a different opening, so the two games share no position and each
+    # entry says which game owns it
+    second = moves_pgn("1. d4 d5 2. c4 e6", round_="1")
+    keys = sorted(build_corpus.game_key(game) for game in games(first + second))
+    expected = hashlib.sha256(" ".join(keys).encode()).hexdigest()
+    for text in (first + second, second + first):
+        entries, counts = build(text, book_plies=0)
+        assert {entry.played.pair for entry in entries.values()} == {expected}
+        assert counts["pairs"] == 1
+        assert counts["unpaired"] == 0
+    # and the pair is the run's and the round's: the same round number in
+    # another run is another opening
+    both = list(sourced(first, run="a")) + list(sourced(second, run="b"))
+    entries, counts = build_corpus.corpus(both, 0)
+    assert len({entry.played.pair for entry in entries.values()}) == 2
+    assert counts["pairs"] == 0
+    assert counts["unpaired"] == 2
+
+
+def test_a_round_of_more_than_two_games_is_one_pair():
+    """What the pair holds together is the opening, so a run that asked for
+    four games an opening gives one pair of four."""
+    text = "".join(
+        moves_pgn(moves, round_="2")
+        for moves in (
+            "1. e4 e5 2. Nf3 Nc6",
+            "1. d4 d5 2. c4 e6",
+            "1. c4 e5 2. Nc3 Nf6",
+        )
+    )
+    entries, counts = build(text, book_plies=0)
+    assert len({entry.played.pair for entry in entries.values()}) == 1
+    assert counts["pairs"] == 1
+    assert counts["unpaired"] == 0
+
+
+def test_a_round_the_pgn_did_not_name_pairs_nothing():
+    """python-chess reads a missing Round header back as a question mark,
+    which is no round, so two such games do not pair with each other."""
+    text = moves_pgn("1. e4 e5 2. Nf3 Nc6") + moves_pgn("1. d4 d5 2. c4 e6")
+    entries, counts = build(text, book_plies=0)
+    assert {entry.played.round for entry in entries.values()} == {"-"}
+    assert len({entry.played.pair for entry in entries.values()}) == 2
+    assert counts["unpaired"] == 2
+
+
+def test_a_game_with_no_partner_is_a_pair_of_one():
+    """No round, or a round the shard's clock stopped after the first game
+    of, leaves a game alone, and its pair key is its own so the split reads
+    it as it did before pairs existed."""
+    entries, counts = build(pgn(round_="9"), book_plies=8)
+    entry = next(iter(entries.values()))
+    assert entry.played.pair == entry.key
+    assert counts["pairs"] == 0
+    assert counts["unpaired"] == 1
+
+
+def test_a_paired_opening_is_never_split_across_the_groups():
+    """The acceptance check: two colour-reversed games of one round whose
+    own keys fall in different groups. Split by the game they would hold
+    half an opening out and drop the position both reached from one of them;
+    split by the pair they are one group's evidence and nothing is dropped."""
+    text = moves_pgn(DIRECT, result="1-0", round_="1") + moves_pgn(
+        TRANSPOSED, result="0-1", round_="1"
+    )
+    keys = [build_corpus.game_key(game) for game in games(text)]
+    assert len({groups.group_of(key) for key in keys}) == 2
+    entries, counts = build(text, book_plies=4)
+    entry = next(iter(entries.values()))
+    assert len({entry.group_of(key) for key in keys}) == 1
+    assert entry.count == 2
+    assert entry.result == 0.5
+    assert entry.dropped == 0
+    assert counts["straddled"] == 0
+    assert counts["dropped_appearances"] == 0
 
 
 def test_the_runs_read_are_counted():

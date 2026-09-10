@@ -289,13 +289,14 @@ def parse_terms(lines):
 
 class Label:
     """What the corpus says about one position: the game result from the side
-    to move's point of view, how many times the corpus reached it, and which
-    game it belongs to."""
+    to move's point of view, how many times the corpus reached it, which game
+    it belongs to and which pair that game is half of."""
 
-    def __init__(self, result, count, game):
+    def __init__(self, result, count, game, pair):
         self.result = result
         self.count = count
         self.game = game
+        self.pair = pair
 
 
 def parse_corpus(lines):
@@ -305,11 +306,11 @@ def parse_corpus(lines):
     at all: the first four words are the position and what follows them is
     operations, each an opcode and its operands, ended by a semicolon.
 
-    A row with no `game` operand is refused rather than given a game of its
-    own. That operand is what the three groups are assigned from, and a corpus
-    built before it existed would be split into one game per position, which is
-    the leak the game split was written to close arriving quietly through the
-    back door.
+    A row with no `game` or no `pair` operand is refused rather than given one
+    of its own. The pair is what the three groups are assigned from and the
+    game is what every interval is taken over, and a corpus built before either
+    existed would be split into one game per position, which is the leak the
+    game split was written to close arriving quietly through the back door.
     """
     labels = {}
     for line in lines:
@@ -325,14 +326,16 @@ def parse_corpus(lines):
                 operations[opcode] = operands.strip().strip('"')
         if "id" not in operations or "result" not in operations:
             continue
-        if "game" not in operations:
-            raise ValueError(
-                f"the corpus row {operations['id']} names no game to split on"
-            )
+        for operand, what in (("game", "cluster on"), ("pair", "split on")):
+            if operand not in operations:
+                raise ValueError(
+                    f"the corpus row {operations['id']} names no {operand} to {what}"
+                )
         labels[operations["id"]] = Label(
             float(operations["result"]),
             int(operations.get("count", 1)),
             operations["game"],
+            operations["pair"],
         )
     return labels
 
@@ -371,6 +374,10 @@ class Sealed:
         return len({self._labels[row.id].game for row in self._rows})
 
     @property
+    def pairs(self):
+        return len({self._labels[row.id].pair for row in self._rows})
+
+    @property
     def appearances(self):
         return sum(self._labels[row.id].count for row in self._rows)
 
@@ -392,9 +399,10 @@ class Corpus:
     the two enter the evaluation differently: the piece square half divides by
     the taper and the material half does not.
 
-    The rows also carry which game each came from, because the game is the unit
-    the split and every interval are taken over, and it is the corpus that says
-    so rather than the extraction.
+    The rows also carry which game each came from and which pair that game is
+    half of, because the pair is the unit the split is taken over and the game
+    the unit every interval is, and it is the corpus that says so rather than
+    the extraction.
 
     The calibration group is not here. It is in `sealed`, which holds its rows
     and no way to score them.
@@ -417,7 +425,7 @@ class Corpus:
                 raise ValueError(
                     f"the position {row.fen} is in {owner} and in {labels[row.id].game}"
                 )
-        groups = {row.id: group_of(labels[row.id].game) for row in joined}
+        groups = {row.id: group_of(labels[row.id].pair) for row in joined}
         self.sealed = Sealed(
             [row for row in joined if groups[row.id] == CALIBRATION], labels
         )
@@ -430,6 +438,7 @@ class Corpus:
         )
         self.counts = np.array([labels[row.id].count for row in kept], dtype=np.float64)
         self.games = np.array([labels[row.id].game for row in kept])
+        self.pairs = np.array([labels[row.id].pair for row in kept])
         self.groups = np.array([groups[row.id] for row in kept])
         self.train = self.groups == "train"
         self.selection = self.groups == "selection"
@@ -839,6 +848,13 @@ def report(corpus, named, k, out=None):
         f"train {len(np.unique(corpus.games[train]))} "
         f"selection {len(np.unique(corpus.games[selection]))} "
         f"calibration {corpus.sealed.games}",
+        file=out,
+    )
+    print(
+        f"pairs {len(np.unique(corpus.pairs)) + corpus.sealed.pairs} "
+        f"train {len(np.unique(corpus.pairs[train]))} "
+        f"selection {len(np.unique(corpus.pairs[selection]))} "
+        f"calibration {corpus.sealed.pairs}",
         file=out,
     )
     print(
