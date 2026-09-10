@@ -596,11 +596,14 @@ mod tests {
         assert_eq!(weight(Piece::King as usize * 64 + entry(File::E, 5)), -40);
         assert_eq!(
             weight(MIDGAME_SLOTS + Piece::King as usize * 64 + entry(File::E, 5)),
-            40
+            36
         );
         // the four tables that were added stand where the same arithmetic
-        // puts them, a half of the vector on from their midgame twins, and
-        // hold what those twins hold until the fit moves them
+        // puts them, a half of the vector on from their midgame twins. a1 is
+        // the one corner the fit left alone in all four, which is why the
+        // same number serves both halves here and nowhere else in this test.
+        // The corners are not generally untouched: the rook's other three
+        // moved, and moved by different amounts in the two halves
         for (piece, corner) in [
             (Piece::Knight, -50),
             (Piece::Bishop, -20),
