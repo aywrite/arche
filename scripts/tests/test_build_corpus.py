@@ -11,10 +11,11 @@ parses, so the shape of a line is pinned as well.
 The game key has tests of its own, because two properties rest on it. The
 tuner's three groups are assigned from it, so it has to be the movetext's and
 nothing else or a re-extraction would move games between groups. And a position
-two games reached belongs to the lower of their keys, which is what keeps a
-repeated position out of two groups at once. Two games can also key alike, and
-the counters say how many do, because a repeated game looks like nothing at all
-in the other numbers.
+two games reached belongs to the group of the lower of their keys and is
+labelled by that group's games alone, which is what keeps a repeated position
+out of two groups at once and keeps a sealed game's result out of a label the
+fit reads. Two games can also key alike, and the counters say how many do,
+because a repeated game looks like nothing at all in the other numbers.
 """
 
 import hashlib
@@ -22,7 +23,15 @@ import io
 
 import build_corpus
 import chess.pgn
+import groups
 import pytest
+
+# Two move orders reaching the same position, which is how a test asks for one
+# position in two games. The keys are the movetexts', so which group each game
+# falls in is fixed, and the tests below assert what they need of it rather
+# than assuming it.
+DIRECT = "1. e4 e5 2. Nf3 Nc6 3. Bb5"
+TRANSPOSED = "1. Nf3 Nc6 2. e4 e5 3. Bb5"
 
 
 def pgn(
@@ -166,17 +175,14 @@ def test_two_games_of_the_same_moves_are_counted():
 def test_a_position_two_games_reached_belongs_to_the_lower_key():
     """Grouping by the game loses the property that rows sharing a position
     land on one side, because the games that reached it can fall in different
-    groups. The lowest key owns the position, which restores it, and the weight
-    still counts every appearance."""
-    direct = "1. e4 e5 2. Nf3 Nc6 3. Bb5"
-    transposed = "1. Nf3 Nc6 2. e4 e5 3. Bb5"
+    groups. The lowest key owns the position, which restores it."""
     keys = sorted(
         build_corpus.game_key(game)
-        for game in games(moves_pgn(direct) + moves_pgn(transposed))
+        for game in games(moves_pgn(DIRECT) + moves_pgn(TRANSPOSED))
     )
     both_ways = (
-        moves_pgn(direct) + moves_pgn(transposed),
-        moves_pgn(transposed) + moves_pgn(direct),
+        moves_pgn(DIRECT) + moves_pgn(TRANSPOSED),
+        moves_pgn(TRANSPOSED) + moves_pgn(DIRECT),
     )
     for text in both_ways:
         entries, _ = build(text, book_plies=4)
@@ -184,18 +190,64 @@ def test_a_position_two_games_reached_belongs_to_the_lower_key():
         # whichever order the games arrived in, and whichever of them the
         # position was first seen in
         assert entry.key == keys[0]
+
+
+def test_a_position_is_labelled_by_its_own_group_and_no_other():
+    """The appearance in another group is dropped rather than meaned in.
+
+    These two games fall in different groups, so merging them would put the
+    result of a game in one group into a label the other group's fit reads. The
+    position takes the owning game's result alone and weighs one, and the
+    counters say an appearance went.
+    """
+    text = moves_pgn(DIRECT, result="1-0") + moves_pgn(TRANSPOSED, result="0-1")
+    keys = dict(zip((build_corpus.game_key(game) for game in games(text)), (1.0, 0.0)))
+    owner = min(keys)
+    assert len({groups.group_of(key) for key in keys}) == 2
+    entries, counts = build(text, book_plies=4)
+    entry = next(iter(entries.values()))
+    # white is to move in the shared position, so the label is the owning
+    # game's result the way white saw it and not the mean of the two, which
+    # would have been a half
+    assert entry.result == keys[owner]
+    assert entry.count == 1
+    assert entry.dropped == 1
+    assert counts["repeated"] == 1
+    assert counts["straddled"] == 1
+    assert counts["dropped_appearances"] == 1
+
+
+def test_a_position_two_games_of_one_group_reached_merges_as_before():
+    """Where both games are in one group nothing is dropped and the label is
+    the mean of the two, which is what the rule did everywhere before it was
+    made group-local."""
+    direct, transposed = f"{DIRECT} Nf6", f"{TRANSPOSED} Nf6"
+    keys = [
+        build_corpus.game_key(game)
+        for game in games(moves_pgn(direct) + moves_pgn(transposed))
+    ]
+    assert len({groups.group_of(key) for key in keys}) == 1
+    entries, counts = build(
+        moves_pgn(direct, result="1-0") + moves_pgn(transposed, result="0-1"),
+        book_plies=4,
+    )
+    assert len(entries) == 2
+    for entry in entries.values():
         assert entry.count == 2
+        assert entry.result == 0.5
+        assert entry.dropped == 0
+    assert counts["repeated"] == 2
+    assert counts["straddled"] == 0
+    assert counts["dropped_appearances"] == 0
 
 
 def test_a_position_is_deduplicated_by_the_epd_the_engine_reads():
     """Four fields and no clocks, so two games reaching the same diagram by
     different move orders are one row."""
-    direct = "1. e4 e5 2. Nf3 Nc6 3. Bb5"
-    transposed = "1. Nf3 Nc6 2. e4 e5 3. Bb5"
-    entries, counts = build(moves_pgn(direct) + moves_pgn(transposed), book_plies=4)
+    entries, counts = build(moves_pgn(DIRECT) + moves_pgn(TRANSPOSED), book_plies=4)
     assert counts["post_book"] == 2
     assert len(entries) == 1
-    assert next(iter(entries.values())).count == 2
+    assert len(next(iter(entries.values())).appearances) == 2
 
 
 def test_a_line_is_the_epd_the_engine_parses():

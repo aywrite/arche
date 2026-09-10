@@ -10,17 +10,25 @@ own, and this turns a pile of those pgns into the epd `arche terms` reads:
     python3 scripts/build_corpus.py runs/*/games.pgn --out corpus.epd
 
 One line per unique position, carrying the game it belongs to, the result from
-the side to move's point of view, and how many times it appeared. A position
-that appeared in more than one game carries the mean of its results, which is a
-small correction (duplicates run at a few per cent of the plies) and an exact
-one, and the count is the weight the loss reads the position at.
+the side to move's point of view, and how many times it appeared. The result is
+the mean of what its games did and the count is the weight the loss reads the
+position at.
 
 The game a line names is a key rather than a name: the sha256 of the game's
 movetext. `scripts/tune.py` splits on it, because the label is the game's and
 not the position's, and it is the movetext's alone, so a re-extraction of the
 same archive gives the same keys and nothing has to be written down outside the
-pgn. A position two games reached belongs to the lower of their keys, so a
-position that repeats lands in one group rather than straddling two.
+pgn.
+
+A position two games reached belongs to the group of the lower key, and its
+result and its count are taken from that group's games alone. The appearances
+in other groups are dropped rather than merged. Merging them would put a
+calibration game's result into a training row's label and a training game's
+into a sealed row's, so the group a coverage claim is made on would have been
+read after all, which is the only thing that group is for. Dropping costs a
+handful of appearances and slightly under-weights the positions common enough
+to recur, and the counters say how many of each. A position whose every
+appearance is in one group, which is nearly all of them, is unaffected.
 
 Two games can key alike, and the counters say how many do. A key on the play
 cannot tell the same game archived twice from two games played move for move
@@ -53,6 +61,7 @@ from pathlib import Path
 
 import chess
 import chess.pgn
+from groups import group_of
 
 # The opening book's plies, which every run plays out of the same book. Eight
 # full moves.
@@ -96,24 +105,37 @@ def game_key(game):
 
 
 class Entry:
-    """One unique position: what to call it, which game it belongs to, what its
-    games said, and how many times it was reached."""
+    """One unique position: what to call it, and what every game that reached
+    it said about it.
 
-    def __init__(self, identifier, key):
+    The position belongs to one group and is labelled by that group alone. The
+    lowest key of the games that reached it says which group that is, which is
+    what keeps a repeated position out of two groups at once, and the results
+    of the games in that group are what it is labelled and weighted by. The
+    appearances in other groups are dropped: a label that meaned them would
+    carry a sealed game's result into a row the fit reads, and a training
+    game's into a row that is meant to be unread.
+    """
+
+    def __init__(self, identifier, key, result):
         self.id = identifier
-        self.key = key
-        self.results = []
+        self.appearances = [(key, result)]
 
     def seen(self, key, result):
-        """Another game reaching this position.
+        """Another game reaching this position."""
+        self.appearances.append((key, result))
 
-        The lowest key owns it. Grouping by the game would otherwise lose the
-        property that a repeated position cannot straddle the split, because
-        the games that reached it can fall in different groups. The weight
-        counts every appearance whichever game it was.
-        """
-        self.key = min(self.key, key)
-        self.results.append(result)
+    @property
+    def key(self):
+        """The game the position belongs to: the lowest key that reached it."""
+        return min(key for key, _ in self.appearances)
+
+    @property
+    def results(self):
+        """What the games of its own group said, which is the whole of what it
+        is labelled and weighted by."""
+        group = group_of(self.key)
+        return [result for key, result in self.appearances if group_of(key) == group]
 
     @property
     def count(self):
@@ -122,6 +144,11 @@ class Entry:
     @property
     def result(self):
         return sum(self.results) / len(self.results)
+
+    @property
+    def dropped(self):
+        """The appearances in other groups, which are not merged in."""
+        return len(self.appearances) - len(self.results)
 
 
 def crashed(game, comments):
@@ -152,11 +179,16 @@ def corpus(games, book_plies=BOOK_PLIES):
 
     Returns the entries and the counts a caller reports: games read, games
     dropped, plies seen, plies past the book, how many of the positions more
-    than one game reached, and how many games key alike with one already read.
+    than one game reached, how many of those were reached by games in more than
+    one group and how many appearances that dropped, and how many games key
+    alike with one already read.
 
-    The last is there because a repeated position and a repeated game look the
-    same in every other number. A game whose movetext another game already had
-    is one game's evidence counted twice, and nothing else in the run says so.
+    The dropped appearances are what the group-local label costs, so the run
+    says how many rather than leaving a reader to work it out from the plies.
+    The last count is there because a repeated position and a repeated game
+    look the same in every other number. A game whose movetext another game
+    already had is one game's evidence counted twice, and nothing else in the
+    run says so.
     """
     entries = collections.OrderedDict()
     keys = collections.Counter()
@@ -176,16 +208,21 @@ def corpus(games, book_plies=BOOK_PLIES):
                 continue
             post_book += 1
             epd = board.epd()
-            if epd not in entries:
-                entries[epd] = Entry(f"g{read:05d}p{ply:03d}", key)
-            entries[epd].seen(key, result_for(white_result, board.turn))
+            result = result_for(white_result, board.turn)
+            entry = entries.get(epd)
+            if entry is None:
+                entries[epd] = Entry(f"g{read:05d}p{ply:03d}", key, result)
+            else:
+                entry.seen(key, result)
     counts = {
         "games": read,
         "dropped": dropped,
         "plies": plies,
         "post_book": post_book,
         "positions": len(entries),
-        "repeated": sum(1 for entry in entries.values() if entry.count > 1),
+        "repeated": sum(1 for entry in entries.values() if len(entry.appearances) > 1),
+        "straddled": sum(1 for entry in entries.values() if entry.dropped),
+        "dropped_appearances": sum(entry.dropped for entry in entries.values()),
         "same_key": sum(seen - 1 for seen in keys.values()),
     }
     return entries, counts
@@ -198,7 +235,8 @@ def render(entries):
     The name says where the position was first seen, which is a game and a ply
     a reader can go back to. The game it belongs to is the `game` operand, and
     on a position two games reached the two disagree: the name is the first
-    game and the operand is the lowest key. The split reads the operand.
+    game, which may be one of the games the label drops, and the operand is the
+    lowest key. The split reads the operand.
 
     The result is written to four places. It is a mean over a handful of games
     at most, and a place further would be spelling out a repeating decimal.
@@ -252,6 +290,7 @@ def main(argv=None):
     print(
         "corpus games {games} dropped {dropped} plies {plies} "
         "post_book {post_book} positions {positions} repeated {repeated} "
+        "straddled {straddled} dropped_appearances {dropped_appearances} "
         "same_key {same_key}".format(**counts)
     )
     return 0

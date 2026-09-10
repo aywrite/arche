@@ -160,15 +160,21 @@ material plus piece square tables, tapered between middlegame and endgame.
 ## Code map: scripts
 
 Most of `scripts/` is measurement plumbing, described in DEVELOPMENT.md
-where each measurement is. Two of them are the offline half of the
+where each measurement is. Three of them are the offline half of the
 evaluation tuner, and they have tests under `scripts/tests` gated by the
 Scripts workflow:
 
+- **groups.py**: Which of the three groups a game falls in, by the first
+  byte of its key. The two scripts below both need it, and a second copy of
+  the mapping would be a corpus built to one split and fitted against
+  another, which neither run would say a word about.
 - **build_corpus.py**: Archived strength-run pgns in, an epd of unique
   post-book positions out, each carrying the game it belongs to, the result
   from the side to move's point of view, and how many times it was reached.
   The game is named by the sha256 of its movetext, which is what the split
-  reads, and a position two games reached belongs to the lower of their keys.
+  reads. A position two games reached belongs to the group of the lower key
+  and is labelled and weighted by that group's games alone, and the
+  appearances in other groups are dropped rather than merged.
 - **tune.py**: The loss harness and the fit. Reads an `arche terms` run and
   the corpus above, rebuilds every row against the weights the run printed,
   and either scores weight vectors on the selection games, cross validates one
@@ -177,13 +183,10 @@ Scripts workflow:
   objective weights a position by how often the corpus reached it. There are
   three groups: three fifths of the games train, a fifth ranks the ridge, and
   a fifth is sealed. The sealed rows are not in the matrices anything here
-  scores, so no command can read a sealed row. The seal is on the rows and not
-  on the labels: a position two games reached is one row whose label is the
-  mean of their results, so a sealed game's result can reach a scored row's
-  label and the other way about, on the 3.92% of positions that repeat at all.
-  Nothing here knows how to evaluate a position: the engine states the
-  coefficients and states the weights, and a row this cannot rebuild stops the
-  run.
+  scores, so no command can read a sealed row, and the duplicate rule above
+  keeps a sealed game's result out of every label a fit sees. Nothing here
+  knows how to evaluate a position: the engine states the coefficients and
+  states the weights, and a row this cannot rebuild stops the run.
 
 ## Measurement
 

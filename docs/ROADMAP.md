@@ -40,13 +40,13 @@ the engine plays. Roughly in the order they look worth doing.
 
 - a fit of the piece square tables on our own games does not beat the tables psqt.rs
   already holds by more than its own interval. Measured 2026-09-10 over 1,814 archived
-  games, 100,726 quiet positions across 1,807 of them: the shipped weights score 0.091796
-  on the selection games, and the ridge the selection group picks beats them by 0.000452
-  against a standard error of 0.000329. The harness reads a difference as real when it is
-  larger than twice its standard error, and twice this one is 0.000658, so the fit does
+  games, 100,726 quiet positions across 1,807 of them: the shipped weights score 0.093562
+  on the selection games, and the ridge the selection group picks beats them by 0.000413
+  against a standard error of 0.000331. The harness reads a difference as real when it is
+  larger than twice its standard error, and twice this one is 0.000662, so the fit does
   not clear it. Five-fold cross validation of whole games says the same about the grid's
-  best there, 1e-7: 0.000834 better against a standard error of 0.000479, and twice that
-  is 0.000958. The corpus is the engine's own play, so the positions it never reaches are
+  best there, 1e-7: 0.000526 better against a standard error of 0.000482, and twice that
+  is 0.000964. The corpus is the engine's own play, so the positions it never reaches are
   unlabelled, and that is the ceiling on what any fit of it can say. Whether a re-tune
   buys strength is the sprt's question and not this one
 - the harness said otherwise until 2026-09-10, and why is worth keeping. It split the

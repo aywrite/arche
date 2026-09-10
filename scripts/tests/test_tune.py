@@ -20,6 +20,7 @@ not read by anything here.
 import json
 import math
 
+import groups
 import numpy as np
 import pytest
 import tune
@@ -157,31 +158,6 @@ def test_a_corpus_that_names_no_game_is_refused():
     line = '4k3/8/8/8/8/8/8/4K3 w - - id "g00001p020"; result "1.0000"; count "1";'
     with pytest.raises(ValueError, match="names no game"):
         tune.parse_corpus([line])
-
-
-def test_the_three_groups_are_assigned_by_the_first_byte_of_the_game_key():
-    """Slices nought, one and two train, slice three chooses the ridge, and
-    slice four is not read. The key is the sha256 of the game's movetext, so
-    the group is a property of the play and a re-extraction moves nothing."""
-    assert [tune.group_of(key(0, slice_)) for slice_ in range(5)] == [
-        "train",
-        "train",
-        "train",
-        "selection",
-        "calibration",
-    ]
-    # every byte that is that slice modulo five lands in the same group, which
-    # is what makes the shares three fifths, a fifth and a fifth
-    assert {tune.group_of(f"{byte:02x}" + "0" * 62) for byte in range(0, 256, 5)} == {
-        "train"
-    }
-    assert {tune.group_of(f"{byte:02x}" + "0" * 62) for byte in range(4, 256, 5)} == {
-        "calibration"
-    }
-    # and a key that is no sha256 is refused rather than bucketed
-    for bad in ("", "z", "zz" + "0" * 62):
-        with pytest.raises(ValueError, match="no sha256"):
-            tune.group_of(bad)
 
 
 def test_a_corpus_that_repeats_a_position_across_games_is_refused():
@@ -445,7 +421,7 @@ def sample(vector, count=30, plies=4):
                     fen,
                 )
             )
-            labels[name] = (result, 1, key(index, index * len(tune.SLICES) // count))
+            labels[name] = (result, 1, key(index, index * len(groups.SLICES) // count))
     return rows, labels
 
 
@@ -461,7 +437,7 @@ def fixture_run(tmp_path, vector, rows, labels, name="corpus.epd", drop=()):
             f'4k3/8/8/8/8/8/8/4K3 w - - id "{identifier}"; game "{game}"; '
             f'result "{result}"; count "{count}";'
             for identifier, (result, count, game) in labels.items()
-            if tune.group_of(game) not in drop
+            if groups.group_of(game) not in drop
         )
         + "\n",
         encoding="utf-8",
@@ -638,7 +614,7 @@ def test_the_calibration_group_is_not_read_by_a_fit(tmp_path, capsys):
     rows, labels = sample(vector)
     labels = {
         name: (
-            1.0 - result if tune.group_of(game) == "calibration" else result,
+            1.0 - result if groups.group_of(game) == "calibration" else result,
             count,
             game,
         )
