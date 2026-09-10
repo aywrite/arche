@@ -456,8 +456,9 @@ python3 scripts/tune.py fit --terms rows.txt --corpus corpus.epd --out fit.json
 ```
 
 `scripts/build_corpus.py` builds the corpus from archived strength-run pgns,
-carrying each position's game, the result from the side to move's point of view,
-and how many times the games reached it:
+carrying each position's game, the run and the round that game was played in,
+the result from the side to move's point of view, and how many times the games
+reached it:
 
 ```
 python3 scripts/build_corpus.py runs/*/games.pgn --out corpus.epd
@@ -518,8 +519,16 @@ to be reached by games in two groups carries fewer appearances than the corpus
 gave it. No position loses every appearance, since the group that owns it is
 the group of a game that reached it.
 
-`build_corpus.py`'s counters end with `repeated`, the positions more than one
-game reached, `straddled` and `dropped_appearances`, which are how many of
+The run is read off the `manifest.txt` a strength run keeps beside its
+`games.pgn`, as the run id and the shard, and off the directory's name where
+there is no manifest; the round is the pgn's own `Round` header. Neither is
+part of the key, because neither is a property of the play. They are on the
+row so that a source can be excluded or weighted after extraction, and so that
+the two games that played one opening with the colours reversed can be told
+apart from two openings.
+
+`build_corpus.py`'s counters open with `runs`, the archives the games came
+from, and end with `repeated`, the positions more than one game reached, `straddled` and `dropped_appearances`, which are how many of
 those were reached from more than one group and how many appearances that cost,
 and `same_key`, the games whose movetext another game already had. The last is
 the only place a game the archive holds twice shows up: it is one game's
