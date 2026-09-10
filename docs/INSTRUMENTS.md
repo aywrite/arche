@@ -586,6 +586,16 @@ held, a fit given enough licence spends the loss on growing the tables rather
 than on their shape, and a vector whose loss only falls at its own K bought
 scale.
 
+The scale is a ratio of root mean squares over the table half of the vector,
+so it means one thing inside a layout and nothing across two. That half held
+512 entries before a knight, a bishop, a rook and a queen were given an
+endgame table and holds 768 after, and 256 of the 768 were exact copies of
+their midgame twins until the fit that made them differ. A scale of 1.0 at
+774 slots and a scale of 1.0 at 518 are not the same statement, and the same
+goes for the boardful the bound is checked against. Figures from fits at
+different layouts are quoted with the layout beside them or not quoted
+together.
+
 The fit itself is ridge toward the shipped weights rather than toward zero.
 That makes a re-tune literally what it does; it leaves alone the one direction
 the corpus cannot see, which is a constant added to both king tables and
