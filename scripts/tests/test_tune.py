@@ -137,6 +137,24 @@ def test_a_weights_line_of_the_wrong_length_is_refused():
         tune.parse_terms(["terms positions 0 in_check 0 unsettled 0 kept 0"])
 
 
+def test_a_vector_of_the_layout_before_the_endgame_tables_is_refused(tmp_path):
+    """518 is the one wrong length that would otherwise read as a right one:
+    every slot it names exists in the layout that replaced it, so its numbers
+    would land on the wrong weights rather than failing to parse. Both doors a
+    vector comes through say what changed."""
+    assert tune.SHARED_TABLE_SLOTS == 518
+    assert tune.SLOTS == 774
+    old = [0] * tune.SHARED_TABLE_SLOTS
+    with pytest.raises(ValueError, match="given an endgame table"):
+        tune.parse_terms(
+            ["weights {} {}".format(len(old), " ".join(str(w) for w in old))]
+        )
+    written = tmp_path / "fitted.json"
+    written.write_text(json.dumps(old), encoding="utf-8")
+    with pytest.raises(ValueError, match="given an endgame table"):
+        tune.read_weights(written)
+
+
 def test_a_corpus_line_is_read_the_way_the_engine_reads_epd():
     """Four fields and then operations, so the id is not looked for among the
     words of the position."""

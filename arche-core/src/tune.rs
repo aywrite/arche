@@ -35,16 +35,22 @@ use std::fmt;
 /// the six pieces, in `Piece` order.
 pub const MIDGAME_SLOTS: usize = 6 * 64;
 
-/// The endgame half: the pawn's table then the king's, and nothing else. The
-/// other four pieces hand one array to both ends of the taper, so a knight on
-/// a square is one weight rather than two.
-pub const ENDGAME_SLOTS: usize = 2 * 64;
+/// The endgame half, laid out the way the midgame half is, so a square's two
+/// weights are [`MIDGAME_SLOTS`] apart.
+///
+/// It was the pawn's table and the king's and nothing else, because the other
+/// four pieces handed one array to both ends of the taper and a knight on a
+/// square was one weight rather than two. Giving those four an endgame table
+/// took the vector from 518 slots to 774, so a row printed by an older engine
+/// and any vector fitted against one no longer parse. That is deliberate:
+/// read into this layout they would land on the wrong weights.
+pub const ENDGAME_SLOTS: usize = 6 * 64;
 
 /// Where the six material values stand in the vector, after both halves of
 /// the tables.
 pub const MATERIAL_SLOT: usize = MIDGAME_SLOTS + ENDGAME_SLOTS;
 
-/// The whole weight vector: 384 midgame entries, 128 endgame ones, and the
+/// The whole weight vector: 384 midgame entries, 384 endgame ones, and the
 /// six material values.
 pub const SLOTS: usize = MATERIAL_SLOT + 6;
 
@@ -65,28 +71,9 @@ pub fn weight(slot: usize) -> i32 {
         mg_value(packed(Piece::PIECES[slot / 64], slot % 64))
     } else if slot < MATERIAL_SLOT {
         let entry = slot - MIDGAME_SLOTS;
-        if entry < 64 {
-            eg_value(packed(Piece::Pawn, entry))
-        } else {
-            eg_value(packed(Piece::King, entry - 64))
-        }
+        eg_value(packed(Piece::PIECES[entry / 64], entry % 64))
     } else {
         eval::material(Piece::PIECES[slot - MATERIAL_SLOT]) as i32
-    }
-}
-
-/// The endgame slot a piece's square has, or none for a piece whose two
-/// phases read one array.
-///
-/// A statement about how psqt.rs builds its tables. Splitting one of the four
-/// shared arrays would leave the coefficient here saying the whole taper
-/// where two weights now stand, and [`reconstruct`] would then disagree with
-/// the evaluation, which is what the pin is for.
-fn endgame_slot(piece: Piece, entry: usize) -> Option<usize> {
-    match piece {
-        Piece::Pawn => Some(MIDGAME_SLOTS + entry),
-        Piece::King => Some(MIDGAME_SLOTS + 64 + entry),
-        _ => None,
     }
 }
 
@@ -94,9 +81,10 @@ fn endgame_slot(piece: Piece, entry: usize) -> Option<usize> {
 ///
 /// The coefficients are in the side to move's frame, so a row's own
 /// arithmetic is the evaluation with no further step. They are sparse and
-/// sorted by slot: a position touches about thirty of five hundred and
-/// eighteen weights, and a column's non-zero count is what says how much of
-/// the corpus a weight is fitted on.
+/// sorted by slot: over the strategic suite's quiet positions a row names
+/// thirty four of the seven hundred and seventy four weights at the median,
+/// and a column's non-zero count is what says how much of the corpus a
+/// weight is fitted on.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct Terms {
     /// What is left on the board, capped the way the evaluation caps it. A
@@ -144,19 +132,11 @@ impl Terms {
                 Color::White => usize::from(index ^ 56),
                 Color::Black => usize::from(index),
             };
+            // every square is two weights, one at each end of the taper,
+            // and the phase divides the position between them
             let midgame = piece as usize * 64 + entry;
-            match endgame_slot(piece, entry) {
-                // the pawn and the king are the two the phases disagree
-                // about, so each of their squares is two weights
-                Some(endgame) => {
-                    coefficients[midgame] += sign * phase;
-                    coefficients[endgame] += sign * (TOTAL_PHASE - phase);
-                }
-                // and for the other four the two halves of the taper are one
-                // weight, so what would have been two coefficients arrives
-                // as their sum, which is the whole taper whatever the phase
-                None => coefficients[midgame] += sign * TOTAL_PHASE,
-            }
+            coefficients[midgame] += sign * phase;
+            coefficients[MIDGAME_SLOTS + midgame] += sign * (TOTAL_PHASE - phase);
         }
         Self {
             phase,
@@ -445,6 +425,62 @@ mod tests {
         }
     }
 
+    /// Every piece writes both ends of the taper, and the coefficients say
+    /// so rather than the evaluation they add up to.
+    ///
+    /// While the four new tables are copies of their twins the weight at a
+    /// square is the same at both ends, so a dot product cannot tell a split
+    /// from no split: an endgame coefficient written to its midgame slot
+    /// reproduces every row of the corpus and every reconstruction test above.
+    /// The two shares of the taper differ here, so a coefficient on the wrong
+    /// slot, or the two swapped, is a different number and not a different
+    /// route to the same one.
+    #[test]
+    fn every_piece_writes_both_ends_of_the_taper() {
+        // a knight, a bishop, a rook and a queen for white, so the four
+        // tables that were added carry a coefficient of their own, and no
+        // black piece of any of those kinds to cancel one out. The kings
+        // stand off the mirror of each other for the same reason
+        let fen = "7k/8/8/8/8/8/4P3/RNBQK3 w - - 0 1";
+        let board = Board::from_fen(fen).unwrap();
+        let terms = Terms::of(&board);
+        // a knight and a bishop at one apiece, a rook at two and a queen at
+        // four
+        assert_eq!(terms.phase, 8);
+        assert_ne!(
+            terms.phase,
+            TOTAL_PHASE - terms.phase,
+            "the two ends hold the same share here, so this test cannot tell them apart"
+        );
+        let coefficient = |slot: usize| {
+            terms
+                .coefficients
+                .iter()
+                .find(|(named, _)| usize::from(*named) == slot)
+                .map_or(0, |(_, coefficient)| *coefficient)
+        };
+        for (piece, file, rank) in [
+            (Piece::Pawn, File::E, 2),
+            (Piece::Knight, File::B, 1),
+            (Piece::Bishop, File::C, 1),
+            (Piece::Rook, File::A, 1),
+            (Piece::Queen, File::D, 1),
+            (Piece::King, File::E, 1),
+        ] {
+            // white reads the tables mirrored, so a white piece's slot is
+            // named by the square black would be on
+            let entry = usize::from(coordinate_to_index(rank, file) ^ 56);
+            let slot = piece as usize * 64 + entry;
+            assert_eq!(coefficient(slot), terms.phase, "{:?} midgame", piece);
+            assert_eq!(
+                coefficient(MIDGAME_SLOTS + slot),
+                TOTAL_PHASE - terms.phase,
+                "{:?} endgame",
+                piece
+            );
+        }
+    }
+
     /// A position whose piece square numerator is negative and does not
     /// divide by twenty four evenly, which is what the two tests below need
     /// to tell two readings of the arithmetic apart. A knight a side would
@@ -533,39 +569,6 @@ mod tests {
         assert_eq!(reconstruct(&terms), eval::eval(&board), "{}", fen);
     }
 
-    /// A knight, a bishop, a rook and a queen read one array at either end of
-    /// the taper, which is why each of their squares is one slot and its
-    /// coefficient is the whole taper. Splitting one of them would make that
-    /// coefficient wrong, and this says so here rather than leaving the pin
-    /// to report it as a mismatch.
-    #[test]
-    fn the_four_shared_tables_score_both_ends_of_the_taper() {
-        for piece in [Piece::Knight, Piece::Bishop, Piece::Rook, Piece::Queen] {
-            for entry in 0..64 {
-                let packed = PieceSquareTables::TABLES.get_value(entry, piece, Color::Black);
-                assert_eq!(
-                    mg_value(packed),
-                    eg_value(packed),
-                    "{:?} at {}",
-                    piece,
-                    entry
-                );
-            }
-        }
-        // and the two that are not shared do differ, or the distinction the
-        // slot layout is built on would be empty
-        for piece in [Piece::Pawn, Piece::King] {
-            assert!(
-                (0..64).any(|entry| {
-                    let packed = PieceSquareTables::TABLES.get_value(entry, piece, Color::Black);
-                    mg_value(packed) != eg_value(packed)
-                }),
-                "{:?}",
-                piece
-            );
-        }
-    }
-
     /// A slot names the same weight the tables hold, so a fit that moves slot
     /// n moves the entry a reader of psqt.rs would go looking for. Named
     /// squares rather than a walk, since a walk would only restate `weight`.
@@ -579,11 +582,25 @@ mod tests {
         assert_eq!(weight(Piece::Pawn as usize * 64 + entry(File::A, 2)), 50);
         // and the same square in the endgame table is eighty
         assert_eq!(weight(MIDGAME_SLOTS + entry(File::A, 2)), 80);
-        // a knight in the corner, which is the same weight at either end
-        assert_eq!(weight(Piece::Knight as usize * 64 + entry(File::A, 1)), -50);
         // the king hides in the middlegame and comes out in the ending
         assert_eq!(weight(Piece::King as usize * 64 + entry(File::E, 5)), -40);
-        assert_eq!(weight(MIDGAME_SLOTS + 64 + entry(File::E, 5)), 40);
+        assert_eq!(
+            weight(MIDGAME_SLOTS + Piece::King as usize * 64 + entry(File::E, 5)),
+            40
+        );
+        // the four tables that were added stand where the same arithmetic
+        // puts them, a half of the vector on from their midgame twins, and
+        // hold what those twins hold until the fit moves them
+        for (piece, corner) in [
+            (Piece::Knight, -50),
+            (Piece::Bishop, -20),
+            (Piece::Rook, 0),
+            (Piece::Queen, -20),
+        ] {
+            let slot = piece as usize * 64 + entry(File::A, 1);
+            assert_eq!(weight(slot), corner, "{:?}", piece);
+            assert_eq!(weight(MIDGAME_SLOTS + slot), corner, "{:?}", piece);
+        }
         for (piece, value) in [
             (Piece::Pawn, 100),
             (Piece::Knight, 310),
