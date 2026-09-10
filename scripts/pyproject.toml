@@ -1,0 +1,25 @@
+# The four match tools as one installable package, so that what reads a match
+# can be imported by name rather than found by sitting in the right directory.
+#
+# The package itself needs nothing outside the standard library. The version is
+# the package's own and not the engine's, and it is printed in the --json
+# output and nowhere else.
+
+[build-system]
+requires = ["setuptools>=77"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "match-tools"
+version = "0.1.0"
+description = "Read a sharded engine match: the pooled estimate and the ccrl fit"
+# the floor the `X | None` annotations set
+requires-python = ">=3.10"
+license = "GPL-3.0-or-later"
+authors = [{ name = "Andrew Wright" }]
+dependencies = []
+
+[tool.setuptools.packages.find]
+# Named rather than discovered. Left to itself setuptools takes this directory
+# for a flat layout and installs scripts/tests as a package called tests.
+include = ["match_tools*"]

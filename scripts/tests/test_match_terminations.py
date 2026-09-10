@@ -11,11 +11,12 @@ and the count reading normal games where there were crashes.
 
 import subprocess
 import sys
-from pathlib import Path
 
-import match_terminations
+from conftest import SCRIPTS
+from match_tools import match_terminations
 
-SCRIPT = Path(match_terminations.__file__)
+# the shim at the old path, which is what the workflows run
+SCRIPT = SCRIPTS / "match_terminations.py"
 
 # The comment fastchess puts on the last move, with everything the workflow
 # asks it to track. The reason is the tail of it.

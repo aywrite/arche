@@ -10,12 +10,13 @@ checked against numbers computed by hand.
 
 import subprocess
 import sys
-from pathlib import Path
 
 import pytest
-import rating_estimate
+from conftest import SCRIPTS
+from match_tools import rating_estimate
 
-SCRIPT = Path(rating_estimate.__file__)
+# the shim at the old path, which is what the workflows run
+SCRIPT = SCRIPTS / "rating_estimate.py"
 
 
 def game(white, black, result):
