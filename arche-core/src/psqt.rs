@@ -185,6 +185,64 @@ const PAWNS_END: [i16; 64] = [
       0,  0,  0,  0,  0,  0,  0,  0
 ];
 
+// The other four had no endgame table at all. Each handed its one array to
+// both ends of the taper, so a knight on the rim was worth the same at move
+// fifteen and at move seventy. These four are that array copied entry for
+// entry, which is what leaves the evaluation exactly where it was: what the
+// two ends should say about a knight, a bishop, a rook and a queen is a
+// question for the fit that follows.
+//
+// Copied and not aliased. `const KNIGHTS_END: [i16; 64] = KNIGHTS;` would
+// hold the same numbers today and move both tables when the fit edits one.
+
+#[rustfmt::skip]
+const KNIGHTS_END: [i16; 64] = [
+    -50,-40,-30,-30,-30,-30,-40,-50,
+    -40,-20,  0,  0,  0,  0,-20,-40,
+    -30,  0, 10, 15, 15, 10,  0,-30,
+    -30,  5, 15, 20, 20, 15,  5,-30,
+    -30,  0, 15, 20, 20, 15,  0,-30,
+    -30,  5, 10, 15, 15, 10,  5,-30,
+    -40,-20,  0,  5,  5,  0,-20,-40,
+    -50,-40,-30,-30,-30,-30,-40,-50,
+];
+
+#[rustfmt::skip]
+const BISHOPS_END: [i16; 64] = [
+    -20,-10,-10,-10,-10,-10,-10,-20,
+    -10,  0,  0,  0,  0,  0,  0,-10,
+    -10,  0,  5, 10, 10,  5,  0,-10,
+    -10,  5,  5, 10, 10,  5,  5,-10,
+    -10,  0, 10, 10, 10, 10,  0,-10,
+    -10, 10, 10, 10, 10, 10, 10,-10,
+    -10,  5,  0,  0,  0,  0,  5,-10,
+    -20,-10,-10,-10,-10,-10,-10,-20,
+];
+
+#[rustfmt::skip]
+const ROOKS_END: [i16; 64] = [
+    0,  0,  0,  0,  0,  0,  0,  0,
+    5, 10, 10, 10, 10, 10, 10,  5,
+    -5,  0,  0,  0,  0,  0,  0, -5,
+    -5,  0,  0,  0,  0,  0,  0, -5,
+    -5,  0,  0,  0,  0,  0,  0, -5,
+    -5,  0,  0,  0,  0,  0,  0, -5,
+    -5,  0,  0,  0,  0,  0,  0, -5,
+    0,  0,  0,  5,  5,  0,  0,  0
+];
+
+#[rustfmt::skip]
+const QUEENS_END: [i16; 64] = [
+    -20,-10,-10, -5, -5,-10,-10,-20,
+    -10,  0,  0,  0,  0,  0,  0,-10,
+    -10,  0,  5,  5,  5,  5,  0,-10,
+    -5,  0,  5,  5,  5,  5,  0, -5,
+    0,  0,  5,  5,  5,  5,  0, -5,
+    -10,  5,  5,  5,  5,  5,  0,-10,
+    -10,  0,  5,  0,  0,  0,  0,-10,
+    -20,-10,-10, -5, -5,-10,-10,-20
+];
+
 /// The entries are `i32` rather than a machine word because every piece that is
 /// set or cleared reads one, which is several times per move made or unmade, and
 /// the twelve tables are then 3072 bytes rather than 6144 and stay in L1
@@ -225,23 +283,21 @@ impl PieceSquareTables {
     /// nothing to synchronise on when reading it.
     ///
     /// Written in the order `table_index` reads it: the six pieces as `Piece`
-    /// declares them for white, then the same six for black. A piece whose two
-    /// phases agree is handed the same table twice, which is every piece but
-    /// the king and the pawn: a knight belongs in the middle of the board and
-    /// a rook on the seventh whatever else is left on it.
+    /// declares them for white, then the same six for black. Every piece hands
+    /// two tables of its own to the pair.
     pub const TABLES: PieceSquareTables = PieceSquareTables {
         tables: [
             packed(mirror(&PAWNS), mirror(&PAWNS_END)),
-            packed(mirror(&KNIGHTS), mirror(&KNIGHTS)),
-            packed(mirror(&BISHOPS), mirror(&BISHOPS)),
-            packed(mirror(&ROOKS), mirror(&ROOKS)),
-            packed(mirror(&QUEENS), mirror(&QUEENS)),
+            packed(mirror(&KNIGHTS), mirror(&KNIGHTS_END)),
+            packed(mirror(&BISHOPS), mirror(&BISHOPS_END)),
+            packed(mirror(&ROOKS), mirror(&ROOKS_END)),
+            packed(mirror(&QUEENS), mirror(&QUEENS_END)),
             packed(mirror(&KING), mirror(&KING_END)),
             packed(PAWNS, PAWNS_END),
-            packed(KNIGHTS, KNIGHTS),
-            packed(BISHOPS, BISHOPS),
-            packed(ROOKS, ROOKS),
-            packed(QUEENS, QUEENS),
+            packed(KNIGHTS, KNIGHTS_END),
+            packed(BISHOPS, BISHOPS_END),
+            packed(ROOKS, ROOKS_END),
+            packed(QUEENS, QUEENS_END),
             packed(KING, KING_END),
         ],
     };
@@ -310,6 +366,16 @@ mod tests {
 
     const CORNERS: [(File, u8); 4] = [(File::A, 1), (File::H, 1), (File::A, 8), (File::H, 8)];
 
+    /// One end of the taper: what to call it, and how to read it out of a
+    /// packed pair.
+    type Half = (&'static str, fn(i32) -> i32);
+
+    /// Both ends, since every piece has a table at each of them and a shape
+    /// test that walked one would say nothing about the other. The name is
+    /// for the failure message: a shape that moved is worth knowing which
+    /// half it moved in.
+    const HALVES: [Half; 2] = [("midgame", mg_value), ("endgame", eg_value)];
+
     fn on_the_edge(file: File, rank: u8) -> bool {
         rank == 1 || rank == 8 || file == File::A || file == File::H
     }
@@ -338,8 +404,8 @@ mod tests {
 
     /// A pawn cannot stand on either back rank, so neither table says
     /// anything about those sixteen squares and both leave them at nothing.
-    /// Sixteen of the five hundred and twelve table entries have no support
-    /// in any corpus, and this is which ones.
+    /// Sixteen of the seven hundred and sixty eight table entries have no
+    /// support in any corpus, and this is which ones.
     #[test]
     fn a_pawn_scores_nothing_on_a_rank_it_cannot_stand_on() {
         for file in File::VARIANTS {
@@ -352,39 +418,43 @@ mod tests {
 
     #[test]
     fn a_rook_belongs_on_the_seventh_rank() {
-        for file in File::VARIANTS {
-            let seventh = value(Piece::Rook, Color::White, file, 7);
-            for rank in [2, 4, 6] {
-                let below = value(Piece::Rook, Color::White, file, rank);
-                assert!(
-                    seventh > below,
-                    "{:?}7 is {} and {:?}{} is {}",
-                    file,
-                    seventh,
-                    file,
-                    rank,
-                    below
-                );
+        for (name, half) in HALVES {
+            let at = |file, rank| half(packed_at(Piece::Rook, Color::White, file, rank));
+            for file in File::VARIANTS {
+                let seventh = at(file, 7);
+                for rank in [2, 4, 6] {
+                    let below = at(file, rank);
+                    assert!(
+                        seventh > below,
+                        "{} {:?}7 is {} and {:?}{} is {}",
+                        name,
+                        file,
+                        seventh,
+                        file,
+                        rank,
+                        below
+                    );
+                }
             }
+            // and the centre files of the back rank beat its corners, which is
+            // the open file the rook is put on before there is a seventh to take
+            assert!(at(File::D, 1) > at(File::A, 1), "{}", name);
         }
-        // and the centre files of the back rank beat its corners, which is
-        // the open file the rook is put on before there is a seventh to take
-        assert!(
-            value(Piece::Rook, Color::White, File::D, 1)
-                > value(Piece::Rook, Color::White, File::A, 1)
-        );
     }
 
     #[test]
     fn a_knight_is_worth_least_in_the_corners_and_most_in_the_middle() {
-        let (least, most) = extremes(Piece::Knight, mg_value);
-        assert_eq!(least, CORNERS, "the worst squares are {:?}", least);
-        assert_eq!(
-            most,
-            vec![(File::D, 4), (File::E, 4), (File::D, 5), (File::E, 5)],
-            "the best squares are {:?}",
-            most
-        );
+        for (name, half) in HALVES {
+            let (least, most) = extremes(Piece::Knight, half);
+            assert_eq!(least, CORNERS, "the worst {} squares are {:?}", name, least);
+            assert_eq!(
+                most,
+                vec![(File::D, 4), (File::E, 4), (File::D, 5), (File::E, 5)],
+                "the best {} squares are {:?}",
+                name,
+                most
+            );
+        }
     }
 
     /// The bishop and the queen are the two the reflection test below cannot
@@ -394,34 +464,40 @@ mod tests {
     /// shapes belong to two tables.
     #[test]
     fn a_bishop_is_worth_least_in_the_corners_and_most_on_the_long_diagonals() {
-        let (least, _) = extremes(Piece::Bishop, mg_value);
-        assert_eq!(least, CORNERS, "the worst squares are {:?}", least);
-        // the fianchetto squares, which are on a long diagonal and next to a
-        // corner that is the table's worst
-        for (file, corner) in [(File::B, File::A), (File::G, File::H)] {
-            assert!(
-                value(Piece::Bishop, Color::White, file, 2)
-                    > value(Piece::Bishop, Color::White, corner, 1),
-                "{:?}2 against {:?}1",
-                file,
-                corner
-            );
+        for (name, half) in HALVES {
+            let at = |file, rank| half(packed_at(Piece::Bishop, Color::White, file, rank));
+            let (least, _) = extremes(Piece::Bishop, half);
+            assert_eq!(least, CORNERS, "the worst {} squares are {:?}", name, least);
+            // the fianchetto squares, which are on a long diagonal and next to a
+            // corner that is the table's worst
+            for (file, corner) in [(File::B, File::A), (File::G, File::H)] {
+                assert!(
+                    at(file, 2) > at(corner, 1),
+                    "{} {:?}2 against {:?}1",
+                    name,
+                    file,
+                    corner
+                );
+            }
         }
     }
 
     #[test]
     fn a_queen_is_kept_off_the_edges_but_not_pushed_out() {
-        let (least, most) = extremes(Piece::Queen, mg_value);
-        assert_eq!(least, CORNERS, "the worst squares are {:?}", least);
-        // not pushed out: nowhere on the edge is the best a queen can do,
-        // and the corners are the only squares the table really refuses
-        for (file, rank) in &most {
-            assert!(
-                !on_the_edge(*file, *rank),
-                "{:?}{} is the best square",
-                file,
-                rank
-            );
+        for (name, half) in HALVES {
+            let (least, most) = extremes(Piece::Queen, half);
+            assert_eq!(least, CORNERS, "the worst {} squares are {:?}", name, least);
+            // not pushed out: nowhere on the edge is the best a queen can do,
+            // and the corners are the only squares the table really refuses
+            for (file, rank) in &most {
+                assert!(
+                    !on_the_edge(*file, *rank),
+                    "{:?}{} is the best {} square",
+                    file,
+                    rank,
+                    name
+                );
+            }
         }
     }
 
@@ -430,10 +506,14 @@ mod tests {
     /// reflection test walks both colours of one piece rather than two pieces.
     #[test]
     fn a_bishop_and_a_queen_do_not_read_one_table() {
-        assert_ne!(
-            white_table(Piece::Bishop, mg_value),
-            white_table(Piece::Queen, mg_value)
-        );
+        for (name, half) in HALVES {
+            assert_ne!(
+                white_table(Piece::Bishop, half),
+                white_table(Piece::Queen, half),
+                "{}",
+                name
+            );
+        }
     }
 
     /// Weaker than the tests above, since it holds whether or not the tables are
@@ -523,6 +603,49 @@ mod tests {
             value(Piece::Pawn, Color::White, File::D, 2),
             value(Piece::Pawn, Color::White, File::A, 2)
         );
+    }
+
+    /// The four pieces given an endgame table hold the numbers they held
+    /// before they had one, entry for entry. That is what says the commit
+    /// that added the tables changed no evaluation: the two halves of every
+    /// packed pair are equal, so the interpolation returns what it returned
+    /// whatever the phase, and the bench, both node count pins and both gated
+    /// suites are unmoved by it.
+    ///
+    /// This test dies with the fit. Making these halves differ is the whole
+    /// point of the arm, so the commit that lands the fitted numbers deletes
+    /// this and moves every count named above.
+    #[test]
+    fn the_four_new_endgame_tables_still_hold_their_midgame_numbers() {
+        for piece in [Piece::Knight, Piece::Bishop, Piece::Rook, Piece::Queen] {
+            for rank in 1..=8 {
+                for file in File::VARIANTS {
+                    let packed = packed_at(piece, Color::White, file, rank);
+                    assert_eq!(
+                        mg_value(packed),
+                        eg_value(packed),
+                        "{:?} on {:?}{}",
+                        piece,
+                        file,
+                        rank
+                    );
+                }
+            }
+        }
+    }
+
+    /// Each of the four is written out rather than aliased to its midgame
+    /// twin. `const KNIGHTS_END: [i16; 64] = KNIGHTS;` holds the same numbers,
+    /// passes every test above, and moves both tables when the fit edits one.
+    /// Nothing at run time can tell the copy from the alias, so this reads the
+    /// source and asks whether the numbers are there.
+    #[test]
+    fn each_new_endgame_table_is_written_out_rather_than_aliased() {
+        let source = include_str!("psqt.rs");
+        for table in ["KNIGHTS_END", "BISHOPS_END", "ROOKS_END", "QUEENS_END"] {
+            let written = format!("const {}: [i16; 64] = [", table);
+            assert!(source.contains(&written), "{} is not written out", table);
+        }
     }
 
     /// A pair packs and unpacks to itself, negative halves included: a black

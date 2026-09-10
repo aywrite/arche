@@ -355,13 +355,20 @@ The evaluation is material plus a tapered piece square score, and it is
 linear in the numbers those are read from. So a position's score is a dot
 product of the position against the weights, and a row is the position's half
 of it: for every weight the position touches, the integer that weight is
-multiplied by. The weights are a flat vector of 518, in this order: the 384
-midgame table entries, the 128 endgame ones (the pawn's table then the king's,
-since the other four pieces read one array at both ends of the taper), then
-the six material values. A slot's entry is a square as black sees it, because
-black is the colour that reads the tables as they are written.
+multiplied by. The weights are a flat vector of 774, in this order: the 384
+midgame table entries, the 384 endgame ones in the same order, then the six
+material values. So a square's two weights are 384 apart. A slot's entry is a
+square as black sees it, because black is the colour that reads the tables as
+they are written.
 
-The line after the header is `weights 518 <w0> <w1> ...`, the vector itself as
+The vector was 518 until a knight, a bishop, a rook and a queen were given an
+endgame table of their own, since each of the four had handed one array to
+both ends of the taper. Rows printed by an engine from before that, and any
+vector fitted against them, are refused rather than read: every slot they name
+exists in the layout that replaced them, so reading them would put the numbers
+on the wrong weights.
+
+The line after the header is `weights 774 <w0> <w1> ...`, the vector itself as
 the live tables hold it, so that nothing reading these rows transcribes
 psqt.rs. A transcription is the same failure as a reimplemented evaluation and
 quieter: a table copied out and left behind fits weights against a position it
@@ -419,7 +426,7 @@ terms positions 18 in_check 1 unsettled 8 kept 9
 ```
 
 which is the recorders' rule that a share cannot be read without its
-denominator. If the yield ever leaves too few positions to fit 512 weights,
+denominator. If the yield ever leaves too few positions to fit 768 weights,
 dropping the pass is the fallback, and the header is what makes that a
 decision rather than a discovery.
 

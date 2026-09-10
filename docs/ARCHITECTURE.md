@@ -96,10 +96,9 @@ material plus piece square tables, tapered between middlegame and endgame.
   tells it about every piece placed, removed and moved, so material and the
   piece square score are carried rather than counted; anything too dear to
   keep in step is computed at the leaf instead.
-- **psqt.rs**: The piece square tables. The pawn and the king have a
-  second table for the endgame (they are the pieces the phases disagree
-  about); both phases are packed into one integer so the taper costs one
-  multiply.
+- **psqt.rs**: The piece square tables. Every piece has a second table
+  for the endgame; both phases are packed into one integer so the taper
+  costs one multiply.
 - **zobrist.rs**: The position hash, updated incrementally as pieces move.
 - **bench.rs**: A fixed suite of positions searched to a fixed depth,
   printing exact node counts. This is what a commit's `Bench:` trailer

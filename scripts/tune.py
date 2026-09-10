@@ -81,11 +81,19 @@ import numpy as np
 from groups import CALIBRATION, group_of
 
 # The weight vector, as `arche-core/src/tune.rs` lays it out: 384 midgame table
-# entries, then 128 endgame ones, then the six material values.
+# entries, then 384 endgame ones in the same order, then the six material
+# values. A square's two weights are MIDGAME_SLOTS apart.
 MIDGAME_SLOTS = 6 * 64
-ENDGAME_SLOTS = 2 * 64
+ENDGAME_SLOTS = 6 * 64
 MATERIAL_SLOT = MIDGAME_SLOTS + ENDGAME_SLOTS
 SLOTS = MATERIAL_SLOT + 6
+
+# The layout before a knight, a bishop, a rook and a queen were given an
+# endgame table of their own: the same 384 midgame entries, the pawn's endgame
+# table and the king's, and the six material values. It is named so that a row
+# or a fitted vector written against it is turned away by what it is rather
+# than by its length alone.
+SHARED_TABLE_SLOTS = 6 * 64 + 2 * 64 + 6
 
 # What the opening's pieces come to on the scale the taper is read at, which is
 # what the piece square half of a row divides by.
@@ -100,6 +108,26 @@ BUCKETS = ("0-6", "7-12", "13+")
 # How many folds a cross validated comparison uses. Five, so each fit reads
 # four fifths of the games and every row is scored once.
 FOLDS = 5
+
+
+def check_layout(count, what):
+    """Refuse a vector of any length but this file's, and say what changed when
+    it is the length the layout had before.
+
+    The layout is a contract between this file and `arche-core/src/tune.rs`,
+    and the two are edited together. A vector of the old length is the one
+    wrong length a bare count would not explain: it parses, every slot it names
+    exists here, and its numbers land on weights they were not fitted for.
+    """
+    if count == SLOTS:
+        return
+    if count == SHARED_TABLE_SLOTS:
+        raise ValueError(
+            f"{what} of {count}, which is the layout from before a knight, a "
+            f"bishop, a rook and a queen were given an endgame table. The "
+            f"vector is {SLOTS} now, so extract the rows again and refit"
+        )
+    raise ValueError(f"{what} of {count}, expected {SLOTS}")
 
 
 def trunc_div(numerator, denominator):
@@ -188,8 +216,11 @@ def parse_terms(lines):
         if words[0] == "weights":
             count = int(words[1])
             weights = [int(word) for word in words[2 : 2 + count]]
-            if len(weights) != count or count != SLOTS:
-                raise ValueError(f"a weights line of {len(weights)}, expected {SLOTS}")
+            if len(weights) != count:
+                raise ValueError(
+                    f"a weights line saying {count} with {len(weights)} on it"
+                )
+            check_layout(count, "a weights line")
             continue
         if weights is None:
             raise ValueError("a row arrived before the weights line")
@@ -570,7 +601,7 @@ def lbfgs(objective, start, iterations=300, history=10, tolerance=1e-12):
     """L-BFGS on the closed-form gradient.
 
     The classic Texel local search walks one weight at a time over the whole
-    corpus per step, which for 518 weights is a great many passes. The
+    corpus per step, which for 774 weights is a great many passes. The
     evaluation is linear in its weights, so the gradient is closed form and
     none of that is needed.
     """
@@ -701,24 +732,15 @@ def bounds_hold(weights):
     """
     tables = np.abs(np.asarray(weights)[:MATERIAL_SLOT])
     midgame = tables[:MIDGAME_SLOTS].reshape(6, 64)
-    # the four shared tables read the same array at either end of the taper,
-    # so the endgame boardful is the pawn's and the king's endgame tables with
-    # those four between them
-    endgame = np.vstack(
-        [
-            tables[MIDGAME_SLOTS : MIDGAME_SLOTS + 64],
-            midgame[1:5],
-            tables[MIDGAME_SLOTS + 64 : MATERIAL_SLOT],
-        ]
-    )
+    endgame = tables[MIDGAME_SLOTS:MATERIAL_SLOT].reshape(6, 64)
     worst = 2 * max(int(midgame.max(axis=0).sum()), int(endgame.max(axis=0).sum()))
     return worst < 32767, worst
 
 
 def read_weights(path):
-    return np.array(
-        json.loads(Path(path).read_text(encoding="utf-8")), dtype=np.float64
-    )
+    weights = json.loads(Path(path).read_text(encoding="utf-8"))
+    check_layout(len(weights), f"{path} holds a vector")
+    return np.array(weights, dtype=np.float64)
 
 
 def table_scale(weights, shipped):
