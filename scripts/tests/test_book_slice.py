@@ -11,11 +11,12 @@ quietly overlapping.
 
 import subprocess
 import sys
-from pathlib import Path
 
-import book_slice
+from conftest import SCRIPTS
+from match_tools import book_slice
 
-SCRIPT = Path(book_slice.__file__)
+# the shim at the old path, which is what the workflows run
+SCRIPT = SCRIPTS / "book_slice.py"
 
 # what 8moves_v3.pgn holds, counted at run time by the workflow
 BOOK = 34700

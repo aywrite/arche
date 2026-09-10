@@ -131,6 +131,12 @@ python3 -m pip install -r scripts/requirements.txt
 python3 -m pytest scripts/tests
 ```
 
+The four tools a match is read with (`match_estimate.py`,
+`rating_estimate.py`, `match_terminations.py` and `book_slice.py`) are the
+`match_tools` package under `scripts/`, and `pip install -e ./scripts`
+installs it. The files at the old paths run it and are what the workflows
+call, so nothing has to be installed to run a match.
+
 The tests that run a shell script are skipped on windows, which cannot run
 one through its shebang; from a windows clone run them under wsl. The scripts
 are checked out with unix line endings whatever `core.autocrlf` says, so that

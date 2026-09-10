@@ -15,12 +15,13 @@ an interval the games do not support.
 import math
 import subprocess
 import sys
-from pathlib import Path
 
-import match_estimate
 import pytest
+from conftest import SCRIPTS
+from match_tools import match_estimate
 
-SCRIPT = Path(match_estimate.__file__)
+# the shim at the old path, which is what the workflows run
+SCRIPT = SCRIPTS / "match_estimate.py"
 
 CANDIDATE = "new"
 BASELINE = "old"
@@ -338,6 +339,9 @@ class TestCommandLine:
         assert result.stdout == "+0 ±340 Elo (4 games)\n"
 
     def test_the_trailer_passes_the_hook(self, tmp_path):
+        # the hook is not part of the package, so this reaches it through the
+        # path insert in conftest. It is a test of the seam between the two
+        # sides and it wants a home of its own once they part.
         import check_trailers
 
         line = self.run(tmp_path, [drawn(1) + pair(2)], "--trailer").stdout
