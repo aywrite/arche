@@ -109,6 +109,10 @@ BUCKETS = ("0-6", "7-12", "13+")
 # four fifths of the games and every row is scored once.
 FOLDS = 5
 
+# The fields of a fen: the board, the side to move, the castling rights, the
+# en passant square and the two clocks. What a row's reader counts back from.
+FEN_FIELDS = 6
+
 
 def check_layout(count, what):
     """Refuse a vector of any length but this file's, and say what changed when
@@ -182,6 +186,46 @@ def phase_bucket(fen):
     return BUCKETS[2]
 
 
+def split_row(words):
+    """The fields of one `arche terms` row, read from its right hand end.
+
+    A row is `id eval phase n slot:coefficient... fen`, and both ends of it
+    can hold spaces. A fen is six fields, and an epd id is whatever the file
+    put in the quotes: the bench's own suite names positions "ruy lopez" and
+    "king and pawn", and a line that names no id is called by its own fen, so
+    an id can be six fields itself. So the fields are found from the end whose
+    width is fixed. The fen is the last six, the coefficients are the run of
+    `slot:coefficient` in front of them, and what is left before the three
+    numbers is the id. The engine squeezes a name's whitespace to single
+    spaces before it ever prints one, so those fields joined back up are the
+    name the epd held.
+
+    The run of coefficients cannot walk back into the id whatever the id
+    holds, because the three numbers between them carry no colon. `n` is held
+    against the run rather than counted forward from, so the two ends of the
+    row have to agree.
+    """
+    if len(words) < FEN_FIELDS + 4:
+        raise ValueError(f"a row of {len(words)} fields: {' '.join(words)!r}")
+    head, fen = words[:-FEN_FIELDS], " ".join(words[-FEN_FIELDS:])
+    start = len(head)
+    while start > 0 and ":" in head[start - 1]:
+        start -= 1
+    if start < 4:
+        raise ValueError(f"a row whose fields do not line up: {' '.join(words)!r}")
+    identifier = " ".join(head[: start - 3])
+    evaluation, phase, count = (int(word) for word in head[start - 3 : start])
+    coefficients = []
+    for word in head[start:]:
+        slot, coefficient = word.split(":")
+        coefficients.append((int(slot), int(coefficient)))
+    if count != len(coefficients):
+        raise ValueError(
+            f"{identifier} says {count} coefficients and prints {len(coefficients)}"
+        )
+    return identifier, evaluation, phase, coefficients, fen
+
+
 class Row:
     """One position: what the engine said it scored, and what of.
 
@@ -212,7 +256,7 @@ def parse_terms(lines):
         line = line.strip()
         if not line or line.startswith("terms "):
             continue
-        words = line.split(" ")
+        words = line.split()
         if words[0] == "weights":
             count = int(words[1])
             weights = [int(word) for word in words[2 : 2 + count]]
@@ -224,17 +268,7 @@ def parse_terms(lines):
             continue
         if weights is None:
             raise ValueError("a row arrived before the weights line")
-        identifier, evaluation, phase, count = (
-            words[0],
-            int(words[1]),
-            int(words[2]),
-            int(words[3]),
-        )
-        coefficients = []
-        for word in words[4 : 4 + count]:
-            slot, coefficient = word.split(":")
-            coefficients.append((int(slot), int(coefficient)))
-        fen = " ".join(words[4 + count :])
+        identifier, evaluation, phase, coefficients, fen = split_row(words)
         rebuilt = reconstruct(coefficients, weights)
         if rebuilt != evaluation:
             raise ValueError(

@@ -320,10 +320,20 @@ pub fn run(positions: &[Position], suite: Option<&str>) -> Report {
 /// The report as the command prints it: a header naming the suite and what
 /// the filter did with it, the weight vector, then a row a position.
 ///
-/// A row is `id eval phase n slot:coefficient... fen`, whitespace separated
-/// with the fen last, so it parses left to right and the field that can hold
-/// spaces holds the rest of the line. `n` is how many coefficients follow,
-/// so a reader knows where they stop without counting back from the fen.
+/// A row is `id eval phase n slot:coefficient... fen`, whitespace separated,
+/// and both ends of it can hold spaces. A fen is six fields, and an id is
+/// whatever an epd put in the quotes, which in the bench's own suite is
+/// "ruy lopez" and in the strategic suite "7th Rank.001" (a line that names
+/// no id is called by its own fen, so an id can be six fields itself). So a
+/// row is read from its right hand end: the fen is the last six fields, the
+/// coefficients are the run of `slot:coefficient` in front of it, and what
+/// is left before the three numbers is the id. `n` is printed so the two
+/// ends can be held against each other rather than one of them trusted.
+///
+/// The id is printed as the epd gave it rather than quoted. Quoting would
+/// need an escape rule the epd itself does not have, and the id is the key
+/// a corpus is joined on, so what is printed has to be the name the file
+/// wrote.
 ///
 /// The weights are printed as well as the coefficients, so that what reads
 /// these rows never transcribes psqt.rs. A transcription is the same failure
@@ -747,10 +757,16 @@ mod tests {
         );
     }
 
-    /// A row reads left to right with the fen last, and the count says where
-    /// the coefficients stop.
+    /// The fields of a row are found from the fen back, which is what lets
+    /// an id hold spaces. The name is taken from the bench's own suite, the
+    /// default this command runs, rather than invented here, so the test
+    /// cannot go on claiming something the suite has stopped doing.
     #[test]
-    fn a_row_reads_left_to_right_with_the_fen_last() {
+    fn a_row_reads_from_the_right_and_its_id_can_hold_spaces() {
+        let spaced = bench::positions()
+            .into_iter()
+            .find(|position| position.id.contains(' '))
+            .expect("the bench's suite names a position with a space in it");
         let fen = "4k3/8/8/8/8/8/4P3/4K3 w - - 0 1";
         let board = Board::from_fen(fen).unwrap();
         let report = Report {
@@ -759,7 +775,7 @@ mod tests {
             in_check: 0,
             unsettled: 0,
             rows: vec![Row {
-                id: "solo".to_string(),
+                id: spaced.id.clone(),
                 eval: eval::eval(&board),
                 terms: Terms::of(&board),
                 fen: fen.to_string(),
@@ -768,19 +784,27 @@ mod tests {
         let text = report.to_string();
         let row = text.lines().nth(2).expect("a row");
         let words: Vec<&str> = row.split(' ').collect();
-        assert_eq!(words[0], "solo");
-        assert_eq!(words[1], eval::eval(&board).to_string());
-        // three pieces and no piece worth a phase weight, so the endgame end
-        assert_eq!(words[2], "0");
-        let count: usize = words[3].parse().expect("a count");
-        // a pawn and two kings: three material slots and, since each of the
-        // three reads two tables, up to six piece square slots
-        assert_eq!(count, report.rows[0].terms.coefficients.len());
-        for word in &words[4..4 + count] {
+        // the fen is the last six fields
+        let (head, last_six) = words.split_at(words.len() - 6);
+        assert_eq!(last_six.join(" "), fen);
+        // and the coefficients are the run before it, which cannot walk back
+        // into the id because the three numbers in between hold no colon
+        let count_at = head
+            .iter()
+            .rposition(|word| !word.contains(':'))
+            .expect("a count");
+        for word in &head[count_at + 1..] {
             let (slot, coefficient) = word.split_once(':').expect(word);
             assert!(slot.parse::<usize>().expect(word) < SLOTS);
             coefficient.parse::<i32>().expect(word);
         }
-        assert_eq!(words[4 + count..].join(" "), fen);
+        // a pawn and two kings: three material slots and, since each of the
+        // three reads two tables, up to six piece square slots
+        let count: usize = head[count_at].parse().expect("a count");
+        assert_eq!(count, report.rows[0].terms.coefficients.len());
+        assert_eq!(head[count_at - 2], eval::eval(&board).to_string());
+        // three pieces and no piece worth a phase weight, so the endgame end
+        assert_eq!(head[count_at - 1], "0");
+        assert_eq!(head[..count_at - 2].join(" "), spaced.id);
     }
 }
