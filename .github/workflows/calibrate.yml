@@ -511,6 +511,13 @@ jobs:
             tools/config.json
             tools/manifest.txt
           if-no-files-found: warn
+          # Ninety days, which is the maximum a public repository allows and
+          # was already the default in force. Written down because it is the
+          # corpus's shelf life and not a detail: a games artifact that expires
+          # takes an arm's games with it and they cannot be played again. An
+          # implicit default can be lowered for the repository by someone who
+          # is thinking about disk and not about the tuner.
+          retention-days: 90
 
   estimate:
     needs: [resolve, play]
