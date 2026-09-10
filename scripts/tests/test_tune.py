@@ -42,9 +42,10 @@ def key(index, slice_):
 
 
 def labels_of(mapping):
-    """The labels a corpus file gives, as `parse_corpus` hands them over."""
+    """The labels a corpus file gives, as `parse_corpus` hands them over. A
+    fixture's games have no partners, so each is its own pair."""
     return {
-        name: tune.Label(result, count, game)
+        name: tune.Label(result, count, game, game)
         for name, (result, count, game) in mapping.items()
     }
 
@@ -190,10 +191,16 @@ def test_a_corpus_line_is_read_the_way_the_engine_reads_epd():
     words of the position."""
     line = (
         "r1bqk2r/p3bppp/2n1pn2/2pp4/Pp2P3/3P1NP1/1PPN1PBP/R1BQ1RK1 w kq - "
-        f'id "g00001p016"; game "{key(1, TRAIN)}"; result "0.2500"; count "2";'
+        f'id "g00001p016"; game "{key(1, TRAIN)}"; pair "{key(3, SELECTION)}"; '
+        'result "0.2500"; count "2";'
     )
     label = tune.parse_corpus([line])["g00001p016"]
-    assert (label.result, label.count, label.game) == (0.25, 2, key(1, TRAIN))
+    assert (label.result, label.count, label.game, label.pair) == (
+        0.25,
+        2,
+        key(1, TRAIN),
+        key(3, SELECTION),
+    )
     # a line with no label is not a row to fit
     assert tune.parse_corpus(['4k3/8/8/8/8/8/8/4K3 w - - id "solo";']) == {}
 
@@ -206,6 +213,36 @@ def test_a_corpus_that_names_no_game_is_refused():
     line = '4k3/8/8/8/8/8/8/4K3 w - - id "g00001p020"; result "1.0000"; count "1";'
     with pytest.raises(ValueError, match="names no game"):
         tune.parse_corpus([line])
+
+
+def test_a_corpus_that_names_no_pair_is_refused():
+    """The pair is what the split reads, and a corpus from before pairs were
+    keyed would be split by the game, which holds half an opening out."""
+    line = (
+        '4k3/8/8/8/8/8/8/4K3 w - - id "g00001p020"; '
+        f'game "{key(1, TRAIN)}"; result "1.0000"; count "1";'
+    )
+    with pytest.raises(ValueError, match="names no pair"):
+        tune.parse_corpus([line])
+
+
+def test_the_groups_are_assigned_from_the_pair_and_not_the_game():
+    """A game whose own key would train but whose pair's key is sealed is
+    sealed, because the pair is the unit the split holds out."""
+    vector = weights({0: 7})
+    rows = [
+        row("g00001p020", [(0, 24)], vector, 24, "4k3/8/8/8/8/8/8/4K3 w - - 0 1"),
+        row("g00002p020", [(0, 24)], vector, 24, "4k3/8/8/8/8/8/8/3K4 w - - 0 1"),
+    ]
+    labels = {
+        "g00001p020": tune.Label(1.0, 1, key(1, TRAIN), key(9, CALIBRATION)),
+        "g00002p020": tune.Label(0.0, 1, key(2, CALIBRATION), key(8, TRAIN)),
+    }
+    shipped, parsed = tune.parse_terms(extraction(rows, vector))
+    corpus = tune.Corpus(shipped, parsed, labels)
+    assert [r.id for r in corpus.rows] == ["g00002p020"]
+    assert corpus.sealed.positions == 1
+    assert corpus.sealed.pairs == 1
 
 
 def test_a_corpus_that_repeats_a_position_across_games_is_refused():
@@ -485,7 +522,7 @@ def fixture_run(tmp_path, vector, rows, labels, name="corpus.epd", drop=()):
     corpus.write_text(
         "\n".join(
             f'4k3/8/8/8/8/8/8/4K3 w - - id "{identifier}"; game "{game}"; '
-            f'result "{result}"; count "{count}";'
+            f'pair "{game}"; result "{result}"; count "{count}";'
             for identifier, (result, count, game) in labels.items()
             if groups.group_of(game) not in drop
         )

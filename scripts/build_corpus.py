@@ -15,10 +15,21 @@ view, and how many times it appeared. The result is the mean of what its games
 did and the count is the weight the loss reads the position at.
 
 The game a line names is a key rather than a name: the sha256 of the game's
-movetext. `scripts/tune.py` splits on it, because the label is the game's and
-not the position's, and it is the movetext's alone, so a re-extraction of the
-same archive gives the same keys and nothing has to be written down outside the
-pgn.
+movetext. It is the movetext's alone, so a re-extraction of the same archive
+gives the same keys and nothing has to be written down outside the pgn.
+
+What `scripts/tune.py` splits on is the pair. A strength run plays every
+opening twice with the colours reversed, and the two games are one opening's
+evidence: they share their first moves, and their results lean against each
+other. Split by the game they land in one group eleven times in twenty five,
+which is the chance two keys agree under the split's shares of three fifths,
+a fifth and a fifth, so two groups could hold the two halves of one opening
+and neither would know. The pair key is the sha256 of the two games' keys
+sorted and joined by a space, so it is the movetexts' alone, and the same
+whichever of the two the archive lists first. A game with no partner, because
+the archive named no round or the shard's clock stopped after the first game
+of a pair, is a pair of one and its pair key is its own. The counters report
+the pairs and the games that stood alone.
 
 A position two games reached belongs to the group of the lower key, and its
 result and its count are taken from that group's games alone. The appearances
@@ -129,11 +140,13 @@ def game_key(game):
 
 
 class Played:
-    """Where one game came from: the run and the round it was played in."""
+    """Where one game came from: the run and the round it was played in, and
+    the pair it belongs to, which is filled in once every game is read."""
 
     def __init__(self, run, round_):
         self.run = run
         self.round = round_
+        self.pair = None
 
 
 class Entry:
@@ -141,12 +154,13 @@ class Entry:
     it said about it.
 
     The position belongs to one group and is labelled by that group alone. The
-    lowest key of the games that reached it says which group that is, which is
-    what keeps a repeated position out of two groups at once, and the results
-    of the games in that group are what it is labelled and weighted by. The
-    appearances in other groups are dropped: a label that meaned them would
-    carry a sealed game's result into a row the fit reads, and a training
-    game's into a row that is meant to be unread.
+    lowest key of the games that reached it says which game owns it, that
+    game's pair says which group, which is what keeps a repeated position out
+    of two groups at once, and the results of the games in that group are what
+    it is labelled and weighted by. The appearances in other groups are
+    dropped: a label that meaned them would carry a sealed game's result into a
+    row the fit reads, and a training game's into a row that is meant to be
+    unread.
     """
 
     def __init__(self, identifier, key, result, played):
@@ -169,12 +183,18 @@ class Entry:
         """Where the game the position belongs to came from."""
         return self._played[self.key]
 
+    def group_of(self, key):
+        """The group a game is in, which is its pair's."""
+        return group_of(self._played[key].pair)
+
     @property
     def results(self):
         """What the games of its own group said, which is the whole of what it
         is labelled and weighted by."""
-        group = group_of(self.key)
-        return [result for key, result in self.appearances if group_of(key) == group]
+        group = self.group_of(self.key)
+        return [
+            result for key, result in self.appearances if self.group_of(key) == group
+        ]
 
     @property
     def count(self):
@@ -212,6 +232,38 @@ def result_for(white_result, turn):
     return white_result if turn == chess.WHITE else 1.0 - white_result
 
 
+def pair_key(keys):
+    """The name of a pair: the sha256 of its games' keys, sorted and joined by
+    a space. The same whichever game the archive listed first, and a game's own
+    key when it has no partner."""
+    keys = sorted(set(keys))
+    if len(keys) == 1:
+        return keys[0]
+    return hashlib.sha256(" ".join(keys).encode("utf-8")).hexdigest()
+
+
+def pair_up(played):
+    """Fill in every game's pair: the games of one run and one round are a
+    pair, and a game with no round or no partner is a pair of one. A round of
+    more than two games, which a run asked for more than two games an opening
+    would produce, is one pair of all of them, since what the pair holds
+    together is the opening. Returns how many pairs of more than one game
+    there were and how many games stood alone."""
+    rounds = collections.defaultdict(set)
+    for key, game in played.items():
+        if game.round != UNKNOWN:
+            rounds[game.run, game.round].add(key)
+    pairs, unpaired = set(), 0
+    for key, game in played.items():
+        partners = rounds.get((game.run, game.round), {key})
+        game.pair = pair_key(partners)
+        if len(partners) == 1:
+            unpaired += 1
+        else:
+            pairs.add(game.pair)
+    return len(pairs), unpaired
+
+
 def round_of(game):
     """The round the game was played in, as the pgn names it. A pgn with no
     Round header reads back as a question mark, which is no round either."""
@@ -225,10 +277,11 @@ def corpus(sourced, book_plies=BOOK_PLIES):
     with the run that played it, which `games_of` reads off the archive.
 
     Returns the entries and the counts a caller reports: runs read, games read,
-    games dropped, plies seen, plies past the book, how many of the positions
-    more than one game reached, how many of those were reached by games in more
-    than one group and how many appearances that dropped, and how many games
-    key alike with one already read.
+    games dropped, plies seen, plies past the book, how many pairs of more than
+    one game the rounds made and how many games stood alone, how many of the
+    positions more than one game reached, how many of those were reached by
+    games in more than one group and how many appearances that dropped, and how
+    many games key alike with one already read.
 
     The dropped appearances are what the group-local label costs, so the run
     says how many rather than leaving a reader to work it out from the plies.
@@ -266,12 +319,17 @@ def corpus(sourced, book_plies=BOOK_PLIES):
                 entries[epd] = Entry(f"g{read:05d}p{ply:03d}", key, result, played)
             else:
                 entry.seen(key, result)
+    # the pairs are known only once every game is read, and nothing above
+    # asked which group a game is in
+    pairs, unpaired = pair_up(played)
     counts = {
         "runs": len(runs),
         "games": read,
         "dropped": dropped,
         "plies": plies,
         "post_book": post_book,
+        "pairs": pairs,
+        "unpaired": unpaired,
         "positions": len(entries),
         "repeated": sum(1 for entry in entries.values() if len(entry.appearances) > 1),
         "straddled": sum(1 for entry in entries.values() if entry.dropped),
@@ -290,9 +348,9 @@ def render(entries):
     a reader can go back to. The game it belongs to is the `game` operand, and
     on a position two games reached the two disagree: the name is the first
     game, which may be one of the games the label drops, and the operand is the
-    lowest key. The split reads the operand. The `run` and `round` operands are
-    that game's, so they say where the label came from and not where the
-    position was first seen.
+    lowest key. The `pair` operand is that game's pair, which is what the split
+    reads. The `run` and `round` operands are that game's as well, so they say
+    where the label came from and not where the position was first seen.
 
     The result is written to four places. It is a mean over a handful of games
     at most, and a place further would be spelling out a repeating decimal.
@@ -301,6 +359,7 @@ def render(entries):
     for epd, entry in entries.items():
         lines.append(
             f'{epd} id "{entry.id}"; game "{entry.key}"; '
+            f'pair "{entry.played.pair}"; '
             f'run "{entry.played.run}"; round "{entry.played.round}"; '
             f'result "{entry.result:.4f}"; count "{entry.count}";'
         )
@@ -368,7 +427,8 @@ def main(argv=None):
     Path(args.out).write_text(render(entries), encoding="utf-8", newline="\n")
     print(
         "corpus runs {runs} games {games} dropped {dropped} plies {plies} "
-        "post_book {post_book} positions {positions} repeated {repeated} "
+        "post_book {post_book} pairs {pairs} unpaired {unpaired} "
+        "positions {positions} repeated {repeated} "
         "straddled {straddled} dropped_appearances {dropped_appearances} "
         "same_key {same_key}".format(**counts)
     )

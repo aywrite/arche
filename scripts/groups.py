@@ -1,7 +1,7 @@
 # SPDX-License-Identifier: GPL-3.0-or-later
 # Copyright (C) 2022-2026 Andrew Wright
 
-"""Which of the tuner's three groups a game falls in.
+"""Which of the tuner's three groups a pair of games falls in.
 
 Both halves of the tuner read this. `scripts/build_corpus.py` reads it because
 a position's label and its weight are taken from its own group's games alone,
@@ -10,6 +10,13 @@ so the corpus cannot be written without knowing where each game went.
 the selection group or the sealed one. Two copies of the mapping would be a
 corpus built to one split and fitted against another, and nothing in either run
 would print a word about it.
+
+The unit is the pair rather than the game. A strength run plays every opening
+twice with the colours reversed, so the two games share their first moves and
+lean on each other's result, and a split that put them in different groups
+would hold half an opening out. `build_corpus.py` keys the two together and
+writes the pair's key on every row as the `pair` operand; a game with no
+partner is a pair of one and its pair key is its own.
 
 A file of its own rather than one script importing the other, because the two
 have no dependency in common: the corpus builder reads pgn through
@@ -32,11 +39,12 @@ CALIBRATION = "calibration"
 
 
 def group_of(key):
-    """Which group a game falls in: the first byte of its key, modulo five.
+    """Which group a pair falls in: the first byte of its key, modulo five.
 
-    The key is the sha256 of the game's movetext, which `build_corpus.py`
-    writes into every row's `game` operand. The game is the unit because the
-    label is. Every position of a game carries that game's result, and
+    The key is the sha256 `build_corpus.py` writes into every row's `pair`
+    operand: the two games' movetext keys sorted and joined, or the one game's
+    own key where it has no partner. The game is the unit because the label
+    is. Every position of a game carries that game's result, and
     consecutive positions are one move apart, so a row held out while its
     neighbours are trained on is a row whose answer the fit has already been
     shown. Splitting on the position rather than the game hides that rather

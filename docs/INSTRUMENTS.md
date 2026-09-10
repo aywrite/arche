@@ -479,12 +479,17 @@ interval and share the run prints reads the count, and the header names a phase
 bucket's positions and its appearances separately, so which of the two a figure
 was taken over is on the page rather than assumed.
 
-The split is by game, in three groups. A game is named by the sha256 of its
-movetext, and the first byte of that key modulo five says where it goes:
-nought, one and two train, three is the selection group and four is
-calibration. The key is the movetext's and nothing else's, so a re-extraction
-of the same archive puts every game back where it was and nothing has to be
-written down outside the pgn.
+The split is by game, in three groups, and the two games that played one
+opening with the colours reversed go together. A game is named by the sha256
+of its movetext and a pair by the sha256 of its two games' keys sorted and
+joined, and the first byte of the pair's key modulo five says where the pair
+goes: nought, one and two train, three is the selection group and four is
+calibration. A game with no partner is a pair of one and its pair key is its
+own. Both keys are the movetext's and nothing else's, so a re-extraction of the
+same archive puts every game back where it was and nothing has to be written
+down outside the pgn. Split by the game alone, the two halves of an opening
+land in one group eleven times in twenty five, which is the chance two keys
+agree under shares of three fifths, a fifth and a fifth.
 
 The game is the unit because the label is: every position of a game carries
 that game's result, and consecutive positions are one move apart, so a row held
@@ -528,7 +533,9 @@ the two games that played one opening with the colours reversed can be told
 apart from two openings.
 
 `build_corpus.py`'s counters open with `runs`, the archives the games came
-from, and end with `repeated`, the positions more than one game reached, `straddled` and `dropped_appearances`, which are how many of
+from, carry `pairs` and `unpaired`, the rounds that made a pair of more than
+one game and the games that stood alone, and end with `repeated`, the
+positions more than one game reached, `straddled` and `dropped_appearances`, which are how many of
 those were reached from more than one group and how many appearances that cost,
 and `same_key`, the games whose movetext another game already had. The last is
 the only place a game the archive holds twice shows up: it is one game's
