@@ -10,6 +10,10 @@ runs, the lints, the commit scopes and the trailers an engine commit carries. A
 commit-msg hook checks the scope, so a guess at one is rejected rather than
 quietly accepted.
 
+[docs/INSTRUMENTS.md](docs/INSTRUMENTS.md) is reference, not prerequisite. It
+has the four measurements the engine makes of its own search, and the time to
+read it is when you are about to run one.
+
 [docs/ROADMAP.md](docs/ROADMAP.md) has what is not implemented, what is known to
 be wrong, and which experiments have already been measured and rejected.
 

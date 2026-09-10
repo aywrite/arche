@@ -1,7 +1,8 @@
 # Roadmap
 
 What the engine does not do yet, and what it does badly enough to be worth writing down.
-See [DEVELOPMENT.md](DEVELOPMENT.md) for how to measure whether one of these helped.
+See [DEVELOPMENT.md](DEVELOPMENT.md) for how to measure whether one of these helped, and
+[INSTRUMENTS.md](INSTRUMENTS.md) for the commands the entries below quote.
 
 ## Not implemented yet
 

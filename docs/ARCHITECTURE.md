@@ -2,7 +2,8 @@
 
 An overview of how the code is organized and how the main parts work. See
 [DEVELOPMENT.md](DEVELOPMENT.md) for how to build, test and measure a change,
-and [ROADMAP.md](ROADMAP.md) for what is not implemented yet.
+[INSTRUMENTS.md](INSTRUMENTS.md) for what the search measures about itself, and
+[ROADMAP.md](ROADMAP.md) for what is not implemented yet.
 
 ## Overview
 
@@ -152,4 +153,6 @@ material plus piece square tables, tapered between middlegame and endgame.
 ## Measurement
 
 The engine measures itself, and most of the project's conventions hang off
-that. DEVELOPMENT.md covers all of it.
+that. DEVELOPMENT.md covers the bench and the matches, and
+[INSTRUMENTS.md](INSTRUMENTS.md) covers the four measurements of the search
+itself.
