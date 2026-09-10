@@ -114,12 +114,13 @@ pub struct Staged {
     pub index: usize,
     /// The moves the node generated, as the census records it.
     pub generated: usize,
-    /// The history table's score for the move at the decision. Every
-    /// reduced move is quiet, so there is no class to price it by instead.
-    pub history: u32,
-    /// The largest history score among the node's generated quiets, the
-    /// denominator `history` is read against.
-    pub history_max: u32,
+    /// The history table's score for the move at the decision. Signed, as
+    /// the census's column is. Every reduced move is quiet, so there is no
+    /// class to price it by instead.
+    pub history: i32,
+    /// The largest history score among the node's generated quiets,
+    /// clamped at zero, the denominator `history` is read against.
+    pub history_max: i32,
     /// Whether the move stood in one of the node's killer slots.
     pub killer: bool,
     /// What the node's table probe had given it, the census's three-state.
@@ -153,10 +154,12 @@ pub struct Event {
     pub searched: usize,
     /// The moves the node generated.
     pub generated: usize,
-    /// The history table's score for the reduced move at the decision.
-    pub history: u32,
-    /// The largest history score among the node's generated quiets.
-    pub history_max: u32,
+    /// The history table's score for the reduced move at the decision,
+    /// signed.
+    pub history: i32,
+    /// The largest history score among the node's generated quiets,
+    /// clamped at zero.
+    pub history_max: i32,
     /// Whether the reduced move stood in one of the node's killer slots.
     pub killer: bool,
     /// What the node's table probe had given it.
@@ -373,9 +376,12 @@ pub struct Summary {
     /// 16 and past.
     pub index_bands: [Band; 3],
     /// The replayed rows split by the history fraction, `history` over
-    /// `history_max`: exactly zero, under a tenth, under half, and half
-    /// and up.
-    pub history_bands: [Band; 4],
+    /// `history_max`: exactly zero, under a tenth, under half, half and
+    /// up, and below zero. The last is appended rather than put in its
+    /// place at the foot, so a summary line printed before the history
+    /// went signed reads the same in its first four cells as one printed
+    /// after.
+    pub history_bands: [Band; 5],
 }
 
 /// Which index band a row falls in.
@@ -387,15 +393,19 @@ fn index_band(index: usize) -> usize {
     }
 }
 
-/// Which history fraction band a row falls in. A move with no history is
-/// its own band whatever the denominator; past that the fraction is read
-/// in integers, so no rounding sits under a boundary.
-fn history_band(history: u32, history_max: u32) -> usize {
+/// Which history fraction band a row falls in. A move the table has marked
+/// down is its own band and a move with no history is its own band,
+/// whatever the denominator; past that the fraction is read in integers,
+/// so no rounding sits under a boundary.
+fn history_band(history: i32, history_max: i32) -> usize {
+    if history < 0 {
+        return 4;
+    }
     if history == 0 {
         return 0;
     }
-    let history = u64::from(history);
-    let max = u64::from(history_max);
+    let history = i64::from(history);
+    let max = i64::from(history_max);
     if history * 10 < max {
         1
     } else if history * 2 < max {
@@ -424,7 +434,7 @@ impl Report {
             replayed: 0,
             harmful: 0,
             index_bands: [Band::default(); 3],
-            history_bands: [Band::default(); 4],
+            history_bands: [Band::default(); 5],
         };
         for row in rows {
             match row.event.scout {
@@ -584,7 +594,7 @@ impl fmt::Display for Report {
             {
                 write!(f, " {} {}", label, cell(band))?;
             }
-            for (label, band) in ["hist0", "hist<0.1", "hist<0.5", "hist0.5+"]
+            for (label, band) in ["hist0", "hist<0.1", "hist<0.5", "hist0.5+", "hist<0"]
                 .iter()
                 .zip(s.history_bands)
             {
@@ -930,7 +940,7 @@ mod tests {
 
     /// A replayed row for the summary tests, landed in the band the test
     /// names by its index and its history.
-    fn replayed(depth: u8, index: usize, history: u32, harmful: bool) -> Row {
+    fn replayed(depth: u8, index: usize, history: i32, harmful: bool) -> Row {
         let mut event = made_up("4k3/8/8/8/8/8/8/4K3 b - - 0 1", depth, 0, Scout::Low);
         event.index = index;
         event.searched = index + 1;
@@ -956,24 +966,25 @@ mod tests {
             replayed(5, 9, 3, false),
             replayed(5, 17, 8, false),
             replayed(5, 5, 30, true),
+            replayed(5, 6, -9, true),
             Row {
                 event: high,
                 reference: None,
             },
         ]);
-        let summary = report.summary(5).expect("five rows at depth five");
-        assert_eq!(summary.scouts, 5);
-        assert_eq!(summary.low, 4);
-        assert_eq!(summary.replayed, 4);
-        assert_eq!(summary.harmful, 2);
-        // indices 4 and 5 in the first band, 9 in the second, 17 in the
+        let summary = report.summary(5).expect("six rows at depth five");
+        assert_eq!(summary.scouts, 6);
+        assert_eq!(summary.low, 5);
+        assert_eq!(summary.replayed, 5);
+        assert_eq!(summary.harmful, 3);
+        // indices 4, 5 and 6 in the first band, 9 in the second, 17 in the
         // third; the unreplayed 20 in none
         assert_eq!(
             summary.index_bands,
             [
                 Band {
-                    harmful: 2,
-                    replayed: 2
+                    harmful: 3,
+                    replayed: 3
                 },
                 Band {
                     harmful: 0,
@@ -986,7 +997,8 @@ mod tests {
             ]
         );
         // history 0 in the zero band, 3 of 40 under a tenth, 8 of 40
-        // under half, 30 of 40 half and up
+        // under half, 30 of 40 half and up, and the marked down -9 in the
+        // band appended after them
         assert_eq!(
             summary.history_bands,
             [
@@ -1006,14 +1018,18 @@ mod tests {
                     harmful: 1,
                     replayed: 1
                 },
+                Band {
+                    harmful: 1,
+                    replayed: 1
+                },
             ]
         );
         // every cell is thin, so the line prints counts and no rate
         assert!(
             report.to_string().contains(
-                "depth 5 scouts 5 low 4 share 80.00% skipped 0 replayed 4 harmful 2 rate - \
-                 index4-7 2/2 index8-15 0/1 index16+ 0/1 \
-                 hist0 1/1 hist<0.1 0/1 hist<0.5 0/1 hist0.5+ 1/1"
+                "depth 5 scouts 6 low 5 share 83.33% skipped 0 replayed 5 harmful 3 rate - \
+                 index4-7 3/3 index8-15 0/1 index16+ 0/1 \
+                 hist0 1/1 hist<0.1 0/1 hist<0.5 0/1 hist0.5+ 1/1 hist<0 1/1"
             ),
             "{}",
             report
@@ -1084,6 +1100,11 @@ mod tests {
         assert_eq!(history_band(40, 40), 3);
         // no history at all is the zero band, with nothing divided
         assert_eq!(history_band(0, 0), 0);
+        // a move the table has marked down is the band appended after the
+        // four, whatever the denominator: the fraction it would make is
+        // not on the same scale as the rest
+        assert_eq!(history_band(-1, 40), 4);
+        assert_eq!(history_band(-8192, 0), 4);
     }
 
     /// A line a depth, and the depth with no rows is not invented.

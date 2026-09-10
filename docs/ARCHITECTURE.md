@@ -74,9 +74,11 @@ measured and does not yet move a score.
   breaking the ties, then the quiet moves by two memories the search fills
   as it goes: the killers, which are the quiet moves that cut off at this
   distance from the root, and a history table of how often each quiet move
-  has cut off anywhere. The losing captures close the list. Alpha beta
-  prunes more the sooner a good move is found, so ordering has an outsized
-  effect on tree size.
+  has cut off anywhere against how often it was tried and did not. A move
+  the table has marked down sorts behind the quiet moves nothing is known
+  about. The losing captures close the list. Alpha beta prunes more the
+  sooner a good move is found, so ordering has an outsized effect on tree
+  size.
 - **limits.rs**: When to stop searching. A clock, a node budget, a soft
   rule that skips starting an iteration which would get less than half
   done, and a stop flag shared with the interface thread. The flag is read

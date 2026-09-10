@@ -203,18 +203,23 @@ separated with the fen last so a row parses left to right. A `cut` row
 names the cutting move's place among the searched moves (`index`, 0 for a
 table move searched first), its `class` (`table`, `capture`, `promotion`,
 `killer` or `quiet`, material first, so a capture that is also a killer is
-a capture), the history table's score for it (`history`, quiet moves only),
-and whether its answer came through the reduced scout (`reduced`); a `held`
-row prints `-` in those four columns rather than moving the others.
+a capture), the history table's score for it (`history`, quiet moves only
+and signed, since an entry is a rate and a move tried more often than it
+cuts sits under zero), and whether its answer came through the reduced
+scout (`reduced`); a `held` row prints `-` in those four columns rather
+than moving the others.
 `generated` and `searched` are what the list held and what the loop made:
 the legal count is unknowable without making every move, so the censored
 count is the reader's subtraction, and a node its table move cut before
 anything was generated says `generated 0`. `history_max` is the largest
-history score among the generated quiets, the denominator `history` is read
-against, since the raw number ages. `scored` says whether the staged
-ordering ever scored the quiet band at this node, or the front answered
-first. `tt` is what the probe gave the node: `miss`, `move`, or
-`score_only` for a hit whose move was not playable here. `eval_beta` is the
+history score among the generated quiets, clamped at zero, the denominator
+`history` is read against, since the raw number moves with what the search
+has learned since. It is 0 when the table has marked every one of them
+down, and a row whose `history` is negative is read against nothing.
+`scored` says whether the staged ordering ever scored the quiet band at
+this node, or the front answered first. `tt` is what the probe gave the
+node: `miss`, `move`, or `score_only` for a hit whose move was not
+playable here. `eval_beta` is the
 static evaluation less beta, computed at record time for kept events alone;
 the column is exact rather than a cache read, and evaluating only the
 sampled nodes is what keeps an eval away from the nodes the measured search
@@ -283,9 +288,10 @@ history_max killer tt eval_beta alpha_gap alpha scout cost reference label
 reduction fen`, whitespace separated with the fen last so a row parses left
 to right. `depth` is the reducing node's, its check extension included.
 `index`, `searched`, `generated`, `history` and `history_max` are the
-census's columns, read at the decision; `killer` says whether the move
-stood in a killer slot, and `tt` is the census's three-state. Every
-reduced move is quiet, so `history` is never priced by a class instead.
+census's columns, read at the decision, `history` signed and `history_max`
+clamped at zero as they are there; `killer` says whether the move stood in
+a killer slot, and `tt` is the census's three-state. Every reduced move is
+quiet, so `history` is never priced by a class instead.
 `eval_beta` and `alpha_gap` are the node's own static evaluation against
 its two bounds, computed at record time for kept events alone by stepping
 the move back and replaying it, for the census's reason: an eval forced at
@@ -328,10 +334,14 @@ counted apart, so the fail low share keeps its denominator), the skipped
 count, the fail low share, the replayed count, the harmful count and
 rate, and the harmful rate split by
 index band (4 to 7, 8 to 15, 16 and past) and by history fraction (zero,
-under a tenth, under half, half and up), which are the cells a reduction
-policy would be fit on. A cell under thirty replayed rows prints its
-counts in place of a rate, and the line's own rate holds to the same rule:
-a percentage over a handful of rows reads as a finding and is noise.
+under a tenth, under half, half and up, and a fifth cell for a move the
+table has marked down), which are the cells a reduction policy would be
+fit on. The marked down cell is printed after the four rather than at the
+foot of them, so a line printed before the history went signed reads the
+same in its first four cells as one printed after. A cell under thirty
+replayed rows prints its counts in place of a rate, and the line's own
+rate holds to the same rule: a percentage over a handful of rows reads as
+a finding and is noise.
 
 Recording changes nothing, on the census's terms and held to them the
 same way: `recording_leaves_the_measured_search_where_it_was` in

@@ -218,6 +218,40 @@ enum Gate {
     Skip,
 }
 
+/// Which places in a node's move list the node made and searched, a bit
+/// each. What it is for is the history's malus: under a cutoff the quiet
+/// moves with a bit below the cutting move's place are the ones the node
+/// asked and got nothing from.
+///
+/// Four words rather than one. A position can hold two hundred and
+/// eighteen moves, and the list buffer is sixty four wide and spills past
+/// that, so a single word would drop the moves past the first sixty four
+/// with nothing to say it had.
+#[derive(Default)]
+struct Searched([u64; 4]);
+
+impl Searched {
+    fn mark(&mut self, place: usize) {
+        debug_assert!(place < 64 * 4, "a move list wider than the mask");
+        self.0[place / 64] |= 1 << (place % 64);
+    }
+
+    fn holds(&self, place: usize) -> bool {
+        self.0[place / 64] >> (place % 64) & 1 == 1
+    }
+
+    /// How many places are marked, which the move loop holds to its own
+    /// count of the moves it searched. The two are kept by different
+    /// means, a bit at a place against a counter, so a mark left where
+    /// nothing was searched shows up at the next move the node searches
+    /// rather than as a malus somewhere else in the tree. That is what the
+    /// exclusions rest on: a move the model skipped and a move that turned
+    /// out illegal raise neither.
+    fn count(&self) -> usize {
+        self.0.iter().map(|word| word.count_ones() as usize).sum()
+    }
+}
+
 /// What the protocol interface asks of an engine: positions in, answers out.
 /// How an implementation searches is its own business, which is why the
 /// deepening loop is required here rather than provided.
@@ -773,7 +807,15 @@ impl AlphaBeta {
             index: searched,
             generated: moves.len(),
             history: ordering.history_score(board.active_color, m),
-            history_max: moves.iter().filter_map(quiet_history).max().unwrap_or(0),
+            // clamped where the move's own score is not, as the census's
+            // denominator is: a fraction of a marked down largest would
+            // be a number on no scale
+            history_max: moves
+                .iter()
+                .filter_map(quiet_history)
+                .max()
+                .unwrap_or(0)
+                .max(0),
             killer: killers.contains(&Some(*m)),
             tt,
         }
@@ -975,7 +1017,16 @@ impl AlphaBeta {
                     history: quiet_history(cutting.play).unwrap_or(0),
                     reduced: cutting.reduced,
                 }),
-                history_max: moves.iter().filter_map(quiet_history).max().unwrap_or(0),
+                // the denominator is clamped where the cutting move's own
+                // score is not, so a row whose history is negative is
+                // read against nothing rather than against another
+                // negative
+                history_max: moves
+                    .iter()
+                    .filter_map(quiet_history)
+                    .max()
+                    .unwrap_or(0)
+                    .max(0),
                 quiets_scored,
                 tt,
                 eval_beta: i32::from(crate::eval::eval(board)) - i32::from(beta),
@@ -1057,12 +1108,19 @@ impl AlphaBeta {
         Some(ply)
     }
 
-    /// The move that cut this node off, offered to the quiet memories. The
-    /// move has been unmade by the time this is called, so the board says
-    /// which side played it and how far the node stands from the root.
-    fn remember_cutoff(&mut self, m: &Play, depth: u8) {
+    /// The move that cut this node off and the moves the node made and
+    /// searched before it, offered to the quiet memories. The move has
+    /// been unmade by the time this is called, so the board says which
+    /// side played it and how far the node stands from the root.
+    fn remember_cutoff<'a>(
+        &mut self,
+        m: &Play,
+        tried: impl IntoIterator<Item = &'a Play>,
+        depth: u8,
+    ) {
         if let Some(ply) = self.memory_ply() {
-            self.ordering.cutoff(self.board.active_color, m, ply, depth);
+            self.ordering
+                .cutoff(self.board.active_color, m, tried, ply, depth);
         }
     }
 
@@ -1666,7 +1724,7 @@ impl AlphaBeta {
         moves: &[Play],
         ply: Option<usize>,
         tt: census::Table,
-        node: &mut Option<(i64, u32)>,
+        node: &mut Option<(i64, i32)>,
     ) -> Gate {
         if (!self.config.deep_reductions && !self.config.late_move_pruning)
             || depth < DEEP_REDUCTION_MIN_DEPTH
@@ -1674,8 +1732,12 @@ impl AlphaBeta {
             return Gate::Flat;
         }
         let (eval, history_max) = *node.get_or_insert_with(|| {
-            // the ledger's denominator: the largest history score among
-            // the generated quiets
+            // the denominator: the largest history score among the
+            // generated quiets. Signed and not clamped, unlike the
+            // recorders' column of the same name, which is printed and so
+            // has to be on a scale. Here the guard below is what a list of
+            // nothing but marked down moves meets, and a clamp on top of
+            // it would be a line no test could fail
             let quiet_history = |m: &Play| {
                 if m.capture.is_none() && m.promote.is_none() {
                     Some(self.ordering.history_score(self.board.active_color, m))
@@ -1688,7 +1750,18 @@ impl AlphaBeta {
                 moves.iter().filter_map(quiet_history).max().unwrap_or(0),
             )
         });
-        let history = self.ordering.history_score(self.board.active_color, m);
+        // the feature the attention weights were fitted on runs from zero
+        // to a thousand, so a move the history has marked down reads as
+        // one it knows nothing about rather than pushing the score
+        // somewhere the fit never saw
+        let history = self
+            .ordering
+            .history_score(self.board.active_color, m)
+            .max(0);
+        // nothing is divided unless the list holds a move the table likes.
+        // A largest of zero is the list nothing is known about and a
+        // largest under zero is the list every move has been marked down
+        // in, and the feature is the same nothing for both
         let hist_milli = if history_max > 0 {
             i64::from(history) * 1000 / i64::from(history_max)
         } else {
@@ -1722,12 +1795,23 @@ impl AlphaBeta {
     }
 
     /// A fail high at a full width node: the move that proved it goes to
-    /// the quiet memories and, when the taint policy allows, to the table,
-    /// and what comes back is the node's answer. The one place a full
-    /// width cutoff is acted on, which is where the next thing a cutoff
-    /// should feed lands.
-    fn cutoff(&mut self, m: &Play, taint: Taint, score: Score, depth: u8) -> Value {
-        self.remember_cutoff(m, depth);
+    /// the quiet memories with the moves the node searched before it and,
+    /// when the taint policy allows, to the table, and what comes back is
+    /// the node's answer. The one place a full width cutoff is acted on,
+    /// which is where the next thing a cutoff should feed lands.
+    ///
+    /// `tried` is the node's own moves, not the whole list: what the
+    /// history marks down is what the node asked and got nothing from.
+    /// The captures among them are the memories' to pass over.
+    fn cutoff<'a>(
+        &mut self,
+        m: &Play,
+        tried: impl IntoIterator<Item = &'a Play>,
+        taint: Taint,
+        score: Score,
+        depth: u8,
+    ) -> Value {
+        self.remember_cutoff(m, tried, depth);
         let value = taint.stamp(score);
         if self.keeps(value) {
             self.transpositions
@@ -1860,14 +1944,21 @@ impl AlphaBeta {
                             }
                             // a cutoff is a cutoff wherever it is proved, so
                             // the table's move earns its killer slot here as
-                            // any other move does in the loop below
-                            return Ok(self.cutoff(&tt, taint, tt_score, depth));
+                            // any other move does in the loop below. Nothing
+                            // was searched before it, so there is nothing to
+                            // mark down
+                            return Ok(self.cutoff(&tt, &[], taint, tt_score, depth));
                         }
                         alpha = tt_score;
                     }
                 }
             }
         }
+
+        // whether the table's move was made and searched above, which is
+        // what its bit in the list below stands on. Read here because the
+        // loop's own moves move `found_legal_move` past it
+        let tt_searched = found_legal_move;
 
         let mut moves = if in_check {
             self.board.evasions()
@@ -1881,6 +1972,11 @@ impl AlphaBeta {
         // quiet move late. The table's move, when it was searched, is the
         // first of them
         let mut searched = usize::from(found_legal_move);
+        // which places in the list the node made and searched, which is
+        // what the history marks down under a cutoff. A move the model
+        // skipped or one that turned out illegal has no bit: neither was
+        // asked, so neither answered
+        let mut made = Searched::default();
         // whether the second stage ever ran here, read by the census: the
         // seam is a bool beside the call rather than a question the
         // ordering is asked later
@@ -1889,7 +1985,7 @@ impl AlphaBeta {
         // history denominator, computed by the first move that reaches its
         // gate here and read back for the rest: a node no move reaches the
         // gate at pays for neither
-        let mut node_features: Option<(i64, u32)> = None;
+        let mut node_features: Option<(i64, i32)> = None;
         for i in 0..moves.len() {
             // the front did not cut this node off, so the rest of the list
             // is scored and sorted before the first move past it is tried
@@ -1902,6 +1998,11 @@ impl AlphaBeta {
             }
             let m = &moves[i];
             if tt_tried == Some(*m) {
+                // searched before the list existed, so this is where its
+                // place in the list is known and its bit can be set
+                if tt_searched {
+                    made.mark(i);
+                }
                 continue;
             }
             let reduced = self.reduces(m, searched, depth, in_check, alpha, beta);
@@ -1953,7 +2054,13 @@ impl AlphaBeta {
                 continue;
             };
             found_legal_move = true;
+            made.mark(i);
             searched += 1;
+            debug_assert_eq!(
+                made.count(),
+                searched,
+                "a bit for every move made and searched, and for no other"
+            );
             // a value built from a tainted child is tainted, whether or not
             // it turns out to be the best one here
             taint.absorb(value);
@@ -1986,7 +2093,15 @@ impl AlphaBeta {
                             }),
                         );
                     }
-                    return Ok(self.cutoff(m, taint, score, depth));
+                    // the moves this node asked before the one that
+                    // answered: the malus's population, captures and all,
+                    // which the memories pass over
+                    let tried = moves[..i]
+                        .iter()
+                        .enumerate()
+                        .filter(|(place, _)| made.holds(*place))
+                        .map(|(_, tried)| tried);
+                    return Ok(self.cutoff(m, tried, taint, score, depth));
                 }
                 alpha = score;
             }
@@ -4445,6 +4560,114 @@ mod search {
         );
     }
 
+    /// The gate's history feature under signed entries. The weights were
+    /// fitted on a feature running from zero to a thousand, so a move the
+    /// table has marked down reads as one the table knows nothing about
+    /// rather than pushing the score somewhere the fit never saw, and a
+    /// list holding nothing but marked down moves has no denominator to
+    /// divide by.
+    #[test]
+    fn a_marked_down_move_reads_the_gate_s_history_as_nothing() {
+        let mut e = deep_reducing(Board::from_fen(A_CAPTURE_AND_QUIETS).unwrap());
+        let moves = e.board.generate_moves();
+        let quiet = play_named(&e.board, "a4a5");
+        let rival = play_named(&e.board, "a4a6");
+        let color = e.board.active_color;
+        const SEARCHED: usize = 10;
+        const DEPTH: u8 = 6;
+        // bounds solved so that the score with no history lands exactly on
+        // the threshold, the way the threshold test above solves them.
+        // Alpha moves the score by seven a point and beta by four
+        let eval = i64::from(crate::eval::eval(&e.board));
+        let score_at = |alpha: Score, beta: Score, hist_milli: i64| {
+            attention_score(&AttentionFeatures {
+                depth: DEPTH,
+                index: SEARCHED,
+                hist_milli,
+                killer: false,
+                tt: Table::Miss,
+                eval_beta: eval - i64::from(beta),
+                alpha_gap: i64::from(alpha) - eval,
+                generated: moves.len(),
+            })
+        };
+        let mut solved = None;
+        for beta in 100..107 {
+            let over = score_at(0, beta, 0) - DEEP_REDUCTION_THRESHOLD;
+            if over % 7 == 0 {
+                solved = Some(((over / 7) as Score, beta));
+                break;
+            }
+        }
+        let (alpha, beta) = solved.expect("seven betas cover every residue of seven");
+        assert_eq!(score_at(alpha, beta, 0), DEEP_REDUCTION_THRESHOLD);
+        // and a second pair one point over it, the way the threshold test
+        // above steps off the edge: a point of alpha up and two of beta
+        // down. A feature of nothing fires the gate at the first pair and
+        // not at the second, and a thousandth either way moves the verdict
+        // at one of them, so the two together say the feature is zero
+        // exactly rather than merely small
+        let (over_alpha, over_beta) = (alpha + 1, beta - 2);
+        assert_eq!(
+            score_at(over_alpha, over_beta, 0),
+            DEEP_REDUCTION_THRESHOLD + 1
+        );
+        assert!(score_at(alpha, beta, 1000) > DEEP_REDUCTION_THRESHOLD);
+        assert!(score_at(over_alpha, over_beta, -1000) <= DEEP_REDUCTION_THRESHOLD);
+        let gate = |e: &AlphaBeta, m: &Play, alpha: Score, beta: Score| {
+            let mut node = None;
+            e.model_gate(
+                m,
+                SEARCHED,
+                DEPTH,
+                alpha,
+                beta,
+                &moves,
+                None,
+                Table::Miss,
+                &mut node,
+            )
+        };
+        // what a move the table knows nothing about reads, which is what
+        // the two cases below have to match
+        assert_eq!(gate(&e, &quiet, alpha, beta), Gate::Deeper);
+        assert_eq!(gate(&e, &quiet, over_alpha, over_beta), Gate::Flat);
+
+        // the move holding the whole of the node's history reads the top
+        // of the feature instead
+        e.ordering.cutoff(color, &quiet, &[], 0, 8);
+        assert_eq!(gate(&e, &quiet, alpha, beta), Gate::Flat);
+
+        // the same move marked down, under a rival that holds the history
+        // instead, reads as the unknown move did at both pairs
+        e.ordering.forget();
+        e.ordering.cutoff(color, &rival, &[quiet], 0, 8);
+        assert!(e.ordering.history_score(color, &quiet) < 0);
+        assert_eq!(gate(&e, &quiet, alpha, beta), Gate::Deeper);
+        assert_eq!(gate(&e, &quiet, over_alpha, over_beta), Gate::Flat);
+
+        // and with every quiet in the list marked down there is no
+        // denominator and nothing is divided. The move that did the
+        // marking is one no generator produces here, so nothing in the
+        // list holds the bonus it earned
+        e.ordering.forget();
+        let elsewhere = Play::new(0, 1, None, None, false, false);
+        assert!(!moves.contains(&elsewhere));
+        let all_quiets: Vec<Play> = moves
+            .iter()
+            .filter(|m| m.capture.is_none())
+            .copied()
+            .collect();
+        e.ordering.cutoff(color, &elsewhere, &all_quiets, 0, 8);
+        assert!(
+            all_quiets
+                .iter()
+                .all(|m| e.ordering.history_score(color, m) < 0)
+        );
+        assert_eq!(gate(&e, &quiet, alpha, beta), Gate::Deeper);
+        assert_eq!(gate(&e, &quiet, over_alpha, over_beta), Gate::Flat);
+    }
+
     #[test]
     fn the_deep_reduction_stands_down_off_switch_and_under_its_floor() {
         // under the reference's switch nothing deepens, and the refusal
@@ -4849,6 +5072,28 @@ mod search {
         assert_eq!(e.ordering.killers_at(0), [None; 2]);
         assert!(e.ordering.killers_at(1).iter().any(|k| k.is_some()));
         assert_eq!(e.ordering.killers_at(2), [None; 2]);
+    }
+
+    #[test]
+    fn the_moves_a_node_tried_before_its_cutoff_reach_the_history() {
+        // the malus is the half of the update the memories did not have
+        // before, and nothing but a marked down move can put an entry
+        // under zero, so a negative entry is the search level proof that
+        // the move loop hands the table its own moves and not only the one
+        // that cut. Most quiet cutoffs come with nothing searched before
+        // them, so the position is one whose quiet band is contested
+        let mut e = engine(Board::from_fen(SHARP_MIDDLEGAME).unwrap());
+        completed(e.search(3));
+        let marked = e.ordering.history_marked_down(Color::White)
+            + e.ordering.history_marked_down(Color::Black);
+        assert!(marked > 0, "nothing was marked down");
+
+        // and the reference neither reads nor writes the table, which is
+        // what keeps its own pinned tree still under this change
+        let mut cold = reference(Board::from_fen(SHARP_MIDDLEGAME).unwrap());
+        completed(cold.search(3));
+        assert_eq!(cold.ordering.history_marked_down(Color::White), 0);
+        assert_eq!(cold.ordering.history_marked_down(Color::Black), 0);
     }
 
     #[test]
@@ -5514,8 +5759,12 @@ mod sampling {
     /// its rows carry one and that part is a rule. The margin is not: it
     /// reads the eval against beta and nothing about the width, so a node
     /// searched through an open window whose eval clears beta by the whole
-    /// margin is answered by it too, and this search holds one such node
-    /// out of the three and a half thousand the margin answers. Shadow rows
+    /// margin would be answered by it too. This search holds no such node,
+    /// where it held one before the evaluation gained mobility and the
+    /// quiet moves a cutoff rate. That the count can be anything is the
+    /// point of pinning it: zero here is this tree's number and not a rule,
+    /// and `the_recorded_beta_is_the_one_the_gate_cleared` is what holds
+    /// the open window reachable at all. Shadow rows
     /// are candidates recorded whether or not the margin test fires, so a
     /// handful more arrive through open windows, inside the re-search a
     /// zero width fail high asks for: the proof pass reopens the window and
@@ -5538,7 +5787,7 @@ mod sampling {
             .iter()
             .filter(|s| s.kind == Shortcut::ReverseFutility && s.window == Window::Open)
             .count();
-        assert_eq!(open, 1, "the open windows the margin answers moved");
+        assert_eq!(open, 0, "the open windows the margin answers moved");
     }
 
     /// Every kind reaches the hook, not only whichever fires first. A kind
@@ -5633,6 +5882,17 @@ mod cutoffs {
         e
     }
 
+    /// A from and to square pair no move in the list uses, for teaching
+    /// the history an entry the list cannot read. The table is butterfly
+    /// indexed, so the squares are the whole of what makes an entry.
+    fn unmade_journey(moves: &[Play]) -> Play {
+        (0u8..64)
+            .flat_map(|from| (0u8..64).map(move |to| (from, to)))
+            .find(|(from, to)| from != to && !moves.iter().any(|m| m.from == *from && m.to == *to))
+            .map(|(from, to)| Play::new(from, to, None, None, false, false))
+            .expect("a list cannot hold every journey")
+    }
+
     /// Two quiet moves of the position, for teaching the memories.
     fn quiets(e: &AlphaBeta) -> (Play, Play) {
         let moves = e.board.generate_moves();
@@ -5671,8 +5931,8 @@ mod cutoffs {
         let color = e.board.active_color;
         // taught at another ply, so what makes the class a killer is the
         // slot at this one; its history entry is the larger of the two
-        e.ordering.cutoff(color, &cool, 1, 5);
-        e.ordering.cutoff(color, &killer, 0, 4);
+        e.ordering.cutoff(color, &cool, &[], 1, 5);
+        e.ordering.cutoff(color, &killer, &[], 0, 4);
         let moves = e.board.generate_moves();
         let (alpha, beta): (Score, Score) = (10, 11);
         e.census_event(
@@ -5718,6 +5978,54 @@ mod cutoffs {
             i32::from(crate::eval::eval(&e.board)) - i32::from(beta)
         );
         assert_eq!(row.cost, 0);
+    }
+
+    /// A cutting move the table has marked down: the row prints the signed
+    /// entry, and its denominator is the largest clamped at zero, which is
+    /// zero when every quiet in the list has been marked down.
+    #[test]
+    fn a_marked_down_cutting_move_is_read_against_no_denominator() {
+        let mut e = engine(SHARP_MIDDLEGAME);
+        let (cut, _) = quiets(&e);
+        let color = e.board.active_color;
+        let moves = e.board.generate_moves();
+        // the move that took the bonus makes a journey no move here makes,
+        // so nothing in the list holds the entry it landed on and every
+        // quiet in the list is marked down
+        let elsewhere = unmade_journey(&moves);
+        let marked: Vec<Play> = moves
+            .iter()
+            .filter(|m| m.capture.is_none() && m.promote.is_none())
+            .copied()
+            .collect();
+        e.ordering.cutoff(color, &elsewhere, &marked, 1, 4);
+        e.census_event(
+            3,
+            10,
+            11,
+            false,
+            &moves,
+            2,
+            true,
+            Some(0),
+            Table::Miss,
+            e.nodes,
+            Some(Cutting {
+                play: &cut,
+                reduced: false,
+                table: false,
+            }),
+        );
+        let sampled = e
+            .disarm::<census::Event>()
+            .expect("a census was installed")
+            .drain();
+        let row = &sampled.taken[0];
+        let cutting = row.cut.as_ref().expect("the node cut");
+        assert_eq!(cutting.class, Class::Quiet);
+        assert_eq!(cutting.history, -16);
+        assert_eq!(row.history_max, 0);
+        assert!(cutting.history <= row.history_max);
     }
 
     /// The table's move cutting before anything was generated: index 0,
@@ -5771,7 +6079,7 @@ mod cutoffs {
     fn a_held_node_records_no_cutting_move() {
         let mut e = engine(SHARP_MIDDLEGAME);
         let (taught, _) = quiets(&e);
-        e.ordering.cutoff(e.board.active_color, &taught, 0, 3);
+        e.ordering.cutoff(e.board.active_color, &taught, &[], 0, 3);
         let moves = e.board.generate_moves();
         e.census_event(
             2,
@@ -5842,6 +6150,16 @@ mod reductions {
         assert!(e.staged.is_none(), "the staging outlived the arming");
     }
 
+    /// A from and to square pair no move in the list uses, for teaching
+    /// the history an entry the list cannot read.
+    fn unmade_journey(moves: &[crate::play::Play]) -> crate::play::Play {
+        (0u8..64)
+            .flat_map(|from| (0u8..64).map(move |to| (from, to)))
+            .find(|(from, to)| from != to && !moves.iter().any(|m| m.from == *from && m.to == *to))
+            .map(|(from, to)| crate::play::Play::new(from, to, None, None, false, false))
+            .expect("a list cannot hold every journey")
+    }
+
     /// Two quiet moves of the position, for teaching the memories.
     fn quiets(e: &AlphaBeta) -> (crate::play::Play, crate::play::Play) {
         let moves = e.board.generate_moves();
@@ -5879,8 +6197,8 @@ mod reductions {
         let color = e.board.active_color;
         // taught at another ply, so what makes the flag a killer is the
         // slot at this one; its history entry is the larger of the two
-        e.ordering.cutoff(color, &cool, 1, 5);
-        e.ordering.cutoff(color, &killer, 0, 4);
+        e.ordering.cutoff(color, &cool, &[], 1, 5);
+        e.ordering.cutoff(color, &killer, &[], 0, 4);
         let moves = e.board.generate_moves();
         let parent_eval = i32::from(crate::eval::eval(&e.board));
         e.stage_reduction(&killer, 5, &moves, Some(0), Table::Miss);
@@ -5919,6 +6237,30 @@ mod reductions {
         assert_eq!(row.scout, Scout::Low);
         assert!(row.cost >= 1);
         assert_eq!(row.reduction, 1);
+    }
+
+    /// A reduced move the table has marked down: the staged half carries
+    /// the signed entry, and its denominator is the largest clamped at
+    /// zero, which is zero when every quiet in the list is marked down.
+    #[test]
+    fn a_marked_down_move_stages_a_signed_history_and_no_denominator() {
+        let mut e = engine(SHARP_MIDDLEGAME);
+        let (m, _) = quiets(&e);
+        let color = e.board.active_color;
+        let moves = e.board.generate_moves();
+        // the move that took the bonus makes a journey no move here makes,
+        // so nothing in the list is left with a history to be read against
+        let elsewhere = unmade_journey(&moves);
+        let marked: Vec<crate::play::Play> = moves
+            .iter()
+            .filter(|q| q.capture.is_none() && q.promote.is_none())
+            .copied()
+            .collect();
+        e.ordering.cutoff(color, &elsewhere, &marked, 1, 4);
+        e.stage_reduction(&m, 5, &moves, Some(0), Table::Miss);
+        let staged = e.staged.expect("the move was staged");
+        assert_eq!(staged.history, -16);
+        assert_eq!(staged.history_max, 0);
     }
 
     /// The reduction column reads what `windowed` was handed: a scout run
