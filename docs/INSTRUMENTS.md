@@ -464,6 +464,44 @@ reached it:
 python3 scripts/build_corpus.py runs/*/games.pgn --out corpus.epd
 ```
 
+Getting that pile of pgns is `scripts/harvest_games.py`, which downloads the
+strength runs' game artifacts into an archive and then rebuilds the corpus from
+the whole of it:
+
+```
+python3 scripts/harvest_games.py --archive runs --out corpus.epd
+```
+
+Run it after every arm. A games artifact lives ninety days, which is what
+`retention-days` on the strength workflow's upload says, and an arm whose
+artifact expires before anybody harvests it takes its games with it. They cannot
+be played again. The run prints when the next artifact expires, so the deadline
+is on the page rather than in somebody's head.
+
+Running it twice downloads nothing the second time. An artifact is held once its
+directory carries a `.harvested` marker, which is written after the download
+rather than before, so an interrupted fetch is taken again instead of being
+counted as held.
+
+It takes the strength runs and nothing else. A strength game is arche against
+arche and a calibrate game is arche against another engine, so harvesting
+calibrate would give the corpus a second source and cost it the caveat below:
+that caveat is only stateable while the corpus has one. The same prefix also
+excludes the `gauntlet-<run>` artifacts still in the listing, which were the
+calibrate rungs' games concatenated until the rungs began playing at the same
+time and that upload went away.
+
+The archive and the corpus are both gitignored, because the command above writes
+them into the working tree and at the scale of a release's games that is hundreds
+of megabytes.
+
+The rebuild reads the whole archive every time rather than appending to an epd.
+Which group a repeated position belongs to is decided by every game in the
+archive, so adding games moves labels on positions that were already there, and
+an appended corpus would carry the old ones. The archive is therefore the thing
+that must not be lost, not the epd, which is a few minutes of arithmetic away
+from it.
+
 The book is dropped off the front of every game, so the corpus starts where the
 book stops, and a game that ended in anything but play is dropped whole. The
 known caveat is that these are the engine's own games, so the positions it
@@ -584,6 +622,14 @@ those were reached from more than one group and how many appearances that cost,
 and `same_key`, the games whose movetext another game already had. The last is
 the only place a game the archive holds twice shows up: it is one game's
 evidence counted twice, and every other number in the run reads it as two.
+
+It is not expected to be zero, and the two causes it covers are told apart by
+what the number tracks. A game archived twice climbs with the artifacts; two
+games that were played move for move the same climb with the games. At the time
+of writing a full harvest of the strength archive read `same_key 10` over 23,175
+games, and no run in that archive was present at more than one attempt or under
+more than one artifact name, so those ten are not a re-archived run. What they
+are was not established.
 
 The loss is Texel's, the mean squared error between the game result and a
 logistic of the evaluation, with log loss printed beside it. The two are
