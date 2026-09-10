@@ -37,16 +37,15 @@ nothing has looked at. That is not a rule to remember. The calibration rows are
 not in the matrices the loss and the fit read, so the three commands cannot
 reach a calibration row.
 
-The seal is on the rows and not on the labels, and the difference is worth
-stating. `build_corpus.py` merges a position two games reached into one row
-whose label is the mean of their results, so where a training game and a
-calibration game both reached a position, a little of the sealed game's result
-is in the label the fit reads, and a little of the training game's is in the
-label that stays sealed. That is the spec's own duplicate rule and not an
-oversight here. Its size is small: 3.92% of the positions a run scores repeat
-at all, and a calibration game is a fifth of the games, so about a fifth of
-those repeats have a sealed game among them. A coverage claim made on the group
-carries that much and should say so.
+No command here reads a sealed row, and no sealed game's result reaches a label
+a fit sees. The rows are held apart because they are not in the matrices at
+all, and the labels because `build_corpus.py` labels a position from its own
+group's games alone: a position that games in different groups reached belongs
+to the group of the lowest key, its result and its count are that group's
+appearances, and the appearances elsewhere are dropped rather than merged in.
+What the dropping costs is those appearances and a little weight on the
+positions common enough to recur, which is the price of a group that means what
+it says.
 
 The objective is occurrence weighted. A unique position carries the weight of
 how many times the corpus reached it, which is what the corpus's `count`
@@ -79,6 +78,7 @@ import sys
 from pathlib import Path
 
 import numpy as np
+from groups import CALIBRATION, group_of
 
 # The weight vector, as `arche-core/src/tune.rs` lays it out: 384 midgame table
 # entries, then 128 endgame ones, then the six material values.
@@ -100,19 +100,6 @@ BUCKETS = ("0-6", "7-12", "13+")
 # How many folds a cross validated comparison uses. Five, so each fit reads
 # four fifths of the games and every row is scored once.
 FOLDS = 5
-
-# The five slices of a game key, and which group each one is. Three fifths
-# train, a fifth chooses the ridge, and a fifth is sealed.
-SLICES = (
-    "train",
-    "train",
-    "train",
-    "selection",
-    "calibration",
-)
-
-# The group that is not read until the weights are final.
-CALIBRATION = "calibration"
 
 
 def trunc_div(numerator, denominator):
@@ -141,44 +128,13 @@ def reconstruct(coefficients, weights):
     return material + trunc_div(numerator, TOTAL_PHASE)
 
 
-def group_of(key):
-    """Which group a game falls in: the first byte of its key, modulo five.
-
-    The key is the sha256 of the game's movetext, which `build_corpus.py`
-    writes into every row's `game` operand. The game is the unit because the
-    label is. Every position of a game carries that game's result, and
-    consecutive positions are one move apart, so a row held out while its
-    neighbours are trained on is a row whose answer the fit has already been
-    shown. Splitting on the position rather than the game hides that rather
-    than preventing it: measured on the corpus this was written for, 1,805 of
-    1,809 games had rows on both sides and 53.1% of the held-out rows had the
-    position a ply away, same game and same label, in the training set. What
-    the loss then reports is interpolation inside games the fit has seen, which
-    is not what a held-out loss is read as.
-
-    Three groups rather than two, because a fifth of the games is worth more
-    unread than read. The ridge is ranked on the selection group, which makes
-    the loss reported there the fit's own best case; a distribution-free
-    coverage claim needs a group that no ranking has touched, and the
-    calibration group is it. Retrofitting one later cannot work, so it is
-    assigned by construction from the first run.
-    """
-    if len(key) < 2:
-        raise ValueError(f"a game key that is no sha256: {key!r}")
-    try:
-        first = int(key[:2], 16)
-    except ValueError:
-        raise ValueError(f"a game key that is no sha256: {key!r}") from None
-    return SLICES[first % len(SLICES)]
-
-
 def fold_of(key, folds=FOLDS):
     """Which fold a game falls in, by the second byte of its key. Whole games,
     for the same reason the groups are whole games.
 
-    The second byte and not the first, because the first is what put the game
-    in its group. Folding on it would make one fold the selection group and
-    leave another empty.
+    The second byte and not the first, because the first is what `groups.py`
+    put the game in its group by. Folding on it would make one fold the
+    selection group and leave another empty.
     """
     if len(key) < 4:
         raise ValueError(f"a game key that is no sha256: {key!r}")
@@ -323,10 +279,11 @@ class Sealed:
     prints and what says the group exists. `unseal` is the door the arm that
     holds final weights walks through, and nothing in this file calls it.
 
-    What is held apart is the rows. A label can still cross, on a position a
-    training game and a calibration game both reached, because the corpus merges
-    those into one row and means their results. The module docstring says how
-    much of the corpus that is.
+    The labels are held apart as well, and upstream of here. A position that a
+    training game and a calibration game both reached is labelled by whichever
+    of the two groups owns it and by that group's appearances alone, so no
+    result crosses the seal in either direction. What that costs is the dropped
+    appearances, which `build_corpus.py` counts.
     """
 
     def __init__(self, rows, labels):
