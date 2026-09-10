@@ -14,17 +14,20 @@ are needed. Termination alone does not say which engine disconnected, and
 `abandoned` covers a crash and a stall alike.
 
 The block goes to stdout, a `key: value` per line, for the run summary and the
-manifest. Anything worth an alert goes to stderr, so the workflow can raise it
-from there rather than parsing it back out of the block.
+manifest. `--json` prints the same counts as data, in a shape that is
+provisional while its format is 0. Anything worth an alert goes to stderr, so
+the workflow can raise it from there rather than parsing it back out of the
+block.
 """
 
 import argparse
+import json
 import re
 import sys
 from collections import Counter
 from pathlib import Path
 
-from . import rating_estimate
+from . import JSON_FORMAT, rating_estimate, tool
 
 # The game split and the tag parse are the ones the rating estimate already
 # reads a fastchess pgn with, which take a game at a time so that one truncated
@@ -122,6 +125,19 @@ def block(totals: Counter, blamed: dict[str, Counter]) -> str:
     return "\n".join(lines)
 
 
+def endings(totals: Counter, blamed: dict[str, Counter]) -> dict:
+    """The counts as data, in the order the block prints them and with the
+    same zeroes in it. The engines an ending fell on are a mapping rather than
+    the sentence the block writes, so a reader can add them up."""
+    return {
+        name: {
+            "count": totals[name],
+            "blamed": dict(sorted(blamed.get(name, Counter()).items())),
+        }
+        for name in [*ORDER, *sorted(set(totals) - set(ORDER))]
+    }
+
+
 def remark(totals: Counter, blamed: dict[str, Counter]) -> str:
     """One line about the games that ended in a fault, or nothing when none
     did."""
@@ -144,10 +160,35 @@ def remark(totals: Counter, blamed: dict[str, Counter]) -> str:
 def main() -> None:
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("pgn", type=Path, help="the games the match played")
+    parser.add_argument(
+        "--json",
+        action="store_true",
+        help="print the counts as json instead of the block. The shape is"
+        " provisional while the format is 0",
+    )
     args = parser.parse_args()
 
     totals, blamed = count(args.pgn.read_text())
-    print(block(totals, blamed))
+    if args.json:
+        # allow_nan=False rather than the default, so a figure that is not a
+        # number fails here rather than being written as one no parser has to
+        # read. There are only counts in this object, and it stays true when
+        # something else is added to it.
+        print(
+            json.dumps(
+                {
+                    "format": JSON_FORMAT,
+                    "tool": tool("match_terminations"),
+                    "games": sum(totals.values()),
+                    "endings": endings(totals, blamed),
+                    "remark": remark(totals, blamed),
+                },
+                indent=2,
+                allow_nan=False,
+            )
+        )
+    else:
+        print(block(totals, blamed))
     if line := remark(totals, blamed):
         print(line, file=sys.stderr)
 

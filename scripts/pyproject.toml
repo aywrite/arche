@@ -11,7 +11,9 @@ build-backend = "setuptools.build_meta"
 
 [project]
 name = "match-tools"
-version = "0.1.0"
+# the one in match_tools/__init__.py, which is where the --json output reads
+# it from, so there is one version and not two to keep level
+dynamic = ["version"]
 description = "Read a sharded engine match: the pooled estimate and the ccrl fit"
 # the floor the `X | None` annotations set
 requires-python = ">=3.10"
@@ -38,6 +40,9 @@ dependencies = []
 # The linting is pinned separately, by .pre-commit-config.yaml, which manages
 # its own environments.
 test = ["pytest~=9.1", "pyyaml~=6.0", "chess~=1.11"]
+
+[tool.setuptools.dynamic]
+version = { attr = "match_tools.__version__" }
 
 [tool.setuptools.packages.find]
 # Named rather than discovered. Left to itself setuptools takes this directory

@@ -8,9 +8,11 @@ the logistic model says what score a rating difference earns, so the fit can be
 checked against numbers computed by hand.
 """
 
+import json
 import subprocess
 import sys
 
+import match_tools
 import pytest
 from conftest import SCRIPTS
 from match_tools import rating_estimate
@@ -204,3 +206,69 @@ class TestCommandLine:
         result = self.run(tmp_path, game("a", "b", "1-0"))
         assert result.returncode != 0
         assert "no games for arche" in result.stderr
+
+
+class TestJson:
+    """The --json mode, which is the fit as data.
+
+    The shape is provisional while the format is 0, so what is pinned here is
+    that it parses and that the figures in it are the ones the table and the
+    line print."""
+
+    def run(self, tmp_path, text, *args):
+        return TestCommandLine().run(tmp_path, text, *args)
+
+    def test_the_figures_are_the_ones_the_table_states(self, tmp_path):
+        result = self.run(tmp_path, TestCommandLine.GAMES, "--json")
+        assert result.returncode == 0
+        written = json.loads(result.stdout)
+        assert written["format"] == 0
+        assert written["tool"] == {
+            "name": "match-tools",
+            "version": match_tools.__version__,
+            "command": "rating_estimate",
+        }
+        assert written["engine"] == "arche"
+        assert written["ladder"] == {"stash-v11": 1690.0}
+        assert written["pairings"] == [
+            {
+                "opponent": "stash-v11",
+                "ccrl": 1690.0,
+                "wins": 2,
+                "draws": 1,
+                "losses": 1,
+                "games": 4,
+                "score": 0.625,
+                "implied": pytest.approx(1778.7, abs=0.1),
+            }
+        ]
+        assert written["games"] == 4
+        assert written["bounded"] == ""
+        assert written["note"] == ""
+        assert written["remarks"] == []
+        assert (
+            written["line"]
+            == self.run(tmp_path, TestCommandLine.GAMES, "--line").stdout.strip()
+        )
+        # unrounded, and the line is what rounds them
+        assert written["rating"] == pytest.approx(1778.7, abs=0.1)
+        assert written["line"].startswith("1779 ±")
+
+    def test_a_gauntlet_that_went_one_way_states_no_rating(self, tmp_path):
+        swept = game("arche", "stash-v11", "1-0") + game("stash-v11", "arche", "0-1")
+        written = json.loads(self.run(tmp_path, swept, "--json").stdout)
+        assert written["rating"] is None
+        assert written["margin"] is None
+        assert written["bounded"] == "above 1690"
+
+    def test_what_went_to_stderr_is_in_it_too(self, tmp_path):
+        text = TestCommandLine.GAMES + game("arche", "stash-v11", "*")
+        result = self.run(tmp_path, text, "--json")
+        written = json.loads(result.stdout)
+        assert written["remarks"] == ["1 game with no result, left out of the fit"]
+        assert result.stderr.strip() == written["remarks"][0]
+
+    def test_the_json_and_the_line_are_not_both_asked_for(self, tmp_path):
+        result = self.run(tmp_path, TestCommandLine.GAMES, "--json", "--line")
+        assert result.returncode != 0
+        assert "not allowed with argument" in result.stderr

@@ -28,19 +28,22 @@ Looking only at batch boundaries is what leaves the bounds meaning what they
 say.
 
 The report goes to stdout for the run summary. `--line` prints the one line the
-release notes carry and `--trailer` the trailer a commit does. Anything worth an
-alert goes to stderr, so the workflow can raise it from there rather than
-parsing it back out of the report.
+release notes carry and `--trailer` the trailer a commit does. `--json` prints
+the whole of it as data, for a reader that is not a person; that shape is
+provisional while its format is 0. Anything worth an alert goes to stderr, so
+the workflow can raise it from there rather than parsing it back out of the
+report.
 """
 
 import argparse
+import json
 import math
 import re
 import sys
 from collections import Counter
 from pathlib import Path
 
-from . import match_terminations, rating_estimate
+from . import JSON_FORMAT, match_terminations, rating_estimate, tool
 
 # The game split and the tag parse the rest of this tooling reads a fastchess
 # pgn with. Round is wanted here and by nothing else: fastchess writes it on
@@ -542,6 +545,115 @@ def report(
     return "\n".join(lines)
 
 
+def finite(value: float | None) -> float | None:
+    """A number json can carry, or nothing. A match that went one way
+    throughout has a bound of infinity on the open side, and json.dumps writes
+    that as -Infinity, which no parser is required to read back; the bounded
+    string below is what says which side it ran off."""
+    return value if value is not None and math.isfinite(value) else None
+
+
+def figures(estimate: Estimate, left_over: dict[str, int] | None = None) -> dict:
+    """One estimate as data, with what the pairing left over beside it where
+    the caller counted any.
+
+    The figures are unrounded, since rounding is what the report, the trailer
+    and the line do with them. A match with no complete pair has no figure at
+    all, so those are null rather than the zeroes the estimate starts at, and
+    the bounded string is what it has instead."""
+    measured = estimate.bounded != "not measured"
+    return {
+        "games": estimate.games,
+        "pairs": estimate.pairs,
+        **(left_over or {}),
+        "score": estimate.score,
+        "paired_score": estimate.paired if measured else None,
+        "elo": estimate.elo if measured else None,
+        "margin": estimate.margin,
+        "low": finite(estimate.low),
+        "high": finite(estimate.high),
+        "los": estimate.los if measured else None,
+        "bounded": estimate.bounded,
+        "modelled": estimate.modelled,
+    }
+
+
+def as_json(
+    shards: list[Shard],
+    estimate: Estimate,
+    text: str,
+    candidate: str,
+    baseline: str,
+    tc: str,
+    sprt: Sprt | None = None,
+) -> dict:
+    """The whole result as data, for a reader that is not a person.
+
+    It is built from the objects the report is built from rather than from the
+    report, so the two cannot say different things. It carries the shards, the
+    pairs by score, how the games ended and both strings the other modes
+    print, and the remarks that went to stderr are in it as well, so that
+    reading stdout alone loses nothing.
+
+    The shape is provisional while the format is 0, which JSON_FORMAT
+    explains."""
+    totals, blamed = match_terminations.count(text)
+    counted = Counter(score for shard in shards for score in shard.pairs)
+    fault = match_terminations.remark(totals, blamed)
+    return {
+        "format": JSON_FORMAT,
+        "tool": tool("match_estimate"),
+        "candidate": candidate,
+        "baseline": baseline,
+        "tc": tc,
+        **figures(
+            estimate,
+            {
+                "unpaired": sum(shard.unpaired for shard in shards),
+                "unfinished": sum(shard.unfinished for shard in shards),
+            },
+        ),
+        "pentanomial": [counted[score] for score in PENTANOMIAL],
+        "sprt": None
+        if sprt is None
+        else {
+            "elo0": sprt.elo0,
+            "elo1": sprt.elo1,
+            "llr": sprt.llr,
+            "lower": LOWER,
+            "upper": UPPER,
+            "verdict": sprt.verdict,
+            "batch": sprt.batch,
+            "prior": sprt.prior,
+            "counts": sprt.counts,
+            "carried": sprt.carried,
+            # the pairs of the whole test, which is what the trailer states
+            "estimate": figures(sprt.estimate),
+        },
+        "shards": [
+            {
+                "name": shard.name,
+                "index": shard.index,
+                "games": len(shard.games),
+                "points": shard.points,
+                "score": shard.percent / 100,
+                "pairs": len(shard.pairs),
+                "unpaired": shard.unpaired,
+                "unfinished": shard.unfinished,
+                "faults": shard.faults,
+            }
+            for shard in shards
+        ],
+        "terminations": {
+            "games": sum(totals.values()),
+            "endings": match_terminations.endings(totals, blamed),
+        },
+        "remarks": [fault] if fault else [],
+        "line": f"{estimate}, {sprt}" if sprt else str(estimate),
+        "trailer": trailer(estimate, tc, baseline, sprt),
+    }
+
+
 def read_shards(paths: list[Path], candidate: str) -> tuple[list[Shard], str]:
     """One shard per pgn, named after the directory it arrived in, which is the
     artifact it was downloaded from. A single artifact is extracted without a
@@ -585,6 +697,12 @@ def main() -> None:
         action="store_true",
         help="print the Elo trailer for a commit instead of the report",
     )
+    printed.add_argument(
+        "--json",
+        action="store_true",
+        help="print the whole result as json instead of the report. The shape"
+        " is provisional while the format is 0",
+    )
     args = parser.parse_args()
     if (args.elo0 is None) != (args.elo1 is None):
         parser.error(
@@ -622,6 +740,19 @@ def main() -> None:
         print(trailer(estimate, args.tc, args.baseline, sprt))
     elif args.line:
         print(f"{estimate}, {sprt}" if sprt else str(estimate))
+    elif args.json:
+        # allow_nan=False rather than the default, so a figure that is not a
+        # number fails here rather than being written as one no parser has to
+        # read back
+        print(
+            json.dumps(
+                as_json(
+                    shards, estimate, text, args.candidate, args.baseline, args.tc, sprt
+                ),
+                indent=2,
+                allow_nan=False,
+            )
+        )
     else:
         print(report(shards, estimate, text, sprt))
     if fault := match_terminations.remark(*match_terminations.count(text)):

@@ -9,9 +9,11 @@ comment with. What this guards against is a later release moving one of them
 and the count reading normal games where there were crashes.
 """
 
+import json
 import subprocess
 import sys
 
+import match_tools
 from conftest import SCRIPTS
 from match_tools import match_terminations
 
@@ -207,3 +209,53 @@ class TestCommandLine:
         assert result.returncode == 0
         assert "disconnect: 1 (old 1)" in result.stdout
         assert "1 of 1 games ended by a fault" in result.stderr
+
+
+class TestJson:
+    """The --json mode, which is the block as data.
+
+    The shape is provisional while the format is 0, so what is pinned here is
+    that it parses and that the counts in it are the block's."""
+
+    def run(self, tmp_path, text):
+        pgn = tmp_path / "games.pgn"
+        pgn.write_text(text)
+        return subprocess.run(
+            [sys.executable, str(SCRIPT), str(pgn), "--json"],
+            check=False,
+            capture_output=True,
+            text=True,
+        )
+
+    def test_the_counts_are_the_ones_the_block_prints(self, tmp_path):
+        text = (
+            game()
+            + game("time forfeit", FORFEIT, "Black")
+            + game("abandoned", CRASH, "White")
+        )
+        result = self.run(tmp_path, text)
+        assert result.returncode == 0
+        written = json.loads(result.stdout)
+        assert written["format"] == 0
+        assert written["tool"] == {
+            "name": "match-tools",
+            "version": match_tools.__version__,
+            "command": "match_terminations",
+        }
+        assert written["games"] == 3
+        assert written["endings"]["normal"] == {"count": 1, "blamed": {}}
+        assert written["endings"]["time forfeit"] == {"count": 1, "blamed": {"old": 1}}
+        assert written["endings"]["disconnect"] == {"count": 1, "blamed": {"new": 1}}
+        # every ending, zeroes included, in the order the block prints them
+        assert list(written["endings"]) == list(match_terminations.ORDER)
+        assert written["endings"]["stall"]["count"] == 0
+
+    def test_the_remark_is_in_it_as_well_as_on_stderr(self, tmp_path):
+        result = self.run(tmp_path, game("time forfeit", FORFEIT, "Black"))
+        written = json.loads(result.stdout)
+        assert written["remark"] == result.stderr.strip()
+        assert written["remark"].startswith("1 of 1 games ended by a fault")
+
+    def test_a_clean_match_has_nothing_to_remark_on(self, tmp_path):
+        written = json.loads(self.run(tmp_path, game()).stdout)
+        assert written["remark"] == ""

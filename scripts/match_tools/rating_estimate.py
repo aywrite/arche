@@ -12,13 +12,19 @@ describes the games and nothing else. Whether one rating can describe the
 results at all is a separate question, asked separately: when the opponents
 disagree with each other by more than chance allows, that margin is an
 understatement rather than an estimate, and a note saying so goes to stderr.
+
+The table goes to stdout. `--line` prints the estimate alone and `--json`
+prints the fit as data, in a shape that is provisional while its format is 0.
 """
 
 import argparse
+import json
 import math
 import re
 import sys
 from pathlib import Path
+
+from . import JSON_FORMAT, tool
 
 LN10_OVER_400 = math.log(10) / 400
 # A pairing that ends 25-0 puts no upper bound on the winner, so both the
@@ -146,11 +152,23 @@ def fit(pairings: list[tuple[str, float, int, int, int]]) -> tuple[Estimate, str
 
 
 def read_pairings(
-    pgn: Path, engine: str, ladder: dict[str, float]
+    pgn: Path,
+    engine: str,
+    ladder: dict[str, float],
+    remarks: list[str] | None = None,
 ) -> list[tuple[str, float, int, int, int]]:
+    """The pairings the gauntlet played, and what is worth saying about the
+    games it did not fit. What is said goes to stderr as it is found, and into
+    `remarks` as well when a caller wants to print it somewhere else too."""
     tally: dict[str, list[int]] = {name: [0, 0, 0] for name in ladder}
     unfinished = 0
     text = pgn.read_text()
+
+    def say(line: str) -> None:
+        print(line, file=sys.stderr)
+        if remarks is not None:
+            remarks.append(line)
+
     for record in RECORD.split(text)[1:]:
         tags = dict(TAG.findall(record))
         white, black, result = tags.get("White"), tags.get("Black"), tags.get("Result")
@@ -174,16 +192,60 @@ def read_pairings(
     # say how many rather than quietly fitting whatever finished.
     if unfinished:
         plural = "" if unfinished == 1 else "s"
-        print(
-            f"{unfinished} game{plural} with no result, left out of the fit",
-            file=sys.stderr,
-        )
+        say(f"{unfinished} game{plural} with no result, left out of the fit")
     for name in ladder:
         if sum(tally[name]) == 0:
-            print(f"{name} played no games and is not in the fit", file=sys.stderr)
+            say(f"{name} played no games and is not in the fit")
     return [
         (name, ladder[name], *tally[name]) for name in ladder if sum(tally[name]) > 0
     ]
+
+
+def as_json(
+    engine: str,
+    ladder: dict[str, float],
+    pairings: list[tuple[str, float, int, int, int]],
+    estimate: Estimate,
+    note: str,
+    remarks: list[str],
+) -> dict:
+    """The fit as data, for a reader that is not a person.
+
+    The figures are unrounded: rounding is what the table and the line do with
+    them, and a consumer can round what it reads. A rating the games bound
+    from one side only has no figure at all, so it is null and the bounded
+    string is what says which side. What went to stderr is here as well, so
+    that reading stdout alone loses nothing.
+
+    The shape is provisional while the format is 0, which JSON_FORMAT
+    explains."""
+    measured = not estimate.bounded
+    return {
+        "format": JSON_FORMAT,
+        "tool": tool("rating_estimate"),
+        "engine": engine,
+        "ladder": ladder,
+        "pairings": [
+            {
+                "opponent": name,
+                "ccrl": opponent,
+                "wins": w,
+                "draws": d,
+                "losses": loss,
+                "games": w + d + loss,
+                "score": (w + d / 2) / (w + d + loss),
+                "implied": implied(opponent, w + d / 2, w + d + loss),
+            }
+            for name, opponent, w, d, loss in pairings
+        ],
+        "rating": estimate.rating if measured else None,
+        "margin": estimate.margin if measured else None,
+        "games": estimate.games,
+        "bounded": estimate.bounded,
+        "note": note,
+        "remarks": remarks,
+        "line": str(estimate),
+    }
 
 
 def read_ladder(spec: str) -> dict[str, float]:
@@ -209,31 +271,52 @@ def main() -> None:
     parser.add_argument("pgn", type=Path, help="the games the gauntlet played")
     parser.add_argument("engine", help="the name the engine played under")
     parser.add_argument("ladder", help="opponents, as name:rating pairs")
-    parser.add_argument(
+    # each of these replaces the whole of stdout, so at most one of them
+    printed = parser.add_mutually_exclusive_group()
+    printed.add_argument(
         "--line",
         action="store_true",
         help="print only the estimate, for somewhere a table does not fit",
     )
+    printed.add_argument(
+        "--json",
+        action="store_true",
+        help="print the fit as json instead of the table. The shape is"
+        " provisional while the format is 0",
+    )
     args = parser.parse_args()
 
     ladder = read_ladder(args.ladder)
-    pairings = read_pairings(args.pgn, args.engine, ladder)
+    remarks: list[str] = []
+    pairings = read_pairings(args.pgn, args.engine, ladder, remarks)
     if not pairings:
         sys.exit(f"no games for {args.engine} against any of {', '.join(ladder)}")
 
     estimate, note = fit(pairings)
-    if not args.line:
-        print("| opponent | ccrl | w-d-l | score | implies |")
-        print("| --- | --- | --- | --- | --- |")
-        for name, opponent, w, d, loss in pairings:
-            games = w + d + loss
-            percent = 100 * (w + d / 2) / games
-            print(
-                f"| {name} | {opponent:.0f} | {w}-{d}-{loss} | {percent:.1f}% |"
-                f" {implied(opponent, w + d / 2, games):.0f} |"
+    if args.json:
+        # allow_nan=False rather than the default, so a figure that is not a
+        # number fails here rather than being written as one no parser has to
+        # read back
+        print(
+            json.dumps(
+                as_json(args.engine, ladder, pairings, estimate, note, remarks),
+                indent=2,
+                allow_nan=False,
             )
-        print()
-    print(estimate)
+        )
+    else:
+        if not args.line:
+            print("| opponent | ccrl | w-d-l | score | implies |")
+            print("| --- | --- | --- | --- | --- |")
+            for name, opponent, w, d, loss in pairings:
+                games = w + d + loss
+                percent = 100 * (w + d / 2) / games
+                print(
+                    f"| {name} | {opponent:.0f} | {w}-{d}-{loss} | {percent:.1f}% |"
+                    f" {implied(opponent, w + d / 2, games):.0f} |"
+                )
+            print()
+        print(estimate)
     if note:
         print(f"note: {note}", file=sys.stderr)
 
