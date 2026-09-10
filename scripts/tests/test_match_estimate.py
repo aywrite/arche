@@ -12,10 +12,12 @@ that reads a colour it assumed rather than one the tags gave, or that states
 an interval the games do not support.
 """
 
+import json
 import math
 import subprocess
 import sys
 
+import match_tools
 import pytest
 from conftest import SCRIPTS
 from match_tools import match_estimate
@@ -619,3 +621,116 @@ class TestSequential:
         )
         assert "SPRT [0, 10] passed." in printed
         assert "stronger by about 10 elo or more" in printed
+
+
+class TestJson:
+    """The --json mode, which is the same result the report states, as data.
+
+    The shape is provisional while the format is 0, so what is pinned here is
+    that it parses, that the figures in it are the ones the other modes print,
+    and that a bound the model puts at infinity is not written as a word no
+    parser has to read."""
+
+    def run(self, tmp_path, texts, *arguments):
+        return TestCommandLine().run(tmp_path, texts, *arguments)
+
+    def loaded(self, tmp_path, texts, *arguments):
+        result = self.run(tmp_path, texts, "--json", *arguments)
+        assert result.returncode == 0, result.stderr
+        return json.loads(result.stdout)
+
+    def test_the_figures_are_the_ones_the_report_states(self, tmp_path):
+        texts = [batch(MATCH), drawn(1) + drawn(2)]
+        written = self.loaded(tmp_path, texts)
+        assert written["format"] == 0
+        assert written["tool"] == {
+            "name": "match-tools",
+            "version": match_tools.__version__,
+            "command": "match_estimate",
+        }
+        assert written["candidate"] == CANDIDATE
+        assert written["baseline"] == BASELINE
+        assert written["tc"] == "30+0.3"
+        assert written["games"] == 64
+        assert written["pairs"] == 32
+        assert written["pentanomial"] == [2, 3, 16, 3, 8]
+        assert written["sprt"] is None
+        assert [one["name"] for one in written["shards"]] == [
+            "strength-1-1-shard-0",
+            "strength-1-1-shard-1",
+        ]
+        assert written["terminations"]["games"] == 64
+        assert written["terminations"]["endings"]["normal"]["count"] == 64
+        assert written["remarks"] == []
+        assert written["line"] == self.run(tmp_path, texts, "--line").stdout.strip()
+        assert (
+            written["trailer"] == self.run(tmp_path, texts, "--trailer").stdout.strip()
+        )
+        # the figures are unrounded, and the line is what rounds them
+        assert round(written["elo"]) == 66
+        assert written["line"].startswith("+66 ")
+        assert written["low"] < written["elo"] < written["high"]
+
+    def test_a_bounded_estimate_is_null_and_not_an_infinity(self, tmp_path):
+        # every pair went the same way, so the model has no elo for the score
+        # and the interval is open on one side. json.dumps writes that side as
+        # -Infinity, which no parser is required to read back
+        result = self.run(tmp_path, [pair(1) + pair(2)], "--json")
+        assert "Infinity" not in result.stdout
+        written = json.loads(result.stdout)
+        assert written["bounded"] == "above +1200"
+        assert written["elo"] == match_estimate.MAX_ELO
+        assert written["margin"] is None
+        assert written["low"] == match_estimate.MAX_ELO
+        assert written["high"] is None
+
+    def test_a_match_with_no_complete_pair_states_no_figure(self, tmp_path):
+        written = self.loaded(tmp_path, [game(1, "1-0")])
+        assert written["bounded"] == "not measured"
+        assert written["unpaired"] == 1
+        assert written["score"] == 1.0
+        for key in ("paired_score", "elo", "margin", "low", "high", "los"):
+            assert written[key] is None, key
+
+    def test_the_sprt_carries_the_whole_test_and_this_batch(self, tmp_path):
+        written = self.loaded(
+            tmp_path,
+            [drawn(1) + pair(2)],
+            "--elo0",
+            "0",
+            "--elo1",
+            "10",
+            "--prior-pairs",
+            "0,0,100,0,5",
+        )
+        sprt = written["sprt"]
+        assert sprt["elo0"] == 0.0
+        assert sprt["elo1"] == 10.0
+        assert sprt["verdict"] == "passed"
+        assert sprt["batch"] == [0, 0, 1, 0, 1]
+        assert sprt["prior"] == [0, 0, 100, 0, 5]
+        assert sprt["counts"] == [0, 0, 101, 0, 6]
+        assert sprt["carried"] == "0,0,101,0,6"
+        # the batch played 4 games and the test 214, and the trailer states
+        # the test
+        assert written["games"] == 4
+        assert sprt["estimate"]["games"] == 214
+        assert "214 games" in written["trailer"]
+
+    def test_the_remarks_are_in_it_as_well_as_on_stderr(self, tmp_path):
+        text = drawn(1) + game(
+            2, "1-0", termination="time forfeit", reason="White loses on time"
+        )
+        result = self.run(tmp_path, [text], "--json")
+        written = json.loads(result.stdout)
+        assert written["remarks"] == [result.stderr.strip()]
+        assert "ended by a fault" in written["remarks"][0]
+        assert written["terminations"]["endings"]["time forfeit"] == {
+            "count": 1,
+            "blamed": {CANDIDATE: 1},
+        }
+
+    def test_the_json_and_the_line_are_not_both_asked_for(self, tmp_path):
+        result = self.run(tmp_path, [drawn(1)], "--json", "--line")
+        assert result.returncode != 0
+        assert "not allowed with argument" in result.stderr
