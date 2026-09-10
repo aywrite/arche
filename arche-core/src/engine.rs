@@ -134,15 +134,18 @@ const ATTENTION_INTERCEPT: i64 = -2503;
 // integer; at or under admits the fourteen training rows sitting exactly
 // on it and moves neither holdout figure at that precision.
 const DEEP_REDUCTION_THRESHOLD: i64 = -4637;
-// The score at or under which a late quiet is not searched at all. Not
-// the bench fit's number: the percentile comes from a census of our own
-// games, 17,057,552 scouts from 1,428 positions sampled out of 1,814
-// games at 10+0.1, recorded on master at c13a6ed and reported in
-// game-corpus/REPORT.md. The threshold is that census's deadest
-// quartile, which held 0.018% attention over all depths and 0.028% at
-// depth four and up. The corpus is the point: the bench's percentiles
-// sit elsewhere, and a skip spends the model's word where the games
-// actually go.
+// The score at or under which a late quiet is not searched at all. The
+// number came from a census of our own games, 17,057,552 scouts from
+// 1,428 positions sampled out of 1,814 games at 10+0.1, recorded on
+// master at c13a6ed: the deadest quartile there, but of a model refitted
+// to the census rather than of the weights above. Read with these
+// weights over the rows this gate can reach, depth four and up with the
+// move not giving check, it skips 39% of them at 0.031% attention, and
+// the quartile would be -9513. The +18 the arm played for over 2,000
+// games is the gate at 39%; moving it to the quartile is an arm of its
+// own, not a correction. The corpus is still the point: the bench's
+// percentiles sit elsewhere, and a skip spends the model's word where
+// the games actually go.
 const LATE_MOVE_PRUNING_THRESHOLD: i64 = -7954;
 
 /// What the attention model reads about a late quiet at the gate: the
@@ -555,7 +558,7 @@ impl Default for SearchConfig {
     /// node's answer, never raise it, so the node itself cuts nothing
     /// falsely; the lowered answer still travels, as every bound does,
     /// and what the guess risks is a good move written off, which is
-    /// what the threshold's quartile prices.
+    /// what the threshold's band prices.
     ///
     /// The quiet memories are the ninth, and no kind of guess at all.
     /// They prune nothing. What they move is how soon a node finds the move
