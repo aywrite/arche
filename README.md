@@ -34,6 +34,8 @@ The engine is something to experiment on rather than an example to copy.
 - [docs/DEVELOPMENT.md](docs/DEVELOPMENT.md) — building, the tests, the benchmarks and the
   bench, playing a match against a previous version, placing the engine on the ccrl scale, and
   cutting a release
+- [docs/INSTRUMENTS.md](docs/INSTRUMENTS.md) — the four measurements the engine makes of its
+  own search, and how to read what they print
 - [docs/ROADMAP.md](docs/ROADMAP.md) — what is not implemented yet, and the limitations of what is
 - [docs/LICHESS.md](docs/LICHESS.md) — running the engine as a bot account on lichess
 - [CHANGELOG.md](CHANGELOG.md) — what changed in each release

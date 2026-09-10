@@ -1111,7 +1111,7 @@ mod tests {
         }
     }
 
-    /// The row's fields, in the order the header of docs/DEVELOPMENT.md
+    /// The row's fields, in the order the header of docs/INSTRUMENTS.md
     /// names them, with the fen last so a row parses left to right.
     #[test]
     fn a_row_reads_left_to_right_with_the_fen_last() {
