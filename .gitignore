@@ -18,3 +18,9 @@ flamegraph.svg*
 # agent instructions for one machine, kept out of the repository
 /AGENTS.local.md
 /CLAUDE.local.md
+
+# the harvested games and the corpus built from them. Hundreds of megabytes,
+# and the documented harvest writes both into the working tree by default. They
+# are inputs rather than sources and the artifacts are where they come from.
+/runs/
+/corpus.epd

@@ -167,6 +167,9 @@ Scripts workflow:
   byte of its key. The two scripts below both need it, and a second copy of
   the mapping would be a corpus built to one split and fitted against
   another, which neither run would say a word about.
+- **harvest_games.py**: The strength runs' game artifacts down into an
+  archive, then the corpus rebuilt from the whole of it. What keeps the
+  games from expiring unharvested.
 - **build_corpus.py**: Archived strength-run pgns in, an epd of unique
   post-book positions out, each carrying the game it belongs to, the result
   from the side to move's point of view, and how many times it was reached.
