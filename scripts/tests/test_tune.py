@@ -687,6 +687,188 @@ def test_a_cross_validation_folds_only_the_games_it_may_read(tmp_path, capsys):
     assert folded == 32
 
 
+def test_final_opens_the_sealed_group_once_and_logs_it_first(tmp_path, capsys):
+    """A frozen integer vector is scored on the sealed group against the
+    shipped one, the log names the corpus and the sealed games by checksum
+    before any row is read, and the same sealed games are refused a second
+    time whatever file they arrive in. A corpus whose sealed games differ
+    opens."""
+    vector = weights({0: 20, 64: -30})
+    rows, labels = sample(vector)
+    terms, corpus = fixture_run(tmp_path, vector, rows, labels)
+    frozen = tmp_path / "frozen.json"
+    frozen.write_text(json.dumps(weights({0: 24, 64: -30})), encoding="utf-8")
+    log = tmp_path / "final.log"
+    run = ["final", "--terms", str(terms), "--corpus", str(corpus)]
+    assert tune.main([*run, "--weights", str(frozen), "--log", str(log)]) == 0
+    printed = capsys.readouterr().out
+    # six sealed games at four positions each, and nothing else
+    assert "calibration positions 24 games 6 pairs 6 appearances 24 opened" in printed
+    assert "shipped calibration mse" in printed
+    assert "frozen against shipped calibration quantized_mse" in printed
+    assert "frozen residual signed p50" in printed
+    assert "not a coverage claim" in printed
+    lines = log.read_text(encoding="utf-8").splitlines()
+    assert len(lines) == 1
+    assert lines[0].startswith("opened ")
+    assert f"corpus {tune.sha256_of(corpus)}" in lines[0]
+    assert f"weights {tune.sha256_of(frozen)}" in lines[0]
+    assert "positions 24 games 6" in lines[0]
+    sealed_line = lines[0]
+    # the same rows under another name are the same corpus
+    renamed = tmp_path / "renamed.epd"
+    renamed.write_bytes(corpus.read_bytes())
+    with pytest.raises(SystemExit, match="opened before"):
+        tune.main(
+            [
+                "final",
+                "--terms",
+                str(terms),
+                "--corpus",
+                str(renamed),
+                "--weights",
+                str(frozen),
+                "--log",
+                str(log),
+            ]
+        )
+    assert len(log.read_text(encoding="utf-8").splitlines()) == 1
+    # and so are the same sealed games in a corpus that grew elsewhere: a
+    # training row's count moved, the file's checksum with it, and the
+    # sealed games are the ones the log names
+    grown = tmp_path / "grown.epd"
+    grown.write_text(
+        corpus.read_text(encoding="utf-8").replace('count "1"', 'count "2"', 1),
+        encoding="utf-8",
+    )
+    assert tune.sha256_of(grown) != tune.sha256_of(corpus)
+    with pytest.raises(SystemExit, match="opened before"):
+        tune.main(
+            [
+                "final",
+                "--terms",
+                str(terms),
+                "--corpus",
+                str(grown),
+                "--weights",
+                str(frozen),
+                "--log",
+                str(log),
+            ]
+        )
+    assert log.read_text(encoding="utf-8").splitlines() == [sealed_line]
+    # a corpus whose sealed games differ opens: one sealed game left out
+    sealed_game = next(
+        game
+        for (_, _, game) in labels.values()
+        if groups.group_of(game) == "calibration"
+    )
+    other = tmp_path / "other.epd"
+    other.write_text(
+        "".join(
+            line
+            for line in corpus.read_text(encoding="utf-8").splitlines(keepends=True)
+            if sealed_game not in line
+        ),
+        encoding="utf-8",
+    )
+    assert (
+        tune.main(
+            [
+                "final",
+                "--terms",
+                str(terms),
+                "--corpus",
+                str(other),
+                "--weights",
+                str(frozen),
+                "--log",
+                str(log),
+            ]
+        )
+        == 0
+    )
+    assert len(log.read_text(encoding="utf-8").splitlines()) == 2
+
+
+def test_final_scores_the_sealed_rows_and_only_those(tmp_path, capsys):
+    """The number printed is the loss over the sealed rows, worked out here
+    from the same rows by hand, so the command is reading the group and not
+    the corpus it was handed."""
+    vector = weights({0: 20})
+    rows, labels = sample(vector)
+    terms, corpus = fixture_run(tmp_path, vector, rows, labels)
+    frozen = tmp_path / "frozen.json"
+    frozen.write_text(json.dumps(vector), encoding="utf-8")
+    log = tmp_path / "final.log"
+    assert (
+        tune.main(
+            [
+                "final",
+                "--terms",
+                str(terms),
+                "--corpus",
+                str(corpus),
+                "--weights",
+                str(frozen),
+                "--log",
+                str(log),
+                "--k",
+                "1.0",
+            ]
+        )
+        == 0
+    )
+    printed = capsys.readouterr().out
+    # the sealed rows, scored the way the fixture's rows state their own
+    # evaluation: the table entry at full phase and a pawn either way
+    sealed = [
+        (index, result)
+        for index, (result, _, game) in enumerate(labels.values())
+        if groups.group_of(game) == "calibration"
+    ]
+    scores = np.array(
+        [
+            tune.reconstruct(
+                [(0, 24), (tune.MATERIAL_SLOT, 1 if result == 1.0 else -1)], vector
+            )
+            for _, result in sealed
+        ],
+        dtype=float,
+    )
+    results = np.array([result for _, result in sealed])
+    counts = np.ones(len(sealed))
+    expected = tune.mean_squared_error(scores, results, counts, 1.0)
+    assert f"shipped calibration mse {expected:.6f}" in printed
+    assert f"frozen calibration mse {expected:.6f}" in printed
+
+
+def test_final_refuses_a_vector_that_is_not_integers(tmp_path):
+    """The vector that ships is integers, and a reading of the sealed group
+    against anything else is a reading of a vector that will not ship."""
+    vector = weights({0: 20})
+    rows, labels = sample(vector)
+    terms, corpus = fixture_run(tmp_path, vector, rows, labels)
+    unrounded = tmp_path / "unrounded.json"
+    unrounded.write_text(json.dumps(weights({0: 20.5})), encoding="utf-8")
+    log = tmp_path / "final.log"
+    with pytest.raises(SystemExit, match="not the integers"):
+        tune.main(
+            [
+                "final",
+                "--terms",
+                str(terms),
+                "--corpus",
+                str(corpus),
+                "--weights",
+                str(unrounded),
+                "--log",
+                str(log),
+            ]
+        )
+    assert not log.exists()
+
+
 def test_the_calibration_group_is_not_read_by_a_fit(tmp_path, capsys):
     """What "not read until the weights are final" means, rather than what it
     promises.

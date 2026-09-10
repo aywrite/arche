@@ -532,6 +532,28 @@ row so that a source can be excluded or weighted after extraction, and so that
 the two games that played one opening with the colours reversed can be told
 apart from two openings.
 
+The one door into the sealed group is `final`:
+
+```
+python3 scripts/tune.py final --terms rows.txt --corpus corpus.epd --weights fit.json --log final.log
+```
+
+It takes a vector already quantized to the integers that would ship, refuses
+one that is not, and before it reads a sealed row it appends a line to the log
+naming the corpus, the sealed games, the extraction and the vector by checksum,
+the scaling constant and the group's size. A corpus the log names is refused,
+and so is one whose sealed games the log names under another corpus: the
+checksums are over the file and over the sealed pair keys, so neither a new
+filename nor a re-extraction with a run appended reopens the same games. What
+it prints is the frozen vector against the shipped one on the sealed rows, both
+losses at real and at integer weights, the paired difference with its interval
+clustered on the game, the loss by phase bucket, and the residual quantiles,
+signed and absolute, weighted by appearances. The quantiles are an empirical
+diagnostic and the line says so. A coverage claim needs its sampling unit,
+score, exchangeability, quantile rule and target named before the group is
+opened, which no command can do for the person making it. A vector revised
+after the reading needs a sealed group of games the corpus did not hold.
+
 `build_corpus.py`'s counters open with `runs`, the archives the games came
 from, carry `pairs` and `unpaired`, the rounds that made a pair of more than
 one game and the games that stood alone, and end with `repeated`, the
