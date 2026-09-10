@@ -38,12 +38,15 @@ def pgn(
     moves="1. e4 e5 2. Nf3 Nc6 3. Bb5 a6 4. Ba4 Nf6 5. O-O Be7",
     result="1-0",
     termination="normal",
+    round_=None,
 ):
-    """One game in the shape a fastchess archive writes."""
-    return (
-        f'[Event "match"]\n[Result "{result}"]\n[Termination "{termination}"]\n\n'
-        f"{moves} {result}\n\n"
-    )
+    """One game in the shape a fastchess archive writes. The round is left
+    off unless a test asks for one, which is what an archive from before the
+    header was read looks like."""
+    header = f'[Event "match"]\n[Result "{result}"]\n[Termination "{termination}"]\n'
+    if round_ is not None:
+        header += f'[Round "{round_}"]\n'
+    return f"{header}\n{moves} {result}\n\n"
 
 
 def games(text):
@@ -55,8 +58,14 @@ def games(text):
         yield game
 
 
-def build(text, book_plies=build_corpus.BOOK_PLIES):
-    return build_corpus.corpus(games(text), book_plies)
+def sourced(text, run="-"):
+    """The games as `games_of` hands them over, each with the run that played
+    it."""
+    return (build_corpus.Sourced(run, game) for game in games(text))
+
+
+def build(text, book_plies=build_corpus.BOOK_PLIES, run="-"):
+    return build_corpus.corpus(sourced(text, run), book_plies)
 
 
 def test_the_book_is_dropped_off_the_front_of_a_game():
@@ -261,7 +270,13 @@ def test_a_line_is_the_epd_the_engine_parses():
     fen, name = position.rsplit(" id ", 1)
     assert len(fen.split(" ")) == 4
     assert name.startswith('"g00001p008')
-    assert operations == [f'game "{key}"', 'result "1.0000"', 'count "1";']
+    assert operations == [
+        f'game "{key}"',
+        'run "-"',
+        'round "-"',
+        'result "1.0000"',
+        'count "1";',
+    ]
 
 
 def test_a_mean_result_is_written_to_four_places():
@@ -291,7 +306,71 @@ def test_a_directory_stands_for_the_games_inside_it(tmp_path):
     (run / "games.pgn").write_text(pgn(), encoding="utf-8")
     out = tmp_path / "corpus.epd"
     assert build_corpus.main([str(run), "--out", str(out), "--book-plies", "4"]) == 0
-    assert len(out.read_text(encoding="utf-8").splitlines()) == 6
+    lines = out.read_text(encoding="utf-8").splitlines()
+    assert len(lines) == 6
+    # and with no manifest beside the games, the directory's name is the run
+    assert all('run "9979240008"' in line for line in lines)
+
+
+def test_a_row_names_the_run_the_manifest_beside_its_games_names(tmp_path):
+    """A strength run's artifact keeps a manifest beside its games, and the
+    run id and the shard in it are what a row can be excluded or weighted by
+    after extraction."""
+    shard = tmp_path / "strength-34468958876-1-shard-0"
+    shard.mkdir()
+    (shard / "games.pgn").write_text(pgn(round_="7"), encoding="utf-8")
+    (shard / "manifest.txt").write_text(
+        "candidate: 221\nrun_id: 34468958876\nshard: 0\npairs: 50\n",
+        encoding="utf-8",
+    )
+    assert build_corpus.run_of(shard / "games.pgn") == "34468958876-0"
+    # a run from before the workflow was sharded names no shard, and is its
+    # run id alone rather than an id with a dash hanging off it
+    unsharded = tmp_path / "9979240008"
+    unsharded.mkdir()
+    (unsharded / "games.pgn").write_text(pgn(), encoding="utf-8")
+    (unsharded / "manifest.txt").write_text("run_id: 33999671924\n", encoding="utf-8")
+    assert build_corpus.run_of(unsharded / "games.pgn") == "33999671924"
+    out = tmp_path / "corpus.epd"
+    assert build_corpus.main([str(shard), "--out", str(out), "--book-plies", "8"]) == 0
+    line = out.read_text(encoding="utf-8").splitlines()[0]
+    assert 'run "34468958876-0"' in line
+    assert 'round "7"' in line
+
+
+def test_a_row_says_when_the_archive_did_not_say_where_a_game_came_from():
+    """No manifest, no directory and no Round header leave the two operands
+    at a dash rather than at something invented."""
+    entries, counts = build(pgn(), book_plies=8)
+    entry = next(iter(entries.values()))
+    assert entry.played.run == "-"
+    assert entry.played.round == "-"
+    assert counts["runs"] == 1
+
+
+def test_a_positions_run_and_round_are_the_owning_games():
+    """On a position two games reached the operands are the owning game's,
+    the lowest key, and not the game the position was first seen in, so they
+    say where the label came from."""
+    text = moves_pgn(DIRECT, result="1-0").replace(
+        "[Event", '[Round "3"]\n[Event', 1
+    ) + moves_pgn(TRANSPOSED, result="0-1").replace("[Event", '[Round "4"]\n[Event', 1)
+    first, second = games(text)
+    keys = {build_corpus.game_key(first): "3", build_corpus.game_key(second): "4"}
+    entries, _ = build(text, book_plies=4)
+    entry = next(iter(entries.values()))
+    assert entry.played.round == keys[min(keys)]
+
+
+def test_the_runs_read_are_counted():
+    """Two archives are two runs whatever they hold, and one archive read
+    twice is one."""
+    first = list(sourced(pgn(), run="a"))
+    second = list(sourced(pgn(), run="b"))
+    _, counts = build_corpus.corpus(first + second, 8)
+    assert counts["runs"] == 2
+    _, counts = build_corpus.corpus(first + first, 8)
+    assert counts["runs"] == 1
 
 
 @pytest.mark.parametrize("turn,expected", [(True, 0.25), (False, 0.75)])

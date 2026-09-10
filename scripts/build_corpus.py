@@ -9,10 +9,10 @@ own, and this turns a pile of those pgns into the epd `arche terms` reads:
 
     python3 scripts/build_corpus.py runs/*/games.pgn --out corpus.epd
 
-One line per unique position, carrying the game it belongs to, the result from
-the side to move's point of view, and how many times it appeared. The result is
-the mean of what its games did and the count is the weight the loss reads the
-position at.
+One line per unique position, carrying the game it belongs to, the run and the
+round that game was played in, the result from the side to move's point of
+view, and how many times it appeared. The result is the mean of what its games
+did and the count is the weight the loss reads the position at.
 
 The game a line names is a key rather than a name: the sha256 of the game's
 movetext. `scripts/tune.py` splits on it, because the label is the game's and
@@ -35,6 +35,15 @@ cannot tell the same game archived twice from two games played move for move
 the same, and either way the archive is holding one game's evidence twice. The
 count is what makes that visible. A key on the game's name hid it.
 
+The run and the round are where the game came from rather than what it is, so
+they are carried beside the key and not folded into it. The run is read off the
+`manifest.txt` a strength run keeps beside its `games.pgn`, as the run id and
+the shard, and off the directory's name where there is no manifest; the round
+is the pgn's own `Round` header. A row that names them can be excluded or
+weighted by its source after extraction, which a row naming only its game
+could not, and the round is what says which two games played one opening with
+the colours reversed.
+
 The book is dropped. The first sixteen plies are the opening book's, and so is
 any further ply whose comment says `book`, so the corpus starts where the book
 stops and its opening variety is the book's rather than the engine's. Games
@@ -56,6 +65,7 @@ games reaching the same diagram by different move orders are one row.
 import argparse
 import collections
 import hashlib
+import re
 import sys
 from pathlib import Path
 
@@ -89,6 +99,20 @@ CRASH_WORDS = (
 # result to label with, and it is dropped.
 RESULTS = {"1-0": 1.0, "0-1": 0.0, "1/2-1/2": 0.5}
 
+# What a game's row says for a round the archive did not name, and what
+# `corpus` is handed for the run by a caller that has none. A pgn read from
+# the archive always has a run: the manifest's, or the directory's name.
+UNKNOWN = "-"
+
+# The file a strength run keeps beside its games, and the two lines of it that
+# name the run: `run_id: 34468958876` and `shard: 0`.
+MANIFEST = "manifest.txt"
+MANIFEST_LINE = re.compile(r"^(run_id|shard):\s*(\S+)\s*$")
+
+# The run and the game as read from the archive, which is what `corpus` is
+# handed: a game on its own does not know which run played it.
+Sourced = collections.namedtuple("Sourced", "run game")
+
 
 def game_key(game):
     """The name of a game: the sha256 of its movetext.
@@ -104,6 +128,14 @@ def game_key(game):
     return hashlib.sha256(movetext.encode("utf-8")).hexdigest()
 
 
+class Played:
+    """Where one game came from: the run and the round it was played in."""
+
+    def __init__(self, run, round_):
+        self.run = run
+        self.round = round_
+
+
 class Entry:
     """One unique position: what to call it, and what every game that reached
     it said about it.
@@ -117,9 +149,11 @@ class Entry:
     game's into a row that is meant to be unread.
     """
 
-    def __init__(self, identifier, key, result):
+    def __init__(self, identifier, key, result, played):
         self.id = identifier
         self.appearances = [(key, result)]
+        # the table of every game read, by key, shared with every entry
+        self._played = played
 
     def seen(self, key, result):
         """Another game reaching this position."""
@@ -129,6 +163,11 @@ class Entry:
     def key(self):
         """The game the position belongs to: the lowest key that reached it."""
         return min(key for key, _ in self.appearances)
+
+    @property
+    def played(self):
+        """Where the game the position belongs to came from."""
+        return self._played[self.key]
 
     @property
     def results(self):
@@ -173,15 +212,23 @@ def result_for(white_result, turn):
     return white_result if turn == chess.WHITE else 1.0 - white_result
 
 
-def corpus(games, book_plies=BOOK_PLIES):
-    """The unique post-book positions of the games, in the order they were
-    first seen, with what each one's games said about it.
+def round_of(game):
+    """The round the game was played in, as the pgn names it. A pgn with no
+    Round header reads back as a question mark, which is no round either."""
+    found = game.headers.get("Round", "").strip()
+    return UNKNOWN if found in ("", "?") else found
 
-    Returns the entries and the counts a caller reports: games read, games
-    dropped, plies seen, plies past the book, how many of the positions more
-    than one game reached, how many of those were reached by games in more than
-    one group and how many appearances that dropped, and how many games key
-    alike with one already read.
+
+def corpus(sourced, book_plies=BOOK_PLIES):
+    """The unique post-book positions of the games, in the order they were
+    first seen, with what each one's games said about it. Each game arrives
+    with the run that played it, which `games_of` reads off the archive.
+
+    Returns the entries and the counts a caller reports: runs read, games read,
+    games dropped, plies seen, plies past the book, how many of the positions
+    more than one game reached, how many of those were reached by games in more
+    than one group and how many appearances that dropped, and how many games
+    key alike with one already read.
 
     The dropped appearances are what the group-local label costs, so the run
     says how many rather than leaving a reader to work it out from the plies.
@@ -192,9 +239,12 @@ def corpus(games, book_plies=BOOK_PLIES):
     """
     entries = collections.OrderedDict()
     keys = collections.Counter()
+    played = {}
+    runs = set()
     read = dropped = plies = post_book = 0
-    for game in games:
+    for run, game in sourced:
         read += 1
+        runs.add(run)
         mainline = list(plies_of(game))
         plies += len(mainline)
         white_result = RESULTS.get(game.headers.get("Result", "*"))
@@ -203,6 +253,8 @@ def corpus(games, book_plies=BOOK_PLIES):
             continue
         key = game_key(game)
         keys[key] += 1
+        # a game the archive holds twice keeps the first place it was seen
+        played.setdefault(key, Played(run, round_of(game)))
         for ply, board, comment in mainline:
             if ply < book_plies or comment.strip() == BOOK_COMMENT:
                 continue
@@ -211,10 +263,11 @@ def corpus(games, book_plies=BOOK_PLIES):
             result = result_for(white_result, board.turn)
             entry = entries.get(epd)
             if entry is None:
-                entries[epd] = Entry(f"g{read:05d}p{ply:03d}", key, result)
+                entries[epd] = Entry(f"g{read:05d}p{ply:03d}", key, result, played)
             else:
                 entry.seen(key, result)
     counts = {
+        "runs": len(runs),
         "games": read,
         "dropped": dropped,
         "plies": plies,
@@ -230,13 +283,16 @@ def corpus(games, book_plies=BOOK_PLIES):
 
 def render(entries):
     """The epd the engine reads: the four-field position, a name, the game it
-    belongs to, the result and how many times it was reached.
+    belongs to and where that game was played, the result and how many times
+    it was reached.
 
     The name says where the position was first seen, which is a game and a ply
     a reader can go back to. The game it belongs to is the `game` operand, and
     on a position two games reached the two disagree: the name is the first
     game, which may be one of the games the label drops, and the operand is the
-    lowest key. The split reads the operand.
+    lowest key. The split reads the operand. The `run` and `round` operands are
+    that game's, so they say where the label came from and not where the
+    position was first seen.
 
     The result is written to four places. It is a mean over a handful of games
     at most, and a place further would be spelling out a repeating decimal.
@@ -245,13 +301,35 @@ def render(entries):
     for epd, entry in entries.items():
         lines.append(
             f'{epd} id "{entry.id}"; game "{entry.key}"; '
+            f'run "{entry.played.run}"; round "{entry.played.round}"; '
             f'result "{entry.result:.4f}"; count "{entry.count}";'
         )
     return "\n".join(lines) + "\n"
 
 
+def run_of(path):
+    """The run that played the games in a pgn: the run id and the shard off the
+    manifest beside it, the run id alone where the manifest names no shard,
+    the directory's name where there is no manifest, and the file's own name
+    where there is no directory to speak of either."""
+    manifest = path.parent / MANIFEST
+    if manifest.is_file():
+        found = {}
+        for line in manifest.read_text(encoding="utf-8", errors="replace").splitlines():
+            match = MANIFEST_LINE.match(line)
+            if match:
+                found[match.group(1)] = match.group(2)
+        if "run_id" in found:
+            # a run before the workflow was sharded names no shard
+            return "-".join(
+                found[word] for word in ("run_id", "shard") if word in found
+            )
+    return path.parent.name or path.stem
+
+
 def games_of(paths):
-    """Every game in the pgn files named, in the order the files were given.
+    """Every game in the pgn files named, in the order the files were given,
+    each with the run that played it.
 
     A directory stands for the `games.pgn` inside it, which is how a strength
     run's artifact is laid out.
@@ -260,12 +338,13 @@ def games_of(paths):
         path = Path(path)
         if path.is_dir():
             path = path / "games.pgn"
+        run = run_of(path)
         with path.open(encoding="utf-8", errors="replace") as handle:
             while True:
                 game = chess.pgn.read_game(handle)
                 if game is None:
                     break
-                yield game
+                yield Sourced(run, game)
 
 
 def main(argv=None):
@@ -288,7 +367,7 @@ def main(argv=None):
         return 1
     Path(args.out).write_text(render(entries), encoding="utf-8", newline="\n")
     print(
-        "corpus games {games} dropped {dropped} plies {plies} "
+        "corpus runs {runs} games {games} dropped {dropped} plies {plies} "
         "post_book {post_book} positions {positions} repeated {repeated} "
         "straddled {straddled} dropped_appearances {dropped_appearances} "
         "same_key {same_key}".format(**counts)
