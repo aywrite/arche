@@ -165,14 +165,25 @@ evaluation tuner, and they have tests under `scripts/tests` gated by the
 Scripts workflow:
 
 - **build_corpus.py**: Archived strength-run pgns in, an epd of unique
-  post-book positions out, each carrying the game result from the side to
-  move's point of view and how many games it appeared in.
+  post-book positions out, each carrying the game it belongs to, the result
+  from the side to move's point of view, and how many times it was reached.
+  The game is named by the sha256 of its movetext, which is what the split
+  reads, and a position two games reached belongs to the lower of their keys.
 - **tune.py**: The loss harness and the fit. Reads an `arche terms` run and
   the corpus above, rebuilds every row against the weights the run printed,
-  and either scores weight vectors on a held-out split or fits new ones.
+  and either scores weight vectors on the selection games, cross validates one
+  way of fitting against another, or fits new weights. The unit throughout is
+  the game and not the position, because the label is the game's, and the
+  objective weights a position by how often the corpus reached it. There are
+  three groups: three fifths of the games train, a fifth ranks the ridge, and
+  a fifth is sealed. The sealed rows are not in the matrices anything here
+  scores, so no command can read a sealed row. The seal is on the rows and not
+  on the labels: a position two games reached is one row whose label is the
+  mean of their results, so a sealed game's result can reach a scored row's
+  label and the other way about, on the 3.92% of positions that repeat at all.
   Nothing here knows how to evaluate a position: the engine states the
-  coefficients and states the weights, and a row this cannot rebuild stops
-  the run.
+  coefficients and states the weights, and a row this cannot rebuild stops the
+  run.
 
 ## Measurement
 

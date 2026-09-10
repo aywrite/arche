@@ -38,6 +38,23 @@ the engine plays. Roughly in the order they look worth doing.
 
 ## Known limitations
 
+- a fit of the piece square tables on our own games does not beat the tables psqt.rs
+  already holds by more than its own interval. Measured 2026-09-10 over 1,814 archived
+  games, 100,726 quiet positions across 1,807 of them: the shipped weights score 0.091796
+  on the selection games, and the ridge the selection group picks beats them by 0.000452
+  against a standard error of 0.000329. The harness reads a difference as real when it is
+  larger than twice its standard error, and twice this one is 0.000658, so the fit does
+  not clear it. Five-fold cross validation of whole games says the same about the grid's
+  best there, 1e-7: 0.000834 better against a standard error of 0.000479, and twice that
+  is 0.000958. The corpus is the engine's own play, so the positions it never reaches are
+  unlabelled, and that is the ceiling on what any fit of it can say. Whether a re-tune
+  buys strength is the sprt's question and not this one
+- the harness said otherwise until 2026-09-10, and why is worth keeping. It split the
+  corpus on the fen, and 1,805 of the corpus's 1,809 games had rows on both sides: 53.1% of
+  the held-out rows had the position a ply away, from the same game and carrying the same
+  label, sitting in the training set. Read that way a fit of the same tables came to
+  -0.005831 at 27.8 standard errors, which is what the leak was worth. Any number quoted
+  from a tuner run made before that date is a number on a split that held nothing out
 - a transposition score that came from a repetition or fifty move draw is trusted, except
   within four plies of the fifty move horizon, where every cutoff is refused. The search can
   therefore read a draw down a path that could not reach it; the policies were played against
