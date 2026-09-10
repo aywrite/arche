@@ -351,24 +351,27 @@ It searches nothing to a depth, so it takes no depth. It reads the bench's
 suite, or the one named, keeps the positions that are quiet, and prints what
 each one's evaluation is made of.
 
-The evaluation is material plus a tapered piece square score, and it is
-linear in the numbers those are read from. So a position's score is a dot
-product of the position against the weights, and a row is the position's half
-of it: for every weight the position touches, the integer that weight is
-multiplied by. The weights are a flat vector of 774, in this order: the 384
-midgame table entries, the 384 endgame ones in the same order, then the six
-material values. So a square's two weights are 384 apart. A slot's entry is a
-square as black sees it, because black is the colour that reads the tables as
-they are written.
+The evaluation is material plus a tapered piece square score plus a tapered
+mobility score, and it is linear in the numbers those are read from. So a
+position's score is a dot product of the position against the weights, and a
+row is the position's half of it: for every weight the position touches, the
+integer that weight is multiplied by. The weights are a flat vector of 782, in
+this order: the 384 midgame table entries, the 384 endgame ones in the same
+order, then the six material values, then four midgame mobility weights and
+the same four at the endgame end. So a square's two weights are 384 apart and a
+piece kind's two mobility weights are 4 apart. A slot's entry is a square as
+black sees it, because black is the colour that reads the tables as they are
+written.
 
 The vector was 518 until a knight, a bishop, a rook and a queen were given an
 endgame table of their own, since each of the four had handed one array to
-both ends of the taper. Rows printed by an engine from before that, and any
-vector fitted against them, are refused rather than read: every slot they name
-exists in the layout that replaced them, so reading them would put the numbers
-on the wrong weights.
+both ends of the taper, and 774 until the eight mobility weights were added
+after the material block. Rows printed by an engine from before either change,
+and any vector fitted against them, are refused rather than read: every slot
+they name exists in the layout that replaced them, so reading them would put
+the numbers on the wrong weights.
 
-The line after the header is `weights 774 <w0> <w1> ...`, the vector itself as
+The line after the header is `weights 782 <w0> <w1> ...`, the vector itself as
 the live tables hold it, so that nothing reading these rows transcribes
 psqt.rs. A transcription is the same failure as a reimplemented evaluation and
 quieter: a table copied out and left behind fits weights against a position it
@@ -597,7 +600,7 @@ so it means one thing inside a layout and nothing across two. That half held
 512 entries before a knight, a bishop, a rook and a queen were given an
 endgame table and holds 768 after, and 256 of the 768 were exact copies of
 their midgame twins until the fit that made them differ. A scale of 1.0 at
-774 slots and a scale of 1.0 at 518 are not the same statement, and the same
+782 slots and a scale of 1.0 at 518 are not the same statement, and the same
 goes for the boardful the bound is checked against. Figures from fits at
 different layouts are quoted with the layout beside them or not quoted
 together.
