@@ -64,7 +64,9 @@ fn the_cutoffs_argument_prints_a_header_rows_and_a_summary() {
                     "row: {}",
                     row
                 );
-                assert!(words[8].parse::<u32>().is_ok(), "row: {}", row);
+                // the history column is signed: a move tried more often
+                // than it has cut prints under zero
+                assert!(words[8].parse::<i32>().is_ok(), "row: {}", row);
                 assert!(
                     words[14] == "reduced" || words[14] == "full",
                     "row: {}",

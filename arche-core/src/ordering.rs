@@ -19,9 +19,9 @@
 //! Two memories carry across nodes. The killers are the quiet moves that
 //! cut a node off at each distance from the root, tried early by that
 //! ply's other nodes; the history is how often each quiet move has cut off
-//! anywhere, which orders the moves no killer names. Both are held here
-//! and both are the search's to fill: `SearchConfig::move_memory` says
-//! whether a node consults them at all.
+//! against how often it was tried and did not, which orders the moves no
+//! killer names. Both are held here and both are the search's to fill:
+//! `SearchConfig::move_memory` says whether a node consults them at all.
 //!
 //! The bands do not overlap, and `the_bands_do_not_overlap` says so with
 //! the constants rather than a comment. Mind that the root's
@@ -52,13 +52,21 @@ const SEE_UNIT: i64 = 2_000;
 /// The two killers, in the order they are tried. Both sit under the
 /// smallest even capture, and above the quiet moves themselves.
 const KILLER_BONUS: [i64; 2] = [9_000_000, 8_000_000];
-/// What a history entry may reach before the whole table is halved. It is
-/// below the second killer, so no move the history likes ever reaches the
-/// killers' band however long a search runs. At the depths the engine is
-/// measured at, entries peak thousands of times below this, so the
-/// halving is a guard on the band and not aging; a threshold low enough
-/// to age inside a search is its own change to measure.
-const HISTORY_MAX: u32 = 7_000_000;
+/// What a history entry gravitates toward and never passes, either way.
+/// Every update is a step of `bonus - entry * |bonus| / HISTORY_MAX`, so
+/// the step shrinks as the entry approaches the bound and an entry rests
+/// at this times the net share of its updates that were cutoffs, cutoffs
+/// less the rest rather than cutoffs over the whole: a move that cuts half
+/// the nodes it is tried at rests near zero and not near half the bound.
+/// It is the scale of the rate rather than a ceiling something else
+/// guards: nothing halves the table and nothing else ages it. Both bands
+/// hold with room. Above, it is three orders under the second killer, so
+/// no move the history likes reaches the killers however long a search
+/// runs; below, a move the history dislikes keys at most `HISTORY_MAX` and
+/// the least losing capture keys at `SEE_UNIT * 100` less the largest
+/// tiebreak, so a quiet stays ahead of every losing capture on the spilled
+/// list path. `the_bands_do_not_overlap` says both with the constants.
+const HISTORY_MAX: i32 = 8_192;
 
 /// Most valuable victim: what taking each piece is worth.
 const VICTIM_SCORES: [i64; 6] = [100, 250, 300, 400, 500, 1000];
@@ -92,11 +100,14 @@ const NOWHERE: Play = Play {
     castle: false,
 };
 
-/// How often each quiet move has cut a node off, by the side that played
-/// it and the squares it moved between. The from and to squares alone,
-/// which is what a butterfly table is: the piece is not part of the index,
-/// so two pieces that can make the same journey share an entry.
-type History = [[[u32; 64]; 64]; 2];
+/// How often each quiet move has cut a node off against how often it was
+/// tried and did not, by the side that played it and the squares it moved
+/// between. The from and to squares alone, which is what a butterfly table
+/// is: the piece is not part of the index, so two pieces that can make the
+/// same journey share an entry. An entry is signed, since a move tried
+/// more often than it cuts is worth ordering behind one the search knows
+/// nothing about.
+type History = [[[i32; 64]; 64]; 2];
 
 pub(crate) struct MoveOrdering {
     /// Scratch for the keys, one buffer reused by every sort. As a local it
@@ -142,13 +153,27 @@ impl MoveOrdering {
     }
 
     /// A move that cut a node off, `ply` from the root with `depth` left to
-    /// search. It becomes this ply's first killer and its history entry
-    /// gains the square of the depth, so a cutoff proved over a deeper
-    /// subtree counts for more than a shallow one.
+    /// search, and the moves the node made and searched before it. It
+    /// becomes this ply's first killer. Its history entry gains the square
+    /// of the depth, so a cutoff proved over a deeper subtree counts for
+    /// more than a shallow one, and every quiet in `tried` loses the same,
+    /// since those moves were asked where this one was asked and answered
+    /// nothing. That is the denominator a count of cutoffs lacks: without
+    /// it an entry rewards a move for being ordered early, which the
+    /// ordering itself decides.
     ///
-    /// A capture is dropped. The swap orders the captures already, and a
-    /// killer slot holding one would order nothing the sort does not.
-    pub(crate) fn cutoff(&mut self, color: Color, m: &Play, ply: usize, depth: u8) {
+    /// A capture is dropped, cutting or tried. The swap orders the
+    /// captures already, and a killer slot holding one would order nothing
+    /// the sort does not; the caller passes the moves it has rather than
+    /// sorting the quiets out first.
+    pub(crate) fn cutoff<'a>(
+        &mut self,
+        color: Color,
+        m: &Play,
+        tried: impl IntoIterator<Item = &'a Play>,
+        ply: usize,
+        depth: u8,
+    ) {
         debug_assert!(ply < MAX_PLY as usize, "no killers past the rail");
         if m.capture.is_some() {
             return;
@@ -160,33 +185,50 @@ impl MoveOrdering {
             killers[1] = killers[0];
             killers[0] = Some(*m);
         }
-        let bonus = u32::from(depth) * u32::from(depth);
-        let entry = &mut self.history[color as usize][m.from as usize][m.to as usize];
-        *entry += bonus;
-        if *entry >= HISTORY_MAX {
-            // the whole table halves rather than the hot entry sticking at
-            // the top, so if the ceiling is ever reached the entries keep
-            // their proportions and none reaches the killers' band. See
-            // HISTORY_MAX for why no measured search gets here
-            for side in self.history.iter_mut() {
-                for from in side.iter_mut() {
-                    for to in from.iter_mut() {
-                        *to /= 2;
-                    }
-                }
+        // d², held to the bound. Gravity's step only stays inside the bound
+        // while it is no wider than it, and a depth whose square is not
+        // needs the rail and a chain of check extensions to reach: no
+        // measured search has been near one. The invariant is what both
+        // bands rest on, so it is kept for any depth this is handed rather
+        // than argued from the depths that happen.
+        let bonus = (i32::from(depth) * i32::from(depth)).min(HISTORY_MAX);
+        for t in tried {
+            if t.capture.is_none() {
+                gravitate(
+                    &mut self.history[color as usize][t.from as usize][t.to as usize],
+                    -bonus,
+                );
             }
         }
+        gravitate(
+            &mut self.history[color as usize][m.from as usize][m.to as usize],
+            bonus,
+        );
     }
 
     /// Test-only read, for the search level checks that a cutoff is
-    /// credited to the side that earned it.
+    /// credited to the side that earned it. Signed, so a side taught
+    /// nothing and a side whose maluses outweigh its bonuses are told
+    /// apart rather than both reading as nothing.
     #[cfg(test)]
-    pub(crate) fn history_total(&self, color: Color) -> u64 {
+    pub(crate) fn history_total(&self, color: Color) -> i64 {
         self.history[color as usize]
             .iter()
             .flatten()
-            .map(|&e| u64::from(e))
+            .map(|&e| i64::from(e))
             .sum()
+    }
+
+    /// Test-only read of how many entries the side holds below zero, which
+    /// is what says the tried moves reached the table at all: a bonus
+    /// alone can never put one there.
+    #[cfg(test)]
+    pub(crate) fn history_marked_down(&self, color: Color) -> usize {
+        self.history[color as usize]
+            .iter()
+            .flatten()
+            .filter(|&&e| e < 0)
+            .count()
     }
 
     /// The killers standing at a ply. Read by the cutoff census, which asks
@@ -199,7 +241,7 @@ impl MoveOrdering {
     /// What the history table holds for one of `color`'s moves: the score
     /// `order_quiets` would rank it by, read without teaching anything.
     /// Read by the cutoff census.
-    pub(crate) fn history_score(&self, color: Color, m: &Play) -> u32 {
+    pub(crate) fn history_score(&self, color: Color, m: &Play) -> i32 {
         self.history[color as usize][m.from as usize][m.to as usize]
     }
 
@@ -294,7 +336,9 @@ impl MoveOrdering {
     /// and the quiet moves run from there to the first losing capture. They
     /// are scored by the memories as they stand now, killers first and the
     /// rest by history, and sorted in place; the losing captures behind
-    /// them are already in their order.
+    /// them are already in their order. A move the history has marked down
+    /// goes last of the quiet moves, behind the ones nothing is known
+    /// about and still ahead of every losing capture.
     pub(crate) fn order_quiets(&mut self, board: &Board, rest: &mut [Play], ply: usize) {
         debug_assert!(ply < MAX_PLY as usize, "no killers past the rail");
         // `order` hands back the whole length of a list that spilled, so
@@ -323,11 +367,11 @@ impl MoveOrdering {
             if key == 0 {
                 plain |= 1 << i;
             } else {
-                // a bonus is never negative, so the count here always
-                // comes to the same as `scored`. Reading it off the sign
-                // anyway measured 0.3% faster than handing `scored` over,
-                // and it is what the sort wants if a bonus ever goes the
-                // other way
+                // a move the history has marked down keys the other way,
+                // and the count is what puts it behind the quiets nothing
+                // is known about rather than ahead of them. Reading it off
+                // the sign measured 0.3% faster than handing `scored` over
+                // back when a bonus could only be positive
                 front += usize::from(key < 0);
                 keys[scored] = pack(key, i);
                 scored += 1;
@@ -345,13 +389,14 @@ impl MoveOrdering {
 /// for the node rather than read again for each move scored.
 struct Quiet<'a> {
     killers: [Option<Play>; 2],
-    history: &'a [[u32; 64]; 64],
+    history: &'a [[i32; 64]; 64],
 }
 
 impl Quiet<'_> {
     /// What a quiet move is worth here. A move nothing is known about
-    /// scores zero, and nothing this returns reaches the smallest capture
-    /// the sort puts above a quiet move.
+    /// scores zero, a move tried more often than it has cut scores under
+    /// it, and nothing this returns reaches the smallest capture the sort
+    /// puts above a quiet move or falls to the largest one it puts below.
     ///
     /// The squares are masked to the six bits they already sit in. A `Play`
     /// holds a square as a byte and the table is sixty four rows of sixty
@@ -373,6 +418,28 @@ impl Quiet<'_> {
         }
         i64::from(self.history[(m.from & 63) as usize][(m.to & 63) as usize])
     }
+}
+
+/// One update of a history entry: `entry += bonus - entry * |bonus| / MAX`.
+/// The entry moves the way the bonus points by a step that shrinks as it
+/// nears the bound, so it never passes `HISTORY_MAX` either way, and comes
+/// to rest at the bound times the net share of its updates that were
+/// cutoffs: cutoffs less the rest over the whole of them, so half and half
+/// rests near zero and nothing but cutoffs rests on the bound itself. That
+/// share is what makes the entry a rate: a move tried a hundred times and
+/// cutting ten of them settles where a move tried ten and cutting one
+/// does, where a count would put the first ten times ahead.
+///
+/// The step is what ages the table as well. An old cutoff is worn away by
+/// the updates that follow it rather than by anything sweeping the table,
+/// which is why nothing halves the table any more.
+#[inline]
+fn gravitate(entry: &mut i32, bonus: i32) {
+    debug_assert!(
+        bonus.abs() <= HISTORY_MAX,
+        "a step wider than the bound would carry an entry past it"
+    );
+    *entry += bonus - *entry * bonus.abs() / HISTORY_MAX;
 }
 
 /// What a move sorts by, smaller first: a capture by what the swap says of
@@ -541,6 +608,13 @@ mod order {
     // defends
     const CAPTURES: &str = "rn5k/7p/8/3q3Q/4P3/8/8/6K1 w - - 0 1";
 
+    // the two hundred move position with a knight added on c3, so that the
+    // pawn on a2 has a defender besides the king: taking it with the knight
+    // or the bishop then loses, where against the king alone the swap knows
+    // a defended piece cannot be taken back. Long enough to spill the
+    // buffer, which is the path where one sort orders the whole list
+    const CROWDED: &str = "R6R/3Q4/1Q4Q1/4Q3/2Q4Q/Q1n2Q2/pp1Q4/kBNN1KB1 w - - 0 1";
+
     fn ordered(fen: &str, table_move: Option<Play>) -> Vec<Play> {
         ordered_by(fen, table_move, &mut MoveOrdering::new())
     }
@@ -591,7 +665,7 @@ mod order {
         let taught = named(&board.generate_moves(), "g1f1");
         // taught at another ply, so it sorts by history and not as a killer
         let mut ordering = MoveOrdering::new();
-        ordering.cutoff(Color::White, &taught, 1, 4);
+        ordering.cutoff(Color::White, &taught, &[], 1, 4);
 
         let moves = ordered_by(CAPTURES, None, &mut ordering);
         let losing = position_of(&moves, "h5h7");
@@ -609,7 +683,7 @@ mod order {
         let board = Board::from_fen(ROOKS).unwrap();
         let killer = named(&board.generate_moves(), "h1g1");
         let mut ordering = MoveOrdering::new();
-        ordering.cutoff(Color::White, &killer, 0, 4);
+        ordering.cutoff(Color::White, &killer, &[], 0, 4);
 
         let moves = ordered_by(ROOKS, None, &mut ordering);
         assert!(position_of(&moves, "e1e8") < position_of(&moves, "h1g1"));
@@ -650,11 +724,6 @@ mod order {
     // nothing to read there
     #[test]
     fn the_count_returned_is_where_the_losing_captures_start() {
-        // the two hundred move position with a knight added on c3, so that
-        // the pawn on a2 has a defender besides the king: taking it with
-        // the knight or the bishop then loses, where against the king alone
-        // the swap knows a defended piece cannot be taken back
-        const CROWDED: &str = "R6R/3Q4/1Q4Q1/4Q3/2Q4Q/Q1n2Q2/pp1Q4/kBNN1KB1 w - - 0 1";
         for (fen, table_move) in [
             (CAPTURES, None),
             (CAPTURES, Some("h5h7")),
@@ -698,7 +767,7 @@ mod order {
         for killer in [false, true] {
             let mut ordering = MoveOrdering::new();
             if killer {
-                ordering.cutoff(Color::White, &push, 0, 4);
+                ordering.cutoff(Color::White, &push, &[], 0, 4);
             }
             let moves = ordered_by(CAPTURES, Some(push), &mut ordering);
             assert_eq!(moves[0], push, "killer {killer}");
@@ -719,7 +788,7 @@ mod order {
         let board = Board::from_fen(CAPTURES).unwrap();
         let killer = named(&board.generate_moves(), "e4e5");
         let mut ordering = MoveOrdering::new();
-        ordering.cutoff(Color::White, &killer, 0, 4);
+        ordering.cutoff(Color::White, &killer, &[], 0, 4);
 
         let moves = ordered_by(CAPTURES, None, &mut ordering);
         // behind both captures the sort puts above a quiet move
@@ -739,8 +808,8 @@ mod order {
         let first = named(&generated, "e4e5");
         let second = named(&generated, "g1f1");
         let mut ordering = MoveOrdering::new();
-        ordering.cutoff(Color::White, &second, 0, 4);
-        ordering.cutoff(Color::White, &first, 0, 4);
+        ordering.cutoff(Color::White, &second, &[], 0, 4);
+        ordering.cutoff(Color::White, &first, &[], 0, 4);
 
         let moves = quiets(&ordered_by(CAPTURES, None, &mut ordering));
         assert_eq!(moves[0], first);
@@ -756,12 +825,80 @@ mod order {
         // taught at another ply, so this ply's killers are empty and what
         // is left to order the two by is the history alone
         let mut ordering = MoveOrdering::new();
-        ordering.cutoff(Color::White, &generated[0], 1, 1);
-        ordering.cutoff(Color::White, &last, 1, 4);
+        ordering.cutoff(Color::White, &generated[0], &[], 1, 1);
+        ordering.cutoff(Color::White, &last, &[], 1, 4);
 
         let moves = quiets(&ordered_by(CAPTURES, None, &mut ordering));
         assert_eq!(moves[0], last);
         assert_eq!(moves[1], generated[0]);
+    }
+
+    // the whole band a cutoff leaves behind it: the move that cut goes
+    // first, the moves the node tried before it go last, and the quiets it
+    // never asked keep their generated order in between. All of them are
+    // still ahead of the losing capture, which is the invariant a marked
+    // down entry has to hold to
+    #[test]
+    fn the_moves_tried_before_a_cutoff_sort_behind_the_ones_it_never_asked() {
+        let board = Board::from_fen(CAPTURES).unwrap();
+        let generated = quiets(&board.generate_moves());
+        let cut = *generated.last().expect("the position has quiet moves");
+        let tried = [generated[0], generated[1]];
+        let untouched = &generated[2..generated.len() - 1];
+        assert!(!untouched.is_empty(), "there is a move to leave alone");
+
+        // taught at another ply, so nothing here stands in a killer slot
+        // and the history alone orders the band
+        let mut ordering = MoveOrdering::new();
+        ordering.cutoff(Color::White, &cut, &tried, 1, 4);
+
+        let moves = ordered_by(CAPTURES, None, &mut ordering);
+        let mut expected = vec![cut];
+        expected.extend_from_slice(untouched);
+        expected.extend_from_slice(&tried);
+        assert_eq!(quiets(&moves), expected);
+        assert!(position_of(&moves, "h5h7") > position_of(&moves, &tried[1].to_string()));
+    }
+
+    // the same band on the path that has no second stage: a list too long
+    // for the buffer is ordered by one sort with the losing captures in it,
+    // and a marked down quiet keys the way a losing capture does, positive.
+    // What keeps the two apart there is the distance between `HISTORY_MAX`
+    // and the least losing capture's key and nothing else
+    #[test]
+    fn a_marked_down_quiet_stays_ahead_of_the_losing_captures_on_a_spilled_list() {
+        let board = Board::from_fen(CROWDED).unwrap();
+        let generated = board.generate_moves();
+        assert!(
+            generated.len() > crate::board::MOVE_LIST_INLINE,
+            "the list has to spill, or the second stage sorts the quiets instead"
+        );
+        let band = quiets(&generated);
+        let (cut, marked) = (band[0], band[1]);
+
+        // taught at another ply, so this ply's killers are empty and the
+        // history alone orders the quiet moves
+        let mut ordering = MoveOrdering::new();
+        ordering.cutoff(Color::White, &cut, &[marked], 1, 4);
+        assert!(ordering.history_score(Color::White, &marked) < 0);
+
+        let moves = ordered_by(CROWDED, None, &mut ordering);
+        let at = |m: &Play| {
+            moves
+                .iter()
+                .position(|x| x == m)
+                .unwrap_or_else(|| panic!("{m} was not generated"))
+        };
+        let losing = moves
+            .iter()
+            .position(|m| m.capture.is_some() && board.see(m) < 0)
+            .expect("the position has a losing capture");
+        assert!(at(&marked) < losing, "a marked down quiet fell behind");
+        // and it is behind every quiet the history says nothing about,
+        // which are behind the one that cut
+        for m in band.iter().filter(|m| **m != cut && **m != marked) {
+            assert!(at(&cut) < at(m) && at(m) < at(&marked), "{m}");
+        }
     }
 }
 
@@ -769,8 +906,9 @@ mod order {
 mod memory {
     use super::SEE_UNIT;
     use super::{ATTACKER_SCORES, HISTORY_MAX, KILLER_BONUS, MoveOrdering, PLACE_BITS};
-    use super::{TABLE_MOVE_BONUS, VICTIM_SCORES, WINNING_CAPTURE_BASE};
+    use super::{TABLE_MOVE_BONUS, VICTIM_SCORES, WINNING_CAPTURE_BASE, gravitate};
     use crate::board::SEE_VALUES;
+    use crate::engine::MAX_PLY;
     use crate::misc::{Color, Piece};
     use crate::play::Play;
 
@@ -819,6 +957,16 @@ mod memory {
         assert!(KILLER_BONUS[0] > KILLER_BONUS[1]);
         assert!(KILLER_BONUS[1] > i64::from(HISTORY_MAX));
 
+        // and the other side of the history's band, which is a band now
+        // that an entry can go under zero. A losing capture loses a pawn
+        // at least, so the best a losing capture can key is that swap with
+        // the largest tiebreak on top, and the worst a quiet move can key
+        // is the whole bound; the quiet has to stay ahead. That is the
+        // spilled list path, where one sort orders the quiet moves and the
+        // losing captures together
+        let least_losing = -i64::from(SEE_VALUES[Piece::Pawn as usize]) * SEE_UNIT + biggest;
+        assert!(-i64::from(HISTORY_MAX) > least_losing);
+
         // the sort compares a key with the place packed under it, so the
         // widest key there could be has to survive the shift. The place
         // half of `pack` has a compile time assert of its own; this is the
@@ -845,7 +993,7 @@ mod memory {
             (second, [Some(second), Some(first)]),
             (first, [Some(first), Some(second)]),
         ] {
-            ordering.cutoff(Color::White, &m, 3, 4);
+            ordering.cutoff(Color::White, &m, &[], 3, 4);
             assert_eq!(ordering.killers[3], killers, "after {m}");
         }
         // and the ply is what indexes them
@@ -856,46 +1004,90 @@ mod memory {
     fn a_capture_cutoff_touches_neither_memory() {
         let mut ordering = MoveOrdering::new();
         let take = Play::new(8, 16, Some(Piece::Pawn), None, false, false);
-        ordering.cutoff(Color::White, &take, 0, 4);
+        let tried = quiet(9, 17);
+        ordering.cutoff(Color::White, &take, &[tried], 0, 4);
         assert_eq!(ordering.killers[0], [None, None]);
         assert_eq!(ordering.history[Color::White as usize][8][16], 0);
+        // and the moves the node tried before it are not marked down
+        // either. What the capture proved is priced by the swap, so
+        // nothing about this node is the history's business
+        assert_eq!(ordering.history[Color::White as usize][9][17], 0);
     }
 
     #[test]
-    fn a_history_entry_gains_the_square_of_the_depth() {
+    fn a_cutoff_gains_the_square_of_the_depth_and_the_moves_tried_lose_it() {
         let mut ordering = MoveOrdering::new();
         let m = quiet(8, 16);
-        ordering.cutoff(Color::White, &m, 0, 5);
-        assert_eq!(ordering.history[Color::White as usize][8][16], 25);
+        let tried = quiet(9, 17);
+        let take = Play::new(10, 18, Some(Piece::Pawn), None, false, false);
+        ordering.cutoff(Color::White, &m, &[tried, take], 0, 5);
+        let history = &ordering.history[Color::White as usize];
+        // gravity gives back a share of the entry, which is nothing at
+        // zero, so a first update is the step itself either way
+        assert_eq!(history[8][16], 25);
+        assert_eq!(history[9][17], -25);
+        // a capture among the moves tried is passed over the way a
+        // capturing cutoff is, so the caller passes what it has
+        assert_eq!(history[10][18], 0);
         // the side that played it is part of the index
         assert_eq!(ordering.history[Color::Black as usize][8][16], 0);
     }
 
+    // the closed form the update is: a step of 64 on an entry standing at
+    // half the bound gives half of itself back, whichever way it points
     #[test]
-    fn an_entry_at_the_ceiling_halves_the_table_rather_than_wrapping() {
+    fn gravity_gives_back_the_entry_s_share_of_the_step() {
+        for (step, expected) in [(64, 4128), (-64, 4000)] {
+            let mut entry = 4096;
+            gravitate(&mut entry, step);
+            assert_eq!(entry, expected, "a step of {step}");
+        }
+    }
+
+    // an entry settles against the bound rather than wrapping or being
+    // halved back, and it does so from either direction
+    #[test]
+    fn ten_thousand_steps_leave_an_entry_inside_the_bound() {
         const DEPTH: u8 = 8;
-        let bonus = u32::from(DEPTH) * u32::from(DEPTH);
         let mut ordering = MoveOrdering::new();
         let hot = quiet(8, 16);
-        let cool = quiet(9, 17);
-        ordering.cutoff(Color::White, &cool, 0, DEPTH);
-        for _ in 0..(HISTORY_MAX / bonus + 2) {
-            ordering.cutoff(Color::White, &hot, 0, DEPTH);
+        let cold = quiet(9, 17);
+        for _ in 0..10_000 {
+            ordering.cutoff(Color::White, &hot, &[cold], 0, DEPTH);
         }
         let history = &ordering.history[Color::White as usize];
-        assert!(history[8][16] > 0 && history[8][16] < HISTORY_MAX);
-        // the whole table aged, not the entry that reached the ceiling
-        assert!(history[9][17] > 0 && history[9][17] < bonus);
+        assert!(history[8][16] > HISTORY_MAX / 2 && history[8][16] <= HISTORY_MAX);
+        assert!(history[9][17] < -HISTORY_MAX / 2 && history[9][17] >= -HISTORY_MAX);
+    }
+
+    // a step wider than the bound would carry an entry through it, so d²
+    // is held to the bound. It takes the rail and a chain of check
+    // extensions to hand `cutoff` such a depth and no measured search has
+    // been near one, which is why the invariant is kept here rather than
+    // argued from the depths that happen
+    #[test]
+    fn a_depth_whose_square_passes_the_bound_lands_on_it() {
+        let mut ordering = MoveOrdering::new();
+        let m = quiet(8, 16);
+        assert!(i32::from(MAX_PLY) * i32::from(MAX_PLY) > HISTORY_MAX);
+        for _ in 0..2 {
+            ordering.cutoff(Color::White, &m, &[], 0, MAX_PLY);
+            assert_eq!(ordering.history[Color::White as usize][8][16], HISTORY_MAX);
+        }
     }
 
     #[test]
     fn forgetting_empties_both_memories() {
         let mut ordering = MoveOrdering::new();
         let m = quiet(8, 16);
-        ordering.cutoff(Color::White, &m, 2, 4);
+        let tried = quiet(9, 17);
+        ordering.cutoff(Color::White, &m, &[tried], 2, 4);
+        assert!(ordering.history[Color::White as usize][9][17] < 0);
         ordering.forget();
         assert_eq!(ordering.killers[2], [None, None]);
         assert_eq!(ordering.history[Color::White as usize][8][16], 0);
+        // a marked down entry goes with the rest of them
+        assert_eq!(ordering.history[Color::White as usize][9][17], 0);
     }
 }
 

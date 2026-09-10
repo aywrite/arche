@@ -174,9 +174,11 @@ pub struct Cut {
     pub index: usize,
     pub class: Class,
     /// The history table's score for the cutting move at the moment of the
-    /// cutoff, quiets only and 0 otherwise. Read as a fraction of
-    /// `history_max` rather than raw, since the raw number ages.
-    pub history: u32,
+    /// cutoff, quiets only and 0 otherwise. Signed: an entry is a rate,
+    /// and a move tried more often than it cuts sits below zero. Read as a
+    /// fraction of `history_max` rather than raw, since the raw number
+    /// moves with what the search has learned since.
+    pub history: i32,
     /// Whether the cutting move's answer came through the reduced scout.
     pub reduced: bool,
 }
@@ -206,10 +208,11 @@ pub struct Event {
     pub searched: usize,
     /// The cutting move's half, or none when the loop ran out.
     pub cut: Option<Cut>,
-    /// The largest history score among the node's generated quiets, the
-    /// denominator `Cut::history` is read against. 0 when nothing was
-    /// generated.
-    pub history_max: u32,
+    /// The largest history score among the node's generated quiets,
+    /// clamped at zero, the denominator `Cut::history` is read against. 0
+    /// when nothing was generated and 0 when the table has marked every
+    /// one of them down.
+    pub history_max: i32,
     /// Whether the staged ordering ever scored the quiet band here, or the
     /// front answered before `order_quiets` ran: the class-staged scoring
     /// win made visible. A list too long for the stack is sorted whole,

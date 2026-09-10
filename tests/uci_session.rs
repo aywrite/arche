@@ -265,10 +265,13 @@ fn the_move_a_swap_answers_with_opens_the_last_line_said() {
     // depth before it answered, which is the swap. Without a report of its
     // own the last line an interface read would open with the move being
     // given up, and fastchess calls that out on every move it happens on.
-    // The budget moves whenever the tree does, in the commit that moved it
+    // The budget moves whenever the tree does, in the commit that moved it.
+    // The swap is at depth ten here, which finishes at 2,734,705 nodes, and
+    // the depth before it at 833,301, so the budget has to land between the
+    // move being found and the iteration ending
     let mut s = Session::start(&[]);
     s.say(&format!("position fen {}", SHARP_MIDDLEGAME));
-    s.say("go nodes 400000");
+    s.say("go nodes 2600000");
     let answer = s.wait_for(|l| l.starts_with("bestmove"));
     let best = answer
         .strip_prefix("bestmove ")
