@@ -460,9 +460,7 @@ cannot be attributed to either.
 
 The objective is occurrence weighted. A unique position carries the weight of
 how many times the corpus reached it, so the loss is over the distribution the
-engine runs on rather than the one deduplication leaves behind. This is a small
-correction and an exact one: 1,795 of the 79,492 positions a run scores repeat,
-which is 2.26% of them, and none was reached more than three times. Every loss,
+engine runs on rather than the one deduplication leaves behind. Every loss,
 interval and share the run prints reads the count, and the header names a phase
 bucket's positions and its appearances separately, so which of the two a figure
 was taken over is on the page rather than assumed.
@@ -478,18 +476,15 @@ The game is the unit because the label is: every position of a game carries
 that game's result, and consecutive positions are one move apart, so a row held
 out while its neighbours are trained on is a row whose answer the fit has
 already been shown. Splitting on the position instead hides that rather than
-preventing it. The harness split on fen-hash parity until 2026-09-10, and on
-the corpus it was written for, 1,805 of the 1,809 games had rows on both sides
-and 53.1% of the held-out rows had the position a ply away, same game and same
-label, sitting in the training set. What the held-out loss reported was
-interpolation inside games the fit had seen.
+preventing it.
 
-Grouping by the game loses one property fen parity had for free, which is that
-rows sharing a position land together, so `build_corpus.py` gives it back: a
-position two games reached belongs to the group of the lower key, and its
-result and its count are taken from that group's games alone. The appearances
-in other groups are dropped rather than merged. A corpus that repeats a
-position across games anyway is refused rather than fitted around.
+Grouping by the game loses one property a split keyed on the position has for
+free, which is that rows sharing a position land together, so
+`build_corpus.py` gives it back: a position two games reached belongs to the
+group of the lower key, and its result and its count are taken from that
+group's games alone. The appearances in other groups are dropped rather than
+merged. A corpus that repeats a position across games anyway is refused rather
+than fitted around.
 
 The ridge is chosen on the selection group and the loss is reported there. The
 calibration group is not read at all. What it is for is a coverage claim made
@@ -507,10 +502,8 @@ and no sealed game's result reaches a label a fit sees, because a position is
 labelled by its own group and by nothing else. What that costs is the
 appearances in the other groups: they are dropped, so a position common enough
 to be reached by games in two groups carries fewer appearances than the corpus
-gave it. On the seven archived runs that is 3,807 of the 220,369 positions
-losing 3,881 of the 229,018 appearances, or 1.7% of them, and no position loses
-every appearance, since the group that owns it is the group of a game that
-reached it.
+gave it. No position loses every appearance, since the group that owns it is
+the group of a game that reached it.
 
 `build_corpus.py`'s counters end with `repeated`, the positions more than one
 game reached, `straddled` and `dropped_appearances`, which are how many of
@@ -518,11 +511,6 @@ those were reached from more than one group and how many appearances that cost,
 and `same_key`, the games whose movetext another game already had. The last is
 the only place a game the archive holds twice shows up: it is one game's
 evidence counted twice, and every other number in the run reads it as two.
-
-The seven archived runs the harness was written against hold 1,814 games with
-1,812 distinct movetexts, and the quiet filter leaves 100,726 positions across
-1,807 of them. 1,064 games and 58,766 positions train, 372 games and 20,726
-positions choose the ridge, and 371 games and 21,234 positions are sealed.
 
 The loss is Texel's, the mean squared error between the game result and a
 logistic of the evaluation, with log loss printed beside it. The two are
@@ -559,15 +547,7 @@ and counting them as a hundred independent draws counts one game's evidence a
 hundred times. Both figures are printed: the standard error over the games, the
 naive one over the positions, and the design factor between them, so what
 treating the positions as independent would have claimed is on the page rather
-than described. On this corpus the factor runs at 3.8 to 4.4. Had it come back
-near one the games would be carrying no more dependence than the positions, and
-the split by game would have cost more than it bought.
-
-K is a draw over games rather than a property of chess, and the old split hid
-that. Fitted across the fen split it came to 1.2882 on one side and 1.3005 on
-the other, which reads as a constant the corpus has pinned down. Fitted on
-whole games it is 1.3902 on the training games, and the five cross validation
-folds put it between 1.2437 and 1.3644.
+than described.
 
 Comparing two ways of fitting is `cv`:
 
@@ -665,8 +645,7 @@ the same rate scaled by sixty five thousand, so the figure is a few dozen
 instead of about zero, and a count sitting on its expectation says the rate
 really does scale by two to the minus the width on this workload. The thirty
 two bit expectation beside it can then be believed where its observation
-cannot, which is what makes the audit fit to rule a claimant out of the bit
-budget.
+cannot.
 
 Twenty four and twenty eight are the widths the signature would be left with
 if four or eight of its bits went to some other piece of metadata, which is
