@@ -443,8 +443,8 @@ python3 scripts/tune.py fit --terms rows.txt --corpus corpus.epd --out fit.json
 ```
 
 `scripts/build_corpus.py` builds the corpus from archived strength-run pgns,
-carrying each position's game result from the side to move's point of view and
-how many games it appeared in:
+carrying each position's game, the result from the side to move's point of view,
+and how many times the games reached it:
 
 ```
 python3 scripts/build_corpus.py runs/*/games.pgn --out corpus.epd
@@ -458,15 +458,76 @@ normal play. Mixing in positions from stronger engines' games would answer a
 different question, and a loss change measured on a corpus of two sources
 cannot be attributed to either.
 
-The split is by fen-hash parity, sha256 of the fen and the low bit of the first
-byte, which is the house pattern: rows that share a fen land on the same side
-by construction, so the split leaks no position across itself.
+The objective is occurrence weighted. A unique position carries the weight of
+how many times the corpus reached it, so the loss is over the distribution the
+engine runs on rather than the one deduplication leaves behind. This is a small
+correction and an exact one: 3,113 of the 79,492 positions a run scores repeat,
+which is 3.92% of them, and none was reached more than four times. Every loss,
+interval and share the run prints reads the count, and the header names a phase
+bucket's positions and its appearances separately, so which of the two a figure
+was taken over is on the page rather than assumed.
+
+The split is by game, in three groups. A game is named by the sha256 of its
+movetext, and the first byte of that key modulo five says where it goes:
+nought, one and two train, three is the selection group and four is
+calibration. The key is the movetext's and nothing else's, so a re-extraction
+of the same archive puts every game back where it was and nothing has to be
+written down outside the pgn.
+
+The game is the unit because the label is: every position of a game carries
+that game's result, and consecutive positions are one move apart, so a row held
+out while its neighbours are trained on is a row whose answer the fit has
+already been shown. Splitting on the position instead hides that rather than
+preventing it. The harness split on fen-hash parity until 2026-09-10, and on
+the corpus it was written for, 1,805 of the 1,809 games had rows on both sides
+and 53.1% of the held-out rows had the position a ply away, same game and same
+label, sitting in the training set. What the held-out loss reported was
+interpolation inside games the fit had seen.
+
+Grouping by the game loses one property fen parity had for free, which is that
+rows sharing a position land together, so `build_corpus.py` gives it back: a
+position two games reached belongs to the lower of their keys, and its weight
+counts every appearance across all of them. A corpus that repeats a position
+across games anyway is refused rather than fitted around.
+
+The ridge is chosen on the selection group and the loss is reported there. The
+calibration group is not read at all. What it is for is a coverage claim made
+on it once the weights are final, and a group that has already been read cannot
+carry one, so it is assigned from the first run rather than carved out when it
+is wanted. That is not a convention a reader has to keep in mind: the
+calibration rows are not in the matrices `loss`, `cv` and `fit` score, so none
+of the three can reach a calibration row. Deleting them from the corpus file
+changes nothing any of the three prints, and
+`the_calibration_group_is_not_read_by_a_fit` says so by running the same fit
+twice.
+
+The seal is on the rows and not on the labels. A position two games reached is
+one row in the corpus and its label is the mean of what those games did, so
+where a training game and a calibration game both reached a position, a little
+of the sealed game's result is in the label the fit reads and a little of the
+training game's is in the label that stays sealed. That is the duplicate rule
+above doing what it is for, and it is upstream of the split rather than
+something the split could undo. Its size is 3.92% of the positions a run scores
+repeating at all, of which about a fifth have a calibration game among them,
+since calibration is a fifth of the games. A coverage claim made on the group
+carries that much and says so.
+
+`build_corpus.py`'s counters end with `repeated`, the positions more than one
+game reached, and `same_key`, the games whose movetext another game already
+had. The second is the only place a game the archive holds twice shows up: it
+is one game's evidence counted twice, and every other number in the run reads
+it as two.
+
+The seven archived runs the harness was written against hold 1,814 games with
+1,812 distinct movetexts, and the quiet filter leaves 100,726 positions across
+1,807 of them. 1,064 games and 58,766 positions train, 372 games and 20,726
+positions choose the ridge, and 371 games and 21,234 positions are sealed.
 
 The loss is Texel's, the mean squared error between the game result and a
 logistic of the evaluation, with log loss printed beside it. The two are
 different scoring rules and if they disagree about a candidate that is worth
 seeing, which is the only reason both are printed. The scaling constant K is
-fitted once on the training split at the shipped weights and held there,
+fitted once on the training games at the shipped weights and held there,
 because K and the overall scale of the weights are one degree of freedom and
 the scale is not free: `REVERSE_FUTILITY_MARGIN` at 100 a ply, `DELTA_MARGIN`
 at 200 and the ledger's `eval_beta` column all read the evaluation on the
@@ -485,11 +546,46 @@ be read before a line of engine code exists for it. That is a triage instrument
 and not a verdict.
 
 A meaningful move in the number is one larger than its own interval. Two weight
-vectors are scored on the same held-out positions, so the difference in
+vectors are scored on the same selection positions, so the difference in
 per-position squared error is a paired sample; the run prints its mean with a
 standard error and marks a difference that sits inside its own interval. There
 is no loss-to-elo mapping here and the run does not print one. Its job is to
 rank candidates and to reject the ones that cannot help. The sprt says elo.
+
+The interval is taken over the games and not over the positions. A game's
+hundred odd rows share a result and differ by a move, so they move together,
+and counting them as a hundred independent draws counts one game's evidence a
+hundred times. Both figures are printed: the standard error over the games, the
+naive one over the positions, and the design factor between them, so what
+treating the positions as independent would have claimed is on the page rather
+than described. On this corpus the factor runs at 3.8 to 4.3. Had it come back
+near one the games would be carrying no more dependence than the positions, and
+the split by game would have cost more than it bought.
+
+K is a draw over games rather than a property of chess, and the old split hid
+that. Fitted across the fen split it came to 1.2882 on one side and 1.3005 on
+the other, which reads as a constant the corpus has pinned down. Fitted on
+whole games it is 1.3786 on the training games, and the five cross validation
+folds put it between 1.2380 and 1.3533.
+
+Comparing two ways of fitting is `cv`:
+
+```
+python3 scripts/tune.py cv --terms rows.txt --corpus corpus.epd
+```
+
+Five folds assigned by the second byte of the game key, each refitting on four
+fifths of the games and scored on the fifth, so every row is scored once and by
+a fit that never read its game. K is fitted per fold on that fold's training
+games. The second byte and not the first, because the first is what put the
+game in its group and folding on it would leave two folds empty. What it folds
+is the training and selection games, and the sealed group is not among them
+because it is not in the corpus `cv` is handed. `fit` does not choose its ridge
+here: the selection group is what a fifth of the games was set aside for, and
+the wider question this answers is whether a way of fitting is worth anything
+at all over the games the run may read. The line naming the best penalty says
+which of the two it is best over, so a reader of a `cv` log cannot paste it
+into `fit --penalties` as the ridge the fit would have picked.
 
 Three more figures are printed because a loss on its own hides what a fit
 did. The loss is stratified by the three phase buckets, so a fit that improves
@@ -507,13 +603,17 @@ That makes a re-tune literally what it does; it leaves alone the one direction
 the corpus cannot see, which is a constant added to both king tables and
 cancelling between the colours; and it holds the slots with no support at all,
 the two back ranks of the pawn tables, at exactly the zeroes they already are.
-The ridge strength is chosen on the held-out split from a grid, and a fit whose
-tables have grown past what the packed halves can carry is refused whatever it
-scores. `MATERIAL` is held for a first fit, because `eval::material` is read by
-the delta margin in quiescence, so moving it changes which captures quiescence
-skips, which changes the tree for a reason that has nothing to do with the
-evaluation's accuracy. `--free-material` lets it move, for the run that reports
-what holding it cost.
+The ridge strength is chosen from a grid on the selection games, each penalty
+fitted on the training games alone, and a fit whose tables have grown past what
+the packed halves can carry is refused whatever it scores. What that costs is
+that the selection loss printed beside the chosen vector is the fit's own best
+case, since it is the number the grid was ranked on. The sealed group is where
+an honest interval on a final vector comes from, which is what it is being kept
+for. `MATERIAL` is held for a first fit, because
+`eval::material` is read by the delta margin in quiescence, so moving it
+changes which captures quiescence skips, which changes the tree for a reason
+that has nothing to do with the evaluation's accuracy. `--free-material` lets
+it move, for the run that reports what holding it cost.
 
 ## What the table's key signature costs
 
