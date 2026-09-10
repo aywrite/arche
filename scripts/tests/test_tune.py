@@ -63,7 +63,8 @@ def row(
     identifier, coefficients, vector, phase=24, fen="4k3/8/8/8/8/8/8/4K3 w - - 0 1"
 ):
     """One row in the shape `arche terms` prints it, with the evaluation it
-    states worked out from the weights the same way the engine does."""
+    states worked out from the weights the same way the engine does. The fen
+    is six fields, which is what the row's reader counts back from."""
     evaluation = tune.reconstruct(coefficients, vector)
     terms = " ".join(f"{slot}:{coefficient}" for slot, coefficient in coefficients)
     return f"{identifier} {evaluation} {phase} {len(coefficients)} {terms} {fen}"
@@ -113,19 +114,30 @@ def test_a_row_that_does_not_rebuild_stops_the_run():
         tune.parse_terms(extraction([" ".join(words)], vector))
 
 
-def test_a_row_reads_left_to_right_with_the_fen_last():
-    """The count says where the coefficients stop, so the field that can hold
-    spaces holds the rest of the line."""
+def test_a_row_reads_from_the_right_and_an_id_can_hold_spaces():
+    """An id can hold a space, so the fields are found from the right rather
+    than the left. Nine of the bench's eighteen positions are named that way
+    and the bench is the suite `arche terms` reads by default, so reading the
+    id as the first word left the rest of a name to be read as the evaluation.
+
+    The three rows are the shapes the reading has to survive: a name with a
+    space in it, a line that named no id and is called by its own fen, and a
+    row with no coefficients, where the walk back from the fen has nothing to
+    walk over."""
     vector = weights({5: 12, 400: -7})
     fen = "rnbqkbnr/pppppppp/8/8/8/8/PPPPPPPP/RNBQKBNR w KQkq - 0 1"
-    line = row(
-        "start", [(5, 24), (400, -3), (tune.MATERIAL_SLOT + 4, -1)], vector, 18, fen
-    )
-    _, rows = tune.parse_terms(extraction([line], vector))
-    assert rows[0].id == "start"
+    coefficients = [(5, 24), (400, -3), (tune.MATERIAL_SLOT + 4, -1)]
+    lines = [
+        row("ruy lopez", coefficients, vector, 18, fen),
+        row(fen, coefficients, vector, 18, fen),
+        row("start", [], vector, 24, fen),
+    ]
+    _, rows = tune.parse_terms(extraction(lines, vector))
+    assert [parsed.id for parsed in rows] == ["ruy lopez", fen, "start"]
+    assert [parsed.fen for parsed in rows] == [fen, fen, fen]
     assert rows[0].phase == 18
-    assert rows[0].fen == fen
-    assert rows[0].coefficients == [(5, 24), (400, -3), (tune.MATERIAL_SLOT + 4, -1)]
+    assert rows[0].coefficients == coefficients
+    assert rows[2].coefficients == []
 
 
 def test_a_weights_line_of_the_wrong_length_is_refused():
@@ -254,13 +266,15 @@ def test_the_integer_score_is_the_evaluation_the_engine_gave():
     the engine. At the shipped weights the second is the row's own column."""
     vector = weights({0: -30, 64: 17, 400: 5})
     rows = [
-        row("a", [(0, 7), (64, -13), (tune.MATERIAL_SLOT, 1)], vector, 7, "a w - -"),
+        row(
+            "a", [(0, 7), (64, -13), (tune.MATERIAL_SLOT, 1)], vector, 7, "a w - - 0 1"
+        ),
         row(
             "b",
             [(0, -11), (400, 3), (tune.MATERIAL_SLOT + 3, -2)],
             vector,
             11,
-            "b w - -",
+            "b w - - 0 1",
         ),
     ]
     corpus = corpus_of(
@@ -282,8 +296,8 @@ def test_the_occurrence_count_weights_the_loss():
     pulls the loss towards its own result."""
     vector = weights({0: 20})
     rows = [
-        row("a", [(0, 24), (tune.MATERIAL_SLOT, 1)], vector, 24, "a w - -"),
-        row("b", [(0, 24), (tune.MATERIAL_SLOT, 1)], vector, 24, "b w - -"),
+        row("a", [(0, 24), (tune.MATERIAL_SLOT, 1)], vector, 24, "a w - - 0 1"),
+        row("b", [(0, 24), (tune.MATERIAL_SLOT, 1)], vector, 24, "b w - - 0 1"),
     ]
     # two positions scored alike and labelled oppositely, so the only thing a
     # weight can move is which of the two the loss listens to
@@ -309,8 +323,8 @@ def test_a_slots_support_is_how_many_rows_it_appears_in():
     """A weight the corpus barely constrains says so before it ships."""
     vector = weights({0: 5})
     rows = [
-        row("a", [(0, 24), (tune.MATERIAL_SLOT, 1)], vector, 24, "a w - -"),
-        row("b", [(tune.MATERIAL_SLOT, 1)], vector, 24, "b w - -"),
+        row("a", [(0, 24), (tune.MATERIAL_SLOT, 1)], vector, 24, "a w - - 0 1"),
+        row("b", [(tune.MATERIAL_SLOT, 1)], vector, 24, "b w - - 0 1"),
     ]
     corpus = corpus_of(
         rows,

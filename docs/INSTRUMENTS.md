@@ -375,10 +375,16 @@ quieter: a table copied out and left behind fits weights against a position it
 scores differently from the engine, and nothing says so.
 
 Each row after that is `id eval phase n slot:coefficient... fen`, whitespace
-separated with the fen last so a row parses left to right. `n` is how many
-coefficients follow, so a reader knows where they stop without counting back
-from the fen. The coefficients are in the side to move's frame, so the row's
-own arithmetic is the evaluation with nothing further to do:
+separated. Both ends of it can hold spaces: a fen is six fields, and an id is
+whatever the epd put in the quotes, which in the bench's own suite is "ruy
+lopez" and in the strategic suite "7th Rank.001". An epd line that names no id
+is called by its own fen, so an id can be six fields itself. So a row is read
+from the end whose width is fixed. The fen is the last six fields, the
+coefficients are the run of `slot:coefficient` in front of it, and what is left
+before the three numbers is the id. `n` is printed so the two ends can be held
+against each other rather than one of them trusted. The coefficients are in
+the side to move's frame, so the row's own arithmetic is the evaluation with
+nothing further to do:
 
 ```
 eval = mat . w_mat + trunc((psqt . w_psqt) / 24)
