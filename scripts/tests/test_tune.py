@@ -12,8 +12,9 @@ says so by naming a case where getting it wrong gives a different answer.
 The rest pin the formats the run parses, which is the stated reason the other
 script tests exist, and the claims the harness makes about its own numbers:
 that a difference is never printed without its interval, that a weight vector
-the engine's arithmetic cannot carry is refused, and that the calibration group
-is not read by anything here.
+the engine's arithmetic cannot carry is refused, that the objective weights a
+position by how often the corpus reached it, and that the calibration group is
+not read by anything here.
 """
 
 import json
@@ -278,6 +279,36 @@ def test_the_integer_score_is_the_evaluation_the_engine_gave():
     assert np.all(
         np.abs(corpus.scores(np.array(vector, dtype=float)) - corpus.evals) < 1.0
     )
+
+
+def test_the_occurrence_count_weights_the_loss():
+    """A unique position carries the weight of how many times the corpus
+    reached it. The objective is the distribution the engine runs on rather
+    than the one deduplication leaves behind, so a position two games reached
+    pulls the loss towards its own result."""
+    vector = weights({0: 20})
+    rows = [
+        row("a", [(0, 24), (tune.MATERIAL_SLOT, 1)], vector, 24, "a w - -"),
+        row("b", [(0, 24), (tune.MATERIAL_SLOT, 1)], vector, 24, "b w - -"),
+    ]
+    # two positions scored alike and labelled oppositely, so the only thing a
+    # weight can move is which of the two the loss listens to
+    once = corpus_of(
+        rows, vector, {"a": (1.0, 1, key(1, TRAIN)), "b": (0.0, 1, key(2, TRAIN))}
+    )
+    twice = corpus_of(
+        rows, vector, {"a": (1.0, 3, key(1, TRAIN)), "b": (0.0, 1, key(2, TRAIN))}
+    )
+    assert int(once.counts.sum()) == 2
+    assert int(twice.counts.sum()) == 4
+    predicted = tune.sigmoid(120.0, 1.0)
+    flat = tune.scored(once, vector, once.train, 1.0)["mse"]
+    weighted = tune.scored(twice, vector, twice.train, 1.0)["mse"]
+    assert flat == pytest.approx(((1 - predicted) ** 2 + predicted**2) / 2)
+    assert weighted == pytest.approx((3 * (1 - predicted) ** 2 + predicted**2) / 4)
+    # the row the evaluation is right about is the one weighted up, so three
+    # appearances of it is a lower loss and not merely a different one
+    assert weighted < flat
 
 
 def test_a_slots_support_is_how_many_rows_it_appears_in():

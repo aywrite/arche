@@ -48,6 +48,12 @@ at all, and a calibration game is a fifth of the games, so about a fifth of
 those repeats have a sealed game among them. A coverage claim made on the group
 carries that much and should say so.
 
+The objective is occurrence weighted. A unique position carries the weight of
+how many times the corpus reached it, which is what the corpus's `count`
+operand says, and every loss, interval and share printed here reads it. The
+corpus is scored on the distribution the engine will run on rather than on the
+distribution deduplication leaves behind.
+
 Nothing here knows how to evaluate a position. The engine states the
 coefficients and states the weights, and `reconstruct` below folds one row back
 against the other and has to give the integer the row says the engine gave it.
@@ -825,11 +831,16 @@ def report(corpus, named, k, out=None):
         np.sum(corpus.counts * (corpus.results == 0.5)) / np.sum(corpus.counts)
     )
     print(f"results mean {wins:.4f} drawn {100 * draws:.1f}%", file=out)
+    appearances = max(float(corpus.counts.sum()), 1.0)
     for bucket in BUCKETS:
         share = corpus.buckets == bucket
+        # the share is of the appearances and not of the unique positions,
+        # because the loss weights a position by how often the corpus reached
+        # it and a share read the other way describes a corpus nothing scores
+        seen = float(corpus.counts[share].sum())
         print(
-            f"pieces {bucket} {int(share.sum())} "
-            f"({100.0 * share.sum() / max(len(corpus), 1):.1f}%)",
+            f"pieces {bucket} positions {int(share.sum())} "
+            f"appearances {int(seen)} ({100.0 * seen / appearances:.1f}%)",
             file=out,
         )
     print(f"k {k:.4f}", file=out)
@@ -865,7 +876,8 @@ def report(corpus, named, k, out=None):
                     if not inside.any():
                         continue
                     print(
-                        f"{name} selection pieces {bucket} {int(inside.sum())} mse "
+                        f"{name} selection pieces {bucket} "
+                        f"{int(corpus.counts[mask][inside].sum())} mse "
                         f"{mean_squared_error(numbers['scores'][inside], corpus.results[mask][inside], corpus.counts[mask][inside], k):.6f}",
                         file=out,
                     )
