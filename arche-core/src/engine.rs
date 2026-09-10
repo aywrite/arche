@@ -134,19 +134,18 @@ const ATTENTION_INTERCEPT: i64 = -2503;
 // integer; at or under admits the fourteen training rows sitting exactly
 // on it and moves neither holdout figure at that precision.
 const DEEP_REDUCTION_THRESHOLD: i64 = -4637;
-// The score at or under which a late quiet is not searched at all. The
-// number came from a census of our own games, 17,057,552 scouts from
+// The score at or under which a late quiet is not searched at all: the
+// deadest quartile of the rows this gate can reach, read with the
+// weights above on a census of our own games, 17,057,552 scouts from
 // 1,428 positions sampled out of 1,814 games at 10+0.1, recorded on
-// master at c13a6ed: the deadest quartile there, but of a model refitted
-// to the census rather than of the weights above. Read with these
-// weights over the rows this gate can reach, depth four and up with the
-// move not giving check, it skips 39% of them at 0.031% attention, and
-// the quartile would be -9513. The +18 the arm played for over 2,000
-// games is the gate at 39%; moving it to the quartile is an arm of its
-// own, not a correction. The corpus is still the point: the bench's
-// percentiles sit elsewhere, and a skip spends the model's word where
-// the games actually go.
-const LATE_MOVE_PRUNING_THRESHOLD: i64 = -7954;
+// master at c13a6ed. Over the rows at depth four and up whose move does
+// not give check, at or under this score is 25.00% of them at 0.019%
+// attention, 0.019% again on the held out half. The arm that shipped
+// the skip stood at -7954, which was the quartile of a model refitted to
+// the census rather than of these weights, and covered 39% at 0.031%.
+// The corpus is the point: the bench's percentiles sit elsewhere, and a
+// skip spends the model's word where the games actually go.
+const LATE_MOVE_PRUNING_THRESHOLD: i64 = -9513;
 
 /// What the attention model reads about a late quiet at the gate: the
 /// reduction ledger's feature columns, in the ledger's own units. The
