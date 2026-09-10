@@ -9,11 +9,23 @@ own, and this turns a pile of those pgns into the epd `arche terms` reads:
 
     python3 scripts/build_corpus.py runs/*/games.pgn --out corpus.epd
 
-One line per unique position, carrying the game result from the side to move's
-point of view and how many games the position appeared in. A position that
-appeared in more than one game carries the mean of its results, which is a
+One line per unique position, carrying the game it belongs to, the result from
+the side to move's point of view, and how many times it appeared. A position
+that appeared in more than one game carries the mean of its results, which is a
 small correction (duplicates run at a few per cent of the plies) and an exact
-one.
+one, and the count is the weight the loss reads the position at.
+
+The game a line names is a key rather than a name: the sha256 of the game's
+movetext. `scripts/tune.py` splits on it, because the label is the game's and
+not the position's, and it is the movetext's alone, so a re-extraction of the
+same archive gives the same keys and nothing has to be written down outside the
+pgn. A position two games reached belongs to the lower of their keys, so a
+position that repeats lands in one group rather than straddling two.
+
+Two games can key alike, and the counters say how many do. A key on the play
+cannot tell the same game archived twice from two games played move for move
+the same, and either way the archive is holding one game's evidence twice. The
+count is what makes that visible. A key on the game's name hid it.
 
 The book is dropped. The first sixteen plies are the opening book's, and so is
 any further ply whose comment says `book`, so the corpus starts where the book
@@ -35,6 +47,7 @@ games reaching the same diagram by different move orders are one row.
 
 import argparse
 import collections
+import hashlib
 import sys
 from pathlib import Path
 
@@ -68,13 +81,39 @@ CRASH_WORDS = (
 RESULTS = {"1-0": 1.0, "0-1": 0.0, "1/2-1/2": 0.5}
 
 
-class Entry:
-    """One unique position: what to call it, what its games said, and how many
-    of them there were."""
+def game_key(game):
+    """The name of a game: the sha256 of its movetext.
 
-    def __init__(self, identifier):
+    The moves are taken as uci and joined by spaces, which is the movetext with
+    the notation's choices and the clock comments out of it, so a pgn another
+    tool re-exported keys the same. The key is a property of the play and of
+    nothing else. That is what makes it stable across a re-extraction: the same
+    game read again is the same key, whatever order the archive's files are
+    given in and whatever else the archive has grown since.
+    """
+    movetext = " ".join(move.uci() for move in game.mainline_moves())
+    return hashlib.sha256(movetext.encode("utf-8")).hexdigest()
+
+
+class Entry:
+    """One unique position: what to call it, which game it belongs to, what its
+    games said, and how many times it was reached."""
+
+    def __init__(self, identifier, key):
         self.id = identifier
+        self.key = key
         self.results = []
+
+    def seen(self, key, result):
+        """Another game reaching this position.
+
+        The lowest key owns it. Grouping by the game would otherwise lose the
+        property that a repeated position cannot straddle the split, because
+        the games that reached it can fall in different groups. The weight
+        counts every appearance whichever game it was.
+        """
+        self.key = min(self.key, key)
+        self.results.append(result)
 
     @property
     def count(self):
@@ -112,9 +151,15 @@ def corpus(games, book_plies=BOOK_PLIES):
     first seen, with what each one's games said about it.
 
     Returns the entries and the counts a caller reports: games read, games
-    dropped, plies seen and plies past the book.
+    dropped, plies seen, plies past the book, how many of the positions more
+    than one game reached, and how many games key alike with one already read.
+
+    The last is there because a repeated position and a repeated game look the
+    same in every other number. A game whose movetext another game already had
+    is one game's evidence counted twice, and nothing else in the run says so.
     """
     entries = collections.OrderedDict()
+    keys = collections.Counter()
     read = dropped = plies = post_book = 0
     for game in games:
         read += 1
@@ -124,27 +169,36 @@ def corpus(games, book_plies=BOOK_PLIES):
         if white_result is None or crashed(game, [c for _, _, c in mainline]):
             dropped += 1
             continue
+        key = game_key(game)
+        keys[key] += 1
         for ply, board, comment in mainline:
             if ply < book_plies or comment.strip() == BOOK_COMMENT:
                 continue
             post_book += 1
             epd = board.epd()
             if epd not in entries:
-                entries[epd] = Entry(f"g{read:05d}p{ply:03d}")
-            entries[epd].results.append(result_for(white_result, board.turn))
+                entries[epd] = Entry(f"g{read:05d}p{ply:03d}", key)
+            entries[epd].seen(key, result_for(white_result, board.turn))
     counts = {
         "games": read,
         "dropped": dropped,
         "plies": plies,
         "post_book": post_book,
         "positions": len(entries),
+        "repeated": sum(1 for entry in entries.values() if entry.count > 1),
+        "same_key": sum(seen - 1 for seen in keys.values()),
     }
     return entries, counts
 
 
 def render(entries):
-    """The epd the engine reads: the four-field position, a name, the result
-    and how many games it came from.
+    """The epd the engine reads: the four-field position, a name, the game it
+    belongs to, the result and how many times it was reached.
+
+    The name says where the position was first seen, which is a game and a ply
+    a reader can go back to. The game it belongs to is the `game` operand, and
+    on a position two games reached the two disagree: the name is the first
+    game and the operand is the lowest key. The split reads the operand.
 
     The result is written to four places. It is a mean over a handful of games
     at most, and a place further would be spelling out a repeating decimal.
@@ -152,7 +206,8 @@ def render(entries):
     lines = []
     for epd, entry in entries.items():
         lines.append(
-            f'{epd} id "{entry.id}"; result "{entry.result:.4f}"; count "{entry.count}";'
+            f'{epd} id "{entry.id}"; game "{entry.key}"; '
+            f'result "{entry.result:.4f}"; count "{entry.count}";'
         )
     return "\n".join(lines) + "\n"
 
@@ -196,7 +251,8 @@ def main(argv=None):
     Path(args.out).write_text(render(entries), encoding="utf-8", newline="\n")
     print(
         "corpus games {games} dropped {dropped} plies {plies} "
-        "post_book {post_book} positions {positions}".format(**counts)
+        "post_book {post_book} positions {positions} repeated {repeated} "
+        "same_key {same_key}".format(**counts)
     )
     return 0
 

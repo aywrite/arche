@@ -7,8 +7,17 @@ What is under test is the reading rather than the writing: which plies are the
 book's, which games are not play, which way round a result is read, and how a
 position two games reached is labelled. The epd it prints is what the engine
 parses, so the shape of a line is pinned as well.
+
+The game key has tests of its own, because two properties rest on it. The
+tuner's three groups are assigned from it, so it has to be the movetext's and
+nothing else or a re-extraction would move games between groups. And a position
+two games reached belongs to the lower of their keys, which is what keeps a
+repeated position out of two groups at once. Two games can also key alike, and
+the counters say how many do, because a repeated game looks like nothing at all
+in the other numbers.
 """
 
+import hashlib
 import io
 
 import build_corpus
@@ -114,9 +123,68 @@ def test_a_position_two_games_reached_carries_the_mean_of_them():
     # the two games are the same moves, so every position is a duplicate
     assert counts["post_book"] == 20
     assert len(entries) == 10
+    assert counts["repeated"] == 10
     for entry in entries.values():
         assert entry.count == 2
         assert entry.result == 0.5
+
+
+def test_a_game_key_is_its_movetext_and_nothing_else():
+    """The key is what the tuner's three groups are assigned from, so it has to
+    be a property of the play. Two games of the same moves key alike whatever
+    their headers say, and a game one move different does not."""
+    played = "1. e4 e5 2. Nf3 Nc6"
+    first = next(games(moves_pgn(played, result="1-0")))
+    same = next(games(moves_pgn(played, result="0-1")))
+    other = next(games(moves_pgn("1. e4 e5 2. Nf3 Nf6")))
+    assert build_corpus.game_key(first) == build_corpus.game_key(same)
+    assert build_corpus.game_key(first) != build_corpus.game_key(other)
+    # and it is the sha256 the split reads sixty-four hex characters of
+    assert (
+        build_corpus.game_key(first)
+        == hashlib.sha256(b"e2e4 e7e5 g1f3 b8c6").hexdigest()
+    )
+
+
+def test_two_games_of_the_same_moves_are_counted():
+    """A repeated game and a repeated position look the same in every other
+    number, and a game whose movetext another game already had is one game's
+    evidence counted twice. Nothing else in the run says so."""
+    entries, counts = build(pgn(result="1-0") + pgn(result="0-1"), book_plies=0)
+    # the same moves, so the same key, whatever the two games ended in
+    assert counts["games"] == 2
+    assert counts["same_key"] == 1
+    assert len({entry.key for entry in entries.values()}) == 1
+    # a game a move different keys apart and is counted apart
+    _, counts = build(
+        moves_pgn("1. e4 e5 2. Nf3 Nc6") + moves_pgn("1. e4 e5 2. Nf3 Nf6"),
+        book_plies=0,
+    )
+    assert counts["same_key"] == 0
+
+
+def test_a_position_two_games_reached_belongs_to_the_lower_key():
+    """Grouping by the game loses the property that rows sharing a position
+    land on one side, because the games that reached it can fall in different
+    groups. The lowest key owns the position, which restores it, and the weight
+    still counts every appearance."""
+    direct = "1. e4 e5 2. Nf3 Nc6 3. Bb5"
+    transposed = "1. Nf3 Nc6 2. e4 e5 3. Bb5"
+    keys = sorted(
+        build_corpus.game_key(game)
+        for game in games(moves_pgn(direct) + moves_pgn(transposed))
+    )
+    both_ways = (
+        moves_pgn(direct) + moves_pgn(transposed),
+        moves_pgn(transposed) + moves_pgn(direct),
+    )
+    for text in both_ways:
+        entries, _ = build(text, book_plies=4)
+        entry = next(iter(entries.values()))
+        # whichever order the games arrived in, and whichever of them the
+        # position was first seen in
+        assert entry.key == keys[0]
+        assert entry.count == 2
 
 
 def test_a_position_is_deduplicated_by_the_epd_the_engine_reads():
@@ -132,14 +200,16 @@ def test_a_position_is_deduplicated_by_the_epd_the_engine_reads():
 
 def test_a_line_is_the_epd_the_engine_parses():
     """The engine reads four fields and then operations, so the line names the
-    position, the label and how many games it came from."""
+    position, the game it belongs to, the label and how many times it was
+    reached."""
     entries, _ = build(pgn(), book_plies=8)
+    key = build_corpus.game_key(next(games(pgn())))
     line = build_corpus.render(entries).splitlines()[0]
     position, *operations = line.split("; ")
     fen, name = position.rsplit(" id ", 1)
     assert len(fen.split(" ")) == 4
     assert name.startswith('"g00001p008')
-    assert operations == ['result "1.0000"', 'count "1";']
+    assert operations == [f'game "{key}"', 'result "1.0000"', 'count "1";']
 
 
 def test_a_mean_result_is_written_to_four_places():
