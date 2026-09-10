@@ -3,11 +3,11 @@
 
 //! What a position's evaluation is made of, weight by weight.
 //!
-//! The evaluation is material plus a tapered piece square score, and it is
-//! linear in the numbers those two are read from. So a position's score is a
-//! dot product: a coefficient for each of the weights it touches, against the
-//! weights themselves. This module writes the coefficients down, and a fit
-//! run outside the engine reads them.
+//! The evaluation is material plus a tapered piece square score plus a
+//! tapered mobility score, and it is linear in the numbers those three are
+//! read from. So a position's score is a dot product: a coefficient for each
+//! of the weights it touches, against the weights themselves. This module
+//! writes the coefficients down, and a fit run outside the engine reads them.
 //!
 //! The seam is the point. A tuner needs a model of the evaluation, and a
 //! second implementation of one in another language diverges quietly: a model
@@ -22,6 +22,13 @@
 //! and the same terms hold here: two implementations that agree are a check,
 //! and a helper shared between them is not. The accumulator the search keeps
 //! is neither read nor duplicated.
+//!
+//! Mobility is the exception, and it is deliberate. The walk asks
+//! `Board::mobility_counts` for the counts and so does `eval`, so the identity
+//! cannot see a wrong count at any weights, fitted or zero. A second count
+//! here would be a second chance to be wrong about a term that is read at
+//! every leaf rather than a check on the first, so what pins it is the hand
+//! counts beside the helper in board.rs.
 
 use crate::bench::Position;
 use crate::board::Board;
@@ -50,9 +57,19 @@ pub const ENDGAME_SLOTS: usize = 6 * 64;
 /// the tables.
 pub const MATERIAL_SLOT: usize = MIDGAME_SLOTS + ENDGAME_SLOTS;
 
-/// The whole weight vector: 384 midgame entries, 384 endgame ones, and the
-/// six material values.
-pub const SLOTS: usize = MATERIAL_SLOT + 6;
+/// Where the mobility weights stand, after the material block: four midgame
+/// weights, one for each of `eval::MOBILE_PIECES`, then the same four at the
+/// endgame end. After the material rather than beside the tables, so that
+/// adding them moved no slot a fit has already been written against.
+pub const MOBILITY_SLOT: usize = MATERIAL_SLOT + 6;
+
+/// How many pieces carry a mobility weight, which is how far apart a piece's
+/// two mobility weights are.
+const MOBILITY_SLOTS: usize = eval::MOBILE_PIECES.len();
+
+/// The whole weight vector: 384 midgame entries, 384 endgame ones, the six
+/// material values and the eight mobility weights.
+pub const SLOTS: usize = MOBILITY_SLOT + 2 * MOBILITY_SLOTS;
 
 /// The weight a slot names.
 ///
@@ -72,9 +89,20 @@ pub fn weight(slot: usize) -> i32 {
     } else if slot < MATERIAL_SLOT {
         let entry = slot - MIDGAME_SLOTS;
         eg_value(packed(Piece::PIECES[entry / 64], entry % 64))
-    } else {
+    } else if slot < MOBILITY_SLOT {
         eval::material(Piece::PIECES[slot - MATERIAL_SLOT]) as i32
+    } else if slot < MOBILITY_SLOT + MOBILITY_SLOTS {
+        mg_value(eval::mobility_weight(slot - MOBILITY_SLOT))
+    } else {
+        eg_value(eval::mobility_weight(slot - MOBILITY_SLOT - MOBILITY_SLOTS))
     }
+}
+
+/// Whether a slot is one of the material values, which are the only weights
+/// added outside the taper's divide. Everything else is inside it, mobility
+/// included.
+fn is_material(slot: usize) -> bool {
+    (MATERIAL_SLOT..MOBILITY_SLOT).contains(&slot)
 }
 
 /// One position's evaluation, decomposed over the weight vector.
@@ -82,9 +110,9 @@ pub fn weight(slot: usize) -> i32 {
 /// The coefficients are in the side to move's frame, so a row's own
 /// arithmetic is the evaluation with no further step. They are sparse and
 /// sorted by slot: over the strategic suite's quiet positions a row names
-/// thirty four of the seven hundred and seventy four weights at the median,
-/// and a column's non-zero count is what says how much of the corpus a
-/// weight is fitted on.
+/// forty of the seven hundred and eighty two weights at the median, and a
+/// column's non-zero count is what says how much of the corpus a weight is
+/// fitted on.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct Terms {
     /// What is left on the board, capped the way the evaluation caps it. A
@@ -138,6 +166,16 @@ impl Terms {
             coefficients[midgame] += sign * phase;
             coefficients[MIDGAME_SLOTS + midgame] += sign * (TOTAL_PHASE - phase);
         }
+        // mobility is a leaf term rather than a per square one, so its counts
+        // come off the board whole rather than out of the walk above. Tapered
+        // the way a square is, and so two slots per piece kind
+        for (color, sign) in [(Color::White, mover), (Color::Black, -mover)] {
+            for (index, count) in board.mobility_counts(color).into_iter().enumerate() {
+                coefficients[MOBILITY_SLOT + index] += sign * count * phase;
+                coefficients[MOBILITY_SLOT + MOBILITY_SLOTS + index] +=
+                    sign * count * (TOTAL_PHASE - phase);
+            }
+        }
         Self {
             phase,
             coefficients: coefficients
@@ -186,7 +224,7 @@ pub fn reconstruct(terms: &Terms) -> Score {
     let mut numerator = 0;
     for &(slot, coefficient) in &terms.coefficients {
         let product = coefficient * weight(usize::from(slot));
-        if usize::from(slot) >= MATERIAL_SLOT {
+        if is_material(usize::from(slot)) {
             material += product;
         } else {
             numerator += product;
@@ -491,6 +529,86 @@ mod tests {
         }
     }
 
+    /// Every mobile piece writes both ends of the taper too, and its count is
+    /// hand counted rather than read back off the board.
+    ///
+    /// The identity says nothing about these eight slots while the weights are
+    /// zero, so a mobility coefficient written to the wrong slot, doubled, or
+    /// left out entirely reproduces every row of the corpus. What is asserted
+    /// here is the coefficient itself, against a count worked out by hand from
+    /// the position below.
+    #[test]
+    fn every_mobile_piece_writes_both_ends_of_the_taper() {
+        // the same corner the piece square test uses, and for the same reason:
+        // one white piece of each mobile kind, and no black piece of any of
+        // them to cancel a coefficient out
+        let fen = "7k/8/8/8/8/8/4P3/RNBQK3 w - - 0 1";
+        let board = Board::from_fen(fen).unwrap();
+        let terms = Terms::of(&board);
+        assert_eq!(terms.phase, 8);
+        assert_ne!(
+            terms.phase,
+            TOTAL_PHASE - terms.phase,
+            "the two ends hold the same share here, so this test cannot tell them apart"
+        );
+        let coefficient = |slot: usize| {
+            terms
+                .coefficients
+                .iter()
+                .find(|(named, _)| usize::from(*named) == slot)
+                .map_or(0, |(_, coefficient)| *coefficient)
+        };
+        for (index, count, why) in [
+            // the knight on b1 has a3, c3 and d2
+            (0, 3, "knight"),
+            // the bishop on c1 has b2 and a3 one way, and d2 out to h6 the
+            // other
+            (1, 7, "bishop"),
+            // the rook on a1 has the a file, and the knight beside it is
+            // neither scope nor something to see through
+            (2, 7, "rook"),
+            // the queen on d1 has the d file, and c2, b3 and a4 the other
+            // way. The pawn on e2 blocks the diagonal beside that one
+            (3, 10, "queen"),
+        ] {
+            assert_eq!(
+                coefficient(MOBILITY_SLOT + index),
+                count * terms.phase,
+                "{} midgame",
+                why
+            );
+            assert_eq!(
+                coefficient(MOBILITY_SLOT + MOBILITY_SLOTS + index),
+                count * (TOTAL_PHASE - terms.phase),
+                "{} endgame",
+                why
+            );
+        }
+    }
+
+    /// A position and its reflection with the colours swapped state the same
+    /// row, coefficient for coefficient, so the mobility counts are signed
+    /// and slotted the same way for both sides.
+    ///
+    /// The reflection is the side to move's as well, which is what leaves the
+    /// two rows identical rather than opposite: a black piece in the mirror
+    /// carries the sign of the white piece it reflects.
+    #[test]
+    fn a_mirrored_position_states_the_same_row() {
+        let white = Board::from_fen("4k3/pp6/2n5/8/3B4/8/6PP/4K3 w - - 0 1").unwrap();
+        let black = Board::from_fen("4k3/6pp/8/3b4/8/2N5/PP6/4K3 b - - 0 1").unwrap();
+        let terms = Terms::of(&white);
+        assert!(
+            terms
+                .coefficients
+                .iter()
+                .any(|(slot, _)| usize::from(*slot) >= MOBILITY_SLOT),
+            "no mobility coefficient here, so this test says nothing about one"
+        );
+        assert_eq!(terms, Terms::of(&black));
+        assert_eq!(eval::eval(&white), eval::eval(&black));
+    }
+
     /// A position whose piece square numerator is negative and does not
     /// divide by twenty four evenly, which is what the two tests below need
     /// to tell two readings of the arithmetic apart. A knight a side would
@@ -509,7 +627,7 @@ mod tests {
         let numerator: i32 = terms
             .coefficients
             .iter()
-            .filter(|(slot, _)| usize::from(*slot) < MATERIAL_SLOT)
+            .filter(|(slot, _)| !is_material(usize::from(*slot)))
             .map(|(slot, coefficient)| coefficient * weight(usize::from(*slot)))
             .sum();
         assert!(numerator < 0, "the numerator is {}", numerator);
@@ -542,7 +660,7 @@ mod tests {
                 .iter()
                 .fold((0, 0), |(material, numerator), (slot, coefficient)| {
                     let product = coefficient * weight(usize::from(*slot));
-                    if usize::from(*slot) >= MATERIAL_SLOT {
+                    if is_material(usize::from(*slot)) {
                         (material + product, numerator)
                     } else {
                         (material, numerator + product)

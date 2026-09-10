@@ -54,7 +54,7 @@ def weights(entries=None):
     """A weight vector in the engine's layout, tables at nothing unless the
     caller names an entry."""
     vector = [0] * tune.SLOTS
-    vector[tune.MATERIAL_SLOT :] = MATERIAL
+    vector[tune.MATERIAL_SLOT : tune.MOBILITY_SLOT] = MATERIAL
     for slot, value in (entries or {}).items():
         vector[slot] = value
     return vector
@@ -150,21 +150,26 @@ def test_a_weights_line_of_the_wrong_length_is_refused():
         tune.parse_terms(["terms positions 0 in_check 0 unsettled 0 kept 0"])
 
 
-def test_a_vector_of_the_layout_before_the_endgame_tables_is_refused(tmp_path):
-    """518 is the one wrong length that would otherwise read as a right one:
-    every slot it names exists in the layout that replaced it, so its numbers
-    would land on the wrong weights rather than failing to parse. Both doors a
-    vector comes through say what changed."""
+@pytest.mark.parametrize(
+    ("count", "message"),
+    [(518, "given an endgame table"), (774, "before mobility")],
+)
+def test_a_vector_of_an_earlier_layout_is_refused(tmp_path, count, message):
+    """518 and 774 are the two wrong lengths that would otherwise read as right
+    ones: every slot either names exists in the layout that replaced it, so
+    their numbers would land on the wrong weights rather than failing to parse.
+    Both doors a vector comes through say what changed."""
     assert tune.SHARED_TABLE_SLOTS == 518
-    assert tune.SLOTS == 774
-    old = [0] * tune.SHARED_TABLE_SLOTS
-    with pytest.raises(ValueError, match="given an endgame table"):
+    assert tune.NO_MOBILITY_SLOTS == 774
+    assert tune.SLOTS == 782
+    old = [0] * count
+    with pytest.raises(ValueError, match=message):
         tune.parse_terms(
             ["weights {} {}".format(len(old), " ".join(str(w) for w in old))]
         )
     written = tmp_path / "fitted.json"
     written.write_text(json.dumps(old), encoding="utf-8")
-    with pytest.raises(ValueError, match="given an endgame table"):
+    with pytest.raises(ValueError, match=message):
         tune.read_weights(written)
 
 
@@ -480,6 +485,41 @@ def test_a_vector_the_engine_could_not_carry_is_refused():
     assert worst == 2 * 64 * 400
 
 
+def test_the_mobility_weights_are_priced_too():
+    """The figure reads as the whole vector, so a mobility weight left out of
+    it would be a vector priced at 774 of its 782 slots."""
+    one_each = weights({slot: 1 for slot in range(tune.MOBILITY_SLOT, tune.SLOTS)})
+    _, worst = tune.bounds_hold(np.array(one_each))
+    assert worst == 2 * int(tune.MAX_COUNT.sum())
+    huge = weights({slot: 5000 for slot in range(tune.MOBILITY_SLOT, tune.SLOTS)})
+    assert not tune.bounds_hold(np.array(huge))[0]
+
+
+def test_the_material_block_is_the_only_thing_outside_the_divide():
+    """`is_material` is what puts a weight outside the taper's divide, and
+    mobility goes inside it the way the tables do. Outside it a mobility weight
+    would answer a centipawn away from the engine wherever a numerator is
+    negative and does not divide evenly, and `reconstruct` would stop matching
+    `eval` the moment a weight was fitted."""
+    material = [slot for slot in range(tune.SLOTS) if tune.is_material(slot)]
+    assert material == list(range(tune.MATERIAL_SLOT, tune.MOBILITY_SLOT))
+    assert not any(
+        tune.is_material(slot) for slot in range(tune.MOBILITY_SLOT, tune.SLOTS)
+    )
+
+
+def test_a_fit_is_free_to_move_the_mobility_weights():
+    """Material is held for a first fit and nothing after it is. Frozen at the
+    material block's end instead, which is what it was before mobility, the
+    eight new weights would sit at zero through the fit and the arm would
+    report a null result with nothing saying why."""
+    frozen = tune.frozen_slots(False)
+    assert frozen[tune.MATERIAL_SLOT : tune.MOBILITY_SLOT].all()
+    assert not frozen[tune.MOBILITY_SLOT :].any()
+    assert not frozen[: tune.MATERIAL_SLOT].any()
+    assert not tune.frozen_slots(True).any()
+
+
 def test_quantizing_rounds_to_nearest():
     assert list(tune.quantize([1.4, 1.6, -1.4, -1.6, 2.5])) == [1, 2, -1, -2, 2]
 
@@ -610,7 +650,7 @@ def test_a_fit_holds_the_material_values_unless_it_is_told_not_to(tmp_path, caps
         == 0
     )
     fitted = json.loads(out.read_text(encoding="utf-8"))
-    assert fitted[tune.MATERIAL_SLOT :] == MATERIAL
+    assert fitted[tune.MATERIAL_SLOT : tune.MOBILITY_SLOT] == MATERIAL
     assert len(fitted) == tune.SLOTS
 
 

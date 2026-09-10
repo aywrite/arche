@@ -397,6 +397,23 @@ impl AttackMasks {
     }
 }
 
+/// Every square a side's pawns attack, as one span.
+///
+/// A shift rather than a mask a pawn at a time, because the one caller wants
+/// the whole span and asks for it at every leaf. A white pawn takes up the
+/// board, to a square one rank on and a file either side, and a black pawn
+/// down it; a pawn on the a file has no capture to its left and one on the h
+/// file none to its right, which is what the two masks drop before the shift
+/// carries a bit around into the next rank.
+const fn pawn_attacks(pawns: u64, color: Color) -> u64 {
+    const A_FILE: u64 = 0x0101_0101_0101_0101;
+    const H_FILE: u64 = 0x8080_8080_8080_8080;
+    match color {
+        Color::White => ((pawns & !A_FILE) << 7) | ((pawns & !H_FILE) << 9),
+        Color::Black => ((pawns & !H_FILE) >> 7) | ((pawns & !A_FILE) >> 9),
+    }
+}
+
 /// What each piece is worth to `see`, indexed by `Piece`. An ordering
 /// oracle, not the evaluation: these say which capture to try first, and
 /// `eval::material` says what a position is worth, so either can move
@@ -1057,6 +1074,69 @@ impl Board {
             attackers |= magic.get_straight_move(index, occupied) & straight;
         }
         attackers & occupied
+    }
+
+    /// How many squares this side's knights, bishops, rooks and queens cover,
+    /// a count per piece kind in that order, which is the order
+    /// `eval::MOBILE_PIECES` names them in.
+    ///
+    /// A piece's count is its attack set over the real occupancy, less the
+    /// squares this side stands on, less the squares an enemy pawn attacks. So
+    /// a friendly piece blocks a slider rather than being seen through, and a
+    /// square an enemy pawn covers is not somewhere a piece goes. An enemy
+    /// piece standing on a square keeps that square in the count, because
+    /// attacking it is the point. Pins are ignored: a pinned bishop counts its
+    /// squares, and the search is what knows it cannot move.
+    ///
+    /// The enemy pawns are taken as one span rather than probed a square at a
+    /// time. The king and the pawn have no count of their own: a king's is a
+    /// danger signal rather than a scope one, and a pawn's is move generation.
+    ///
+    /// Both `eval` and the tuner's walk read this. The counts are what a
+    /// mobility weight is fitted against, so a second implementation of them
+    /// would be two chances to be wrong rather than a check on one, and the
+    /// hand counts in the tests are what pins it. That is the exception to the
+    /// rule `tune.rs` states in its header, which names it.
+    ///
+    /// Inlined by force. Left to itself llvm keeps this out of line even under
+    /// link time optimisation, and `eval` asks for it twice at every leaf and
+    /// every quiescence node. That call was three fifths of what the term cost
+    /// over the bench: 4.30 billion instructions without the attribute against
+    /// 3.76 billion with it.
+    #[inline(always)]
+    pub(crate) fn mobility_counts(&self, color: Color) -> [i32; eval::MOBILE_PIECES.len()] {
+        let occupied = self.occupied();
+        let (ours, theirs) = match color {
+            Color::White => (self.white, self.black),
+            Color::Black => (self.black, self.white),
+        };
+        let scope = !(ours | pawn_attacks(self.pawns() & theirs, !color));
+        let attack_masks = &ATTACK_MASKS;
+        let magic = &MAGIC;
+        let mut counts = [0; 4];
+        let mut knights = self.knights() & ours;
+        while knights != 0 {
+            let from = pop_lsb(&mut knights);
+            counts[0] += (attack_masks.knights[from as usize] & scope).count_ones() as i32;
+        }
+        let mut bishops = self.bishops() & ours;
+        while bishops != 0 {
+            let from = pop_lsb(&mut bishops);
+            counts[1] += (magic.get_diagonal_move(from, occupied) & scope).count_ones() as i32;
+        }
+        let mut rooks = self.rooks() & ours;
+        while rooks != 0 {
+            let from = pop_lsb(&mut rooks);
+            counts[2] += (magic.get_straight_move(from, occupied) & scope).count_ones() as i32;
+        }
+        let mut queens = self.queens() & ours;
+        while queens != 0 {
+            let from = pop_lsb(&mut queens);
+            let attacks =
+                magic.get_straight_move(from, occupied) | magic.get_diagonal_move(from, occupied);
+            counts[3] += (attacks & scope).count_ones() as i32;
+        }
+        counts
     }
 
     /// The least valuable piece of `set`: the bit of one such piece and what
@@ -4550,5 +4630,125 @@ mod gives_check {
         assert!(claims("1k6/8/8/3Pp3/8/8/7B/4K3 w - e6 0 1", "d5e6"));
         // en passant checking directly, the pawn landing beside the king
         assert!(claims("8/2k5/8/3pP3/8/8/8/4K3 w - d6 0 1", "e5d6"));
+    }
+}
+
+#[cfg(test)]
+mod mobility {
+    use super::{ATTACK_MASKS, Board, Color, pawn_attacks};
+    use pretty_assertions::assert_eq;
+
+    /// The counts by hand, square by square, because nothing else pins them.
+    /// The tuner's identity folds a row against the live weights, which are
+    /// zero, so it is blind to a wrong count here and stays blind to one after
+    /// the fit: `eval` and the tuner's walk read the same helper, so the two
+    /// sides of the identity move together whatever the helper answers. These
+    /// cases are the only check this term has.
+    ///
+    /// Each case names what the count is made of. The two kings stand in
+    /// opposite corners and out of the way, so that nothing here is a count of
+    /// theirs and no piece is placed giving check.
+    #[test]
+    fn a_piece_covers_what_a_hand_count_says_it_does() {
+        for (fen, counts, why) in [
+            // a knight in the corner has two squares and one in the middle
+            // has all eight
+            (
+                "k7/8/8/8/8/8/8/N6K w - - 0 1",
+                [2, 0, 0, 0],
+                "a knight on a1",
+            ),
+            (
+                "k7/8/8/8/3N4/8/8/7K w - - 0 1",
+                [8, 0, 0, 0],
+                "a knight on d4",
+            ),
+            // rays of three, four, three and three
+            (
+                "k7/8/8/8/3B4/8/8/7K w - - 0 1",
+                [0, 13, 0, 0],
+                "a bishop on d4",
+            ),
+            // a rank and a file, less the square it stands on
+            (
+                "k7/8/8/8/3R4/8/8/7K w - - 0 1",
+                [0, 0, 14, 0],
+                "a rook on d4",
+            ),
+            (
+                "k7/8/8/8/3Q4/8/8/7K w - - 0 1",
+                [0, 0, 0, 27],
+                "a queen on d4",
+            ),
+            // the friendly pawn on d6 is not scope and is not seen through
+            // either, so the file gives d5, d3, d2 and d1 beside the rank
+            (
+                "k7/8/3P4/8/3R4/8/8/7K w - - 0 1",
+                [0, 0, 11, 0],
+                "a rook on d4 behind its own pawn",
+            ),
+            // the pawn on b7 covers c6, which is one of the knight's eight
+            (
+                "k7/1p6/8/8/3N4/8/8/7K w - - 0 1",
+                [7, 0, 0, 0],
+                "a knight on d4 against a pawn on b7",
+            ),
+            // the enemy rook stands on one of the same eight and keeps it:
+            // a square with something to take on it is still scope
+            (
+                "k7/8/2r5/8/3N4/8/8/7K w - - 0 1",
+                [8, 0, 0, 0],
+                "a knight on d4 against a rook on c6",
+            ),
+            // the enemy pawn stops the file at d6 rather than being seen
+            // through, so the file gives d5 and d6 beside the rank. This is
+            // the case that says the magic lookup is asked about the whole
+            // occupancy and not about this side's half of it
+            (
+                "8/2k5/3p4/8/3R4/8/8/6K1 w - - 0 1",
+                [0, 0, 12, 0],
+                "a rook on d4 in front of an enemy pawn",
+            ),
+        ] {
+            let board = Board::from_fen(fen).unwrap();
+            assert_eq!(board.mobility_counts(Color::White), counts, "{}", why);
+        }
+    }
+
+    /// Black's count of a position is white's count of its reflection, so the
+    /// two colours are read the same way round.
+    #[test]
+    fn the_two_colours_count_the_same_squares() {
+        let white = Board::from_fen("7k/1p6/8/8/3N4/8/8/7K w - - 0 1").unwrap();
+        let black = Board::from_fen("7k/8/8/3n4/8/8/1P6/7K b - - 0 1").unwrap();
+        assert_eq!(
+            white.mobility_counts(Color::White),
+            black.mobility_counts(Color::Black)
+        );
+        assert_eq!(white.mobility_counts(Color::Black), [0, 0, 0, 0]);
+    }
+
+    /// The span is shifted rather than gathered a pawn at a time, and the
+    /// shifts have to answer what the masks generation reads already say. A
+    /// pawn attacks upward for white and downward for black, so the span of a
+    /// white pawn on a square is the mask of the black pawns that could attack
+    /// it, which is where the two files come off.
+    #[test]
+    fn the_pawn_span_is_what_the_attack_masks_hold() {
+        for square in 0..64u8 {
+            let pawn = 1u64 << square;
+            assert_eq!(
+                pawn_attacks(pawn, Color::White),
+                ATTACK_MASKS.black_pawns[square as usize],
+                "a white pawn on {}",
+                square
+            );
+            assert_eq!(
+                pawn_attacks(pawn, Color::Black),
+                ATTACK_MASKS.white_pawns[square as usize],
+                "a black pawn on {}",
+                square
+            );
+        }
     }
 }
