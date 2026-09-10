@@ -127,15 +127,17 @@ fastchess result, the bench's last line, a pgn), so an upstream that changes
 shape fails a test instead of quietly publishing the wrong number:
 
 ```
-python3 -m pip install -r scripts/requirements.txt
+python3 -m pip install -e './scripts[test]'
 python3 -m pytest scripts/tests
 ```
 
 The four tools a match is read with (`match_estimate.py`,
 `rating_estimate.py`, `match_terminations.py` and `book_slice.py`) are the
-`match_tools` package under `scripts/`, and `pip install -e ./scripts`
-installs it. The files at the old paths run it and are what the workflows
-call, so nothing has to be installed to run a match.
+`match_tools` package under `scripts/`, and that install is of the package
+with the pins the tests want. The files at the old paths run the package and
+are what the workflows call, so nothing has to be installed to run a match.
+The quotes are for the shell, which would otherwise read the brackets as a
+pattern to match files with.
 
 The tests that run a shell script are skipped on windows, which cannot run
 one through its shebang; from a windows clone run them under wsl. The scripts
