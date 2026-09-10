@@ -113,6 +113,13 @@ FOLDS = 5
 # en passant square and the two clocks. What a row's reader counts back from.
 FEN_FIELDS = 6
 
+# What the run's header line opens with, in the two shapes `Report`'s
+# `Display` writes it: the bench's own suite reads as absent and any other
+# file is named. Matched in full rather than on the word alone, because an id
+# can open with that word too and a row skipped for looking like a header
+# would leave the corpus a position short with nothing said about it.
+HEADERS = ("terms positions ", "terms epd ")
+
 
 def check_layout(count, what):
     """Refuse a vector of any length but this file's, and say what changed when
@@ -254,7 +261,7 @@ def parse_terms(lines):
     rows = []
     for line in lines:
         line = line.strip()
-        if not line or line.startswith("terms "):
+        if not line or line.startswith(HEADERS):
             continue
         words = line.split()
         if words[0] == "weights":

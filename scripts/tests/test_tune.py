@@ -167,6 +167,24 @@ def test_a_vector_of_the_layout_before_the_endgame_tables_is_refused(tmp_path):
         tune.read_weights(written)
 
 
+def test_a_row_whose_id_opens_with_the_header_word_is_kept():
+    """The header is skipped on the two shapes the engine writes it in, and
+    not on its first word. An id is whatever the epd put in the quotes, so a
+    name can open with the same word, and a row dropped for looking like a
+    header would leave the corpus a position short with nothing said about
+    it."""
+    vector = weights()
+    lines = extraction(
+        [row("terms of the endgame", [(tune.MATERIAL_SLOT, 1)], vector)], vector
+    )
+    _, rows = tune.parse_terms(lines)
+    assert [parsed.id for parsed in rows] == ["terms of the endgame"]
+    # and both shapes of the header are still skipped rather than read as rows
+    header = "terms epd corpus.epd positions 1 in_check 0 unsettled 0 kept 1"
+    _, rows = tune.parse_terms([header, *lines])
+    assert [parsed.id for parsed in rows] == ["terms of the endgame"]
+
+
 def test_a_corpus_line_is_read_the_way_the_engine_reads_epd():
     """Four fields and then operations, so the id is not looked for among the
     words of the position."""
