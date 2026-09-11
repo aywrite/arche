@@ -23,9 +23,9 @@ down to one or two instructions. The search is alpha beta with iterative
 deepening, quiescence search and a transposition table. Evaluation is
 material plus piece square tables, tapered between middlegame and endgame,
 plus two terms counted at the leaf: piece mobility, which ships as a rook
-count, and king safety, which counts the pawns in front of each king and the
-open files beside it. The king safety weights are still zero, so that term is
-measured and does not yet move a score.
+count, and king safety, which counts the pawns in front of each king, the open
+files beside it and the enemy pawns coming for it. The king safety weights are
+still zero, so that term is measured and does not yet move a score.
 
 ## Code map: arche-core
 

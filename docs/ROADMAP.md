@@ -20,11 +20,13 @@ the engine plays. Roughly in the order they look worth doing.
   as the bishop pair and open files. Mobility is counted for the knight, the bishop,
   the rook and the queen and has been fitted once, and the fit left it a rook count:
   six of the eight weights rounded to zero, so only the rook is counted at the leaf
-  until a refit prices another piece. The king's shelter is measured, as the
-  pawns on the two ranks in front of it and the open and half open files beside it, but
-  the weights ship at zero until the fit lands. What is not measured at all is the pawn
-  storm coming the other way and the squares the enemy pieces attack around the king. The
-  second of those wants the attack sets the mobility count already walks. The tuner that
+  until a refit prices another piece. King safety is measured, as the
+  pawns on the two ranks in front of the king, the open and half open files beside it, and
+  the enemy pawns on the three ranks in front of it, but the weights ship at zero until the
+  fit lands. What is not measured at all is the squares the enemy pieces attack around the
+  king, which wants the attack sets the mobility count already walks. The storm is followed
+  three ranks and no further, so a pawn four ranks out is not counted, and a storm pawn
+  blocked by one of ours counts the same as a free one. The tuner that
   sentence asked for is built: `arche terms`
   states what each position's evaluation is made of and `scripts/tune.py` fits and scores a
   weight vector against the games, so a candidate term is one appended column whose
@@ -46,6 +48,21 @@ the engine plays. Roughly in the order they look worth doing.
 
 ## Known limitations
 
+- king safety costs nothing today and will cost about a tenth of the search once it is
+  fitted, which is over the 5% an evaluation term is allowed. Every one of its weights is
+  zero, so llvm folds the multiplications away and deletes the counts behind them: neither
+  `shelter_with` nor `shelter_counts` appears in a callgrind profile of the bench, on this
+  tree or on the one before the storm. So a cost measured at zero weights is not the term's
+  cost. Measured 2026-09-11 by setting every weight to one and reading the same bench:
+  the four counts before the storm take 312,179,514 instructions and the seven take
+  428,879,568, against a run of 3,807,827,155 with the term folded away. That is 9.06% and
+  11.91% of the search, and the storm's own share of it is 2.62 points. The `Bench:` and the
+  tree do not move either way, since the counts change no score while the weights are zero.
+  The 0.305% quoted in `22f5aac` is what survived the fold and not what the term costs; it
+  should not be read as a price. What the fit has to do about this is not settled: skipping
+  the counts whose fitted weight is zero, the way `SCORED_KINDS` does for mobility, is the
+  cheap half of it, and a cache keyed by the pawn key and the two king squares is the answer
+  if the fit prices most of them
 - a held-out loss on our own games cannot resolve a fit of the piece square tables one way
   or the other, so an sprt is what decides a re-tune. Measured 2026-09-10 over 1,812
   archived games, 100,726 quiet positions across 1,807 of them: the shipped weights score

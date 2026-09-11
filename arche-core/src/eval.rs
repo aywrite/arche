@@ -123,26 +123,30 @@ const fn scored_kinds() -> u8 {
 /// How many counts the king's shelter is measured in, and so how many weights
 /// it carries at each end of the taper. `Board::shelter_counts` prints them in
 /// this order: this side's pawns one rank in front of its king, its pawns two
-/// ranks in front, the king's files with no pawn of either colour on them, and
-/// the king's files holding an enemy pawn and none of ours.
-pub(crate) const SHELTER_TERMS: usize = 4;
+/// ranks in front, the king's files with no pawn of either colour on them, the
+/// king's files holding an enemy pawn and none of ours, and then the enemy
+/// pawns one, two and three ranks in front of the king.
+pub(crate) const SHELTER_TERMS: usize = 7;
 
-/// What one of those four counts is worth, as the packed pairs the taper is
+/// What one of those seven counts is worth, as the packed pairs the taper is
 /// read from.
 ///
-/// Every weight is zero, so the shelter is measured and not yet priced: the
+/// Every weight is zero, so the term is measured and not yet priced: the
 /// evaluation scores what it scored before the counts were taken. Fitting them
 /// against the archived games is its own change, and the sign is the fit's to
-/// find, since the first two counts are cover the king wants and the last two
-/// are holes in it.
+/// find. Four of the seven are the king's own side of it, where the first two
+/// are cover it wants and the next two are holes in that cover. The last three
+/// are the storm, and a rank of it is not the negative of a rank of cover: the
+/// fit is what says how the six pawn counts stand against each other.
 ///
-/// A side's four counts come to nine at the very most. Two of them are at most
-/// three pawns each, and the other two share three files between them rather
-/// than reaching three each. So a boardful is eighteen across the colours, and
-/// a weight in single figures leaves what `pack` asks for in hand.
+/// A side's seven counts come to eighteen at the very most. Five of them are
+/// at most three pawns each, and the other two share three files between them
+/// rather than reaching three each. So a boardful is thirty six across the
+/// colours, and a weight in single figures leaves what `pack` asks for in
+/// hand.
 static SHELTER: [i32; SHELTER_TERMS] = [pack(0, 0); SHELTER_TERMS];
 
-/// The shelter weight of one of the four counts, as the packed pair. The
+/// The shelter weight of one of the seven counts, as the packed pair. The
 /// tuner's seam asks, so that a slot names the live weight rather than a copy
 /// of it, the way it reads the tables.
 pub(crate) fn shelter_weight(index: usize) -> i32 {
@@ -207,7 +211,7 @@ fn mobility_with<const KINDS: u8>(board: &Board, weights: &[i32; MOBILE_PIECES.l
 /// What white's king shelter stands ahead by, as a packed pair on the scale
 /// the piece square pair is on.
 ///
-/// Read off the board rather than accumulated. All four counts are read off
+/// Read off the board rather than accumulated. All seven counts are read off
 /// the king's square, so a king move rewrites the side's whole reading, and a
 /// pawn move changes it wherever the pawn stood. There is nothing here for
 /// `Accumulator::count` to add and take away a piece at a time.
@@ -687,25 +691,40 @@ mod evaluate {
             (material + inside) as crate::misc::Score
         );
     }
-    /// The position the two tests below are read against, and what each side
-    /// shelters behind in it, worked out by hand rather than read back off
-    /// `shelter_counts`.
+    /// The position the test below is read against, and what each side counts
+    /// in it, worked out by hand rather than read back off `shelter_counts`.
     ///
     /// White's king on g1 stands behind the f, g and h files. It has f2 and h2
-    /// one rank ahead and g3 two, and all three files hold a pawn of its own.
-    /// Black's king on b8 stands behind the a, b and c files and has nothing
-    /// on either rank in front of it. White's pawns on a4 and b4 leave two of
-    /// those files half open, and the c file holds no pawn at all.
-    const SHELTERED: &str = "1k6/4p3/8/8/PP6/6P1/5P1P/6K1 w - - 0 1";
-    const WHITE_SHELTERS: [i32; SHELTER_TERMS] = [2, 1, 0, 0];
-    const BLACK_SHELTERS: [i32; SHELTER_TERMS] = [0, 0, 1, 2];
+    /// one rank ahead and g3 two, and all three files hold a pawn of its own,
+    /// so neither file count fires. Coming the other way it faces g2 one rank
+    /// ahead, f3 and h3 two, and f4, g4 and h4 three.
+    ///
+    /// Black's king on b8 stands behind the a, b and c files with nothing on
+    /// either rank in front of it and no white pawn within three ranks, so its
+    /// storm is empty. White's pawn on a4 leaves that file half open and the b
+    /// and c files hold no pawn at all.
+    ///
+    /// The seven differences are 2, 1, -2, -1, 1, 2 and 3. None is zero, so
+    /// every slot is doing work in the assertion below, which a position with
+    /// an empty storm would not manage.
+    const SHELTERED: &str = "1k6/8/8/8/P4ppp/5pPp/5PpP/6K1 w - - 0 1";
+    const WHITE_SHELTERS: [i32; SHELTER_TERMS] = [2, 1, 0, 0, 1, 2, 3];
+    const BLACK_SHELTERS: [i32; SHELTER_TERMS] = [0, 0, 2, 1, 0, 0, 0];
 
-    /// Four weights that differ from each other at both ends of the taper, so
+    /// Seven weights that differ from each other at both ends of the taper, so
     /// that a pair read into the wrong count's slot lands on a different
-    /// number. The four differences are 9, -20, 8 and -12, which differ from
-    /// each other too, so a permutation of either array shows.
-    const SHELTER_TRIAL: [i32; SHELTER_TERMS] =
-        [pack(11, 2), pack(-7, 13), pack(3, -5), pack(29, 41)];
+    /// number. The seven differences between the halves are 9, -20, 8, -12,
+    /// 20, -29 and -14, which differ from each other too, so a permutation of
+    /// either array shows.
+    const SHELTER_TRIAL: [i32; SHELTER_TERMS] = [
+        pack(11, 2),
+        pack(-7, 13),
+        pack(3, -5),
+        pack(29, 41),
+        pack(17, -3),
+        pack(-23, 6),
+        pack(5, 19),
+    ];
 
     /// What the fold does with weights that are not zero.
     ///

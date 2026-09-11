@@ -366,33 +366,37 @@ mobility score plus a tapered king shelter score, and it is linear in the
 numbers those are read from. So a
 position's score is a dot product of the position against the weights, and a
 row is the position's half of it: for every weight the position touches, the
-integer that weight is multiplied by. The weights are a flat vector of 790, in
+integer that weight is multiplied by. The weights are a flat vector of 796, in
 this order: the 384 midgame table entries, the 384 endgame ones in the same
 order, then the six material values, then four midgame mobility weights and
-the same four at the endgame end, then the four shelter weights the same way.
+the same four at the endgame end, then the seven shelter weights the same way.
 So a square's two weights are 384 apart, a piece kind's two mobility weights
-are 4 apart and a shelter count's two are 4 apart. A slot's entry is a square
+are 4 apart and a shelter count's two are 7 apart. A slot's entry is a square
 as black sees it, because black is the colour that reads the tables as they are
 written.
 
-The four shelter counts are what a side's king stands behind, in this order:
-its own pawns one rank in front of the king, its own pawns two ranks in front,
-how many of the king's three files hold no pawn of either colour, and how many
-hold an enemy pawn and none of its own. The three files are the king's own and
-its neighbours, stepped in at the a and h files so that every king square names
-three. A row carries white's counts less black's, in the side to move's frame,
-the way every other coefficient is carried.
+The seven shelter counts are what stands between a side's king and the board,
+in this order: its own pawns one rank in front of the king, its own pawns two
+ranks in front, how many of the king's three files hold no pawn of either
+colour, how many hold an enemy pawn and none of its own, and then the enemy
+pawns one, two and three ranks in front of the king. The three files are the
+king's own and its neighbours, stepped in at the a and h files so that every
+king square names three. The last three counts are the pawn storm, read off the
+same masks as the first two: a rank of storm is counted apart from the next
+because how far it has come is most of what it is worth. A row carries white's
+counts less black's, in the side to move's frame, the way every other
+coefficient is carried.
 
 The vector was 518 until a knight, a bishop, a rook and a queen were given an
 endgame table of their own, since each of the four had handed one array to
 both ends of the taper, 774 until the eight mobility weights were added after
-the material block, and 782 until the king's shelter was measured after those.
-Rows printed by an engine from before any of those changes, and any vector
-fitted against them, are refused rather than read: every slot they name exists
-in the layout that replaced them, so reading them would put the numbers on the
-wrong weights.
+the material block, 782 until the king's shelter was measured after those, and
+790 until the pawn storm joined it. Rows printed by an engine from before any of
+those changes, and any vector fitted against them, are refused rather than read:
+every slot they name exists in the layout that replaced them, so reading them
+would put the numbers on the wrong weights.
 
-The line after the header is `weights 790 <w0> <w1> ...`, the vector itself as
+The line after the header is `weights 796 <w0> <w1> ...`, the vector itself as
 the live tables hold it, so that nothing reading these rows transcribes
 psqt.rs. A transcription is the same failure as a reimplemented evaluation and
 quieter: a table copied out and left behind fits weights against a position it
@@ -729,7 +733,7 @@ so it means one thing inside a layout and nothing across two. That half held
 512 entries before a knight, a bishop, a rook and a queen were given an
 endgame table and holds 768 after, and 256 of the 768 were exact copies of
 their midgame twins until the fit that made them differ. A scale of 1.0 at
-790 slots and a scale of 1.0 at 518 are not the same statement, and the same
+796 slots and a scale of 1.0 at 518 are not the same statement, and the same
 goes for the boardful the bound is checked against. Figures from fits at
 different layouts are quoted with the layout beside them or not quoted
 together.
