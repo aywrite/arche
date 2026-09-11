@@ -16,13 +16,16 @@ the engine plays. Roughly in the order they look worth doing.
   match. Reducing the losing captures and reading the history table for the eligibility
   come after that, each measured on its own
 - evaluate drawn positions
-- the rest of evaluation: mobility, the rest of king safety, passed pawns, and special
-  cases such as the bishop pair and open files. The king's shelter is measured, as the
+- the rest of evaluation: the rest of king safety, passed pawns, and special cases such
+  as the bishop pair and open files. Mobility is counted for the knight, the bishop,
+  the rook and the queen and has been fitted once, and the fit left it a rook count:
+  six of the eight weights rounded to zero, so only the rook is counted at the leaf
+  until a refit prices another piece. The king's shelter is measured, as the
   pawns on the two ranks in front of it and the open and half open files beside it, but
   the weights ship at zero until the fit lands. What is not measured at all is the pawn
   storm coming the other way and the squares the enemy pieces attack around the king. The
-  second of those wants the attack sets mobility builds, so it comes after mobility rather
-  than beside it. The tuner that sentence asked for is built: `arche terms`
+  second of those wants the attack sets the mobility count already walks. The tuner that
+  sentence asked for is built: `arche terms`
   states what each position's evaluation is made of and `scripts/tune.py` fits and scores a
   weight vector against the games, so a candidate term is one appended column whose
   held-out loss can be read before there is engine code for it. What is not settled is

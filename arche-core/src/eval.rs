@@ -60,8 +60,8 @@ pub(crate) const MOBILE_PIECES: [Piece; 4] =
 ///
 /// Six of the eight rounded to nothing. Before rounding, the rook stood at
 /// 0.667 and 0.828 centipawns a square and no other piece reached half of
-/// one either end, so the term ships as a rook count and what the other
-/// three cost to compute is bought by nothing.
+/// one either end, so the term ships as a rook count. The other three are
+/// not counted at the leaf: `SCORED_KINDS` reads that off the weights.
 ///
 /// The rook's two halves are equal, so its contribution does not taper: a
 /// square of its scope is worth the same at either end of the game. That is a
