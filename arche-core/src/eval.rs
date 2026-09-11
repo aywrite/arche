@@ -120,6 +120,35 @@ const fn scored_kinds() -> u8 {
     kinds
 }
 
+/// How many counts the king's shelter is measured in, and so how many weights
+/// it carries at each end of the taper. `Board::shelter_counts` prints them in
+/// this order: this side's pawns one rank in front of its king, its pawns two
+/// ranks in front, the king's files with no pawn of either colour on them, and
+/// the king's files holding an enemy pawn and none of ours.
+pub(crate) const SHELTER_TERMS: usize = 4;
+
+/// What one of those four counts is worth, as the packed pairs the taper is
+/// read from.
+///
+/// Every weight is zero, so the shelter is measured and not yet priced: the
+/// evaluation scores what it scored before the counts were taken. Fitting them
+/// against the archived games is its own change, and the sign is the fit's to
+/// find, since the first two counts are cover the king wants and the last two
+/// are holes in it.
+///
+/// A side's four counts come to nine at the very most. Two of them are at most
+/// three pawns each, and the other two share three files between them rather
+/// than reaching three each. So a boardful is eighteen across the colours, and
+/// a weight in single figures leaves what `pack` asks for in hand.
+static SHELTER: [i32; SHELTER_TERMS] = [pack(0, 0); SHELTER_TERMS];
+
+/// The shelter weight of one of the four counts, as the packed pair. The
+/// tuner's seam asks, so that a slot names the live weight rather than a copy
+/// of it, the way it reads the tables.
+pub(crate) fn shelter_weight(index: usize) -> i32 {
+    SHELTER[index]
+}
+
 /// What one piece leaves on the board, on the scale the taper is read at.
 /// The tuner's walk asks, because a position's phase decides what its
 /// coefficients are and a copy of the table there would be a second opinion
@@ -134,7 +163,9 @@ pub(crate) fn phase_weight(piece: Piece) -> i32 {
 /// computed at the leaf is added here, from the board itself.
 #[inline]
 pub(crate) fn eval(board: &Board) -> Score {
-    board.eval.score(board.active_color, mobility(board))
+    board
+        .eval
+        .score(board.active_color, mobility(board) + shelter(board))
 }
 
 /// What white's mobility stands ahead by, as a packed pair on the scale the
@@ -166,6 +197,35 @@ fn mobility(board: &Board) -> i32 {
 fn mobility_with<const KINDS: u8>(board: &Board, weights: &[i32; MOBILE_PIECES.len()]) -> i32 {
     let white = board.mobility_counts::<KINDS>(Color::White);
     let black = board.mobility_counts::<KINDS>(Color::Black);
+    let mut packed = 0;
+    for ((weight, white), black) in weights.iter().zip(white).zip(black) {
+        packed += weight * (white - black);
+    }
+    packed
+}
+
+/// What white's king shelter stands ahead by, as a packed pair on the scale
+/// the piece square pair is on.
+///
+/// Read off the board rather than accumulated. All four counts are read off
+/// the king's square, so a king move rewrites the side's whole reading, and a
+/// pawn move changes it wherever the pawn stood. There is nothing here for
+/// `Accumulator::count` to add and take away a piece at a time.
+#[inline]
+fn shelter(board: &Board) -> i32 {
+    shelter_with(board, &SHELTER)
+}
+
+/// The same fold against weights named by the caller.
+///
+/// Every live weight is zero, so nothing about the sign of this term, the
+/// order of the four counts or the packing shows in an evaluation the engine
+/// prints. The tests supply weights of their own through here, which is what
+/// says those are right today rather than after a fit.
+#[inline]
+fn shelter_with(board: &Board, weights: &[i32; SHELTER_TERMS]) -> i32 {
+    let white = board.shelter_counts(Color::White);
+    let black = board.shelter_counts(Color::Black);
     let mut packed = 0;
     for ((weight, white), black) in weights.iter().zip(white).zip(black) {
         packed += weight * (white - black);
@@ -296,18 +356,21 @@ impl Accumulator {
     /// to that piece's endgame table, and the tables are the tidier place to
     /// say it.
     ///
-    /// `mobility` is the leaf term [`eval`] reads off the board, as a packed
-    /// pair on the same scale. It joins the piece square pair before the
+    /// `leaf` is the leaf terms [`eval`] reads off the board, mobility and the
+    /// king's shelter summed, as a packed pair on the same scale. Summing them
+    /// before the call is exact, since both are pairs on this scale, and it is
+    /// what keeps one divide however many such terms there are. The pair joins
+    /// the piece square pair before the
     /// interpolation rather than being tapered beside it, so the two share one
     /// divide. A second divide would answer a centipawn away wherever a
     /// numerator is negative and does not divide evenly, and `tune::reconstruct`
     /// folds a whole row with one.
     #[inline]
-    fn score(&self, side: Color, mobility: i32) -> Score {
+    fn score(&self, side: Color, leaf: i32) -> Score {
         // promotions can leave more on the board than the opening had, so the
         // phase is capped. It cannot go the other way: no weight is negative.
         let phase = self.phase.min(TOTAL_PHASE);
-        let tapered = self.psqt + mobility;
+        let tapered = self.psqt + leaf;
         let scaled =
             (mg_value(tapered) * phase + eg_value(tapered) * (TOTAL_PHASE - phase)) / TOTAL_PHASE;
         let eval = (self.material[Color::White as usize] as i32
@@ -323,8 +386,8 @@ impl Accumulator {
 #[cfg(test)]
 mod evaluate {
     use super::{
-        ALL_KINDS, Board, MOBILE_PIECES, MOBILITY, SCORED_KINDS, TOTAL_PHASE, eval, mobility,
-        mobility_weight, mobility_with,
+        ALL_KINDS, Board, MOBILE_PIECES, MOBILITY, SCORED_KINDS, SHELTER_TERMS, TOTAL_PHASE, eval,
+        mobility, mobility_weight, mobility_with, shelter_with,
     };
     use crate::board::fens;
     use crate::misc::Color;
@@ -623,5 +686,51 @@ mod evaluate {
             accumulator.score(Color::White, mobility),
             (material + inside) as crate::misc::Score
         );
+    }
+    /// The position the two tests below are read against, and what each side
+    /// shelters behind in it, worked out by hand rather than read back off
+    /// `shelter_counts`.
+    ///
+    /// White's king on g1 stands behind the f, g and h files. It has f2 and h2
+    /// one rank ahead and g3 two, and all three files hold a pawn of its own.
+    /// Black's king on b8 stands behind the a, b and c files and has nothing
+    /// on either rank in front of it. White's pawns on a4 and b4 leave two of
+    /// those files half open, and the c file holds no pawn at all.
+    const SHELTERED: &str = "1k6/4p3/8/8/PP6/6P1/5P1P/6K1 w - - 0 1";
+    const WHITE_SHELTERS: [i32; SHELTER_TERMS] = [2, 1, 0, 0];
+    const BLACK_SHELTERS: [i32; SHELTER_TERMS] = [0, 0, 1, 2];
+
+    /// Four weights that differ from each other at both ends of the taper, so
+    /// that a pair read into the wrong count's slot lands on a different
+    /// number. The four differences are 9, -20, 8 and -12, which differ from
+    /// each other too, so a permutation of either array shows.
+    const SHELTER_TRIAL: [i32; SHELTER_TERMS] =
+        [pack(11, 2), pack(-7, 13), pack(3, -5), pack(29, 41)];
+
+    /// What the fold does with weights that are not zero.
+    ///
+    /// Every shipped weight is zero, so nothing about the sign of this term,
+    /// the order of the four counts or the packing changes an evaluation the
+    /// engine prints. This hands the fold weights of its own and asserts the
+    /// packed pair against the arithmetic: white's count less black's, count
+    /// by count, each half of the pair summed on its own.
+    #[test]
+    fn the_shelter_fold_reads_white_less_black_count_by_count() {
+        let board = Board::from_fen(SHELTERED).unwrap();
+        assert_eq!(board.shelter_counts(Color::White), WHITE_SHELTERS);
+        assert_eq!(board.shelter_counts(Color::Black), BLACK_SHELTERS);
+        let midgame: i32 = (0..SHELTER_TERMS)
+            .map(|i| mg_value(SHELTER_TRIAL[i]) * (WHITE_SHELTERS[i] - BLACK_SHELTERS[i]))
+            .sum();
+        let endgame: i32 = (0..SHELTER_TERMS)
+            .map(|i| eg_value(SHELTER_TRIAL[i]) * (WHITE_SHELTERS[i] - BLACK_SHELTERS[i]))
+            .sum();
+        assert_ne!(
+            midgame, endgame,
+            "the two halves would not tell a swap apart"
+        );
+        let packed = shelter_with(&board, &SHELTER_TRIAL);
+        assert_ne!(midgame, 0, "black less white would answer the same here");
+        assert_eq!((mg_value(packed), eg_value(packed)), (midgame, endgame));
     }
 }

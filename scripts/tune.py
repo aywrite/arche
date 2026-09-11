@@ -99,14 +99,17 @@ from groups import CALIBRATION, group_of
 # The weight vector, as `arche-core/src/tune.rs` lays it out: 384 midgame table
 # entries, then 384 endgame ones in the same order, then the six material
 # values, then four midgame mobility weights and the same four at the endgame
-# end. A square's two weights are MIDGAME_SLOTS apart and a piece kind's two
-# mobility weights MOBILITY_SLOTS apart.
+# end, then the four shelter weights the same way. A square's two weights are
+# MIDGAME_SLOTS apart, a piece kind's two mobility weights MOBILITY_SLOTS apart
+# and a shelter count's two SHELTER_SLOTS apart.
 MIDGAME_SLOTS = 6 * 64
 ENDGAME_SLOTS = 6 * 64
 MATERIAL_SLOT = MIDGAME_SLOTS + ENDGAME_SLOTS
 MOBILITY_SLOT = MATERIAL_SLOT + 6
 MOBILITY_SLOTS = 4
-SLOTS = MOBILITY_SLOT + 2 * MOBILITY_SLOTS
+SHELTER_SLOT = MOBILITY_SLOT + 2 * MOBILITY_SLOTS
+SHELTER_SLOTS = 4
+SLOTS = SHELTER_SLOT + 2 * SHELTER_SLOTS
 
 # The layout before a knight, a bishop, a rook and a queen were given an
 # endgame table of their own: the same 384 midgame entries, the pawn's endgame
@@ -120,10 +123,21 @@ SHARED_TABLE_SLOTS = 6 * 64 + 2 * 64 + 6
 # every slot it holds still exists here and holds the same weight.
 NO_MOBILITY_SLOTS = MOBILITY_SLOT
 
+# The layout after mobility and before the king's shelter, which is the nearest
+# of the three to fall into: it is one term back rather than two, and every
+# slot it holds still means here what it meant there.
+NO_SHELTER_SLOTS = SHELTER_SLOT
+
 # The most one knight, one bishop, one rook and one queen can each cover, which
 # is what a mobility weight is priced against in bounds_hold. A queen in the
 # middle of an empty board is the twenty seven.
 MAX_COUNT = np.array([8, 13, 14, 27])
+
+# The most of each shelter count one side can show, which is what a shelter
+# weight is priced against in bounds_hold. Three pawns on each of the two ranks
+# in front of the king, and three files, which the open and half open counts
+# share rather than reach each.
+MAX_SHELTER = 3
 
 # What the opening's pieces come to on the scale the taper is read at, which is
 # what the piece square half of a row divides by.
@@ -173,6 +187,12 @@ def check_layout(count, what):
             f"{what} of {count}, which is the layout from before mobility. The "
             f"vector is {SLOTS} now, so extract the rows again and refit"
         )
+    if count == NO_SHELTER_SLOTS:
+        raise ValueError(
+            f"{what} of {count}, which is the layout from before the king's "
+            f"shelter was measured. The vector is {SLOTS} now, so extract the "
+            f"rows again and refit"
+        )
     raise ValueError(f"{what} of {count}, expected {SLOTS}")
 
 
@@ -187,8 +207,8 @@ def trunc_div(numerator, denominator):
 def is_material(slot):
     """Whether a slot is one of the six material values, which are the only
     weights added outside the taper's divide. Everything else is inside it,
-    mobility as well as the tables, which is what `Accumulator::score` does
-    with them."""
+    the tables and both leaf terms alike, which is what `Accumulator::score`
+    does with them."""
     return MATERIAL_SLOT <= slot < MOBILITY_SLOT
 
 
@@ -859,21 +879,27 @@ def bounds_hold(weights):
     A one-sided boardful, both colours, against the sixteen bits the halves
     have to stay inside.
 
-    Mobility is in the same sum, so it is priced here too rather than left out
-    of a figure that reads as the whole vector. A piece of each kind at its
-    widest is the price, which is a screen rather than a proof: a side that
-    promoted could cover more, and the worst a board can be arranged into comes
-    to 313 squares against the 62 this charges. Over the 1,809 positions of the
-    three suites the largest one-sided difference was 37, so at the centipawn
-    weights a fit produces neither figure is near the sixteen bits. What this
-    catches is a vector that has gone somewhere else entirely.
+    Mobility and the shelter are in the same sum, so they are priced here too
+    rather than left out of a figure that reads as the whole vector. A piece of
+    each kind at its widest is the mobility price, and three of each of its four
+    counts is the shelter's. Both are screens rather than proofs: a side that
+    promoted could cover more, the worst a board can be arranged into comes to
+    313 squares against the 62 mobility charges, and a side's open and half open
+    files come to three between them rather than three each. Over the 1,809
+    positions of the three suites the largest one-sided mobility difference was
+    37, so at the centipawn weights a fit produces neither figure is near the
+    sixteen bits. What this catches is a vector that has gone somewhere else
+    entirely.
     """
-    tables = np.abs(np.asarray(weights)[:MATERIAL_SLOT])
+    weights = np.abs(np.asarray(weights))
+    tables = weights[:MATERIAL_SLOT]
     midgame = tables[:MIDGAME_SLOTS].reshape(6, 64)
     endgame = tables[MIDGAME_SLOTS:MATERIAL_SLOT].reshape(6, 64)
     worst = 2 * max(int(midgame.max(axis=0).sum()), int(endgame.max(axis=0).sum()))
-    mobility = np.abs(np.asarray(weights)[MOBILITY_SLOT:]).reshape(2, MOBILITY_SLOTS)
+    mobility = weights[MOBILITY_SLOT:SHELTER_SLOT].reshape(2, MOBILITY_SLOTS)
     worst += 2 * int((mobility * MAX_COUNT).sum(axis=1).max())
+    shelter = weights[SHELTER_SLOT:].reshape(2, SHELTER_SLOTS)
+    worst += 2 * MAX_SHELTER * int(shelter.sum(axis=1).max())
     return worst < 32767, worst
 
 
@@ -1405,7 +1431,9 @@ def frozen_slots(free_material, held_tables=False):
     margin in quiescence, so moving a material value changes which captures
     quiescence skips, which changes the tree for a reason that has nothing to
     do with the evaluation's accuracy. The material block alone: nothing else
-    after it is read by the search.
+    after it is read by the search, and a freeze that ran to the end of the
+    vector would hold every leaf term's weights at zero through a fit and print
+    a null result with nothing saying why.
 
     The tables are held when the fit is for a term added after them. They were
     fitted on these same games, so refitting them beside a new term leaves a

@@ -16,8 +16,13 @@ the engine plays. Roughly in the order they look worth doing.
   match. Reducing the losing captures and reading the history table for the eligibility
   come after that, each measured on its own
 - evaluate drawn positions
-- the rest of evaluation: mobility, king safety, passed pawns, and special cases such as
-  the bishop pair and open files. The tuner that sentence asked for is built: `arche terms`
+- the rest of evaluation: mobility, the rest of king safety, passed pawns, and special
+  cases such as the bishop pair and open files. The king's shelter is measured, as the
+  pawns on the two ranks in front of it and the open and half open files beside it, but
+  the weights ship at zero until the fit lands. What is not measured at all is the pawn
+  storm coming the other way and the squares the enemy pieces attack around the king. The
+  second of those wants the attack sets mobility builds, so it comes after mobility rather
+  than beside it. The tuner that sentence asked for is built: `arche terms`
   states what each position's evaluation is made of and `scripts/tune.py` fits and scores a
   weight vector against the games, so a candidate term is one appended column whose
   held-out loss can be read before there is engine code for it. What is not settled is
@@ -314,6 +319,13 @@ of these again without saying what is different this time.
   `copy_from_slice` is 2.1% more: a `Play` is six bytes, an awkward width
   to move one of, and a run averages eight of them, which memcpy does in
   one go.
+- `#[inline(always)]` on `Board::shelter_counts`, which moved 127 instructions
+  of 3.4 billion over the bench and is not carried. It is worth recording
+  because the case for it is good and the measurement still says no: the
+  function is read twice at every leaf and every quiescence node, which is
+  where the attribute has paid elsewhere. It is small enough that llvm inlines
+  it unasked. A larger counting helper read from the same place is a different
+  question and is measured on its own.
 - `#[inline(always)]` on `square_attacked`, 3.7% more instructions, and on
   `Quiet::bonus`, 3.1% more. Both are called from inside a loop the register
   allocator then runs short in, and forcing them in is what tips it. The

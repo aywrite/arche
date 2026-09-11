@@ -220,6 +220,7 @@ const fn castle_masks(leaving: bool) -> [u32; 64] {
 const NULL_HISTORY_SALT: u64 = 0x9e37_79b9_7f4a_7c15;
 
 static ATTACK_MASKS: AttackMasks = AttackMasks::new();
+static SHELTER_MASKS: ShelterMasks = ShelterMasks::new();
 // the squares strictly between two aligned squares, and empty for a pair
 // that shares no line. What a piece must land on to block a slider on one
 // square checking a king on the other.
@@ -412,6 +413,84 @@ const fn pawn_attacks(pawns: u64, color: Color) -> u64 {
         Color::White => ((pawns & !A_FILE) << 7) | ((pawns & !H_FILE) << 9),
         Color::Black => ((pawns & !H_FILE) >> 7) | ((pawns & !A_FILE) >> 9),
     }
+}
+
+/// The three files a king on `square` stands behind, as a bit per file.
+///
+/// A king on the a file or the h file is read against three files rather than
+/// two, by stepping the middle one in: the b file and the g file are the
+/// centres a corner king keeps. So every king square names three files and
+/// the counts off them are on one scale wherever the king stands.
+const fn king_files(square: u8) -> u8 {
+    let file = square % 8;
+    let centre = match file {
+        0 => 1,
+        7 => 6,
+        file => file,
+    };
+    0b111 << (centre - 1)
+}
+
+/// The three squares `ahead` ranks in front of a king on `square`, on the
+/// files [`king_files`] names, and empty where that rank is off the board.
+///
+/// `forward` is the direction the side's pawns push, so a white king is read
+/// up the board and a black king down it. A king that has walked far enough
+/// up is left with nothing in front of it, which is the answer rather than a
+/// case to rule out: a king off its own back ranks has no shelter, and what
+/// that is worth is for the weights to say.
+const fn shelter_rank(square: u8, forward: i8, ahead: i8) -> u64 {
+    let rank = (square / 8) as i8 + forward * ahead;
+    if rank < 0 || rank > 7 {
+        return 0;
+    }
+    // a file bit and a square index share their low three bits, so the byte
+    // shifted to the rank is the three squares on it
+    (king_files(square) as u64) << (rank * 8)
+}
+
+/// Where a king wants its own pawns standing, and which files it stands
+/// behind. Indexed by `Color`'s discriminant, the way the accumulator's
+/// material is: a white king shelters up the board and a black king down it,
+/// and the files are the same either way.
+struct ShelterMasks {
+    near: [[u64; 64]; 2],
+    far: [[u64; 64]; 2],
+    files: [u8; 64],
+}
+
+impl ShelterMasks {
+    /// Built at compile time, the way `AttackMasks` is.
+    const fn new() -> Self {
+        let mut masks = ShelterMasks {
+            near: [[0; 64]; 2],
+            far: [[0; 64]; 2],
+            files: [0; 64],
+        };
+        let mut square = 0u8;
+        while square < 64 {
+            let i = square as usize;
+            masks.files[i] = king_files(square);
+            masks.near[Color::White as usize][i] = shelter_rank(square, 1, 1);
+            masks.far[Color::White as usize][i] = shelter_rank(square, 1, 2);
+            masks.near[Color::Black as usize][i] = shelter_rank(square, -1, 1);
+            masks.far[Color::Black as usize][i] = shelter_rank(square, -1, 2);
+            square += 1;
+        }
+        masks
+    }
+}
+
+/// Which files a set of pawns stands on, as a bit per file.
+///
+/// The board folded in half three times, so the answer is three shifts, three
+/// ors and a narrowing rather than eight masked tests. Nothing here says how
+/// many pawns a file holds, which is all the two file counts want to know.
+const fn files_of(pawns: u64) -> u8 {
+    let folded = pawns | (pawns >> 32);
+    let folded = folded | (folded >> 16);
+    let folded = folded | (folded >> 8);
+    folded as u8
 }
 
 /// What each piece is worth to `see`, indexed by `Piece`. An ordering
@@ -1780,6 +1859,57 @@ impl Board {
             Color::Black => self.black,
         };
         (self.kings() & mask).trailing_zeros() as u8
+    }
+
+    /// What stands between this side's king and the board, as four counts in
+    /// the order `eval::SHELTER_TERMS` names them: this side's pawns one rank
+    /// in front of the king, its pawns two ranks in front, how many of the
+    /// king's three files hold no pawn of either colour, and how many hold an
+    /// enemy pawn and none of this side's.
+    ///
+    /// All four are read off the three files the king stands behind, which
+    /// `king_files` steps in at the two corners so that the counts mean the
+    /// same thing on every square. Pawns and nothing else: a piece in front of
+    /// the king shelters it too, but a term that pays for one pays a piece to
+    /// sit still, and the piece square tables already hold an opinion about
+    /// where a piece belongs. A pawn is the part of the cover the king cannot
+    /// get back.
+    ///
+    /// The two file counts overlap the two pawn counts, since a file with no
+    /// pawn of ours on it adds nothing to either of those. They are kept apart
+    /// because they are different knowledge: a missing g pawn and a g pawn
+    /// pushed to g4 both leave the near count short, and only the first opens
+    /// the file to a rook.
+    ///
+    /// Nothing here is gated on the king standing at home. A king that has
+    /// walked up the board has no rank in front of it inside the masks and
+    /// counts nothing, so the term fades rather than falling off a cliff the
+    /// search could step over.
+    ///
+    /// Both `eval` and the tuner's walk read this, so the identity between
+    /// them cannot see a wrong count here. What pins it is the hand counts
+    /// beside this in the tests, the way the mobility counts are pinned.
+    #[inline]
+    pub(crate) fn shelter_counts(&self, color: Color) -> [i32; eval::SHELTER_TERMS] {
+        let masks = &SHELTER_MASKS;
+        let square = self.king_index(color) as usize;
+        let side = color as usize;
+        let (ours, theirs) = match color {
+            Color::White => (self.white, self.black),
+            Color::Black => (self.black, self.white),
+        };
+        let pawns = self.pawns();
+        let (our_pawns, their_pawns) = (pawns & ours, pawns & theirs);
+        let near = (our_pawns & masks.near[side][square]).count_ones() as i32;
+        let far = (our_pawns & masks.far[side][square]).count_ones() as i32;
+        // the king's files with no pawn of ours on them, split by whether the
+        // other side has one there
+        let files = masks.files[square];
+        let bare = files & !files_of(our_pawns);
+        let theirs_on = files_of(their_pawns);
+        let open = (bare & !theirs_on).count_ones() as i32;
+        let half_open = (bare & theirs_on).count_ones() as i32;
+        [near, far, open, half_open]
     }
 
     /// Whether the side to move stands in check, read from the checkers
@@ -4781,5 +4911,210 @@ mod mobility {
                 square
             );
         }
+    }
+}
+
+#[cfg(test)]
+mod shelter {
+    use super::{Board, Color, SHELTER_MASKS, files_of, king_files};
+    use pretty_assertions::assert_eq;
+
+    /// The counts by hand, square by square, because nothing else pins them.
+    /// The tuner's identity folds a row against the live weights, which are
+    /// zero, so it is blind to a wrong count here and stays blind to one after
+    /// the fit: `eval` and the tuner's walk read the same helper, so the two
+    /// sides of the identity move together whatever the helper answers. These
+    /// cases are the only check this term has.
+    ///
+    /// Each case names what the count is made of, in the order the helper
+    /// returns them: the pawns one rank ahead, the pawns two ranks ahead, the
+    /// king's files that hold no pawn at all, and the ones that hold an enemy
+    /// pawn and none of ours. The other king stands out of the way.
+    #[test]
+    fn a_king_shelters_behind_what_a_hand_count_says_it_does() {
+        for (fen, counts, why) in [
+            // three pawns where a castled king wants them
+            (
+                "k7/8/8/8/8/8/5PPP/6K1 w - - 0 1",
+                [3, 0, 0, 0],
+                "a king on g1 behind f2, g2 and h2",
+            ),
+            // the g pawn one square further on is the far rank rather than
+            // the near one
+            (
+                "k7/8/8/8/8/6P1/5P1P/6K1 w - - 0 1",
+                [2, 1, 0, 0],
+                "a king on g1 with the g pawn on g3",
+            ),
+            // the g file holds no pawn of either colour
+            (
+                "k7/8/8/8/8/8/5P1P/6K1 w - - 0 1",
+                [2, 0, 1, 0],
+                "a king on g1 with no g pawn",
+            ),
+            // the same file with a black pawn on it is half open rather than
+            // open
+            (
+                "k7/6p1/8/8/8/8/5P1P/6K1 w - - 0 1",
+                [2, 0, 0, 1],
+                "a king on g1 with a black pawn on g7",
+            ),
+            // all four at once: h2 near, g3 far, and the f file holding a
+            // black pawn and none of white's
+            (
+                "k7/8/8/5p2/8/6P1/7P/6K1 w - - 0 1",
+                [1, 1, 0, 1],
+                "a king on g1 with the f file gone",
+            ),
+            // an enemy pawn standing on a rank in front of the king is not
+            // cover. It is the pawn that came the other way, and counting it
+            // would read a storm as shelter
+            (
+                "k7/8/8/8/8/8/5PpP/6K1 w - - 0 1",
+                [2, 0, 0, 1],
+                "a king on g1 with a black pawn on g2",
+            ),
+            (
+                "k7/8/8/8/8/6p1/5P1P/6K1 w - - 0 1",
+                [2, 0, 0, 1],
+                "a king on g1 with a black pawn on g3",
+            ),
+            // a pawn on the file stops it counting as open wherever on the
+            // file it stands, so a passed pawn up the board is not a hole
+            // behind the king it left
+            (
+                "k7/6P1/8/8/8/8/8/6K1 w - - 0 1",
+                [0, 0, 2, 0],
+                "a king on g1 whose only pawn is on g7",
+            ),
+            // a king in the corner is read against three files, so the f file
+            // it does not stand beside is still counted. Two files would
+            // leave this at nothing
+            (
+                "k7/8/8/8/8/8/6PP/7K w - - 0 1",
+                [2, 0, 1, 0],
+                "a king on h1 behind g2 and h2",
+            ),
+            (
+                "k7/8/8/8/8/8/PPP5/K7 w - - 0 1",
+                [3, 0, 0, 0],
+                "a king on a1 behind a2, b2 and c2",
+            ),
+            // a king off its own ranks has no rank in front of it inside the
+            // masks, so the pawns it left behind are not shelter
+            (
+                "k7/8/8/4K3/8/8/3PPP2/8 w - - 0 1",
+                [0, 0, 0, 0],
+                "a king on e5 with its pawns at home",
+            ),
+            // the rank in front of a king on the eighth is off the board
+            // rather than round the other side of it
+            (
+                "4K3/8/8/8/8/8/8/k7 w - - 0 1",
+                [0, 0, 3, 0],
+                "a king on e8 with no pawns anywhere",
+            ),
+        ] {
+            let board = Board::from_fen(fen).unwrap();
+            assert_eq!(board.shelter_counts(Color::White), counts, "{}", why);
+        }
+    }
+
+    /// The same reading for black, whose king is measured down the board
+    /// rather than up it. The rank in front of a king on the first is off the
+    /// board, and the three files all hold a white pawn and no black one.
+    #[test]
+    fn a_black_king_is_measured_down_the_board() {
+        let board = Board::from_fen("7K/8/8/8/8/8/3PPP2/4k3 b - - 0 1").unwrap();
+        assert_eq!(board.shelter_counts(Color::Black), [0, 0, 0, 3]);
+        // and the storm case the other way up: the white pawn on g6 stands on
+        // the rank two in front of a black king on g8 and is not its cover
+        let stormed = Board::from_fen("6k1/5ppp/6P1/8/8/8/8/6K1 b - - 0 1").unwrap();
+        assert_eq!(stormed.shelter_counts(Color::Black), [3, 0, 0, 0]);
+    }
+
+    /// Black's count of a position is white's count of its reflection, so the
+    /// two colours are read the same way round.
+    #[test]
+    fn the_two_colours_count_the_same_squares() {
+        let white = Board::from_fen("k7/8/8/5p2/8/6P1/7P/6K1 w - - 0 1").unwrap();
+        let black = Board::from_fen("6k1/7p/6p1/8/5P2/8/8/K7 b - - 0 1").unwrap();
+        assert_eq!(
+            white.shelter_counts(Color::White),
+            black.shelter_counts(Color::Black)
+        );
+    }
+
+    /// Every square names three files, the two corners included, and the
+    /// three are the king's own file and its neighbours wherever there is
+    /// room for them.
+    #[test]
+    fn every_king_square_names_three_files() {
+        for square in 0..64u8 {
+            let files = king_files(square);
+            assert_eq!(files.count_ones(), 3, "the files of {}", square);
+            assert_eq!(
+                files & (1 << (square % 8)),
+                1 << (square % 8),
+                "the king's own file is not among the files of {}",
+                square
+            );
+            assert_eq!(
+                files.trailing_zeros() + 2,
+                7 - files.leading_zeros(),
+                "the files of {} are not three in a row",
+                square
+            );
+        }
+    }
+
+    /// The two masks hold the two ranks in front of the king, on those same
+    /// three files, and nothing where the board has run out.
+    #[test]
+    fn the_masks_hold_the_two_ranks_in_front_of_the_king() {
+        for square in 0..64u8 {
+            let rank = i32::from(square / 8);
+            for (side, forward) in [(Color::White, 1), (Color::Black, -1)] {
+                let i = side as usize;
+                for (mask, ahead) in [
+                    (SHELTER_MASKS.near[i][square as usize], 1),
+                    (SHELTER_MASKS.far[i][square as usize], 2),
+                ] {
+                    let target = rank + forward * ahead;
+                    if !(0..8).contains(&target) {
+                        assert_eq!(mask, 0, "{:?} on {} at {} ahead", side, square, ahead);
+                        continue;
+                    }
+                    assert_eq!(mask.count_ones(), 3, "{:?} on {}", side, square);
+                    assert_eq!(
+                        files_of(mask),
+                        king_files(square),
+                        "{:?} on {} covers other files",
+                        side,
+                        square
+                    );
+                    let rank_mask = 0xffu64 << (target * 8);
+                    assert_eq!(
+                        mask & rank_mask,
+                        mask,
+                        "{:?} on {} is off its rank",
+                        side,
+                        square
+                    );
+                }
+            }
+        }
+    }
+
+    /// The fold down to a file a bit answers what a walk of the squares does.
+    #[test]
+    fn the_file_fold_answers_a_walk_of_the_squares() {
+        for square in 0..64u8 {
+            assert_eq!(files_of(1u64 << square), 1 << (square % 8), "{}", square);
+        }
+        let board = Board::from_fen("k7/8/8/5p2/8/6P1/7P/6K1 w - - 0 1").unwrap();
+        // white's pawns stand on g3 and h2, and black's on f5
+        assert_eq!(files_of(board.pawns() & board.white), 0b1100_0000);
+        assert_eq!(files_of(board.pawns() & board.black), 0b0010_0000);
     }
 }
