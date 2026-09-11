@@ -156,17 +156,19 @@ def test_a_weights_line_of_the_wrong_length_is_refused():
         (518, "given an endgame table"),
         (774, "before mobility"),
         (782, "before the king's shelter"),
+        (790, "before the pawn storm"),
     ],
 )
 def test_a_vector_of_an_earlier_layout_is_refused(tmp_path, count, message):
-    """518, 774 and 782 are the wrong lengths that would otherwise read as
+    """518, 774, 782 and 790 are the wrong lengths that would otherwise read as
     right ones: every slot any of them names exists in the layout that replaced
     it, so their numbers would land on the wrong weights rather than failing to
     parse. Both doors a vector comes through say what changed."""
     assert tune.SHARED_TABLE_SLOTS == 518
     assert tune.NO_MOBILITY_SLOTS == 774
     assert tune.NO_SHELTER_SLOTS == 782
-    assert tune.SLOTS == 790
+    assert tune.NO_STORM_SLOTS == 790
+    assert tune.SLOTS == 796
     old = [0] * count
     with pytest.raises(ValueError, match=message):
         tune.parse_terms(

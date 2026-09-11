@@ -4,11 +4,11 @@
 //! What a position's evaluation is made of, weight by weight.
 //!
 //! The evaluation is material plus a tapered piece square score plus a
-//! tapered mobility score plus a tapered shelter score, and it is linear in
-//! the numbers those four are
-//! read from. So a position's score is a dot product: a coefficient for each
-//! of the weights it touches, against the weights themselves. This module
-//! writes the coefficients down, and a fit run outside the engine reads them.
+//! tapered mobility score plus a tapered king shelter score, and it is linear
+//! in the numbers those four are read from. So a position's score is a dot
+//! product: a coefficient for each of the weights it touches, against the
+//! weights themselves. This module writes the coefficients down, and a fit run
+//! outside the engine reads them.
 //!
 //! The seam is the point. A tuner needs a model of the evaluation, and a
 //! second implementation of one in another language diverges quietly: a model
@@ -25,12 +25,11 @@
 //! is neither read nor duplicated.
 //!
 //! The two leaf terms are the exception, and it is deliberate. The walk asks
-//! `Board::mobility_counts` and `Board::shelter_counts` for their counts and
-//! so does `eval`, so the identity
-//! cannot see a wrong count at any weights, fitted or zero. A second count
-//! here would be a second chance to be wrong about a term that is read at
-//! every leaf rather than a check on the first, so what pins them is the hand
-//! counts beside each helper in board.rs.
+//! `Board::mobility_counts` and `Board::shelter_counts` for their counts and so
+//! does `eval`, so the identity cannot see a wrong count at any weights, fitted
+//! or zero. A second count here would be a second chance to be wrong about a
+//! term that is read at every leaf rather than a check on the first, so what
+//! pins them is the hand counts beside each helper in board.rs.
 //!
 //! On mobility the two no longer ask for the same kinds. The walk asks for all
 //! four, because it is offline and a coefficient for a kind worth nothing
@@ -82,10 +81,12 @@ pub const MOBILITY_SLOT: usize = MATERIAL_SLOT + 6;
 const MOBILITY_SLOTS: usize = eval::MOBILE_PIECES.len();
 
 /// Where the shelter weights stand, after the mobility block and laid out the
-/// same way: four midgame weights, one for each of the counts
-/// `eval::SHELTER_TERMS` names, then the same four at the endgame end. Each
+/// same way: seven midgame weights, one for each of the counts
+/// `eval::SHELTER_TERMS` names, then the same seven at the endgame end. Each
 /// term appended rather than inserted, so that adding one moves no slot a fit
-/// has already been written against.
+/// has already been written against. Growing one in place is not that: the
+/// storm took this block from eight weights to fourteen, and the endgame half
+/// moved with it.
 pub const SHELTER_SLOT: usize = MOBILITY_SLOT + 2 * MOBILITY_SLOTS;
 
 /// How many counts the shelter is measured in, which is how far apart a
@@ -93,7 +94,7 @@ pub const SHELTER_SLOT: usize = MOBILITY_SLOT + 2 * MOBILITY_SLOTS;
 const SHELTER_SLOTS: usize = eval::SHELTER_TERMS;
 
 /// The whole weight vector: 384 midgame entries, 384 endgame ones, the six
-/// material values, the eight mobility weights and the eight shelter ones.
+/// material values, the eight mobility weights and the fourteen shelter ones.
 pub const SLOTS: usize = SHELTER_SLOT + 2 * SHELTER_SLOTS;
 
 /// The weight a slot names.
@@ -791,7 +792,7 @@ mod tests {
     ///
     /// A boardful and not a legal position: what has to hold is the arithmetic
     /// the accumulator does, and it does not know what is legal. The shelter
-    /// is charged at three of each of its four counts a side, which no
+    /// is charged at three of each of its seven counts a side, which no
     /// position reaches, since a side's open and half open files come to three
     /// between them rather than three each. So this is the screen
     /// `tune.py::bounds_hold` applies, stated on the side that holds the
@@ -1021,14 +1022,16 @@ mod tests {
     /// asserted here is the coefficient itself.
     ///
     /// White's king on g1 has f2 and h2 one rank ahead and g3 two, and its
-    /// three files all hold a pawn of its own. Black's king on b8 has nothing
-    /// in front of it, the a and b files hold a white pawn and no black one,
-    /// and the c file holds neither. The queen and the two rooks are there to
-    /// hold the phase off the middle of the taper, so that a coefficient
-    /// written to the wrong end of it shows.
+    /// three files all hold a pawn of its own, while g2, then f3 and h3, then
+    /// f4, g4 and h4 come the other way. Black's king on b8 has nothing in
+    /// front of it and no white pawn within three ranks, the a file holds a
+    /// white pawn and no black one, and the b and c files hold neither. The
+    /// queen and the two rooks are there to hold the phase off the middle of
+    /// the taper, so that a coefficient written to the wrong end of it
+    /// shows.
     #[test]
     fn every_shelter_count_writes_both_ends_of_the_taper() {
-        let fen = "1k6/4p3/8/8/PP6/6P1/5P1P/R2Q2KR w - - 0 1";
+        let fen = "1k6/8/8/8/P4ppp/5pPp/5PpP/R2Q2KR w - - 0 1";
         let board = Board::from_fen(fen).unwrap();
         let terms = Terms::of(&board);
         assert_eq!(terms.phase, 8);
@@ -1047,13 +1050,19 @@ mod tests {
         for (index, count, why) in [
             // f2 and h2, and black has nothing on the rank in front of b8
             (0, 2, "the pawns one rank ahead"),
-            // g3, against nothing on b6, a6 or c6
+            // g3, against nothing on a6, b6 or c6
             (1, 1, "the pawns two ranks ahead"),
-            // the c file holds no pawn at all, and none of white's three is
-            // bare
-            (2, -1, "the open files"),
-            // the a and b files hold a white pawn and no black one
-            (3, -2, "the half open files"),
+            // the b and c files hold no pawn at all, and none of white's
+            // three is bare
+            (2, -2, "the open files"),
+            // the a file holds a white pawn and no black one
+            (3, -1, "the half open files"),
+            // g2, and no white pawn within three ranks of b8
+            (4, 1, "the storm one rank ahead"),
+            // f3 and h3
+            (5, 2, "the storm two ranks ahead"),
+            // f4, g4 and h4
+            (6, 3, "the storm three ranks ahead"),
         ] {
             assert_eq!(
                 coefficient(SHELTER_SLOT + index),

@@ -99,7 +99,7 @@ from groups import CALIBRATION, group_of
 # The weight vector, as `arche-core/src/tune.rs` lays it out: 384 midgame table
 # entries, then 384 endgame ones in the same order, then the six material
 # values, then four midgame mobility weights and the same four at the endgame
-# end, then the four shelter weights the same way. A square's two weights are
+# end, then the seven shelter weights the same way. A square's two weights are
 # MIDGAME_SLOTS apart, a piece kind's two mobility weights MOBILITY_SLOTS apart
 # and a shelter count's two SHELTER_SLOTS apart.
 MIDGAME_SLOTS = 6 * 64
@@ -108,7 +108,7 @@ MATERIAL_SLOT = MIDGAME_SLOTS + ENDGAME_SLOTS
 MOBILITY_SLOT = MATERIAL_SLOT + 6
 MOBILITY_SLOTS = 4
 SHELTER_SLOT = MOBILITY_SLOT + 2 * MOBILITY_SLOTS
-SHELTER_SLOTS = 4
+SHELTER_SLOTS = 7
 SLOTS = SHELTER_SLOT + 2 * SHELTER_SLOTS
 
 # The layout before a knight, a bishop, a rook and a queen were given an
@@ -123,10 +123,12 @@ SHARED_TABLE_SLOTS = 6 * 64 + 2 * 64 + 6
 # every slot it holds still exists here and holds the same weight.
 NO_MOBILITY_SLOTS = MOBILITY_SLOT
 
-# The layout after mobility and before the king's shelter, which is the nearest
-# of the three to fall into: it is one term back rather than two, and every
-# slot it holds still means here what it meant there.
+# The layout after mobility and before the king's shelter, and the layout
+# before the shelter grew the pawn storm. Both are nearer mistakes than the two
+# above: they are one term or half a term back rather than two, and every slot
+# either holds still means here what it meant there.
 NO_SHELTER_SLOTS = SHELTER_SLOT
+NO_STORM_SLOTS = SHELTER_SLOT + 2 * 4
 
 # The most one knight, one bishop, one rook and one queen can each cover, which
 # is what a mobility weight is priced against in bounds_hold. A queen in the
@@ -134,9 +136,9 @@ NO_SHELTER_SLOTS = SHELTER_SLOT
 MAX_COUNT = np.array([8, 13, 14, 27])
 
 # The most of each shelter count one side can show, which is what a shelter
-# weight is priced against in bounds_hold. Three pawns on each of the two ranks
-# in front of the king, and three files, which the open and half open counts
-# share rather than reach each.
+# weight is priced against in bounds_hold. Three pawns on each of the five
+# ranks counted, its own two and the storm's three, and three files, which the
+# open and half open counts share rather than reach each.
 MAX_SHELTER = 3
 
 # What the opening's pieces come to on the scale the taper is read at, which is
@@ -192,6 +194,12 @@ def check_layout(count, what):
             f"{what} of {count}, which is the layout from before the king's "
             f"shelter was measured. The vector is {SLOTS} now, so extract the "
             f"rows again and refit"
+        )
+    if count == NO_STORM_SLOTS:
+        raise ValueError(
+            f"{what} of {count}, which is the layout from before the pawn "
+            f"storm joined the king's shelter. The vector is {SLOTS} now, so "
+            f"extract the rows again and refit"
         )
     raise ValueError(f"{what} of {count}, expected {SLOTS}")
 
