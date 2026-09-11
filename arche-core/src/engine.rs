@@ -5509,15 +5509,19 @@ mod sampling {
 
     /// The window a real search hands the hook. Principal variation search
     /// puts every child after a node's first inside a zero width window,
-    /// and at this depth that is where every shortcut that fires sits: a
-    /// search this size never answers a node through an open window. A
-    /// shadow row is the one exception, a candidate recorded whether or
-    /// not the margin test fires, so a handful arrive through open
-    /// windows, inside the re-search a zero width fail high asks for:
-    /// the proof pass reopens the window and is the one place an open
-    /// window carries a finite beta. The open column is pinned by
-    /// `the_recorded_beta_is_the_one_the_gate_cleared`, which drives the
-    /// hook directly with both windows.
+    /// and at this depth that is where all but one of the shortcuts that
+    /// fire sit. The pass is asked for only under a zero width window, so
+    /// its rows carry one and that part is a rule. The margin is not: it
+    /// reads the eval against beta and nothing about the width, so a node
+    /// searched through an open window whose eval clears beta by the whole
+    /// margin is answered by it too, and this search holds one such node
+    /// out of the three and a half thousand the margin answers. Shadow rows
+    /// are candidates recorded whether or not the margin test fires, so a
+    /// handful more arrive through open windows, inside the re-search a
+    /// zero width fail high asks for: the proof pass reopens the window and
+    /// is the one place an open window carries a finite beta. The open
+    /// column is pinned by `the_recorded_beta_is_the_one_the_gate_cleared`,
+    /// which drives the hook directly with both windows.
     #[test]
     fn the_windows_a_search_records_are_the_zero_ones() {
         let mut e = engine(SHARP_MIDDLEGAME);
@@ -5526,10 +5530,15 @@ mod sampling {
         let taken = collected(&mut e).taken;
         assert!(!taken.is_empty());
         for sample in &taken {
-            if sample.kind != Shortcut::ShadowFutility {
+            if sample.kind == Shortcut::NullMove {
                 assert_eq!(sample.window, Window::Zero, "{sample:?}");
             }
         }
+        let open = taken
+            .iter()
+            .filter(|s| s.kind == Shortcut::ReverseFutility && s.window == Window::Open)
+            .count();
+        assert_eq!(open, 1, "the open windows the margin answers moved");
     }
 
     /// Every kind reaches the hook, not only whichever fires first. A kind
