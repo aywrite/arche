@@ -152,16 +152,21 @@ def test_a_weights_line_of_the_wrong_length_is_refused():
 
 @pytest.mark.parametrize(
     ("count", "message"),
-    [(518, "given an endgame table"), (774, "before mobility")],
+    [
+        (518, "given an endgame table"),
+        (774, "before mobility"),
+        (782, "before the king's shelter"),
+    ],
 )
 def test_a_vector_of_an_earlier_layout_is_refused(tmp_path, count, message):
-    """518 and 774 are the two wrong lengths that would otherwise read as right
-    ones: every slot either names exists in the layout that replaced it, so
-    their numbers would land on the wrong weights rather than failing to parse.
-    Both doors a vector comes through say what changed."""
+    """518, 774 and 782 are the wrong lengths that would otherwise read as
+    right ones: every slot any of them names exists in the layout that replaced
+    it, so their numbers would land on the wrong weights rather than failing to
+    parse. Both doors a vector comes through say what changed."""
     assert tune.SHARED_TABLE_SLOTS == 518
     assert tune.NO_MOBILITY_SLOTS == 774
-    assert tune.SLOTS == 782
+    assert tune.NO_SHELTER_SLOTS == 782
+    assert tune.SLOTS == 790
     old = [0] * count
     with pytest.raises(ValueError, match=message):
         tune.parse_terms(
@@ -487,32 +492,66 @@ def test_a_vector_the_engine_could_not_carry_is_refused():
 
 def test_the_mobility_weights_are_priced_too():
     """The figure reads as the whole vector, so a mobility weight left out of
-    it would be a vector priced at 774 of its 782 slots."""
-    one_each = weights({slot: 1 for slot in range(tune.MOBILITY_SLOT, tune.SLOTS)})
+    it would be a vector priced at 774 of its 790 slots. The range stops at the
+    shelter block, which the test below prices on its own."""
+    one_each = weights(
+        {slot: 1 for slot in range(tune.MOBILITY_SLOT, tune.SHELTER_SLOT)}
+    )
     _, worst = tune.bounds_hold(np.array(one_each))
     assert worst == 2 * int(tune.MAX_COUNT.sum())
-    huge = weights({slot: 5000 for slot in range(tune.MOBILITY_SLOT, tune.SLOTS)})
+    huge = weights(
+        {slot: 5000 for slot in range(tune.MOBILITY_SLOT, tune.SHELTER_SLOT)}
+    )
+    assert not tune.bounds_hold(np.array(huge))[0]
+
+
+def test_the_shelter_weights_are_priced_too():
+    """The same for the block after it. Three of each count a side, both
+    colours, at the larger of the two halves, which here is the endgame one at
+    ten a count."""
+    vector = weights(
+        {tune.SHELTER_SLOT + index: 5 for index in range(tune.SHELTER_SLOTS)}
+        | {
+            tune.SHELTER_SLOT + tune.SHELTER_SLOTS + index: 10
+            for index in range(tune.SHELTER_SLOTS)
+        }
+    )
+    inside, worst = tune.bounds_hold(np.array(vector))
+    assert inside
+    assert worst == 2 * tune.MAX_SHELTER * tune.SHELTER_SLOTS * 10
+    huge = weights({slot: 5000 for slot in range(tune.SHELTER_SLOT, tune.SLOTS)})
     assert not tune.bounds_hold(np.array(huge))[0]
 
 
 def test_the_material_block_is_the_only_thing_outside_the_divide():
     """`is_material` is what puts a weight outside the taper's divide, and
-    mobility goes inside it the way the tables do. Outside it a mobility weight
-    would answer a centipawn away from the engine wherever a numerator is
-    negative and does not divide evenly, and `reconstruct` would stop matching
-    `eval` the moment a weight was fitted."""
+    mobility and the shelter go inside it the way the tables do. Outside it
+    either would answer a centipawn away from the engine wherever a numerator
+    is negative and does not divide evenly, and `reconstruct` would stop
+    matching `eval` the moment a weight was fitted.
+
+    The last two lines are what the slot arithmetic above cannot say. Every
+    shelter weight ships at zero, so a shelter coefficient sorted into the
+    material half multiplies to nothing either way and every row rebuilds
+    whichever side it was put on. Here the weights are the fixture's, so the
+    two answers differ."""
     material = [slot for slot in range(tune.SLOTS) if tune.is_material(slot)]
     assert material == list(range(tune.MATERIAL_SLOT, tune.MOBILITY_SLOT))
     assert not any(
         tune.is_material(slot) for slot in range(tune.MOBILITY_SLOT, tune.SLOTS)
     )
+    vector = weights({tune.SHELTER_SLOT: 30})
+    vector[tune.MATERIAL_SLOT] = 100
+    # a pawn outside the divide, and a shelter count of a full phase inside it
+    coefficients = [(tune.SHELTER_SLOT, 24), (tune.MATERIAL_SLOT, 1)]
+    assert tune.reconstruct(coefficients, vector) == 130
 
 
-def test_a_fit_is_free_to_move_the_mobility_weights():
+def test_a_fit_is_free_to_move_the_leaf_terms_weights():
     """Material is held for a first fit and nothing after it is. Frozen at the
     material block's end instead, which is what it was before mobility, the
-    eight new weights would sit at zero through the fit and the arm would
-    report a null result with nothing saying why."""
+    sixteen weights of the two leaf terms would sit at zero through the fit and
+    the arm would report a null result with nothing saying why."""
     frozen = tune.frozen_slots(False)
     assert frozen[tune.MATERIAL_SLOT : tune.MOBILITY_SLOT].all()
     assert not frozen[tune.MOBILITY_SLOT :].any()

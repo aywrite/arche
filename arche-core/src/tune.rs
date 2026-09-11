@@ -4,7 +4,8 @@
 //! What a position's evaluation is made of, weight by weight.
 //!
 //! The evaluation is material plus a tapered piece square score plus a
-//! tapered mobility score, and it is linear in the numbers those three are
+//! tapered mobility score plus a tapered shelter score, and it is linear in
+//! the numbers those four are
 //! read from. So a position's score is a dot product: a coefficient for each
 //! of the weights it touches, against the weights themselves. This module
 //! writes the coefficients down, and a fit run outside the engine reads them.
@@ -23,21 +24,25 @@
 //! and a helper shared between them is not. The accumulator the search keeps
 //! is neither read nor duplicated.
 //!
-//! Mobility is the exception, and it is deliberate. The walk asks
-//! `Board::mobility_counts` for the counts and so does `eval`, so the identity
+//! The two leaf terms are the exception, and it is deliberate. The walk asks
+//! `Board::mobility_counts` and `Board::shelter_counts` for their counts and
+//! so does `eval`, so the identity
 //! cannot see a wrong count at any weights, fitted or zero. A second count
 //! here would be a second chance to be wrong about a term that is read at
-//! every leaf rather than a check on the first, so what pins it is the hand
-//! counts beside the helper in board.rs.
+//! every leaf rather than a check on the first, so what pins them is the hand
+//! counts beside each helper in board.rs.
 //!
-//! The two no longer ask for the same kinds. The walk asks for all four,
-//! because it is offline and a coefficient for a kind worth nothing today is
-//! what lets a later fit price it; `eval` asks only for the kinds whose weight
-//! is not zero, because a count multiplied by zero is not worth taking at
-//! every leaf. So the walk's row is the wider of the two, and the identity
-//! holds because the difference is exactly the kinds that score nothing.
-//! `eval_counts_a_kind_exactly_when_its_weight_is_not_zero` is what says the
-//! difference is that and not something else.
+//! On mobility the two no longer ask for the same kinds. The walk asks for all
+//! four, because it is offline and a coefficient for a kind worth nothing
+//! today is what lets a later fit price it; `eval` asks only for the kinds
+//! whose weight is not zero, because a count multiplied by zero is not worth
+//! taking at every leaf. So the walk's row is the wider of the two, and the
+//! identity holds because the difference is exactly the kinds that score
+//! nothing. `eval_counts_a_kind_exactly_when_its_weight_is_not_zero` is what
+//! says the difference is that and not something else. The shelter is not
+//! split that way: every one of its weights is zero, so the same rule would
+//! leave `eval` counting nothing at all and the term unmeasured. It is counted
+//! whole at both ends until the fit says which counts are worth keeping.
 
 use crate::bench::Position;
 use crate::board::Board;
@@ -76,9 +81,20 @@ pub const MOBILITY_SLOT: usize = MATERIAL_SLOT + 6;
 /// two mobility weights are.
 const MOBILITY_SLOTS: usize = eval::MOBILE_PIECES.len();
 
+/// Where the shelter weights stand, after the mobility block and laid out the
+/// same way: four midgame weights, one for each of the counts
+/// `eval::SHELTER_TERMS` names, then the same four at the endgame end. Each
+/// term appended rather than inserted, so that adding one moves no slot a fit
+/// has already been written against.
+pub const SHELTER_SLOT: usize = MOBILITY_SLOT + 2 * MOBILITY_SLOTS;
+
+/// How many counts the shelter is measured in, which is how far apart a
+/// count's two weights are.
+const SHELTER_SLOTS: usize = eval::SHELTER_TERMS;
+
 /// The whole weight vector: 384 midgame entries, 384 endgame ones, the six
-/// material values and the eight mobility weights.
-pub const SLOTS: usize = MOBILITY_SLOT + 2 * MOBILITY_SLOTS;
+/// material values, the eight mobility weights and the eight shelter ones.
+pub const SLOTS: usize = SHELTER_SLOT + 2 * SHELTER_SLOTS;
 
 /// The weight a slot names.
 ///
@@ -89,6 +105,12 @@ pub const SLOTS: usize = MOBILITY_SLOT + 2 * MOBILITY_SLOTS;
 /// Black reads the tables as written, so a table's own index is the square to
 /// ask black about, and a slot is a (piece, table index) pair rather than a
 /// (piece, colour, square) triple.
+///
+/// The two shelter branches are the one part of this nothing pins. While those
+/// weights are zero, an assertion about which half of the pair a slot names
+/// multiplies to nothing whichever half it reads, so a test of them would pass
+/// on either. The fit that gives them values is what makes one non-vacuous,
+/// and it is the change that owes it.
 pub fn weight(slot: usize) -> i32 {
     let packed = |piece: Piece, entry: usize| {
         PieceSquareTables::TABLES.get_value(entry, piece, Color::Black)
@@ -102,14 +124,18 @@ pub fn weight(slot: usize) -> i32 {
         eval::material(Piece::PIECES[slot - MATERIAL_SLOT]) as i32
     } else if slot < MOBILITY_SLOT + MOBILITY_SLOTS {
         mg_value(eval::mobility_weight(slot - MOBILITY_SLOT))
-    } else {
+    } else if slot < SHELTER_SLOT {
         eg_value(eval::mobility_weight(slot - MOBILITY_SLOT - MOBILITY_SLOTS))
+    } else if slot < SHELTER_SLOT + SHELTER_SLOTS {
+        mg_value(eval::shelter_weight(slot - SHELTER_SLOT))
+    } else {
+        eg_value(eval::shelter_weight(slot - SHELTER_SLOT - SHELTER_SLOTS))
     }
 }
 
 /// Whether a slot is one of the material values, which are the only weights
 /// added outside the taper's divide. Everything else is inside it, mobility
-/// included.
+/// and the shelter included.
 fn is_material(slot: usize) -> bool {
     (MATERIAL_SLOT..MOBILITY_SLOT).contains(&slot)
 }
@@ -119,7 +145,7 @@ fn is_material(slot: usize) -> bool {
 /// The coefficients are in the side to move's frame, so a row's own
 /// arithmetic is the evaluation with no further step. They are sparse and
 /// sorted by slot: over the strategic suite's quiet positions a row names
-/// forty of the seven hundred and eighty two weights at the median, and a
+/// forty four of the seven hundred and ninety weights at the median, and a
 /// column's non-zero count is what says how much of the corpus a weight is
 /// fitted on.
 #[derive(Clone, Debug, PartialEq, Eq)]
@@ -175,14 +201,19 @@ impl Terms {
             coefficients[midgame] += sign * phase;
             coefficients[MIDGAME_SLOTS + midgame] += sign * (TOTAL_PHASE - phase);
         }
-        // mobility is a leaf term rather than a per square one, so its counts
-        // come off the board whole rather than out of the walk above. Tapered
-        // the way a square is, and so two slots per piece kind
+        // the two leaf terms are per position rather than per square, so
+        // their counts come off the board whole rather than out of the walk
+        // above. Tapered the way a square is, and so two slots per count
         for (color, sign) in [(Color::White, mover), (Color::Black, -mover)] {
             let counts = board.mobility_counts::<{ eval::ALL_KINDS }>(color);
             for (index, count) in counts.into_iter().enumerate() {
                 coefficients[MOBILITY_SLOT + index] += sign * count * phase;
                 coefficients[MOBILITY_SLOT + MOBILITY_SLOTS + index] +=
+                    sign * count * (TOTAL_PHASE - phase);
+            }
+            for (index, count) in board.shelter_counts(color).into_iter().enumerate() {
+                coefficients[SHELTER_SLOT + index] += sign * count * phase;
+                coefficients[SHELTER_SLOT + SHELTER_SLOTS + index] +=
                     sign * count * (TOTAL_PHASE - phase);
             }
         }
@@ -754,13 +785,19 @@ mod tests {
         }
     }
 
-    /// The largest one-sided sum of either half of the tables, against the
-    /// sixteen bits each half of a packed pair has to stay inside.
+    /// The largest one-sided sum of either half of the tables, plus what the
+    /// shelter adds to the same halves, against the sixteen bits each half of
+    /// a packed pair has to stay inside.
     ///
     /// A boardful and not a legal position: what has to hold is the arithmetic
-    /// the accumulator does, and it does not know what is legal.
+    /// the accumulator does, and it does not know what is legal. The shelter
+    /// is charged at three of each of its four counts a side, which no
+    /// position reaches, since a side's open and half open files come to three
+    /// between them rather than three each. So this is the screen
+    /// `tune.py::bounds_hold` applies, stated on the side that holds the
+    /// weights, and the two are meant to answer the same.
     #[test]
-    fn a_boardful_of_tables_stays_inside_the_packed_halves() {
+    fn a_boardful_stays_inside_the_packed_halves() {
         let mut midgame = 0;
         let mut endgame = 0;
         for entry in 0..64 {
@@ -776,8 +813,13 @@ mod tests {
             midgame += largest(mg_value);
             endgame += largest(eg_value);
         }
+        let shelter = |half: fn(i32) -> i32| {
+            (0..SHELTER_SLOTS)
+                .map(|index| half(eval::shelter_weight(index)).abs())
+                .sum::<i32>()
+        };
         // both sides at once, which is what the accumulator carries
-        let worst = 2 * midgame.max(endgame);
+        let worst = 2 * midgame.max(endgame) + 2 * 3 * shelter(mg_value).max(shelter(eg_value));
         assert!(
             worst < i32::from(i16::MAX),
             "a boardful comes to {} against {}",
@@ -937,5 +979,117 @@ mod tests {
         // three pieces and no piece worth a phase weight, so the endgame end
         assert_eq!(head[count_at - 1], "0");
         assert_eq!(head[..count_at - 2].join(" "), spaced.id);
+    }
+    /// Which slots are added outside the taper's divide, slot by slot.
+    ///
+    /// The identity cannot see the shelter's half of this. A shelter slot
+    /// sorted into the material block is multiplied by a weight of zero either
+    /// way, so every row of the corpus reconstructs whichever side it is put
+    /// on, and it would go on reconstructing until the fit gave those weights a
+    /// value. The predicate is arithmetic on slot numbers, so it is pinned as
+    /// that instead. Both leaf terms are asked about, since what the material
+    /// block ends at has moved once already.
+    #[test]
+    fn the_material_values_are_the_only_weights_outside_the_divide() {
+        for slot in 0..MATERIAL_SLOT {
+            assert!(
+                !is_material(slot),
+                "the table slot {} is not material",
+                slot
+            );
+        }
+        for slot in MATERIAL_SLOT..MOBILITY_SLOT {
+            assert!(is_material(slot), "the material slot {} is", slot);
+        }
+        for slot in MOBILITY_SLOT..SLOTS {
+            assert!(
+                !is_material(slot),
+                "the leaf term slot {} is inside the divide",
+                slot
+            );
+        }
+        assert_eq!(SHELTER_SLOT, MOBILITY_SLOT + 2 * MOBILITY_SLOTS);
+        assert_eq!(SLOTS, SHELTER_SLOT + 2 * SHELTER_SLOTS);
+    }
+
+    /// Every shelter count writes both ends of the taper too, and the counts
+    /// are hand worked rather than read back off the board.
+    ///
+    /// The identity says nothing about these eight slots. Every shipped weight
+    /// is zero, so a shelter coefficient written to the wrong slot, doubled,
+    /// or left out entirely reproduces every row of the corpus. What is
+    /// asserted here is the coefficient itself.
+    ///
+    /// White's king on g1 has f2 and h2 one rank ahead and g3 two, and its
+    /// three files all hold a pawn of its own. Black's king on b8 has nothing
+    /// in front of it, the a and b files hold a white pawn and no black one,
+    /// and the c file holds neither. The queen and the two rooks are there to
+    /// hold the phase off the middle of the taper, so that a coefficient
+    /// written to the wrong end of it shows.
+    #[test]
+    fn every_shelter_count_writes_both_ends_of_the_taper() {
+        let fen = "1k6/4p3/8/8/PP6/6P1/5P1P/R2Q2KR w - - 0 1";
+        let board = Board::from_fen(fen).unwrap();
+        let terms = Terms::of(&board);
+        assert_eq!(terms.phase, 8);
+        assert_ne!(
+            terms.phase,
+            TOTAL_PHASE - terms.phase,
+            "the two ends hold the same share here, so this test cannot tell them apart"
+        );
+        let coefficient = |slot: usize| {
+            terms
+                .coefficients
+                .iter()
+                .find(|(named, _)| usize::from(*named) == slot)
+                .map_or(0, |(_, coefficient)| *coefficient)
+        };
+        for (index, count, why) in [
+            // f2 and h2, and black has nothing on the rank in front of b8
+            (0, 2, "the pawns one rank ahead"),
+            // g3, against nothing on b6, a6 or c6
+            (1, 1, "the pawns two ranks ahead"),
+            // the c file holds no pawn at all, and none of white's three is
+            // bare
+            (2, -1, "the open files"),
+            // the a and b files hold a white pawn and no black one
+            (3, -2, "the half open files"),
+        ] {
+            assert_eq!(
+                coefficient(SHELTER_SLOT + index),
+                count * terms.phase,
+                "{} midgame",
+                why
+            );
+            assert_eq!(
+                coefficient(SHELTER_SLOT + SHELTER_SLOTS + index),
+                count * (TOTAL_PHASE - terms.phase),
+                "{} endgame",
+                why
+            );
+        }
+    }
+
+    /// A position and its reflection with the colours swapped state the same
+    /// row, coefficient for coefficient, so the shelter counts are signed and
+    /// slotted the same way for both sides.
+    ///
+    /// The reflection is the side to move's as well, which is what leaves the
+    /// two rows identical rather than opposite: a black king in the mirror
+    /// carries the sign of the white king it reflects.
+    #[test]
+    fn a_mirrored_position_states_the_same_shelter_row() {
+        let white = Board::from_fen("4k3/pp6/8/8/8/8/3PPP2/4K3 w - - 0 1").unwrap();
+        let black = Board::from_fen("4k3/3ppp2/8/8/8/8/PP6/4K3 b - - 0 1").unwrap();
+        let terms = Terms::of(&white);
+        assert!(
+            terms
+                .coefficients
+                .iter()
+                .any(|(slot, _)| usize::from(*slot) >= SHELTER_SLOT),
+            "no shelter coefficient here, so this test says nothing about one"
+        );
+        assert_eq!(terms, Terms::of(&black));
+        assert_eq!(eval::eval(&white), eval::eval(&black));
     }
 }
