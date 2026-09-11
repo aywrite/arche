@@ -532,11 +532,11 @@ mod tests {
     /// Every mobile piece writes both ends of the taper too, and its count is
     /// hand counted rather than read back off the board.
     ///
-    /// The identity says nothing about these eight slots while the weights are
-    /// zero, so a mobility coefficient written to the wrong slot, doubled, or
-    /// left out entirely reproduces every row of the corpus. What is asserted
-    /// here is the coefficient itself, against a count worked out by hand from
-    /// the position below.
+    /// The identity says little about these eight slots. Six of the eight
+    /// shipped weights are zero, so a mobility coefficient written to one of
+    /// those slots, doubled, or left out entirely reproduces every row of the
+    /// corpus. What is asserted here is the coefficient itself, against a
+    /// count worked out by hand from the position below.
     #[test]
     fn every_mobile_piece_writes_both_ends_of_the_taper() {
         // the same corner the piece square test uses, and for the same reason:
