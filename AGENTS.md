@@ -34,6 +34,18 @@ plainly. Short declarative sentences. Parentheses rather than em dashes. Say
 what changed and why without staging it: a commit title is "Add an
 architecture overview", not "Draw the map a new reader looks for".
 
+A title names the thing, in the words someone looking for it would use. Where
+a change has a standard name in engine vocabulary (king safety, mobility, late
+move reductions, null move pruning), the title carries that name and, where
+there is room, how it is done: "Add a basic king safety term from pawn masks",
+not "Measure what the king stands behind". Both describe the same commit, and
+only the first tells someone scanning `git log` which feature landed. Where a
+term arrives in stages, say which stage this is. The same goes for a pull
+request title, which is the commit title when there is one commit.
+
+That rule is about the title. A body still explains, and the paragraphs under
+it are where the reasoning, the numbers and the rejected alternatives go.
+
 Some things read as generated and are avoided: three-part parallel
 constructions, hype words (robust, comprehensive, powerful, seamless), clever
 closing lines, and the same idiom twice in one file. When unsure, read the
