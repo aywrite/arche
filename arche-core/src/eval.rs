@@ -63,16 +63,61 @@ pub(crate) const MOBILE_PIECES: [Piece; 4] =
 /// one either end, so the term ships as a rook count and what the other
 /// three cost to compute is bought by nothing.
 ///
+/// The rook's two halves are equal, so its contribution does not taper: a
+/// square of its scope is worth the same at either end of the game. That is a
+/// fact about this fit rather than about the term, so nothing here takes
+/// advantage of it. The taper is what a later fit needs.
+///
 /// A count is at most twenty seven for a queen and a boardful comes to a few
 /// hundred, so a weight in single figures leaves the same order of magnitude
 /// in hand that `pack` asks for.
-static MOBILITY: [i32; MOBILE_PIECES.len()] = [pack(0, 0), pack(0, 0), pack(1, 1), pack(0, 0)];
+const MOBILITY: [i32; MOBILE_PIECES.len()] = [pack(0, 0), pack(0, 0), pack(1, 1), pack(0, 0)];
 
 /// The mobility weight of one of the four pieces that carries one, as the
 /// packed pair. The tuner's seam asks, so that a slot names the live weight
 /// rather than a copy of it, the way it reads the tables.
-pub(crate) fn mobility_weight(index: usize) -> i32 {
+pub(crate) const fn mobility_weight(index: usize) -> i32 {
     MOBILITY[index]
+}
+
+/// A set of [`MOBILE_PIECES`], a bit per index, which is what
+/// `Board::mobility_counts` takes. A kind left out of the set is not counted
+/// and answers zero.
+///
+/// This is all four of them. The tuner's walk asks for it whatever the
+/// weights hold, because that walk is offline and its coefficients are what
+/// lets a later fit price a kind that is worth nothing today.
+pub(crate) const ALL_KINDS: u8 = (1 << MOBILE_PIECES.len()) - 1;
+
+/// The kinds [`eval`] counts: the ones whose [`MOBILITY`] weight is not zero
+/// at one end of the taper or the other. Six of the eight weights are zero
+/// today, which leaves the rook.
+///
+/// Derived from the weights rather than written out, so a refit that prices a
+/// kind starts counting it again instead of having it ignored at every leaf.
+/// `eval_counts_a_kind_exactly_when_its_weight_is_not_zero` is what holds the
+/// two together.
+pub(crate) const SCORED_KINDS: u8 = scored_kinds();
+
+/// Whether `kinds` names the piece at `index` in [`MOBILE_PIECES`].
+pub(crate) const fn counted(kinds: u8, index: usize) -> bool {
+    kinds & (1 << index) != 0
+}
+
+/// [`SCORED_KINDS`], read off the weights at compile time. Both halves are
+/// asked about: a weight worth nothing in the midgame and something in the
+/// ending is still a weight and still has to be counted.
+const fn scored_kinds() -> u8 {
+    let mut kinds = 0;
+    let mut index = 0;
+    while index < MOBILE_PIECES.len() {
+        let weight = mobility_weight(index);
+        if mg_value(weight) != 0 || eg_value(weight) != 0 {
+            kinds |= 1 << index;
+        }
+        index += 1;
+    }
+    kinds
 }
 
 /// What one piece leaves on the board, on the scale the taper is read at.
@@ -98,22 +143,29 @@ pub(crate) fn eval(board: &Board) -> Score {
 /// Read off the board rather than accumulated. A piece that moves changes what
 /// every slider looking through its square sees, so there is nothing here for
 /// `Accumulator::count` to add and take away.
+///
+/// Only [`SCORED_KINDS`] are counted. A kind whose weight is zero contributes
+/// nothing however many squares it covers, so counting it is work no score can
+/// see. Leaving three of the four out took a bit over a third off what the
+/// term cost.
 #[inline]
 fn mobility(board: &Board) -> i32 {
-    mobility_with(board, &MOBILITY)
+    mobility_with::<SCORED_KINDS>(board, &MOBILITY)
 }
 
-/// The same fold against weights named by the caller.
+/// The same fold over the kinds `KINDS` names, against weights named by the
+/// caller. A kind outside `KINDS` counts zero and so has to be worth zero.
 ///
 /// Six of the eight live weights are zero and the other two are equal, so a
 /// swapped pair of halves scores every position exactly as the right answer
 /// does and a permuted [`MOBILITY`] shows only on the one piece that carries a
-/// weight. The tests supply weights of their own through here, which is what
-/// says the sign, the order and the packing are right whatever the fit holds.
+/// weight. The tests supply weights of their own through here, over all four
+/// kinds, which is what says the sign, the order and the packing are right
+/// whatever the fit holds.
 #[inline]
-fn mobility_with(board: &Board, weights: &[i32; MOBILE_PIECES.len()]) -> i32 {
-    let white = board.mobility_counts(Color::White);
-    let black = board.mobility_counts(Color::Black);
+fn mobility_with<const KINDS: u8>(board: &Board, weights: &[i32; MOBILE_PIECES.len()]) -> i32 {
+    let white = board.mobility_counts::<KINDS>(Color::White);
+    let black = board.mobility_counts::<KINDS>(Color::Black);
     let mut packed = 0;
     for ((weight, white), black) in weights.iter().zip(white).zip(black) {
         packed += weight * (white - black);
@@ -270,7 +322,10 @@ impl Accumulator {
 
 #[cfg(test)]
 mod evaluate {
-    use super::{Board, MOBILE_PIECES, TOTAL_PHASE, eval, mobility_with};
+    use super::{
+        ALL_KINDS, Board, MOBILE_PIECES, MOBILITY, SCORED_KINDS, TOTAL_PHASE, eval, mobility,
+        mobility_weight, mobility_with,
+    };
     use crate::board::fens;
     use crate::misc::Color;
     use crate::psqt::{eg_value, mg_value, pack};
@@ -458,8 +513,14 @@ mod evaluate {
     #[test]
     fn the_mobility_fold_reads_white_less_black_piece_by_piece() {
         let board = Board::from_fen(COUNTED).unwrap();
-        assert_eq!(board.mobility_counts(Color::White), WHITE_COVERS);
-        assert_eq!(board.mobility_counts(Color::Black), BLACK_COVERS);
+        assert_eq!(
+            board.mobility_counts::<{ ALL_KINDS }>(Color::White),
+            WHITE_COVERS
+        );
+        assert_eq!(
+            board.mobility_counts::<{ ALL_KINDS }>(Color::Black),
+            BLACK_COVERS
+        );
         let midgame: i32 = (0..MOBILE_PIECES.len())
             .map(|i| mg_value(TRIAL[i]) * (WHITE_COVERS[i] - BLACK_COVERS[i]))
             .sum();
@@ -470,9 +531,64 @@ mod evaluate {
             midgame, endgame,
             "the two halves would not tell a swap apart"
         );
-        let packed = mobility_with(&board, &TRIAL);
+        let packed = mobility_with::<{ ALL_KINDS }>(&board, &TRIAL);
         assert_ne!(midgame, 0, "black less white would answer the same here");
         assert_eq!((mg_value(packed), eg_value(packed)), (midgame, endgame));
+    }
+
+    /// What `eval` is allowed to leave out, which is the whole of the contract
+    /// between it and the tuner's walk.
+    ///
+    /// The walk counts all four kinds and `eval` counts [`SCORED_KINDS`], so
+    /// the two no longer read one answer. What makes that safe is the size of
+    /// the difference and nothing else: a count multiplied by zero adds
+    /// nothing, so a kind worth zero can go uncounted without moving a score,
+    /// and any other kind cannot. So this asserts the difference is exactly
+    /// that, kind by kind, and then that the two fold to the same packed pair
+    /// at the shipped weights.
+    ///
+    /// A later fit that prices one of the three kinds `eval` skips today fails
+    /// here, rather than being silently thrown away at every leaf and every
+    /// quiescence node.
+    ///
+    /// The position has to give every kind of both colours something to cover,
+    /// or a kind that is skipped and a kind that covers nothing read the same
+    /// and the test passes without having looked at anything.
+    #[test]
+    fn eval_counts_a_kind_exactly_when_its_weight_is_not_zero() {
+        let board = Board::from_fen(fens::KIWIPETE).unwrap();
+        for color in [Color::White, Color::Black] {
+            let all = board.mobility_counts::<{ ALL_KINDS }>(color);
+            let scored = board.mobility_counts::<{ SCORED_KINDS }>(color);
+            for (index, piece) in MOBILE_PIECES.into_iter().enumerate() {
+                assert_ne!(
+                    all[index], 0,
+                    "{:?} covers nothing here, so this position cannot tell a skipped kind \
+                     from a counted one",
+                    piece
+                );
+                let weight = mobility_weight(index);
+                let priced = mg_value(weight) != 0 || eg_value(weight) != 0;
+                assert_eq!(
+                    scored[index],
+                    if priced { all[index] } else { 0 },
+                    "{:?} is worth {} in the midgame and {} in the ending, so it should be \
+                     {}, and eval counted {} of its {} squares",
+                    piece,
+                    mg_value(weight),
+                    eg_value(weight),
+                    if priced { "counted" } else { "skipped" },
+                    scored[index],
+                    all[index]
+                );
+            }
+        }
+        let whole = mobility_with::<{ ALL_KINDS }>(&board, &MOBILITY);
+        assert_ne!(
+            whole, 0,
+            "mobility is level here, so this position says nothing about the fold"
+        );
+        assert_eq!(mobility(&board), whole);
     }
 
     /// Mobility enters the numerator of the one interpolation rather than
