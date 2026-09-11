@@ -11,7 +11,7 @@ name: Coverage
 # Instrumented, the suite takes about eighteen minutes, and sixteen of those
 # are the perft tests: they make and unmake tens of millions of moves, which
 # instrumentation slows by roughly twenty times. There is nothing to trim
-# there — the depths are the whole point of perft, and cutting them would
+# there: the depths are the whole point of perft, and cutting them would
 # leave the move generator reading as uncovered when it is the best covered
 # code here. So the cost is real, and a number that gates nothing should not
 # be spending it on a schedule nobody asked for.

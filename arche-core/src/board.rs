@@ -26,8 +26,8 @@ pub type MoveList = SmallVec<[Play; MOVE_LIST_INLINE]>;
 /// generation adds nothing to that: it walks the same pieces to the same
 /// squares and only declines to ask whether the mover's king is left in
 /// check. This is more than twice that, because `from_fen` bounds neither
-/// the number of pieces nor what they are — a position with nine queens is
-/// accepted and played from — so the margin is against a position no game
+/// the number of pieces nor what they are (a position with nine queens is
+/// accepted and played from), so the margin is against a position no game
 /// reaches rather than against the generator. Nothing here is initialised,
 /// so the width costs stack and no instructions, and the stack it costs is
 /// one frame's: the buffer is gone before the search recurses.
@@ -50,8 +50,8 @@ impl Building {
     fn new() -> Self {
         // nothing is written here, and that is the point: giving every entry
         // a value first costs a store each, and `Play` has no zero value to
-        // memset — `None` for the piece a move captures is a niche rather
-        // than a zero — so an initialiser here measured slower than the
+        // memset (`None` for the piece a move captures is a niche rather
+        // than a zero), so an initialiser here measured slower than the
         // pushing it replaced.
         Self {
             moves: [const { MaybeUninit::uninit() }; MAX_GENERATED],
@@ -965,7 +965,7 @@ impl Board {
     /// every count correct and shows up only as the engine evaluating or
     /// transposing wrongly. Debug only: it walks the whole board.
     ///
-    /// Each recompute — the ones below and `Accumulator::recomputed` — is a
+    /// Each recompute (the ones below and `Accumulator::recomputed`) is a
     /// second implementation on purpose, and only worth having while it
     /// stays one. Factoring shared code out of a recompute and the
     /// piece-at-a-time path it is checked against would leave both sides
@@ -2132,7 +2132,7 @@ impl Board {
     /// none of them can be refused without being played; the checker, its
     /// line and the king are found once for the whole list rather than once
     /// per move. The moves kept still go through `make_move`, which settles
-    /// pins and squares the king may not step to — refusing here only spares
+    /// pins and squares the king may not step to. Refusing here only spares
     /// that work for moves it would certainly refuse. En passant is kept
     /// unexamined: the captured pawn does not stand on the to square, so the
     /// capture and block masks misread it, and it is rare.

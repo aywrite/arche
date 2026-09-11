@@ -23,8 +23,8 @@
 unmaintained = "all"
 unsound = "all"
 # A yank is an author withdrawing a version. It is worth hearing about and it
-# is not by itself a vulnerability — the ones that are have advisories, and
-# those fail above — so it is reported rather than gated, and an unrelated
+# is not by itself a vulnerability (the ones that are have advisories, and
+# those fail above), so it is reported rather than gated, and an unrelated
 # pull request is not held up by someone else's accidental publish.
 yanked = "warn"
 # An advisory that has been read and judged not to apply goes here with the
@@ -54,8 +54,8 @@ private = { ignore = true }
 
 [bans]
 # Two versions of one crate in the same tree is the ecosystem's business rather
-# than this repository's — criterion and proptest disagree about a handful, and
-# neither is ours to reconcile — so it is reported and not gated.
+# than this repository's (criterion and proptest disagree about a handful, and
+# neither is ours to reconcile), so it is reported and not gated.
 multiple-versions = "warn"
 # A wildcard version requirement is a dependency on whatever is published next.
 # The path dependency on arche-core is exempt because it is a path rather

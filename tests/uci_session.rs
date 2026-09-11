@@ -7,7 +7,7 @@
 //! the parsing and the search and says nothing about the program: argument
 //! handling, the stdin loop, the reader thread, exit codes. These spawn the
 //! executable cargo built, script a session against its pipes, and assert on
-//! the transcript — the docker smoke test's job, on every push and on every
+//! the transcript, the docker smoke test's job, on every push and on every
 //! platform the release ships for.
 //!
 //! Every wait has a deadline, so a binary that stops answering fails the

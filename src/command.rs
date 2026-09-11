@@ -70,7 +70,7 @@ impl Command {
     /// set would have to decide whether `16` was known on its own.
     ///
     /// The first word is whatever invoked us and the second may be the depth,
-    /// which is a number this cannot judge — `depth: abc` is the reading a
+    /// which is a number this cannot judge: `depth: abc` is the reading a
     /// caller's own parse gives it, and a better one, which is why this runs
     /// after that parse rather than before.
     pub fn unclaimed<'a>(&self, params: &Params<'a>) -> Option<&'a str> {

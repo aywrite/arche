@@ -4,9 +4,9 @@
 //! What bounds a single search: the clock it may spend and the nodes it may
 //! visit, measured from the moment the search began.
 //!
-//! One value answers every question the search asks about stopping — whether
+//! One value answers every question the search asks about stopping (whether
 //! it has run out, when to look again, whether another iteration is worth
-//! beginning, and how long it has been going — so that the count of nodes a
+//! beginning, and how long it has been going), so that the count of nodes a
 //! search reports and the time it reports are read from the same place. A
 //! limit reached is what `SearchOutcome::Aborted` means; the depth asked for
 //! is not one of these, because reaching that is how a search finishes rather

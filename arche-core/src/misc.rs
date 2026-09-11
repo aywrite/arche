@@ -128,8 +128,8 @@ const _: () = assert!(std::mem::size_of::<CastlePermissions>() == 4);
 ///
 /// The derive reads a field, branches, and reads the next, which is the
 /// cheaper shape when the answer is usually no and the first field settles
-/// it. Here the answer is usually yes — the rights survive almost every move
-/// unchanged, which is what make asks this to find out — so all four are read
+/// it. Here the answer is usually yes (the rights survive almost every move
+/// unchanged, which is what make asks this to find out), so all four are read
 /// either way, and reading them together is a comparison instead of four.
 impl PartialEq for CastlePermissions {
     #[inline]

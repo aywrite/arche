@@ -328,7 +328,7 @@ impl SearchParameters {
 
     /// Everything one iteration may be stopped by, under the one rule:
     /// until a depth has been answered there is nothing to answer with, so
-    /// nothing — not the clock, not the budget, not the flag — may stop
+    /// nothing (not the clock, not the budget, not the flag) may stop
     /// the search. Depth one is microseconds, and this is what makes every
     /// `go` end in a real move rather than in a null one from a position
     /// with moves.
@@ -2068,8 +2068,8 @@ impl AlphaBeta {
     }
 
     /// The body of one fixed depth search. Everything that may interrupt
-    /// it arrives in the signature — the limits it spends, and the flag
-    /// that is the one interrupter from outside — and the prologue, not
+    /// it arrives in the signature (the limits it spends, and the flag
+    /// that is the one interrupter from outside), and the prologue, not
     /// the caller, writes the field the poll reads.
     fn search_root(
         &mut self,
