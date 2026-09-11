@@ -39,20 +39,21 @@ pub const MAX_PLY: u8 = 128;
 const _: () = assert!(MAX_PLY < u8::MAX);
 // How far above beta a static eval has to stand, per ply still to search,
 // before a node is answered from it instead of searched: what the opponent
-// is allowed to win back over those plies. A pawn a ply. The bench barely
-// argues either way, sixty through a hundred and twenty spanning a tenth
-// of the count between them, so what chose this figure is the depth four
-// mate in two the_mate_distance_survives_a_deeper_warm_search pins:
-// ninety loses it and ninety one keeps it. A margin standing one notch
-// from a mate it can miss is not a margin, so this is the round number
-// above that, and it costs about one and a half percent of the tree over
-// ninety.
+// is allowed to win back over those plies. A pawn a ply. The bench argues
+// for a smaller margin and not by much, sixty through a hundred and twenty
+// spanning about five percent of the count and not monotone in between, so
+// what chose this figure is the depth four mate in two
+// the_mate_distance_survives_a_deeper_warm_search pins: eighty nine loses
+// it and ninety keeps it. A margin standing one notch from a mate it can
+// miss is not a margin, so this is the round number above that, and it
+// costs about two thirds of a percent of the tree over ninety.
 //
 // That boundary was between eighty five and ninety when the figure was
-// chosen and has climbed since, a search change at a time, so it is a
-// measurement and not a fact to read off this line. The round number above
-// it is a hundred either way. What the shadow lane says about the rest of
-// the question is in docs/ROADMAP.md.
+// chosen, stood at ninety one before the piece square tables were fitted,
+// and is ninety now, so it moves both ways a change at a time and is a
+// measurement rather than a fact to read off this line. The round number
+// above it has been a hundred every time it has been read. What the shadow
+// lane says about the rest of the question is in docs/ROADMAP.md.
 const REVERSE_FUTILITY_MARGIN: Score = 100;
 // The depth the shortcut stops at. The margin grows by a fixed step a ply
 // and a straight line stops describing a tree quickly, which the bench
