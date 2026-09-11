@@ -98,6 +98,61 @@ const LATE_MOVE_THRESHOLD: usize = 4;
 // what the arm prices is the mechanism, and the depth and move count table
 // is the next rung.
 const DEEP_REDUCTION: u8 = 2;
+// What the model gate's word is worth on top of whatever the flat policy
+// would have done: one ply, which is the difference between the two
+// constants above. Written as that difference rather than as a one so the
+// table below cannot drift away from the pair it replaced.
+const DEEP_REDUCTION_BONUS: u8 = DEEP_REDUCTION - LATE_MOVE_REDUCTION;
+// ln(x) at a scale of 1024, for every index the reduction table has. The
+// only transcendental the table needs, held as integers so the table is
+// built at compile time rather than at startup and so two targets cannot
+// disagree about it. Zero at both ends of the bottom, which puts the
+// table's first row and column on its floor of one.
+#[rustfmt::skip]
+const LN: [u16; 64] = [
+        0,     0,   710,  1125,  1420,  1648,  1835,  1993,
+     2129,  2250,  2358,  2455,  2545,  2627,  2702,  2773,
+     2839,  2901,  2960,  3015,  3068,  3118,  3165,  3211,
+     3254,  3296,  3336,  3375,  3412,  3448,  3483,  3516,
+     3549,  3580,  3611,  3641,  3670,  3698,  3725,  3751,
+     3777,  3803,  3827,  3851,  3875,  3898,  3921,  3943,
+     3964,  3985,  4006,  4026,  4046,  4066,  4085,  4104,
+     4122,  4140,  4158,  4175,  4193,  4210,  4226,  4243,
+];
+// 2.6 at the scale above squared, which is what sets how fast the
+// reduction grows with the two logs multiplied. The conventional figure,
+// and what moves it is a match rather than the bench. The half is added
+// before the divide so it rounds to nearest instead of toward zero.
+const REDUCTION_DIV: u32 = 2_726_298;
+const REDUCTION_HALF: u32 = REDUCTION_DIV / 2;
+
+/// How many plies shallower a late quiet is scouted, by the node's depth
+/// and the move's place in the order, before the model gate's word and the
+/// floor are applied.
+///
+/// Built at compile time from `LN` and the divisor, so the formula is the
+/// source rather than four thousand numbers, and the search pays one array
+/// read. The floor of one is what keeps the table's shallow corner at the
+/// flat ply the search already applies there.
+const REDUCTION: [[u8; 64]; 64] = reduction_table();
+
+const fn reduction_table() -> [[u8; 64]; 64] {
+    let mut table = [[1u8; 64]; 64];
+    let mut depth = 0;
+    while depth < 64 {
+        let mut index = 0;
+        while index < 64 {
+            let product = LN[depth] as u32 * LN[index] as u32;
+            let value = (product + REDUCTION_HALF) / REDUCTION_DIV;
+            if value > 1 {
+                table[depth][index] = value as u8;
+            }
+            index += 1;
+        }
+        depth += 1;
+    }
+    table
+}
 // The shallowest depth a node may reduce two plies at, two more than the
 // reduction on the late move floor's reasoning: the scout keeps a full
 // width ply under it, so `depth - 1 - DEEP_REDUCTION` never falls under
@@ -443,6 +498,14 @@ pub struct SearchConfig {
     /// the sixth carries; its threshold is a deeper cut of the same
     /// score. On in the default, off in the reference.
     pub late_move_pruning: bool,
+    /// Whether the amount a late quiet is scouted shallower by grows with
+    /// the node's depth and the move's place in the order, rather than
+    /// being the flat ply and the gate's second one. It changes no move's
+    /// eligibility and nothing the model gate decides, only how far the
+    /// scout of a move already reduced is stood back. On in the default,
+    /// off in the reference, and off it the two constants are read as they
+    /// were, which is what the bench identity test holds it to.
+    pub reduction_table: bool,
     /// Whether a node orders its quiet moves by what other nodes have
     /// learned: the killers for its distance from the root, and the history
     /// table under them. On in the default, off in the reference, which
@@ -514,6 +577,7 @@ impl SearchConfig {
             late_move_reductions: false,
             deep_reductions: false,
             late_move_pruning: false,
+            reduction_table: false,
             move_memory: false,
         }
     }
@@ -609,6 +673,7 @@ impl Default for SearchConfig {
             late_move_reductions: true,
             deep_reductions: true,
             late_move_pruning: true,
+            reduction_table: true,
             move_memory: true,
         }
     }
@@ -1794,6 +1859,37 @@ impl AlphaBeta {
         Gate::Flat
     }
 
+    /// How many plies shallower the scout runs, once the gate has said
+    /// which question the move is answering. `bonus` is the model gate's
+    /// word, which stays a ply on top of whatever the flat policy would
+    /// have done rather than a depth of its own: the model ranks how dead
+    /// a move is and never named a depth, so reading it as a relative one
+    /// keeps the R=1 label's approximation where it already was.
+    ///
+    /// Off the table this is the two constants it replaced, so the tree is
+    /// the tree. On it, the amount grows with the node's depth and the
+    /// move's index.
+    ///
+    /// The clamp is the floor the two minimum depths used to guarantee on
+    /// their own: `depth - 1 - reduction` never falls under one, so the
+    /// scout always keeps a full width ply. It is applied after the bonus
+    /// rather than before, because what has to stay above zero is the
+    /// depth the scout actually runs at. Clamping is chosen over raising
+    /// the minimum depths so that the eligible population does not move
+    /// with the amount.
+    fn reduction_amount(&self, depth: u8, searched: usize, bonus: u8) -> u8 {
+        debug_assert!(
+            depth >= LATE_MOVE_MIN_DEPTH,
+            "a move is only reduced at a depth the scout keeps a ply under"
+        );
+        let base = if self.config.reduction_table {
+            REDUCTION[usize::from(depth).min(63)][searched.min(63)]
+        } else {
+            LATE_MOVE_REDUCTION
+        };
+        (base + bonus).min(depth - 2)
+    }
+
     /// A fail high at a full width node: the move that proved it goes to
     /// the quiet memories with the moves the node searched before it and,
     /// when the taint policy allows, to the table, and what comes back is
@@ -2033,8 +2129,8 @@ impl AlphaBeta {
                         }
                         continue;
                     }
-                    Gate::Deeper => DEEP_REDUCTION,
-                    Gate::Flat => LATE_MOVE_REDUCTION,
+                    Gate::Deeper => self.reduction_amount(depth, searched, DEEP_REDUCTION_BONUS),
+                    Gate::Flat => self.reduction_amount(depth, searched, 0),
                 }
             };
             // the ledger's staged half: what the node knows about the move
@@ -2575,11 +2671,11 @@ mod search {
     use super::Board;
     use super::Engine;
     use super::{
-        ATTENTION_KILLER, AttentionFeatures, DEEP_REDUCTION, DEEP_REDUCTION_MIN_DEPTH,
-        DEEP_REDUCTION_THRESHOLD, Gate, LATE_MOVE_MIN_DEPTH, LATE_MOVE_PRUNING_THRESHOLD,
-        LATE_MOVE_REDUCTION, LATE_MOVE_THRESHOLD, Limits, MAX_PLY, Play, Score, ScoreBound,
-        SearchConfig, SearchOutcome, SearchParameters, SearchResult, TaintPolicy, Value,
-        attention_score,
+        ATTENTION_KILLER, AttentionFeatures, DEEP_REDUCTION, DEEP_REDUCTION_BONUS,
+        DEEP_REDUCTION_MIN_DEPTH, DEEP_REDUCTION_THRESHOLD, Gate, LATE_MOVE_MIN_DEPTH,
+        LATE_MOVE_PRUNING_THRESHOLD, LATE_MOVE_REDUCTION, LATE_MOVE_THRESHOLD, Limits, MAX_PLY,
+        Play, REDUCTION, Score, ScoreBound, SearchConfig, SearchOutcome, SearchParameters,
+        SearchResult, TaintPolicy, Value, attention_score,
     };
     use crate::board::{fens, fens::SHARP_MIDDLEGAME, play_named};
     use crate::census::Table;
@@ -4206,6 +4302,127 @@ mod search {
         let capture = play_named(&e.board, "a4e4");
         assert!(quiet.capture.is_none() && capture.capture.is_some());
         (e, quiet, capture)
+    }
+
+    /// Off the switch the amount is the two constants the table replaced,
+    /// at every depth and index the gate can reach. This is the identity
+    /// the arm's bench claim rests on: a search with the table off is the
+    /// search that was there before it existed.
+    #[test]
+    fn the_table_off_reads_the_two_constants_it_replaced() {
+        let e = at_reducible_child(SearchConfig {
+            reduction_table: false,
+            ..SearchConfig::default()
+        });
+        for depth in LATE_MOVE_MIN_DEPTH..64 {
+            for searched in [LATE_MOVE_THRESHOLD, 8, 20, 63, 200] {
+                assert_eq!(
+                    e.reduction_amount(depth, searched, 0),
+                    LATE_MOVE_REDUCTION,
+                    "flat at depth {depth} index {searched}"
+                );
+                if depth >= DEEP_REDUCTION_MIN_DEPTH {
+                    assert_eq!(
+                        e.reduction_amount(depth, searched, DEEP_REDUCTION_BONUS),
+                        DEEP_REDUCTION,
+                        "deeper at depth {depth} index {searched}"
+                    );
+                }
+            }
+        }
+    }
+
+    /// The table's shape rather than its numbers, on the psqt tests'
+    /// precedent: a pin on every entry would fail on any change to the
+    /// divisor and say nothing about whether the change was wrong.
+    #[test]
+    fn the_reduction_table_grows_with_depth_and_with_move_count() {
+        assert_eq!(REDUCTION[0][0], 1, "the floor is a ply, never nothing");
+        // the corner most reduced scouts sit in reads what the search
+        // did before the table, which is what keeps the shallow tree
+        assert_eq!(
+            REDUCTION[usize::from(LATE_MOVE_MIN_DEPTH)][LATE_MOVE_THRESHOLD],
+            1
+        );
+        assert_eq!(REDUCTION[4][4], 1);
+        for depth in 0..64 {
+            for index in 0..64 {
+                assert!(REDUCTION[depth][index] >= 1, "at {depth}, {index}");
+                if depth > 0 {
+                    assert!(
+                        REDUCTION[depth][index] >= REDUCTION[depth - 1][index],
+                        "depth {depth} at index {index} reduces less than {}",
+                        depth - 1
+                    );
+                }
+                if index > 0 {
+                    assert!(
+                        REDUCTION[depth][index] >= REDUCTION[depth][index - 1],
+                        "index {index} at depth {depth} reduces less than {}",
+                        index - 1
+                    );
+                }
+            }
+        }
+        assert_eq!(REDUCTION[63][63], 7, "the deepest and latest corner");
+    }
+
+    /// The clamp is what the two minimum depths used to guarantee on their
+    /// own: whatever the table says, the scout keeps a full width ply
+    /// under it. A table entry of seven at a depth of five would search at
+    /// a depth below zero without this, and the subtraction is on unsigned
+    /// plies.
+    #[test]
+    fn the_scout_keeps_a_full_width_ply_at_every_depth_the_table_reaches() {
+        let e = at_reducible_child(SearchConfig::default());
+        for depth in LATE_MOVE_MIN_DEPTH..64 {
+            for searched in [LATE_MOVE_THRESHOLD, 12, 40, 63, 500] {
+                for bonus in [0, DEEP_REDUCTION_BONUS] {
+                    if bonus > 0 && depth < DEEP_REDUCTION_MIN_DEPTH {
+                        continue;
+                    }
+                    let reduction = e.reduction_amount(depth, searched, bonus);
+                    assert!(
+                        reduction >= LATE_MOVE_REDUCTION,
+                        "never under the flat ply at depth {depth} index {searched}"
+                    );
+                    assert!(
+                        depth - 1 - reduction >= 1,
+                        "depth {depth} index {searched} bonus {bonus} scouts at {}",
+                        i32::from(depth) - 1 - i32::from(reduction)
+                    );
+                }
+            }
+        }
+    }
+
+    /// The gate's word stays worth a ply on top of the flat policy rather
+    /// than becoming a depth of its own, which is the composition the arm
+    /// registered. At the table's shallow corner that is today's two.
+    #[test]
+    fn the_model_gate_is_worth_one_ply_over_the_flat_amount() {
+        let e = at_reducible_child(SearchConfig::default());
+        for depth in DEEP_REDUCTION_MIN_DEPTH..64 {
+            for searched in [LATE_MOVE_THRESHOLD, 10, 30, 63] {
+                let flat = e.reduction_amount(depth, searched, 0);
+                let deeper = e.reduction_amount(depth, searched, DEEP_REDUCTION_BONUS);
+                let clamp = depth - 2;
+                assert_eq!(
+                    deeper,
+                    (flat + DEEP_REDUCTION_BONUS).min(clamp),
+                    "at depth {depth} index {searched}"
+                );
+            }
+        }
+        assert_eq!(
+            e.reduction_amount(
+                DEEP_REDUCTION_MIN_DEPTH,
+                LATE_MOVE_THRESHOLD,
+                DEEP_REDUCTION_BONUS
+            ),
+            DEEP_REDUCTION,
+            "the shallow corner is what the constants did"
+        );
     }
 
     #[test]
