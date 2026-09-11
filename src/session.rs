@@ -295,7 +295,7 @@ where
 /// The handler is called on this thread, so whatever it closes over never
 /// crosses to the reader; the reader is over there so that a `stop` is read
 /// while a search is running rather than after it. The input is built on
-/// the reader's thread too — stdin's lock lives its whole life there — so
+/// the reader's thread too (stdin's lock lives its whole life there), so
 /// what crosses is the recipe for it rather than the thing.
 pub(crate) fn wire<W, I, F, H>(out: SharedWriter<W>, input: F, handle: H)
 where

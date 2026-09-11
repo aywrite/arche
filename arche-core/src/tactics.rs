@@ -82,7 +82,7 @@ impl Report {
 
 /// Runs a suite under the settings given. Each position gets a fresh engine
 /// and a fresh table and is deepened to the depth the way a game would be, so
-/// the table is warm from each iteration to the next — the same shape the
+/// the table is warm from each iteration to the next, the same shape the
 /// bench runs in, because a position searched differently is a position
 /// answered differently.
 pub fn run_suite(

@@ -20,7 +20,7 @@ middlegame and an endgame score.
 ### Background
 
 Since 2026 most of the changes in this repo are written by AI. I had abandoned this project
-for want of time, but AI has changed that. AI allows me to explore new ideas — be they my own,
+for want of time, but AI has changed that. AI allows me to explore new ideas, be they my own,
 AI generated or borrowed from other engines. I still decide on the roadmap, but I can no longer
 call the engine all my own work. It remains first and foremost a fun project that helps me
 learn about how chess engines work and performance tuning in Rust.
@@ -29,16 +29,16 @@ The engine is something to experiment on rather than an example to copy.
 
 ## Documentation
 
-- [docs/ARCHITECTURE.md](docs/ARCHITECTURE.md) — how the code is organized and how the main
+- [docs/ARCHITECTURE.md](docs/ARCHITECTURE.md): how the code is organized and how the main
   parts work
-- [docs/DEVELOPMENT.md](docs/DEVELOPMENT.md) — building, the tests, the benchmarks and the
+- [docs/DEVELOPMENT.md](docs/DEVELOPMENT.md): building, the tests, the benchmarks and the
   bench, playing a match against a previous version, placing the engine on the ccrl scale, and
   cutting a release
-- [docs/INSTRUMENTS.md](docs/INSTRUMENTS.md) — the measurements the engine makes of its own
+- [docs/INSTRUMENTS.md](docs/INSTRUMENTS.md): the measurements the engine makes of its own
   search and of its evaluation, and how to read what they print
-- [docs/ROADMAP.md](docs/ROADMAP.md) — what is not implemented yet, and the limitations of what is
-- [docs/LICHESS.md](docs/LICHESS.md) — running the engine as a bot account on lichess
-- [CHANGELOG.md](CHANGELOG.md) — what changed in each release
+- [docs/ROADMAP.md](docs/ROADMAP.md): what is not implemented yet, and the limitations of what is
+- [docs/LICHESS.md](docs/LICHESS.md): running the engine as a bot account on lichess
+- [CHANGELOG.md](CHANGELOG.md): what changed in each release
 
 ## Usage
 

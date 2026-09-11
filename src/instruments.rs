@@ -12,7 +12,7 @@
 //!
 //! Their own module rather than `uci`, because none of them is the protocol.
 //! An interface will never send `cutoffs`, and would not wait for the answer
-//! if it did — these take minutes and answer a research question, which is why
+//! if it did: these take minutes and answer a research question, which is why
 //! they are arguments rather than commands. They were spelled with the same
 //! `Params` reader as the uci commands and had come to live beside them, which
 //! left the module named for the protocol about half full of things no
