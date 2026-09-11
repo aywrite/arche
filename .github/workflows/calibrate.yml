@@ -583,6 +583,9 @@ jobs:
             || { cat notes.txt >&2; exit 1; }
           # asked for again rather than cut out of the table, so that a change
           # to how the table is laid out cannot quietly change what is published
+          # to the log as well as to the summary, for the reason the strength
+          # workflow says at the same place
+          cat table.md
           line=$(python3 scripts/rating_estimate.py \
             gauntlet.pgn "$ENGINE_NAME" "$LADDER_SPEC" --line 2> /dev/null)
           echo "line=Estimated rating | ${line}" >> "$GITHUB_OUTPUT"

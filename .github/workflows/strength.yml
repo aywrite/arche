@@ -609,6 +609,13 @@ jobs:
             echo "::warning::${remark}"
           done < remarks.txt
 
+          # The report goes to the log as well as to the summary. The summary
+          # is read from the run's own web page and nowhere else, and the pair
+          # counts the next batch carries are in here, so a reader holding
+          # only the log had to recover them from the artifacts or go without.
+          # The artifacts expire and the log is what an api reaches.
+          cat report.md
+
           trailer=$("${estimate[@]}" --trailer)
           line="Performance compared to ${PREVIOUS} | $("${estimate[@]}" --line)"
           echo "::notice::$line"
