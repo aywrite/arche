@@ -1078,7 +1078,8 @@ impl Board {
 
     /// How many squares this side's knights, bishops, rooks and queens cover,
     /// a count per piece kind in that order, which is the order
-    /// `eval::MOBILE_PIECES` names them in.
+    /// `eval::MOBILE_PIECES` names them in. `KINDS` says which of the four to
+    /// count; the rest are not looked at and answer zero.
     ///
     /// A piece's count is its attack set over the real occupancy, less the
     /// squares this side stands on, less the squares an enemy pawn attacks. So
@@ -1092,11 +1093,21 @@ impl Board {
     /// time. The king and the pawn have no count of their own: a king's is a
     /// danger signal rather than a scope one, and a pawn's is move generation.
     ///
-    /// Both `eval` and the tuner's walk read this. The counts are what a
-    /// mobility weight is fitted against, so a second implementation of them
-    /// would be two chances to be wrong rather than a check on one, and the
-    /// hand counts in the tests are what pins it. That is the exception to the
-    /// rule `tune.rs` states in its header, which names it.
+    /// Both `eval` and the tuner's walk read this, but no longer for the same
+    /// kinds. The walk asks for all four, because it is offline and its
+    /// coefficients are what prices a kind; `eval` asks for the kinds whose
+    /// weight is not zero, because a count multiplied by zero is not worth the
+    /// leaf it is taken at. What keeps the two honest is that the difference
+    /// between them is exactly the zero weights, which
+    /// `eval_counts_a_kind_exactly_when_its_weight_is_not_zero` pins. Within
+    /// one set of kinds the counts are still one answer rather than two, so a
+    /// second implementation of them would still be two chances to be wrong
+    /// rather than a check on one, and the hand counts below are what pins
+    /// them. That is the exception to the rule `tune.rs` states in its header,
+    /// which names it.
+    ///
+    /// `KINDS` is a compile time set, so a kind left out of it costs nothing:
+    /// its loop is not compiled rather than skipped.
     ///
     /// Inlined by force. Left to itself llvm keeps this out of line even under
     /// link time optimisation, and `eval` asks for it twice at every leaf and
@@ -1104,7 +1115,10 @@ impl Board {
     /// over the bench: 4.30 billion instructions without the attribute against
     /// 3.76 billion with it.
     #[inline(always)]
-    pub(crate) fn mobility_counts(&self, color: Color) -> [i32; eval::MOBILE_PIECES.len()] {
+    pub(crate) fn mobility_counts<const KINDS: u8>(
+        &self,
+        color: Color,
+    ) -> [i32; eval::MOBILE_PIECES.len()] {
         let occupied = self.occupied();
         let (ours, theirs) = match color {
             Color::White => (self.white, self.black),
@@ -1114,27 +1128,35 @@ impl Board {
         let attack_masks = &ATTACK_MASKS;
         let magic = &MAGIC;
         let mut counts = [0; 4];
-        let mut knights = self.knights() & ours;
-        while knights != 0 {
-            let from = pop_lsb(&mut knights);
-            counts[0] += (attack_masks.knights[from as usize] & scope).count_ones() as i32;
+        if eval::counted(KINDS, 0) {
+            let mut knights = self.knights() & ours;
+            while knights != 0 {
+                let from = pop_lsb(&mut knights);
+                counts[0] += (attack_masks.knights[from as usize] & scope).count_ones() as i32;
+            }
         }
-        let mut bishops = self.bishops() & ours;
-        while bishops != 0 {
-            let from = pop_lsb(&mut bishops);
-            counts[1] += (magic.get_diagonal_move(from, occupied) & scope).count_ones() as i32;
+        if eval::counted(KINDS, 1) {
+            let mut bishops = self.bishops() & ours;
+            while bishops != 0 {
+                let from = pop_lsb(&mut bishops);
+                counts[1] += (magic.get_diagonal_move(from, occupied) & scope).count_ones() as i32;
+            }
         }
-        let mut rooks = self.rooks() & ours;
-        while rooks != 0 {
-            let from = pop_lsb(&mut rooks);
-            counts[2] += (magic.get_straight_move(from, occupied) & scope).count_ones() as i32;
+        if eval::counted(KINDS, 2) {
+            let mut rooks = self.rooks() & ours;
+            while rooks != 0 {
+                let from = pop_lsb(&mut rooks);
+                counts[2] += (magic.get_straight_move(from, occupied) & scope).count_ones() as i32;
+            }
         }
-        let mut queens = self.queens() & ours;
-        while queens != 0 {
-            let from = pop_lsb(&mut queens);
-            let attacks =
-                magic.get_straight_move(from, occupied) | magic.get_diagonal_move(from, occupied);
-            counts[3] += (attacks & scope).count_ones() as i32;
+        if eval::counted(KINDS, 3) {
+            let mut queens = self.queens() & ours;
+            while queens != 0 {
+                let from = pop_lsb(&mut queens);
+                let attacks = magic.get_straight_move(from, occupied)
+                    | magic.get_diagonal_move(from, occupied);
+                counts[3] += (attacks & scope).count_ones() as i32;
+            }
         }
         counts
     }
@@ -4636,6 +4658,7 @@ mod gives_check {
 #[cfg(test)]
 mod mobility {
     use super::{ATTACK_MASKS, Board, Color, pawn_attacks};
+    use crate::eval::ALL_KINDS;
     use pretty_assertions::assert_eq;
 
     /// The counts by hand, square by square, because nothing else pins them.
@@ -4711,7 +4734,12 @@ mod mobility {
             ),
         ] {
             let board = Board::from_fen(fen).unwrap();
-            assert_eq!(board.mobility_counts(Color::White), counts, "{}", why);
+            assert_eq!(
+                board.mobility_counts::<{ ALL_KINDS }>(Color::White),
+                counts,
+                "{}",
+                why
+            );
         }
     }
 
@@ -4722,10 +4750,13 @@ mod mobility {
         let white = Board::from_fen("7k/1p6/8/8/3N4/8/8/7K w - - 0 1").unwrap();
         let black = Board::from_fen("7k/8/8/3n4/8/8/1P6/7K b - - 0 1").unwrap();
         assert_eq!(
-            white.mobility_counts(Color::White),
-            black.mobility_counts(Color::Black)
+            white.mobility_counts::<{ ALL_KINDS }>(Color::White),
+            black.mobility_counts::<{ ALL_KINDS }>(Color::Black)
         );
-        assert_eq!(white.mobility_counts(Color::Black), [0, 0, 0, 0]);
+        assert_eq!(
+            white.mobility_counts::<{ ALL_KINDS }>(Color::Black),
+            [0, 0, 0, 0]
+        );
     }
 
     /// The span is shifted rather than gathered a pawn at a time, and the

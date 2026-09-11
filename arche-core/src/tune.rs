@@ -29,6 +29,15 @@
 //! here would be a second chance to be wrong about a term that is read at
 //! every leaf rather than a check on the first, so what pins it is the hand
 //! counts beside the helper in board.rs.
+//!
+//! The two no longer ask for the same kinds. The walk asks for all four,
+//! because it is offline and a coefficient for a kind worth nothing today is
+//! what lets a later fit price it; `eval` asks only for the kinds whose weight
+//! is not zero, because a count multiplied by zero is not worth taking at
+//! every leaf. So the walk's row is the wider of the two, and the identity
+//! holds because the difference is exactly the kinds that score nothing.
+//! `eval_counts_a_kind_exactly_when_its_weight_is_not_zero` is what says the
+//! difference is that and not something else.
 
 use crate::bench::Position;
 use crate::board::Board;
@@ -170,7 +179,8 @@ impl Terms {
         // come off the board whole rather than out of the walk above. Tapered
         // the way a square is, and so two slots per piece kind
         for (color, sign) in [(Color::White, mover), (Color::Black, -mover)] {
-            for (index, count) in board.mobility_counts(color).into_iter().enumerate() {
+            let counts = board.mobility_counts::<{ eval::ALL_KINDS }>(color);
+            for (index, count) in counts.into_iter().enumerate() {
                 coefficients[MOBILITY_SLOT + index] += sign * count * phase;
                 coefficients[MOBILITY_SLOT + MOBILITY_SLOTS + index] +=
                     sign * count * (TOTAL_PHASE - phase);
