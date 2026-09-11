@@ -44,15 +44,29 @@ pub(crate) const MOBILE_PIECES: [Piece; 4] =
 /// What one square of scope is worth to each of [`MOBILE_PIECES`], as the
 /// packed pairs the taper is read from.
 ///
-/// All zero. The term is computed and the tuner's seam states its
-/// coefficients, so what a mobility weight would be worth can be fitted, and
-/// until it is the evaluation returns exactly what it returned without the
-/// term. The fit is a commit of its own.
+/// Fitted 2026-09-11 by `scripts/tune.py` over the 1,812 archived
+/// strength-run games at 10+0.1 the tables were fitted on, whose 229,018
+/// post-book plies gave 220,369 positions and 101,046 quiet rows in 1,808 of
+/// them, extracted by `arche terms` at 2ff6a25, with K held at 1.4834 and the
+/// games split 1,065 that trained, 372 that chose the ridge of 1e-4 and 371
+/// that were sealed. The 768 table entries and the six material values were
+/// held where they stand, so these eight weights are the only thing that
+/// moved. Every number here is of the rounded vector that ships. The
+/// selection group scores 0.093203 at zero and 0.093176 at these, and the
+/// sealed group 0.083462 and 0.083407, a paired difference of -0.000055
+/// against a standard error of 0.000157 over its 371 games. Both intervals
+/// cover zero, so the loss favours the fit and settles nothing; the match is
+/// what settles it.
+///
+/// Six of the eight rounded to nothing. Before rounding, the rook stood at
+/// 0.667 and 0.828 centipawns a square and no other piece reached half of
+/// one either end, so the term ships as a rook count and what the other
+/// three cost to compute is bought by nothing.
 ///
 /// A count is at most twenty seven for a queen and a boardful comes to a few
 /// hundred, so a weight in single figures leaves the same order of magnitude
 /// in hand that `pack` asks for.
-static MOBILITY: [i32; MOBILE_PIECES.len()] = [pack(0, 0); MOBILE_PIECES.len()];
+static MOBILITY: [i32; MOBILE_PIECES.len()] = [pack(0, 0), pack(0, 0), pack(1, 1), pack(0, 0)];
 
 /// The mobility weight of one of the four pieces that carries one, as the
 /// packed pair. The tuner's seam asks, so that a slot names the live weight
@@ -91,11 +105,11 @@ fn mobility(board: &Board) -> i32 {
 
 /// The same fold against weights named by the caller.
 ///
-/// The live weights are zero, so `mobility` returns zero whatever it does with
-/// the counts: a reversed sign and a permuted [`MOBILITY`] both score every
-/// position exactly as the right answer does. The tests supply weights of
-/// their own through here, which is what says the sign, the order and the
-/// packing are right before there is a fitted number to notice them by.
+/// Six of the eight live weights are zero and the other two are equal, so a
+/// swapped pair of halves scores every position exactly as the right answer
+/// does and a permuted [`MOBILITY`] shows only on the one piece that carries a
+/// weight. The tests supply weights of their own through here, which is what
+/// says the sign, the order and the packing are right whatever the fit holds.
 #[inline]
 fn mobility_with(board: &Board, weights: &[i32; MOBILE_PIECES.len()]) -> i32 {
     let white = board.mobility_counts(Color::White);
@@ -435,11 +449,12 @@ mod evaluate {
 
     /// What the fold does with weights that are not zero.
     ///
-    /// The shipped weights are zero, so nothing about the sign, the order of
-    /// the four pieces or the packing changes a single evaluation the engine
-    /// prints. This hands the fold weights of its own and asserts the packed
-    /// pair against the arithmetic: white's count less black's, piece by
-    /// piece, each half of the pair summed on its own.
+    /// Six of the shipped weights are zero and the other two are equal, so
+    /// almost nothing about the sign, the order of the four pieces or the
+    /// packing changes an evaluation the engine prints, and a swapped pair of
+    /// halves changes none of them at all. This hands the fold weights of its
+    /// own and asserts the packed pair against the arithmetic: white's count
+    /// less black's, piece by piece, each half of the pair summed on its own.
     #[test]
     fn the_mobility_fold_reads_white_less_black_piece_by_piece() {
         let board = Board::from_fen(COUNTED).unwrap();
@@ -467,8 +482,7 @@ mod evaluate {
     /// by twenty four evenly, so the two readings differ: inside the divide
     /// the whole numerator is truncated once, and a second divide would
     /// truncate each part on its own and answer a centipawn away. Nothing else
-    /// pins this while the weights are zero, and it is what `tune::reconstruct`
-    /// folds a row with.
+    /// pins this, and it is what `tune::reconstruct` folds a row with.
     #[test]
     fn mobility_joins_the_numerator_rather_than_being_tapered_beside_it() {
         let board = Board::from_fen("4k3/8/8/8/8/8/4P3/1N2K3 w - - 0 1").unwrap();

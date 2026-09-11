@@ -726,7 +726,11 @@ for. `MATERIAL` is held for a first fit, because
 `eval::material` is read by the delta margin in quiescence, so moving it
 changes which captures quiescence skips, which changes the tree for a reason
 that has nothing to do with the evaluation's accuracy. `--free-material` lets
-it move, for the run that reports what holding it cost.
+it move, for the run that reports what holding it cost. `--hold-tables` holds
+the 768 table entries in the same way, which is what a fit for a term added
+after them does: the tables were fitted on these games already, so a refit of
+them beside a new term would leave a match unable to say which of the two it
+measured.
 
 ## What the table's key signature costs
 
