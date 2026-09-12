@@ -101,7 +101,10 @@ engine's own archived games.
 - **eval.rs**: What a position scores. The board hosts an accumulator and
   tells it about every piece placed, removed and moved, so material and the
   piece square score are carried rather than counted; anything too dear to
-  keep in step is computed at the leaf instead.
+  keep in step is computed at the leaf instead. The king shelter is computed
+  at the leaf and then remembered under the pawns and the two king squares it
+  is a function of, in a small table the searcher owns, because a king move
+  rewrites a whole side's reading and there is nothing there to keep in step.
 - **psqt.rs**: The piece square tables. Every piece has a second table
   for the endgame; both phases are packed into one integer so the taper
   costs one multiply.
