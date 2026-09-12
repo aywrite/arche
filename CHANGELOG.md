@@ -22,6 +22,24 @@ generated lines below are left as they were published.
   the trees they landed on count 4162584. `scripts/check_bench_pins.py`
   reads a message against its own pins and the release runs it from 0.5.0
   on, with these two on its acknowledgement list.
+- Three entries here print `vs master` in their `[elo ...]`, which names
+  whatever master was on the day the trailer was written rather than what
+  was played. The bases, recovered from the Strength runs:
+  - "Order captures by static exchange evaluation" (`dcdaab0`) was
+    measured against `6bcd2440`, candidate `fb56979d`, in run 33964436951.
+  - "Add a model gated two ply reduction" (`634083f`) has three runs
+    behind it. Run 33964444015 played 840 games at [0, 10] for +10 ±19
+    against `fb56979d`. Run 33964436951 played 840 at [-10, 0], which is
+    the run above. Run 34029955963 played the 2,000 at [-10, 0] the
+    trailer carries, candidate `2d40e50f`, against `50a54c7f`.
+  - "Add late move pruning under the model gate" (`2057f39`) was measured
+    against `634083f`, candidate `1b9dc346`, in run 34098727843.
+
+  Run 33964436951 kept no artifacts, expired or otherwise. It ran before
+  the workflow began keeping a manifest, so its bases come from its job
+  logs, which are held for ninety days as the artifacts are. From 0.5.0 on
+  `scripts/check_trailers.py` refuses a base that is not a commit or a
+  release tag.
 
 ### Features
 

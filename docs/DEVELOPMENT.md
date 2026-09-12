@@ -259,7 +259,11 @@ a sentence that names one goes above them.
 
 The Elo line is pasted from the Strength workflow's summary, which prints it
 ready to use, and `Elo: not measured` is the honest alternative on a change
-that was not played. The changelog prints all three after the entry.
+that was not played. What it says it was measured against has to be a commit
+or a release tag: a branch moves, so `vs master` names what master is on the
+day the trailer is read rather than what played the games, and the run's own
+artifacts are kept for ninety days. The changelog prints all three after the
+entry.
 
 ## The bench and speed
 
