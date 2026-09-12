@@ -24,9 +24,9 @@ name: Calibrate
 # names, which is why every rung is pinned at a released version.
 #
 # A rung is a job. A runner plays about one and seven tenths games a minute at
-# 20+0.2, so the default twenty six games against one opponent take about a
-# quarter of an hour, and the rungs played one after another would take about
-# two hours of wall clock for no reason: they share nothing but the openings.
+# 20+0.2, so the default fifty games against one opponent take about half an
+# hour, and the rungs played one after another would take about four hours of
+# wall clock for no reason: they share nothing but the openings.
 # Each rung now plays its own match, on its own slice of the book so that no
 # two of them play the same opening, and a job at the end pools the games and
 # fits the one rating to all of them.
@@ -45,7 +45,7 @@ on:
       games:
         description: Games against each opponent, rounded down to an even number
         type: number
-        default: 26
+        default: 50
       time_control:
         description: Passed to fastchess as tc
         type: string
@@ -68,7 +68,7 @@ on:
         required: false
       games:
         type: number
-        default: 26
+        default: 50
       time_control:
         type: string
         default: 20+0.2
@@ -147,9 +147,8 @@ env:
   CONCURRENCY: ${{ inputs.concurrency || 2 }}
   # The wall clock cap on play alone. The play job's timeout is worked out from
   # it with half an hour over, which is what the two builds before the match
-  # run in. Twenty six games at 20+0.2 is about a quarter of an hour, so this
-  # is headroom for a slow runner or a longer control rather than a budget to
-  # be spent.
+  # run in. Fifty games at 20+0.2 is about half an hour, so this is headroom
+  # for a slow runner or a longer control rather than a budget to be spent.
   MAX_MATCH_MINUTES: ${{ inputs.max_match_minutes || 90 }}
   # The engine allocates its table before it answers uci, which takes it
   # several seconds and the ten second default does not always allow for.
