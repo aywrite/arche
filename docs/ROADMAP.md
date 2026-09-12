@@ -48,6 +48,23 @@ the engine plays. Roughly in the order they look worth doing.
 
 ## Known limitations
 
+- the strategic suite's total cannot be read against zero. One of the fourteen king
+  safety weights changed by a centipawn moves it +242 or -170, twenty eight such nudges
+  have a standard deviation of 447, and single themes move up to 510, while the fit that
+  took +44 elo moved it -121. It discriminates between vectors of the same size and not
+  between a term and its absence, which is how it should be used and what
+  `docs/DEVELOPMENT.md` now says. Three themes lose under any shelter term at all:
+  Recapturing takes 90.7% of its points already and can only regress, and Square Vacancy
+  and Advancement of a/b/c pawns lose under every arbitrary vector tried
+- the fitted term makes the engine keep the pawns in front of its own king at home, and
+  one graded theme says that is wrong. The midgame cover weights are +10 and +21, and they
+  do what they say: over the strategic suite the engine advances a pawn on its king's file
+  or a neighbour 100 times where it advanced 123 before, and 167 times with the weights
+  negated. AKPC grades such a push as the best move in 79 of its 100 positions and the
+  engine now plays one in 22 of them against 31 before. That is the one place the suite
+  and the term disagree about chess rather than about noise, and the games were played
+  with the term as it stands, so what is unresolved is whether declining those pushes is
+  right in positions the games under-sample rather than whether it costs elo overall
 - the king safety weights are fitted on a corpus that is mostly not the middlegame the
   term is about. 66.4% of the 2026-09-12 corpus's appearances have six or fewer pieces
   left on the board and 6.0% have thirteen or more of the fourteen, so the midgame half
