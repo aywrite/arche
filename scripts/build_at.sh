@@ -42,6 +42,17 @@
 # tree. The engine is built afresh for every commit; what the target
 # directory keeps across calls is the dependencies.
 #
+# Where the export lands decides which build configuration it is built
+# under, because cargo finds a config by walking up from where it builds.
+# An export inside the tree, which the default target directory puts it,
+# reads the tree's .cargo/config.toml and is built the way the tree is; an
+# export under a CARGO_TARGET_DIR outside the tree reads only its own and
+# is built the way its commit was. That is invisible while two commits
+# agree on their build configuration, which is nearly always, and it is
+# the whole difference when they do not: a comparison spanning a change to
+# .cargo/config.toml reads about zero from inside the tree and reads the
+# change from outside it.
+#
 # No --locked in the default command: a baseline old enough that its lock
 # file predates a registry change would refuse to build, and the pull
 # request's own tree is held to its lock file by the Rust workflow. A caller

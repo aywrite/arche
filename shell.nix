@@ -59,8 +59,12 @@ pkgs.mkShell rec {
     # Ensures our windows target is added via rustup.
     rustup target add "${rustBuildTargetTriple}"
     '';
+  # A set RUSTFLAGS replaces .cargo/config.toml rather than adding to it, so
+  # the default target level is restated here. Without it this shell would
+  # build the baseline while the documentation says v2, and every figure
+  # taken in it would be about four percent of instructions off.
   RUSTFLAGS = (builtins.map (a: ''-L ${a}/lib'') [
     mingw_w64
     mingw_w64_pthreads_w_static
-  ]);
+  ]) ++ [ "-C" "target-cpu=x86-64-v2" ];
 }
