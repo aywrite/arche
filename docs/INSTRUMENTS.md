@@ -757,7 +757,9 @@ it move, for the run that reports what holding it cost. `--hold-tables` holds
 the 768 table entries in the same way, which is what a fit for a term added
 after them does: the tables were fitted on these games already, so a refit of
 them beside a new term would leave a match unable to say which of the two it
-measured.
+measured. `--hold-mobility` holds the eight mobility weights for the same
+reason. Each term earns a hold of its own as it is fitted, and a fit of the
+newest term names every hold below it, so the shelter was fitted under both.
 
 ## What the table's key signature costs
 
