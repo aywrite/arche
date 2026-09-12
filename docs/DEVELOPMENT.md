@@ -17,6 +17,30 @@ The release profile uses link time optimisation and a single codegen unit, so a
 release build is noticeably slower to compile than a debug one but is several
 times faster to search. Always measure with a release build.
 
+On x86-64 that build targets `x86-64-v2`, which `.cargo/config.toml` sets and
+which the comment there explains: the unqualified target predates popcnt, and
+the mobility count and the bit popping in the generator pay for that at every
+leaf and every move. It is 4.54% of the bench's instructions with the node
+count unchanged.
+
+The level asks for sse4.2 and popcnt, which arrived with Intel's Nehalem in
+2008 and AMD's Bulldozer in 2011. A chip sold later is not the same as a chip
+that has it, since Core 2 ran to 2011 and the first Atoms to 2013. A machine
+without it builds the baseline, which is also how to reproduce a figure taken
+before the default moved:
+
+```
+RUSTFLAGS= cargo build --release
+set RUSTFLAGS=&& cargo build --release        rem cmd
+$env:RUSTFLAGS=''; cargo build --release      # powershell
+```
+
+A `RUSTFLAGS` that is set at all replaces the file rather than adding to it,
+and so does a `target.<cfg>.rustflags` of your own. The release workflow names
+a level for each of the three variants it builds, so its archives are built at
+the level their names claim; `shell.nix` restates the level for the same
+reason. A personal `build.rustflags` is dropped here rather than merged.
+
 ## Tests
 
 ```

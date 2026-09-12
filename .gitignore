@@ -1,6 +1,11 @@
 /target
 /arche-core/target
-.cargo
+# a cargo home installed into the tree, which shell.nix does. Git does not
+# look inside an excluded directory, so the build configuration that lives
+# in the same place is named back in rather than the directory being left
+# out whole.
+.cargo/*
+!.cargo/config.toml
 .rustup
 
 __pycache__/
