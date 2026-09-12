@@ -3,6 +3,7 @@
 
 use crate::board::Board;
 use crate::census;
+use crate::eval;
 use crate::limits::Limits;
 use crate::misc::{Color, Score};
 use crate::ordering::MoveOrdering;
@@ -646,6 +647,11 @@ pub struct AlphaBeta {
     /// The move ordering and its scratch buffer, search state like the
     /// limits above: one per engine, reused by every node.
     ordering: MoveOrdering,
+    /// The king shelter's memo, scratch on the same terms as the ordering.
+    /// Never cleared between searches: an entry is read only against the key
+    /// that wrote it, so what the last search left is a warm start and not a
+    /// stale answer.
+    shelter: eval::ShelterCache,
     /// The residual sampler, or none, which is what every constructor here
     /// builds and what the engine plays and benches with. An engine with
     /// none takes no branch a search without a sampler did not take, which
@@ -739,6 +745,7 @@ impl AlphaBeta {
             stop: None,
             quiescence_nodes: 0,
             ordering: MoveOrdering::new(),
+            shelter: eval::ShelterCache::default(),
             sampler: None,
             census: None,
             ledger: None,
@@ -1091,8 +1098,13 @@ impl AlphaBeta {
         });
     }
 
-    fn eval(&self) -> Score {
-        crate::eval::eval(&self.board)
+    /// The score at this node, with the shelter taken from the engine's memo.
+    ///
+    /// `&mut self` for the memo alone. The score is the one `eval::eval`
+    /// gives, so nothing about the tree turns on which of the two a node
+    /// asked.
+    fn eval(&mut self) -> Score {
+        crate::eval::eval_cached(&self.board, &mut self.shelter)
     }
 
     /// The ply the quiet memories are indexed by at this node, or none when
@@ -3034,7 +3046,7 @@ mod search {
         let (searched, _) = quiet_nodes(reference(Board::from_fen(fen).unwrap()));
         assert!(searched > 1, "the reference did not search the capture");
 
-        let e = skipping(Board::from_fen(fen).unwrap());
+        let mut e = skipping(Board::from_fen(fen).unwrap());
         let standing = e.eval();
         let (skipped, value) = quiet_nodes(e);
         assert_eq!(skipped, 1);

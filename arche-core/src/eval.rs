@@ -151,8 +151,7 @@ pub(crate) const SHELTER_TERMS: usize = 7;
 ///
 /// Not one of the fourteen rounded to nothing, so every count is priced and
 /// none can be left uncounted at the leaf the way `SCORED_KINDS` leaves a
-/// mobility kind. All seven are read at every leaf, and what that costs is
-/// over what a leaf term is allowed.
+/// mobility kind. [`ShelterCache`] is what pays for the seven instead.
 ///
 /// Two of the storm's three signs are not what the term was named for. An
 /// enemy pawn one rank in front of the king reads 11 and 35, and three ranks
@@ -203,15 +202,115 @@ pub(crate) fn phase_weight(piece: Piece) -> i32 {
     PHASE_WEIGHTS[piece as usize]
 }
 
+/// How many shelter scores the cache holds. A power of two, so the index is
+/// a mask rather than a remainder.
+///
+/// Eight thousand entries at sixteen bytes is a hundred and twenty eight
+/// kilobytes, which is past the first level cache and inside the second.
+/// The size was measured rather than reasoned about. Callgrind over the
+/// bench with the cache simulated, at eleven, twelve, thirteen and fourteen
+/// bits, reads 3,968,905,639, 3,958,897,319, 3,950,063,019 and 3,943,552,801
+/// instructions against last level misses of 284,996, 285,117, 286,191 and
+/// 292,291. Each bit buys fewer instructions than the one before it and the
+/// misses are flat until fourteen, where they turn up by six thousand. So
+/// this is the last size the memory does not notice, and the whole range is
+/// within two thirds of a percent of instructions: the constant is not
+/// load bearing and a later working set can move it.
+const SHELTER_CACHE_BITS: usize = 13;
+const SHELTER_CACHE_SLOTS: usize = 1 << SHELTER_CACHE_BITS;
+
+/// One remembered shelter score, under the key that decides it.
+///
+/// The whole key is kept rather than the bits the index does not use, so a
+/// hit is a hit on the position's pawns and kings and not on a tag that
+/// happens to agree. A wrong hit here would be a silently wrong evaluation,
+/// which is the one error a search does not report, and sixty four bits of
+/// key costs four bytes against the alternative.
+#[derive(Copy, Clone)]
+struct ShelterEntry {
+    key: u64,
+    packed: i32,
+}
+
+/// The king shelter, remembered by what it depends on.
+///
+/// The term reads both sides' pawns and the two king squares and nothing
+/// else, so a position that agrees with a remembered one on those scores the
+/// same however its pieces stand. Most moves in a search are piece moves,
+/// which leave every one of those alone, so the score computed at one leaf
+/// answers a great many of the leaves after it.
+///
+/// Direct mapped and never cleared. An entry is only ever read against the
+/// key that wrote it, so a stale one is a miss rather than a wrong answer,
+/// and a search that begins with the last search's entries begins with a warm
+/// cache. That is also what leaves the node counts alone: the cache changes
+/// how a score is arrived at and not what it is, so the counts are the ones
+/// the weights alone produce.
+///
+/// Owned by the searcher rather than by the board, because it is scratch and
+/// not position. A board carries what it would take to undo a move and
+/// compares equal to another board holding the same position; a cache does
+/// neither, and one thread's cache is its own.
+pub(crate) struct ShelterCache {
+    entries: Box<[ShelterEntry]>,
+}
+
+impl Default for ShelterCache {
+    fn default() -> Self {
+        // an empty entry is key zero holding a score of zero, so a position
+        // whose pawns and kings xor to nothing would read it as its own and
+        // take nothing from it. That is a sixty four bit coincidence, which
+        // is the same one a wrong hit needs anywhere else in the table
+        ShelterCache {
+            entries: vec![ShelterEntry { key: 0, packed: 0 }; SHELTER_CACHE_SLOTS]
+                .into_boxed_slice(),
+        }
+    }
+}
+
+impl ShelterCache {
+    /// What white's shelter stands ahead by, remembered or computed.
+    #[inline]
+    fn shelter(&mut self, board: &Board) -> i32 {
+        let key = board.shelter_key();
+        let slot = (key as usize) & (SHELTER_CACHE_SLOTS - 1);
+        let entry = &mut self.entries[slot];
+        if entry.key == key {
+            return entry.packed;
+        }
+        let packed = shelter(board);
+        *entry = ShelterEntry { key, packed };
+        packed
+    }
+}
+
 /// The score of the position from the side to move's point of view.
 ///
 /// Everything incremental is read off the board's accumulator; a term
 /// computed at the leaf is added here, from the board itself.
+///
+/// The shelter is computed every time. `eval_cached` is the same score with
+/// that one term remembered, and is what the search asks. The tuner's walk
+/// and the instruments ask this one. Neither is hot, and both want a score
+/// that depends on the position alone.
 #[inline]
 pub(crate) fn eval(board: &Board) -> Score {
     board
         .eval
         .score(board.active_color, mobility(board) + shelter(board))
+}
+
+/// The same score with the shelter taken from `cache` where it is there.
+///
+/// Equal to [`eval`] for every position, which is what
+/// `the_cache_answers_what_the_full_evaluation_does` holds it to. The search
+/// calls this and the node counts do not move, because a remembered score is
+/// the score that would have been computed.
+#[inline]
+pub(crate) fn eval_cached(board: &Board, cache: &mut ShelterCache) -> Score {
+    board
+        .eval
+        .score(board.active_color, mobility(board) + cache.shelter(board))
 }
 
 /// What white's mobility stands ahead by, as a packed pair on the scale the
@@ -435,13 +534,15 @@ impl Accumulator {
 #[cfg(test)]
 mod evaluate {
     use super::{
-        ALL_KINDS, Board, MOBILE_PIECES, MOBILITY, SCORED_KINDS, SHELTER_TERMS, TOTAL_PHASE, eval,
-        mobility, mobility_weight, mobility_with, shelter_with,
+        ALL_KINDS, Board, MOBILE_PIECES, MOBILITY, SCORED_KINDS, SHELTER, SHELTER_CACHE_SLOTS,
+        SHELTER_TERMS, ShelterCache, TOTAL_PHASE, eval, eval_cached, mobility, mobility_weight,
+        mobility_with, shelter_with,
     };
     use crate::board::fens;
     use crate::misc::Color;
     use crate::psqt::{eg_value, mg_value, pack};
     use pretty_assertions::assert_eq;
+    use std::collections::HashSet;
 
     /// Both the accumulator and its recompute read `PHASE_WEIGHTS`, so the
     /// state-in-step check holds them to each other and neither to what the
@@ -799,5 +900,97 @@ mod evaluate {
         let packed = shelter_with(&board, &SHELTER_TRIAL);
         assert_ne!(midgame, 0, "black less white would answer the same here");
         assert_eq!((mg_value(packed), eg_value(packed)), (midgame, endgame));
+    }
+
+    /// Every position reachable inside `budget` moves of `board`, scored both
+    /// ways through the one cache. Collects the shelter keys it saw, which is
+    /// what says whether the run evicted anything.
+    fn walk(
+        board: &Board,
+        depth: usize,
+        cache: &mut ShelterCache,
+        budget: &mut usize,
+        keys: &mut HashSet<u64>,
+    ) {
+        if depth == 0 || *budget == 0 {
+            return;
+        }
+        for m in &board.generate_moves() {
+            if *budget == 0 {
+                break;
+            }
+            let mut played = board.clone();
+            if !played.make_move(m) {
+                continue;
+            }
+            *budget -= 1;
+            keys.insert(played.shelter_key());
+            assert_eq!(
+                eval_cached(&played, cache),
+                eval(&played),
+                "the cache and the evaluation part company at {}",
+                played.to_fen()
+            );
+            walk(&played, depth - 1, cache, budget, keys);
+        }
+    }
+
+    /// The cache answers what the full evaluation does, position for
+    /// position.
+    ///
+    /// A shelter score is remembered under the pawns and the two king
+    /// squares, and every other piece is outside that key, so a key missing
+    /// something the term reads would hand one position's shelter to
+    /// another. Nothing in a search would say so: the score is simply not
+    /// the position's, and a wrong evaluation is the one error it does not
+    /// report.
+    ///
+    /// A walk that never evicted would be testing a cache that only ever
+    /// grows, so the run has to overwrite entries as well as write and read
+    /// them. Counting the positions does not say it happened: the walk
+    /// revisits keys, and far fewer keys than positions reach the table. What
+    /// says it is the keys against the slots they land in, so the test
+    /// collects the keys and asserts that two of them shared a slot.
+    #[test]
+    fn the_cache_answers_what_the_full_evaluation_does() {
+        let mut cache = ShelterCache::default();
+        let mut budget = 4 * SHELTER_CACHE_SLOTS;
+        let mut keys = HashSet::new();
+        for fen in fens::CORE {
+            let board = Board::from_fen(fen).unwrap();
+            assert_eq!(eval_cached(&board, &mut cache), eval(&board), "{}", fen);
+            keys.insert(board.shelter_key());
+            walk(&board, 3, &mut cache, &mut budget, &mut keys);
+        }
+        let slots: HashSet<usize> = keys
+            .iter()
+            .map(|key| (*key as usize) & (SHELTER_CACHE_SLOTS - 1))
+            .collect();
+        assert!(
+            keys.len() > slots.len(),
+            "{} keys over {} slots, so no slot was written twice and nothing              was evicted",
+            keys.len(),
+            slots.len()
+        );
+    }
+
+    /// A remembered score is read back rather than recomputed, which is the
+    /// whole point of the cache and is not visible in what it answers.
+    ///
+    /// Asked twice for one position, the second answer comes from the entry
+    /// the first wrote. There is no counter to read, so this says it the way
+    /// a caller could: the entry the key lands on holds the score after the
+    /// first call, and holds it under that key and no other.
+    #[test]
+    fn a_score_is_remembered_under_the_key_that_wrote_it() {
+        let board = Board::from_fen(fens::MIDDLEGAME).unwrap();
+        let mut cache = ShelterCache::default();
+        let key = board.shelter_key();
+        let slot = (key as usize) & (SHELTER_CACHE_SLOTS - 1);
+        assert_eq!(cache.entries[slot].key, 0, "the slot starts empty");
+        let first = eval_cached(&board, &mut cache);
+        assert_eq!(cache.entries[slot].key, key);
+        assert_eq!(cache.entries[slot].packed, shelter_with(&board, &SHELTER));
+        assert_eq!(eval_cached(&board, &mut cache), first);
     }
 }

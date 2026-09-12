@@ -1873,6 +1873,28 @@ impl Board {
         (self.kings() & mask).trailing_zeros() as u8
     }
 
+    /// What the king shelter depends on and nothing else: both sides' pawns
+    /// and both kings' squares.
+    ///
+    /// `shelter_counts` reads the pawn boards and the two king squares and
+    /// nothing else, so two positions whose pawns and kings agree agree on
+    /// every count of it whatever else has moved. This key stands in for that
+    /// agreement rather than being it: two positions can share it and differ,
+    /// which takes a collision across the whole sixty four bits. The pawn key
+    /// already hashes the pawns of both colours and is kept in step move by
+    /// move, so this is that key with the two kings folded in, from the same
+    /// zobrist table the position key uses.
+    ///
+    /// Composed here rather than maintained beside `pawn_key`, because a
+    /// king move would then have to write it and the cost of this is two
+    /// loads and two xors at the one place that asks.
+    #[inline]
+    pub(crate) fn shelter_key(&self) -> u64 {
+        self.pawn_key
+            ^ ZOBRIST.get_piece_key(self.king_index(Color::White), Piece::King, Color::White)
+            ^ ZOBRIST.get_piece_key(self.king_index(Color::Black), Piece::King, Color::Black)
+    }
+
     /// What stands between this side's king and the board, as seven counts in
     /// the order `eval::SHELTER_TERMS` names them: this side's pawns one rank
     /// in front of the king and two ranks in front, how many of the king's
@@ -3340,6 +3362,33 @@ mod pawn_key {
     fn a_board_with_no_pawns_has_no_key() {
         let board = Board::from_fen("4k3/8/8/8/8/8/8/4K3 w - - 0 1").unwrap();
         assert_eq!(board.pawn_key, 0);
+    }
+
+    /// `shelter_key` is this key with the two kings folded in, which is what
+    /// the shelter cache is keyed on. What the shelter reads is the pawns and
+    /// the two king squares, so a piece that is neither has to leave it alone
+    /// and either king moving has to move it. A key that missed a king would
+    /// hand one position's shelter to another.
+    #[test]
+    fn the_shelter_key_follows_the_pawns_and_the_two_kings() {
+        let bare = Board::from_fen("4k3/pppppppp/8/8/8/8/PPPPPPPP/4K3 w - - 0 1").unwrap();
+
+        // the same pawns and the same two kings behind a boardful of other
+        // pieces, which the shelter does not read
+        let pieced =
+            Board::from_fen("rnbqk1nr/pppppppp/8/8/8/8/PPPPPPPP/RNBQK1NR w - - 0 1").unwrap();
+        assert_eq!(bare.shelter_key(), pieced.shelter_key());
+
+        // either king one square along
+        let ours = Board::from_fen("4k3/pppppppp/8/8/8/8/PPPPPPPP/5K2 w - - 0 1").unwrap();
+        let theirs = Board::from_fen("5k2/pppppppp/8/8/8/8/PPPPPPPP/4K3 w - - 0 1").unwrap();
+        assert_ne!(bare.shelter_key(), ours.shelter_key());
+        assert_ne!(bare.shelter_key(), theirs.shelter_key());
+        assert_ne!(ours.shelter_key(), theirs.shelter_key());
+
+        // and one pawn pushed, the pawn key being the rest of it
+        let pushed = Board::from_fen("4k3/pppppppp/8/8/8/7P/PPPPPPP1/4K3 w - - 0 1").unwrap();
+        assert_ne!(bare.shelter_key(), pushed.shelter_key());
     }
 }
 
