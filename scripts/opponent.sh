@@ -112,6 +112,21 @@ tantabus_build() {
 # Cinnamon. The cmake file beside its sources builds a debug target against
 # clang and gtest, so the release build is the project's own makefile, which
 # names a target per instruction set. The generic one is the plain x86-64.
+# Weiss, Terje Kirstihagen's engine in c. Fathom is vendored beside its own
+# sources rather than fetched, so a shallow clone holds everything the makefile
+# compiles. The default target is the one openbench builds, and its flags name
+# the machine they are built on, which is dropped here for the same reason the
+# zagreus and tantabus blocks drop it: what plays should be the release the
+# rating belongs to and not a build tuned to whichever runner picked it up.
+# Popcount is kept because the version the list rates is a popcount build, and
+# pext is not, since it asks for bmi2 the runner may not have. This target
+# leaves the binary beside the sources rather than in ../bin.
+REPOSITORY[weiss]=https://github.com/TerjeKir/weiss.git
+weiss_build() {
+    make -C src bench-basic CFLAGS="-std=gnu11 -O3 -flto -msse3 -mpopcnt" > /dev/null
+    echo src/weiss
+}
+
 REPOSITORY[cinnamon]=https://github.com/gekomad/Cinnamon.git
 cinnamon_build() {
     make -C src cinnamon64-generic -j"$(nproc)" > /dev/null
