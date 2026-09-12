@@ -17,7 +17,7 @@ name: Calibrate
 # "stronger than that", so the useful opponents are the ones close enough to
 # take games off.
 #
-# The default is eight rungs of four lineages, from 2173 to 2713. A gauntlet at
+# The default is eight rungs of five lineages, from 2252 to 2713. A gauntlet at
 # this control put the engine at 2332, and the rungs sit either side of that
 # figure rather than all below it. They were read off the complete ccrl blitz
 # list of 5 September 2026. A rating belongs to the exact version the list
@@ -57,7 +57,7 @@ on:
       ladder:
         description: Opponents to play, as engine, pin and ccrl blitz rating (goldfish:v2.1.1:2252,stash:v17.0:2297)
         type: string
-        default: stash:v15.3:2173,goldfish:v2.1.1:2252,stash:v17.0:2297,sofcheck:v0.9-beta:2384,stash:v19.0:2473,stash:v20.0.1:2511,tantabus:v2.0.0:2555,stash:v21.0:2713
+        default: goldfish:v2.1.1:2252,stash:v17.0:2297,sofcheck:v0.9-beta:2384,stash:v19.0:2473,stash:v20.0.1:2511,tantabus:v2.0.0:2555,weiss:v0.9:2650,stash:v21.0:2713
       seed:
         description: Seed for the region of the book the rungs play, an unsigned integer. Left empty it is the run id, and either way the manifests record it.
         type: string
@@ -77,7 +77,7 @@ on:
         default: 8moves_v3
       ladder:
         type: string
-        default: stash:v15.3:2173,goldfish:v2.1.1:2252,stash:v17.0:2297,sofcheck:v0.9-beta:2384,stash:v19.0:2473,stash:v20.0.1:2511,tantabus:v2.0.0:2555,stash:v21.0:2713
+        default: goldfish:v2.1.1:2252,stash:v17.0:2297,sofcheck:v0.9-beta:2384,stash:v19.0:2473,stash:v20.0.1:2511,tantabus:v2.0.0:2555,weiss:v0.9:2650,stash:v21.0:2713
       seed:
         type: string
       publish:
