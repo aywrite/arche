@@ -362,18 +362,19 @@ suite, or the one named, keeps the positions that are quiet, and prints what
 each one's evaluation is made of.
 
 The evaluation is material plus a tapered piece square score plus a tapered
-mobility score plus a tapered king shelter score, and it is linear in the
-numbers those are read from. So a
-position's score is a dot product of the position against the weights, and a
+mobility score plus a tapered king shelter score plus a tapered pawn structure
+score, and it is linear in the numbers those are read from. So a position's
+score is a dot product of the position against the weights, and a
 row is the position's half of it: for every weight the position touches, the
-integer that weight is multiplied by. The weights are a flat vector of 796, in
+integer that weight is multiplied by. The weights are a flat vector of 812, in
 this order: the 384 midgame table entries, the 384 endgame ones in the same
 order, then the six material values, then four midgame mobility weights and
-the same four at the endgame end, then the seven shelter weights the same way.
-So a square's two weights are 384 apart, a piece kind's two mobility weights
-are 4 apart and a shelter count's two are 7 apart. A slot's entry is a square
-as black sees it, because black is the colour that reads the tables as they are
-written.
+the same four at the endgame end, then the seven shelter weights the same way,
+then the eight pawn structure weights the same way again. So a square's two
+weights are 384 apart, a piece kind's two mobility weights are 4 apart, a shelter
+count's two are 7 apart and a pawn count's two are 8 apart. A slot's entry is a
+square as black sees it, because black is the colour that reads the tables as
+they are written.
 
 The seven shelter counts are what stands between a side's king and the board,
 in this order: its own pawns one rank in front of the king, its own pawns two
@@ -387,16 +388,27 @@ because how far it has come is most of what it is worth. A row carries white's
 counts less black's, in the side to move's frame, the way every other
 coefficient is carried.
 
+The eight pawn counts are read off the two pawn boards and nothing else, in
+this order: a side's passed pawns on the relative second rank through the
+relative seventh, then its isolated pawns, then its doubled ones. A pawn is
+passed when no enemy pawn stands on its file or either file beside it on any
+rank ahead of it and no pawn of its own stands ahead of it on its file, which
+leaves the rear of a doubled pair out. Isolated and doubled are counted per
+pawn rather than per file, so an isolated pair on one file pays twice and a
+tripled file is doubled two. What stands on the square in front of a passer is
+not read, so a blockaded passer counts as a passer.
+
 The vector was 518 until a knight, a bishop, a rook and a queen were given an
 endgame table of their own, since each of the four had handed one array to
 both ends of the taper, 774 until the eight mobility weights were added after
-the material block, 782 until the king's shelter was measured after those, and
-790 until the pawn storm joined it. Rows printed by an engine from before any of
+the material block, 782 until the king's shelter was measured after those,
+790 until the pawn storm joined it, and 796 until the pawn structure was
+measured after that. Rows printed by an engine from before any of
 those changes, and any vector fitted against them, are refused rather than read:
 every slot they name exists in the layout that replaced them, so reading them
 would put the numbers on the wrong weights.
 
-The line after the header is `weights 796 <w0> <w1> ...`, the vector itself as
+The line after the header is `weights 812 <w0> <w1> ...`, the vector itself as
 the live tables hold it, so that nothing reading these rows transcribes
 psqt.rs. A transcription is the same failure as a reimplemented evaluation and
 quieter: a table copied out and left behind fits weights against a position it
@@ -415,11 +427,12 @@ the side to move's frame, so the row's own arithmetic is the evaluation with
 nothing further to do:
 
 ```
-eval = mat . w_mat + trunc((psqt . w_psqt + shelter . w_shelter) / 24)
+eval = mat . w_mat + trunc((psqt . w_psqt + shelter . w_shelter
+                            + pawns . w_pawns) / 24)
 ```
 
 Four things in that line are load bearing, and each is a way to be wrong by a
-centipawn. The shelter is inside the divide beside the piece square half
+centipawn. Every leaf term is inside the divide beside the piece square half
 rather than tapered on its own, so the whole numerator is truncated once. The
 divide truncates toward zero, where python's `//` floors, and on a negative
 numerator that does not divide evenly the two differ. The
@@ -733,7 +746,7 @@ so it means one thing inside a layout and nothing across two. That half held
 512 entries before a knight, a bishop, a rook and a queen were given an
 endgame table and holds 768 after, and 256 of the 768 were exact copies of
 their midgame twins until the fit that made them differ. A scale of 1.0 at
-796 slots and a scale of 1.0 at 518 are not the same statement, and the same
+812 slots and a scale of 1.0 at 518 are not the same statement, and the same
 goes for the boardful the bound is checked against. Figures from fits at
 different layouts are quoted with the layout beside them or not quoted
 together.
@@ -758,8 +771,10 @@ the 768 table entries in the same way, which is what a fit for a term added
 after them does: the tables were fitted on these games already, so a refit of
 them beside a new term would leave a match unable to say which of the two it
 measured. `--hold-mobility` holds the eight mobility weights for the same
-reason. Each term earns a hold of its own as it is fitted, and a fit of the
-newest term names every hold below it, so the shelter was fitted under both.
+reason, and `--hold-shelter` the fourteen shelter ones. Each term earns a hold
+of its own as it is fitted, and a fit of the newest term names every hold
+below it, so the shelter was fitted under two and the pawn structure is fitted
+under three.
 
 ## What the table's key signature costs
 

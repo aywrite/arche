@@ -22,10 +22,12 @@ and one per colour, with one bit per square. Most operations on them compile
 down to one or two instructions. The search is alpha beta with iterative
 deepening, quiescence search and a transposition table. Evaluation is
 material plus piece square tables, tapered between middlegame and endgame,
-plus two terms counted at the leaf: piece mobility, which ships as a rook
-count, and king safety, which counts the pawns in front of each king, the open
-files beside it and the enemy pawns coming for it. Both are fitted to the
-engine's own archived games.
+plus three terms counted at the leaf: piece mobility, which ships as a rook
+count; king safety, which counts the pawns in front of each king, the open
+files beside it and the enemy pawns coming for it; and pawn structure, which
+counts each side's passed pawns by rank, its isolated pawns and its doubled
+ones. The first two are fitted to the engine's own archived games and the
+third is at zero weight until its own fit.
 
 ## Code map: arche-core
 
@@ -105,6 +107,10 @@ engine's own archived games.
   at the leaf and then remembered under the pawns and the two king squares it
   is a function of, in a small table the searcher owns, because a king move
   rewrites a whole side's reading and there is nothing there to keep in step.
+  The pawn structure is remembered the same way in a table of its own, under
+  the pawn key alone: it reads neither king, so what misses is a pawn move
+  and the capture of a pawn, where the shelter's key misses on a king move
+  as well.
 - **psqt.rs**: The piece square tables. Every piece has a second table
   for the endgame; both phases are packed into one integer so the taper
   costs one multiply.

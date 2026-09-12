@@ -221,6 +221,7 @@ const NULL_HISTORY_SALT: u64 = 0x9e37_79b9_7f4a_7c15;
 
 static ATTACK_MASKS: AttackMasks = AttackMasks::new();
 static SHELTER_MASKS: ShelterMasks = ShelterMasks::new();
+static PAWN_MASKS: PawnMasks = PawnMasks::new();
 // the squares strictly between two aligned squares, and empty for a pair
 // that shares no line. What a piece must land on to block a slider on one
 // square checking a king on the other.
@@ -490,6 +491,107 @@ impl ShelterMasks {
             square += 1;
         }
         masks
+    }
+}
+
+/// A pawn's own file and the files beside it, as a bit per file.
+///
+/// [`king_files`] steps the middle file in at the two edges so that a king
+/// always names three; this does not, because the two are asking different
+/// questions. A white pawn on a4 is passed while black has no pawn on the a
+/// file or the b file, and a black pawn on the c file has nothing to say
+/// about it. Stepping in would let that pawn stop it.
+const fn pawn_files(square: u8) -> u8 {
+    let own = 1u8 << (square % 8);
+    // a shift off either end of the byte drops the bit, which is the edge
+    // case: the a file has no file to its left and the h file none to its
+    // right
+    own | (own << 1) | (own >> 1)
+}
+
+/// The squares on `files` on every rank strictly ahead of `square`, ahead
+/// meaning the direction `forward` pushes.
+const fn span_ahead(square: u8, forward: i8, files: u8) -> u64 {
+    let mut mask = 0;
+    let mut rank = (square / 8) as i8 + forward;
+    while rank >= 0 && rank < 8 {
+        mask |= (files as u64) << (rank * 8);
+        rank += forward;
+    }
+    mask
+}
+
+/// What stands in a pawn's way, as two masks a square names.
+///
+/// `front_span` is the pawn's file and the two beside it, on every rank ahead
+/// of it. A pawn of ours is passed when no pawn of theirs stands anywhere in
+/// it, which is the whole of the standard definition bar one clause.
+/// `file_ahead` is the same span without the neighbouring files, and it
+/// answers that clause: whether a pawn of ours is already in front of this
+/// one. It is kept as its own table rather than masked out of the first at
+/// the leaf, because a leaf term pays for every instruction it adds and a
+/// table costs half a kilobyte.
+///
+/// Indexed by `Color`'s discriminant and then the square, the way
+/// `ShelterMasks` is indexed and for the same reason. A white pawn is read up
+/// the board and a black one down it.
+struct PawnMasks {
+    front_span: [[u64; 64]; 2],
+    file_ahead: [[u64; 64]; 2],
+}
+
+impl PawnMasks {
+    /// Built at compile time, the way `ShelterMasks` is.
+    const fn new() -> Self {
+        let mut masks = PawnMasks {
+            front_span: [[0; 64]; 2],
+            file_ahead: [[0; 64]; 2],
+        };
+        let mut square = 0u8;
+        while square < 64 {
+            let i = square as usize;
+            let own = 1u8 << (square % 8);
+            let beside = pawn_files(square);
+            masks.front_span[Color::White as usize][i] = span_ahead(square, 1, beside);
+            masks.front_span[Color::Black as usize][i] = span_ahead(square, -1, beside);
+            masks.file_ahead[Color::White as usize][i] = span_ahead(square, 1, own);
+            masks.file_ahead[Color::Black as usize][i] = span_ahead(square, -1, own);
+            square += 1;
+        }
+        masks
+    }
+}
+
+/// A set of files put back on the board: every square on every file the byte
+/// names. What [`files_of`] undoes, and one multiply rather than eight
+/// shifts, since a byte times the a file's eight squares lands a copy of the
+/// byte on each rank.
+const fn spread(files: u8) -> u64 {
+    (files as u64) * 0x0101_0101_0101_0101
+}
+
+/// Every square strictly in front of one of `pawns`, on that pawn's own file.
+///
+/// The pawns shifted one rank on and then doubled three times, which carries
+/// them the seven ranks a board has. Seeded with the shift rather than with
+/// the pawns, so a pawn is never in its own fill, which is what leaves a lone
+/// pawn undoubled.
+const fn ahead_of(pawns: u64, color: Color) -> u64 {
+    match color {
+        Color::White => {
+            let mut filled = pawns << 8;
+            filled |= filled << 8;
+            filled |= filled << 16;
+            filled |= filled << 32;
+            filled
+        }
+        Color::Black => {
+            let mut filled = pawns >> 8;
+            filled |= filled >> 8;
+            filled |= filled >> 16;
+            filled |= filled >> 32;
+            filled
+        }
     }
 }
 
@@ -2037,6 +2139,85 @@ impl Board {
             ahead(their_pawns, 1),
             ahead(their_pawns, 2),
         ]
+    }
+
+    /// What this side's pawns stand as, in the eight counts
+    /// `eval::PAWN_TERMS` names: its passed pawns by relative rank, the
+    /// second through the seventh, then its isolated pawns and its doubled
+    /// ones.
+    ///
+    /// A pawn of ours is passed when no pawn of theirs stands on its file or
+    /// either file beside it on any rank ahead of it, and no pawn of ours
+    /// stands ahead of it on its own file. The second clause is what leaves
+    /// the rear of a doubled pair out: the front pawn is the runner, and the
+    /// one behind it is going nowhere the front one has not gone first. What
+    /// stands on the square in front of the pawn is not read, so a passer a
+    /// knight has blockaded is counted as a passer. That is on purpose and it
+    /// is the first thing this term leaves out: the stop square reads the
+    /// pieces, and a term that reads the pieces cannot sit behind a key over
+    /// the pawns.
+    ///
+    /// A pawn is isolated when no pawn of ours stands on either file beside
+    /// it, and doubled when a pawn of ours stands behind it on its own file.
+    /// Both are counted per pawn rather than per file, so an isolated pair on
+    /// one file pays the isolated weight twice and a tripled file is doubled
+    /// two. Per pawn is what one coefficient can state; per file would want a
+    /// second table to say how many.
+    ///
+    /// Relative rank is the rank a pawn has come, so a white pawn's is its
+    /// rank and a black pawn's is nine less. The relative second is a real
+    /// bucket and not a rounding of the others: a pawn still at home is
+    /// passed the moment the enemy pawns on its three files are gone.
+    ///
+    /// Pawns and nothing else is read here, which is the property the pawn
+    /// hash rests on. Neither king, no piece and not the side to move: two
+    /// positions whose pawns agree agree on all eight counts, and
+    /// `Board::pawn_key` already stands for that agreement.
+    ///
+    /// Both `eval` and the tuner's walk read this, so the identity between
+    /// them cannot see a wrong count here, at the fitted weights or at zero.
+    /// What pins it is the hand counts beside this in the tests, the way the
+    /// shelter counts and the mobility counts are pinned.
+    #[inline]
+    pub(crate) fn pawn_structure_counts(&self, color: Color) -> [i32; eval::PAWN_TERMS] {
+        let masks = &PAWN_MASKS;
+        let side = color as usize;
+        let (ours, theirs) = match color {
+            Color::White => (self.white, self.black),
+            Color::Black => (self.black, self.white),
+        };
+        let pawns = self.pawns();
+        let (our_pawns, their_pawns) = (pawns & ours, pawns & theirs);
+        let mut counts = [0; eval::PAWN_TERMS];
+        let mut remaining = our_pawns;
+        while remaining != 0 {
+            let square = remaining.trailing_zeros() as usize;
+            remaining &= remaining - 1;
+            let relative = match color {
+                Color::White => square / 8,
+                Color::Black => 7 - square / 8,
+            };
+            // from_fen accepts a pawn on either back rank, knowingly, and the
+            // search has to survive one. Such a pawn has come no ranks or all
+            // eight and so names none of the six counted; it is left out of
+            // the passed count rather than folded into the nearest bucket,
+            // and it still counts toward the two below, which read its file
+            // and not its rank
+            if !(1..eval::PASSED_RANKS + 1).contains(&relative) {
+                continue;
+            }
+            if their_pawns & masks.front_span[side][square] == 0
+                && our_pawns & masks.file_ahead[side][square] == 0
+            {
+                counts[relative - 1] += 1;
+            }
+        }
+        let files = files_of(our_pawns);
+        let beside = (files << 1) | (files >> 1);
+        counts[eval::PASSED_RANKS] = (our_pawns & spread(files & !beside)).count_ones() as i32;
+        counts[eval::PASSED_RANKS + 1] =
+            (our_pawns & ahead_of(our_pawns, color)).count_ones() as i32;
+        counts
     }
 
     /// Whether the side to move stands in check, read from the checkers
@@ -5495,6 +5676,327 @@ mod evasion_targets {
             let board = Board::from_fen(fen).unwrap();
             assert!(!board.in_check(), "{fen} is in check");
             assert_eq!(board.evasions(), board.generate_moves(), "{fen}");
+        }
+    }
+}
+
+#[cfg(test)]
+mod pawn_structure {
+    use super::{Board, Color, PAWN_MASKS, ahead_of, files_of, pawn_files, spread};
+    use pretty_assertions::assert_eq;
+
+    /// The counts by hand, position by position, because nothing else pins
+    /// them. The tuner's identity folds a row against the live weights, which
+    /// are zero, so it is blind to a wrong count here, and it stays blind to
+    /// one after a fit: `eval` and the tuner's walk read this same helper, so
+    /// the two sides of the identity move together whatever it answers. These
+    /// cases are the only check this term has.
+    ///
+    /// Each case names the eight counts in the order the helper returns them:
+    /// the passed pawns on the relative second through the relative seventh,
+    /// then the isolated pawns, then the doubled ones. The other king stands
+    /// out of the way.
+    #[test]
+    fn pawns_count_as_a_hand_count_says_they_do() {
+        for (fen, counts, why) in [
+            // a pawn with nothing in front of it anywhere is passed, and a
+            // pawn with no pawn beside it is isolated. The lone pawn is both
+            (
+                "4k3/8/8/8/4P3/8/8/4K3 w - - 0 1",
+                [0, 0, 1, 0, 0, 0, 1, 0],
+                "a white pawn on e4 and no black pawn",
+            ),
+            // an enemy pawn on an adjacent file ahead of it stops it
+            (
+                "4k3/8/8/3p4/4P3/8/8/4K3 w - - 0 1",
+                [0, 0, 0, 0, 0, 0, 1, 0],
+                "the same against a black pawn on d5",
+            ),
+            // level is not ahead. A black pawn beside the white one has
+            // already been passed
+            (
+                "4k3/8/8/8/3pP3/8/8/4K3 w - - 0 1",
+                [0, 0, 1, 0, 0, 0, 1, 0],
+                "the same against a black pawn on d4",
+            ),
+            // the whole file ahead is read and not the next rank or two
+            (
+                "4k3/5p2/8/8/4P3/8/8/4K3 w - - 0 1",
+                [0, 0, 0, 0, 0, 0, 1, 0],
+                "the same against a black pawn on f7",
+            ),
+            // a pawn of ours in front of it stops it too, which is what
+            // leaves the rear of a doubled pair out of the passed count
+            (
+                "4k3/8/8/4P3/4P3/8/8/4K3 w - - 0 1",
+                [0, 0, 0, 1, 0, 0, 2, 1],
+                "white pawns on e4 and e5",
+            ),
+            // a tripled file is two doubled pawns and not one or three
+            (
+                "4k3/8/8/8/4P3/4P3/4P3/4K3 w - - 0 1",
+                [0, 0, 1, 0, 0, 0, 3, 2],
+                "white pawns on e2, e3 and e4",
+            ),
+            // the relative second is a real bucket. A pawn still at home is
+            // passed once the enemy pawns on its three files are gone
+            (
+                "4k3/8/8/8/8/8/4P3/4K3 w - - 0 1",
+                [1, 0, 0, 0, 0, 0, 1, 0],
+                "a white pawn on e2 with no black pawn",
+            ),
+            (
+                "4k3/4P3/8/8/8/8/8/4K3 w - - 0 1",
+                [0, 0, 0, 0, 0, 1, 1, 0],
+                "a white pawn on e7",
+            ),
+            // the stop square is not read, so a blockaded passer is a passer.
+            // On purpose: the stop square is the first thing this term leaves
+            // out, and a later arm has to be able to find the place it goes
+            (
+                "4k3/4n3/4P3/8/8/8/8/4K3 w - - 0 1",
+                [0, 0, 0, 0, 1, 0, 1, 0],
+                "a white pawn on e6 behind a black knight on e7",
+            ),
+            // a pawn two files away is no company
+            (
+                "4k3/8/8/8/8/8/P1P5/4K3 w - - 0 1",
+                [2, 0, 0, 0, 0, 0, 2, 0],
+                "white pawns on a2 and c2",
+            ),
+            (
+                "4k3/8/8/8/8/8/PP6/4K3 w - - 0 1",
+                [2, 0, 0, 0, 0, 0, 0, 0],
+                "white pawns on a2 and b2",
+            ),
+            // the two edge files at once. The file mask is a shift and not a
+            // rotate, so the a file has no neighbour off the left of the byte
+            // and the h file none off the right; a rotate would make each of
+            // these the other's neighbour and leave both counted as company
+            (
+                "4k3/8/8/8/8/8/P6P/4K3 w - - 0 1",
+                [2, 0, 0, 0, 0, 0, 2, 0],
+                "white pawns on a2 and h2",
+            ),
+            // the edge cases the file mask decides. A pawn on the a file is
+            // read against the a and b files and not against the c file, so
+            // stepping the mask in the way `king_files` steps it would let
+            // the pawn on c5 stop this one
+            (
+                "4k3/8/8/1p6/P7/8/8/4K3 w - - 0 1",
+                [0, 0, 0, 0, 0, 0, 1, 0],
+                "a white pawn on a4 against a black pawn on b5",
+            ),
+            (
+                "4k3/8/8/2p5/P7/8/8/4K3 w - - 0 1",
+                [0, 0, 1, 0, 0, 0, 1, 0],
+                "a white pawn on a4 against a black pawn on c5",
+            ),
+            (
+                "4k3/8/8/6p1/7P/8/8/4K3 w - - 0 1",
+                [0, 0, 0, 0, 0, 0, 1, 0],
+                "a white pawn on h4 against a black pawn on g5",
+            ),
+            // from_fen accepts a pawn on either back rank and the search has
+            // to survive one. It has come no ranks or all eight, so it names
+            // none of the six passed buckets, and it still counts toward the
+            // two that read its file
+            (
+                "4k3/8/8/8/8/8/8/3K1P2 w - - 0 1",
+                [0, 0, 0, 0, 0, 0, 1, 0],
+                "a white pawn on f1",
+            ),
+            (
+                "4k1P1/8/8/8/8/8/8/4K3 w - - 0 1",
+                [0, 0, 0, 0, 0, 0, 1, 0],
+                "a white pawn on g8",
+            ),
+        ] {
+            let board = Board::from_fen(fen).unwrap();
+            assert_eq!(board.pawn_structure_counts(Color::White), counts, "{}", why);
+        }
+    }
+
+    /// The same reading for black, whose pawns are measured down the board
+    /// rather than up it. Each case is the reflection of one above, so a
+    /// relative rank read the wrong way up shows as a count in the wrong
+    /// bucket rather than as no count at all.
+    #[test]
+    fn a_black_pawn_is_measured_down_the_board() {
+        for (fen, counts, why) in [
+            (
+                "4k3/8/8/4p3/8/8/8/4K3 w - - 0 1",
+                [0, 0, 1, 0, 0, 0, 1, 0],
+                "a black pawn on e5 and no white pawn",
+            ),
+            (
+                "4k3/8/8/4p3/3P4/8/8/4K3 w - - 0 1",
+                [0, 0, 0, 0, 0, 0, 1, 0],
+                "the same against a white pawn on d4",
+            ),
+            (
+                "4k3/8/8/4p3/4p3/8/8/4K3 w - - 0 1",
+                [0, 0, 0, 1, 0, 0, 2, 1],
+                "black pawns on e4 and e5",
+            ),
+            (
+                "4k3/8/8/8/8/8/4p3/4K3 w - - 0 1",
+                [0, 0, 0, 0, 0, 1, 1, 0],
+                "a black pawn on e2",
+            ),
+            (
+                "4k3/4p3/8/8/8/8/8/4K3 w - - 0 1",
+                [1, 0, 0, 0, 0, 0, 1, 0],
+                "a black pawn on e7",
+            ),
+        ] {
+            let board = Board::from_fen(fen).unwrap();
+            assert_eq!(board.pawn_structure_counts(Color::Black), counts, "{}", why);
+        }
+    }
+
+    /// Black's count of a position is white's count of its reflection, so the
+    /// two colours are read the same way round.
+    #[test]
+    fn the_two_colours_count_the_same_way() {
+        let white = Board::from_fen("4k3/P4p2/8/3P2p1/3P4/PP2p2p/1P6/4K3 w - - 0 1").unwrap();
+        let black = Board::from_fen("4k3/1p6/pp2P2P/3p4/3p2P1/8/p4P2/4K3 w - - 0 1").unwrap();
+        assert_eq!(
+            white.pawn_structure_counts(Color::White),
+            black.pawn_structure_counts(Color::Black)
+        );
+        assert_eq!(
+            white.pawn_structure_counts(Color::Black),
+            black.pawn_structure_counts(Color::White)
+        );
+    }
+
+    /// Nothing but the pawns decides the counts, which is the property the
+    /// pawn hash rests on. The same pawns behind different pieces, and with
+    /// the two kings somewhere else, count the same.
+    #[test]
+    fn nothing_but_the_pawns_is_counted() {
+        let bare = Board::from_fen("4k3/pp3ppp/8/8/8/8/PPP2PP1/4K3 w - - 0 1").unwrap();
+        let full =
+            Board::from_fen("r1bq1rk1/pp3ppp/2n5/8/8/2N5/PPP2PP1/R1BQK2R w KQ - 0 1").unwrap();
+        for color in [Color::White, Color::Black] {
+            assert_eq!(
+                bare.pawn_structure_counts(color),
+                full.pawn_structure_counts(color),
+                "{:?}",
+                color
+            );
+        }
+    }
+
+    /// A pawn's own file and the files beside it, and no more than that. The
+    /// edges are the case: two files there and not three, and not three with
+    /// the middle one stepped in the way `king_files` steps it.
+    #[test]
+    fn a_pawn_names_its_own_file_and_the_ones_beside_it() {
+        for square in 0..64u8 {
+            let file = u32::from(square % 8);
+            let files = pawn_files(square);
+            let expected = if file == 0 || file == 7 { 2 } else { 3 };
+            assert_eq!(files.count_ones(), expected, "the files of {}", square);
+            assert_eq!(
+                files & (1 << file),
+                1 << file,
+                "not its own file: {}",
+                square
+            );
+            assert_eq!(
+                files.trailing_zeros() + expected - 1,
+                7 - files.leading_zeros(),
+                "the files of {} are not in a row",
+                square
+            );
+        }
+    }
+
+    /// Each front span holds every rank ahead of the pawn and no rank level
+    /// with it or behind it, on the files the pawn names and no others.
+    #[test]
+    fn the_front_span_is_the_files_beside_the_pawn_on_the_ranks_ahead() {
+        for square in 0..64u8 {
+            let rank = i32::from(square / 8);
+            for (side, forward) in [(Color::White, 1), (Color::Black, -1)] {
+                let span = PAWN_MASKS.front_span[side as usize][square as usize];
+                let ranks = if forward == 1 { 7 - rank } else { rank };
+                assert_eq!(
+                    span.count_ones(),
+                    pawn_files(square).count_ones() * ranks as u32,
+                    "{:?} on {}",
+                    side,
+                    square
+                );
+                if span != 0 {
+                    assert_eq!(
+                        files_of(span),
+                        pawn_files(square),
+                        "{:?} on {} covers other files",
+                        side,
+                        square
+                    );
+                }
+                for step in 0..8i32 {
+                    let on_rank = span & (0xffu64 << (step * 8));
+                    let ahead = (step - rank) * forward > 0;
+                    assert_eq!(
+                        on_rank != 0,
+                        ahead,
+                        "{:?} on {} holds rank {}",
+                        side,
+                        square,
+                        step
+                    );
+                }
+            }
+        }
+    }
+
+    /// The file ahead is the front span with the neighbouring files taken
+    /// off, which is the relationship the two tables are built to have. Kept
+    /// as its own table rather than masked out at the leaf, so this is what
+    /// says the two agree.
+    #[test]
+    fn the_file_ahead_is_the_front_span_on_the_pawns_own_file() {
+        for square in 0..64u8 {
+            let own = spread(1u8 << (square % 8));
+            for side in [Color::White, Color::Black] {
+                let i = side as usize;
+                assert_eq!(
+                    PAWN_MASKS.file_ahead[i][square as usize],
+                    PAWN_MASKS.front_span[i][square as usize] & own,
+                    "{:?} on {}",
+                    side,
+                    square
+                );
+            }
+        }
+    }
+
+    /// The forward fill holds every square in front of a pawn and never the
+    /// pawn itself, which is what leaves a lone pawn undoubled.
+    #[test]
+    fn the_fill_starts_one_rank_in_front_of_the_pawn() {
+        for square in 0..64u8 {
+            let pawn = 1u64 << square;
+            for side in [Color::White, Color::Black] {
+                let filled = ahead_of(pawn, side);
+                assert_eq!(
+                    filled & pawn,
+                    0,
+                    "{:?} on {} is in its own fill",
+                    side,
+                    square
+                );
+                assert_eq!(
+                    filled, PAWN_MASKS.file_ahead[side as usize][square as usize],
+                    "{:?} on {}",
+                    side, square
+                );
+            }
         }
     }
 }

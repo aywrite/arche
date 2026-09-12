@@ -652,6 +652,10 @@ pub struct AlphaBeta {
     /// that wrote it, so what the last search left is a warm start and not a
     /// stale answer.
     shelter: eval::ShelterCache,
+    /// The pawn structure's memo, on the same terms. A second cache rather
+    /// than a wider entry in the shelter's, because the two are keyed on
+    /// different things: this one misses only on a pawn move.
+    pawns: eval::PawnCache,
     /// The residual sampler, or none, which is what every constructor here
     /// builds and what the engine plays and benches with. An engine with
     /// none takes no branch a search without a sampler did not take, which
@@ -746,6 +750,7 @@ impl AlphaBeta {
             quiescence_nodes: 0,
             ordering: MoveOrdering::new(),
             shelter: eval::ShelterCache::default(),
+            pawns: eval::PawnCache::default(),
             sampler: None,
             census: None,
             ledger: None,
@@ -1098,13 +1103,14 @@ impl AlphaBeta {
         });
     }
 
-    /// The score at this node, with the shelter taken from the engine's memo.
+    /// The score at this node, with the shelter and the pawn structure taken
+    /// from the engine's two memos.
     ///
-    /// `&mut self` for the memo alone. The score is the one `eval::eval`
+    /// `&mut self` for the memos alone. The score is the one `eval::eval`
     /// gives, so nothing about the tree turns on which of the two a node
     /// asked.
     fn eval(&mut self) -> Score {
-        crate::eval::eval_cached(&self.board, &mut self.shelter)
+        crate::eval::eval_cached(&self.board, &mut self.shelter, &mut self.pawns)
     }
 
     /// The ply the quiet memories are indexed by at this node, or none when

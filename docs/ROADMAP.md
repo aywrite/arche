@@ -16,9 +16,10 @@ the engine plays. Roughly in the order they look worth doing.
   match. Reducing the losing captures and reading the history table for the eligibility
   come after that, each measured on its own
 - evaluate drawn positions
-- the rest of evaluation: the rest of king safety, passed pawns, and special cases such
-  as the bishop pair and open files. Mobility is counted for the knight, the bishop,
-  the rook and the queen and has been fitted once, and the fit left it a rook count:
+- the rest of evaluation: the rest of king safety, the rest of pawn structure, and
+  special cases such as the bishop pair and open files. Mobility is counted for the
+  knight, the bishop, the rook and the queen and has been fitted once, and the fit
+  left it a rook count:
   six of the eight weights rounded to zero, so only the rook is counted at the leaf
   until a refit prices another piece. King safety counts the pawns on the two ranks in
   front of the king, the open and half open files beside it, and the enemy pawns on the
@@ -26,8 +27,16 @@ the engine plays. Roughly in the order they look worth doing.
   measured at all is the squares the enemy pieces attack around the
   king, which wants the attack sets the mobility count already walks. The storm is followed
   three ranks and no further, so a pawn four ranks out is not counted, and a storm pawn
-  blocked by one of ours counts the same as a free one. The tuner that
-  sentence asked for is built: `arche terms`
+  blocked by one of ours counts the same as a free one. Pawn structure counts a side's
+  passed pawns by the rank they have reached, its isolated pawns and its doubled ones,
+  read off the two pawn boards alone and remembered under the pawn key; all sixteen of
+  its weights are zero until the fit, so the term is in the tree and prices nothing
+  yet. What it leaves out is everything that reads a square rather than a file: whether
+  the square in front of a passer is occupied or attacked, how far each king stands
+  from the promotion square, candidate pawns, connected and backward pawns, pawn
+  islands, and the rule of the square. The first two are the valuable ones and
+  neither can sit behind a key over the pawns. The tuner that sentence asked for is
+  built: `arche terms`
   states what each position's evaluation is made of and `scripts/tune.py` fits and scores a
   weight vector against the games, so a candidate term is one appended column whose
   held-out loss can be read before there is engine code for it. What is not settled is
