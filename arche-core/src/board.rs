@@ -773,28 +773,50 @@ impl Board {
     /// the promoting pushes, in the same order, made without generating the
     /// quiet moves only to filter them out.
     pub fn generate_captures(&self) -> MoveList {
-        self.generate::<true>()
+        self.generate::<true, false>()
     }
 
     /// The moves worth trying here: every pseudo legal one, less those that
     /// cannot answer a check when there is one. Most of what full width
     /// generation returns in check would only be refused by `make_move`, so
-    /// dropping it before the list is sorted spares the sort and the make.
+    /// leaving it ungenerated spares the push, the sort and the make.
     ///
     /// Correct whichever position it is asked of: out of check it is
     /// `generate_moves`. The caller does not have to establish that it is in
-    /// check first, which is what the filter used to ask of it.
+    /// check first, which is what the filter this replaced used to ask of it.
+    ///
+    /// The list is the one the filter returned, move for move and in the same
+    /// order, which `the_masked_generator_keeps_what_the_filter_kept` holds it
+    /// to against the filter itself.
     #[inline]
     pub fn evasions(&self) -> MoveList {
-        let mut moves = self.generate_moves();
         if self.in_check() {
-            self.retain_evasions(&mut moves);
+            self.generate::<false, true>()
+        } else {
+            self.generate_moves()
         }
-        moves
     }
 
     pub fn generate_moves(&self) -> MoveList {
-        self.generate::<false>()
+        self.generate::<false, false>()
+    }
+
+    /// The squares a move must land on to answer the check, for a mover that
+    /// is not the king. Capturing the sole checker or blocking its line are
+    /// the only two, and a double check leaves neither: nothing answers it
+    /// but a king move.
+    ///
+    /// En passant is not in here. The captured pawn does not stand on the to
+    /// square, so this mask misreads it, and the generator leaves those moves
+    /// unmasked the way the filter left them unexamined.
+    fn evasion_targets(&self) -> u64 {
+        debug_assert!(self.checkers != 0, "asked of a position not in check");
+        if self.checkers.count_ones() > 1 {
+            return 0;
+        }
+        let checker = self.checkers.trailing_zeros() as usize;
+        let king = self.king_index(self.active_color) as usize;
+        self.checkers | BETWEEN[king][checker]
     }
 
     /// The one generator behind generate_moves and generate_captures. The
@@ -802,7 +824,7 @@ impl Board {
     /// monomorphises into the equivalent of a hand-written copy: the captures
     /// one masks every piece's targets with the opponent's pieces and drops
     /// the quiet-only sections, with nothing tested per move.
-    fn generate<const CAPTURES_ONLY: bool>(&self) -> MoveList {
+    fn generate<const CAPTURES_ONLY: bool, const EVASIONS: bool>(&self) -> MoveList {
         let mut moves = Building::new();
         let (color_mask, capture_mask) = match self.active_color {
             Color::Black => (self.black, self.white),
@@ -812,12 +834,19 @@ impl Board {
         let attack_masks = &ATTACK_MASKS;
         let magic = &MAGIC;
         // the captures list keeps only the squares the opponent stands on,
-        // the full list keeps every square our own pieces do not
-        let target_filter = if CAPTURES_ONLY {
+        // the full list keeps every square our own pieces do not. The king
+        // takes this one as it stands, which is why it is named
+        let king_filter = if CAPTURES_ONLY {
             capture_mask
         } else {
             !color_mask
         };
+        // in check, everything but the king has to capture the checker or
+        // block it, so the squares that do neither come off the filter and
+        // those moves are never built. A double check leaves this zero,
+        // which is the same statement
+        let evasion_filter = if EVASIONS { self.evasion_targets() } else { !0 };
+        let target_filter = king_filter & evasion_filter;
         // when every target is a capture there is nothing to ask per move
         let capture_at = |to: u8| {
             if CAPTURES_ONLY {
@@ -856,11 +885,13 @@ impl Board {
                 moves.push(Play::new(from, to, capture_at(to), None, false, false));
             }
         }
-        // kings
+        // kings, which take the filter without the evasion mask: a king
+        // answers a check by leaving, not by landing on the checker's line,
+        // and `make_move` settles which squares it may step to
         let mut kings = self.kings() & color_mask;
         while kings != 0 {
             let from = pop_lsb(&mut kings);
-            let mut targets = attack_masks.kings[from as usize] & target_filter;
+            let mut targets = attack_masks.kings[from as usize] & king_filter;
             while targets != 0 {
                 let to = pop_lsb(&mut targets);
                 moves.push(Play::new(from, to, capture_at(to), None, false, false));
@@ -913,7 +944,10 @@ impl Board {
                 Color::White => attack_masks.black_pawns[from as usize] & capture_mask,
                 Color::Black => attack_masks.white_pawns[from as usize] & capture_mask,
             };
-            let mut targets = pmoves;
+            // a pawn's captures take the evasion mask like every other
+            // piece's: taking something that is not the checker leaves the
+            // king in check
+            let mut targets = pmoves & evasion_filter;
             while targets != 0 {
                 let to = pop_lsb(&mut targets);
                 let capture = self.get_piece_index(to);
@@ -934,14 +968,24 @@ impl Board {
                     Color::White => from as isize + 8,
                     Color::Black => from as isize - 8,
                 };
+                // the square being empty is what lets the pawn through, and
+                // the double push needs the single one's square empty as
+                // well, so the evasion mask is asked of each push and not of
+                // the step they share: a double push can block a check the
+                // single push does not reach
                 if (0..64).contains(&to) && !all_pieces.is_bit_set(to as u8) {
                     let to = to as u8;
+                    let blocks = evasion_filter.is_bit_set(to);
                     if can_promote {
-                        for p in PromotePiece::VARIANTS {
-                            moves.push(Play::new(from, to, None, Some(p), false, false));
+                        if blocks {
+                            for p in PromotePiece::VARIANTS {
+                                moves.push(Play::new(from, to, None, Some(p), false, false));
+                            }
                         }
                     } else {
-                        moves.push(Play::new(from, to, None, None, false, false));
+                        if blocks {
+                            moves.push(Play::new(from, to, None, None, false, false));
+                        }
                         if match self.active_color {
                             Color::White => rank == 2,
                             Color::Black => rank == 7,
@@ -950,7 +994,9 @@ impl Board {
                                 Color::White => to as isize + 8,
                                 Color::Black => to as isize - 8,
                             };
-                            if !all_pieces.is_bit_set(to as u8) {
+                            if !all_pieces.is_bit_set(to as u8)
+                                && evasion_filter.is_bit_set(to as u8)
+                            {
                                 moves.push(Play::new(from, to as u8, None, None, false, false));
                             }
                         }
@@ -2187,6 +2233,15 @@ impl Board {
     /// that work for moves it would certainly refuse. En passant is kept
     /// unexamined: the captured pawn does not stand on the to square, so the
     /// capture and block masks misread it, and it is rare.
+    ///
+    /// The generator masks its targets instead, so this is no longer on the
+    /// search's path. It is kept as the second implementation the masked
+    /// generator is held to, two ways of saying which moves answer a check,
+    /// pinned against each other by
+    /// `the_masked_generator_keeps_what_the_filter_kept` over a corpus of
+    /// positions in check. Do not fold it into the generator: then there
+    /// would be one statement of the rule and nothing to check it against.
+    #[cfg(test)]
     fn retain_evasions(&self, moves: &mut MoveList) {
         debug_assert!(self.checkers != 0, "asked of a position not in check");
         let targets = if self.checkers.count_ones() > 1 {
@@ -2407,7 +2462,27 @@ impl Board {
     /// Count the legal moves to a depth, the standard measure of whether
     /// move generation is right.
     pub fn perft(&mut self, depth: u8) -> u64 {
-        self.perft_impl::<false>(depth)
+        self.perft_impl::<false, false>(depth)
+    }
+
+    /// The same count, walked over `evasions` rather than the whole pseudo
+    /// legal list.
+    ///
+    /// It has to come to the same number. Every legal move answers a check
+    /// when there is one, so the legal moves sit inside what `evasions`
+    /// returns, which sits inside what `generate_moves` returns; `make_move`
+    /// refuses the rest either way. So this is the masked generator held to
+    /// the counts the perft suites already pin, over every position they
+    /// reach rather than the handful a test can name. Perft itself walks
+    /// `generate_moves`, so without this the evasion mask has no exhaustive
+    /// check at all.
+    ///
+    /// The checkers are maintained here, as `perft_as_played` maintains
+    /// them, because that is what the mask is read off. The plain `perft`
+    /// leaves them stale, which no caller in the search does.
+    #[cfg(test)]
+    pub(crate) fn perft_through_evasions(&mut self, depth: u8) -> u64 {
+        self.perft_impl::<true, true>(depth)
     }
 
     /// The same count, walked the way the engine plays: checkers maintained
@@ -2427,10 +2502,13 @@ impl Board {
     /// rather than the few thousand a proptest reaches.
     #[cfg(test)]
     pub(crate) fn perft_as_played(&mut self, depth: u8) -> u64 {
-        self.perft_impl::<true>(depth)
+        self.perft_impl::<true, false>(depth)
     }
 
-    fn perft_impl<const MAINTAIN_CHECKERS: bool>(&mut self, depth: u8) -> u64 {
+    fn perft_impl<const MAINTAIN_CHECKERS: bool, const THROUGH_EVASIONS: bool>(
+        &mut self,
+        depth: u8,
+    ) -> u64 {
         // Based on pseudocode at https://www.chessprogramming.org/Perft
         let mut nodes = 0;
 
@@ -2438,9 +2516,14 @@ impl Board {
             return 1;
         }
 
-        for m in &self.generate_moves() {
+        let moves = if THROUGH_EVASIONS {
+            self.evasions()
+        } else {
+            self.generate_moves()
+        };
+        for m in &moves {
             if self.make_move_impl::<MAINTAIN_CHECKERS>(m) {
-                nodes += self.perft_impl::<MAINTAIN_CHECKERS>(depth - 1);
+                nodes += self.perft_impl::<MAINTAIN_CHECKERS, THROUGH_EVASIONS>(depth - 1);
                 self.undo_move();
             }
         }
@@ -3446,6 +3529,26 @@ mod perft {
         }
     }
 
+    /// The same counts again, walked over `evasions` rather than the whole
+    /// pseudo legal list. The masked generator drops only moves `make_move`
+    /// would refuse, so the count cannot move. See `perft_through_evasions`.
+    #[test]
+    fn the_standard_positions_count_the_same_through_evasions() {
+        for (description, fen, counts) in CASES {
+            let mut board = Board::from_fen(fen).unwrap();
+            for (i, &expected) in counts.iter().enumerate() {
+                let depth = i as u8 + 1;
+                assert_eq!(
+                    board.perft_through_evasions(depth),
+                    expected,
+                    "{} at depth {}, through evasions",
+                    description,
+                    depth
+                );
+            }
+        }
+    }
+
     /// The same counts, walked the way the engine plays: the numbers above
     /// are the accepted ones, and this is what holds the game's own path to
     /// them. See `perft_as_played`.
@@ -4178,6 +4281,25 @@ mod perft_edge_cases {
         }
     }
 
+    /// The same cases through `evasions`. These are the shapes most likely
+    /// to catch the evasion mask out: the promotions that answer a check,
+    /// the en passant captures the mask deliberately does not examine, and
+    /// the pins that leave a move looking like an answer when it is not.
+    #[test]
+    fn every_edge_case_counts_the_same_through_evasions() {
+        for (fen, depth, expected, description) in CASES {
+            let mut board = Board::from_fen(fen).unwrap();
+            assert_eq!(
+                board.perft_through_evasions(depth),
+                expected,
+                "{} ({} at depth {}), through evasions",
+                description,
+                fen,
+                depth
+            );
+        }
+    }
+
     /// The same cases, walked the way the engine plays. These are the shapes
     /// most likely to catch checkers maintenance out: the pins, the en
     /// passant discoveries, the castles through an attacked square and the
@@ -4337,14 +4459,6 @@ mod evasions {
         // six moves and the rook's whole file answer nothing
         let board = Board::from_fen("4k3/8/8/8/3n4/8/8/r3R1K1 b - - 0 1").unwrap();
         assert_eq!(answers(&board), vec!["a1e1", "d4e2", "d4e6"]);
-    }
-
-    #[test]
-    fn out_of_check_the_evasions_are_every_move() {
-        // asked of a position not in check it filters nothing, which is what
-        // lets the caller ask without establishing that first
-        let board = Board::new();
-        assert_eq!(board.evasions().len(), board.generate_moves().len());
     }
 }
 
@@ -5212,5 +5326,145 @@ mod shelter {
         // white's pawns stand on g3 and h2, and black's on f5
         assert_eq!(files_of(board.pawns() & board.white), 0b1100_0000);
         assert_eq!(files_of(board.pawns() & board.black), 0b0010_0000);
+    }
+}
+
+#[cfg(test)]
+mod evasion_targets {
+    use super::fens;
+    use super::{Board, MoveList};
+    use pretty_assertions::assert_eq;
+
+    /// Positions whose evasions exercise a case the target mask has to get
+    /// right on its own, each with a piece able to reach the square the
+    /// mask must refuse. A case with nothing to refuse passes whatever the
+    /// mask says, which is how an earlier double check here let a mask
+    /// missing its double check rule through the whole suite.
+    const IN_CHECK: &[(&str, &str)] = &[
+        // a bishop checks along a5 to e1, and the only block a pawn can
+        // reach is b4, two squares ahead. Masking the step the two pushes
+        // share rather than each push would lose b2b4 here
+        ("double push blocks", "4k3/8/8/b7/8/8/1P6/4K3 w - - 0 1"),
+        // a knight checks, so nothing can be interposed and only the king's
+        // moves and captures of the knight answer
+        ("knight check", "4k3/8/8/8/8/5n2/8/4K3 w - - 0 1"),
+        // two checkers at once, which leaves the target mask empty. The
+        // queen can take the rook, which answers one check and not the
+        // other, so a mask that read only the first checker would keep a
+        // move the filter drops
+        ("double check", "4k3/8/8/8/8/5n2/4r3/R2QK2R w KQ - 0 1"),
+        // a pawn gives the check and stands beside the king
+        ("pawn check", "4k3/8/8/8/8/8/3p4/4K3 w - - 0 1"),
+        // a rook checks along the eighth rank and the pawn promotes onto
+        // the one square between, so a promoting push has to be kept
+        ("promotion blocks", "r3K3/2P5/8/8/8/8/8/7k w - - 0 1"),
+        // the same rook taken by a promoting capture
+        (
+            "promotion takes the checker",
+            "r3K3/1P6/8/8/8/8/8/7k w - - 0 1",
+        ),
+        // the checking pawn is the one taken en passant, which the mask
+        // deliberately does not examine: the pawn taken does not stand on
+        // the square captured to, so the mask would read it wrongly
+        (
+            "en passant takes the checker",
+            "4k3/8/8/3pP3/4K3/8/8/8 w - d6 0 1",
+        ),
+        // and an en passant that answers nothing, kept unexamined all the
+        // same and refused later by make_move
+        (
+            "en passant answers nothing",
+            "4k3/8/8/3pP3/8/6b1/8/3RK3 w - d6 0 1",
+        ),
+    ];
+
+    /// The masked generator and the filter it replaced, on one position.
+    fn both_ways(board: &Board) -> (MoveList, MoveList) {
+        let masked = board.evasions();
+        let mut filtered = board.generate_moves();
+        if board.in_check() {
+            board.retain_evasions(&mut filtered);
+        }
+        (masked, filtered)
+    }
+
+    /// Every position in check that a walk of `depth` plies from `fen`
+    /// reaches, handed to `visit`. Illegal moves are dropped by `make_move`
+    /// the way the search drops them.
+    fn walk(board: &mut Board, depth: u8, visit: &mut impl FnMut(&Board)) {
+        if board.in_check() {
+            visit(board);
+        }
+        if depth == 0 {
+            return;
+        }
+        for m in board.generate_moves() {
+            // a refused move has already put the board back, which is the
+            // contract the search relies on
+            if board.make_move(&m) {
+                walk(board, depth - 1, visit);
+                board.undo_move();
+            }
+        }
+    }
+
+    #[test]
+    fn the_masked_generator_keeps_what_the_filter_kept() {
+        for (name, fen) in IN_CHECK {
+            let board = Board::from_fen(fen).unwrap();
+            assert!(board.in_check(), "{name} is not a position in check");
+            let (masked, filtered) = both_ways(&board);
+            assert_eq!(masked, filtered, "{name}: {fen}");
+        }
+
+        // and over every position in check a short walk of the suite
+        // reaches, which is where the shapes nobody thought to name are
+        let mut seen = 0;
+        for fen in fens::CORE
+            .iter()
+            .chain([fens::KIWIPETE, fens::PROMOTIONS].iter())
+        {
+            let mut board = Board::from_fen(fen).unwrap();
+            let mut checked = Vec::new();
+            walk(&mut board, 3, &mut |b| checked.push(b.to_fen()));
+            for position in &checked {
+                let board = Board::from_fen(position).unwrap();
+                let (masked, filtered) = both_ways(&board);
+                assert_eq!(masked, filtered, "{position}");
+            }
+            seen += checked.len();
+        }
+        assert!(seen > 200, "the walk reached only {seen} positions");
+
+        // The corpus is only worth its shapes. A count of positions says
+        // nothing about whether the ones the mask can get wrong are in
+        // there, and the walk reaches no double check, no en passant in
+        // check and no promotion that answers one, which is why the named
+        // cases above carry those three and this says so.
+        let mut doubles = 0;
+        let mut passing = 0;
+        let mut promotions = 0;
+        for (_, fen) in IN_CHECK {
+            let board = Board::from_fen(fen).unwrap();
+            doubles += usize::from(board.checkers.count_ones() > 1);
+            passing += usize::from(board.en_passant.is_some());
+            promotions += board
+                .evasions()
+                .iter()
+                .filter(|m| m.promote.is_some())
+                .count();
+        }
+        assert!(doubles > 0, "no double check among the named cases");
+        assert!(passing > 0, "no en passant among the named cases");
+        assert!(promotions > 0, "no promotion answers a check");
+    }
+
+    #[test]
+    fn out_of_check_the_evasions_are_the_whole_list() {
+        for fen in fens::CORE {
+            let board = Board::from_fen(fen).unwrap();
+            assert!(!board.in_check(), "{fen} is in check");
+            assert_eq!(board.evasions(), board.generate_moves(), "{fen}");
+        }
     }
 }
