@@ -1504,7 +1504,11 @@ def command_loss(args):
 
 
 def frozen_slots(
-    free_material, held_tables=False, held_mobility=False, held_shelter=False
+    free_material,
+    held_tables=False,
+    held_mobility=False,
+    held_shelter=False,
+    held_pawn=False,
 ):
     """Which weights a fit holds where they are.
 
@@ -1531,6 +1535,14 @@ def frozen_slots(
     beside the newer term and the attribution the holds exist to keep. That is
     not hypothetical: `1b0862a` found half of the king safety fit's apparent
     gain to be a mobility refit that no hold had stopped.
+
+    The ladder runs the other way too. A term already in the tree can be worth
+    fitting again on a corpus grown since, and then every term is older than
+    the fit rather than newer: a mobility refit holds the tables below it and
+    the shelter and the pawn structure above, and moves the eight weights
+    alone. `--hold-pawn` is what the upper end of that needs. Which holds an
+    arm passes follows from the one term it means to move and not from where
+    that term sits in the vector.
     """
     frozen = np.zeros(SLOTS, dtype=bool)
     if not free_material:
@@ -1541,6 +1553,8 @@ def frozen_slots(
         frozen[MOBILITY_SLOT:SHELTER_SLOT] = True
     if held_shelter:
         frozen[SHELTER_SLOT:PAWN_SLOT] = True
+    if held_pawn:
+        frozen[PAWN_SLOT:] = True
     return frozen
 
 
@@ -1548,7 +1562,11 @@ def command_cv(args):
     corpus = load(args)
     start = corpus.weights.copy()
     frozen = frozen_slots(
-        args.free_material, args.hold_tables, args.hold_mobility, args.hold_shelter
+        args.free_material,
+        args.hold_tables,
+        args.hold_mobility,
+        args.hold_shelter,
+        args.hold_pawn,
     )
     errors, outside = cross_validate(
         corpus, args.penalties, start, frozen, args.iterations
@@ -1570,7 +1588,11 @@ def command_fit(args):
     corpus = load(args)
     start = corpus.weights.copy()
     frozen = frozen_slots(
-        args.free_material, args.hold_tables, args.hold_mobility, args.hold_shelter
+        args.free_material,
+        args.hold_tables,
+        args.hold_mobility,
+        args.hold_shelter,
+        args.hold_pawn,
     )
     k = args.k or fit_k(
         corpus.scores(corpus.weights)[corpus.train],
@@ -1629,7 +1651,11 @@ def command_curve(args):
     shares = curve_shares(args.shares, args.draws)
     start = corpus.weights.copy()
     frozen = frozen_slots(
-        args.free_material, args.hold_tables, args.hold_mobility, args.hold_shelter
+        args.free_material,
+        args.hold_tables,
+        args.hold_mobility,
+        args.hold_shelter,
+        args.hold_pawn,
     )
     k = args.k or fit_k(
         corpus.scores(corpus.weights)[corpus.train],
@@ -1823,6 +1849,12 @@ def main(argv=None):
             action="store_true",
             help="hold the fourteen king shelter weights, which a fit for a "
             "term added after them passes alongside the two holds above",
+        )
+        command.add_argument(
+            "--hold-pawn",
+            action="store_true",
+            help="hold the sixteen pawn structure weights, which a refit of "
+            "a term below them passes so that term moves alone",
         )
     fit = commands.choices["fit"]
     fit.add_argument("--out", help="where to write the fitted vector")

@@ -776,10 +776,17 @@ the 768 table entries in the same way, which is what a fit for a term added
 after them does: the tables were fitted on these games already, so a refit of
 them beside a new term would leave a match unable to say which of the two it
 measured. `--hold-mobility` holds the eight mobility weights for the same
-reason, and `--hold-shelter` the fourteen shelter ones. Each term earns a hold
-of its own as it is fitted, and a fit of the newest term names every hold
-below it, so the shelter was fitted under two and the pawn structure is fitted
-under three.
+reason, `--hold-shelter` the fourteen shelter ones and `--hold-pawn` the
+sixteen pawn structure ones. Each term earns a hold of its own as it is
+fitted, and a fit of the newest term names every hold below it, so the shelter
+was fitted under two and the pawn structure under three.
+
+A term already in the tree can be worth fitting again on a corpus grown since,
+and then the holds are not a ladder downward. Every other term is older than
+the fit rather than newer, so a mobility refit holds the tables below it and
+the shelter and the pawn structure above, and the eight weights are the only
+thing that moves. Which holds a run passes follows from the one term it means
+to move, not from where that term sits in the vector.
 
 `--sealed` names the sealed group in a file rather than drawing it from the
 keys, one pair key to a line. The key rule seals the same fifth of the archive
