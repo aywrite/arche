@@ -215,19 +215,93 @@ pub(crate) const PAWN_TERMS: usize = PASSED_RANKS + 2;
 /// What one of those eight counts is worth, as the packed pairs the taper is
 /// read from.
 ///
-/// Zero, so the evaluation is master's to the node. The term is here at zero
-/// weight so that the counts, the masks, the cache and the tuner's sixteen
-/// columns can be built and pinned against an engine that plays exactly as it
-/// played before, and the fit that gives them values is measured on its own.
-/// The shelter arrived the same way, and the bench is what says the two
-/// commits are apart: this one carries master's.
+/// Fitted 2026-09-12 by `scripts/tune.py` over the whole archived strength
+/// run: 164 artifacts across 37 runs, 34,175 games, whose 4,428,569 post-book
+/// plies gave 4,196,989 positions and 1,922,548 quiet rows, extracted by
+/// `arche terms` at 39da0fe. The corpus is sha256 `f9ff326c` and the rows are
+/// sha256 `35fd184d`. K was held at 1.1959 and the games split by pair: 10,696
+/// pairs trained, 3,638 chose the ridge and 2,750 were sealed. The 768 table
+/// entries, the six material values, the eight mobility weights and the
+/// fourteen shelter ones were all held where they stand, so these sixteen are
+/// the only thing that moved. Every number here is of the rounded vector that
+/// ships.
 ///
-/// A cost read at these weights is not a floor, which is what it was expected
-/// to be. `PAWN_CACHE_BITS` has the measurement and the reason: the term
-/// survives the zero fold, and it costs 1.46% of the bench's instructions
-/// here for a score of nothing. What a fit changes is the tree, so the number
-/// of record is still taken on the fitted build.
-static PAWN_STRUCTURE: [i32; PAWN_TERMS] = [pack(0, 0); PAWN_TERMS];
+/// The selection group scores 0.090580 at zero and 0.089555 at these, a
+/// paired difference of -0.001025 against a standard error of 0.000128 over
+/// its 7,263 games, at a design factor of 4.8. That is eight standard errors
+/// outside its interval, and larger than the king safety fit read on a corpus
+/// four fifths this size. By phase it is -0.001274 where six or fewer pieces
+/// are left, -0.000671 from seven to twelve, and +0.000135 at thirteen or
+/// more: the term pays in the ending, pays a little in the middlegame and
+/// costs a little in the opening, which is the shape a pawn structure term
+/// should have.
+///
+/// The sealed group was opened once, after the weights were frozen, over
+/// 2,750 pairs and 5,480 games and 312,012 positions that no fit and no
+/// ridge choice had read. It scores 0.084236 at zero and 0.083240 at these,
+/// a paired difference of -0.000995 against a standard error of 0.000146 at
+/// a design factor of 5.0. That is outside its interval, and 0.15 standard
+/// errors from the selection group's reading, so the two agree more closely
+/// than the king safety fit's two did.
+///
+/// It also answers the one thing the selection group said against the term.
+/// There the opening bucket got worse by 0.000135; on the sealed games it
+/// improves by 0.000249, so that was noise rather than a cost. By phase the
+/// sealed reading is -0.001107 at six pieces or fewer, -0.000867 from seven
+/// to twelve and -0.000249 at thirteen or more, which is the same shape
+/// without the sting in its tail.
+///
+/// The ridge is 1e-8, chosen on the selection group from a grid the zero was
+/// taken out of. The grid as it stands includes no regularisation at all and
+/// ranked it first, and the vector it produced put 239 on a passed pawn's
+/// seventh rank in the midgame and -29 in the ending. `PAWNS_END` already
+/// pays a pawn on the seventh 78 to 83, so that says a passed pawn one square
+/// from queening is worth less than a blockaded one in the phase that decides
+/// it. The seventh rank count carries the fewest rows of the eight (5.31%)
+/// and the smallest summed midgame coefficient of all sixteen slots, a
+/// twenty seventh of the isolated count's, so it is the direction the corpus
+/// constrains least and the one an unregularised fit put its error in.
+/// Overruling the grid cost 0.000132 of selection loss against a standard
+/// error of 0.00015, and bought a largest weight of 53 rather than 239.
+///
+/// The selection group did not catch that, which is the part worth knowing:
+/// zero scored better there, on games no fit had read. A held-out group
+/// detects a vector that has memorised its training games and does not detect
+/// one that has learned a real but unrepresentative regularity, and the quiet
+/// filter manufactures exactly that wherever a feature's interesting cases
+/// are tactical.
+///
+/// Three of the sixteen are not what the term was built to say, and they are
+/// left as the fit gave them rather than tidied. A passed pawn on the seventh
+/// is worth less than one on the sixth at both ends, and that survives every
+/// ridge on the grid, so it is the corpus and not the regularisation: a
+/// position with a passer on the seventh is rarely quiet unless the pawn is
+/// blockaded or about to be lost, so the rows that reach the fit are the ones
+/// where it is not winning. Passed pawns on the second through the fourth are
+/// a midgame penalty. A doubled pawn is worth 8 in the midgame. The isolated
+/// count, which carries a coefficient in 56.98% of the rows and has by far
+/// the most evidence behind it, reads -11 and -6, which is what a player
+/// would have guessed.
+///
+/// A side's eight pawns can fill the eight counts twenty four times over
+/// between them, since one pawn can be passed and isolated and doubled at
+/// once, but no count can exceed eight and the six passed counts share the
+/// eight between them. So the most this term adds to one half of the packed
+/// pair is 776 in the midgame and 440 in the ending, both sides counted,
+/// against the 32,767 a half has to stay inside. `bounds_hold` charges eight
+/// of every count rather than eight across them, which is looser again and
+/// is the screen rather than the arithmetic: it puts the whole vector's
+/// boardful at 8,622, of which this term is at most 3,024.
+static PAWN_STRUCTURE: [i32; PAWN_TERMS] = [
+    pack(-18, 18),
+    pack(-25, 15),
+    pack(-22, 28),
+    pack(6, 30),
+    pack(53, 39),
+    pack(46, 13),
+    pack(-11, -6),
+    pack(8, -10),
+];
 
 /// The pawn structure weight of one of the eight counts, as the packed pair.
 /// The tuner's seam asks, so that a slot names the live weight rather than a
@@ -331,30 +405,27 @@ impl ShelterCache {
 ///
 /// Four thousand entries at sixteen bytes is sixty four kilobytes, half what
 /// the shelter's table takes. The size was measured rather than reasoned
-/// about, the way `SHELTER_CACHE_BITS` was. Callgrind over the bench with
-/// the cache simulated, at eleven, twelve, thirteen and fourteen bits, reads
-/// 4,010,856,695, 4,007,795,963, 4,005,771,900 and 4,004,661,757
-/// instructions against last level misses of 287,156, 287,284, 290,275 and
-/// 294,381. Each bit buys fewer instructions than the one before it, and the
-/// misses are flat from eleven to twelve and then turn up by three thousand
-/// at thirteen and four thousand more at fourteen. So twelve is the last
-/// size the memory does not notice, and the whole range is inside a fifth of
-/// a percent of instructions: the constant is not load bearing and a later
-/// working set can move it.
+/// about, the way `SHELTER_CACHE_BITS` was, and the measurement was retaken
+/// on the fitted tree when the weights arrived, since a different tree is a
+/// different working set. Callgrind over the bench with the cache simulated,
+/// at eleven, twelve, thirteen and fourteen bits, reads 4,098,418,313,
+/// 4,092,752,759, 4,089,023,904 and 4,086,576,985 instructions against last
+/// level misses of 287,010, 287,113, 290,125 and 294,220. Each bit buys
+/// fewer instructions than the one before it, and the misses are flat from
+/// eleven to twelve and then turn up by three thousand at thirteen and four
+/// thousand more at fourteen. So twelve is the last size the memory does not
+/// notice, and the whole range is inside three tenths of a percent of
+/// instructions: the constant is not load bearing and a later working set
+/// can move it. The sweep at zero weights, before the fit, put the turn in
+/// the same place.
 ///
-/// Half the shelter's table is what this term's key predicted before the
+/// Half the shelter's table is what this term's key predicted before either
 /// sweep was run. The same pawns under two different pairs of king squares
 /// are two entries there and one entry here, so the working set behind this
 /// key is the smaller of the two.
 ///
-/// The sweep is read at the weights that ship, which are zero, and it is a
-/// reading rather than four copies of one number. The storm's commit found
-/// llvm folding away a term all of whose weights were zero, and that does
-/// not happen here: the probe stores the entry it missed on, which is a side
-/// effect nothing can remove, so the counts feeding that store stay in the
-/// binary. The bench counts the same 3,882,989 nodes at all four sizes,
-/// which is what says the cache changes how a score is arrived at and not
-/// what it is.
+/// The bench counts the same 4,066,438 nodes at all four sizes, which is
+/// what says the cache changes how a score is arrived at and not what it is.
 const PAWN_CACHE_BITS: usize = 12;
 const PAWN_CACHE_SLOTS: usize = 1 << PAWN_CACHE_BITS;
 
@@ -535,12 +606,13 @@ fn pawn_structure(board: &Board) -> i32 {
 
 /// The same fold against weights named by the caller.
 ///
-/// Every live weight is zero, so this answers zero for every position and the
-/// evaluation is master's. That is what leaves the tests no choice but to
-/// supply weights of their own: the sign of the term, the order of the eight
-/// counts and the packing are all invisible at zero, and a permuted
-/// [`PAWN_STRUCTURE`] would score every position exactly as the right answer
-/// does until the fit gives the eight values that differ.
+/// The live weights are the fit's now, and no two of the eight pairs agree,
+/// so the sign of this term, the order of the eight counts and the packing
+/// all show in an evaluation the engine prints. The tests still supply
+/// weights of their own, because what they pin is the fold rather than the
+/// fit: a permuted [`PAWN_STRUCTURE`] would be a different evaluation and not
+/// a wrong one, and a pin written against the shipped numbers would have to
+/// be rewritten by every refit.
 #[inline]
 fn pawn_structure_with(board: &Board, weights: &[i32; PAWN_TERMS]) -> i32 {
     let white = board.pawn_structure_counts(Color::White);
@@ -1124,12 +1196,13 @@ mod evaluate {
 
     /// What the fold does with weights that are not the shipped ones.
     ///
-    /// The shipped ones are all zero, so they would say nothing at all here:
-    /// the sign of the term, the order of the eight counts and the packing
-    /// are every one of them invisible until a fit gives the weights values.
-    /// So this hands the fold eight pairs that differ from each other at both
-    /// ends and asserts the packed pair against the arithmetic: white's count
-    /// less black's, count by count, each half of the pair summed on its own.
+    /// The shipped weights would do here now that they are not zero. Weights
+    /// of this test's own are kept anyway, because the shipped ones are the
+    /// fit's and will move again: a pin written against them would have to be
+    /// rewritten by every refit, and what it is pinning is the fold. So this
+    /// hands the fold eight pairs that differ from each other at both ends
+    /// and asserts the packed pair against the arithmetic: white's count less
+    /// black's, count by count, each half of the pair summed on its own.
     #[test]
     fn the_pawn_structure_fold_reads_white_less_black_count_by_count() {
         let board = Board::from_fen(STRUCTURED).unwrap();
@@ -1167,13 +1240,12 @@ mod evaluate {
         /// What the pawn key claims, checked against what the counts say.
         ///
         /// The cache hands a remembered score to every position whose pawn
-        /// key it matches, so the key has to decide the counts. At the
-        /// shipped weights the score is zero either way and the identity
-        /// below cannot see a key that misses something the term reads; this
-        /// reads the counts themselves, which are the same eight numbers the
-        /// weights will later be multiplied by. Two positions under one key
-        /// that disagree here would be one position handed the other's
-        /// score the moment a fit prices the term.
+        /// key it matches, so the key has to decide the counts. The identity
+        /// below sees a wrong key now that the weights are the fit's, and it
+        /// sees it as a wrong score; this says the same thing one step
+        /// earlier and in the terms the term is defined in. Two positions
+        /// under one key that disagree on the eight counts are one position
+        /// handed the other's score, whatever the weights make that worth.
         fn note(&mut self, board: &Board) {
             let counts = [
                 board.pawn_structure_counts(Color::White),
@@ -1247,12 +1319,12 @@ mod evaluate {
     /// says it is the keys against the slots they land in, so the test
     /// collects the keys and asserts that two of them shared a slot.
     ///
-    /// The pawn structure's sixteen weights are zero, so what this asserts
-    /// about that cache is that it answers zero, which it would do with any
-    /// key at all. `Caches::note` is what carries the claim at these
-    /// weights: every position the walk reaches is checked against the
-    /// counts of the last position under its pawn key, which is the thing
-    /// the cache will hand it a score for.
+    /// `Caches::note` carries the same claim in the counts rather than in
+    /// the score, which is what it was written to do while the sixteen
+    /// weights were zero and the score said nothing. It is kept now that they
+    /// are fitted, because a count is a sharper thing to compare than a sum
+    /// of sixteen products: two wrong counts whose weights happen to cancel
+    /// would pass the score and fail the note.
     #[test]
     fn the_cache_answers_what_the_full_evaluation_does() {
         let mut caches = Caches::default();
@@ -1318,11 +1390,10 @@ mod evaluate {
     /// The same for the pawn structure, under the pawn key rather than that
     /// key with the two kings folded in.
     ///
-    /// The shipped weights are zero, so the score remembered is zero and an
-    /// entry holding one would say nothing. What this reads instead is the
-    /// key: an entry written under the position's pawn key is the entry the
-    /// next position with those pawns is handed, whatever a fit later makes
-    /// it worth.
+    /// What this reads is the key as much as the score: an entry written
+    /// under the position's pawn key is the entry the next position with
+    /// those pawns is handed. The score is now the fit's rather than zero, so
+    /// the entry holding it says something too.
     #[test]
     fn a_pawn_structure_is_remembered_under_the_pawn_key() {
         let board = Board::from_fen(fens::MIDDLEGAME).unwrap();

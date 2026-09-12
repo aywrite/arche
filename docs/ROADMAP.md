@@ -29,9 +29,14 @@ the engine plays. Roughly in the order they look worth doing.
   three ranks and no further, so a pawn four ranks out is not counted, and a storm pawn
   blocked by one of ours counts the same as a free one. Pawn structure counts a side's
   passed pawns by the rank they have reached, its isolated pawns and its doubled ones,
-  read off the two pawn boards alone and remembered under the pawn key; all sixteen of
-  its weights are zero until the fit, so the term is in the tree and prices nothing
-  yet. What it leaves out is everything that reads a square rather than a file: whether
+  read off the two pawn boards alone and remembered under the pawn key, and all sixteen
+  of its weights are fitted. The seventh rank is the one to distrust: a passed pawn there
+  prices below one on the sixth at both ends of the taper, which survives every ridge on
+  the grid, and the quiet filter is the likely cause since a position with a passer one
+  square from queening is rarely settled unless the pawn is blockaded or falling. Thirteen
+  of the strategic suite's fifteen themes rose when the term was fitted; the two that fell
+  are AKPC by 112 and 7th Rank by 217, and the second of those is the same seventh rank.
+  What it leaves out is everything that reads a square rather than a file: whether
   the square in front of a passer is occupied or attacked, how far each king stands
   from the promotion square, candidate pawns, connected and backward pawns, pawn
   islands, and the rule of the square. The first two are the valuable ones and

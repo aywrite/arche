@@ -26,8 +26,7 @@ plus three terms counted at the leaf: piece mobility, which ships as a rook
 count; king safety, which counts the pawns in front of each king, the open
 files beside it and the enemy pawns coming for it; and pawn structure, which
 counts each side's passed pawns by rank, its isolated pawns and its doubled
-ones. The first two are fitted to the engine's own archived games and the
-third is at zero weight until its own fit.
+ones. All three are fitted to the engine's own archived games.
 
 ## Code map: arche-core
 

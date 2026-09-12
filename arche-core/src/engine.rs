@@ -5150,6 +5150,24 @@ mod search {
         }
     }
 
+    /// Whether `played` is worth `score` to the side to move in `fen`.
+    ///
+    /// A root's answer is the best of its moves' negated replies, so a move
+    /// that reaches it is one a correct search may return and a move that
+    /// does not is one no correct search returns. Asked of an engine with
+    /// nothing in its table, a ply below the root, so nothing the warm
+    /// search saw can reach the answer.
+    fn worth(fen: &str, played: &Play, score: Score) -> bool {
+        let mut board = Board::from_fen(fen).unwrap();
+        assert!(
+            board.make_move(played),
+            "{} is not legal in {}",
+            played,
+            fen
+        );
+        -completed(reference(board).search(5)).score == score
+    }
+
     #[test]
     fn a_warm_cache_matches_cold_across_draw_context() {
         // The same pieces hash to the same key whatever the fifty move counter
@@ -5157,6 +5175,28 @@ mod search {
         // with scores that are true of that path only. A fresh game reaching
         // the same position must not read them: its search has the whole
         // clock ahead of it.
+        //
+        // Six of white's moves here are worth the answer: c3a1, c3e1, c3b2,
+        // c3d2, c3b4 and c3d4 all reach it, measured a ply down from engines
+        // with nothing in their tables. That was already true one commit
+        // back, at a different score, so the tie is not something a fit
+        // made.
+        //
+        // What the near-draw table does to this search was also already
+        // true. Warming from it costs 20,579 nodes against the 16,179 a cold
+        // search takes, and one commit back it cost 25,452 against 15,980,
+        // while warming from an unrelated position leaves the node count
+        // identical to cold on both. So its entries have always reordered
+        // this search; what changed is only which of the six equal moves
+        // came back first, and asserting the move by name was passing on
+        // luck rather than on the property. The comment above this pair
+        // worried about exactly that.
+        //
+        // So the move is asserted by what it is worth rather than by its
+        // name. That is the property the table owes: a score read out of the
+        // draw context would be a score this position is not worth, and a
+        // move chosen on one would be a move that does not reach the
+        // answer.
         let near_draw = "5k2/1p3p1p/p3pK1P/P1P1P3/4bP2/2B5/8/8 w - - 96 112";
         let fresh = "5k2/1p3p1p/p3pK1P/P1P1P3/4bP2/2B5/8/8 w - - 0 1";
         let mut warm = reference(Board::from_fen(near_draw).unwrap());
@@ -5167,9 +5207,11 @@ mod search {
         let mut cold = reference(Board::from_fen(fresh).unwrap());
         let expected = completed(cold.search(6));
         assert_eq!(result.score, expected.score);
-        assert_eq!(
-            format!("{}", result.best_move),
-            format!("{}", expected.best_move),
+        assert!(
+            worth(fresh, &result.best_move, expected.score),
+            "the warm search returned {}, which is not worth {}",
+            result.best_move,
+            expected.score
         );
     }
 
@@ -5210,9 +5252,11 @@ mod search {
             AlphaBeta::with_config(Board::from_fen(fresh).unwrap(), TABLE_BYTES, skipping);
         let expected = completed(cold.search(6));
         assert_eq!(result.score, expected.score);
-        assert_eq!(
-            format!("{}", result.best_move),
-            format!("{}", expected.best_move),
+        assert!(
+            worth(fresh, &result.best_move, expected.score),
+            "the warm search returned {}, which is not worth {}",
+            result.best_move,
+            expected.score
         );
     }
 
