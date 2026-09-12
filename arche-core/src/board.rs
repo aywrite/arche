@@ -145,6 +145,16 @@ const F8: u8 = 61;
 const G8: u8 = 62;
 const H8: u8 = 63;
 
+/// The light squares, as the board indexes them from a1 at zero. A square is
+/// light when its file and its rank sum to an odd number, so the first rank
+/// contributes b1, d1, f1 and h1 and the second the four squares beside them.
+///
+/// Held for one reader, `drawn_by_material`, which asks whether every bishop
+/// on the board stands on one colour. Nothing else in the tree has needed the
+/// colour of a square: the attack masks answer where a bishop goes without
+/// naming which half of the board it is confined to.
+const LIGHT_SQUARES: u64 = 0x55AA_55AA_55AA_55AA;
+
 static ZOBRIST: Zobrist = Zobrist::TABLE;
 
 /// What each square leaves of the castling rights, as the four bytes
@@ -2237,6 +2247,47 @@ impl Board {
             Color::Black => self.black,
         };
         ours & !(self.pawns() | self.kings()) != 0
+    }
+
+    /// Whether what stands on the board cannot mate, whoever is to move and
+    /// however the pieces are placed. A fact about the material, not about the
+    /// path: no repetition and no move count is read here.
+    ///
+    /// Four signatures. Two bare kings; a lone minor, which cannot mate at
+    /// all; two knights against a bare king, where mate exists but cannot be
+    /// forced against a king that keeps out of the corner; and bishops all on
+    /// one square colour with no knight, which covers a bishop pair on one
+    /// colour, a bishop each on the same colour, and what promotions make of
+    /// them. A knight, or a bishop of the other colour, takes a position out
+    /// of the rule.
+    ///
+    /// Two minors that cancel, a knight each or bishops on opposite colours,
+    /// are drawn in practice and are left out. The evaluation already reads
+    /// them within a few centipawns of zero, and pricing the near drawn
+    /// endings is a longer rule than this one.
+    ///
+    /// The first line is the one nearly every position meets. A pawn, a rook
+    /// or a queen anywhere ends the question, so the rest runs only in
+    /// pawnless positions with no heavy piece, which is a small share of any
+    /// tree.
+    pub fn drawn_by_material(&self) -> bool {
+        if self.pawns() | self.rooks() | self.queens() != 0 {
+            return false;
+        }
+        let knights = self.knights();
+        let bishops = self.bishops();
+        // two bare kings, or a lone minor against a bare king
+        if (knights | bishops).count_ones() < 2 {
+            return true;
+        }
+        // every bishop on one colour, whichever side owns which
+        if knights == 0 && (bishops & LIGHT_SQUARES == 0 || bishops & !LIGHT_SQUARES == 0) {
+            return true;
+        }
+        // both knights on one side, and nothing else
+        bishops == 0
+            && knights.count_ones() == 2
+            && (knights & self.white == 0 || knights & self.black == 0)
     }
 
     /// The pieces checking the new side to move after the move just made,
@@ -5997,6 +6048,173 @@ mod pawn_structure {
                     side, square
                 );
             }
+        }
+    }
+}
+
+#[cfg(test)]
+mod drawn_by_material {
+    use super::{A1, B1, Board, LIGHT_SQUARES};
+    use pretty_assertions::assert_eq;
+
+    /// The same position with a named side to move. The rule reads the
+    /// material and not the path, so which side is to move cannot change its
+    /// answer, and both are asked of every case.
+    fn to_move(fen: &str, side: char) -> String {
+        let mut fields = fen.split(' ');
+        let board = fields.next().unwrap();
+        let _ = fields.next();
+        let rest: Vec<&str> = fields.collect();
+        format!("{} {} {}", board, side, rest.join(" "))
+    }
+
+    /// The colour mirror: the ranks reversed and the piece cases swapped.
+    ///
+    /// A vertical flip puts every bishop on the other square colour. So the
+    /// mirror of a case is a case the one colour rule has to answer the same
+    /// way for the opposite colour, which a rule that named light or dark
+    /// rather than agreement on one would fail. The fields after the side to
+    /// move are carried over, which is why every fen here holds no castling
+    /// right and no en passant square.
+    fn mirrored(fen: &str) -> String {
+        let mut fields = fen.split(' ');
+        let board = fields.next().unwrap();
+        let side = fields.next().unwrap();
+        let rest: Vec<&str> = fields.collect();
+        assert_eq!(rest[0], "-", "the mirror does not move castling rights");
+        let swap = |c: char| {
+            if c.is_ascii_uppercase() {
+                c.to_ascii_lowercase()
+            } else {
+                c.to_ascii_uppercase()
+            }
+        };
+        let ranks: Vec<String> = board
+            .split('/')
+            .rev()
+            .map(|rank| rank.chars().map(swap).collect())
+            .collect();
+        format!("{} {} {}", ranks.join("/"), side, rest.join(" "))
+    }
+
+    /// Every signature the rule names and every near neighbour it leaves out,
+    /// by hand, from both sides to move and mirrored.
+    ///
+    /// Nothing else pins these. The evaluation tests say the rule is read and
+    /// the search tests say what a drawn position scores, and both would pass
+    /// on a rule that answered one signature too many.
+    #[test]
+    fn material_that_cannot_mate_is_drawn_and_material_that_can_is_not() {
+        for (fen, drawn, why) in [
+            ("4k3/8/8/8/8/8/8/4K3 w - - 0 1", true, "two bare kings"),
+            ("4k3/8/8/8/8/8/8/4K1N1 w - - 0 1", true, "a lone knight"),
+            ("4k3/8/8/8/8/8/8/4KB2 w - - 0 1", true, "a lone bishop"),
+            (
+                "4k3/8/8/8/8/8/8/4K1NN w - - 0 1",
+                true,
+                "two knights, which cannot force mate",
+            ),
+            (
+                "4k3/8/8/8/8/B7/8/2B1K3 w - - 0 1",
+                true,
+                "a bishop pair on one colour",
+            ),
+            (
+                "3bk3/8/8/8/8/8/8/2B1K3 w - - 0 1",
+                true,
+                "a bishop each, both on one colour",
+            ),
+            (
+                "3bk3/8/8/8/8/B7/8/2B1K3 w - - 0 1",
+                true,
+                "three bishops, all on one colour",
+            ),
+            // a pawn on the board keeps the rule off, whatever else stands
+            // there. KBvKP is usually drawn and KNNvKP is sometimes won
+            (
+                "4k3/8/8/4p3/8/8/8/4K1N1 w - - 0 1",
+                false,
+                "a knight and a pawn",
+            ),
+            (
+                "4k3/8/8/4p3/8/8/8/4KB2 w - - 0 1",
+                false,
+                "a bishop and a pawn",
+            ),
+            (
+                "4k3/8/8/4p3/8/8/8/4K1NN w - - 0 1",
+                false,
+                "two knights and a pawn",
+            ),
+            (
+                "4k3/8/8/8/8/8/8/2B1KB2 w - - 0 1",
+                false,
+                "a bishop pair on opposite colours, which mates",
+            ),
+            (
+                "2b1k3/8/8/8/8/8/8/2B1K3 w - - 0 1",
+                false,
+                "a bishop each on opposite colours",
+            ),
+            // drawn in practice and outside the rule: the tables already read
+            // the cancelling pairs near zero
+            ("4k1n1/8/8/8/8/8/8/4K1N1 w - - 0 1", false, "a knight each"),
+            (
+                "4k1n1/8/8/8/8/8/8/4KB2 w - - 0 1",
+                false,
+                "a bishop against a knight",
+            ),
+            (
+                "4k3/8/8/8/8/8/8/4KBN1 w - - 0 1",
+                false,
+                "a bishop and a knight",
+            ),
+            // what a promotion can make, which the rule does not reach
+            (
+                "4k3/8/8/8/8/8/8/3NK1NN w - - 0 1",
+                false,
+                "three knights, which mate",
+            ),
+            (
+                "4k1n1/8/8/8/8/8/8/4K1NN w - - 0 1",
+                false,
+                "two knights against one",
+            ),
+            ("4k3/8/8/8/8/8/8/4K2R w - - 0 1", false, "a rook"),
+            ("4k3/8/8/8/8/8/8/4K2Q w - - 0 1", false, "a queen"),
+        ] {
+            for fen in [fen.to_string(), mirrored(fen)] {
+                for side in ['w', 'b'] {
+                    let fen = to_move(&fen, side);
+                    let board = Board::from_fen(&fen).unwrap();
+                    assert_eq!(board.drawn_by_material(), drawn, "{} is {}", fen, why);
+                }
+            }
+        }
+    }
+
+    /// The start position, which the first line of the rule exits on and which
+    /// is the one case here that carries castling rights.
+    #[test]
+    fn the_start_position_is_not_drawn() {
+        assert!(!Board::default().drawn_by_material());
+    }
+
+    /// The mask against a walk of the squares. a1 is dark and b1 is light,
+    /// which is the statement a reader checks the constant by; the walk says
+    /// the other sixty two agree with the same arithmetic.
+    #[test]
+    fn the_light_squares_are_the_squares_whose_file_and_rank_disagree() {
+        assert_eq!(LIGHT_SQUARES & (1 << A1), 0, "a1 is dark");
+        assert_ne!(LIGHT_SQUARES & (1 << B1), 0, "b1 is light");
+        for square in 0..64u64 {
+            let light = (square % 8 + square / 8) % 2 == 1;
+            assert_eq!(
+                LIGHT_SQUARES & (1 << square) != 0,
+                light,
+                "square {}",
+                square
+            );
         }
     }
 }

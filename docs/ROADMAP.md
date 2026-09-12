@@ -15,7 +15,10 @@ the engine plays. Roughly in the order they look worth doing.
   ply, flat, and a reduction that grows with the depth and the move count is the next
   match. Reducing the losing captures and reading the history table for the eligibility
   come after that, each measured on its own
-- evaluate drawn positions
+- draw knowledge in the evaluation. The material signatures that cannot mate
+  read zero. What remains is a scale factor on the endgame half for the near
+  drawn endings that rule does not catch: opposite coloured bishops with pawns,
+  and a pawnless minor piece advantage, neither of which the signatures reach
 - the rest of evaluation: the rest of king safety, the rest of pawn structure, and
   special cases such as the bishop pair and open files. Mobility is counted for the
   knight, the bishop, the rook and the queen and has been fitted once, and the fit

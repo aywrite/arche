@@ -11,6 +11,15 @@
 //! weights themselves. This module writes the coefficients down, and a fit run
 //! outside the engine reads them.
 //!
+//! It is linear everywhere but one. Material that cannot mate is answered with
+//! a hard zero, which is no dot product at all: every weight vector scores such
+//! a position the same, so a fit can learn nothing from it and its loss is a
+//! constant. `run` turns those positions away and counts them in the header
+//! beside the two it already turned away, and `scripts/tune.py` refuses a
+//! header that does not carry the count, since an extraction printed before the
+//! rule holds rows the rule would have dropped and would parse without
+//! complaint.
+//!
 //! The seam is the point. A tuner needs a model of the evaluation, and a
 //! second implementation of one in another language diverges quietly: a model
 //! wrong by a little still produces plausible weights, and nothing says when.
@@ -361,8 +370,8 @@ pub struct Row {
 pub struct Report {
     /// The file the positions were read from, or none for the bench's own.
     pub suite: Option<String>,
-    /// Positions the run was given, which is the denominator the three counts
-    /// below are shares of.
+    /// Positions the run was given, which is the denominator the counts below
+    /// are shares of.
     pub positions: usize,
     /// Positions refused because the side to move was in check. A checked
     /// position's static evaluation is not a thing to fit, and quiescence
@@ -371,6 +380,15 @@ pub struct Report {
     /// Positions refused because a capture search moved the evaluation, for
     /// one side or the other.
     pub unsettled: usize,
+    /// Positions refused because the material on them cannot mate, which the
+    /// evaluation answers with a hard zero.
+    ///
+    /// Such a row is not a thing a fit can read. Its score does not come from
+    /// the weights, so every weight vector scores it the same and the loss it
+    /// contributes is a constant. It is turned away rather than emitted with
+    /// a flag, because a row kept for the record is a row a later fit reads
+    /// by accident.
+    pub drawn: usize,
     pub rows: Vec<Row>,
 }
 
@@ -390,6 +408,7 @@ pub fn run(positions: &[Position], suite: Option<&str>) -> Report {
         positions: positions.len(),
         in_check: 0,
         unsettled: 0,
+        drawn: 0,
         rows: Vec::new(),
     };
     for position in positions {
@@ -401,6 +420,13 @@ pub fn run(positions: &[Position], suite: Option<&str>) -> Report {
         }
         if !settled(&mut engine, &board) {
             report.unsettled += 1;
+            continue;
+        }
+        // the one position whose evaluation is not the dot product the
+        // identity below asserts: `eval` answers a hard zero on material that
+        // cannot mate, while the coefficients still state the pieces
+        if board.drawn_by_material() {
+            report.drawn += 1;
             continue;
         }
         let terms = Terms::of(&board);
@@ -460,10 +486,11 @@ impl fmt::Display for Report {
         }
         writeln!(
             f,
-            " positions {} in_check {} unsettled {} kept {}",
+            " positions {} in_check {} unsettled {} drawn {} kept {}",
             self.positions,
             self.in_check,
             self.unsettled,
+            self.drawn,
             self.rows.len(),
         )?;
         write!(f, "weights {}", SLOTS)?;
@@ -922,6 +949,41 @@ mod tests {
         assert_ne!(SearchConfig::reference(), SearchConfig::default());
     }
 
+    /// A position drawn by material is counted and not kept, and the same
+    /// position with a pawn on it is kept.
+    ///
+    /// The pair is the point. A rule that turned away every pawnless position,
+    /// or every position, would pass the first half alone.
+    fn one_position(fen: &str) -> Vec<Position> {
+        vec![Position {
+            id: fen.to_string(),
+            fen: fen.to_string(),
+            operations: std::collections::HashMap::new(),
+        }]
+    }
+
+    #[test]
+    fn a_position_drawn_by_material_is_turned_away_and_counted() {
+        let drawn = run(&one_position("8/8/8/8/8/4k3/8/4K1N1 w - - 0 1"), None);
+        assert_eq!((drawn.drawn, drawn.rows.len()), (1, 0));
+        let kept = run(&one_position("8/8/8/4p3/8/4k3/8/4K1N1 w - - 0 1"), None);
+        assert_eq!((kept.drawn, kept.rows.len()), (0, 1));
+    }
+
+    /// Why the position above has to be turned away: the evaluation answers
+    /// zero and the coefficients still state the knight, so the identity the
+    /// run asserts on every kept row does not hold there.
+    ///
+    /// Neither half of this can be sabotaged while the other passes. With the
+    /// rule missing the first assertion fails, and with the exclusion missing
+    /// `run`'s own identity panics on the suite above.
+    #[test]
+    fn the_identity_is_what_a_drawn_position_would_break() {
+        let board = Board::from_fen("8/8/8/8/8/4k3/8/4K1N1 w - - 0 1").unwrap();
+        assert_eq!(eval::eval(&board), 0);
+        assert_ne!(reconstruct(&Terms::of(&board)), 0);
+    }
+
     /// A run over a small suite: the header counts what it turned away beside
     /// what it kept, and every row it printed is one the identity held on.
     #[test]
@@ -930,17 +992,18 @@ mod tests {
         let report = run(&positions, None);
         assert_eq!(report.positions, positions.len());
         assert_eq!(
-            report.in_check + report.unsettled + report.rows.len(),
+            report.in_check + report.unsettled + report.drawn + report.rows.len(),
             positions.len()
         );
         assert!(!report.rows.is_empty(), "the filter kept nothing");
         let text = report.to_string();
         assert!(
             text.starts_with(&format!(
-                "terms positions {} in_check {} unsettled {} kept {}\n",
+                "terms positions {} in_check {} unsettled {} drawn {} kept {}\n",
                 report.positions,
                 report.in_check,
                 report.unsettled,
+                report.drawn,
                 report.rows.len()
             )),
             "{}",
@@ -996,6 +1059,7 @@ mod tests {
             positions: 1,
             in_check: 0,
             unsettled: 0,
+            drawn: 0,
             rows: vec![Row {
                 id: spaced.id.clone(),
                 eval: eval::eval(&board),

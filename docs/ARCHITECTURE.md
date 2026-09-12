@@ -109,7 +109,8 @@ ones. All three are fitted to the engine's own archived games.
   The pawn structure is remembered the same way in a table of its own, under
   the pawn key alone: it reads neither king, so what misses is a pawn move
   and the capture of a pawn, where the shelter's key misses on a king move
-  as well.
+  as well. Material that cannot mate is answered with a hard zero before any
+  of that, which is the one place the score is not a sum over the weights.
 - **psqt.rs**: The piece square tables. Every piece has a second table
   for the endgame; both phases are packed into one integer so the taper
   costs one multiply.
@@ -136,12 +137,14 @@ ones. All three are fitted to the engine's own archived games.
   denied to say whether the reduction threw a move away. Driven by the
   `reductions` argument.
 - **tune.rs**: What a position's evaluation is made of. The evaluation is
-  linear in the tables and the material values, so a position's score is a
-  dot product, and this writes down the coefficients: one per weight the
+  linear in the tables and the material values everywhere it is not a drawn
+  signature, so a position's score is a dot product, and this writes down the
+  coefficients: one per weight the
   position touches, in the side to move's frame. `reconstruct` folds a row
   back against the live tables and has to give the evaluation exactly,
   which is asserted on every row printed as well as over three suites in a
-  test. Driven by the `terms` argument, and read by `scripts/tune.py`.
+  test. A position drawn by material is turned away and counted in the header
+  rather than fitted, because its score does not read the weights at all. Driven by the `terms` argument, and read by `scripts/tune.py`.
 - **tactics.rs**: 300 tactical positions with a pinned pass count, gated
   in CI.
 - **strategy.rs**: 1500 quiet positions, each move graded out of a
