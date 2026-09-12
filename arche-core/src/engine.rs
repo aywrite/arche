@@ -107,10 +107,14 @@ const DEEP_REDUCTION_MIN_DEPTH: u8 = DEEP_REDUCTION + 2;
 // The attention model the deep reduction is gated by: a logistic
 // regression over the reduction ledger's feature columns, quantized to
 // fixed point at a scale of 1024, so the gate is an integer dot product
-// and a compare. Fitted 2026-09-06 on a depth 8 ledger run of the bench
-// suite, 193,143 rows recorded at ledger commit 5217271 and labelled by
-// the replay, split by fen-hash parity; the holdout side scored an AUC of
-// 0.927. Training on R=1 labels to gate an R=2 decision is an
+// and a compare. Fitted by `scripts/fit_attention.py` on 2026-09-06,
+// over the ledger `arche reductions 8 every 1 cap 2000000` printed on
+// the bench suite at commit 5217271: 193,143 rows labelled by the
+// replay, split by fen-hash parity; the holdout side scored an AUC of
+// 0.927. The same command on this tree records a different ledger,
+// because the deep reduction and the late move pruning below did not
+// exist at 5217271, so the command makes a new fit rather than this
+// one. Training on R=1 labels to gate an R=2 decision is an
 // approximation: the label says the move is dead at full depth, which is
 // R-independent; what is approximated is the weaker scout's noise, and
 // the SPRT prices the difference.
