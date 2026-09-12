@@ -23,7 +23,7 @@ body = """
 {{ commit.message | upper_first }}\
 {% for footer in commit.footers %}\
 {% if footer.token == "Bench" %} [bench {{ footer.value }}]\
-{% elif footer.token == "Speed" %} [speed {{ footer.value | split(pat=" ") | first }}]\
+{% elif footer.token == "Speed" %} [speed {{ footer.value }}]\
 {% elif footer.token == "Elo" %} [elo {{ footer.value }}]\
 {% endif %}\
 {% endfor %}\
