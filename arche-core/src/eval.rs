@@ -131,20 +131,62 @@ pub(crate) const SHELTER_TERMS: usize = 7;
 /// What one of those seven counts is worth, as the packed pairs the taper is
 /// read from.
 ///
-/// Every weight is zero, so the term is measured and not yet priced: the
-/// evaluation scores what it scored before the counts were taken. Fitting them
-/// against the archived games is its own change, and the sign is the fit's to
-/// find. Four of the seven are the king's own side of it, where the first two
-/// are cover it wants and the next two are holes in that cover. The last three
-/// are the storm, and a rank of it is not the negative of a rank of cover: the
-/// fit is what says how the six pawn counts stand against each other.
+/// Fitted 2026-09-12 by `scripts/tune.py` over the whole archived strength
+/// run: 28,675 games (27,133 at 10+0.1, 1,500 at 30+0.3 and 42 at 2+0.02),
+/// whose 3,711,074 post-book plies gave 3,536,193 positions and 1,623,149
+/// quiet rows in 28,618 of them, extracted by `arche terms` at 4e5bd7d, with
+/// K held at 1.2071 and the games split 17,192 that trained, 5,654 that chose
+/// the ridge of 1e-8 and 5,772 that were sealed. The 768 table entries, the
+/// six material values and the eight mobility weights were all held where
+/// they stand, so these fourteen are the only thing that moved. Every number
+/// here is of the rounded vector that ships. The selection group scores
+/// 0.090395 at zero and 0.089746 at these, a paired difference of -0.000649
+/// against a standard error of 0.000116 over its 5,654 games, at a design
+/// factor of 3.9. That is outside its interval, which the mobility fit's
+/// reading was not.
+///
+/// The sealed group has not been opened. What it is for is one reading of a
+/// final vector, and the match is what says whether this is one, so a seal
+/// spent here on a vector the games then reject could not be spent again.
+///
+/// Not one of the fourteen rounded to nothing, so every count is priced and
+/// none can be left uncounted at the leaf the way `SCORED_KINDS` leaves a
+/// mobility kind. All seven are read at every leaf, and what that costs is
+/// over what a leaf term is allowed.
+///
+/// Two of the storm's three signs are not what the term was named for. An
+/// enemy pawn one rank in front of the king reads 11 and 35, and three ranks
+/// out reads 14, so the fit likes the near storm where the term expected it
+/// to fear it, and only the middle rank is negative. Our own cover is worth
+/// 21 in the midgame and -26 in the ending, which reads as a king that wants
+/// to be active rather than covered. The corpus is the first place to look
+/// and not the term: 66.4% of its appearances have six or fewer pieces left
+/// on the board and 6.0% have thirteen or more of the fourteen, so the
+/// midgame half of the taper, which is the half king safety is about, is
+/// fitted on the thinnest slice of the games. The count with the oddest
+/// weight is also the thinnest supported: an enemy pawn one rank in front of
+/// a king carries a coefficient in 4.65% of the rows against 47.83% for the
+/// near cover, because a king usually takes such a pawn and the position is
+/// then not quiet. The loss says these fourteen score the corpus better than
+/// zero did, and that is all it says.
 ///
 /// A side's seven counts come to eighteen at the very most. Five of them are
 /// at most three pawns each, and the other two share three files between them
-/// rather than reaching three each. So a boardful is thirty six across the
-/// colours, and a weight in single figures leaves what `pack` asks for in
-/// hand.
-static SHELTER: [i32; SHELTER_TERMS] = [pack(0, 0); SHELTER_TERMS];
+/// rather than reaching three each. Against these weights the largest total
+/// any legal set of counts reaches on one side is 168 in the midgame half and
+/// -207 in the ending half, so a boardful of both colours leaves the sixteen
+/// bits `pack` gives each half a long way off. Six of the fourteen are past
+/// single figures, which the paragraph here said they would not be while they
+/// were all zero.
+static SHELTER: [i32; SHELTER_TERMS] = [
+    pack(10, -11),
+    pack(21, -26),
+    pack(-11, -26),
+    pack(-8, -1),
+    pack(11, 35),
+    pack(-18, 2),
+    pack(14, -6),
+];
 
 /// The shelter weight of one of the seven counts, as the packed pair. The
 /// tuner's seam asks, so that a slot names the live weight rather than a copy
@@ -222,10 +264,13 @@ fn shelter(board: &Board) -> i32 {
 
 /// The same fold against weights named by the caller.
 ///
-/// Every live weight is zero, so nothing about the sign of this term, the
-/// order of the four counts or the packing shows in an evaluation the engine
-/// prints. The tests supply weights of their own through here, which is what
-/// says those are right today rather than after a fit.
+/// The live weights are the fit's now, and the two halves of every one of
+/// them differ, so the sign of this term, the order of the seven counts and
+/// the packing all show in an evaluation the engine prints and in the rows
+/// the tuner's walk states. The tests still supply weights of their own
+/// through here, because what they pin is the fold rather than the fit: a
+/// permuted [`SHELTER`] would be a different evaluation and not a wrong
+/// one.
 #[inline]
 fn shelter_with(board: &Board, weights: &[i32; SHELTER_TERMS]) -> i32 {
     let white = board.shelter_counts(Color::White);
@@ -726,13 +771,16 @@ mod evaluate {
         pack(5, 19),
     ];
 
-    /// What the fold does with weights that are not zero.
+    /// What the fold does with weights that are not the shipped ones.
     ///
-    /// Every shipped weight is zero, so nothing about the sign of this term,
-    /// the order of the four counts or the packing changes an evaluation the
-    /// engine prints. This hands the fold weights of its own and asserts the
-    /// packed pair against the arithmetic: white's count less black's, count
-    /// by count, each half of the pair summed on its own.
+    /// The shipped weights would do here now that they are not zero. Weights
+    /// of this test's own are kept anyway, because the shipped ones are the
+    /// fit's and will move again: a pin written against them would have to
+    /// be rewritten by every refit, and what it is pinning is the fold. So
+    /// this hands the fold seven pairs that differ from each other at both
+    /// ends and asserts the packed pair against the arithmetic: white's count
+    /// less black's, count by count, each half of the pair summed on its
+    /// own.
     #[test]
     fn the_shelter_fold_reads_white_less_black_count_by_count() {
         let board = Board::from_fen(SHELTERED).unwrap();

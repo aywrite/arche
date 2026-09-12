@@ -532,11 +532,12 @@ def test_the_material_block_is_the_only_thing_outside_the_divide():
     is negative and does not divide evenly, and `reconstruct` would stop
     matching `eval` the moment a weight was fitted.
 
-    The last two lines are what the slot arithmetic above cannot say. Every
-    shelter weight ships at zero, so a shelter coefficient sorted into the
-    material half multiplies to nothing either way and every row rebuilds
-    whichever side it was put on. Here the weights are the fixture's, so the
-    two answers differ."""
+    The last two lines are what the slot arithmetic above cannot say. A
+    shelter weight is the fit's now and a coefficient sorted into the material
+    half rebuilds to a different number, but six of the eight mobility weights
+    still ship at zero and theirs would not. The weights here are the
+    fixture's for that reason, so the two answers differ whatever a fit
+    holds."""
     material = [slot for slot in range(tune.SLOTS) if tune.is_material(slot)]
     assert material == list(range(tune.MATERIAL_SLOT, tune.MOBILITY_SLOT))
     assert not any(

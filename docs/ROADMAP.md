@@ -20,10 +20,10 @@ the engine plays. Roughly in the order they look worth doing.
   as the bishop pair and open files. Mobility is counted for the knight, the bishop,
   the rook and the queen and has been fitted once, and the fit left it a rook count:
   six of the eight weights rounded to zero, so only the rook is counted at the leaf
-  until a refit prices another piece. King safety is measured, as the
-  pawns on the two ranks in front of the king, the open and half open files beside it, and
-  the enemy pawns on the three ranks in front of it, but the weights ship at zero until the
-  fit lands. What is not measured at all is the squares the enemy pieces attack around the
+  until a refit prices another piece. King safety counts the pawns on the two ranks in
+  front of the king, the open and half open files beside it, and the enemy pawns on the
+  three ranks in front of it, and all fourteen of its weights are fitted. What is not
+  measured at all is the squares the enemy pieces attack around the
   king, which wants the attack sets the mobility count already walks. The storm is followed
   three ranks and no further, so a pawn four ranks out is not counted, and a storm pawn
   blocked by one of ours counts the same as a free one. The tuner that
@@ -48,21 +48,30 @@ the engine plays. Roughly in the order they look worth doing.
 
 ## Known limitations
 
-- king safety costs nothing today and will cost about a tenth of the search once it is
-  fitted, which is over the 5% an evaluation term is allowed. Every one of its weights is
-  zero, so llvm folds the multiplications away and deletes the counts behind them: neither
-  `shelter_with` nor `shelter_counts` appears in a callgrind profile of the bench, on this
-  tree or on the one before the storm. So a cost measured at zero weights is not the term's
-  cost. Measured 2026-09-11 by setting every weight to one and reading the same bench:
-  the four counts before the storm take 312,179,514 instructions and the seven take
-  428,879,568, against a run of 3,807,827,155 with the term folded away. That is 9.06% and
-  11.91% of the search, and the storm's own share of it is 2.62 points. The `Bench:` and the
-  tree do not move either way, since the counts change no score while the weights are zero.
-  The 0.305% quoted in `22f5aac` is what survived the fold and not what the term costs; it
-  should not be read as a price. What the fit has to do about this is not settled: skipping
-  the counts whose fitted weight is zero, the way `SCORED_KINDS` does for mobility, is the
-  cheap half of it, and a cache keyed by the pawn key and the two king squares is the answer
-  if the fit prices most of them
+- the king safety weights are fitted on a corpus that is mostly not the middlegame the
+  term is about. 66.4% of the 2026-09-12 corpus's appearances have six or fewer pieces
+  left on the board and 6.0% have thirteen or more of the fourteen, so the midgame half
+  of the taper, which is the half king safety is for, rests on the smallest of the three
+  phase buckets. It shows in the answer: two of the storm's three weights came out
+  positive, so an enemy pawn one rank in front of a king scores in favour of the side it
+  stands in front of. That count is also the thinnest supported in the corpus, carrying a
+  coefficient in 4.65% of the rows against 47.83% for the near cover, because a king
+  usually takes such a pawn and the position is then not quiet. The held-out loss puts the
+  fourteen at 5.6 standard errors better than zero. Whether the term measures king safety
+  is a separate question, and a corpus with middlegames in it is what would answer it
+- the sealed fifth of the 2026-09-12 corpus is unopened, so the numbers quoted for the
+  king safety fit are the selection group's and are the group the ridge was chosen on.
+  What the sealed group is for is one reading of a final vector, and a vector revised
+  after a reading needs sealed games the corpus does not hold, so it is being kept until
+  the games have said whether this vector is final
+- an evaluation term is allowed 5% of the search, and mobility is over it. The figure had
+  no home in the repository but the king safety bullet this list used to carry, so it is
+  written here instead of being lost with it. Measured on the bench at the commit that
+  cached the shelter: `mobility_with` takes 334,907,944 instructions of 3,950,062,514,
+  which is 8.48%, and the shelter with its cache takes 133,627,554, which is 3.38%.
+  Mobility has been over the budget since the fit that priced it and nothing has charged
+  it since, so either it wants the treatment the shelter has just had or the 5% wants
+  restating as what it is, which is a rule of thumb nothing enforces
 - a held-out loss on our own games cannot resolve a fit of the piece square tables one way
   or the other, so an sprt is what decides a re-tune. Measured 2026-09-10 over 1,812
   archived games, 100,726 quiet positions across 1,807 of them: the shipped weights score
@@ -73,7 +82,10 @@ the engine plays. Roughly in the order they look worth doing.
   so they are one corpus disagreeing with itself rather than two findings, and the games
   settled it at +54 ±13 over 2,000 at 10+0.1. The corpus is the engine's own play, so the
   positions it never reaches are unlabelled, and that is the ceiling on what any fit of it
-  can say
+  can say. The 2026-09-12 corpus holds sixteen times the games and did resolve a fit, at
+  5.6 standard errors, but of fourteen weights rather than 768, so it says the corpus was
+  small for that question as well as the question hard. A re-tune of the tables on it has
+  not been run
 - the harness said otherwise until 2026-09-10, and why is worth keeping. It split the
   corpus on the fen, and 1,805 of the corpus's 1,809 games had rows on both sides: 53.1% of
   the held-out rows had the position a ply away, from the same game and carrying the same
