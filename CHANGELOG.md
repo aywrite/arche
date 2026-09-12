@@ -4,6 +4,18 @@ All notable changes to this project will be documented in this file.
 
 ## [0.4.2] - 2026-09-07
 
+Corrections to this section, written by hand after it was generated. The
+generated lines below are left as they were published.
+
+- The `[speed ...]` figures in this section and in the ones before it were
+  printed without the spread they were measured against. 18 of the 22
+  `Speed:` trailers between 0.3.10 and this release sit inside their own
+  spread, which by the rule in `docs/DEVELOPMENT.md` makes them
+  measurements stating no claim. Three of the 22 (`66aa260`, `594366a`
+  and `911eaeb`) were measured across trees counting different benches,
+  where a rate is not a like for like comparison either. The trailers in
+  `git log` carry the spread, and sections from 0.5.0 on print it.
+
 ### Features
 
 - *(search)* Record every reverse futility candidate, fired or not [bench 8182450]
