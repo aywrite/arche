@@ -52,8 +52,9 @@ RECORD = rating_estimate.RECORD
 TAG = rating_estimate.TAG
 
 LN10 = math.log(10)
-# the 95% interval, in standard errors
-CONFIDENCE = 1.96
+# the 95% interval, in standard errors, defined beside the other ± this tooling
+# prints so that the two cannot drift apart under one symbol
+CONFIDENCE = rating_estimate.CONFIDENCE
 # A match that went one way throughout bounds the difference from one side
 # only. This is as far out as it is worth reading, and is where the rating
 # estimate stops its own extrapolation.

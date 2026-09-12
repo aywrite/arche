@@ -756,8 +756,17 @@ where the ladder goes next:
 
 ### Reading the result
 
-The margin printed with the figure is how much a score of that size wobbles, and
-it describes the games and nothing else.
+The margin printed with the figure is a 95% interval on how much a score of that
+size wobbles, and it describes the games and nothing else. It is the same
+interval the match estimate prints under the same symbol, and both read it off
+one constant, because a ± that means one thing in one report and another thing
+in the next is a trap rather than a figure.
+
+Every margin this tool printed before 12 September 2026 was one standard error
+instead, so those are about half as wide as a margin printed now. That covers
+the gauntlet figure quoted above and the release notes up to 0.4.2. They are
+left as they were published rather than rewritten, and this is the note that
+says how to read them.
 
 Whether one rating describes the results at all is a different question, and it
 is asked separately rather than folded into the margin. A single number cannot
