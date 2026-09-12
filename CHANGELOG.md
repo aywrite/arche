@@ -2,6 +2,85 @@
 
 All notable changes to this project will be documented in this file.
 
+## [0.4.3] - 2026-09-12
+
+### Features
+
+- *(uci)* Let the reductions argument search a suite of its own [bench 4162584]
+- *(eval)* Fit the twelve piece square tables to our own games [bench 4070288] [elo +54 ±13 (sprt [0, 10] passed, 2000 games, 10+0.1, vs d17622f)]
+- *(eval)* Add the mobility term with its eight weights at zero [bench 4070288]
+- *(eval)* Fit the eight mobility weights to our own games [bench 4053745] [elo +12 ±8 (sprt [0, 10] passed, 4000 games, 10+0.1, vs 96bad35)]
+- *(eval)* Add a basic king safety term from pawn masks [bench 4053745]
+- *(search)* Rank the quiet moves by a cutoff rate [bench 4020251] [elo +22 ±13 (sprt [0, 10] passed, 1500 games, 10+0.1, vs 96bad352)]
+- *(eval)* Add the pawn storm to the king safety term [bench 4020251]
+- *(eval)* Fit the fourteen king safety weights to our own games [bench 3882989] [elo +44 ±15 (sprt [0, 10] passed, 1500 games, 10+0.1, vs ccd1804)]
+
+### Performance
+
+- *(eval)* Count mobility only where a weight is not zero [speed +5.7% (bench nps, 41 interleaved rounds vs 54a6ceb, spread 20.1%)] [bench 4053745]
+- *(eval)* Cache the king shelter by the pawn key and the two king squares [speed +4.9% (bench nps, 21 interleaved rounds vs 114fc59, spread 11.1%)] [bench 3882989]
+- *(board)* Generate the evasions rather than filter them [bench 3882989] [speed +5.4% (bench nps, 21 interleaved rounds vs acf076d, spread 20.5%)]
+- *(search)* Spare the swap two walks it always takes [bench 3882989] [speed -1.0% (bench nps, 21 interleaved rounds vs baf7a97, spread 14.6%)]
+
+### Refactor
+
+- *(eval)* Give four pieces an endgame table of their own [bench 4162584]
+
+### Documentation
+
+- *(search)* Say what the pruning threshold covers under its own weights
+- *(search)* Re-measure the figures beside the reverse futility margin
+- *(eval)* Record what the sealed games say about the king safety fit
+
+### Development
+
+- *(bench)* Add a recorder module the three recorders share [bench 4162584]
+- *(ci)* Play a panel of engines rather than one lineage
+- *(docs)* Record that the reduction floor guards cheap nodes
+- *(docs)* Record that the wider pruning band bought no strength
+- *(ci)* Let a run play a second opening book
+- *(ci)* Let build_at.sh be told how to build and what to copy
+- *(ci)* Take the name the calibrated engine plays under as an input
+- *(ci)* Take what a match is played on as inputs
+- *(ci)* Take the release note marker as an input
+- *(docs)* Move the instrument reference out of DEVELOPMENT.md
+- *(ci)* Make the four match tools a package
+- *(ci)* Declare the test pins in the package rather than beside it
+- *(ci)* Give the match tools a json mode
+- *(bench)* Print what a position's evaluation is made of
+- *(eval)* Pin the piece square tables on shape rather than on numbers
+- *(bench)* Add the evaluation tuner and its loss harness
+- *(bench)* Split the tuner's corpus into three groups by game
+- *(bench)* Count the tuner's phase shares by appearance
+- *(docs)* Say that the tuner splits by game and seals a fifth
+- *(bench)* Label a tuner position from its own group alone
+- *(docs)* Take the run results out of the instrument reference
+- *(bench)* Read a terms row whose id holds a space
+- *(bench)* Keep a terms row whose id opens with the header word
+- *(deps)* Bump smallvec from 1.15.2 to 1.16.0 in the cargo group
+- *(bench)* Carry each game's run and round on its corpus row
+- *(bench)* Split the tuner's groups by the opening pair
+- *(bench)* Add a final command that scores the sealed group once
+- *(bench)* Add a learning curve to the tuner
+- *(ci)* Pin how long a run's games are kept
+- *(bench)* Harvest the strength runs' games into the corpus
+- *(ci)* Put the match report in the log as well as the summary
+- *(docs)* Say that a title names the thing it changed
+- *(docs)* Replace the em dashes with the punctuation the house rule asks for [bench 4053745]
+- *(docs)* Bring three claims up to date with the code [bench 4053745]
+- *(ci)* Print the gauntlet rating margin as a 95% interval
+- *(release)* Print the whole Speed trailer in the changelog
+- *(release)* Read the stated benches against their pins before a release
+- *(ci)* Hold an Elo trailer to a base that still resolves
+- *(docs)* Date the 2332 gauntlet and state one game count
+- *(bench)* Add the attention model's fitting script
+- *(bench)* Hold the mobility weights through a fit of a later term
+- *(tactics)* Say what the strategic suite's total can and cannot resolve
+- *(release)* Play fifty games against each rung of the gauntlet
+- *(release)* Take the gauntlet's bottom rung off and add one above the top
+- *(release)* Swap the bottom stash for a fifth lineage at the top
+- *(deps)* Bump taiki-e/install-action in the actions group
+
 ## [0.4.2] - 2026-09-07
 
 Corrections to this section, written by hand after it was generated. The
