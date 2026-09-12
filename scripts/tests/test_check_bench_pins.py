@@ -85,9 +85,10 @@ def repo(tmp_path):
     return SimpleNamespace(path=path, commit=commit, commit_tree=commit_tree)
 
 
-def check(repo, base, head):
+def check(repo, base, head, acknowledged=None):
+    listed = ["--acknowledged", str(acknowledged)] if acknowledged else []
     return subprocess.run(
-        [sys.executable, str(SCRIPT), base, head],
+        [sys.executable, str(SCRIPT), base, head, *listed],
         cwd=repo.path,
         capture_output=True,
         text=True,
@@ -171,6 +172,73 @@ def test_the_pins_are_found_wherever_the_crate_puts_them(repo):
     done = check(repo, base, "HEAD")
     assert done.returncode == 0, done.stdout + done.stderr
     assert "matches its pins" in done.stdout
+
+
+class TestAcknowledged:
+    """The list of lapses already on master.
+
+    A commit that has landed cannot be rewritten, so a mismatch that is
+    already history would fail every release after it. The list is how one is
+    written down and stepped over, and it has to be narrow enough that it
+    cannot step over anything else: the numbers are part of the entry, so a
+    commit acknowledged at one pair of figures is not acknowledged at another.
+    """
+
+    def listing(self, tmp_path, text):
+        path = tmp_path / "acknowledged.txt"
+        path.write_text(text)
+        return path
+
+    def test_a_listed_lapse_is_reported_rather_than_failed(self, repo, tmp_path):
+        base = repo.commit([1], "root")
+        bad = repo.commit([10, 20], "perf(search): x\n\nBench: 61")
+        listed = self.listing(tmp_path, f"# a known lapse\n{bad} 61 30\n")
+        done = check(repo, base, "HEAD", listed)
+        assert done.returncode == 0, done.stdout + done.stderr
+        assert "acknowledged" in done.stdout
+
+    def test_a_short_sha_in_the_list_is_enough(self, repo, tmp_path):
+        base = repo.commit([1], "root")
+        bad = repo.commit([10, 20], "perf(search): x\n\nBench: 61")
+        listed = self.listing(tmp_path, f"{bad[:7]} 61 30\n")
+        done = check(repo, base, "HEAD", listed)
+        assert done.returncode == 0, done.stdout + done.stderr
+
+    def test_a_listed_commit_whose_numbers_moved_still_fails(self, repo, tmp_path):
+        # the entry is the lapse, not the commit: a commit that now states
+        # something else has not been looked at
+        base = repo.commit([1], "root")
+        bad = repo.commit([10, 20], "perf(search): x\n\nBench: 61")
+        listed = self.listing(tmp_path, f"{bad} 99 30\n")
+        done = check(repo, base, "HEAD", listed)
+        assert done.returncode == 1
+        assert "bench stated 61, pins count 30" in done.stdout
+
+    def test_a_lapse_that_is_not_listed_still_fails(self, repo, tmp_path):
+        base = repo.commit([1], "root")
+        repo.commit([10, 20], "perf(search): x\n\nBench: 61")
+        listed = self.listing(tmp_path, "0123456 1 2\n")
+        done = check(repo, base, "HEAD", listed)
+        assert done.returncode == 1
+
+    def test_a_malformed_entry_is_an_error_rather_than_ignored(self, repo, tmp_path):
+        base = repo.commit([1], "root")
+        repo.commit([10, 20], "perf(search): x\n\nBench: 30")
+        listed = self.listing(tmp_path, "not-a-sha 61\n")
+        done = check(repo, base, "HEAD", listed)
+        assert done.returncode != 0
+        assert "not-a-sha" in done.stderr
+
+    def test_the_engine_s_own_list_covers_the_four_lapses_on_master(self):
+        # the seeded entries, so that an edit that empties the file is caught
+        # here rather than by a release failing months from now
+        text = (SCRIPT.parent / "acknowledged_bench_pins.txt").read_text()
+        entries = [
+            line.split()[0]
+            for line in text.splitlines()
+            if line.strip() and not line.startswith("#")
+        ]
+        assert sorted(entries) == sorted(["f1f0730", "5b12f03", "ac47935", "a0bf845"])
 
 
 def test_two_files_of_pins_are_an_error(repo):

@@ -1,0 +1,23 @@
+# Commits on master whose stated bench does not match the counts their own
+# tree pins. check_bench_pins.py reports these and steps over them instead of
+# failing, because a commit that has landed cannot be rewritten and one lapse
+# would otherwise fail every release after it.
+#
+# One `<sha> <stated> <pinned>` line each. The numbers are part of the entry:
+# a commit whose figures are not these two is not acknowledged, so the list
+# cannot widen into a way of ignoring the check. An entry is added when the
+# lapse is understood, not to get a release out.
+#
+# All four below were rebased before they landed, which is the gap this check
+# exists for: the bench workflow builds every commit of a pull request, and a
+# commit rebased after that is not the commit that was built.
+
+# 2026-08-25, the pair the check was written from
+f1f0730 36130893 35561814
+5b12f03 36130893 35561814
+
+# 2026-09-07, thirteen days after the check landed on master push. The two
+# entries carry the bench of the tree they were written on, and the trees
+# they arrived on count 4162584. The 0.4.2 changelog says so beside them.
+ac47935 4395471 4162584
+a0bf845 4395471 4162584
