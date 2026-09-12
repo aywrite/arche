@@ -183,6 +183,34 @@ FEN_FIELDS = 6
 # would leave the corpus a position short with nothing said about it.
 HEADERS = ("terms positions ", "terms epd ")
 
+# The counts the header ends with, in the order `Report`'s `Display` writes
+# them. Read from the right hand end for the same reason a row is: the suite in
+# the middle of the line is a file name and can hold anything, and the counts
+# at the end cannot.
+#
+# `drawn` is the one that has to be here. A header without it was printed by an
+# engine whose evaluation had no drawn material rule, so its rows were
+# extracted before the rule and a fit over them would fit an evaluation the
+# engine no longer runs. This file cannot tell which of those rows the rule
+# would have turned away without holding a second copy of the rule, which the
+# seam forbids, so it refuses the extraction instead.
+HEADER_COUNTS = ("positions", "in_check", "unsettled", "drawn", "kept")
+
+
+def check_header(line):
+    """Refuse a header this engine did not print, and say what it counted."""
+    words = line.split()
+    named = tuple(words[-2 * len(HEADER_COUNTS) :: 2])
+    if named == HEADER_COUNTS:
+        return
+    raise ValueError(
+        "a terms header counting {}, where this file expects {}: it was "
+        "printed by an engine whose evaluation differs from the one these "
+        "weights are for, and the extraction is to redo".format(
+            " ".join(named), " ".join(HEADER_COUNTS)
+        )
+    )
+
 
 def check_layout(count, what):
     """Refuse a vector of any length but this file's, and say what changed when
@@ -355,7 +383,10 @@ def parse_terms(lines):
     rows = []
     for line in lines:
         line = line.strip()
-        if not line or line.startswith(HEADERS):
+        if not line:
+            continue
+        if line.startswith(HEADERS):
+            check_header(line)
             continue
         words = line.split()
         if words[0] == "weights":

@@ -2937,6 +2937,48 @@ mod search {
         assert_eq!(result.checkmate_in(), Some(-1));
     }
 
+    /// Material that cannot mate is searched as the draw it is.
+    ///
+    /// Each of these was played as a win before the rule: the knight read
+    /// +327 at depth twelve from its own side and -336 from the bare one, the
+    /// bishop +341, and the two knights +663. Nothing in the tree knew the
+    /// position was dead, so the engine spent the fifty move rule looking for
+    /// a mate that is not there.
+    #[test]
+    fn material_that_cannot_mate_is_searched_as_a_draw() {
+        for fen in [
+            "8/8/8/8/8/4k3/8/4K1N1 w - - 0 1",
+            "8/8/8/8/8/4k3/8/4K1N1 b - - 0 1",
+            "8/8/8/8/8/4k3/8/4KB2 w - - 0 1",
+            "8/8/8/8/8/4k3/8/4KB2 b - - 0 1",
+            "8/8/8/8/8/4k3/8/4K1NN w - - 0 1",
+            "8/8/8/8/8/4k3/8/4K1NN b - - 0 1",
+        ] {
+            let mut e = engine(Board::from_fen(fen).unwrap());
+            let result = completed(e.search(12));
+            assert_eq!(result.score, 0, "{}", fen);
+        }
+    }
+
+    /// A mate inside the horizon is still found in a position the rule calls
+    /// drawn.
+    ///
+    /// This is why the rule sits in the evaluation and not at the node. Mate
+    /// comes from the move generator, so a static zero leaves it reachable; a
+    /// `Value::clean(0)` returned from `alpha_beta` before the moves were
+    /// generated would save the subtree and lose this.
+    ///
+    /// Two knights against a bare king cannot force mate, which is why the
+    /// signature returns zero, but helpmates exist and the black king here
+    /// stands in one.
+    #[test]
+    fn a_helpmate_survives_the_rule() {
+        let mut e = engine(Board::from_fen("k7/3N4/1K6/1N6/8/8/8/8 w - - 0 1").unwrap());
+        let result = completed(e.search(5));
+        assert_eq!(result.checkmate_in(), Some(1));
+        assert_eq!(format!("{}", result.best_move), "b5c7");
+    }
+
     #[test]
     fn quiescence_does_not_stand_pat_out_of_a_mate() {
         // the queen on a8 hangs, and taking it is losing: Rxa8 Nxf2 is mate,

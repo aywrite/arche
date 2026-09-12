@@ -471,11 +471,16 @@ when the guess moved.
 The header states what the run turned away beside what it kept:
 
 ```
-terms positions 18 in_check 1 unsettled 8 kept 9
+terms positions 18 in_check 1 unsettled 8 drawn 0 kept 9
 ```
 
 which is the recorders' rule that a share cannot be read without its
-denominator. If the yield ever leaves too few positions to fit 768 weights,
+denominator. `drawn` counts the positions whose material cannot mate, which
+the evaluation answers with a hard zero rather than a sum over the weights.
+A row like that is not a thing a fit can read, since every weight vector
+scores it the same, so it is turned away rather than emitted. `tune.py`
+refuses a header that does not carry the count, because an extraction printed
+by an older engine holds those rows and would parse. If the yield ever leaves too few positions to fit 768 weights,
 dropping the pass is the fallback, and the header is what makes that a
 decision rather than a discovery.
 

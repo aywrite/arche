@@ -490,8 +490,19 @@ impl PawnCache {
 /// `eval_cached` is the same score with those two terms remembered, and is
 /// what the search asks. The tuner's walk and the instruments ask this one.
 /// Neither is hot, and both want a score that depends on the position alone.
+///
+/// Material that cannot mate reads zero before any of it. That is the one
+/// place in the evaluation that is not a dot product against the weights,
+/// which is why the tuner turns such a position away rather than fitting it:
+/// see `tune::run`. It sits here rather than at the node because the model
+/// gate, the tuner's walk and the instruments all read this function, and a
+/// zero returned from the search instead would leave them saying a dead draw
+/// is worth a piece.
 #[inline]
 pub(crate) fn eval(board: &Board) -> Score {
+    if board.drawn_by_material() {
+        return 0;
+    }
     board.eval.score(
         board.active_color,
         mobility(board) + shelter(board) + pawn_structure(board),
@@ -499,7 +510,8 @@ pub(crate) fn eval(board: &Board) -> Score {
 }
 
 /// The same score with the shelter and the pawn structure taken from their
-/// caches where they are there.
+/// caches where they are there, and the same zero on material that cannot
+/// mate.
 ///
 /// Equal to [`eval`] for every position, which is what
 /// `the_cache_answers_what_the_full_evaluation_does` holds both of them to.
@@ -517,6 +529,9 @@ pub(crate) fn eval_cached(
     shelter: &mut ShelterCache,
     pawns: &mut PawnCache,
 ) -> Score {
+    if board.drawn_by_material() {
+        return 0;
+    }
     board.eval.score(
         board.active_color,
         mobility(board) + shelter.shelter(board) + pawns.pawn_structure(board),
@@ -869,6 +884,66 @@ mod evaluate {
         }
     }
 
+    /// Material that cannot mate scores zero from either side, through both
+    /// entry points.
+    ///
+    /// Both, because the search reads the cached one and the tuner, the model
+    /// gate and the instruments read the other, and a rule in one of them
+    /// would have the two disagree about the same node. Both caches are
+    /// passed and neither is read: a drawn position has no pawn on it, so the
+    /// pawn structure would have contributed nothing had it been reached.
+    ///
+    /// The figures in the comments are what the evaluation returned before the
+    /// rule. The search played every one of them as a win.
+    #[test]
+    fn material_that_cannot_mate_scores_zero() {
+        for fen in [
+            "8/8/8/8/8/4k3/8/4K1N1 w - - 0 1", // a knight, read as +320 and a table
+            "8/8/8/8/8/4k3/8/4K1N1 b - - 0 1",
+            "8/8/8/8/8/4k3/8/4KB2 w - - 0 1", // a bishop, +320 and a table
+            "8/8/8/8/8/4k3/8/4KB2 b - - 0 1",
+            "8/8/8/8/8/4k3/8/4K1NN w - - 0 1", // two knights, +640 and a table
+            "8/8/8/8/8/4k3/8/4K1NN b - - 0 1",
+            "4k3/8/8/8/4K3/8/8/8 w - - 0 1", // already zero, by cancellation
+            "4k3/8/8/8/4K3/8/8/8 b - - 0 1",
+            "4k3/8/8/8/8/B7/8/2B1K3 w - - 0 1",
+            "4k3/8/8/8/8/B7/8/2B1K3 b - - 0 1",
+            "3bk3/8/8/8/8/8/8/2B1K3 w - - 0 1",
+            "3bk3/8/8/8/8/8/8/2B1K3 b - - 0 1",
+        ] {
+            let board = Board::from_fen(fen).unwrap();
+            let mut shelter = ShelterCache::default();
+            let mut pawns = PawnCache::default();
+            assert_eq!(eval(&board), 0, "{}", fen);
+            assert_eq!(eval_cached(&board, &mut shelter, &mut pawns), 0, "{}", fen);
+        }
+    }
+
+    /// The same signatures with a pawn on the board are outside the rule and
+    /// are scored as they were.
+    ///
+    /// Without this, the test above would pass on a rule that answered zero
+    /// for every pawnless position, or for every position at all.
+    #[test]
+    fn a_pawn_takes_a_position_out_of_the_rule() {
+        for fen in [
+            "8/8/8/4p3/8/4k3/8/4K1N1 w - - 0 1",
+            "8/8/8/4p3/8/4k3/8/4KB2 w - - 0 1",
+            "8/8/8/4p3/8/4k3/8/4K1NN w - - 0 1",
+        ] {
+            let board = Board::from_fen(fen).unwrap();
+            let mut shelter = ShelterCache::default();
+            let mut pawns = PawnCache::default();
+            assert_ne!(eval(&board), 0, "{}", fen);
+            assert_eq!(
+                eval_cached(&board, &mut shelter, &mut pawns),
+                eval(&board),
+                "{}",
+                fen
+            );
+        }
+    }
+
     /// The point of tapering: the same king on the same square is scored
     /// differently depending on what is left on the board. A bare king wants
     /// the middle; a king with the pieces still on wants the back rank.
@@ -894,9 +969,14 @@ mod evaluate {
             "r3k3/8/8/8/4K3/8/8/R7 w q - 0 1",
             "r3k3/8/8/8/8/8/8/R5K1 w q - 0 1",
         );
+        // a pawn a side, because two bare kings are drawn by material and
+        // both fens would read zero. A pawn does not count towards the phase,
+        // so this is still the ending, and the two pawns stand on the same
+        // squares in both fens and away from either king's files, which
+        // leaves the difference the king's own square
         let ending = centre_over_corner(
-            "4k3/8/8/8/4K3/8/8/8 w - - 0 1",
-            "4k3/8/8/8/8/8/8/6K1 w - - 0 1",
+            "4k3/p7/8/8/4K3/8/P7/8 w - - 0 1",
+            "4k3/p7/8/8/8/8/P7/6K1 w - - 0 1",
         );
         assert!(
             opening < middlegame && middlegame < ending,
