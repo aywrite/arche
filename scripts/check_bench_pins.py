@@ -4,7 +4,7 @@
 
 """Check every commit's stated bench against the counts its own tree pins.
 
-    check_bench_pins.py <base> <head>
+    check_bench_pins.py <base> <head> [--acknowledged <file>]
 
 The bench is the sum of the per position counts that
 `node_counts_have_not_moved` pins, because the test runs the suite at the
@@ -23,17 +23,31 @@ passed is stale by the time it arrives. Nothing rebuilt it afterwards, and
 `f1f0730` and `5b12f03` reached master saying 36130893 with trees counting
 35561814.
 
+A commit already on master cannot be rewritten, so a lapse that is history
+would fail every release after it and the check would be turned off rather
+than read. `acknowledged_bench_pins.txt` beside this script is the way one
+is written down instead: a `<sha> <stated> <pinned>` line a run reports and
+steps over. The numbers are part of the entry, so a commit acknowledged at
+one pair of figures is not acknowledged at another, and the list cannot grow
+into a way of ignoring the check.
+
 What this does not check is whether the pins themselves are true, which is
 the other half. `cargo test --release` runs `node_counts_have_not_moved` on
 every push to master already, so between the two a landed commit's message,
 its pins and its tree all have to agree.
 """
 
+import argparse
 import re
 import subprocess
 import sys
+from pathlib import Path
 
 PINNED_TEST = "fn node_counts_have_not_moved"
+
+# the lapses already on master, read from beside the script so that the
+# release workflow needs no path of its own
+ACKNOWLEDGED = Path(__file__).resolve().parent / "acknowledged_bench_pins.txt"
 
 # ("some position", 1_234_567), as the pinned list writes them
 PIN = re.compile(r'\(\s*"[^"]*"\s*,\s*([\d_]+)\s*\)')
@@ -108,13 +122,42 @@ def pinned_total(sha: str) -> int:
     return sum(counts)
 
 
+def acknowledged(path: Path) -> list[tuple[str, str, str]]:
+    """The lapses the list names, as `(sha, stated, pinned)`.
+
+    Blank lines and `#` comments are skipped. Anything else that is not those
+    three fields is an error rather than a line quietly passed over, since a
+    typo in this file would otherwise turn a check off without saying so.
+    """
+    if not path.exists():
+        sys.exit(f"{path}: no acknowledgement list there")
+    entries = []
+    for number, line in enumerate(path.read_text(encoding="utf-8").splitlines(), 1):
+        if not line.strip() or line.lstrip().startswith("#"):
+            continue
+        fields = line.split()
+        if len(fields) != 3 or not re.fullmatch(r"[0-9a-f]{7,40}", fields[0]):
+            sys.exit(f"{path}:{number}: not a <sha> <stated> <pinned> line: {line}")
+        entries.append((fields[0], fields[1], fields[2]))
+    return entries
+
+
 def main() -> int:
-    if len(sys.argv) != 3:
-        sys.exit("usage: check_bench_pins.py <base> <head>")
-    base, head = sys.argv[1], sys.argv[2]
+    parser = argparse.ArgumentParser(description=__doc__)
+    parser.add_argument("base", help="the commit to start after")
+    parser.add_argument("head", help="the commit to stop at")
+    parser.add_argument(
+        "--acknowledged",
+        type=Path,
+        default=ACKNOWLEDGED,
+        help="the list of lapses already on master, which are reported"
+        " rather than failed on",
+    )
+    args = parser.parse_args()
+    known = acknowledged(args.acknowledged)
 
     failed = False
-    for sha in run("rev-list", "--reverse", f"{base}..{head}").split():
+    for sha in run("rev-list", "--reverse", f"{args.base}..{args.head}").split():
         subject = run("log", "-1", "--format=%s", sha).strip()
         stated = stated_bench(sha)
         if stated is None:
@@ -123,6 +166,14 @@ def main() -> int:
         total = pinned_total(sha)
         if stated == str(total):
             print(f"{sha[:7]} {subject}: bench {stated} matches its pins")
+        elif any(
+            sha.startswith(listed) and (stated, str(total)) == (was, pins)
+            for listed, was, pins in known
+        ):
+            print(
+                f"{sha[:7]} {subject}: bench stated {stated}, pins count {total}"
+                ", acknowledged"
+            )
         else:
             print(f"{sha[:7]} {subject}: bench stated {stated}, pins count {total}")
             failed = True

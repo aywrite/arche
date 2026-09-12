@@ -26,9 +26,32 @@ jobs:
           echo "::error::this has to run against a release tag, got ${{ github.ref }}"
           exit 1
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          # the bench ledger check walks every commit since the last release,
+          # so it needs the history and the tags, not the tag being built
+          fetch-depth: 0
       - uses: Swatinem/rust-cache@6323deb102c322ba6fcbdcafc7e3dddab59af2b6 # v2.9.2
       - name: Run tests
         run: cargo test --workspace --locked --release
+      # The changelog prints each commit's stated bench, so a release publishes
+      # whatever the messages say. This reads them against the counts the same
+      # commits pin, over the range the changelog covers. Lapses already on
+      # master are in scripts/acknowledged_bench_pins.txt and are reported
+      # rather than failed on; anything else stops the release.
+      - name: Check the stated benches against the pins
+        run: |
+          # The last full release, found the way scripts/changelog.sh finds it,
+          # so the range checked is the range the section covers. The tag being
+          # released is skipped: changelog.sh runs before that tag exists and
+          # this runs after it, and the newest tag is this one.
+          previous=$(git tag --list 'v[0-9]*' --sort=-v:refname \
+            | grep -v -- '-' | grep -v -x -- "${GITHUB_REF_NAME}" | head -1 || true)
+          if [ -z "$previous" ]; then
+            echo "no previous release, nothing to read this one against"
+            exit 0
+          fi
+          echo "reading ${previous}..HEAD"
+          python3 scripts/check_bench_pins.py "$previous" HEAD
 
   create-release:
     needs: test
