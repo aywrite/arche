@@ -696,6 +696,16 @@ panel runs from 2168 to 2555, four rungs below that figure and four above:
 | stash:v20.0.1 | 2511 ±23 | Stash 20.0.1 |
 | tantabus:v2.0.0 | 2555 ±13 | Tantabus 2.0.0 64-bit |
 
+That 2332 was measured by hand on 8 September 2026, in a container rather than
+by the Calibrate workflow, so there is no run id to look it up by. Ten
+opponents played it, each held at its published rating: nine rungs at twenty
+games apiece, four of those taken on to eighty, and Zagreus 5.0 added
+afterwards at twenty. That is the 440. Eighteen triage games at another
+control are in neither count. A commit message from the same work
+(`e827024`) says 420, which is the same run before the tenth opponent
+played; the count here is the record. The per rung results are kept outside
+the tree.
+
 Five lineages, of which four rungs are Stash, which is what this started as. A
 ladder of one lineage measures partly how this engine does against that
 lineage: a blind spot the two share, or an opening a family handles the same
