@@ -24,6 +24,8 @@ python-chess and the tuner fits in numpy, and neither should have to install
 the other's half to read a modulo.
 """
 
+from pathlib import Path
+
 # The five slices of a game key, and which group each one is. Three fifths
 # train, a fifth chooses the ridge, and a fifth is sealed.
 SLICES = (
@@ -34,12 +36,52 @@ SLICES = (
     "calibration",
 )
 
+# The four slices a pair falls in when the sealed group is named rather than
+# drawn from the key: the calibration slice is gone and the rest stand as they
+# are, so three quarters of what is not named trains and a quarter chooses the
+# ridge.
+OPEN_SLICES = (
+    "train",
+    "train",
+    "train",
+    "selection",
+)
+
 # The group that is not read until the weights are final.
 CALIBRATION = "calibration"
 
+# What a pair key is: the hex of a sha256.
+KEY_LENGTH = 64
+HEX = set("0123456789abcdef")
 
-def group_of(key):
-    """Which group a pair falls in: the first byte of its key, modulo five.
+
+def sealed_pairs(path):
+    """The pair keys a file names, one to a line.
+
+    Blank lines are skipped and so is anything after a hash, so the file can
+    say which runs its games came from and when it was drawn. Every other line
+    has to be a pair key, because a typo that quietly named no pair is a game
+    quietly not sealed, and the whole point of naming them is that nobody has
+    to take the seal on trust.
+    """
+    named = {}
+    for number, line in enumerate(
+        Path(path).read_text(encoding="utf-8").splitlines(), 1
+    ):
+        key = line.split("#", 1)[0].strip()
+        if not key:
+            continue
+        if len(key) != KEY_LENGTH or set(key) - HEX:
+            raise ValueError(f"{path} line {number} is no pair key: {key!r}")
+        named.setdefault(key, number)
+    if not named:
+        raise ValueError(f"{path} names no pair")
+    return set(named)
+
+
+def group_of(key, sealed=None):
+    """Which group a pair falls in: the first byte of its key, modulo five, or
+    the group `sealed` names it.
 
     The key is the sha256 `build_corpus.py` writes into every row's `pair`
     operand: the two games' movetext keys sorted and joined, or the one game's
@@ -60,6 +102,22 @@ def group_of(key):
     coverage claim needs a group that no ranking has touched, and the
     calibration group is it. Retrofitting one later cannot work, so it is
     assigned by construction from the first run.
+
+    `sealed`, where it is given, is the set of pair keys that are the
+    calibration group, and no pair outside it is in that group. A seal drawn
+    from the key alone cannot be drawn a second time: which pairs it names is
+    a property of the pairs, so re-harvesting an archive seals the same games
+    again, and a vector revised after a reading would be read against games
+    that have already been read. The archive only ever grows, so the games
+    that settle that are the ones played since the last reading, and naming
+    them is the only way to say so. `tune.py final` still refuses the same
+    sealed games twice, by checksum over the keys of whichever group it is
+    handed.
+
+    Both halves of the tuner have to be handed the same set. A corpus built
+    with one seal and fitted against another would label rows by one group and
+    hold out a different one, which is the leak the groups exist to prevent
+    wearing the clothes of the thing that prevents it.
     """
     if len(key) < 2:
         raise ValueError(f"a game key that is no sha256: {key!r}")
@@ -67,4 +125,8 @@ def group_of(key):
         first = int(key[:2], 16)
     except ValueError:
         raise ValueError(f"a game key that is no sha256: {key!r}") from None
-    return SLICES[first % len(SLICES)]
+    if sealed is None:
+        return SLICES[first % len(SLICES)]
+    if key in sealed:
+        return CALIBRATION
+    return OPEN_SLICES[first % len(OPEN_SLICES)]
