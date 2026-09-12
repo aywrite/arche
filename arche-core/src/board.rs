@@ -1188,20 +1188,40 @@ impl Board {
         false
     }
 
-    /// Every piece of either colour attacking `index` on a board occupied by
-    /// `occupied`, which the swap in `see` shrinks as pieces trade off. The
-    /// sliders are probed against that occupancy, so a bishop or rook standing
-    /// behind the piece that just captured is found the moment the capturer
-    /// leaves the line.
+    /// Every piece of either colour bearing on `index` through `occupied`,
+    /// the two halves put back together.
+    ///
+    /// The swap asks for the halves rather than this, since the steppers do
+    /// not change as it empties the square. What is left here is the whole
+    /// statement of what an attacker is, which the exhaustive model `see` is
+    /// checked against reads.
+    #[cfg(test)]
     fn attackers_to(&self, index: u8, occupied: u64) -> u64 {
+        (self.steppers_onto(index) | self.sliders_onto(index, occupied)) & occupied
+    }
+
+    /// The pawns, knights and kings bearing on `index`. Nothing stands
+    /// between a stepper and the square it attacks, so this is the half of
+    /// `attackers_to` that does not depend on the occupancy, and a swap
+    /// works it out once rather than at every capture it prices.
+    #[inline]
+    fn steppers_onto(&self, index: u8) -> u64 {
+        let attack_masks = &ATTACK_MASKS;
+        let i = index as usize;
+        let pawns = ((attack_masks.white_pawns[i] & self.white)
+            | (attack_masks.black_pawns[i] & self.black))
+            & self.pawns();
+        pawns | (attack_masks.knights[i] & self.knights()) | (attack_masks.kings[i] & self.kings())
+    }
+
+    /// The bishops, rooks and queens bearing on `index` through `occupied`,
+    /// which is the half that does depend on what stands between.
+    #[inline]
+    fn sliders_onto(&self, index: u8, occupied: u64) -> u64 {
         let attack_masks = &ATTACK_MASKS;
         let magic = &MAGIC;
         let i = index as usize;
-        let mut attackers = ((attack_masks.white_pawns[i] & self.white)
-            | (attack_masks.black_pawns[i] & self.black))
-            & self.pawns();
-        attackers |= attack_masks.knights[i] & self.knights();
-        attackers |= attack_masks.kings[i] & self.kings();
+        let mut attackers = 0;
         let diagonal = self.bishops() | self.queens();
         if attack_masks.diagonal[i] & diagonal != 0 {
             attackers |= magic.get_diagonal_move(index, occupied) & diagonal;
@@ -1210,7 +1230,7 @@ impl Board {
         if attack_masks.straight[i] & straight != 0 {
             attackers |= magic.get_straight_move(index, occupied) & straight;
         }
-        attackers & occupied
+        attackers
     }
 
     /// How many squares this side's knights, bishops, rooks and queens cover,
@@ -1301,6 +1321,11 @@ impl Board {
     /// The least valuable piece of `set`: the bit of one such piece and what
     /// it is. `set` is a subset of one side's pieces.
     fn least_valuable(&self, set: u64) -> Option<(u64, Piece)> {
+        // every swap ends by asking this of an empty set, once per capture
+        // priced, and without the test that walks all six boards to say so
+        if set == 0 {
+            return None;
+        }
         for piece in Piece::PIECES {
             let subset = set & self.pieces[piece as usize];
             if subset != 0 {
@@ -1354,12 +1379,17 @@ impl Board {
             .expect("a capture moves a piece of ours");
         let mut side = !self.active_color;
         let mut d = 0;
+        // the steppers bearing on the square are the same however the swap
+        // empties it, so they are found once here rather than at every
+        // capture. Masking by `occupied` is what drops the ones that have
+        // already captured, which is what the whole lookup did before
+        let steppers = self.steppers_onto(m.to);
         loop {
             let side_mask = match side {
                 Color::White => self.white,
                 Color::Black => self.black,
             };
-            let attackers = self.attackers_to(m.to, occupied) & side_mask;
+            let attackers = (steppers | self.sliders_onto(m.to, occupied)) & occupied & side_mask;
             let Some((bit, piece)) = self.least_valuable(attackers) else {
                 break;
             };

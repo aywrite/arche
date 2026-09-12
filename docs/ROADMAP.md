@@ -361,7 +361,11 @@ of these again without saying what is different this time.
   fresh lookup returns. Node counts identical and 0.2% more instructions.
   The swap is too short to pay for it: under two captures past the first
   on average, so the set is found again once or twice, and the two slider
-  lookups that costs each time are most of the lookup it replaces.
+  lookups that costs each time are most of the lookup it replaces. Hoisting
+  the steppers alone does pay, and is what the swap now does: the pawns,
+  knights and kings bearing on the square do not depend on the occupancy at
+  all, so they are found once and the sliders are still looked up fresh.
+  That is 0.12% and carries none of the accumulation this entry rejected.
 - Two other shapes for putting the sorted moves back, both slower than the
   runs the sort now copies. Walking the passed-over places one bit at a
   time into a destination slice cut to the popcount, so that the write has
