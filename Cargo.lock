@@ -36,6 +36,7 @@ name = "arche-core"
 version = "0.4.2"
 dependencies = [
  "criterion",
+ "libc",
  "pretty_assertions",
  "proptest",
  "smallvec",
