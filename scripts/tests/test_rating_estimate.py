@@ -15,7 +15,7 @@ import sys
 import match_tools
 import pytest
 from conftest import SCRIPTS
-from match_tools import rating_estimate
+from match_tools import match_estimate, rating_estimate
 
 # the shim at the old path, which is what the workflows run
 SCRIPT = SCRIPTS / "rating_estimate.py"
@@ -81,6 +81,17 @@ class TestFit:
         estimate, _ = rating_estimate.fit([("a", 1600, 15, 0, 5)])
         assert estimate.rating == pytest.approx(1790.85, abs=0.5)
         assert 0 < estimate.margin < 400
+
+    def test_the_margin_is_the_interval_the_symbol_means_elsewhere(self):
+        # 7-1-2 against a 1600 opponent has a standard error of 118.105, and
+        # the ± the match estimate prints is 1.96 of those. This one is the
+        # same, or one symbol reads at two scales.
+        estimate, _ = rating_estimate.fit([("a", 1600, 7, 1, 2)])
+        assert estimate.margin == pytest.approx(1.96 * 118.105, abs=0.5)
+        assert str(estimate).startswith("1791 ±231 (95%)")
+
+    def test_the_two_tools_read_one_confidence(self):
+        assert match_estimate.CONFIDENCE == rating_estimate.CONFIDENCE
 
     def test_a_sweep_is_reported_as_a_bound_not_a_number(self):
         estimate, _ = rating_estimate.fit([("a", 1600, 10, 0, 0), ("b", 1700, 4, 0, 0)])

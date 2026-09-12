@@ -7,8 +7,12 @@ Every opponent is held at its published ccrl figure, so the only free parameter
 is our own rating, and the maximum likelihood fit of the logistic model is
 simply the rating at which the expected score equals the score actually made.
 
-The margin printed with it is how much a score of this size wobbles, and it
-describes the games and nothing else. Whether one rating can describe the
+The margin printed with it is a 95% interval on how much a score of this size
+wobbles, and it describes the games and nothing else. It is the interval the
+pooled match estimate prints under the same symbol, read off the same constant,
+because one ± that means two things is worse than no ± at all. Every figure this
+tool printed before 2026-09-12 was one standard error, so it was about half as
+wide. Whether one rating can describe the
 results at all is a separate question, asked separately: when the opponents
 disagree with each other by more than chance allows, that margin is an
 understatement rather than an estimate, and a note saying so goes to stderr.
@@ -27,6 +31,10 @@ from pathlib import Path
 from . import JSON_FORMAT, tool
 
 LN10_OVER_400 = math.log(10) / 400
+# The 95% interval, in standard errors. Both tools print ±, so both read this:
+# the pooled match estimate imports it from here rather than keeping a second
+# copy that could drift to a different scale under the same symbol.
+CONFIDENCE = 1.96
 # A pairing that ends 25-0 puts no upper bound on the winner, so both the
 # implied rating and the search for the fitted one stop this far out rather than
 # running off to wherever the bracket happens to end.
@@ -75,8 +83,10 @@ class Estimate:
     def __str__(self) -> str:
         if self.bounded:
             return f"{self.bounded} on the ccrl blitz scale ({self.games} games)"
+        # the scale is printed with the figure, so a line pasted into a
+        # release note carries what its ± means wherever it ends up
         return (
-            f"{self.rating:.0f} ±{self.margin:.0f}"
+            f"{self.rating:.0f} ±{self.margin:.0f} (95%)"
             f" on the ccrl blitz scale ({self.games} games)"
         )
 
@@ -128,7 +138,7 @@ def fit(pairings: list[tuple[str, float, int, int, int]]) -> tuple[Estimate, str
     if spread == 0.0:
         spread = modelled
     per_game = spread / played
-    margin = math.sqrt(spread) / slope
+    margin = CONFIDENCE * math.sqrt(spread) / slope
 
     # Whether one rating describes all of the pairings, which is a different
     # question from how precisely it is pinned down. Comparing each pairing's
