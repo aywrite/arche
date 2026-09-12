@@ -59,11 +59,13 @@ the engine plays. Roughly in the order they look worth doing.
   usually takes such a pawn and the position is then not quiet. The held-out loss puts the
   fourteen at 5.6 standard errors better than zero. Whether the term measures king safety
   is a separate question, and a corpus with middlegames in it is what would answer it
-- the sealed fifth of the 2026-09-12 corpus is unopened, so the numbers quoted for the
-  king safety fit are the selection group's and are the group the ridge was chosen on.
-  What the sealed group is for is one reading of a final vector, and a vector revised
-  after a reading needs sealed games the corpus does not hold, so it is being kept until
-  the games have said whether this vector is final
+- the sealed fifth of the 2026-09-12 corpus is spent. It was opened once, on 2026-09-12
+  after the games had accepted the king safety vector, and read -0.000537 against a
+  standard error of 0.000118 over its 5,772 games, which is 0.68 standard errors from the
+  selection group's -0.000649. A vector revised after that reading needs sealed games this
+  corpus does not hold, so the next fit wanting an honest held-out interval wants games
+  this corpus never saw. The access log is not in this repository; it is kept with the
+  run's record in the planning repository
 - an evaluation term is allowed 5% of the search, and mobility is over it. The figure had
   no home in the repository but the king safety bullet this list used to carry, so it is
   written here instead of being lost with it. Measured on the bench at the commit that
