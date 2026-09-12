@@ -41,11 +41,9 @@
 //! identity holds because the difference is exactly the kinds that score
 //! nothing. `eval_counts_a_kind_exactly_when_its_weight_is_not_zero` is what
 //! says the difference is that and not something else. Neither of the other
-//! two is split that way. The shelter's fit gave all fourteen of its weights
-//! a value, so there is nothing there to leave out. The pawn structure's
-//! sixteen are all zero, and the same rule applied to them would leave `eval`
-//! counting nothing at all and the term unmeasured, so it is counted whole at
-//! both ends until a fit says which counts are worth keeping.
+//! two is split that way: both fits gave every one of their weights a value,
+//! the shelter's fourteen and the pawn structure's sixteen, so there is
+//! nothing in either to leave out.
 
 use crate::bench::Position;
 use crate::board::Board;
@@ -1136,12 +1134,14 @@ mod tests {
     /// Each of the eight pawn counts writes its own coefficient, at both ends
     /// of the taper, and the coefficient is the count.
     ///
-    /// The identity the rows are printed under cannot see this. It folds the
-    /// whole row against the whole vector, so a coefficient written to the
-    /// wrong bucket reconstructs at zero weights whatever it does, and after
-    /// a fit it reconstructs whenever two wrong slots happen to cancel. What
-    /// says the passed count landed on the rank it was counted on, and that
-    /// the isolated count did not land in the doubled slot, is reading the
+    /// The identity the rows are printed under reaches these sixteen slots
+    /// now that the fit has priced them, and it did not while they were all
+    /// zero. It still cannot see this. It folds the whole row against the
+    /// whole vector, so a coefficient written to the wrong bucket
+    /// reconstructs whenever two wrong slots happen to cancel, and two
+    /// buckets of a rank table are the likeliest pair to. What says the
+    /// passed count landed on the rank it was counted on, and that the
+    /// isolated count did not land in the doubled slot, is reading the
     /// coefficients one at a time against a hand count. That is this.
     ///
     /// White has a7, a3, b3, b2, d5 and d4, and black has f7, g5, e3 and h3,

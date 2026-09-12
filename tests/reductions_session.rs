@@ -27,6 +27,7 @@ fn the_reductions_argument_prints_a_header_rows_and_a_summary() {
     );
     assert!(printed.events() > 0, "header: {}", printed.header);
 
+    let mut replayed = 0;
     let mut low = 0;
     for row in &printed.rows {
         let words: Vec<&str> = row.split(' ').collect();
@@ -47,12 +48,15 @@ fn the_reductions_argument_prints_a_header_rows_and_a_summary() {
         // a late move is what the ledger records, so no index is under
         // the threshold
         assert!(words[2].parse::<usize>().unwrap() >= 4, "row: {}", row);
-        // a fail low carries the replay's answer and its label; a fail
-        // high carries neither, said with dashes so the columns stand
-        // still
+        // a fail low carries the replay's answer and its label, and so does
+        // a skip, which late move pruning records where the loop passes a
+        // move over and whose counterfactual the replay builds the same
+        // way. A fail high carries neither, said with dashes so the
+        // columns stand still
         match words[12] {
-            "low" => {
-                low += 1;
+            "low" | "skipped" => {
+                replayed += 1;
+                low += usize::from(words[12] == "low");
                 assert!(words[14].parse::<i64>().is_ok(), "row: {}", row);
                 assert!(
                     words[15] == "harmful" || words[15] == "harmless",
@@ -67,9 +71,11 @@ fn the_reductions_argument_prints_a_header_rows_and_a_summary() {
             other => panic!("scout {} in: {}", other, row),
         }
     }
-    // the fail lows are what the replay labels, so a run that kept none
-    // has measured nothing
+    // the replayed rows are the ones the ledger labels, so a run that kept
+    // none has measured nothing. Both are counted, because a run of nothing
+    // but skips would leave the scout's own labelling untested
     assert!(low > 0, "no fail low rows in:\n{}", printed.all);
+    assert!(replayed > low, "no skipped rows in:\n{}", printed.all);
 
     // a line a depth, each carrying the whole shape
     for line in &printed.summary {
