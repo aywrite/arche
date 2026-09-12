@@ -700,11 +700,10 @@ moved up as the engine improves.
 
 The default plays eight of them, and they sit either side of the engine rather
 than under it. A gauntlet at 20+0.2 put it at 2332 over 440 games, and the
-panel runs from 2168 to 2555, four rungs below that figure and four above:
+panel runs from 2173 to 2713, three rungs below that figure and five above:
 
 | rung | ccrl blitz | |
 | --- | --- | --- |
-| zagreus:v5.0 | 2168 ±16 | Zagreus 5.0 64-bit |
 | stash:v15.3 | 2173 ±19 | Stash 15.3 |
 | goldfish:v2.1.1 | 2252 ±16 | Goldfish 2.1.1 64-bit |
 | stash:v17.0 | 2297 ±19 | Stash 17.0 |
@@ -712,6 +711,7 @@ panel runs from 2168 to 2555, four rungs below that figure and four above:
 | stash:v19.0 | 2473 ±18 | Stash 19.0 |
 | stash:v20.0.1 | 2511 ±23 | Stash 20.0.1 |
 | tantabus:v2.0.0 | 2555 ±13 | Tantabus 2.0.0 64-bit |
+| stash:v21.0 | 2713 ±14 | Stash 21.0 64-bit |
 
 That 2332 was measured by hand on 8 September 2026, in a container rather than
 by the Calibrate workflow, so there is no run id to look it up by. Ten
@@ -723,7 +723,13 @@ control are in neither count. A commit message from the same work
 played; the count here is the record. The per rung results are kept outside
 the tree.
 
-Five lineages, of which four rungs are Stash, which is what this started as. A
+Four lineages, of which five rungs are Stash, which is what this started as,
+and that is one lineage worse than the panel was. Zagreus 5.0 came off the
+bottom at 2168, where a rung 164 elo under the engine bounds it from below and
+little else, and the rung that replaced it at the top is a Stash because on the
+list of 5 September 2026 no other engine with a block in the table is rated
+above 2555. Adding a block for a fifth lineage above that mark would be the
+better fix and is not this change. A
 ladder of one lineage measures partly how this engine does against that
 lineage: a blind spot the two share, or an opening a family handles the same
 way, moves the number without anything about the strength behind it having
@@ -740,9 +746,16 @@ at; Stash does not spell its tags the way the list names its releases, which is
 why both are given. A list is redone as games arrive, so a figure here can
 drift from the published one; the date is what says how old these are.
 
-Every one of the eight was cloned at its pin, built and played against this
-engine before it was named in the ladder, twenty games apiece at 20+0.2 and
-eighty for four of them. All of them ended normally, with no illegal move, no
+Seven of the eight were cloned at their pin, built and played against this
+engine before they were named in the ladder, twenty games apiece at 20+0.2 and
+eighty for four of them. Stash 21.0 was added later and proved the same way, by
+a Calibrate run of its own rung alone (34676811269), which cloned it at
+`v21.0`, built it and played ten games. This engine scored none of them. That
+is what a rung 380 elo above it looks like at ten games rather than a rung out
+of range: the expected score at that gap is about a tenth, so a blank is the
+likelier single outcome and fifty games should return about five points. The
+rung earns its place as the panel's ceiling and will trade games properly as
+the engine climbs toward it. All of them ended normally, with no illegal move, no
 loss on time and nothing dropping the connection. Goldfish, SoFCheck and
 Tantabus do print principal variations fastchess will not follow, lines that
 walk on past a repetition or the fifty move rule, so those rungs fill their
