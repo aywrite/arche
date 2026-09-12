@@ -107,11 +107,12 @@ pub const SLOTS: usize = SHELTER_SLOT + 2 * SHELTER_SLOTS;
 /// ask black about, and a slot is a (piece, table index) pair rather than a
 /// (piece, colour, square) triple.
 ///
-/// The two shelter branches are the one part of this nothing pins. While those
-/// weights are zero, an assertion about which half of the pair a slot names
-/// multiplies to nothing whichever half it reads, so a test of them would pass
-/// on either. The fit that gives them values is what makes one non-vacuous,
-/// and it is the change that owes it.
+/// The two shelter branches were the one part of this nothing pinned, since a
+/// weight of zero multiplies to nothing whichever half of the pair a slot
+/// reads. The fit gave all fourteen values and gave every count two that
+/// differ, so `a_positions_terms_reconstruct_its_evaluation` now fails on a
+/// slot that reads the wrong half: the reconstruction is a different number
+/// rather than another route to the same one.
 pub fn weight(slot: usize) -> i32 {
     let packed = |piece: Piece, entry: usize| {
         PieceSquareTables::TABLES.get_value(entry, piece, Color::Black)
@@ -1016,10 +1017,13 @@ mod tests {
     /// Every shelter count writes both ends of the taper too, and the counts
     /// are hand worked rather than read back off the board.
     ///
-    /// The identity says nothing about these eight slots. Every shipped weight
-    /// is zero, so a shelter coefficient written to the wrong slot, doubled,
-    /// or left out entirely reproduces every row of the corpus. What is
-    /// asserted here is the coefficient itself.
+    /// The identity reaches these fourteen slots now that the fit has priced
+    /// them, and it did not while every shipped weight was zero and a shelter
+    /// coefficient written to the wrong slot, doubled, or left out entirely
+    /// reproduced every row of the corpus. It is still worth asserting the
+    /// coefficient itself: the identity reads the fourteen through one sum,
+    /// so two errors that cancel pass it, and the next refit could put a
+    /// weight back at zero.
     ///
     /// White's king on g1 has f2 and h2 one rank ahead and g3 two, and its
     /// three files all hold a pawn of its own, while g2, then f3 and h3, then
