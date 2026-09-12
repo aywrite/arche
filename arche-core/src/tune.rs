@@ -4,8 +4,9 @@
 //! What a position's evaluation is made of, weight by weight.
 //!
 //! The evaluation is material plus a tapered piece square score plus a
-//! tapered mobility score plus a tapered king shelter score, and it is linear
-//! in the numbers those four are read from. So a position's score is a dot
+//! tapered mobility score plus a tapered king shelter score plus a tapered
+//! pawn structure score, and it is linear in the numbers those five are read
+//! from. So a position's score is a dot
 //! product: a coefficient for each of the weights it touches, against the
 //! weights themselves. This module writes the coefficients down, and a fit run
 //! outside the engine reads them.
@@ -24,12 +25,13 @@
 //! and a helper shared between them is not. The accumulator the search keeps
 //! is neither read nor duplicated.
 //!
-//! The two leaf terms are the exception, and it is deliberate. The walk asks
-//! `Board::mobility_counts` and `Board::shelter_counts` for their counts and so
-//! does `eval`, so the identity cannot see a wrong count at any weights, fitted
-//! or zero. A second count here would be a second chance to be wrong about a
-//! term that is read at every leaf rather than a check on the first, so what
-//! pins them is the hand counts beside each helper in board.rs.
+//! The three leaf terms are the exception, and it is deliberate. The walk
+//! asks `Board::mobility_counts`, `Board::shelter_counts` and
+//! `Board::pawn_structure_counts` for their counts and so does `eval`, so the
+//! identity cannot see a wrong count at any weights, fitted or zero. A second
+//! count here would be a second chance to be wrong about a term that is read
+//! at every leaf rather than a check on the first, so what pins them is the
+//! hand counts beside each helper in board.rs.
 //!
 //! On mobility the two no longer ask for the same kinds. The walk asks for all
 //! four, because it is offline and a coefficient for a kind worth nothing
@@ -38,10 +40,12 @@
 //! taking at every leaf. So the walk's row is the wider of the two, and the
 //! identity holds because the difference is exactly the kinds that score
 //! nothing. `eval_counts_a_kind_exactly_when_its_weight_is_not_zero` is what
-//! says the difference is that and not something else. The shelter is not
-//! split that way: every one of its weights is zero, so the same rule would
-//! leave `eval` counting nothing at all and the term unmeasured. It is counted
-//! whole at both ends until the fit says which counts are worth keeping.
+//! says the difference is that and not something else. Neither of the other
+//! two is split that way. The shelter's fit gave all fourteen of its weights
+//! a value, so there is nothing there to leave out. The pawn structure's
+//! sixteen are all zero, and the same rule applied to them would leave `eval`
+//! counting nothing at all and the term unmeasured, so it is counted whole at
+//! both ends until a fit says which counts are worth keeping.
 
 use crate::bench::Position;
 use crate::board::Board;
@@ -93,9 +97,21 @@ pub const SHELTER_SLOT: usize = MOBILITY_SLOT + 2 * MOBILITY_SLOTS;
 /// count's two weights are.
 const SHELTER_SLOTS: usize = eval::SHELTER_TERMS;
 
+/// Where the pawn structure weights stand, after the shelter block and laid
+/// out the same way: eight midgame weights, one for each of the counts
+/// `eval::PAWN_TERMS` names, then the same eight at the endgame end.
+/// Appended rather than inserted, on the rule the two blocks above it follow,
+/// so no slot a fit has already been written against has moved.
+pub const PAWN_SLOT: usize = SHELTER_SLOT + 2 * SHELTER_SLOTS;
+
+/// How many counts the pawn structure is measured in, which is how far apart
+/// a count's two weights are.
+const PAWN_SLOTS: usize = eval::PAWN_TERMS;
+
 /// The whole weight vector: 384 midgame entries, 384 endgame ones, the six
-/// material values, the eight mobility weights and the fourteen shelter ones.
-pub const SLOTS: usize = SHELTER_SLOT + 2 * SHELTER_SLOTS;
+/// material values, the eight mobility weights, the fourteen shelter ones and
+/// the sixteen pawn structure ones.
+pub const SLOTS: usize = PAWN_SLOT + 2 * PAWN_SLOTS;
 
 /// The weight a slot names.
 ///
@@ -130,8 +146,12 @@ pub fn weight(slot: usize) -> i32 {
         eg_value(eval::mobility_weight(slot - MOBILITY_SLOT - MOBILITY_SLOTS))
     } else if slot < SHELTER_SLOT + SHELTER_SLOTS {
         mg_value(eval::shelter_weight(slot - SHELTER_SLOT))
-    } else {
+    } else if slot < PAWN_SLOT {
         eg_value(eval::shelter_weight(slot - SHELTER_SLOT - SHELTER_SLOTS))
+    } else if slot < PAWN_SLOT + PAWN_SLOTS {
+        mg_value(eval::pawn_weight(slot - PAWN_SLOT))
+    } else {
+        eg_value(eval::pawn_weight(slot - PAWN_SLOT - PAWN_SLOTS))
     }
 }
 
@@ -147,7 +167,7 @@ fn is_material(slot: usize) -> bool {
 /// The coefficients are in the side to move's frame, so a row's own
 /// arithmetic is the evaluation with no further step. They are sparse and
 /// sorted by slot: over the strategic suite's quiet positions a row names
-/// forty four of the seven hundred and ninety weights at the median, and a
+/// forty eight of the eight hundred and twelve weights at the median, and a
 /// column's non-zero count is what says how much of the corpus a weight is
 /// fitted on.
 #[derive(Clone, Debug, PartialEq, Eq)]
@@ -203,7 +223,7 @@ impl Terms {
             coefficients[midgame] += sign * phase;
             coefficients[MIDGAME_SLOTS + midgame] += sign * (TOTAL_PHASE - phase);
         }
-        // the two leaf terms are per position rather than per square, so
+        // the three leaf terms are per position rather than per square, so
         // their counts come off the board whole rather than out of the walk
         // above. Tapered the way a square is, and so two slots per count
         for (color, sign) in [(Color::White, mover), (Color::Black, -mover)] {
@@ -216,6 +236,11 @@ impl Terms {
             for (index, count) in board.shelter_counts(color).into_iter().enumerate() {
                 coefficients[SHELTER_SLOT + index] += sign * count * phase;
                 coefficients[SHELTER_SLOT + SHELTER_SLOTS + index] +=
+                    sign * count * (TOTAL_PHASE - phase);
+            }
+            for (index, count) in board.pawn_structure_counts(color).into_iter().enumerate() {
+                coefficients[PAWN_SLOT + index] += sign * count * phase;
+                coefficients[PAWN_SLOT + PAWN_SLOTS + index] +=
                     sign * count * (TOTAL_PHASE - phase);
             }
         }
@@ -787,15 +812,32 @@ mod tests {
         }
     }
 
+    /// The most of any one shelter count a side can show, which is what a
+    /// shelter weight is priced against below. Three pawns on each of the
+    /// five ranks counted, and three files, which the open and the half open
+    /// counts share between them rather than reach each.
+    const MAX_SHELTER: i32 = 3;
+
+    /// The most of any one pawn count a side can show. Eight, which is how
+    /// many pawns a side has. Charging every one of the eight counts at eight
+    /// is far past any position: it charges forty eight passers, eight
+    /// isolated pawns and eight doubled ones to a side that has eight pawns
+    /// between them all. The looseness is on the safe side and deliberate,
+    /// since what this catches is a vector that has gone somewhere else
+    /// entirely.
+    const MAX_PAWNS: i32 = 8;
+
     /// The largest one-sided sum of either half of the tables, plus what the
-    /// shelter adds to the same halves, against the sixteen bits each half of
-    /// a packed pair has to stay inside.
+    /// shelter and the pawn structure add to the same halves, against the
+    /// sixteen bits each half of a packed pair has to stay inside.
     ///
     /// A boardful and not a legal position: what has to hold is the arithmetic
     /// the accumulator does, and it does not know what is legal. The shelter
     /// is charged at three of each of its seven counts a side, which no
     /// position reaches, since a side's open and half open files come to three
-    /// between them rather than three each. So this is the screen
+    /// between them rather than three each. The pawn structure is charged at
+    /// eight of each of its eight, which is looser still: eight pawns cannot
+    /// fill sixty four counts between them. So this is the screen
     /// `tune.py::bounds_hold` applies, stated on the side that holds the
     /// weights, and the two are meant to answer the same.
     #[test]
@@ -820,8 +862,15 @@ mod tests {
                 .map(|index| half(eval::shelter_weight(index)).abs())
                 .sum::<i32>()
         };
+        let pawns = |half: fn(i32) -> i32| {
+            (0..PAWN_SLOTS)
+                .map(|index| half(eval::pawn_weight(index)).abs())
+                .sum::<i32>()
+        };
         // both sides at once, which is what the accumulator carries
-        let worst = 2 * midgame.max(endgame) + 2 * 3 * shelter(mg_value).max(shelter(eg_value));
+        let worst = 2 * midgame.max(endgame)
+            + 2 * MAX_SHELTER * shelter(mg_value).max(shelter(eg_value))
+            + 2 * MAX_PAWNS * pawns(mg_value).max(pawns(eg_value));
         assert!(
             worst < i32::from(i16::MAX),
             "a boardful comes to {} against {}",
@@ -989,7 +1038,7 @@ mod tests {
     /// way, so every row of the corpus reconstructs whichever side it is put
     /// on, and it would go on reconstructing until the fit gave those weights a
     /// value. The predicate is arithmetic on slot numbers, so it is pinned as
-    /// that instead. Both leaf terms are asked about, since what the material
+    /// that instead. All three leaf terms are asked about, since what the material
     /// block ends at has moved once already.
     #[test]
     fn the_material_values_are_the_only_weights_outside_the_divide() {
@@ -1011,7 +1060,8 @@ mod tests {
             );
         }
         assert_eq!(SHELTER_SLOT, MOBILITY_SLOT + 2 * MOBILITY_SLOTS);
-        assert_eq!(SLOTS, SHELTER_SLOT + 2 * SHELTER_SLOTS);
+        assert_eq!(PAWN_SLOT, SHELTER_SLOT + 2 * SHELTER_SLOTS);
+        assert_eq!(SLOTS, PAWN_SLOT + 2 * PAWN_SLOTS);
     }
 
     /// Every shelter count writes both ends of the taper too, and the counts
@@ -1081,6 +1131,92 @@ mod tests {
                 why
             );
         }
+    }
+
+    /// Each of the eight pawn counts writes its own coefficient, at both ends
+    /// of the taper, and the coefficient is the count.
+    ///
+    /// The identity the rows are printed under cannot see this. It folds the
+    /// whole row against the whole vector, so a coefficient written to the
+    /// wrong bucket reconstructs at zero weights whatever it does, and after
+    /// a fit it reconstructs whenever two wrong slots happen to cancel. What
+    /// says the passed count landed on the rank it was counted on, and that
+    /// the isolated count did not land in the doubled slot, is reading the
+    /// coefficients one at a time against a hand count. That is this.
+    ///
+    /// White has a7, a3, b3, b2, d5 and d4, and black has f7, g5, e3 and h3,
+    /// which the eval module works through square by square beside its own
+    /// test of the fold. The rook and the two queens are there to hold the
+    /// phase off the middle of the taper, so a coefficient written to the
+    /// wrong end of it shows.
+    #[test]
+    fn every_pawn_count_writes_both_ends_of_the_taper() {
+        let fen = "3k4/P4p2/8/3P2p1/3P4/PP2p2p/1P6/QQ4KR w - - 0 1";
+        let board = Board::from_fen(fen).unwrap();
+        let terms = Terms::of(&board);
+        assert_eq!(terms.phase, 10);
+        assert_ne!(
+            terms.phase,
+            TOTAL_PHASE - terms.phase,
+            "the two ends hold the same share here, so this test cannot tell them apart"
+        );
+        let coefficient = |slot: usize| {
+            terms
+                .coefficients
+                .iter()
+                .find(|(named, _)| usize::from(*named) == slot)
+                .map_or(0, |(_, coefficient)| *coefficient)
+        };
+        for (index, count, why) in [
+            // black's f7, against nothing of white's on its second
+            (0, -1, "the passers on the second"),
+            // white's b3, against nothing of black's
+            (1, 1, "the passers on the third"),
+            // black's g5
+            (2, -1, "the passers on the fourth"),
+            // white's d5
+            (3, 1, "the passers on the fifth"),
+            // black's e3 and h3
+            (4, -2, "the passers on the sixth"),
+            // white's a7
+            (5, 1, "the passers on the seventh"),
+            // white's d5 and d4, and no black pawn stands alone
+            (6, 2, "the isolated pawns"),
+            // white's a7, b3 and d5 each have one behind them
+            (7, 3, "the doubled pawns"),
+        ] {
+            assert_eq!(
+                coefficient(PAWN_SLOT + index),
+                count * terms.phase,
+                "{} midgame",
+                why
+            );
+            assert_eq!(
+                coefficient(PAWN_SLOT + PAWN_SLOTS + index),
+                count * (TOTAL_PHASE - terms.phase),
+                "{} endgame",
+                why
+            );
+        }
+    }
+
+    /// A position and its reflection with the colours swapped state the same
+    /// pawn row, so the eight counts are signed and slotted the same way for
+    /// both sides.
+    #[test]
+    fn a_mirrored_position_states_the_same_pawn_row() {
+        let white = Board::from_fen("4k3/P4p2/8/3P2p1/3P4/PP2p2p/1P6/4K3 w - - 0 1").unwrap();
+        let black = Board::from_fen("4k3/1p6/pp2P2P/3p4/3p2P1/8/p4P2/4K3 b - - 0 1").unwrap();
+        let terms = Terms::of(&white);
+        assert!(
+            terms
+                .coefficients
+                .iter()
+                .any(|(slot, _)| usize::from(*slot) >= PAWN_SLOT),
+            "no pawn structure coefficient here, so this test says nothing about one"
+        );
+        assert_eq!(terms, Terms::of(&black));
+        assert_eq!(eval::eval(&white), eval::eval(&black));
     }
 
     /// A position and its reflection with the colours swapped state the same

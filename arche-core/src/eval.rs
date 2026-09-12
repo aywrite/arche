@@ -198,6 +198,44 @@ pub(crate) fn shelter_weight(index: usize) -> i32 {
     SHELTER[index]
 }
 
+/// How many ranks the passed pawn count is split over: a pawn's relative
+/// second through its relative seventh, which is every rank one can stand on.
+///
+/// A table by rank rather than one weight times the rank. What a passer is
+/// worth is convex in how far it has come, and a ramp cannot say so; six
+/// numbers can, and the tables already spend sixty four on where a pawn
+/// stands.
+pub(crate) const PASSED_RANKS: usize = 6;
+
+/// What the pawn structure is measured in, in the order [`PAWN_STRUCTURE`]
+/// and `Board::pawn_structure_counts` are indexed by: the passed pawns by
+/// relative rank, then the isolated pawns, then the doubled ones.
+pub(crate) const PAWN_TERMS: usize = PASSED_RANKS + 2;
+
+/// What one of those eight counts is worth, as the packed pairs the taper is
+/// read from.
+///
+/// Zero, so the evaluation is master's to the node. The term is here at zero
+/// weight so that the counts, the masks, the cache and the tuner's sixteen
+/// columns can be built and pinned against an engine that plays exactly as it
+/// played before, and the fit that gives them values is measured on its own.
+/// The shelter arrived the same way, and the bench is what says the two
+/// commits are apart: this one carries master's.
+///
+/// A cost read at these weights is not a floor, which is what it was expected
+/// to be. `PAWN_CACHE_BITS` has the measurement and the reason: the term
+/// survives the zero fold, and it costs 1.46% of the bench's instructions
+/// here for a score of nothing. What a fit changes is the tree, so the number
+/// of record is still taken on the fitted build.
+static PAWN_STRUCTURE: [i32; PAWN_TERMS] = [pack(0, 0); PAWN_TERMS];
+
+/// The pawn structure weight of one of the eight counts, as the packed pair.
+/// The tuner's seam asks, so that a slot names the live weight rather than a
+/// copy of it, the way it reads the tables.
+pub(crate) fn pawn_weight(index: usize) -> i32 {
+    PAWN_STRUCTURE[index]
+}
+
 /// What one piece leaves on the board, on the scale the taper is read at.
 /// The tuner's walk asks, because a position's phase decides what its
 /// coefficients are and a copy of the table there would be a second opinion
@@ -288,33 +326,130 @@ impl ShelterCache {
     }
 }
 
+/// How many pawn structure scores the cache holds. A power of two, so the
+/// index is a mask rather than a remainder.
+///
+/// Four thousand entries at sixteen bytes is sixty four kilobytes, half what
+/// the shelter's table takes. The size was measured rather than reasoned
+/// about, the way `SHELTER_CACHE_BITS` was. Callgrind over the bench with
+/// the cache simulated, at eleven, twelve, thirteen and fourteen bits, reads
+/// 4,010,856,695, 4,007,795,963, 4,005,771,900 and 4,004,661,757
+/// instructions against last level misses of 287,156, 287,284, 290,275 and
+/// 294,381. Each bit buys fewer instructions than the one before it, and the
+/// misses are flat from eleven to twelve and then turn up by three thousand
+/// at thirteen and four thousand more at fourteen. So twelve is the last
+/// size the memory does not notice, and the whole range is inside a fifth of
+/// a percent of instructions: the constant is not load bearing and a later
+/// working set can move it.
+///
+/// Half the shelter's table is what this term's key predicted before the
+/// sweep was run. The same pawns under two different pairs of king squares
+/// are two entries there and one entry here, so the working set behind this
+/// key is the smaller of the two.
+///
+/// The sweep is read at the weights that ship, which are zero, and it is a
+/// reading rather than four copies of one number. The storm's commit found
+/// llvm folding away a term all of whose weights were zero, and that does
+/// not happen here: the probe stores the entry it missed on, which is a side
+/// effect nothing can remove, so the counts feeding that store stay in the
+/// binary. The bench counts the same 3,882,989 nodes at all four sizes,
+/// which is what says the cache changes how a score is arrived at and not
+/// what it is.
+const PAWN_CACHE_BITS: usize = 12;
+const PAWN_CACHE_SLOTS: usize = 1 << PAWN_CACHE_BITS;
+
+/// One remembered pawn structure score, under the key that decides it. The
+/// whole key, for the reason [`ShelterEntry`] keeps the whole of its own.
+#[derive(Copy, Clone)]
+struct PawnEntry {
+    key: u64,
+    packed: i32,
+}
+
+/// The pawn structure, remembered by what it depends on.
+///
+/// The term reads the two pawn boards and nothing else, so its key is
+/// `Board::pawn_key` with nothing folded in. That is the difference between
+/// this cache and the shelter's, and it is the whole reason this term could
+/// be cached in the commit that introduced it: the shelter's key carries both
+/// kings and so misses on every king move, and this one does not. What misses
+/// here is a pawn move and the capture of a pawn, which is every way the two
+/// pawn boards change and nothing else.
+///
+/// Direct mapped and never cleared, on the terms [`ShelterCache`] sets out.
+/// An empty entry is key zero holding zero, and here that is exact rather
+/// than a coincidence to be argued about: a board with no pawns has a pawn
+/// key of zero, which `a_board_with_no_pawns_has_no_key` pins, and
+/// the structure of no pawns is eight zero counts. The one position that
+/// reads an empty entry as its own reads the right answer from it.
+pub(crate) struct PawnCache {
+    entries: Box<[PawnEntry]>,
+}
+
+impl Default for PawnCache {
+    fn default() -> Self {
+        PawnCache {
+            entries: vec![PawnEntry { key: 0, packed: 0 }; PAWN_CACHE_SLOTS].into_boxed_slice(),
+        }
+    }
+}
+
+impl PawnCache {
+    /// What white's pawn structure stands ahead by, remembered or computed.
+    #[inline]
+    fn pawn_structure(&mut self, board: &Board) -> i32 {
+        let key = board.pawn_key;
+        let slot = (key as usize) & (PAWN_CACHE_SLOTS - 1);
+        let entry = &mut self.entries[slot];
+        if entry.key == key {
+            return entry.packed;
+        }
+        let packed = pawn_structure(board);
+        *entry = PawnEntry { key, packed };
+        packed
+    }
+}
+
 /// The score of the position from the side to move's point of view.
 ///
 /// Everything incremental is read off the board's accumulator; a term
 /// computed at the leaf is added here, from the board itself.
 ///
-/// The shelter is computed every time. `eval_cached` is the same score with
-/// that one term remembered, and is what the search asks. The tuner's walk
-/// and the instruments ask this one. Neither is hot, and both want a score
-/// that depends on the position alone.
+/// The shelter and the pawn structure are computed every time.
+/// `eval_cached` is the same score with those two terms remembered, and is
+/// what the search asks. The tuner's walk and the instruments ask this one.
+/// Neither is hot, and both want a score that depends on the position alone.
 #[inline]
 pub(crate) fn eval(board: &Board) -> Score {
-    board
-        .eval
-        .score(board.active_color, mobility(board) + shelter(board))
+    board.eval.score(
+        board.active_color,
+        mobility(board) + shelter(board) + pawn_structure(board),
+    )
 }
 
-/// The same score with the shelter taken from `cache` where it is there.
+/// The same score with the shelter and the pawn structure taken from their
+/// caches where they are there.
 ///
 /// Equal to [`eval`] for every position, which is what
-/// `the_cache_answers_what_the_full_evaluation_does` holds it to. The search
-/// calls this and the node counts do not move, because a remembered score is
-/// the score that would have been computed.
+/// `the_cache_answers_what_the_full_evaluation_does` holds both of them to.
+/// The search calls this and the node counts do not move, because a
+/// remembered score is the score that would have been computed.
+///
+/// Two caches rather than one wider entry under the shelter's key. The
+/// alternative is one probe for both terms, and it would recompute the pawn
+/// structure on every king move, which is the half of the shelter's key this
+/// term does not need. Which is cheaper is a measurement and not an opinion,
+/// and it is made on the fitted build.
 #[inline]
-pub(crate) fn eval_cached(board: &Board, cache: &mut ShelterCache) -> Score {
-    board
-        .eval
-        .score(board.active_color, mobility(board) + cache.shelter(board))
+pub(crate) fn eval_cached(
+    board: &Board,
+    shelter: &mut ShelterCache,
+    pawns: &mut PawnCache,
+) -> Score {
+    board.eval.score(
+        board.active_color,
+        mobility(board) + shelter.shelter(board) + pawns.pawn_structure(board),
+    )
 }
 
 /// What white's mobility stands ahead by, as a packed pair on the scale the
@@ -378,6 +513,38 @@ fn shelter(board: &Board) -> i32 {
 fn shelter_with(board: &Board, weights: &[i32; SHELTER_TERMS]) -> i32 {
     let white = board.shelter_counts(Color::White);
     let black = board.shelter_counts(Color::Black);
+    let mut packed = 0;
+    for ((weight, white), black) in weights.iter().zip(white).zip(black) {
+        packed += weight * (white - black);
+    }
+    packed
+}
+
+/// What white's pawn structure stands ahead by, as a packed pair on the scale
+/// the piece square pair is on.
+///
+/// Read off the board rather than accumulated. A pawn that moves changes
+/// which of the pawns behind and beside it are passed, isolated or doubled,
+/// so there is nothing here for `Accumulator::count` to add and take away a
+/// pawn at a time. What makes that cheap anyway is that only a pawn move
+/// changes it at all, which is what [`PawnCache`] is built on.
+#[inline]
+fn pawn_structure(board: &Board) -> i32 {
+    pawn_structure_with(board, &PAWN_STRUCTURE)
+}
+
+/// The same fold against weights named by the caller.
+///
+/// Every live weight is zero, so this answers zero for every position and the
+/// evaluation is master's. That is what leaves the tests no choice but to
+/// supply weights of their own: the sign of the term, the order of the eight
+/// counts and the packing are all invisible at zero, and a permuted
+/// [`PAWN_STRUCTURE`] would score every position exactly as the right answer
+/// does until the fit gives the eight values that differ.
+#[inline]
+fn pawn_structure_with(board: &Board, weights: &[i32; PAWN_TERMS]) -> i32 {
+    let white = board.pawn_structure_counts(Color::White);
+    let black = board.pawn_structure_counts(Color::Black);
     let mut packed = 0;
     for ((weight, white), black) in weights.iter().zip(white).zip(black) {
         packed += weight * (white - black);
@@ -508,8 +675,9 @@ impl Accumulator {
     /// to that piece's endgame table, and the tables are the tidier place to
     /// say it.
     ///
-    /// `leaf` is the leaf terms [`eval`] reads off the board, mobility and the
-    /// king's shelter summed, as a packed pair on the same scale. Summing them
+    /// `leaf` is the leaf terms [`eval`] reads off the board, mobility, the
+    /// king's shelter and the pawn structure summed, as a packed pair on the
+    /// same scale. Summing them
     /// before the call is exact, since both are pairs on this scale, and it is
     /// what keeps one divide however many such terms there are. The pair joins
     /// the piece square pair before the
@@ -538,15 +706,16 @@ impl Accumulator {
 #[cfg(test)]
 mod evaluate {
     use super::{
-        ALL_KINDS, Board, MOBILE_PIECES, MOBILITY, SCORED_KINDS, SHELTER, SHELTER_CACHE_SLOTS,
-        SHELTER_TERMS, ShelterCache, TOTAL_PHASE, eval, eval_cached, mobility, mobility_weight,
-        mobility_with, shelter_with,
+        ALL_KINDS, Board, MOBILE_PIECES, MOBILITY, PAWN_CACHE_SLOTS, PAWN_STRUCTURE, PAWN_TERMS,
+        PawnCache, SCORED_KINDS, SHELTER, SHELTER_CACHE_SLOTS, SHELTER_TERMS, ShelterCache,
+        TOTAL_PHASE, eval, eval_cached, mobility, mobility_weight, mobility_with,
+        pawn_structure_with, shelter_with,
     };
     use crate::board::fens;
-    use crate::misc::Color;
+    use crate::misc::{Color, File, coordinate_to_index};
     use crate::psqt::{eg_value, mg_value, pack};
     use pretty_assertions::assert_eq;
-    use std::collections::HashSet;
+    use std::collections::{HashMap, HashSet};
 
     /// Both the accumulator and its recompute read `PHASE_WEIGHTS`, so the
     /// state-in-step check holds them to each other and neither to what the
@@ -906,16 +1075,136 @@ mod evaluate {
         assert_eq!((mg_value(packed), eg_value(packed)), (midgame, endgame));
     }
 
+    /// The position the pawn structure test below is read against, and what
+    /// each side counts in it, worked out by hand rather than read back off
+    /// `pawn_structure_counts`.
+    ///
+    /// The two sides are kept to files that do not meet, white on a, b and d
+    /// and black on e, f, g and h, so no pawn of one colour stands in any
+    /// pawn of the other's way and every passer here is passed for a reason
+    /// a reader can check in one line.
+    ///
+    /// White has a7, a3, b3, b2, d5 and d4. a7 is passed on the seventh and
+    /// a3 is not, because a7 is ahead of it on the file; b3 is passed on the
+    /// third and b2 is not; d5 is passed on the fifth and d4 is not. The d
+    /// file has no white pawn beside it, so d5 and d4 are the two isolated
+    /// pawns. a7, b3 and d5 each have a pawn of their own behind them on
+    /// their file, which is the three doubled.
+    ///
+    /// Black has f7, g5, e3 and h3, one to a file and all four passed: f7 on
+    /// its relative second, g5 on its relative fourth, and e3 and h3 on its
+    /// relative sixth. The four files run together, so nothing is isolated,
+    /// and no file holds two, so nothing is doubled.
+    ///
+    /// The eight differences are -1, 1, -1, 1, -2, 1, 2 and 3. None is zero,
+    /// so every slot does work in the assertion below. They are not all
+    /// distinct, so this alone would not tell the first count from the third;
+    /// what tells those apart is
+    /// `every_pawn_count_writes_both_ends_of_the_taper` in tune.rs, which
+    /// reads the coefficients bucket by bucket.
+    const STRUCTURED: &str = "3k4/P4p2/8/3P2p1/3P4/PP2p2p/1P6/6K1 w - - 0 1";
+    const WHITE_STRUCTURE: [i32; PAWN_TERMS] = [0, 1, 0, 1, 0, 1, 2, 3];
+    const BLACK_STRUCTURE: [i32; PAWN_TERMS] = [1, 0, 1, 0, 2, 0, 0, 0];
+
+    /// Eight weights that differ from each other at both ends of the taper,
+    /// so that a pair read into the wrong count's slot lands on a different
+    /// number. The eight differences between the halves are 38, 20, -24, -30,
+    /// 36, 25, -26 and -28, which differ from each other too, so a
+    /// permutation of either array shows.
+    const PAWN_TRIAL: [i32; PAWN_TERMS] = [
+        pack(3, 41),
+        pack(-7, 13),
+        pack(29, 5),
+        pack(11, -19),
+        pack(17, 53),
+        pack(-23, 2),
+        pack(-5, -31),
+        pack(37, 9),
+    ];
+
+    /// What the fold does with weights that are not the shipped ones.
+    ///
+    /// The shipped ones are all zero, so they would say nothing at all here:
+    /// the sign of the term, the order of the eight counts and the packing
+    /// are every one of them invisible until a fit gives the weights values.
+    /// So this hands the fold eight pairs that differ from each other at both
+    /// ends and asserts the packed pair against the arithmetic: white's count
+    /// less black's, count by count, each half of the pair summed on its own.
+    #[test]
+    fn the_pawn_structure_fold_reads_white_less_black_count_by_count() {
+        let board = Board::from_fen(STRUCTURED).unwrap();
+        assert_eq!(board.pawn_structure_counts(Color::White), WHITE_STRUCTURE);
+        assert_eq!(board.pawn_structure_counts(Color::Black), BLACK_STRUCTURE);
+        let midgame: i32 = (0..PAWN_TERMS)
+            .map(|i| mg_value(PAWN_TRIAL[i]) * (WHITE_STRUCTURE[i] - BLACK_STRUCTURE[i]))
+            .sum();
+        let endgame: i32 = (0..PAWN_TERMS)
+            .map(|i| eg_value(PAWN_TRIAL[i]) * (WHITE_STRUCTURE[i] - BLACK_STRUCTURE[i]))
+            .sum();
+        assert_ne!(
+            midgame, endgame,
+            "the two halves would not tell a swap apart"
+        );
+        let packed = pawn_structure_with(&board, &PAWN_TRIAL);
+        assert_ne!(midgame, 0, "black less white would answer the same here");
+        assert_eq!((mg_value(packed), eg_value(packed)), (midgame, endgame));
+    }
+
+    /// The two caches and the keys a walk saw through them. One thing to
+    /// carry rather than four, and the keys are what say whether the run
+    /// evicted anything.
+    #[derive(Default)]
+    struct Caches {
+        shelter: ShelterCache,
+        pawns: PawnCache,
+        shelter_keys: HashSet<u64>,
+        pawn_keys: HashSet<u64>,
+        counted: HashMap<u64, [[i32; PAWN_TERMS]; 2]>,
+        compared: usize,
+    }
+
+    impl Caches {
+        /// What the pawn key claims, checked against what the counts say.
+        ///
+        /// The cache hands a remembered score to every position whose pawn
+        /// key it matches, so the key has to decide the counts. At the
+        /// shipped weights the score is zero either way and the identity
+        /// below cannot see a key that misses something the term reads; this
+        /// reads the counts themselves, which are the same eight numbers the
+        /// weights will later be multiplied by. Two positions under one key
+        /// that disagree here would be one position handed the other's
+        /// score the moment a fit prices the term.
+        fn note(&mut self, board: &Board) {
+            let counts = [
+                board.pawn_structure_counts(Color::White),
+                board.pawn_structure_counts(Color::Black),
+            ];
+            if let Some(seen) = self.counted.insert(board.pawn_key, counts) {
+                self.compared += 1;
+                assert_eq!(
+                    seen,
+                    counts,
+                    "two positions share a pawn key and not its counts, at {}",
+                    board.to_fen()
+                );
+            }
+        }
+    }
+
+    /// How many of `keys` there are and how many slots of a table of `slots`
+    /// they land in. The second being the smaller is what says two keys
+    /// shared a slot, so an entry was written over rather than only written.
+    fn filled(keys: &HashSet<u64>, slots: usize) -> (usize, usize) {
+        let landed: HashSet<usize> = keys
+            .iter()
+            .map(|key| (*key as usize) & (slots - 1))
+            .collect();
+        (keys.len(), landed.len())
+    }
+
     /// Every position reachable inside `budget` moves of `board`, scored both
-    /// ways through the one cache. Collects the shelter keys it saw, which is
-    /// what says whether the run evicted anything.
-    fn walk(
-        board: &Board,
-        depth: usize,
-        cache: &mut ShelterCache,
-        budget: &mut usize,
-        keys: &mut HashSet<u64>,
-    ) {
+    /// ways through the two caches.
+    fn walk(board: &Board, depth: usize, caches: &mut Caches, budget: &mut usize) {
         if depth == 0 || *budget == 0 {
             return;
         }
@@ -928,14 +1217,16 @@ mod evaluate {
                 continue;
             }
             *budget -= 1;
-            keys.insert(played.shelter_key());
+            caches.shelter_keys.insert(played.shelter_key());
+            caches.pawn_keys.insert(played.pawn_key);
+            caches.note(&played);
             assert_eq!(
-                eval_cached(&played, cache),
+                eval_cached(&played, &mut caches.shelter, &mut caches.pawns),
                 eval(&played),
-                "the cache and the evaluation part company at {}",
+                "a cache and the evaluation part company at {}",
                 played.to_fen()
             );
-            walk(&played, depth - 1, cache, budget, keys);
+            walk(&played, depth - 1, caches, budget);
         }
     }
 
@@ -955,27 +1246,47 @@ mod evaluate {
     /// revisits keys, and far fewer keys than positions reach the table. What
     /// says it is the keys against the slots they land in, so the test
     /// collects the keys and asserts that two of them shared a slot.
+    ///
+    /// The pawn structure's sixteen weights are zero, so what this asserts
+    /// about that cache is that it answers zero, which it would do with any
+    /// key at all. `Caches::note` is what carries the claim at these
+    /// weights: every position the walk reaches is checked against the
+    /// counts of the last position under its pawn key, which is the thing
+    /// the cache will hand it a score for.
     #[test]
     fn the_cache_answers_what_the_full_evaluation_does() {
-        let mut cache = ShelterCache::default();
-        let mut budget = 4 * SHELTER_CACHE_SLOTS;
-        let mut keys = HashSet::new();
+        let mut caches = Caches::default();
+        let mut budget = 4 * SHELTER_CACHE_SLOTS.max(PAWN_CACHE_SLOTS);
         for fen in fens::CORE {
             let board = Board::from_fen(fen).unwrap();
-            assert_eq!(eval_cached(&board, &mut cache), eval(&board), "{}", fen);
-            keys.insert(board.shelter_key());
-            walk(&board, 3, &mut cache, &mut budget, &mut keys);
+            assert_eq!(
+                eval_cached(&board, &mut caches.shelter, &mut caches.pawns),
+                eval(&board),
+                "{}",
+                fen
+            );
+            caches.shelter_keys.insert(board.shelter_key());
+            caches.pawn_keys.insert(board.pawn_key);
+            caches.note(&board);
+            walk(&board, 3, &mut caches, &mut budget);
         }
-        let slots: HashSet<usize> = keys
-            .iter()
-            .map(|key| (*key as usize) & (SHELTER_CACHE_SLOTS - 1))
-            .collect();
         assert!(
-            keys.len() > slots.len(),
-            "{} keys over {} slots, so no slot was written twice and nothing              was evicted",
-            keys.len(),
-            slots.len()
+            caches.compared > 0,
+            "every pawn key here was seen once, so no two positions were held against each other"
         );
+        for (name, keys, slots) in [
+            ("shelter", &caches.shelter_keys, SHELTER_CACHE_SLOTS),
+            ("pawn", &caches.pawn_keys, PAWN_CACHE_SLOTS),
+        ] {
+            let (keys, landed) = filled(keys, slots);
+            assert!(
+                keys > landed,
+                "{} keys over {} slots of the {} cache, so no slot was written twice and nothing was evicted",
+                keys,
+                landed,
+                name
+            );
+        }
     }
 
     /// A remembered score is read back rather than recomputed, which is the
@@ -988,13 +1299,69 @@ mod evaluate {
     #[test]
     fn a_score_is_remembered_under_the_key_that_wrote_it() {
         let board = Board::from_fen(fens::MIDDLEGAME).unwrap();
-        let mut cache = ShelterCache::default();
+        let mut caches = Caches::default();
         let key = board.shelter_key();
         let slot = (key as usize) & (SHELTER_CACHE_SLOTS - 1);
-        assert_eq!(cache.entries[slot].key, 0, "the slot starts empty");
-        let first = eval_cached(&board, &mut cache);
-        assert_eq!(cache.entries[slot].key, key);
-        assert_eq!(cache.entries[slot].packed, shelter_with(&board, &SHELTER));
-        assert_eq!(eval_cached(&board, &mut cache), first);
+        assert_eq!(caches.shelter.entries[slot].key, 0, "the slot starts empty");
+        let first = eval_cached(&board, &mut caches.shelter, &mut caches.pawns);
+        assert_eq!(caches.shelter.entries[slot].key, key);
+        assert_eq!(
+            caches.shelter.entries[slot].packed,
+            shelter_with(&board, &SHELTER)
+        );
+        assert_eq!(
+            eval_cached(&board, &mut caches.shelter, &mut caches.pawns),
+            first
+        );
+    }
+
+    /// The same for the pawn structure, under the pawn key rather than that
+    /// key with the two kings folded in.
+    ///
+    /// The shipped weights are zero, so the score remembered is zero and an
+    /// entry holding one would say nothing. What this reads instead is the
+    /// key: an entry written under the position's pawn key is the entry the
+    /// next position with those pawns is handed, whatever a fit later makes
+    /// it worth.
+    #[test]
+    fn a_pawn_structure_is_remembered_under_the_pawn_key() {
+        let board = Board::from_fen(fens::MIDDLEGAME).unwrap();
+        let mut caches = Caches::default();
+        let key = board.pawn_key;
+        assert_ne!(key, 0, "an empty entry would answer this one correctly");
+        let slot = (key as usize) & (PAWN_CACHE_SLOTS - 1);
+        assert_eq!(caches.pawns.entries[slot].key, 0, "the slot starts empty");
+        let first = eval_cached(&board, &mut caches.shelter, &mut caches.pawns);
+        assert_eq!(caches.pawns.entries[slot].key, key);
+        assert_eq!(
+            caches.pawns.entries[slot].packed,
+            pawn_structure_with(&board, &PAWN_STRUCTURE)
+        );
+        assert_eq!(
+            eval_cached(&board, &mut caches.shelter, &mut caches.pawns),
+            first
+        );
+    }
+
+    /// A king move leaves the pawn key alone and moves the shelter key, so
+    /// the entry this term wrote answers the position after it and the
+    /// shelter's does not.
+    ///
+    /// The difference between the two caches, stated rather than implied. It
+    /// is why this term could be cached in the commit that introduced it
+    /// where the shelter's cache had to wait for a fit to show it was needed.
+    #[test]
+    fn a_king_move_keeps_the_pawn_entry_and_loses_the_shelter_one() {
+        let board = Board::from_fen("4k3/pppppppp/8/8/8/8/PPPPPPPP/4K3 w - - 0 1").unwrap();
+        let from = coordinate_to_index(1, File::E);
+        let king = board
+            .generate_moves()
+            .into_iter()
+            .find(|m| m.from == from)
+            .expect("the king on e1 has a move here");
+        let mut moved = board.clone();
+        assert!(moved.make_move(&king));
+        assert_eq!(moved.pawn_key, board.pawn_key);
+        assert_ne!(moved.shelter_key(), board.shelter_key());
     }
 }

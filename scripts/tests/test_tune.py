@@ -157,18 +157,20 @@ def test_a_weights_line_of_the_wrong_length_is_refused():
         (774, "before mobility"),
         (782, "before the king's shelter"),
         (790, "before the pawn storm"),
+        (796, "before the pawn structure"),
     ],
 )
 def test_a_vector_of_an_earlier_layout_is_refused(tmp_path, count, message):
-    """518, 774, 782 and 790 are the wrong lengths that would otherwise read as
-    right ones: every slot any of them names exists in the layout that replaced
-    it, so their numbers would land on the wrong weights rather than failing to
-    parse. Both doors a vector comes through say what changed."""
+    """518, 774, 782, 790 and 796 are the wrong lengths that would otherwise
+    read as right ones: every slot any of them names exists in the layout that
+    replaced it, so their numbers would land on the wrong weights rather than
+    failing to parse. Both doors a vector comes through say what changed."""
     assert tune.SHARED_TABLE_SLOTS == 518
     assert tune.NO_MOBILITY_SLOTS == 774
     assert tune.NO_SHELTER_SLOTS == 782
     assert tune.NO_STORM_SLOTS == 790
-    assert tune.SLOTS == 796
+    assert tune.NO_PAWN_SLOTS == 796
+    assert tune.SLOTS == 812
     old = [0] * count
     with pytest.raises(ValueError, match=message):
         tune.parse_terms(
@@ -521,7 +523,25 @@ def test_the_shelter_weights_are_priced_too():
     inside, worst = tune.bounds_hold(np.array(vector))
     assert inside
     assert worst == 2 * tune.MAX_SHELTER * tune.SHELTER_SLOTS * 10
-    huge = weights({slot: 5000 for slot in range(tune.SHELTER_SLOT, tune.SLOTS)})
+    huge = weights({slot: 5000 for slot in range(tune.SHELTER_SLOT, tune.PAWN_SLOT)})
+    assert not tune.bounds_hold(np.array(huge))[0]
+
+
+def test_the_pawn_structure_weights_are_priced_too():
+    """And the block after that one. Eight of each count a side, both colours,
+    at the larger of the two halves, which here is the endgame one at four a
+    count."""
+    vector = weights(
+        {tune.PAWN_SLOT + index: 3 for index in range(tune.PAWN_SLOTS)}
+        | {
+            tune.PAWN_SLOT + tune.PAWN_SLOTS + index: 4
+            for index in range(tune.PAWN_SLOTS)
+        }
+    )
+    inside, worst = tune.bounds_hold(np.array(vector))
+    assert inside
+    assert worst == 2 * tune.MAX_PAWNS * tune.PAWN_SLOTS * 4
+    huge = weights({slot: 5000 for slot in range(tune.PAWN_SLOT, tune.SLOTS)})
     assert not tune.bounds_hold(np.array(huge))[0]
 
 
@@ -566,12 +586,16 @@ def test_a_term_is_fitted_with_every_earlier_term_held():
     """The holds leave one term free, which is what lets a match read the
     change as that term. Holding the tables alone leaves mobility free, so a
     shelter fit that passed only that would have refitted mobility beside the
-    shelter and called the pair king safety."""
+    shelter and called the pair king safety. The same again one term on: two
+    holds leave the shelter free, and a pawn structure fit wants three."""
     tables = tune.frozen_slots(False, True)
     assert not tables[tune.MOBILITY_SLOT : tune.SHELTER_SLOT].any()
     both = tune.frozen_slots(False, True, True)
     assert both[: tune.SHELTER_SLOT].all()
-    assert not both[tune.SHELTER_SLOT :].any()
+    assert not both[tune.SHELTER_SLOT : tune.PAWN_SLOT].any()
+    three = tune.frozen_slots(False, True, True, True)
+    assert three[: tune.PAWN_SLOT].all()
+    assert not three[tune.PAWN_SLOT :].any()
 
 
 def test_quantizing_rounds_to_nearest():

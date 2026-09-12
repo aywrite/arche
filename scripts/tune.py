@@ -99,9 +99,11 @@ from groups import CALIBRATION, group_of
 # The weight vector, as `arche-core/src/tune.rs` lays it out: 384 midgame table
 # entries, then 384 endgame ones in the same order, then the six material
 # values, then four midgame mobility weights and the same four at the endgame
-# end, then the seven shelter weights the same way. A square's two weights are
-# MIDGAME_SLOTS apart, a piece kind's two mobility weights MOBILITY_SLOTS apart
-# and a shelter count's two SHELTER_SLOTS apart.
+# end, then the seven shelter weights the same way, then the eight pawn
+# structure weights the same way again. A square's two weights are
+# MIDGAME_SLOTS apart, a piece kind's two mobility weights MOBILITY_SLOTS
+# apart, a shelter count's two SHELTER_SLOTS apart and a pawn count's two
+# PAWN_SLOTS apart.
 MIDGAME_SLOTS = 6 * 64
 ENDGAME_SLOTS = 6 * 64
 MATERIAL_SLOT = MIDGAME_SLOTS + ENDGAME_SLOTS
@@ -109,7 +111,9 @@ MOBILITY_SLOT = MATERIAL_SLOT + 6
 MOBILITY_SLOTS = 4
 SHELTER_SLOT = MOBILITY_SLOT + 2 * MOBILITY_SLOTS
 SHELTER_SLOTS = 7
-SLOTS = SHELTER_SLOT + 2 * SHELTER_SLOTS
+PAWN_SLOT = SHELTER_SLOT + 2 * SHELTER_SLOTS
+PAWN_SLOTS = 8
+SLOTS = PAWN_SLOT + 2 * PAWN_SLOTS
 
 # The layout before a knight, a bishop, a rook and a queen were given an
 # endgame table of their own: the same 384 midgame entries, the pawn's endgame
@@ -130,6 +134,12 @@ NO_MOBILITY_SLOTS = MOBILITY_SLOT
 NO_SHELTER_SLOTS = SHELTER_SLOT
 NO_STORM_SLOTS = SHELTER_SLOT + 2 * 4
 
+# The layout after the shelter and before the pawn structure, which is the
+# most recent mistake of the five and so the likeliest: a row extracted or a
+# vector fitted one term back, when every slot it holds still means here what
+# it meant there.
+NO_PAWN_SLOTS = PAWN_SLOT
+
 # The most one knight, one bishop, one rook and one queen can each cover, which
 # is what a mobility weight is priced against in bounds_hold. A queen in the
 # middle of an empty board is the twenty seven.
@@ -140,6 +150,13 @@ MAX_COUNT = np.array([8, 13, 14, 27])
 # ranks counted, its own two and the storm's three, and three files, which the
 # open and half open counts share rather than reach each.
 MAX_SHELTER = 3
+
+# The most of each pawn count one side can show, which is what a pawn
+# structure weight is priced against in bounds_hold. Eight, since that is how
+# many pawns a side has. Charging all eight counts at eight is far past any
+# position, since eight pawns cannot fill sixty four counts between them, and
+# the looseness is on the safe side.
+MAX_PAWNS = 8
 
 # What the opening's pieces come to on the scale the taper is read at, which is
 # what the piece square half of a row divides by.
@@ -200,6 +217,12 @@ def check_layout(count, what):
             f"{what} of {count}, which is the layout from before the pawn "
             f"storm joined the king's shelter. The vector is {SLOTS} now, so "
             f"extract the rows again and refit"
+        )
+    if count == NO_PAWN_SLOTS:
+        raise ValueError(
+            f"{what} of {count}, which is the layout from before the pawn "
+            f"structure was measured. The vector is {SLOTS} now, so extract "
+            f"the rows again and refit"
         )
     raise ValueError(f"{what} of {count}, expected {SLOTS}")
 
@@ -887,17 +910,19 @@ def bounds_hold(weights):
     A one-sided boardful, both colours, against the sixteen bits the halves
     have to stay inside.
 
-    Mobility and the shelter are in the same sum, so they are priced here too
+    All three leaf terms are in the same sum, so they are priced here too
     rather than left out of a figure that reads as the whole vector. A piece of
-    each kind at its widest is the mobility price, and three of each of its four
-    counts is the shelter's. Both are screens rather than proofs: a side that
-    promoted could cover more, the worst a board can be arranged into comes to
-    313 squares against the 62 mobility charges, and a side's open and half open
-    files come to three between them rather than three each. Over the 1,809
-    positions of the three suites the largest one-sided mobility difference was
-    37, so at the centipawn weights a fit produces neither figure is near the
-    sixteen bits. What this catches is a vector that has gone somewhere else
-    entirely.
+    each kind at its widest is the mobility price, three of each of its seven
+    counts is the shelter's, and eight of each of its eight is the pawn
+    structure's. All are screens rather than proofs: a side that promoted could
+    cover more, the worst a board can be arranged into comes to 313 squares
+    against the 62 mobility charges, a side's open and half open files come to
+    three between them rather than three each, and eight pawns cannot fill the
+    pawn term's sixty four charges between them. Over
+    the 1,809 positions of the three suites the largest one-sided mobility
+    difference was 37, so at the centipawn weights a fit produces none of the
+    figures is near the sixteen bits. What this catches is a vector that has
+    gone somewhere else entirely.
     """
     weights = np.abs(np.asarray(weights))
     tables = weights[:MATERIAL_SLOT]
@@ -906,8 +931,10 @@ def bounds_hold(weights):
     worst = 2 * max(int(midgame.max(axis=0).sum()), int(endgame.max(axis=0).sum()))
     mobility = weights[MOBILITY_SLOT:SHELTER_SLOT].reshape(2, MOBILITY_SLOTS)
     worst += 2 * int((mobility * MAX_COUNT).sum(axis=1).max())
-    shelter = weights[SHELTER_SLOT:].reshape(2, SHELTER_SLOTS)
+    shelter = weights[SHELTER_SLOT:PAWN_SLOT].reshape(2, SHELTER_SLOTS)
     worst += 2 * MAX_SHELTER * int(shelter.sum(axis=1).max())
+    pawns = weights[PAWN_SLOT:].reshape(2, PAWN_SLOTS)
+    worst += 2 * MAX_PAWNS * int(pawns.sum(axis=1).max())
     return worst < 32767, worst
 
 
@@ -1432,7 +1459,9 @@ def command_loss(args):
     return 0
 
 
-def frozen_slots(free_material, held_tables=False, held_mobility=False):
+def frozen_slots(
+    free_material, held_tables=False, held_mobility=False, held_shelter=False
+):
     """Which weights a fit holds where they are.
 
     Material is held for a first fit. `eval::material` is read by the delta
@@ -1449,12 +1478,15 @@ def frozen_slots(free_material, held_tables=False, held_mobility=False):
     the only thing that moved and the only thing the match can be reading.
 
     Mobility is a hold of its own for that same reason, since it was fitted
-    after the tables and before the shelter. Each term earns one as it is
-    fitted, and a fit of the newest term names every hold below it, so a
-    shelter fit passes `--hold-tables --hold-mobility`. Holding the tables
-    alone leaves the eight mobility weights free, which is a refit of mobility
-    beside the fourteen shelter ones and the attribution the holds exist to
-    keep.
+    after the tables and before the shelter, and the shelter is one for the
+    same reason again. Each term earns a hold as it is fitted, and a fit of
+    the newest term names every hold below it, so a shelter fit passes
+    `--hold-tables --hold-mobility` and a pawn structure fit passes
+    `--hold-tables --hold-mobility --hold-shelter`. Holding the tables alone
+    leaves the eight mobility weights free, which is a refit of mobility
+    beside the newer term and the attribution the holds exist to keep. That is
+    not hypothetical: `1b0862a` found half of the king safety fit's apparent
+    gain to be a mobility refit that no hold had stopped.
     """
     frozen = np.zeros(SLOTS, dtype=bool)
     if not free_material:
@@ -1463,13 +1495,17 @@ def frozen_slots(free_material, held_tables=False, held_mobility=False):
         frozen[:MATERIAL_SLOT] = True
     if held_mobility:
         frozen[MOBILITY_SLOT:SHELTER_SLOT] = True
+    if held_shelter:
+        frozen[SHELTER_SLOT:PAWN_SLOT] = True
     return frozen
 
 
 def command_cv(args):
     corpus = load(args)
     start = corpus.weights.copy()
-    frozen = frozen_slots(args.free_material, args.hold_tables, args.hold_mobility)
+    frozen = frozen_slots(
+        args.free_material, args.hold_tables, args.hold_mobility, args.hold_shelter
+    )
     errors, outside = cross_validate(
         corpus, args.penalties, start, frozen, args.iterations
     )
@@ -1489,7 +1525,9 @@ def command_cv(args):
 def command_fit(args):
     corpus = load(args)
     start = corpus.weights.copy()
-    frozen = frozen_slots(args.free_material, args.hold_tables, args.hold_mobility)
+    frozen = frozen_slots(
+        args.free_material, args.hold_tables, args.hold_mobility, args.hold_shelter
+    )
     k = args.k or fit_k(
         corpus.scores(corpus.weights)[corpus.train],
         corpus.results[corpus.train],
@@ -1546,7 +1584,9 @@ def command_curve(args):
     corpus = load(args)
     shares = curve_shares(args.shares, args.draws)
     start = corpus.weights.copy()
-    frozen = frozen_slots(args.free_material, args.hold_tables, args.hold_mobility)
+    frozen = frozen_slots(
+        args.free_material, args.hold_tables, args.hold_mobility, args.hold_shelter
+    )
     k = args.k or fit_k(
         corpus.scores(corpus.weights)[corpus.train],
         corpus.results[corpus.train],
@@ -1727,6 +1767,12 @@ def main(argv=None):
             action="store_true",
             help="hold the eight mobility weights, which a fit for a term "
             "added after them passes alongside --hold-tables",
+        )
+        command.add_argument(
+            "--hold-shelter",
+            action="store_true",
+            help="hold the fourteen king shelter weights, which a fit for a "
+            "term added after them passes alongside the two holds above",
         )
     fit = commands.choices["fit"]
     fit.add_argument("--out", help="where to write the fitted vector")
