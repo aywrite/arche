@@ -27,6 +27,10 @@ SCRIPT = SCRIPTS / "match_estimate.py"
 
 CANDIDATE = "new"
 BASELINE = "old"
+# What the workflow tells the estimate it played against, which is not the
+# name fastchess played it under: the trailer has to still resolve months
+# later, so a baseline that is not a release tag goes in as its sha.
+BASE = "ce8b662"
 
 # the comment fastchess puts on the last move, with the reason its tail
 PLAYED = (
@@ -320,7 +324,7 @@ class TestCommandLine:
                 "--candidate",
                 CANDIDATE,
                 "--baseline",
-                BASELINE,
+                BASE,
                 "--tc",
                 "30+0.3",
                 *arguments,
@@ -348,7 +352,7 @@ class TestCommandLine:
 
         line = self.run(tmp_path, [drawn(1) + pair(2)], "--trailer").stdout
         assert line.startswith("Elo: +")
-        assert line.endswith("(4 games, 30+0.3, vs old)\n")
+        assert line.endswith("(4 games, 30+0.3, vs ce8b662)\n")
         message = (
             "perf(search): Sort less\n\nBench: 1\n"
             "Speed: +1.0% (bench nps, 5 interleaved rounds vs a1b2c3d,"
@@ -383,7 +387,7 @@ class TestCommandLine:
         # the interval and the count are all the test's: the batch on its own
         # reads +191 ±321 over 4 games, which is no claim about 214 of them
         assert line == (
-            "Elo: +20 ±15 (sprt [0, 10] passed, 214 games, 30+0.3, vs old)\n"
+            "Elo: +20 ±15 (sprt [0, 10] passed, 214 games, 30+0.3, vs ce8b662)\n"
         )
         message = (
             f"fix(search): Stop the reduction eating the last ply\n\nBench: 1\n{line}"
@@ -395,7 +399,7 @@ class TestCommandLine:
             tmp_path, [drawn(1) + pair(2)], "--trailer", "--elo0", "0", "--elo1", "10"
         ).stdout
         assert line == (
-            "Elo: +191 ±321 (sprt [0, 10] inconclusive, 4 games, 30+0.3, vs old)\n"
+            "Elo: +191 ±321 (sprt [0, 10] inconclusive, 4 games, 30+0.3, vs ce8b662)\n"
         )
 
     def test_the_trailer_counts_the_paired_games_of_a_cut_off_shard(self, tmp_path):
@@ -411,7 +415,9 @@ class TestCommandLine:
             "--elo1",
             "10",
         ).stdout
-        assert line.endswith("(sprt [0, 10] inconclusive, 2 games, 30+0.3, vs old)\n")
+        assert line.endswith(
+            "(sprt [0, 10] inconclusive, 2 games, 30+0.3, vs ce8b662)\n"
+        )
 
     def test_one_hypothesis_without_the_other_is_not_a_test(self, tmp_path):
         result = self.run(tmp_path, [drawn(1)], "--elo0", "0")
@@ -436,7 +442,7 @@ class TestCommandLine:
             "0,0,0,0,110",
         ).stdout
         assert line == (
-            "Elo: not measured (sprt [0, 10] passed, 224 games, 30+0.3, vs old)\n"
+            "Elo: not measured (sprt [0, 10] passed, 224 games, 30+0.3, vs ce8b662)\n"
         )
         message = f"fix(search): Finish depth one\n\nBench: 1\n{line}"
         assert check_trailers.problems(message) == [], line
@@ -649,7 +655,7 @@ class TestJson:
             "command": "match_estimate",
         }
         assert written["candidate"] == CANDIDATE
-        assert written["baseline"] == BASELINE
+        assert written["baseline"] == BASE
         assert written["tc"] == "30+0.3"
         assert written["games"] == 64
         assert written["pairs"] == 32

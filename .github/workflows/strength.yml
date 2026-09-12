@@ -597,8 +597,16 @@ jobs:
           # against the bounds. fastchess never ran the test, so there is no
           # result block to take a verdict from and no second reading to
           # disagree with this one
+          # What the trailer says it played against has to still name the same
+          # build when the trailer is read back. A release tag does, so it is
+          # kept as it is; anything else is a branch or a ref that moves, so
+          # the sha it resolved to today goes in instead of its name.
+          case "$PREVIOUS" in
+            v[0-9]*.[0-9]*.[0-9]*) base="$PREVIOUS" ;;
+            *) base="${BASELINE_SHA:0:8}" ;;
+          esac
           estimate=(python3 scripts/match_estimate.py "${games[@]}"
-                    --candidate "$CANDIDATE" --baseline "$PREVIOUS"
+                    --candidate "$CANDIDATE" --baseline "$base"
                     --tc "$TIME_CONTROL")
           if [ "$SPRT" = "true" ]; then
             estimate+=(--elo0 "$ELO0" --elo1 "$ELO1" --prior-pairs "$PRIOR_PAIRS")

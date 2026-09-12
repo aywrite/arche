@@ -97,8 +97,9 @@ def test_the_elo_format_is_fixed_when_present():
     for value in [
         "+12 ±8 (sprt [0, 10] passed, 1240 games, 10+0.1, vs v0.3.10)",
         "-2 ±9 (sprt [0, 10] failed, 1240 games, 10+0.1, vs v0.3.10)",
-        "+12 ±8 (sprt [-1.5, 2.5] inconclusive, 100 games, 10+0.1, vs master)",
-        "-3 ±11 (500 games, 10+0.1, vs master)",
+        "+12 ±8 (sprt [-1.5, 2.5] inconclusive, 100 games, 10+0.1, vs 96bad352)",
+        "-3 ±11 (500 games, 10+0.1, vs 96bad35)",
+        "+4 ±9 (500 games, 10+0.1, vs v0.4.2-rc.1)",
         "not measured",
         # a sweep has no elo to state, and the test it settled still does
         "not measured (sprt [0, 10] passed, 500 games, 10+0.1, vs v0.3.10)",
@@ -109,7 +110,29 @@ def test_the_elo_format_is_fixed_when_present():
         # sprt bounds with no verdict: the estimate alone is not the result
         "+12 ±8 (sprt [0, 10], 1240 games, 10+0.1, vs v0.3.10)",
         # no elo and no verdict either: the games are not the claim
-        "not measured (500 games, 10+0.1, vs master)",
+        "not measured (500 games, 10+0.1, vs 96bad35)",
+    ]:
+        assert problems(f"{ENGINE}\n\nBench: 1\nElo: {value}\n") == [
+            f"Elo: is not in the shape the strength workflow prints, got {value}"
+        ], value
+
+
+def test_the_base_played_against_has_to_still_resolve():
+    """A branch name is not a base.
+
+    The figure belongs to the two builds that played, and a trailer is read
+    months later. `vs master` names whatever master is on the day it is read,
+    and the run's own artifacts are kept for ninety days, so after that
+    nothing says what was played. A commit or a release tag stays put.
+    """
+    for value in [
+        "+12 ±18 (sprt [-10, 0] inconclusive, 840 games, 10+0.1, vs master)",
+        "-3 ±11 (500 games, 10+0.1, vs the previous release)",
+        "-3 ±11 (500 games, 10+0.1, vs some-branch)",
+        # not a release tag: the tags are three numbers
+        "-3 ±11 (500 games, 10+0.1, vs v0.4)",
+        # a sha shorter than git will resolve on its own
+        "-3 ±11 (500 games, 10+0.1, vs 96bad)",
     ]:
         assert problems(f"{ENGINE}\n\nBench: 1\nElo: {value}\n") == [
             f"Elo: is not in the shape the strength workflow prints, got {value}"

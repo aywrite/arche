@@ -38,7 +38,12 @@ SPEED = re.compile(
 # an sprt names its verdict: bounds alone would leave a passed test and a
 # failed one telling the same story
 SPRT = r"sprt \[-?\d+(\.\d+)?, -?\d+(\.\d+)?\] (passed|failed|inconclusive), "
-PLAYED = r"\d+ games, [^,()]+, vs [^()]+"
+# What was played against has to name the same build when the trailer is read
+# back: a commit, or a release tag. A branch moves, so `vs master` says what
+# the figure was measured against only on the day it was written, and the run
+# that could have said more keeps its artifacts for ninety days.
+BASE = r"(?:[0-9a-f]{7,40}|v\d+\.\d+\.\d+(?:-[0-9A-Za-z.]+)?)"
+PLAYED = rf"\d+ games, [^,()]+, vs {BASE}"
 # A match with no estimate to state says so. It still carries the verdict when
 # a test reached one, since a settled test says something a missing number does
 # not, so the bare form and the one that names an sprt are both accepted.
