@@ -145,9 +145,13 @@ pub(crate) const SHELTER_TERMS: usize = 7;
 /// factor of 3.9. That is outside its interval, which the mobility fit's
 /// reading was not.
 ///
-/// The sealed group has not been opened. What it is for is one reading of a
-/// final vector, and the match is what says whether this is one, so a seal
-/// spent here on a vector the games then reject could not be spent again.
+/// The sealed group was opened once, after the games had accepted this
+/// vector, over 5,772 games and 324,273 positions no fit and no ridge choice
+/// had read. It scores 0.090914 at zero and 0.090377 at these, a paired
+/// difference of -0.000537 against a standard error of 0.000118 at a design
+/// factor of 3.9. That is outside its interval, and 0.68 standard errors
+/// from the selection group's reading, so the two groups agree. The piece
+/// square fit's two did not.
 ///
 /// Not one of the fourteen rounded to nothing, so every count is priced and
 /// none can be left uncounted at the leaf the way `SCORED_KINDS` leaves a
