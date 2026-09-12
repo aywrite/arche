@@ -1432,7 +1432,7 @@ def command_loss(args):
     return 0
 
 
-def frozen_slots(free_material, held_tables=False):
+def frozen_slots(free_material, held_tables=False, held_mobility=False):
     """Which weights a fit holds where they are.
 
     Material is held for a first fit. `eval::material` is read by the delta
@@ -1447,19 +1447,29 @@ def frozen_slots(free_material, held_tables=False):
     fitted on these same games, so refitting them beside a new term leaves a
     match unable to say which of the two it measured. Held, the new weights are
     the only thing that moved and the only thing the match can be reading.
+
+    Mobility is a hold of its own for that same reason, since it was fitted
+    after the tables and before the shelter. Each term earns one as it is
+    fitted, and a fit of the newest term names every hold below it, so a
+    shelter fit passes `--hold-tables --hold-mobility`. Holding the tables
+    alone leaves the eight mobility weights free, which is a refit of mobility
+    beside the fourteen shelter ones and the attribution the holds exist to
+    keep.
     """
     frozen = np.zeros(SLOTS, dtype=bool)
     if not free_material:
         frozen[MATERIAL_SLOT:MOBILITY_SLOT] = True
     if held_tables:
         frozen[:MATERIAL_SLOT] = True
+    if held_mobility:
+        frozen[MOBILITY_SLOT:SHELTER_SLOT] = True
     return frozen
 
 
 def command_cv(args):
     corpus = load(args)
     start = corpus.weights.copy()
-    frozen = frozen_slots(args.free_material, args.hold_tables)
+    frozen = frozen_slots(args.free_material, args.hold_tables, args.hold_mobility)
     errors, outside = cross_validate(
         corpus, args.penalties, start, frozen, args.iterations
     )
@@ -1479,7 +1489,7 @@ def command_cv(args):
 def command_fit(args):
     corpus = load(args)
     start = corpus.weights.copy()
-    frozen = frozen_slots(args.free_material, args.hold_tables)
+    frozen = frozen_slots(args.free_material, args.hold_tables, args.hold_mobility)
     k = args.k or fit_k(
         corpus.scores(corpus.weights)[corpus.train],
         corpus.results[corpus.train],
@@ -1536,7 +1546,7 @@ def command_curve(args):
     corpus = load(args)
     shares = curve_shares(args.shares, args.draws)
     start = corpus.weights.copy()
-    frozen = frozen_slots(args.free_material)
+    frozen = frozen_slots(args.free_material, args.hold_tables, args.hold_mobility)
     k = args.k or fit_k(
         corpus.scores(corpus.weights)[corpus.train],
         corpus.results[corpus.train],
@@ -1711,6 +1721,12 @@ def main(argv=None):
             action="store_true",
             help="hold the 768 piece square entries, so a fit moves the term "
             "added after them and nothing else",
+        )
+        command.add_argument(
+            "--hold-mobility",
+            action="store_true",
+            help="hold the eight mobility weights, which a fit for a term "
+            "added after them passes alongside --hold-tables",
         )
     fit = commands.choices["fit"]
     fit.add_argument("--out", help="where to write the fitted vector")

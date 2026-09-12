@@ -552,13 +552,25 @@ def test_the_material_block_is_the_only_thing_outside_the_divide():
 def test_a_fit_is_free_to_move_the_leaf_terms_weights():
     """Material is held for a first fit and nothing after it is. Frozen at the
     material block's end instead, which is what it was before mobility, the
-    sixteen weights of the two leaf terms would sit at zero through the fit and
-    the arm would report a null result with nothing saying why."""
+    twenty two weights of the two leaf terms would sit at zero through the fit
+    and the arm would report a null result with nothing saying why."""
     frozen = tune.frozen_slots(False)
     assert frozen[tune.MATERIAL_SLOT : tune.MOBILITY_SLOT].all()
     assert not frozen[tune.MOBILITY_SLOT :].any()
     assert not frozen[: tune.MATERIAL_SLOT].any()
     assert not tune.frozen_slots(True).any()
+
+
+def test_a_term_is_fitted_with_every_earlier_term_held():
+    """The holds leave one term free, which is what lets a match read the
+    change as that term. Holding the tables alone leaves mobility free, so a
+    shelter fit that passed only that would have refitted mobility beside the
+    shelter and called the pair king safety."""
+    tables = tune.frozen_slots(False, True)
+    assert not tables[tune.MOBILITY_SLOT : tune.SHELTER_SLOT].any()
+    both = tune.frozen_slots(False, True, True)
+    assert both[: tune.SHELTER_SLOT].all()
+    assert not both[tune.SHELTER_SLOT :].any()
 
 
 def test_quantizing_rounds_to_nearest():
