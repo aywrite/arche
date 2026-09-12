@@ -623,6 +623,19 @@ def test_a_term_is_fitted_with_every_earlier_term_held():
     assert not three[tune.PAWN_SLOT :].any()
 
 
+def test_a_refit_holds_the_terms_above_it_as_well_as_the_ones_below():
+    """A term fitted once can be fitted again on a larger corpus, and then
+    every other term is older than the fit rather than newer. A mobility refit
+    holds the tables below it and the shelter and the pawn structure above, so
+    the eight weights are the only thing that moves and a match reads them
+    alone. Without the last hold the sixteen pawn weights move too, which is
+    the confound `1b0862a` found the first time a hold was missing."""
+    refit = tune.frozen_slots(False, True, False, True, True)
+    assert refit[: tune.MOBILITY_SLOT].all()
+    assert not refit[tune.MOBILITY_SLOT : tune.SHELTER_SLOT].any()
+    assert refit[tune.SHELTER_SLOT :].all()
+
+
 def test_quantizing_rounds_to_nearest():
     assert list(tune.quantize([1.4, 1.6, -1.4, -1.6, 2.5])) == [1, 2, -1, -2, 2]
 
