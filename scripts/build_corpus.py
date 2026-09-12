@@ -82,7 +82,7 @@ from pathlib import Path
 
 import chess
 import chess.pgn
-from groups import group_of
+from groups import group_of, sealed_pairs
 
 # The opening book's plies, which every run plays out of the same book. Eight
 # full moves.
@@ -163,11 +163,14 @@ class Entry:
     unread.
     """
 
-    def __init__(self, identifier, key, result, played):
+    def __init__(self, identifier, key, result, played, sealed=None):
         self.id = identifier
         self.appearances = [(key, result)]
         # the table of every game read, by key, shared with every entry
         self._played = played
+        # the pairs the caller sealed, or none to draw the seal from the key.
+        # Shared with every entry the way the table above is
+        self._sealed = sealed
 
     def seen(self, key, result):
         """Another game reaching this position."""
@@ -185,7 +188,7 @@ class Entry:
 
     def group_of(self, key):
         """The group a game is in, which is its pair's."""
-        return group_of(self._played[key].pair)
+        return group_of(self._played[key].pair, self._sealed)
 
     @property
     def results(self):
@@ -271,7 +274,7 @@ def round_of(game):
     return UNKNOWN if found in ("", "?") else found
 
 
-def corpus(sourced, book_plies=BOOK_PLIES):
+def corpus(sourced, book_plies=BOOK_PLIES, sealed=None):
     """The unique post-book positions of the games, in the order they were
     first seen, with what each one's games said about it. Each game arrives
     with the run that played it, which `games_of` reads off the archive.
@@ -413,6 +416,11 @@ def main(argv=None):
     )
     parser.add_argument("--out", required=True, help="where to write the epd")
     parser.add_argument(
+        "--sealed",
+        help="a file naming the sealed pairs, one key to a line; without it "
+        "the sealed group is drawn from the keys",
+    )
+    parser.add_argument(
         "--book-plies",
         type=int,
         default=BOOK_PLIES,
@@ -420,7 +428,8 @@ def main(argv=None):
     )
     args = parser.parse_args(argv)
 
-    entries, counts = corpus(games_of(args.pgn), args.book_plies)
+    sealed = sealed_pairs(args.sealed) if args.sealed else None
+    entries, counts = corpus(games_of(args.pgn), args.book_plies, sealed)
     if not entries:
         print("build_corpus.py: the pgns hold no post-book position", file=sys.stderr)
         return 1

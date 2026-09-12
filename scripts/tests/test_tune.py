@@ -17,6 +17,7 @@ position by how often the corpus reached it, and that the calibration group is
 not read by anything here.
 """
 
+import hashlib
 import json
 import math
 
@@ -1175,3 +1176,40 @@ def test_the_calibration_group_is_not_read_by_a_fit(tmp_path, capsys):
         )
     assert written[0] == written[1]
     assert printed[0] == printed[1]
+
+
+def sealed_checksum(pairs):
+    """What `Sealed.checksum` answers for a set of pairs, which is how `final`
+    names the group it opened."""
+    return hashlib.sha256("\n".join(sorted(pairs)).encode("utf-8")).hexdigest()
+
+
+def test_a_named_seal_holds_out_the_games_it_names_and_no_others():
+    """The corpus splits on the file rather than on the key when it is given
+    one. Read through the checksum `final` logs, so what this asserts is the
+    identity of the group and not its size: the pairs named are sealed, no
+    other pair is, and the same corpus read without the file seals a different
+    set."""
+    vector = weights()
+    rows, raw = sample(vector)
+    _, parsed = tune.parse_terms(extraction(rows, vector))
+    labels = labels_of(raw)
+    named = {min(label.pair for label in labels.values())}
+    corpus = tune.Corpus(vector, parsed, labels, named)
+    assert corpus.sealed.checksum() == sealed_checksum(named)
+    assert named.isdisjoint(corpus.pairs)
+    assert set(corpus.groups) == {"train", "selection"}
+    drawn = tune.Corpus(vector, parsed, labels)
+    assert drawn.sealed.checksum() != sealed_checksum(named)
+
+
+def test_a_sealed_pair_the_extraction_never_reached_is_refused():
+    """A named pair with no row is a game the seal was drawn from that this
+    corpus does not hold, so the group is smaller than the file says it is.
+    The reading would then be over games a reader cannot name, which is worse
+    than no reading at all."""
+    vector = weights()
+    rows, raw = sample(vector)
+    _, parsed = tune.parse_terms(extraction(rows, vector))
+    with pytest.raises(ValueError, match="reach no row"):
+        tune.Corpus(vector, parsed, labels_of(raw), {"f" * 64})

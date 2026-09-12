@@ -192,6 +192,11 @@ def main(argv=None):
         "--out", help="rebuild the corpus epd here once the archive is current"
     )
     parser.add_argument(
+        "--sealed",
+        help="a file naming the sealed pairs, passed to the rebuild; without "
+        "it the sealed group is drawn from the keys",
+    )
+    parser.add_argument(
         "--repo", default=REPO, help="owner/name to harvest (default %(default)s)"
     )
     args = parser.parse_args(argv)
@@ -238,7 +243,8 @@ def main(argv=None):
         # a failed download still fails the run. Returning the builder's status
         # alone would report success over an arm's games left on a run that
         # expires, which is the loss this script exists to prevent
-        built = build_corpus.main([*files, "--out", args.out])
+        sealed = ["--sealed", args.sealed] if args.sealed else []
+        built = build_corpus.main([*files, "--out", args.out, *sealed])
         return built or (1 if failed else 0)
     return 1 if failed else 0
 

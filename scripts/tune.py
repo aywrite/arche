@@ -94,7 +94,7 @@ import sys
 from pathlib import Path
 
 import numpy as np
-from groups import CALIBRATION, group_of
+from groups import CALIBRATION, group_of, sealed_pairs
 
 # The weight vector, as `arche-core/src/tune.rs` lays it out: 384 midgame table
 # entries, then 384 endgame ones in the same order, then the six material
@@ -520,7 +520,7 @@ class Corpus:
     apart and scores them for `final` alone.
     """
 
-    def __init__(self, weights, rows, labels):
+    def __init__(self, weights, rows, labels, sealed=None):
         joined = [row for row in rows if row.id in labels]
         # a position appears in exactly one row, because build_corpus.py
         # deduplicates by fen before it labels and gives the row the lowest key
@@ -537,7 +537,19 @@ class Corpus:
                 raise ValueError(
                     f"the position {row.fen} is in {owner} and in {labels[row.id].game}"
                 )
-        groups = {row.id: group_of(labels[row.id].pair) for row in joined}
+        groups = {row.id: group_of(labels[row.id].pair, sealed) for row in joined}
+        if sealed is not None:
+            # a named pair that reached no row of this extraction is a game
+            # the seal was drawn from and the corpus does not hold, so the
+            # group is smaller than the file says it is. Silence there would
+            # be the one failure the seal cannot afford: a reading reported
+            # over games nobody can name
+            missing = sealed - {labels[row.id].pair for row in joined}
+            if missing:
+                raise ValueError(
+                    f"{len(missing)} sealed pairs reach no row of this "
+                    f"extraction, the first being {min(missing)}"
+                )
         self.sealed = Sealed(
             [row for row in joined if groups[row.id] == CALIBRATION], labels, weights
         )
@@ -1436,7 +1448,8 @@ def load(args):
         Path(args.terms).read_text(encoding="utf-8").splitlines()
     )
     labels = parse_corpus(Path(args.corpus).read_text(encoding="utf-8").splitlines())
-    corpus = Corpus(weights, rows, labels)
+    sealed = sealed_pairs(args.sealed) if getattr(args, "sealed", None) else None
+    corpus = Corpus(weights, rows, labels, sealed)
     if not len(corpus):
         raise SystemExit("tune.py: no row of the extraction is in the corpus")
     for name, mask in (("train", corpus.train), ("selection", corpus.selection)):
@@ -1733,6 +1746,12 @@ def main(argv=None):
         command = commands.add_parser(name)
         command.add_argument("--terms", required=True, help="an arche terms run")
         command.add_argument("--corpus", required=True, help="the epd it was run over")
+        command.add_argument(
+            "--sealed",
+            help="the file naming the sealed pairs the corpus was built with; "
+            "without it the sealed group is drawn from the keys, and a corpus "
+            "built with one and read without it holds out the wrong games",
+        )
     for name in ("loss", "fit", "final", "curve"):
         # cv fits K per fold on that fold's training games, so there is no one
         # constant for a caller to name

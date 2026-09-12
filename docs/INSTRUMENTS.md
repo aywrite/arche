@@ -776,6 +776,17 @@ of its own as it is fitted, and a fit of the newest term names every hold
 below it, so the shelter was fitted under two and the pawn structure is fitted
 under three.
 
+`--sealed` names the sealed group in a file rather than drawing it from the
+keys, one pair key to a line. The key rule seals the same fifth of the archive
+every time it is asked, because which fifth that is depends on the pairs and
+not on when they were played; so a vector revised after the group has been
+opened has no unread group left to be read against. The games that settle that
+are the ones played since, and naming them is how a run says so. Both halves
+of the tuner take the flag and both must be given the same file: a corpus
+built with one seal and fitted against another labels its rows by one group
+and holds out a different one. `tune.py final` still refuses a second reading
+of the same sealed games, by checksum over whichever group it is handed.
+
 ## What the table's key signature costs
 
 An entry keeps thirty two bits of the position key rather than all sixty
