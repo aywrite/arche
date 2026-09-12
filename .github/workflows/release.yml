@@ -73,14 +73,15 @@ jobs:
           - ubuntu-latest
           - macos-latest
           - windows-latest
-        # The x86-64 platforms get three builds: the baseline the tag always
-        # shipped, and the v2 and v3 microarchitecture levels, which is where
-        # popcnt and then avx2/bmi2 live. The evaluation counts pieces with
-        # count_ones and the generator pops bits with trailing_zeros, so the
-        # baseline build spells both out by hand. The node counts cannot move
-        # -- the flags change instructions, not the search -- which is what
-        # lets a variant be checked by running it. The mac runner is arm and
-        # needs no variants.
+        # The x86-64 platforms get three builds: the baseline, and the v2
+        # and v3 microarchitecture levels, which is where popcnt and then
+        # avx2/bmi2 live. The evaluation counts pieces with count_ones and
+        # the generator pops bits with trailing_zeros, so the baseline build
+        # spells both out by hand and pays 4.8% more instructions over the
+        # bench for it. The node counts cannot move (the flags change
+        # instructions, not the search), which is what lets a variant be
+        # checked by running it. The mac runner is arm and needs no
+        # variants.
         cpu: ["", x86-64-v2, x86-64-v3]
         exclude:
           - os: macos-latest
@@ -89,11 +90,22 @@ jobs:
             cpu: x86-64-v3
     runs-on: ${{ matrix.os }}
     env:
-      RUSTFLAGS: ${{ matrix.cpu && format('-C target-cpu={0}', matrix.cpu) || '' }}
-      # the plain build keeps the name every past release used; a variant
-      # says which level it needs, so nobody runs one on a cpu it will not
-      # start on without having chosen to
-      VARIANT: ${{ matrix.cpu == 'x86-64-v2' && '-v2' || matrix.cpu == 'x86-64-v3' && '-v3' || '' }}
+      # the baseline names its level rather than leaving this empty. An
+      # empty value has to survive as a set variable to override
+      # .cargo/config.toml, and windows is not reliably kind to those; the
+      # explicit flag builds the same bytes and does not depend on it
+      RUSTFLAGS: ${{ matrix.cpu && format('-C target-cpu={0}', matrix.cpu) || '-C target-cpu=x86-64' }}
+      # v2 takes the plain name, because it is what almost every machine
+      # downloading this can run and it is the faster build. The level a
+      # binary needs is in its name otherwise: -baseline for the one that
+      # runs on anything, -v3 for the one that wants avx2. The arm mac has
+      # one build and keeps the plain name, which is why the baseline
+      # suffix asks about the runner as well as the level.
+      #
+      # An empty result has to be the last arm of this expression: github
+      # treats the empty string as false, so `cond && '' || other` would
+      # take the other branch.
+      VARIANT: ${{ matrix.cpu == 'x86-64-v3' && '-v3' || (matrix.cpu == '' && matrix.os != 'macos-latest') && '-baseline' || '' }}
     # contents: write is the workflow's, restated because a job that declares
     # permissions gets these and no others. The other two are the attestation's:
     # the job asks github for a short lived signing certificate with its own
