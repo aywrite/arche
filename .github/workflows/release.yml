@@ -205,5 +205,5 @@ jobs:
       contents: write
     uses: ./.github/workflows/calibrate.yml
     with:
-      games: 26
+      games: 50
       publish: true
