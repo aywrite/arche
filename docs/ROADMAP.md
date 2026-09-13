@@ -21,14 +21,14 @@ the engine plays. Roughly in the order they look worth doing.
   and a pawnless minor piece advantage, neither of which the signatures reach
 - the rest of evaluation: the rest of king safety, the rest of pawn structure, and
   special cases such as the bishop pair and open files. Mobility is counted for the
-  knight, the bishop, the rook and the queen and has been fitted once, and the fit
-  left it a rook count:
-  six of the eight weights rounded to zero, so only the rook is counted at the leaf
-  until a refit prices another piece. King safety counts the pawns on the two ranks in
-  front of the king, the open and half open files beside it, and the enemy pawns on the
-  three ranks in front of it, and all fourteen of its weights are fitted. What is not
-  measured at all is the squares the enemy pieces attack around the
-  king, which wants the attack sets the mobility count already walks. The storm is followed
+  knight, the bishop, the rook and the queen and has been fitted twice. The first fit
+  read 1,812 games and rounded six of the eight weights to zero, which left the term a
+  rook count; the refit read twenty four times as many games, priced all four kinds and
+  left no weight at zero, so nothing is skipped at the leaf now. King safety counts the
+  pawns on the two ranks in front of the king, the open and half open files beside it,
+  and the enemy pawns on the three ranks in front of it, and all fourteen of its weights
+  are fitted. What is not measured at all is the squares the enemy pieces attack around
+  the king, which wants the attack sets the mobility count already walks. The storm is followed
   three ranks and no further, so a pawn four ranks out is not counted, and a storm pawn
   blocked by one of ours counts the same as a free one. Pawn structure counts a side's
   passed pawns by the rank they have reached, its isolated pawns and its doubled ones,
@@ -43,12 +43,17 @@ the engine plays. Roughly in the order they look worth doing.
   the square in front of a passer is occupied or attacked, how far each king stands
   from the promotion square, candidate pawns, connected and backward pawns, pawn
   islands, and the rule of the square. The first two are the valuable ones and
-  neither can sit behind a key over the pawns. The tuner that sentence asked for is
-  built: `arche terms`
+  neither can sit behind a key over the pawns. The tuner those want is built: `arche terms`
   states what each position's evaluation is made of and `scripts/tune.py` fits and scores a
   weight vector against the games, so a candidate term is one appended column whose
-  held-out loss can be read before there is engine code for it. What is not settled is
-  whether a fit on our own games buys strength, which is the re-tune's own sprt
+  held-out loss can be read before there is engine code for it. Whether a fit on our own
+  games buys strength is settled, and the answer is yes: four fits have each passed an
+  sprt bounded [0, 10] at 10+0.1, the twelve tables at +54 ±13 over 2,000 games, the
+  first mobility fit at +12 ±8 over 4,000, the mobility refit at +76 ±25 over 500 and the
+  pawn structure weights at +57 ±25 over 500, each against the baseline its own `Elo:`
+  trailer names, none of which is the commit it landed on. What a held-out loss still
+  cannot do is choose between two fits of one term: it favoured the first mobility fit
+  while covering zero, and the games are what ranked the two
 - the rest of the uci protocol
   - the only options advertised are `Hash`, the `Clear Hash` button and a `Threads` fixed at
     one, so everything else an interface might set, `Ponder` among them, is refused rather
@@ -143,6 +148,13 @@ the engine plays. Roughly in the order they look worth doing.
   whose king or rook is not standing on its square is dropped, and so is a square that is not
   on the rank a double push crosses, is occupied, has no pawn placed to take there, or has no
   enemy pawn behind it
+- nothing validates the ten `unsafe` occurrences, nine in `board.rs` and one in `misc.rs`.
+  `unsafe_op_in_unsafe_fn` is denied in `arche-core/Cargo.toml`, so every one of them sits
+  in a block carrying a `SAFETY` note, and the `arche` crate forbids unsafe outright. That
+  is the half a compiler can check. The other half is Miri, which needs nightly, and the
+  two sites where a slip is undefined behaviour rather than a wrong answer are the static
+  exchange gain array's `assume_init` and the move list's cast of its initialised prefix.
+  The exposure is carried knowingly until a scheduled Miri run reports on it
 
 ## Measured and rejected
 
