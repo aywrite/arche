@@ -53,7 +53,13 @@ jobs:
 
       - name: Read the engine version
         id: version
-        run: echo "version=$(grep -m1 '^version' Cargo.toml | cut -d'"' -f2)" >> "$GITHUB_OUTPUT"
+        run: |
+          # the same read as tag-release.yml and prepare-release.yml. A grep
+          # for the first line starting with version finds `version.workspace
+          # = true` in `[package]`, which holds no quote for cut to split on
+          # and passes straight through as the label
+          version=$(python3 -c "import tomllib; print(tomllib.load(open('Cargo.toml','rb'))['workspace']['package']['version'])")
+          echo "version=${version}" >> "$GITHUB_OUTPUT"
 
       - uses: docker/setup-buildx-action@37fe631027851001ddb9b187196cc803df7f5f0e # v4.3.0
 
