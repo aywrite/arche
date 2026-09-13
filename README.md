@@ -14,8 +14,10 @@ boards. The search is alpha beta with a transposition table, iterative deepening
 search, principal variation search, reverse futility pruning, a null move pass and a late move
 reduction. Captures are ordered by what a static exchange evaluation says the swap wins, with
 MVV-LVA breaking the ties between the ones it prices alike, and the quiet moves by the ones that
-have cut off before. Evaluation is material plus piece square tables, tapered between a
-middlegame and an endgame score.
+have cut off before. Evaluation is material, piece square tables, piece mobility, the
+pawns standing in front of each king, and pawn structure, tapered between a middlegame
+and an endgame score. The tables and the three leaf terms were fitted to the engine's
+own games; the material values are hand set.
 
 ### Background
 

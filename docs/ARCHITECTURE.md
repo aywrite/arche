@@ -22,9 +22,10 @@ and one per colour, with one bit per square. Most operations on them compile
 down to one or two instructions. The search is alpha beta with iterative
 deepening, quiescence search and a transposition table. Evaluation is
 material plus piece square tables, tapered between middlegame and endgame,
-plus three terms counted at the leaf: piece mobility, which ships as a rook
-count; king safety, which counts the pawns in front of each king, the open
-files beside it and the enemy pawns coming for it; and pawn structure, which
+plus three terms counted at the leaf: piece mobility, priced for the knight,
+the bishop, the rook and the queen; king safety, which counts the pawns in
+front of each king, the open files beside it and the enemy pawns coming for
+it; and pawn structure, which
 counts each side's passed pawns by rank, its isolated pawns and its doubled
 ones. All three are fitted to the engine's own archived games.
 
@@ -170,28 +171,39 @@ ones. All three are fitted to the engine's own archived games.
   so a dead GUI cannot leave a search running.
 - **params.rs**: Reads the word/value pairs UCI commands are made of, and
   the phrases where a name runs to more than one word, as `Clear Hash` does.
+- **command.rs**: What a command line argument is called and what words it
+  takes, declared once. The same list says which words may stand where the
+  depth would, which words are known at all, and how the usage spells the
+  line, so `--help` cannot describe a line the parser does not take.
 - **time_control.rs**: Reads the time part of a `go` line, and turns a clock
   into a time budget for one move.
 
 ## Code map: scripts
 
 Most of `scripts/` is measurement plumbing, described in DEVELOPMENT.md
-where each measurement is. Three of them are the offline half of the
-evaluation tuner, and they have tests under `scripts/tests` gated by the
-Scripts workflow:
+where each measurement is, or in the script's own header where it is not.
+`fit_attention.py` is the second kind: it fits the thirteen `ATTENTION_*`
+integers `engine.rs` carries, from a `reductions` ledger. The four below are
+the offline half of the evaluation tuner, and they have tests under
+`scripts/tests` gated by the Scripts workflow:
 
-- **groups.py**: Which of the three groups a game falls in, by the first
-  byte of its key. The two scripts below both need it, and a second copy of
-  the mapping would be a corpus built to one split and fitted against
-  another, which neither run would say a word about.
+- **groups.py**: Which of the three groups a pair of games falls in. The unit
+  is the pair, because a run plays every opening twice with the colours
+  reversed and a split that separated the two would hold half an opening out.
+  A pair falls where the first byte of its key puts it, unless a sealed set is
+  named in a file, which is how a second seal is drawn over games no reading
+  has seen. The two scripts below both need it, and a second copy of the
+  mapping would be a corpus built to one split and fitted against another,
+  which neither run would say a word about.
 - **harvest_games.py**: The strength runs' game artifacts down into an
   archive, then the corpus rebuilt from the whole of it. What keeps the
   games from expiring unharvested.
 - **build_corpus.py**: Archived strength-run pgns in, an epd of unique
   post-book positions out, each carrying the game it belongs to, the result
   from the side to move's point of view, and how many times it was reached.
-  The game is named by the sha256 of its movetext, which is what the split
-  reads. A position two games reached belongs to the group of the lower key
+  A game is named by the sha256 of its movetext and a pair by its two games,
+  and the pair key is what the split reads and what every row carries.
+  A position two games reached belongs to the group of the lower key
   and is labelled and weighted by that group's games alone, and the
   appearances in other groups are dropped rather than merged.
 - **tune.py**: The loss harness and the fit. Reads an `arche terms` run and
