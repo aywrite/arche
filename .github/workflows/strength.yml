@@ -57,6 +57,10 @@ on:
         description: Passed to fastchess as tc
         type: string
         default: 10+0.1
+      candidate_time_control:
+        description: A clock for the candidate alone, for a time odds match. Left empty both sides play time_control, which is every ordinary run. A figure from a run that sets this prices the clock and not the code, so it is a measurement and never an elo for a change.
+        type: string
+        default: ""
       book:
         description: The opening set the run plays, one of the books in scripts/book.sh. Figures on different books are not comparable.
         type: string
@@ -356,6 +360,7 @@ jobs:
       SHARDS: ${{ needs.resolve.outputs.count }}
       PAIRS: ${{ needs.resolve.outputs.pairs }}
       TIME_CONTROL: ${{ inputs.time_control }}
+      CANDIDATE_TIME_CONTROL: ${{ inputs.candidate_time_control }}
       # the book the resolve job accepted rather than the input it read, so a
       # shard plays what was checked
       BOOK: ${{ needs.resolve.outputs.book }}
@@ -441,11 +446,30 @@ jobs:
           # games played so far and exit, and 124 is how timeout says it had to
           # send it. A shard stopped that way played fewer games, and the
           # summary says so rather than losing the run
+          #
+          # A time odds run gives the candidate a clock of its own and leaves
+          # the baseline on the shared one. Unset, which is every ordinary
+          # run, both sides take the `-each` clock and the command below is
+          # the one it has always been.
+          # `-each tc=` reaches both engines and takes precedence over a tc
+          # given to one of them, so the clock cannot simply be added to the
+          # candidate: it has to leave `-each` altogether and be given to each
+          # engine separately. Unset, it stays in `-each` and the command is
+          # the one it has always been.
+          new_clock=()
+          old_clock=()
+          each_clock=("tc=${TIME_CONTROL}")
+          if [ -n "${CANDIDATE_TIME_CONTROL}" ]; then
+            new_clock=("tc=${CANDIDATE_TIME_CONTROL}")
+            old_clock=("tc=${TIME_CONTROL}")
+            each_clock=()
+            echo "::warning::time odds: the candidate plays ${CANDIDATE_TIME_CONTROL} against ${TIME_CONTROL}, so this run prices a clock and not a change"
+          fi
           status=0
           timeout -k 60 -s INT "${MAX_MATCH_MINUTES}m" ./fastchess \
-            -engine "name=$CANDIDATE" cmd=./new \
-            -engine "name=$PREVIOUS" cmd=./old \
-            -each proto=uci "tc=$TIME_CONTROL" "option.Hash=$HASH" \
+            -engine "name=$CANDIDATE" cmd=./new "${new_clock[@]}" \
+            -engine "name=$PREVIOUS" cmd=./old "${old_clock[@]}" \
+            -each proto=uci "${each_clock[@]}" "option.Hash=$HASH" \
             -startup-ms "$STARTUP_MS" \
             -openings "file=$BOOK_FILE" "format=$BOOK_FORMAT" order=sequential "start=$START" \
             -rounds "$PAIRS" -repeat -concurrency "$CONCURRENCY" -recover \
@@ -492,6 +516,9 @@ jobs:
             echo "start: ${START:-not chosen, the shard did not get that far}"
             echo "pairs: ${PAIRS}"
             echo "time_control: ${TIME_CONTROL}"
+            if [ -n "${CANDIDATE_TIME_CONTROL}" ]; then
+              echo "candidate_time_control: ${CANDIDATE_TIME_CONTROL}"
+            fi
             echo "hash_mb: ${HASH}"
             echo "concurrency: ${CONCURRENCY}"
             echo "startup_ms: ${STARTUP_MS}"
