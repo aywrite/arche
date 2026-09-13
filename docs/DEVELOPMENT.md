@@ -499,15 +499,23 @@ reading is more games than one job can hold. `shards` jobs play it at once
 instead. Each takes a slice of the book of its own: the openings are read in
 book order from an offset, the first shard's offset is a remainder of the seed
 and each shard after it starts a slice further along, so no two shards play the
-same opening. `scripts/book_slice.py` works the offsets out and the manifests
+same opening. The `book-slice` tool works the offsets out and the manifests
 record them, which is what makes a run replayable without depending on how
 fastchess draws its own openings. The estimate is then pooled over every
-shard's games by `scripts/match_estimate.py`, rather than taken from fastchess,
-which only ever sees the shard it ran. The figure and its interval are both
-read off pairs, since the two games of an opening are one draw and not two.
-A shard the clock stopped can leave a game with no partner, and such a game is
-in the score the shard table prints and in nothing else, so that the figure and
-the interval describe the same games.
+shard's games by `match-estimate`, rather than taken from fastchess, which only
+ever sees the shard it ran. The figure and its interval are both read off pairs,
+since the two games of an opening are one draw and not two. A shard the clock
+stopped can leave a game with no partner, and such a game is in the score the
+shard table prints and in nothing else, so that the figure and the interval
+describe the same games.
+
+The four tools a match is read with are the `mache` package, which has a
+repository of its own and is not in this tree: `match-estimate` pools the
+shards, `rating-estimate` fits the placement below, `match-terminations` counts
+how the games ended and `book-slice` cuts the openings. Both workflows get them
+from its composite action, which builds fastchess and fetches the books in the
+same step, so a match job installs nothing. What each tool computes, and what
+its figures do and do not describe, is written there.
 
 The release workflow calls the same workflow with five hundred games at 30+0.3
 across five shards, which is about ninety minutes of wall clock, and that run is
@@ -563,10 +571,11 @@ else fails the run rather than being played. The action fetched from the
 repository's default branch, which is a branch, and a branch moves under the
 run that names it: the manifest's `book_sha256` would record the change with
 nothing failing. It is the reason `scripts/opponent.sh` refuses a branch for an
-engine. The pin is part of the match-tools cache key as well, so moving it
-cannot leave a cache handing back the old file under the new one's name. Both
-books are fetched whether or not a run plays them, since four and a half
-megabytes between them is less than an input to choose would be worth.
+engine. The action that fetches them builds its cache key from
+`scripts/book.sh pin`, so moving the pin cannot leave a cache handing back the
+old file under the new one's name. Both books are fetched whether or not a run
+plays them, since four and a half megabytes between them is less than an input
+to choose would be worth.
 
 ### Asking whether instead of how much
 
@@ -580,13 +589,13 @@ the accepted error rates, five percent each way.
 
 The unit of the test is a batch, which is one run of the workflow. The shards
 play their slices with nothing watching, and the summary reads all of their
-games at once: `scripts/match_estimate.py` adds the pairs they played to the
-pairs the earlier batches of the same test played and works out the log
-likelihood ratio over all of them, under the same logistic model fastchess uses
-and against the same bounds. fastchess is not asked to run the test in ci at
-all, sharded or not. A test that stopped inside one shard would be looking
-after every game of a fifth of the evidence, and five shards each stopping
-themselves would be five tests rather than one.
+games at once: `match-estimate` adds the pairs they played to the pairs the
+earlier batches of the same test played and works out the log likelihood ratio
+over all of them, under the same logistic model fastchess uses and against the
+same bounds. fastchess is not asked to run the test in ci at all, sharded or
+not. A test that stopped inside one shard would be looking after every game of
+a fifth of the evidence, and five shards each stopping themselves would be five
+tests rather than one.
 
 - `elo0` and `elo1` are the hypotheses, in the same elo the summary reports.
   The defaults ask "is this worth ten elo, or nothing", about the size of
@@ -652,7 +661,8 @@ the [ccrl](https://computerchess.org.uk/) blitz list. It holds each opponent at
 its published rating and fits the one number that is unknown, which is ours:
 
 ```
-python3 scripts/rating_estimate.py gauntlet.pgn arche stash-v15.3:2173,stash-v17.0:2297
+pip install mache
+rating-estimate gauntlet.pgn arche stash-v15.3:2173,stash-v17.0:2297
 ```
 
 Locally the same thing is the fastchess command from the previous section with
