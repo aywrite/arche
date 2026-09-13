@@ -48,9 +48,9 @@ the engine plays. Roughly in the order they look worth doing.
   weight vector against the games, so a candidate term is one appended column whose
   held-out loss can be read before there is engine code for it. Whether a fit on our own
   games buys strength is settled, and the answer is yes: four fits have each passed an
-  sprt bounded [0, 10] at 10+0.1, the twelve tables at +54 Â±13 over 2,000 games, the
-  first mobility fit at +12 Â±8 over 4,000, the mobility refit at +76 Â±25 over 500 and the
-  pawn structure weights at +57 Â±25 over 500, each against the baseline its own `Elo:`
+  sprt bounded [0, 10] at 10+0.1, the twelve tables at +54 ±13 over 2,000 games, the
+  first mobility fit at +12 ±8 over 4,000, the mobility refit at +76 ±25 over 500 and the
+  pawn structure weights at +57 ±25 over 500, each against the baseline its own `Elo:`
   trailer names, none of which is the commit it landed on. What a held-out loss still
   cannot do is choose between two fits of one term: it favoured the first mobility fit
   while covering zero, and the games are what ranked the two
@@ -110,9 +110,15 @@ the engine plays. Roughly in the order they look worth doing.
   written here instead of being lost with it. Measured on the bench at the commit that
   cached the shelter: `mobility_with` takes 334,907,944 instructions of 3,950,062,514,
   which is 8.48%, and the shelter with its cache takes 133,627,554, which is 3.38%.
-  Mobility has been over the budget since the fit that priced it and nothing has charged
-  it since, so either it wants the treatment the shelter has just had or the 5% wants
-  restating as what it is, which is a rule of thumb nothing enforces
+  Mobility has been over the budget since the fit that priced it, so either it wants the
+  treatment the shelter has just had or the 5% wants restating as what it is, which is a
+  rule of thumb nothing enforces. That 8.48% is stale and reads low: measured again at
+  `378c148`, the term is 60,880,488 instructions of 450,153,896 on `bench 5`, which is
+  13.52%. The two commits that charged it take 1.80% off the whole run between them, and
+  most of that is the term's, which leaves it a long way over the budget still. So the
+  question this bullet asks stands and the answer is not going to be a faster loop: that
+  loop is at a local optimum, and what is left is a cheaper formulation of the term or a
+  reading of the position that does not pay for it at every leaf
 - a held-out loss on our own games cannot resolve a fit of the piece square tables one way
   or the other, so an sprt is what decides a re-tune. Measured 2026-09-10 over 1,812
   archived games, 100,726 quiet positions across 1,807 of them: the shipped weights score
@@ -121,7 +127,7 @@ the engine plays. Roughly in the order they look worth doing.
   of the games, opened once after the vector was frozen, reads the same fit 0.001754 better
   against 0.000674, which is outside it. The two readings differ by 1.23 standard errors,
   so they are one corpus disagreeing with itself rather than two findings, and the games
-  settled it at +54 Â±13 over 2,000 at 10+0.1. The corpus is the engine's own play, so the
+  settled it at +54 ±13 over 2,000 at 10+0.1. The corpus is the engine's own play, so the
   positions it never reaches are unlabelled, and that is the ceiling on what any fit of it
   can say. The 2026-09-12 corpus holds sixteen times the games and did resolve a fit, at
   5.6 standard errors, but of fourteen weights rather than 768, so it says the corpus was
@@ -185,7 +191,7 @@ of these again without saying what is different this time.
   side: neither term of that curve is large, which is why no inline capacity wins
   much either.
 - Requiring the game's own two prior occurrences before a pre-root repetition
-  scores as a draw, the line Stockfish draws. Lost -22 Â±18 over 446 games at
+  scores as a draw, the line Stockfish draws. Lost -22 ±18 over 446 games at
   5+0.05 (sprt [0, 10] failed, PR #107): an eval this simple is better off
   taking every draw the history makes available than re-fighting positions it
   half-understands, and the stricter rule spends depth keeping alive games it
@@ -195,7 +201,7 @@ of these again without saying what is different this time.
   evaluation and the search results that followed it, keyed by the pawn
   structure, nudging the evaluation the two shortcut gates read. Two SPRT runs
   at 5+0.05 against master both ended inconclusive at their caps (sprt [0, 10],
-  branch search/correction-history): +12 Â±11 over 1,980 games, then +1 Â±12 over
+  branch search/correction-history): +12 ±11 over 1,980 games, then +1 ±12 over
   another 1,980. Two stopped runs do not pool into one interval, so there is no
   combined number; a re-run of the same arm carries the pairs of the earlier
   ones in and is read as one test over all of them, which is how repeated runs
@@ -203,7 +209,7 @@ of these again without saying what is different this time.
   this arm starts the test again. The mechanism was live and the tree 2.2%
   smaller with the tactical suite unmoved, so the games say the corrections
   were nearly free rather than nearly right. One suspect is on record: the
-  correction's Â±31 centipawn clamp is twice the fifteen the reverse futility
+  correction's ±31 centipawn clamp is twice the fifteen the reverse futility
   margin was sized to keep clear of a mate it can miss, so the table may spend
   its gains inside the margin's own headroom. That is one arm of the re-ask,
   not the fix. The re-ask starts from the shadow sampler's records: the raw
@@ -214,7 +220,7 @@ of these again without saying what is different this time.
   arm was built on landed on its own and stays.
 - Correcting the evaluation reverse futility reads by a table entry's score and
   bound (a stored floor above the evaluation raised it before the margin was
-  measured). Inconclusive at the game cap, +6 Â±11 over 1,980 games at 5+0.05
+  measured). Inconclusive at the game cap, +6 ±11 over 1,980 games at 5+0.05
   (sprt [0, 10], branch search/tt-refined-eval), with four tactical positions
   lost for a 5.3% smaller bench tree. The refinement pruned in the right
   direction, but it bought no measured strength and the tactical losses at
@@ -260,9 +266,9 @@ of these again without saying what is different this time.
   which is what would move the clearance the rows are read by; the margin
   against a raw evaluation is where it should be.
 - The delta margin in quiescence, measured on its own. It landed in one pair
-  with principal variation search, and the pair's +50 Â±24 over 530 games at
+  with principal variation search, and the pair's +50 ±24 over 530 games at
   10+0.1 (sprt [0, 10] passed, PR #171) sits on the margin's commit. Turning
-  the margin off against that master gave +7 Â±17 over 840 games at 10+0.1
+  the margin off against that master gave +7 ±17 over 840 games at 10+0.1
   (sprt [-10, 0] inconclusive at the time cap, final LLR 1.47, branch
   ablate/delta-off): the games could not see the margin at all, and the pair's
   gain is principal variation search's. The margin stays on its switch because
@@ -270,7 +276,7 @@ of these again without saying what is different this time.
   converges on. One guess per run from here, unless two parts cannot be
   measured apart.
 - Exempting quiet moves that give check from the late move reduction. Lost
-  -18 Â±18 over 860 games at 10+0.1 (sprt [0, 10] stopped at the time cap with
+  -18 ±18 over 860 games at 10+0.1 (sprt [0, 10] stopped at the time cap with
   the likelihood ratio at -2.72, a fraction from accepting H0, PR #185). The
   exemption regained seven tactical positions at fixed depth, WAC.118 among
   them, and still lost the games: every checking quiet searched whole grew the
@@ -280,7 +286,7 @@ of these again without saying what is different this time.
   narrower guess: a model that exempts the checking quiets whose reduction is
   measured harmful, or an exemption near the leaves alone, each its own arm.
 - Ranking the quiet moves by cutoffs per node spent, in place of the history
-  table's cutoff score. Lost -53 Â±26 over 420 games at 5+0.05 (sprt [0, 10]
+  table's cutoff score. Lost -53 ±26 over 420 games at 5+0.05 (sprt [0, 10]
   accepted H0, branch research/cost-aware-ordering) with the bench tree 1.8%
   larger. A one-term comparison placed the blame: the cost divisor alone grew
   the tree, while the rest of the change (smoothed plain counts in place of the
@@ -327,8 +333,8 @@ of these again without saying what is different this time.
   three. The tree came out 1.68% smaller at the bench's depth, and 14.6%
   smaller at depth nine over the sixteen bench positions the skip can reach.
   Two sprt batches at 10+0.1 against master at `ce8b662` (sprt [0, 10]) then
-  put it at nothing: -13 Â±24 over 500 games with the likelihood ratio at
-  -1.18, and +1 Â±17 over a further 1,000 at -0.47. The first batch's -13
+  put it at nothing: -13 ±24 over 500 games with the likelihood ratio at
+  -1.18, and +1 ±17 over a further 1,000 at -0.47. The first batch's -13
   sits inside its own interval and the second contradicted it, so the number
   to read is the 1,500 games together, which are centred near zero. The
   batches ran from different seeds and neither carried the other's pairs in,
@@ -432,3 +438,25 @@ of these again without saying what is different this time.
   so that the pawn board is not consulted as well for the fifty move reset.
   0.2% more instructions: carrying the value across the block costs more
   than the load it saves.
+- Two shapes for the mobility count, both slower than the loop it already
+  has. Walking the two colours together, so that the occupancy and the piece
+  boards are read once rather than once per colour, is 0.32% more
+  instructions: llvm already shares those reads across the two calls, and
+  interleaving the colours costs more in registers than the sharing saves.
+  Accumulating each kind's weighted difference as it is counted, in place of
+  the two count arrays the fold then subtracts, is 0.04% more. What did pay
+  on the term was forcing its fold inline, which turns the four weights from
+  a load into four constants.
+- Masking a square index to the board in `PieceSquareTables::get_value`, in
+  `Zobrist::get_piece_key` and at the two castle mask reads in `make_move`,
+  the way the magic attack table now masks. 0.40% more instructions, because
+  none of those three carried a bounds check to remove: a square reaches them
+  from a `u8` whose range llvm can see. The attack table is different in
+  kind, since its index is a hash of the occupancy that nothing upstream
+  bounds, and there the mask and the read below it are worth 1.03%.
+- `#[inline(always)]` on the shelter's fold and on the pawn structure's fold,
+  which is the attribute that pays on the mobility fold beside them. 0.15%
+  more instructions for the two together. Both of those sit behind a cache and
+  are read at a fraction of the leaves the mobility fold is, so forcing them
+  in buys their weights as constants at the leaves that miss and pays for the
+  larger `eval` at every leaf.
