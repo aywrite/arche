@@ -44,34 +44,56 @@ pub(crate) const MOBILE_PIECES: [Piece; 4] =
 /// What one square of scope is worth to each of [`MOBILE_PIECES`], as the
 /// packed pairs the taper is read from.
 ///
-/// Fitted 2026-09-11 by `scripts/tune.py` over the 1,812 archived
-/// strength-run games at 10+0.1 the tables were fitted on, whose 229,018
-/// post-book plies gave 220,369 positions and 101,046 quiet rows in 1,808 of
-/// them, extracted by `arche terms` at 2ff6a25, with K held at 1.4834 and the
-/// games split 1,065 that trained, 372 that chose the ridge of 1e-4 and 371
-/// that were sealed. The 768 table entries and the six material values were
-/// held where they stand, so these eight weights are the only thing that
-/// moved. Every number here is of the rounded vector that ships. The
-/// selection group scores 0.093203 at zero and 0.093176 at these, and the
-/// sealed group 0.083462 and 0.083407, a paired difference of -0.000055
-/// against a standard error of 0.000157 over its 371 games. Both intervals
-/// cover zero, so the loss favours the fit and settles nothing; the match is
-/// what settles it.
+/// Refitted 2026-09-13 by `scripts/tune.py` over the whole archived strength
+/// run: 259 artifacts across 54 runs, 43,675 games, whose 5,694,775 post-book
+/// plies gave 5,355,792 positions and 2,461,322 quiet rows, extracted by
+/// `arche terms` at 2105b55. The corpus is sha256 `b37ebf0c` and the rows are
+/// sha256 `49aa715a`. K was held at 1.1350 and the games split by pair:
+/// 12,743 pairs trained, 4,339 chose the ridge and 4,747 were sealed. The 768
+/// table entries, the six material values, the fourteen shelter weights and
+/// the sixteen pawn structure ones were all held, so these eight are the only
+/// thing that moved. Every number here is of the rounded vector that ships.
 ///
-/// Six of the eight rounded to nothing. Before rounding, the rook stood at
-/// 0.667 and 0.828 centipawns a square and no other piece reached half of
-/// one either end, so the term ships as a rook count. The other three are
-/// not counted at the leaf: `SCORED_KINDS` reads that off the weights.
+/// The selection group scores 0.087671 at the old weights and 0.086874 at
+/// these, a paired difference of -0.000798 against a standard error of
+/// 0.000113 at a design factor of 3.8. The sealed group, opened once
+/// afterwards over 4,747 pairs and 9,452 games that no fit and no ridge
+/// choice had read, scores 0.080507 and 0.079997, a paired difference of
+/// -0.000510 against a standard error of 0.000107 at a design factor of 4.1.
+/// Both are outside their intervals, and they are 1.85 standard errors apart,
+/// so the selection group overstates this fit by about a third. The king
+/// safety fit's two agreed to 0.68 and the pawn structure fit's to 0.15.
 ///
-/// The rook's two halves are equal, so its contribution does not taper: a
-/// square of its scope is worth the same at either end of the game. That is a
-/// fact about this fit rather than about the term, so nothing here takes
-/// advantage of it. The taper is what a later fit needs.
+/// The first fit of this term read 1,812 games and priced one piece. This one
+/// reads twenty four times as many and prices all four, which is the whole of
+/// what changed: nothing about the term is different, the corpus simply has
+/// enough games to say something about a knight. `specs/mobility-cost.md`
+/// predicted the vector from a preliminary fit before the pawn structure term
+/// existed, at `[5,6,5,1]` and `[0,2,2,7]`, and it came out `[4,6,4,1]` and
+/// `[1,3,4,7]`. Pawn structure took almost nothing away from mobility,
+/// despite both terms reading open lines.
+///
+/// The ridge is zero, which the grid ranked first, and here that is not the
+/// trap it was for the pawn structure fit. The vector quantizes identically
+/// at zero, 1e-8 and 1e-7, the largest weight is 7, and every one of the
+/// eight slots carries a coefficient in 37% to 70% of the training rows with
+/// summed coefficients in the tens of millions. There is no low leverage
+/// direction here for an unregularised fit to hide error in.
+///
+/// By phase the sealed reading is -0.000160 at six pieces or fewer,
+/// -0.001725 from seven to twelve, and +0.000703 at thirteen or more. The
+/// term pays in the middlegame, barely in the ending, and costs something in
+/// the opening, which is the phase a mobility count would be expected to earn
+/// most. That is worth an ablation and is not one this arm ran.
+///
+/// Every weight is non-zero, so `SCORED_KINDS` has nothing left to skip and
+/// all four kinds are counted at every leaf again. What that costs is in the
+/// commit that landed this, and it is the larger half of the arm.
 ///
 /// A count is at most twenty seven for a queen and a boardful comes to a few
 /// hundred, so a weight in single figures leaves the same order of magnitude
 /// in hand that `pack` asks for.
-const MOBILITY: [i32; MOBILE_PIECES.len()] = [pack(0, 0), pack(0, 0), pack(1, 1), pack(0, 0)];
+const MOBILITY: [i32; MOBILE_PIECES.len()] = [pack(4, 1), pack(6, 3), pack(4, 4), pack(1, 7)];
 
 /// The mobility weight of one of the four pieces that carries one, as the
 /// packed pair. The tuner's seam asks, so that a slot names the live weight
@@ -90,11 +112,12 @@ pub(crate) const fn mobility_weight(index: usize) -> i32 {
 pub(crate) const ALL_KINDS: u8 = (1 << MOBILE_PIECES.len()) - 1;
 
 /// The kinds [`eval`] counts: the ones whose [`MOBILITY`] weight is not zero
-/// at one end of the taper or the other. Six of the eight weights are zero
-/// today, which leaves the rook.
+/// at one end of the taper or the other. The 2026-09-13 refit priced all
+/// eight weights, so this is now all four kinds and skips nothing.
 ///
-/// Derived from the weights rather than written out, so a refit that prices a
-/// kind starts counting it again instead of having it ignored at every leaf.
+/// Derived from the weights rather than written out, which is what made the
+/// refit start counting three kinds again rather than leaving them ignored at
+/// every leaf. It cost what the refit's commit records.
 /// `eval_counts_a_kind_exactly_when_its_weight_is_not_zero` is what holds the
 /// two together.
 pub(crate) const SCORED_KINDS: u8 = scored_kinds();

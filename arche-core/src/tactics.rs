@@ -40,8 +40,12 @@ pub const TABLE_BYTES: usize = 16 * 1024 * 1024;
 ///
 /// Exact, not a floor. A change that raises it has to update this number in
 /// the same commit, which is what puts the improvement in the diff rather than
-/// leaving it to be noticed later or not at all.
-pub const EXPECTED_PASSES: usize = 231;
+/// leaving it to be noticed later or not at all. A change that lowers it has
+/// the same duty and a heavier one: this is the tactical tripwire, and it had
+/// moved by one in each direction across every evaluation arm before the
+/// 2026-09-13 mobility refit took it down seven at once. What that bought is
+/// in the refit's commit, and the suite is not a gate.
+pub const EXPECTED_PASSES: usize = 224;
 
 const SUITE: &str = include_str!("../tactics.epd");
 

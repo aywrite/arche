@@ -946,6 +946,12 @@ mod tests {
     /// was never cleared. The last two pin the depth as well as the table: a
     /// replay that searched a sample one ply out would still be internally
     /// consistent and would still be wrong.
+    ///
+    /// Which two depths disagree is a property of the evaluation, so the
+    /// first assertion is the one that has to be re-read when the evaluation
+    /// moves. It was five and two until the 2026-09-13 mobility refit, which
+    /// brought them to the same answer of -13; five and three disagree under
+    /// both, at -13 against -5.
     #[test]
     fn a_sample_is_replayed_on_a_cold_table() {
         let fen = "r1b2rk1/ppp1qppp/4pn2/6N1/Qn1P4/2NBP3/PP3PPP/R3K2R w KQ - 9 12";
@@ -960,17 +966,17 @@ mod tests {
             halfmove: 9,
         };
         let (alone, _) = replay(&[node(5)]);
-        let (shallow, _) = replay(&[node(2)]);
+        let (shallow, _) = replay(&[node(3)]);
         assert_ne!(
             alone[0].reference, shallow[0].reference,
             "the depths agree, so this test could not tell a warm table from a cold one"
         );
         // the deep record first, so its entries are there to be read
-        let (both, _) = replay(&[node(5), node(2)]);
+        let (both, _) = replay(&[node(5), node(3)]);
         assert_eq!(both[0].reference, alone[0].reference);
         assert_eq!(both[1].reference, shallow[0].reference);
         assert_eq!(both[0].reference, reference_answer(fen, 5));
-        assert_eq!(both[1].reference, reference_answer(fen, 2));
+        assert_eq!(both[1].reference, reference_answer(fen, 3));
     }
 
     /// The premise of the module, asserted rather than left to the reader of
