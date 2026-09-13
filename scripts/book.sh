@@ -5,6 +5,7 @@
 # The opening books a match can be played on:
 #
 #     book.sh list                  every book named below
+#     book.sh pin                   the commit every book is fetched at
 #     book.sh file <book>           the file it plays as
 #     book.sh format <book>         what fastchess reads that file as
 #     book.sh count <book> <path>   how many openings that file holds
@@ -25,9 +26,9 @@ set -euo pipefail
 # Every book is fetched at this commit. The action fetched from master, which
 # is a branch, and a branch moves under the run that names it: the manifest's
 # book_sha256 would record the change with nothing failing. scripts/opponent.sh
-# refuses a branch for an engine for the same reason. The pin is in the
-# match-tools cache key as well, so changing it here cannot leave a cache
-# handing back the old file under the new name.
+# refuses a branch for an engine for the same reason. The `pin` command below is
+# what the match tools cache key is built from, so this is the one place the pin
+# is written and a cache cannot hand back the old file under the new name.
 PIN=65815ccdbc7727cd4f6aee252ba8f67fb740e92f
 
 # The table. A block is these four fields, and a name is in the list the
@@ -63,6 +64,14 @@ list() {
             printf '%s\n' "$book"
         fi
     done | sort
+}
+
+# Asked for by the action that fetches the books, which builds its cache key
+# from it. Printed rather than written down twice: a key naming one commit and a
+# fetch using another would mean a run restoring the file fetched at the old pin
+# under the new one's name.
+pin() {
+    echo "$PIN"
 }
 
 # Asked of the list rather than of the table, because an associative array
@@ -165,6 +174,7 @@ fetch() {
 command=${1:-}
 case "$command" in
     list) list ;;
+    pin) pin ;;
     file) file "${2:?usage: book.sh file <book>}" ;;
     format) format "${2:?usage: book.sh format <book>}" ;;
     count)
@@ -179,5 +189,5 @@ case "$command" in
         verify "${2:?usage: book.sh verify <book> <dir>}" \
             "${3:?usage: book.sh verify <book> <dir>}"
         ;;
-    *) echo "usage: book.sh list|file|format|count|fetch|verify" >&2; exit 1 ;;
+    *) echo "usage: book.sh list|pin|file|format|count|fetch|verify" >&2; exit 1 ;;
 esac

@@ -139,6 +139,16 @@ def test_a_name_that_is_not_a_name_is_refused(tmp_path):
     assert not list(tmp_path.iterdir())
 
 
+def test_the_pin_is_printed_as_the_commit_it_is():
+    # What the action that fetches the books builds its cache key from. It is
+    # read from here rather than written down beside the key, so that a changed
+    # pin cannot leave a cache handing back the file fetched at the old one.
+    printed = book("pin")
+    assert printed.returncode == 0, printed.stderr
+    assert re.fullmatch(r"[0-9a-f]{40}", printed.stdout.strip()), printed.stdout
+    assert printed.stdout.strip() == pin()
+
+
 def test_the_commands_it_does_not_have_are_refused():
     for asked in (book(), book("sha256", "8moves_v3"), book("count", "8moves_v3")):
         assert asked.returncode != 0
