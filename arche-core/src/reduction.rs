@@ -1149,7 +1149,13 @@ mod tests {
     /// low carries an answer where a fail high carries none.
     #[test]
     fn a_run_records_rows_that_hold_together() {
-        let report = run(&suite(), None, 5, 1, DEFAULT_CAP);
+        // depth six rather than five, because the run has to hold all three
+        // scout outcomes and a fail high is the rare one. At depth five the
+        // 2026-09-13 mobility refit leaves none at any rate: the sampled
+        // late quiets there all fail low or are skipped. At six there are a
+        // handful, and one in five of the events is enough to catch them
+        // while keeping the run smaller than the old one was.
+        let report = run(&suite(), None, 6, 5, DEFAULT_CAP);
         assert_eq!(report.positions, 2);
         assert!(!report.rows.is_empty(), "nothing was recorded");
         assert!(report.events >= report.rows.len() as u64);

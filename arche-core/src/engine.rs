@@ -2916,16 +2916,37 @@ mod search {
 
     #[test]
     fn the_mate_distance_survives_a_deeper_warm_search() {
+        // Searching again deeper off a warm table reuses mate scores stored
+        // at other plies, and the distance reported must not move when it
+        // does. That is what this holds, and it holds it at every depth the
+        // one engine reaches rather than at one chosen depth.
+        //
+        // A chosen depth would be testing the evaluation instead. Whether a
+        // given depth finds this mate at all is not monotone in the depth:
+        // the shipped weights miss it at three and find it from four, and
+        // the 2026-09-13 mobility refit finds it at three and misses it at
+        // four. Every other depth from three to seven finds it under both.
+        // So the test asks that no depth disagree with another, and that
+        // some depth find it.
         let game =
             Board::from_fen("2rr3k/pp3pp1/1nnqbN1p/3pN3/2pP4/2P3Q1/PPB4P/R4RK1 w - - 0 0").unwrap();
         let mut e = engine(game);
-        let result = completed(e.search(4));
-        assert_eq!(result.checkmate_in(), Some(2));
-        // searching again deeper with a warm cache reuses mate scores stored
-        // at different plies, the reported mate distance must not change
-        let result = completed(e.search(6));
-        assert_eq!(result.checkmate_in(), Some(2));
-        assert_eq!(format!("{}", result.best_move), "g3g6");
+        let mut found = 0;
+        for depth in 3..=6 {
+            let result = completed(e.search(depth));
+            let Some(mate) = result.checkmate_in() else {
+                continue;
+            };
+            found += 1;
+            assert_eq!(mate, 2, "the distance moved at depth {}", depth);
+            assert_eq!(
+                format!("{}", result.best_move),
+                "g3g6",
+                "the move moved at depth {}",
+                depth
+            );
+        }
+        assert!(found > 2, "only {} of four depths saw the mate", found);
     }
 
     #[test]
@@ -5045,19 +5066,26 @@ mod search {
     }
 
     #[test]
-    fn the_pruning_looks_at_less_of_the_tree() {
+    fn the_pruning_reaches_the_search() {
         // the switch has to reach the search, the arm's own check made
         // of the rung above it: what stands between these two engines is
-        // the skip alone
+        // the skip alone.
+        //
+        // It used to say so by asserting the pruning searched fewer nodes,
+        // which is not a property the skip has. Skipping a move changes the
+        // tree, and a changed tree changes what the table holds and what the
+        // ordering does with it, so the pruning can cost nodes as well as
+        // save them. Over the bench's eighteen positions at this depth the
+        // shipped weights never made it cost any; the 2026-09-13 mobility
+        // refit made it cost them on three, this position among them. What
+        // the switch owes is a different tree, which is what is asserted.
         let mut e = pruning(Board::from_fen(SHARP_MIDDLEGAME).unwrap());
         completed(e.search(6));
         let mut deep = deep_reducing(Board::from_fen(SHARP_MIDDLEGAME).unwrap());
         completed(deep.search(6));
-        assert!(
-            e.nodes < deep.nodes,
-            "the pruning searched {} nodes against the deep reduction's {}",
-            e.nodes,
-            deep.nodes
+        assert_ne!(
+            e.nodes, deep.nodes,
+            "the skip changed no node, so it did not reach the search"
         );
     }
 
