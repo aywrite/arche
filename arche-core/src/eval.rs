@@ -504,6 +504,95 @@ impl PawnCache {
     }
 }
 
+/// How many mobility scores the cache holds. A power of two, so the index is
+/// a mask rather than a remainder.
+///
+/// Sixteen thousand entries at sixteen bytes is two hundred and fifty six
+/// kilobytes, twice the shelter's table and four times the pawn structure's.
+/// The size was measured rather than reasoned about, the way both of those
+/// were. Callgrind over the bench at eleven through sixteen bits reads
+/// 4,003,487,163, 3,992,530,079, 3,979,728,114, 3,966,023,843, 3,951,932,274
+/// and 3,938,650,063 instructions, against last level misses of 288,163,
+/// 558,262, 291,745, 295,846, 304,033 and 320,418. Every bit buys about the
+/// same again in instructions, which is what a hit rate still climbing looks
+/// like, and the misses double their step from fourteen on: 4,101 from
+/// thirteen, 8,187 to fifteen, 16,385 to sixteen. So fourteen is the last
+/// size the memory does not notice.
+///
+/// Twelve bits is the odd reading and it reproduces to the instruction, twice
+/// over: 558,262 then 558,269 last level misses against 291,745 one bit up.
+/// A sixty four kilobyte direct mapped table lands its lines on something
+/// else the search is walking. It is not a reason to prefer thirteen, which
+/// is slower and no cleaner, but it is a reason not to read this sweep as
+/// smooth.
+const MOBILITY_CACHE_BITS: usize = 14;
+const MOBILITY_CACHE_SLOTS: usize = 1 << MOBILITY_CACHE_BITS;
+
+/// One remembered mobility score, under the key that decides it. The whole
+/// key is kept, for the reason [`ShelterEntry`] keeps the whole of its own.
+#[derive(Copy, Clone)]
+struct MobilityEntry {
+    key: u64,
+    packed: i32,
+}
+
+/// The mobility fold, remembered by the position it was computed for.
+///
+/// `Board::mobility_counts` reads the full occupancy, so the only thing that
+/// decides it is where every piece stands. That is what
+/// [`specs/mobility-cost.md`] said made a cache impossible: a key over the
+/// whole position, and a position that repeats inside a search only by
+/// transposition, which the table catches before the evaluation is reached.
+///
+/// The measurement says otherwise, and it is the reason this exists. A
+/// transposition entry cuts only when the depth it was stored at suffices, so
+/// a position reached again deeper is searched again and evaluated again, and
+/// iterative deepening walks the same tree up to seven times over. The table
+/// removes the search below a repeat, not the evaluation at it. Over the
+/// bench, 29.21% of the term's calls are on a position it has already scored
+/// in that search, and 18.43% land on a live entry of a table this size.
+///
+/// Keyed on the position key rather than on the placement alone. The term
+/// does not read the side to move, the castling rights or the en passant
+/// square, so a key with those taken back out hits more often: 20.40% against
+/// 18.43% here. Taking them out costs about six instructions on every call
+/// and buys about ten million, which is what the extra two points are worth
+/// over the same calls, so the two come out level and this is the one that
+/// needs no arithmetic at the probe.
+///
+/// Direct mapped and never cleared, on the terms [`ShelterCache`] sets out.
+/// An empty entry is key zero holding zero, and a position whose key is zero
+/// would read it as its own; that is a sixty four bit coincidence, which is
+/// the same one a wrong hit needs anywhere else in the table.
+pub(crate) struct MobilityCache {
+    entries: Box<[MobilityEntry]>,
+}
+
+impl Default for MobilityCache {
+    fn default() -> Self {
+        MobilityCache {
+            entries: vec![MobilityEntry { key: 0, packed: 0 }; MOBILITY_CACHE_SLOTS]
+                .into_boxed_slice(),
+        }
+    }
+}
+
+impl MobilityCache {
+    /// What white's mobility stands ahead by, remembered or computed.
+    #[inline]
+    fn mobility(&mut self, board: &Board) -> i32 {
+        let key = board.key;
+        let slot = (key as usize) & (MOBILITY_CACHE_SLOTS - 1);
+        let entry = &mut self.entries[slot];
+        if entry.key == key {
+            return entry.packed;
+        }
+        let packed = mobility(board);
+        *entry = MobilityEntry { key, packed };
+        packed
+    }
+}
+
 /// The score of the position from the side to move's point of view.
 ///
 /// Everything incremental is read off the board's accumulator; a term
@@ -551,13 +640,14 @@ pub(crate) fn eval_cached(
     board: &Board,
     shelter: &mut ShelterCache,
     pawns: &mut PawnCache,
+    mobility: &mut MobilityCache,
 ) -> Score {
     if board.drawn_by_material() {
         return 0;
     }
     board.eval.score(
         board.active_color,
-        mobility(board) + shelter.shelter(board) + pawns.pawn_structure(board),
+        mobility.mobility(board) + shelter.shelter(board) + pawns.pawn_structure(board),
     )
 }
 
@@ -816,10 +906,10 @@ impl Accumulator {
 #[cfg(test)]
 mod evaluate {
     use super::{
-        ALL_KINDS, Board, MOBILE_PIECES, MOBILITY, PAWN_CACHE_SLOTS, PAWN_STRUCTURE, PAWN_TERMS,
-        PawnCache, SCORED_KINDS, SHELTER, SHELTER_CACHE_SLOTS, SHELTER_TERMS, ShelterCache,
-        TOTAL_PHASE, eval, eval_cached, mobility, mobility_weight, mobility_with,
-        pawn_structure_with, shelter_with,
+        ALL_KINDS, Board, MOBILE_PIECES, MOBILITY, MOBILITY_CACHE_SLOTS, MobilityCache,
+        PAWN_CACHE_SLOTS, PAWN_STRUCTURE, PAWN_TERMS, PawnCache, SCORED_KINDS, SHELTER,
+        SHELTER_CACHE_SLOTS, SHELTER_TERMS, ShelterCache, TOTAL_PHASE, eval, eval_cached, mobility,
+        mobility_weight, mobility_with, pawn_structure_with, shelter_with,
     };
     use crate::board::fens;
     use crate::misc::{Color, File, coordinate_to_index};
@@ -937,8 +1027,14 @@ mod evaluate {
             let board = Board::from_fen(fen).unwrap();
             let mut shelter = ShelterCache::default();
             let mut pawns = PawnCache::default();
+            let mut folds = MobilityCache::default();
             assert_eq!(eval(&board), 0, "{}", fen);
-            assert_eq!(eval_cached(&board, &mut shelter, &mut pawns), 0, "{}", fen);
+            assert_eq!(
+                eval_cached(&board, &mut shelter, &mut pawns, &mut folds),
+                0,
+                "{}",
+                fen
+            );
         }
     }
 
@@ -957,9 +1053,10 @@ mod evaluate {
             let board = Board::from_fen(fen).unwrap();
             let mut shelter = ShelterCache::default();
             let mut pawns = PawnCache::default();
+            let mut folds = MobilityCache::default();
             assert_ne!(eval(&board), 0, "{}", fen);
             assert_eq!(
-                eval_cached(&board, &mut shelter, &mut pawns),
+                eval_cached(&board, &mut shelter, &mut pawns, &mut folds),
                 eval(&board),
                 "{}",
                 fen
@@ -1333,9 +1430,12 @@ mod evaluate {
     struct Caches {
         shelter: ShelterCache,
         pawns: PawnCache,
+        mobility: MobilityCache,
         shelter_keys: HashSet<u64>,
         pawn_keys: HashSet<u64>,
+        position_keys: HashSet<u64>,
         counted: HashMap<u64, [[i32; PAWN_TERMS]; 2]>,
+        scored: HashMap<u64, i32>,
         compared: usize,
     }
 
@@ -1354,6 +1454,14 @@ mod evaluate {
                 board.pawn_structure_counts(Color::White),
                 board.pawn_structure_counts(Color::Black),
             ];
+            if let Some(seen) = self.scored.insert(board.key, mobility(board)) {
+                assert_eq!(
+                    seen,
+                    mobility(board),
+                    "two positions share a key and not a mobility fold, at {}",
+                    board.to_fen()
+                );
+            }
             if let Some(seen) = self.counted.insert(board.pawn_key, counts) {
                 self.compared += 1;
                 assert_eq!(
@@ -1394,9 +1502,15 @@ mod evaluate {
             *budget -= 1;
             caches.shelter_keys.insert(played.shelter_key());
             caches.pawn_keys.insert(played.pawn_key);
+            caches.position_keys.insert(played.key);
             caches.note(&played);
             assert_eq!(
-                eval_cached(&played, &mut caches.shelter, &mut caches.pawns),
+                eval_cached(
+                    &played,
+                    &mut caches.shelter,
+                    &mut caches.pawns,
+                    &mut caches.mobility
+                ),
                 eval(&played),
                 "a cache and the evaluation part company at {}",
                 played.to_fen()
@@ -1431,17 +1545,25 @@ mod evaluate {
     #[test]
     fn the_cache_answers_what_the_full_evaluation_does() {
         let mut caches = Caches::default();
-        let mut budget = 4 * SHELTER_CACHE_SLOTS.max(PAWN_CACHE_SLOTS);
+        let mut budget = 4 * SHELTER_CACHE_SLOTS
+            .max(PAWN_CACHE_SLOTS)
+            .max(MOBILITY_CACHE_SLOTS);
         for fen in fens::CORE {
             let board = Board::from_fen(fen).unwrap();
             assert_eq!(
-                eval_cached(&board, &mut caches.shelter, &mut caches.pawns),
+                eval_cached(
+                    &board,
+                    &mut caches.shelter,
+                    &mut caches.pawns,
+                    &mut caches.mobility
+                ),
                 eval(&board),
                 "{}",
                 fen
             );
             caches.shelter_keys.insert(board.shelter_key());
             caches.pawn_keys.insert(board.pawn_key);
+            caches.position_keys.insert(board.key);
             caches.note(&board);
             walk(&board, 3, &mut caches, &mut budget);
         }
@@ -1452,6 +1574,7 @@ mod evaluate {
         for (name, keys, slots) in [
             ("shelter", &caches.shelter_keys, SHELTER_CACHE_SLOTS),
             ("pawn", &caches.pawn_keys, PAWN_CACHE_SLOTS),
+            ("mobility", &caches.position_keys, MOBILITY_CACHE_SLOTS),
         ] {
             let (keys, landed) = filled(keys, slots);
             assert!(
@@ -1478,14 +1601,24 @@ mod evaluate {
         let key = board.shelter_key();
         let slot = (key as usize) & (SHELTER_CACHE_SLOTS - 1);
         assert_eq!(caches.shelter.entries[slot].key, 0, "the slot starts empty");
-        let first = eval_cached(&board, &mut caches.shelter, &mut caches.pawns);
+        let first = eval_cached(
+            &board,
+            &mut caches.shelter,
+            &mut caches.pawns,
+            &mut caches.mobility,
+        );
         assert_eq!(caches.shelter.entries[slot].key, key);
         assert_eq!(
             caches.shelter.entries[slot].packed,
             shelter_with(&board, &SHELTER)
         );
         assert_eq!(
-            eval_cached(&board, &mut caches.shelter, &mut caches.pawns),
+            eval_cached(
+                &board,
+                &mut caches.shelter,
+                &mut caches.pawns,
+                &mut caches.mobility
+            ),
             first
         );
     }
@@ -1505,16 +1638,86 @@ mod evaluate {
         assert_ne!(key, 0, "an empty entry would answer this one correctly");
         let slot = (key as usize) & (PAWN_CACHE_SLOTS - 1);
         assert_eq!(caches.pawns.entries[slot].key, 0, "the slot starts empty");
-        let first = eval_cached(&board, &mut caches.shelter, &mut caches.pawns);
+        let first = eval_cached(
+            &board,
+            &mut caches.shelter,
+            &mut caches.pawns,
+            &mut caches.mobility,
+        );
         assert_eq!(caches.pawns.entries[slot].key, key);
         assert_eq!(
             caches.pawns.entries[slot].packed,
             pawn_structure_with(&board, &PAWN_STRUCTURE)
         );
         assert_eq!(
-            eval_cached(&board, &mut caches.shelter, &mut caches.pawns),
+            eval_cached(
+                &board,
+                &mut caches.shelter,
+                &mut caches.pawns,
+                &mut caches.mobility
+            ),
             first
         );
+    }
+
+    /// A mobility score is remembered under the position key, and read back
+    /// under it.
+    ///
+    /// The other two caches are keyed on a part of the position and this one
+    /// on the whole of it, which is the thing `specs/mobility-cost.md`
+    /// expected to make it useless. What it costs and what it saves is in the
+    /// commit that added it; what this holds is that the entry goes in under
+    /// the key that wrote it and comes back out the same.
+    #[test]
+    fn a_mobility_score_is_remembered_under_the_position_key() {
+        let board = Board::from_fen(fens::MIDDLEGAME).unwrap();
+        let mut caches = Caches::default();
+        let key = board.key;
+        let slot = (key as usize) & (MOBILITY_CACHE_SLOTS - 1);
+        assert_eq!(
+            caches.mobility.entries[slot].key, 0,
+            "the slot starts empty"
+        );
+        let first = eval_cached(
+            &board,
+            &mut caches.shelter,
+            &mut caches.pawns,
+            &mut caches.mobility,
+        );
+        assert_eq!(caches.mobility.entries[slot].key, key);
+        assert_eq!(caches.mobility.entries[slot].packed, mobility(&board));
+        assert_eq!(
+            eval_cached(
+                &board,
+                &mut caches.shelter,
+                &mut caches.pawns,
+                &mut caches.mobility
+            ),
+            first
+        );
+    }
+
+    /// Every move moves the position key, so this cache misses on every move
+    /// a search makes and earns its place only on the positions a search
+    /// reaches twice.
+    ///
+    /// That is the opposite of the other two, and it is why the spec ruled
+    /// this cache out before it was measured. The measurement is in the
+    /// commit; what this says is the mechanism the measurement rests on, that
+    /// nothing but a repeat can hit.
+    #[test]
+    fn any_move_at_all_moves_the_mobility_key() {
+        let board = Board::from_fen(fens::MIDDLEGAME).unwrap();
+        let mut moves = 0;
+        for m in &board.generate_moves() {
+            let mut played = board.clone();
+            if !played.make_move(m) {
+                continue;
+            }
+            moves += 1;
+            assert_ne!(played.key, board.key, "{} left the key alone", m);
+        }
+        assert!(moves > 20, "only {} legal moves here", moves);
     }
 
     /// A king move leaves the pawn key alone and moves the shelter key, so

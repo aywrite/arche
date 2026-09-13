@@ -656,6 +656,10 @@ pub struct AlphaBeta {
     /// than a wider entry in the shelter's, because the two are keyed on
     /// different things: this one misses only on a pawn move.
     pawns: eval::PawnCache,
+    /// The mobility memo, keyed on the whole position because the term reads
+    /// the whole occupancy. It misses far more often than the other two and
+    /// is worth having anyway: the term is the dearest of the three.
+    mobility: eval::MobilityCache,
     /// The residual sampler, or none, which is what every constructor here
     /// builds and what the engine plays and benches with. An engine with
     /// none takes no branch a search without a sampler did not take, which
@@ -751,6 +755,7 @@ impl AlphaBeta {
             ordering: MoveOrdering::new(),
             shelter: eval::ShelterCache::default(),
             pawns: eval::PawnCache::default(),
+            mobility: eval::MobilityCache::default(),
             sampler: None,
             census: None,
             ledger: None,
@@ -1110,7 +1115,12 @@ impl AlphaBeta {
     /// gives, so nothing about the tree turns on which of the two a node
     /// asked.
     fn eval(&mut self) -> Score {
-        crate::eval::eval_cached(&self.board, &mut self.shelter, &mut self.pawns)
+        crate::eval::eval_cached(
+            &self.board,
+            &mut self.shelter,
+            &mut self.pawns,
+            &mut self.mobility,
+        )
     }
 
     /// The ply the quiet memories are indexed by at this node, or none when
