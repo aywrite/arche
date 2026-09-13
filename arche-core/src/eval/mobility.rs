@@ -230,7 +230,13 @@ pub(crate) fn fold(board: &Board) -> i32 {
 /// own through here anyway, over all four kinds, because what they pin is the
 /// fold rather than the fit: a permuted [`MOBILITY`] would be a different
 /// evaluation and not a wrong one.
-#[inline]
+///
+/// Inlined by force, for a different reason to [`counts_of`]. Out of line
+/// this reads its weights through a pointer, so the four multiplies load
+/// [`MOBILITY`] at every leaf rather than being the four constants it holds.
+/// Inlined into [`fold`] they fold in and the array is never read, which is
+/// 3,476,998 instructions off `bench 5`, 0.78%.
+#[inline(always)]
 fn fold_with<const KINDS: u8>(board: &Board, weights: &[i32; COUNTS]) -> i32 {
     let white = counts_of::<KINDS>(board, Color::White);
     let black = counts_of::<KINDS>(board, Color::Black);
