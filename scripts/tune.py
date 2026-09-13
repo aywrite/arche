@@ -569,18 +569,29 @@ class Corpus:
                     f"the position {row.fen} is in {owner} and in {labels[row.id].game}"
                 )
         groups = {row.id: group_of(labels[row.id].pair, sealed) for row in joined}
+        self.sealed_without_rows = 0
         if sealed is not None:
-            # a named pair that reached no row of this extraction is a game
-            # the seal was drawn from and the corpus does not hold, so the
-            # group is smaller than the file says it is. Silence there would
-            # be the one failure the seal cannot afford: a reading reported
-            # over games nobody can name
-            missing = sealed - {labels[row.id].pair for row in joined}
-            if missing:
+            # two different things, and only one of them is a fault. A named
+            # pair the corpus does not hold at all is a seal drawn against
+            # another archive, and a reading taken under it would be over
+            # games nobody can name.
+            absent = sealed - {label.pair for label in labels.values()}
+            if absent:
                 raise ValueError(
-                    f"{len(missing)} sealed pairs reach no row of this "
-                    f"extraction, the first being {min(missing)}"
+                    f"{len(absent)} sealed pairs are in no game of this "
+                    f"corpus, the first being {min(absent)}; the seal was "
+                    f"drawn against a different archive"
                 )
+            # a named pair the corpus holds that reaches no row is ordinary
+            # once the archive is large. Every position those two games saw
+            # was either claimed by a game with a lower key, which is what
+            # keeps a position in one group, or filtered out of the
+            # extraction as in check, unsettled or drawn. The pair is sealed
+            # and contributes nothing, so the group is smaller than the file
+            # says by that many, and what the reading is over is the rows
+            self.sealed_without_rows = len(
+                sealed - {labels[row.id].pair for row in joined}
+            )
         self.sealed = Sealed(
             [row for row in joined if groups[row.id] == CALIBRATION], labels, weights
         )
@@ -1056,6 +1067,13 @@ def report(corpus, named, k, out=None):
         f"appearances {corpus.sealed.appearances} sealed, not read here",
         file=out,
     )
+    if corpus.sealed_without_rows:
+        print(
+            f"calibration pairs {corpus.sealed_without_rows} named and "
+            "reaching no row of the extraction, so sealed and contributing "
+            "nothing",
+            file=out,
+        )
     wins = float(np.sum(corpus.counts * corpus.results) / np.sum(corpus.counts))
     draws = float(
         np.sum(corpus.counts * (corpus.results == 0.5)) / np.sum(corpus.counts)

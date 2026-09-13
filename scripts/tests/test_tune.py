@@ -1240,13 +1240,34 @@ def test_a_named_seal_holds_out_the_games_it_names_and_no_others():
     assert drawn.sealed.checksum() != sealed_checksum(named)
 
 
-def test_a_sealed_pair_the_extraction_never_reached_is_refused():
-    """A named pair with no row is a game the seal was drawn from that this
-    corpus does not hold, so the group is smaller than the file says it is.
-    The reading would then be over games a reader cannot name, which is worse
-    than no reading at all."""
+def test_a_sealed_pair_no_game_of_the_corpus_holds_is_refused():
+    """A pair the corpus has no game for is a seal drawn against another
+    archive, and a reading under it would be over games a reader cannot name.
+    That is worse than no reading at all, so it is refused."""
     vector = weights()
     rows, raw = sample(vector)
     _, parsed = tune.parse_terms(extraction(rows, vector))
-    with pytest.raises(ValueError, match="reach no row"):
+    with pytest.raises(ValueError, match="in no game of this corpus"):
         tune.Corpus(vector, parsed, labels_of(raw), {"f" * 64})
+
+
+def test_a_sealed_pair_with_no_row_is_counted_rather_than_refused():
+    """A named pair the corpus holds whose positions all went elsewhere is
+    ordinary once the archive is large: they were claimed by a game with a
+    lower key, or filtered out of the extraction. The pair is sealed and
+    contributes nothing, which is a number to report and not a fault. The
+    2026-09-13 mobility corpus had four of them in 4,750."""
+    vector = weights()
+    rows, raw = sample(vector)
+    labels = labels_of(raw)
+    # drop one pair's rows from the extraction while leaving its games in the
+    # corpus, which is what a position claimed elsewhere looks like here. A
+    # fixture row opens with its id, so the id is its first field
+    lonely = min(label.pair for label in labels.values())
+    dropped = {name for name, label in labels.items() if label.pair == lonely}
+    kept = [row for row in rows if row.split(" ", 1)[0] not in dropped]
+    assert len(kept) < len(rows), "the fixture shares no pair"
+    _, parsed = tune.parse_terms(extraction(kept, vector))
+    corpus = tune.Corpus(vector, parsed, labels, {lonely})
+    assert corpus.sealed_without_rows == 1
+    assert corpus.sealed.positions == 0
