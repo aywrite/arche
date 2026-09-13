@@ -109,9 +109,6 @@ tantabus_build() {
     echo target/release/tantabus-uci
 }
 
-# Cinnamon. The cmake file beside its sources builds a debug target against
-# clang and gtest, so the release build is the project's own makefile, which
-# names a target per instruction set. The generic one is the plain x86-64.
 # Weiss, Terje Kirstihagen's engine in c. Fathom is vendored beside its own
 # sources rather than fetched, so a shallow clone holds everything the makefile
 # compiles. The default target is the one openbench builds, and its flags name
@@ -127,6 +124,9 @@ weiss_build() {
     echo src/weiss
 }
 
+# Cinnamon. The cmake file beside its sources builds a debug target against
+# clang and gtest, so the release build is the project's own makefile, which
+# names a target per instruction set. The generic one is the plain x86-64.
 REPOSITORY[cinnamon]=https://github.com/gekomad/Cinnamon.git
 cinnamon_build() {
     make -C src cinnamon64-generic -j"$(nproc)" > /dev/null
