@@ -1334,18 +1334,18 @@ go depth 3
     #[test]
     fn a_search_is_given_the_clock_of_the_side_to_move() {
         // both clocks are on the line and they are far apart, so a search
-        // handed the wrong one is handed thirty times the time it has. A
+        // handed the wrong one is handed twenty times the time it has. A
         // share of a game clock arrives as one, since what is not spent on
         // this move is still there for the next
         let line = "go wtime 60000 btime 4000";
         assert_eq!(
             asked_of_engine_as(line, Color::White).limits.clock(),
-            Some(Clock::Share(Duration::from_millis(1450))),
+            Some(Clock::Share(Duration::from_millis(2950))),
             "white was not given its own clock"
         );
         assert_eq!(
             asked_of_engine_as(line, Color::Black).limits.clock(),
-            Some(Clock::Share(Duration::from_millis(50))),
+            Some(Clock::Share(Duration::from_millis(150))),
             "black was not given its own clock"
         );
     }

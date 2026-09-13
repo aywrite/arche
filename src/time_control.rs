@@ -11,7 +11,16 @@ use std::time::Duration;
 const MOVE_OVERHEAD_MS: u64 = 50;
 
 /// Moves we plan for when the time control does not say how many are left.
-const ASSUMED_MOVES_TO_GO: u64 = 40;
+///
+/// A twentieth of the clock rather than a fortieth. With an increment the
+/// clock does not decay towards nothing: it falls until a move's spend equals
+/// the increment and then holds there. So what the horizon decides is how much
+/// of the clock is still unspent when the game ends, and not how fast it runs
+/// out. At the fortieth, self play at 10+0.1 ended games with about half the
+/// clock banked. The twentieth halves that floor (about 1.9 seconds at 10+0.1,
+/// which is nineteen increments) and spends the difference on the opening and
+/// the middlegame.
+const ASSUMED_MOVES_TO_GO: u64 = 20;
 
 /// Share of the increment we count on. It is only credited once we have moved,
 /// so banking all of it leaves nothing to cover the overhead.
@@ -163,7 +172,7 @@ mod tests {
         );
         assert_eq!(
             clock(60_000).budget(),
-            Some(Clock::Share(Duration::from_millis(1_450)))
+            Some(Clock::Share(Duration::from_millis(2_950)))
         );
         assert_eq!(
             TimeControl {
@@ -201,9 +210,9 @@ mod tests {
     }
 
     #[test]
-    fn sudden_death_plans_for_forty_more_moves() {
-        // 60000 / 40 - 50
-        assert_eq!(millis(&clock(60_000)), Some(1_450));
+    fn sudden_death_plans_for_twenty_more_moves() {
+        // 60000 / 20 - 50
+        assert_eq!(millis(&clock(60_000)), Some(2_950));
     }
 
     #[test]
@@ -241,8 +250,8 @@ mod tests {
             increment: Some(1_000),
             ..clock(60_000)
         };
-        // 60000 / 40 + 750 of the increment - 50
-        assert_eq!(millis(&control), Some(2_200));
+        // 60000 / 20 + 750 of the increment - 50
+        assert_eq!(millis(&control), Some(3_700));
     }
 
     #[test]
@@ -257,6 +266,33 @@ mod tests {
             let budget = millis(&control).unwrap();
             assert!(budget < time, "spent {} of {} left", budget, time);
         }
+        // The floor a 10+0.1 game settles on under this horizon, where a move
+        // spends about what the increment pays back: 1900 / 20 + 75 - 50.
+        let control = TimeControl {
+            increment: Some(100),
+            ..clock(1_900)
+        };
+        assert_eq!(millis(&control), Some(120));
+    }
+
+    #[test]
+    fn the_cap_decides_only_on_a_nearly_spent_clock() {
+        // A twentieth plus three quarters of the increment passes a third of
+        // the clock at around 265 ms, so the cap is what decides below that
+        // and the share is what decides above it. Either way the move is
+        // inside what is left.
+        let nearly_spent = TimeControl {
+            increment: Some(100),
+            ..clock(200)
+        };
+        // 33% of 200 is 66, which is less than 200 / 20 + 75
+        assert_eq!(millis(&nearly_spent), Some(16));
+        let a_little_more = TimeControl {
+            increment: Some(100),
+            ..clock(300)
+        };
+        // 300 / 20 + 75 is 90, which is under the 99 the cap allows
+        assert_eq!(millis(&a_little_more), Some(40));
     }
 
     #[test]
