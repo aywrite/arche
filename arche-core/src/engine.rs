@@ -2225,11 +2225,6 @@ impl AlphaBeta {
         self.selective_depth = depth;
         self.board.start_line();
 
-        // the game is already drawn, there is no move to look for
-        if self.board.fifty_move_expired() {
-            return SearchOutcome::GameOver;
-        }
-
         if self.poll_deadline().is_err() {
             return SearchOutcome::Aborted(None);
         }
@@ -2291,7 +2286,15 @@ impl AlphaBeta {
         }
 
         if !found_legal_move {
-            // checkmate or stalemate: either way there is nothing to play
+            // checkmate or stalemate: either way there is nothing to play.
+            //
+            // This is the only way out of this function without a move. An
+            // expired fifty move counter is not another one. That draw is
+            // claimable and not automatic (FIDE 9.3), so the side to move may
+            // still play, and a root asked for a move answers with one. The
+            // tree below scores the draw at every child the move does not
+            // reset, so what comes back is zero unless a capture or a pawn
+            // move is worth more.
             return SearchOutcome::GameOver;
         }
 
@@ -3279,13 +3282,71 @@ mod search {
         assert_eq!(result.score, 0);
     }
 
+    /// A fifty move draw is claimable and not automatic, so a root whose
+    /// counter has expired still has to answer with a move.
+    ///
+    /// This used to report game over and the interface printed `bestmove
+    /// 0000`, which is a forfeit in any GUI that asks rather than
+    /// adjudicating. The counter reaching a hundred is a right the side to
+    /// move holds, not the end of the game: FIDE 9.3 makes it a claim, and
+    /// only seventy five moves under 9.6 ends a game without one.
+    ///
+    /// The score is zero because every move here leaves the counter running,
+    /// and the tree below answers a drawn path with zero.
     #[test]
-    fn a_triggered_fifty_move_rule_is_game_over() {
-        // The fifty move rule has been triggered - the game is already drawn,
-        // there is no move to look for
+    fn a_root_whose_fifty_move_counter_has_expired_still_answers_with_a_move() {
         let game = Board::from_fen("5k2/1p3p1p/p3pK1P/P1P1P3/4bP2/8/8/8 w - - 100 112").unwrap();
         let mut e = engine(game);
+        let result = completed(e.search(3));
+        assert_eq!(result.score, 0);
+        assert!(
+            e.board.generate_moves().contains(&result.best_move),
+            "{} is not a legal move here",
+            result.best_move
+        );
+    }
+
+    /// The same position one ply before expiry, which always answered a move,
+    /// so the pair says the counter is what changed and not the position.
+    #[test]
+    fn the_same_root_one_ply_before_expiry_answers_the_same_way() {
+        let game = Board::from_fen("5k2/1p3p1p/p3pK1P/P1P1P3/4bP2/8/8/8 w - - 99 112").unwrap();
+        let mut e = engine(game);
+        let result = completed(e.search(3));
+        assert_eq!(result.score, 0);
+    }
+
+    /// A root that is mated on the hundredth half move is still game over,
+    /// and for the reason it always was: there is no legal move. The game
+    /// ended on the mate, before the side mated had a move to claim on.
+    ///
+    /// Without this the fix above would read as "the counter no longer ends
+    /// a search", which is not what it says.
+    #[test]
+    fn a_mate_on_the_hundredth_half_move_is_still_game_over() {
+        let game = Board::from_fen("7k/6Q1/6K1/8/8/8/8/8 b - - 100 112").unwrap();
+        let mut e = engine(game);
         assert!(matches!(e.search(3), SearchOutcome::GameOver));
+    }
+
+    /// A move that resets the counter is worth what it wins.
+    ///
+    /// Queens face each other down the d file with the counter expired. Every
+    /// quiet move leaves the counter running, and the tree below answers zero
+    /// for those. The capture resets it and wins a queen. So the search picks
+    /// between the draw and the win on their scores, which is what a root
+    /// that answered the null move could not do.
+    #[test]
+    fn an_expired_counter_does_not_cost_a_win_a_capture_is_worth() {
+        let game = Board::from_fen("3q3k/8/8/8/8/8/8/3Q2K1 w - - 100 1").unwrap();
+        let mut e = engine(game);
+        let result = completed(e.search(6));
+        assert_eq!(format!("{}", result.best_move), "d1d8");
+        assert!(
+            result.score > 500,
+            "winning a queen scored {}",
+            result.score
+        );
     }
 
     #[test]

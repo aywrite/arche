@@ -919,6 +919,30 @@ mod tests {
         }
     }
 
+    /// A claimable fifty move draw is not "no legal moves". The interface
+    /// answers a real move and says nothing about the position that is untrue.
+    ///
+    /// The engine used to report game over from a root whose counter had
+    /// reached a hundred, so this printed `info string no legal moves
+    /// identified` and `bestmove 0000` at a position with thirty of them. A
+    /// GUI that asks rather than adjudicating scores that as a forfeit, and
+    /// the info string is a false statement about the board besides.
+    #[test]
+    fn a_claimable_fifty_move_draw_is_answered_with_a_move() {
+        const FEN: &str = "5k2/1p3p1p/p3pK1P/P1P1P3/4bP2/8/8/8 w - - 100 112";
+        let mut uci = uci();
+        uci.run(Cursor::new(format!("position fen {}\ngo depth 4\n", FEN)));
+        let said = said(&uci);
+        assert!(
+            !said.contains("no legal moves identified"),
+            "the position has legal moves: {}",
+            said
+        );
+        assert!(!said.ends_with("bestmove 0000\n"), "{}", said);
+        let last = said.lines().last().unwrap_or_default();
+        assert!(last.starts_with("bestmove "), "{}", said);
+    }
+
     #[test]
     fn what_could_not_be_acted_on_is_reported_as_an_info_string() {
         let mut uci = uci();
