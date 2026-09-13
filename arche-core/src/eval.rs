@@ -67,11 +67,11 @@ pub(crate) const MOBILE_PIECES: [Piece; 4] =
 /// The first fit of this term read 1,812 games and priced one piece. This one
 /// reads twenty four times as many and prices all four, which is the whole of
 /// what changed: nothing about the term is different, the corpus simply has
-/// enough games to say something about a knight. `specs/mobility-cost.md`
-/// predicted the vector from a preliminary fit before the pawn structure term
-/// existed, at `[5,6,5,1]` and `[0,2,2,7]`, and it came out `[4,6,4,1]` and
-/// `[1,3,4,7]`. Pawn structure took almost nothing away from mobility,
-/// despite both terms reading open lines.
+/// enough games to say something about a knight. A preliminary fit taken
+/// before the pawn structure term existed predicted `[5,6,5,1]` and
+/// `[0,2,2,7]`, and it came out `[4,6,4,1]` and `[1,3,4,7]`. Pawn structure
+/// took almost nothing away from mobility, despite both terms reading open
+/// lines.
 ///
 /// The ridge is zero, which the grid ranked first, and here that is not the
 /// trap it was for the pawn structure fit. The vector quantizes identically
