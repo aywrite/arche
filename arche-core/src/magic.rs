@@ -252,12 +252,36 @@ impl<const ATTACKS: usize> SliderTables<ATTACKS> {
         }
     }
 
+    /// What a slider on `square` attacks under `occupied`.
+    ///
+    /// The lookup carries no bounds check, and what makes that sound is that
+    /// `new` has already written the same slot. `blocker_configuration`
+    /// enumerates the subsets of a square's blocker mask, which is exactly
+    /// the set of values `occupied & mask` can take, so every index a probe
+    /// can compute is one `new` computed while it filled the table. It wrote
+    /// there through an ordinary checked index in a const function, so const
+    /// evaluation has bounds checked each of them once already, and a magic
+    /// or a shift that reached outside the table would not compile.
+    ///
+    /// The square is masked to the board, the bargain `Board::get_piece_index`
+    /// also strikes, with the debug assert over the mask to catch a square
+    /// off the board.
+    ///
+    /// The check was two instructions of the ten a probe takes, and the
+    /// mobility count takes a probe at every slider of both sides at every
+    /// leaf. Dropping it took 4,644,712 instructions off `bench 5`, 1.03%,
+    /// and 2,895,293 conditional branches, with the node count unmoved.
     #[inline]
     fn attacks(&self, square: u8, occupied: u64) -> u64 {
-        let i = square as usize;
+        debug_assert!(square < 64);
+        let i = (square & 63) as usize;
         let blockers = occupied & self.blocker_masks[i];
         let index = blockers.wrapping_mul(self.magics[i]) >> self.shifts[i];
-        self.attacks[self.offsets[i] as usize + index as usize]
+        let slot = self.offsets[i] as usize + index as usize;
+        debug_assert!(slot < ATTACKS);
+        // SAFETY: `new` wrote this slot through a checked index while it
+        // built the table, so the build has proved it is inside `attacks`
+        unsafe { *self.attacks.get_unchecked(slot) }
     }
 }
 

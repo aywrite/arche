@@ -12,9 +12,9 @@ publish = false
 [lib]
 bench = false #https://bheisler.github.io/criterion.rs/book/faq.html#cargo-bench-gives-unrecognized-option-errors-for-valid-command-line-options
 
-# The ten unsafe blocks here are the move list's initialised prefix, the
-# castling rights as the word they occupy, and the static exchange gain
-# array. Each carries a SAFETY note and the argument holds, but nothing
+# The eleven unsafe blocks here are the move list's initialised prefix, the
+# castling rights as the word they occupy, the static exchange gain array,
+# and the magic attack table's index. Each carries a SAFETY note and the argument holds, but nothing
 # checked mechanically that it kept holding.
 #
 # This is the half a compiler can check. Without it the body of an
