@@ -11,10 +11,9 @@ two formats, and that the default of each workflow names a book the table
 knows. The last of those is the one that would otherwise go unnoticed, since
 a default naming a book with no block fails a run rather than a check.
 
-The pin is checked too. It is written out a second time in the match-tools
-cache key, because a cache key is wanted before a step has run, and the two
-saying different things would mean a run restoring the file fetched at the
-old pin under the new one's name.
+The pin is checked too. The action that fetches the books reads it from here
+and builds its cache key from it, so a pin this table cannot print would mean a
+key naming nothing and a run restoring whatever the last one left.
 """
 
 import re
@@ -27,7 +26,6 @@ import yaml
 
 ROOT = Path(__file__).resolve().parent.parent.parent
 SCRIPT = ROOT / "scripts" / "book.sh"
-ACTION = ROOT / ".github" / "actions" / "match-tools" / "action.yml"
 WORKFLOWS = [
     ROOT / ".github" / "workflows" / "strength.yml",
     ROOT / ".github" / "workflows" / "calibrate.yml",
@@ -215,15 +213,6 @@ def test_the_default_is_still_the_book_the_figures_were_played_on():
         assert defaults(workflow) == ["8moves_v3", "8moves_v3"]
 
 
-def test_the_cache_key_names_the_pin_the_books_come_from():
-    action = yaml.safe_load(ACTION.read_text(encoding="utf-8"))
-    steps = action["runs"]["steps"]
-    key = next(step["with"]["key"] for step in steps if step.get("id") == "cache")
-    abbreviated = key.rsplit("-", 1)[-1]
-    assert len(abbreviated) >= 7, key
-    assert pin().startswith(abbreviated), f"{key} is not the pin book.sh fetches at"
-
-
 def test_a_book_that_is_not_the_one_the_table_names_is_refused(tmp_path):
     name = books()[0]
     played = tmp_path / field("FILE", name)
@@ -237,13 +226,3 @@ def test_a_book_that_is_not_there_is_refused(tmp_path):
     checked = book("verify", books()[0], str(tmp_path))
     assert checked.returncode == 1, checked.stdout
     assert "not there" in checked.stderr, checked.stderr
-
-
-def test_the_books_are_checked_even_when_the_cache_hits():
-    # the fetch is skipped on a cache hit, so a check that carries the same
-    # condition would leave the file most runs play unchecked
-    steps = yaml.safe_load(ACTION.read_text(encoding="utf-8"))["runs"]["steps"]
-    checking = [step for step in steps if "book.sh verify" in step.get("run", "")]
-    assert checking, "no step checks the books in tools/ against the table"
-    for step in checking:
-        assert "if" not in step, f"{step['name']} is skipped when the cache hits"

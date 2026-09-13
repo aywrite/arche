@@ -117,6 +117,23 @@ def test_the_elo_format_is_fixed_when_present():
         ], value
 
 
+def test_the_trailers_the_estimator_prints_are_accepted():
+    """The seam with the tool that prints them.
+
+    The estimator is in another repository now, so neither side can import the
+    other to check the shape they agree on. Its own tests pin these lines as
+    what it prints and this pins them as what the hook takes. A change to the
+    shape then fails on the side that made it, and the other side's literal is
+    where the conversation starts.
+    """
+    for value in [
+        "+191 ±321 (4 games, 30+0.3, vs ce8b662)",
+        "+20 ±15 (sprt [0, 10] passed, 214 games, 30+0.3, vs ce8b662)",
+        "not measured (sprt [0, 10] passed, 224 games, 30+0.3, vs ce8b662)",
+    ]:
+        assert problems(f"{ENGINE}\n\nBench: 1\nElo: {value}\n") == [], value
+
+
 def test_the_base_played_against_has_to_still_resolve():
     """A branch name is not a base.
 
