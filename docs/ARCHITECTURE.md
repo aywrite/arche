@@ -145,7 +145,8 @@ ones. All three are fitted to the engine's own archived games.
   back against the live tables and has to give the evaluation exactly,
   which is asserted on every row printed as well as over three suites in a
   test. A position drawn by material is turned away and counted in the header
-  rather than fitted, because its score does not read the weights at all. Driven by the `terms` argument, and read by `scripts/tune.py`.
+  rather than fitted, because its score does not read the weights at all.
+  Driven by the `terms` argument, and read by `scripts/tune.py`.
 - **tactics.rs**: 300 tactical positions with a pinned pass count, gated
   in CI.
 - **strategy.rs**: 1500 quiet positions, each move graded out of a

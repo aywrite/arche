@@ -569,9 +569,12 @@ pub(crate) fn eval_cached(
 /// `Accumulator::count` to add and take away.
 ///
 /// Only [`SCORED_KINDS`] are counted. A kind whose weight is zero contributes
-/// nothing however many squares it covers, so counting it is work no score can
-/// see. Leaving three of the four out took a bit over a third off what the
-/// term cost.
+/// nothing however many squares it covers, so counting it is work no score
+/// can see. The rule is what is written down, not a list: when the first fit
+/// left six of the eight weights at zero, leaving three of the four kinds out
+/// took a bit over a third off what the term cost. The refit priced all four,
+/// so today this counts every kind and the skip is waiting for a weight to
+/// round to nothing again.
 #[inline]
 fn mobility(board: &Board) -> i32 {
     mobility_with::<SCORED_KINDS>(board, &MOBILITY)
@@ -787,10 +790,9 @@ impl Accumulator {
     ///
     /// `leaf` is the leaf terms [`eval`] reads off the board, mobility, the
     /// king's shelter and the pawn structure summed, as a packed pair on the
-    /// same scale. Summing them
-    /// before the call is exact, since both are pairs on this scale, and it is
-    /// what keeps one divide however many such terms there are. The pair joins
-    /// the piece square pair before the
+    /// same scale. Summing them before the call is exact, since each is a pair
+    /// on this scale, and it is what keeps one divide however many such terms
+    /// there are. The pair joins the piece square pair before the
     /// interpolation rather than being tapered beside it, so the two share one
     /// divide. A second divide would answer a centipawn away wherever a
     /// numerator is negative and does not divide evenly, and `tune::reconstruct`
