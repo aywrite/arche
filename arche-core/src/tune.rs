@@ -28,18 +28,23 @@
 //! is asserted on every row a run prints rather than only in a test.
 //!
 //! The walk is a third pass over the board, beside `Accumulator::count` and
-//! `Accumulator::recomputed`. eval.rs defends that duplication on the second
+//! `Accumulator::recomputed`. eval/mod.rs defends that duplication on the second
 //! and the same terms hold here: two implementations that agree are a check,
 //! and a helper shared between them is not. The accumulator the search keeps
 //! is neither read nor duplicated.
 //!
 //! The three leaf terms are the exception, and it is deliberate. The walk
-//! asks `Board::mobility_counts`, `Board::shelter_counts` and
-//! `Board::pawn_structure_counts` for their counts and so does `eval`, so the
-//! identity cannot see a wrong count at any weights, fitted or zero. A second
-//! count here would be a second chance to be wrong about a term that is read
-//! at every leaf rather than a check on the first, so what pins them is the
-//! hand counts beside each helper in board.rs.
+//! asks each term in `eval::TERMS` for its counts through the descriptor, and
+//! what it reaches is the function `eval` reads, so the identity cannot see a
+//! wrong count at any weights, fitted or zero. A second count here would be a
+//! second chance to be wrong about a term that is read at every leaf rather
+//! than a check on the first, so what pins them is the hand counts beside each
+//! term in `eval/`.
+//!
+//! The layout is that list too. Where a term stands in the vector, what its
+//! weights are and how many counts it carries all come off `eval::TERMS`, so a
+//! term added there is laid out, priced and walked here without an edit, and
+//! the run's layout line states the result for `scripts/tune.py` to read.
 //!
 //! On mobility the two may ask for different kinds. The walk always asks for
 //! all four, because it is offline and a coefficient for a kind worth nothing
@@ -82,44 +87,39 @@ pub const ENDGAME_SLOTS: usize = 6 * 64;
 /// the tables.
 pub const MATERIAL_SLOT: usize = MIDGAME_SLOTS + ENDGAME_SLOTS;
 
-/// Where the mobility weights stand, after the material block: four midgame
-/// weights, one for each of `eval::MOBILE_PIECES`, then the same four at the
-/// endgame end. After the material rather than beside the tables, so that
-/// adding them moved no slot a fit has already been written against.
-pub const MOBILITY_SLOT: usize = MATERIAL_SLOT + 6;
+/// How many material values there are, one per piece.
+const MATERIAL_SLOTS: usize = 6;
 
-/// How many pieces carry a mobility weight, which is how far apart a piece's
-/// two mobility weights are.
-const MOBILITY_SLOTS: usize = eval::MOBILE_PIECES.len();
+/// Where the leaf terms start, after the material block. After it rather than
+/// beside the tables, so that adding the first of them moved no slot a fit
+/// had already been written against.
+///
+/// Each term takes twice its width from here on, its midgame half first, in
+/// `eval::TERMS` order. A term is appended rather than inserted for the same
+/// reason the block is: mobility stands where it did when it was the only one
+/// here, and the shelter and the pawn structure were each added after it.
+/// Growing one in place is not that, and the storm is what says so: it took
+/// the shelter from eight weights to fourteen and moved the endgame half of
+/// the vector with it.
+pub const TERM_SLOT: usize = MATERIAL_SLOT + MATERIAL_SLOTS;
 
-/// Where the shelter weights stand, after the mobility block and laid out the
-/// same way: seven midgame weights, one for each of the counts
-/// `eval::SHELTER_TERMS` names, then the same seven at the endgame end. Each
-/// term appended rather than inserted, so that adding one moves no slot a fit
-/// has already been written against. Growing one in place is not that: the
-/// storm took this block from eight weights to fourteen, and the endgame half
-/// moved with it.
-pub const SHELTER_SLOT: usize = MOBILITY_SLOT + 2 * MOBILITY_SLOTS;
-
-/// How many counts the shelter is measured in, which is how far apart a
-/// count's two weights are.
-const SHELTER_SLOTS: usize = eval::SHELTER_TERMS;
-
-/// Where the pawn structure weights stand, after the shelter block and laid
-/// out the same way: eight midgame weights, one for each of the counts
-/// `eval::PAWN_TERMS` names, then the same eight at the endgame end.
-/// Appended rather than inserted, on the rule the two blocks above it follow,
-/// so no slot a fit has already been written against has moved.
-pub const PAWN_SLOT: usize = SHELTER_SLOT + 2 * SHELTER_SLOTS;
-
-/// How many counts the pawn structure is measured in, which is how far apart
-/// a count's two weights are.
-const PAWN_SLOTS: usize = eval::PAWN_TERMS;
+/// Where the term at `index` in `eval::TERMS` starts, which is the sum of the
+/// widths before it, doubled.
+const fn term_slot(index: usize) -> usize {
+    let mut slot = TERM_SLOT;
+    let mut before = 0;
+    while before < index {
+        slot += 2 * eval::TERMS[before].width;
+        before += 1;
+    }
+    slot
+}
 
 /// The whole weight vector: 384 midgame entries, 384 endgame ones, the six
-/// material values, the eight mobility weights, the fourteen shelter ones and
-/// the sixteen pawn structure ones.
-pub const SLOTS: usize = PAWN_SLOT + 2 * PAWN_SLOTS;
+/// material values, and then each leaf term's widths twice over. The tables
+/// and the material are written here; everything after them follows from the
+/// term list, so a term added there moves this without a second edit.
+pub const SLOTS: usize = term_slot(eval::TERMS.len());
 
 /// The weight a slot names.
 ///
@@ -142,32 +142,33 @@ pub fn weight(slot: usize) -> i32 {
         PieceSquareTables::TABLES.get_value(entry, piece, Color::Black)
     };
     if slot < MIDGAME_SLOTS {
-        mg_value(packed(Piece::PIECES[slot / 64], slot % 64))
-    } else if slot < MATERIAL_SLOT {
-        let entry = slot - MIDGAME_SLOTS;
-        eg_value(packed(Piece::PIECES[entry / 64], entry % 64))
-    } else if slot < MOBILITY_SLOT {
-        eval::material(Piece::PIECES[slot - MATERIAL_SLOT]) as i32
-    } else if slot < MOBILITY_SLOT + MOBILITY_SLOTS {
-        mg_value(eval::mobility_weight(slot - MOBILITY_SLOT))
-    } else if slot < SHELTER_SLOT {
-        eg_value(eval::mobility_weight(slot - MOBILITY_SLOT - MOBILITY_SLOTS))
-    } else if slot < SHELTER_SLOT + SHELTER_SLOTS {
-        mg_value(eval::shelter_weight(slot - SHELTER_SLOT))
-    } else if slot < PAWN_SLOT {
-        eg_value(eval::shelter_weight(slot - SHELTER_SLOT - SHELTER_SLOTS))
-    } else if slot < PAWN_SLOT + PAWN_SLOTS {
-        mg_value(eval::pawn_weight(slot - PAWN_SLOT))
-    } else {
-        eg_value(eval::pawn_weight(slot - PAWN_SLOT - PAWN_SLOTS))
+        return mg_value(packed(Piece::PIECES[slot / 64], slot % 64));
     }
+    if slot < MATERIAL_SLOT {
+        let entry = slot - MIDGAME_SLOTS;
+        return eg_value(packed(Piece::PIECES[entry / 64], entry % 64));
+    }
+    if slot < TERM_SLOT {
+        return eval::material(Piece::PIECES[slot - MATERIAL_SLOT]) as i32;
+    }
+    let mut index = slot - TERM_SLOT;
+    for term in eval::TERMS {
+        if index < term.width {
+            return mg_value((term.weight)(index));
+        }
+        if index < 2 * term.width {
+            return eg_value((term.weight)(index - term.width));
+        }
+        index -= 2 * term.width;
+    }
+    panic!("slot {} is past the {} the vector holds", slot, SLOTS)
 }
 
 /// Whether a slot is one of the material values, which are the only weights
-/// added outside the taper's divide. Everything else is inside it, mobility
-/// and the shelter included.
+/// added outside the taper's divide. Everything else is inside it, the leaf
+/// terms included.
 fn is_material(slot: usize) -> bool {
-    (MATERIAL_SLOT..MOBILITY_SLOT).contains(&slot)
+    (MATERIAL_SLOT..TERM_SLOT).contains(&slot)
 }
 
 /// One position's evaluation, decomposed over the weight vector.
@@ -231,25 +232,20 @@ impl Terms {
             coefficients[midgame] += sign * phase;
             coefficients[MIDGAME_SLOTS + midgame] += sign * (TOTAL_PHASE - phase);
         }
-        // the three leaf terms are per position rather than per square, so
-        // their counts come off the board whole rather than out of the walk
-        // above. Tapered the way a square is, and so two slots per count
+        // the leaf terms are per position rather than per square, so their
+        // counts come off the board whole rather than out of the walk above.
+        // Tapered the way a square is, and so two slots per count
+        let mut counts = [0; eval::WIDEST];
         for (color, sign) in [(Color::White, mover), (Color::Black, -mover)] {
-            let counts = board.mobility_counts::<{ eval::ALL_KINDS }>(color);
-            for (index, count) in counts.into_iter().enumerate() {
-                coefficients[MOBILITY_SLOT + index] += sign * count * phase;
-                coefficients[MOBILITY_SLOT + MOBILITY_SLOTS + index] +=
-                    sign * count * (TOTAL_PHASE - phase);
-            }
-            for (index, count) in board.shelter_counts(color).into_iter().enumerate() {
-                coefficients[SHELTER_SLOT + index] += sign * count * phase;
-                coefficients[SHELTER_SLOT + SHELTER_SLOTS + index] +=
-                    sign * count * (TOTAL_PHASE - phase);
-            }
-            for (index, count) in board.pawn_structure_counts(color).into_iter().enumerate() {
-                coefficients[PAWN_SLOT + index] += sign * count * phase;
-                coefficients[PAWN_SLOT + PAWN_SLOTS + index] +=
-                    sign * count * (TOTAL_PHASE - phase);
+            let mut slot = TERM_SLOT;
+            for term in eval::TERMS {
+                let counts = &mut counts[..term.width];
+                (term.counts)(board, color, counts);
+                for (index, count) in counts.iter().enumerate() {
+                    coefficients[slot + index] += sign * count * phase;
+                    coefficients[slot + term.width + index] += sign * count * (TOTAL_PHASE - phase);
+                }
+                slot += 2 * term.width;
             }
         }
         Self {
@@ -449,7 +445,18 @@ pub fn run(positions: &[Position], suite: Option<&str>) -> Report {
 }
 
 /// The report as the command prints it: a header naming the suite and what
-/// the filter did with it, the weight vector, then a row a position.
+/// the filter did with it, the layout the vector is in, the weight vector,
+/// then a row a position.
+///
+/// The layout line is `layout midgame 384 endgame 384 material 6` and then a
+/// term and its width for each of `eval::TERMS`, a width being the counts a
+/// term is measured in per side and per half of the taper. A term takes twice
+/// that in slots, its midgame half first, in the order printed. It is spelled
+/// off the table rather than written out, so what reads these rows learns the
+/// layout from the run that printed them instead of holding a copy of it:
+/// `scripts/tune.py` derives its slots from this line and refuses a run whose
+/// terms it has no bounds for, where a copy would have read the numbers on to
+/// the wrong weights and fitted them.
 ///
 /// A row is `id eval phase n slot:coefficient... fen`, whitespace separated,
 /// and both ends of it can hold spaces. A fen is six fields, and an id is
@@ -494,6 +501,15 @@ impl fmt::Display for Report {
             self.drawn,
             self.rows.len(),
         )?;
+        write!(
+            f,
+            "layout midgame {} endgame {} material {}",
+            MIDGAME_SLOTS, ENDGAME_SLOTS, MATERIAL_SLOTS
+        )?;
+        for term in eval::TERMS {
+            write!(f, " {} {}", term.name, term.width)?;
+        }
+        writeln!(f)?;
         write!(f, "weights {}", SLOTS)?;
         for slot in 0..SLOTS {
             write!(f, " {}", weight(slot))?;
@@ -526,6 +542,20 @@ mod tests {
     use crate::value::CHECKMATE_THRESHOLD;
     use crate::{bench, strategy};
     use pretty_assertions::assert_eq;
+
+    /// Where a named term's block starts and how wide it is, which is what a
+    /// test needs to read one term's coefficients. Read off the same table the
+    /// layout is, so a test names a term rather than a slot number.
+    fn term(name: &str) -> (usize, usize) {
+        let mut slot = TERM_SLOT;
+        for term in eval::TERMS {
+            if term.name == name {
+                return (slot, term.width);
+            }
+            slot += 2 * term.width;
+        }
+        panic!("no term is called {}", name)
+    }
 
     /// Every position three suites of different shapes hold: the shared
     /// fens, the bench's eighteen and the strategic suite's fifteen hundred.
@@ -665,14 +695,15 @@ mod tests {
             // way. The pawn on e2 blocks the diagonal beside that one
             (3, 10, "queen"),
         ] {
+            let (start, width) = term("mobility");
             assert_eq!(
-                coefficient(MOBILITY_SLOT + index),
+                coefficient(start + index),
                 count * terms.phase,
                 "{} midgame",
                 why
             );
             assert_eq!(
-                coefficient(MOBILITY_SLOT + MOBILITY_SLOTS + index),
+                coefficient(start + width + index),
                 count * (TOTAL_PHASE - terms.phase),
                 "{} endgame",
                 why
@@ -696,7 +727,7 @@ mod tests {
             terms
                 .coefficients
                 .iter()
-                .any(|(slot, _)| usize::from(*slot) >= MOBILITY_SLOT),
+                .any(|(slot, _)| usize::from(*slot) >= term("mobility").0),
             "no mobility coefficient here, so this test says nothing about one"
         );
         assert_eq!(terms, Terms::of(&black));
@@ -883,16 +914,17 @@ mod tests {
             midgame += largest(mg_value);
             endgame += largest(eg_value);
         }
-        let shelter = |half: fn(i32) -> i32| {
-            (0..SHELTER_SLOTS)
-                .map(|index| half(eval::shelter_weight(index)).abs())
+        let charged = |name: &str, half: fn(i32) -> i32| {
+            let named = eval::TERMS
+                .iter()
+                .find(|term| term.name == name)
+                .expect(name);
+            (0..named.width)
+                .map(|index| half((named.weight)(index)).abs())
                 .sum::<i32>()
         };
-        let pawns = |half: fn(i32) -> i32| {
-            (0..PAWN_SLOTS)
-                .map(|index| half(eval::pawn_weight(index)).abs())
-                .sum::<i32>()
-        };
+        let shelter = |half: fn(i32) -> i32| charged("shelter", half);
+        let pawns = |half: fn(i32) -> i32| charged("pawn_structure", half);
         // both sides at once, which is what the accumulator carries
         let worst = 2 * midgame.max(endgame)
             + 2 * MAX_SHELTER * shelter(mg_value).max(shelter(eg_value))
@@ -1010,8 +1042,44 @@ mod tests {
             "{}",
             text.lines().next().unwrap_or_default()
         );
-        // the header, the weights and a row a position
-        assert_eq!(text.lines().count(), report.rows.len() + 2);
+        // the header, the layout, the weights and a row a position
+        assert_eq!(text.lines().count(), report.rows.len() + 3);
+    }
+
+    /// The layout line states where every block of the vector stands, and
+    /// states it off the same table the slots are laid out from.
+    ///
+    /// What reads these rows has no copy of the layout, so this is the whole
+    /// of what it is told. A term renamed, dropped or given a different width
+    /// shows here, and what reads the line refuses a term it cannot price
+    /// rather than reading the numbers into a layout of its own.
+    #[test]
+    fn a_run_prints_the_layout_the_slots_are_laid_out_from() {
+        let text = run(&bench::positions()[..1], None).to_string();
+        let line = text.lines().nth(1).expect("a layout line");
+        let mut words = line.split(' ');
+        assert_eq!(words.next(), Some("layout"));
+        let mut named: Vec<(String, usize)> = Vec::new();
+        while let Some(name) = words.next() {
+            let width = words.next().expect("a width").parse().expect("a width");
+            named.push((name.to_string(), width));
+        }
+        let mut expected: Vec<(String, usize)> = vec![
+            ("midgame".to_string(), MIDGAME_SLOTS),
+            ("endgame".to_string(), ENDGAME_SLOTS),
+            ("material".to_string(), MATERIAL_SLOTS),
+        ];
+        expected.extend(
+            eval::TERMS
+                .iter()
+                .map(|term| (term.name.to_string(), term.width)),
+        );
+        assert_eq!(named, expected);
+        // the three blocks are counted whole and a term twice over, which is
+        // what the line leaves a reader to work out
+        let counted: usize = named[..3].iter().map(|(_, width)| width).sum::<usize>()
+            + 2 * named[3..].iter().map(|(_, width)| width).sum::<usize>();
+        assert_eq!(counted, SLOTS);
     }
 
     /// The weight vector is printed beside the coefficients, so that nothing
@@ -1021,7 +1089,7 @@ mod tests {
     fn a_run_prints_the_weights_the_coefficients_are_read_against() {
         let report = run(&bench::positions()[..1], None);
         let text = report.to_string();
-        let line = text.lines().nth(1).expect("a weights line");
+        let line = text.lines().nth(2).expect("a weights line");
         let mut words = line.split(' ');
         assert_eq!(words.next(), Some("weights"));
         assert_eq!(words.next(), Some(SLOTS.to_string().as_str()));
@@ -1069,7 +1137,7 @@ mod tests {
             }],
         };
         let text = report.to_string();
-        let row = text.lines().nth(2).expect("a row");
+        let row = text.lines().nth(3).expect("a row");
         let words: Vec<&str> = row.split(' ').collect();
         // the fen is the last six fields
         let (head, last_six) = words.split_at(words.len() - 6);
@@ -1112,19 +1180,24 @@ mod tests {
                 slot
             );
         }
-        for slot in MATERIAL_SLOT..MOBILITY_SLOT {
+        for slot in MATERIAL_SLOT..TERM_SLOT {
             assert!(is_material(slot), "the material slot {} is", slot);
         }
-        for slot in MOBILITY_SLOT..SLOTS {
+        for slot in TERM_SLOT..SLOTS {
             assert!(
                 !is_material(slot),
                 "the leaf term slot {} is inside the divide",
                 slot
             );
         }
-        assert_eq!(SHELTER_SLOT, MOBILITY_SLOT + 2 * MOBILITY_SLOTS);
-        assert_eq!(PAWN_SLOT, SHELTER_SLOT + 2 * SHELTER_SLOTS);
-        assert_eq!(SLOTS, PAWN_SLOT + 2 * PAWN_SLOTS);
+        // and the blocks after the material are each term's width twice over,
+        // one after the other, which is what the layout line states
+        let mut slot = TERM_SLOT;
+        for named in eval::TERMS {
+            assert_eq!(term(named.name), (slot, named.width), "{}", named.name);
+            slot += 2 * named.width;
+        }
+        assert_eq!(slot, SLOTS);
     }
 
     /// Every shelter count writes both ends of the taper too, and the counts
@@ -1181,14 +1254,15 @@ mod tests {
             // f4, g4 and h4
             (6, 3, "the storm three ranks ahead"),
         ] {
+            let (start, width) = term("shelter");
             assert_eq!(
-                coefficient(SHELTER_SLOT + index),
+                coefficient(start + index),
                 count * terms.phase,
                 "{} midgame",
                 why
             );
             assert_eq!(
-                coefficient(SHELTER_SLOT + SHELTER_SLOTS + index),
+                coefficient(start + width + index),
                 count * (TOTAL_PHASE - terms.phase),
                 "{} endgame",
                 why
@@ -1250,14 +1324,15 @@ mod tests {
             // white's a7, b3 and d5 each have one behind them
             (7, 3, "the doubled pawns"),
         ] {
+            let (start, width) = term("pawn_structure");
             assert_eq!(
-                coefficient(PAWN_SLOT + index),
+                coefficient(start + index),
                 count * terms.phase,
                 "{} midgame",
                 why
             );
             assert_eq!(
-                coefficient(PAWN_SLOT + PAWN_SLOTS + index),
+                coefficient(start + width + index),
                 count * (TOTAL_PHASE - terms.phase),
                 "{} endgame",
                 why
@@ -1277,7 +1352,7 @@ mod tests {
             terms
                 .coefficients
                 .iter()
-                .any(|(slot, _)| usize::from(*slot) >= PAWN_SLOT),
+                .any(|(slot, _)| usize::from(*slot) >= term("pawn_structure").0),
             "no pawn structure coefficient here, so this test says nothing about one"
         );
         assert_eq!(terms, Terms::of(&black));
@@ -1300,7 +1375,7 @@ mod tests {
             terms
                 .coefficients
                 .iter()
-                .any(|(slot, _)| usize::from(*slot) >= SHELTER_SLOT),
+                .any(|(slot, _)| usize::from(*slot) >= term("shelter").0),
             "no shelter coefficient here, so this test says nothing about one"
         );
         assert_eq!(terms, Terms::of(&black));

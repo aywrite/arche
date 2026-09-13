@@ -72,6 +72,13 @@ against the other and has to give the integer the row says the engine gave it.
 That is checked on every row read, so a corpus this cannot rebuild stops the
 run rather than being fitted.
 
+Nor does it know where the weights stand. The run prints a layout line naming
+every block of the vector and how wide it is, and `Layout` reads its slots off
+that, so an extraction from an engine whose terms this file has no bounds for
+is refused by name rather than fitted on to the wrong weights. What stays here
+is the price of each term: a term the run names and `BOUNDS` does not is one
+nobody has screened against the packed halves yet.
+
 Three details of that arithmetic are the ones a python reader gets wrong. The
 divide truncates toward zero where `//` floors, and on a negative numerator
 that does not divide evenly the two differ by a centipawn. The material is
@@ -96,67 +103,121 @@ from pathlib import Path
 import numpy as np
 from groups import CALIBRATION, group_of, sealed_pairs
 
-# The weight vector, as `arche-core/src/tune.rs` lays it out: 384 midgame table
-# entries, then 384 endgame ones in the same order, then the six material
-# values, then four midgame mobility weights and the same four at the endgame
-# end, then the seven shelter weights the same way, then the eight pawn
-# structure weights the same way again. A square's two weights are
-# MIDGAME_SLOTS apart, a piece kind's two mobility weights MOBILITY_SLOTS
-# apart, a shelter count's two SHELTER_SLOTS apart and a pawn count's two
-# PAWN_SLOTS apart.
-MIDGAME_SLOTS = 6 * 64
-ENDGAME_SLOTS = 6 * 64
-MATERIAL_SLOT = MIDGAME_SLOTS + ENDGAME_SLOTS
-MOBILITY_SLOT = MATERIAL_SLOT + 6
-MOBILITY_SLOTS = 4
-SHELTER_SLOT = MOBILITY_SLOT + 2 * MOBILITY_SLOTS
-SHELTER_SLOTS = 7
-PAWN_SLOT = SHELTER_SLOT + 2 * SHELTER_SLOTS
-PAWN_SLOTS = 8
-SLOTS = PAWN_SLOT + 2 * PAWN_SLOTS
+# The three blocks of the vector that are not leaf terms, in the order the
+# layout line prints them. Each is a run of slots and not a width per half of
+# the taper: the midgame table entries, the endgame ones, then the material
+# values.
+FIXED_BLOCKS = ("midgame", "endgame", "material")
 
-# The layout before a knight, a bishop, a rook and a queen were given an
-# endgame table of their own: the same 384 midgame entries, the pawn's endgame
-# table and the king's, and the six material values. It is named so that a row
-# or a fitted vector written against it is turned away by what it is rather
-# than by its length alone.
-SHARED_TABLE_SLOTS = 6 * 64 + 2 * 64 + 6
+# What one side can show of each of a term's counts, which is what a weight is
+# priced against in bounds_hold. A term the layout names and this does not is
+# refused rather than fitted: a new term has to be priced before a fit can say
+# whether its weights stay inside the packed halves.
+#
+# Mobility is the most one knight, one bishop, one rook and one queen can each
+# cover, the twenty seven being a queen in the middle of an empty board. The
+# shelter is three pawns on each of the five ranks counted and three files,
+# which the open and half open counts share rather than reach each. The pawn
+# structure is eight, since that is how many pawns a side has; charging all
+# eight counts at eight is far past any position, and the looseness is on the
+# safe side.
+#
+# One entry per count rather than one per term, so a term that grows a count
+# arrives here with a width this file does not cover and is refused too.
+BOUNDS = {
+    "mobility": (8, 13, 14, 27),
+    "shelter": (3,) * 7,
+    "pawn_structure": (8,) * 8,
+}
 
-# The layout before mobility: both halves of the tables and the material, and
-# nothing after them. Named for the same reason SHARED_TABLE_SLOTS is, since
-# every slot it holds still exists here and holds the same weight.
-NO_MOBILITY_SLOTS = MOBILITY_SLOT
 
-# The layout after mobility and before the king's shelter, and the layout
-# before the shelter grew the pawn storm. Both are nearer mistakes than the two
-# above: they are one term or half a term back rather than two, and every slot
-# either holds still means here what it meant there.
-NO_SHELTER_SLOTS = SHELTER_SLOT
-NO_STORM_SLOTS = SHELTER_SLOT + 2 * 4
+class Layout:
+    """Where every block of the weight vector stands, read off the layout line
+    the run printed rather than written out here.
 
-# The layout after the shelter and before the pawn structure, which is the
-# most recent mistake of the five and so the likeliest: a row extracted or a
-# vector fitted one term back, when every slot it holds still means here what
-# it meant there.
-NO_PAWN_SLOTS = PAWN_SLOT
+    The engine lays its slots out from one list of terms and states the result
+    on that line, so this file learns the layout from the extraction it is
+    reading rather than keeping one of its own. A layout kept here is the
+    failure this seam is here to prevent. Such a run parses and every slot it
+    names exists, so nothing about it looks wrong while its coefficients are
+    priced against weights that stand somewhere else.
 
-# The most one knight, one bishop, one rook and one queen can each cover, which
-# is what a mobility weight is priced against in bounds_hold. A queen in the
-# middle of an empty board is the twenty seven.
-MAX_COUNT = np.array([8, 13, 14, 27])
+    A term's width is the counts it is measured in per side and per half of
+    the taper, so it takes twice that in slots, its midgame half first. The
+    three fixed blocks are stated as slots because neither half of the tables
+    is a half of anything.
+    """
 
-# The most of each shelter count one side can show, which is what a shelter
-# weight is priced against in bounds_hold. Three pawns on each of the five
-# ranks counted, its own two and the storm's three, and three files, which the
-# open and half open counts share rather than reach each.
-MAX_SHELTER = 3
+    def __init__(self, widths):
+        missing = [name for name in FIXED_BLOCKS if name not in widths]
+        if missing or list(widths)[: len(FIXED_BLOCKS)] != list(FIXED_BLOCKS):
+            raise ValueError(
+                "a layout naming {}, where this file expects {} and then the "
+                "terms".format(" ".join(widths), " ".join(FIXED_BLOCKS))
+            )
+        self.widths = dict(widths)
+        self.terms = [name for name in widths if name not in FIXED_BLOCKS]
+        unpriced = [name for name in self.terms if name not in BOUNDS]
+        if unpriced:
+            raise ValueError(
+                "the run names {}, which this file has no bounds for: a term "
+                "has to be priced here before a fit can say whether its "
+                "weights stay inside the packed halves".format(" ".join(unpriced))
+            )
+        mispriced = [name for name in self.terms if len(BOUNDS[name]) != widths[name]]
+        if mispriced:
+            raise ValueError(
+                "the run measures {} in a different number of counts than this "
+                "file prices it in, so the bounds are to redo".format(
+                    " ".join(mispriced)
+                )
+            )
+        self.start = {}
+        slot = 0
+        for name, width in widths.items():
+            self.start[name] = slot
+            slot += width if name in FIXED_BLOCKS else 2 * width
+        self.slots = slot
 
-# The most of each pawn count one side can show, which is what a pawn
-# structure weight is priced against in bounds_hold. Eight, since that is how
-# many pawns a side has. Charging all eight counts at eight is far past any
-# position, since eight pawns cannot fill sixty four counts between them, and
-# the looseness is on the safe side.
-MAX_PAWNS = 8
+    @classmethod
+    def of(cls, line):
+        """The layout a run's `layout` line states."""
+        words = line.split()[1:]
+        if len(words) % 2:
+            raise ValueError(f"a layout line with a name and no width: {line}")
+        widths = {}
+        for name, width in zip(words[::2], words[1::2]):
+            if name in widths:
+                raise ValueError(f"a layout line naming {name} twice")
+            widths[name] = int(width)
+        return cls(widths)
+
+    def is_material(self, slot):
+        """Whether a slot is one of the material values, which are the only
+        weights added outside the taper's divide. Everything else is inside
+        it, the tables and every leaf term alike, which is what
+        `Accumulator::score` does with them."""
+        start = self.start["material"]
+        return start <= slot < start + self.widths["material"]
+
+    def block(self, name):
+        """The slots a named block holds, as a slice."""
+        width = self.widths[name]
+        size = width if name in FIXED_BLOCKS else 2 * width
+        return slice(self.start[name], self.start[name] + size)
+
+    def check(self, count, what):
+        """Refuse a vector of any length but this run's, and say so.
+
+        The layout is the run's rather than this file's now, so a length that
+        does not match is a vector from a different engine or a different
+        extraction. Which one it was is no longer guessable from the length,
+        and it does not need to be: the line names its terms, so a run this
+        file cannot fit has already been refused by name.
+        """
+        if count != self.slots:
+            raise ValueError(f"{what} of {count}, expected {self.slots}")
+
 
 # What the opening's pieces come to on the scale the taper is read at, which is
 # what the piece square half of a row divides by.
@@ -196,6 +257,10 @@ HEADERS = ("terms positions ", "terms epd ")
 # seam forbids, so it refuses the extraction instead.
 HEADER_COUNTS = ("positions", "in_check", "unsettled", "drawn", "kept")
 
+# What the layout line opens with. An extraction that carries no such line is
+# refused, and `no_layout` says why.
+LAYOUT = "layout "
+
 
 def check_header(line):
     """Refuse a header this engine did not print, and say what it counted."""
@@ -212,47 +277,19 @@ def check_header(line):
     )
 
 
-def check_layout(count, what):
-    """Refuse a vector of any length but this file's, and say what changed when
-    it is a length the layout had before.
+def no_layout(why):
+    """Why an extraction with no layout line is refused rather than read.
 
-    The layout is a contract between this file and `arche-core/src/tune.rs`,
-    and the two are edited together. A vector of an earlier length is the wrong
-    length a bare count would not explain: it parses, every slot it names
-    exists here, and its numbers land on weights they were not fitted for.
+    The header says what the run turned away and the layout line says where
+    its weights stand. A run that prints the first and not the second was
+    printed by an engine older than the line, so this file would have to
+    assume a layout for it, which is the duplication the line was added to end.
     """
-    if count == SLOTS:
-        return
-    if count == SHARED_TABLE_SLOTS:
-        raise ValueError(
-            f"{what} of {count}, which is the layout from before a knight, a "
-            f"bishop, a rook and a queen were given an endgame table. The "
-            f"vector is {SLOTS} now, so extract the rows again and refit"
-        )
-    if count == NO_MOBILITY_SLOTS:
-        raise ValueError(
-            f"{what} of {count}, which is the layout from before mobility. The "
-            f"vector is {SLOTS} now, so extract the rows again and refit"
-        )
-    if count == NO_SHELTER_SLOTS:
-        raise ValueError(
-            f"{what} of {count}, which is the layout from before the king's "
-            f"shelter was measured. The vector is {SLOTS} now, so extract the "
-            f"rows again and refit"
-        )
-    if count == NO_STORM_SLOTS:
-        raise ValueError(
-            f"{what} of {count}, which is the layout from before the pawn "
-            f"storm joined the king's shelter. The vector is {SLOTS} now, so "
-            f"extract the rows again and refit"
-        )
-    if count == NO_PAWN_SLOTS:
-        raise ValueError(
-            f"{what} of {count}, which is the layout from before the pawn "
-            f"structure was measured. The vector is {SLOTS} now, so extract "
-            f"the rows again and refit"
-        )
-    raise ValueError(f"{what} of {count}, expected {SLOTS}")
+    return (
+        f"a terms run whose header carries no layout line ({why}): it was printed "
+        "by an engine that states no layout, so where its weights stand "
+        "cannot be read here and the extraction is to redo"
+    )
 
 
 def trunc_div(numerator, denominator):
@@ -263,15 +300,7 @@ def trunc_div(numerator, denominator):
     return quotient if numerator >= 0 else -quotient
 
 
-def is_material(slot):
-    """Whether a slot is one of the six material values, which are the only
-    weights added outside the taper's divide. Everything else is inside it,
-    the tables and both leaf terms alike, which is what `Accumulator::score`
-    does with them."""
-    return MATERIAL_SLOT <= slot < MOBILITY_SLOT
-
-
-def reconstruct(coefficients, weights):
+def reconstruct(coefficients, weights, layout):
     """The evaluation a row states, folded back against the weights.
 
     The material is added outside the divide and not scaled into it. Folding it
@@ -282,7 +311,7 @@ def reconstruct(coefficients, weights):
     numerator = 0
     for slot, coefficient in coefficients:
         product = coefficient * weights[slot]
-        if is_material(slot):
+        if layout.is_material(slot):
             material += product
         else:
             numerator += product
@@ -372,13 +401,14 @@ class Row:
 
 
 def parse_terms(lines):
-    """The weights and the rows of an `arche terms` run.
+    """The layout, the weights and the rows of an `arche terms` run.
 
     Every row is rebuilt from the weights and held against the evaluation it
     states. A row that does not rebuild means this file's arithmetic and the
     engine's have parted company, which is the one failure the seam exists to
     catch, so it raises rather than dropping the row.
     """
+    layout = None
     weights = None
     rows = []
     for line in lines:
@@ -388,28 +418,35 @@ def parse_terms(lines):
         if line.startswith(HEADERS):
             check_header(line)
             continue
+        if line.startswith(LAYOUT):
+            layout = Layout.of(line)
+            continue
         words = line.split()
         if words[0] == "weights":
+            if layout is None:
+                raise ValueError(no_layout("the weights line comes first"))
             count = int(words[1])
             weights = [int(word) for word in words[2 : 2 + count]]
             if len(weights) != count:
                 raise ValueError(
                     f"a weights line saying {count} with {len(weights)} on it"
                 )
-            check_layout(count, "a weights line")
+            layout.check(count, "a weights line")
             continue
         if weights is None:
             raise ValueError("a row arrived before the weights line")
         identifier, evaluation, phase, coefficients, fen = split_row(words)
-        rebuilt = reconstruct(coefficients, weights)
+        rebuilt = reconstruct(coefficients, weights, layout)
         if rebuilt != evaluation:
             raise ValueError(
                 f"{identifier} rebuilds to {rebuilt} and the engine says {evaluation}"
             )
         rows.append(Row(identifier, evaluation, phase, coefficients, fen))
+    if layout is None:
+        raise ValueError(no_layout("there is none"))
     if weights is None:
         raise ValueError("no weights line")
-    return weights, rows
+    return layout, weights, rows
 
 
 class Label:
@@ -487,7 +524,8 @@ class Sealed:
     appearances, which `build_corpus.py` counts.
     """
 
-    def __init__(self, rows, labels, weights):
+    def __init__(self, layout, rows, labels, weights):
+        self._layout = layout
         self._rows = rows
         self._labels = labels
         self._weights = weights
@@ -520,6 +558,7 @@ class Sealed:
         scored, for the arm whose weights are final."""
         opened = Corpus.__new__(Corpus)
         opened.sealed = None
+        opened.layout = self._layout
         opened._load(
             self._weights,
             list(self._rows),
@@ -551,7 +590,8 @@ class Corpus:
     apart and scores them for `final` alone.
     """
 
-    def __init__(self, weights, rows, labels, sealed=None):
+    def __init__(self, layout, weights, rows, labels, sealed=None):
+        self.layout = layout
         joined = [row for row in rows if row.id in labels]
         # a position appears in exactly one row, because build_corpus.py
         # deduplicates by fen before it labels and gives the row the lowest key
@@ -593,7 +633,10 @@ class Corpus:
                 sealed - {labels[row.id].pair for row in joined}
             )
         self.sealed = Sealed(
-            [row for row in joined if groups[row.id] == CALIBRATION], labels, weights
+            layout,
+            [row for row in joined if groups[row.id] == CALIBRATION],
+            labels,
+            weights,
         )
         kept = [row for row in joined if groups[row.id] != CALIBRATION]
         self._load(weights, kept, labels, groups)
@@ -619,7 +662,7 @@ class Corpus:
         tapered, material = [], []
         for index, row in enumerate(kept):
             for slot, coefficient in row.coefficients:
-                (material if is_material(slot) else tapered).append(
+                (material if self.layout.is_material(slot) else tapered).append(
                     (index, slot, coefficient)
                 )
         self.tapered = self._arrays(tapered)
@@ -680,19 +723,22 @@ class Corpus:
         """A per-row quantity spread back over the slots, which is the gradient
         of anything that reads the corpus through `scores`."""
         rows, slots, values = self.tapered
+        slot_count = self.layout.slots
         gradient = np.bincount(
-            slots, values * per_row[rows] / TOTAL_PHASE, minlength=SLOTS
+            slots, values * per_row[rows] / TOTAL_PHASE, minlength=slot_count
         )
         rows, slots, values = self.material
-        return gradient + np.bincount(slots, values * per_row[rows], minlength=SLOTS)
+        return gradient + np.bincount(
+            slots, values * per_row[rows], minlength=slot_count
+        )
 
     def support(self, mask=None):
         """How many of the rows each slot appears in. A weight the corpus
         barely constrains says so here rather than after it has shipped."""
-        counts = np.zeros(SLOTS, dtype=np.int64)
+        counts = np.zeros(self.layout.slots, dtype=np.int64)
         for rows, slots, _ in (self.tapered, self.material):
             picked = slots if mask is None else slots[mask[rows]]
-            counts += np.bincount(picked, minlength=SLOTS).astype(np.int64)
+            counts += np.bincount(picked, minlength=self.layout.slots).astype(np.int64)
         return counts
 
 
@@ -900,6 +946,7 @@ def objective_for(corpus, mask, k, start, penalty, frozen):
     counts = corpus.counts[mask]
     total = np.sum(counts)
     scale = k * math.log(10.0) / 400.0
+    slot_count = corpus.layout.slots
     rows, slots, values = corpus.tapered
     material_rows, material_slots, material_values = corpus.material
     picked = mask[rows]
@@ -935,11 +982,11 @@ def objective_for(corpus, mask, k, start, penalty, frozen):
         gradient = np.bincount(
             tapered_part[1],
             tapered_part[2] * per_row[tapered_part[0]] / TOTAL_PHASE,
-            minlength=SLOTS,
+            minlength=slot_count,
         ) + np.bincount(
             material_part[1],
             material_part[2] * per_row[material_part[0]],
-            minlength=SLOTS,
+            minlength=slot_count,
         )
         gradient += 2.0 * penalty * np.where(frozen, 0.0, slack)
         gradient[frozen] = 0.0
@@ -955,7 +1002,7 @@ def quantize(weights):
     return np.rint(np.asarray(weights)).astype(np.int64)
 
 
-def bounds_hold(weights):
+def bounds_hold(weights, layout):
     """Whether a quantized vector stays inside what the engine's arithmetic
     can carry: each half of a packed pair is an `i16`, a boardful of them is
     summed into one, and an evaluation over the mate threshold would be read as
@@ -964,41 +1011,38 @@ def bounds_hold(weights):
     A one-sided boardful, both colours, against the sixteen bits the halves
     have to stay inside.
 
-    All three leaf terms are in the same sum, so they are priced here too
-    rather than left out of a figure that reads as the whole vector. A piece of
-    each kind at its widest is the mobility price, three of each of its seven
-    counts is the shelter's, and eight of each of its eight is the pawn
-    structure's. All are screens rather than proofs: a side that promoted could
-    cover more, the worst a board can be arranged into comes to 313 squares
-    against the 62 mobility charges, a side's open and half open files come to
-    three between them rather than three each, and eight pawns cannot fill the
-    pawn term's sixty four charges between them. Over
-    the 1,809 positions of the three suites the largest one-sided mobility
-    difference was 37, so at the centipawn weights a fit produces none of the
-    figures is near the sixteen bits. What this catches is a vector that has
-    gone somewhere else entirely.
+    Every leaf term is in the same sum, so each is priced here too rather than
+    left out of a figure that reads as the whole vector, and what one side can
+    show of each of its counts is what `BOUNDS` names. All are screens rather
+    than proofs: a side that promoted could cover more, the worst a board can
+    be arranged into comes to 313 squares against the 62 mobility charges, a
+    side's open and half open files come to three between them rather than
+    three each, and eight pawns cannot fill the pawn term's sixty four charges
+    between them. Over the 1,809 positions of the three suites the largest
+    one-sided mobility difference was 37, so at the centipawn weights a fit
+    produces none of the figures is near the sixteen bits. What this catches is
+    a vector that has gone somewhere else entirely.
     """
     weights = np.abs(np.asarray(weights))
-    tables = weights[:MATERIAL_SLOT]
-    midgame = tables[:MIDGAME_SLOTS].reshape(6, 64)
-    endgame = tables[MIDGAME_SLOTS:MATERIAL_SLOT].reshape(6, 64)
+    tables = weights[: layout.start["material"]]
+    midgame = tables[: layout.widths["midgame"]].reshape(6, 64)
+    endgame = tables[layout.widths["midgame"] :].reshape(6, 64)
     worst = 2 * max(int(midgame.max(axis=0).sum()), int(endgame.max(axis=0).sum()))
-    mobility = weights[MOBILITY_SLOT:SHELTER_SLOT].reshape(2, MOBILITY_SLOTS)
-    worst += 2 * int((mobility * MAX_COUNT).sum(axis=1).max())
-    shelter = weights[SHELTER_SLOT:PAWN_SLOT].reshape(2, SHELTER_SLOTS)
-    worst += 2 * MAX_SHELTER * int(shelter.sum(axis=1).max())
-    pawns = weights[PAWN_SLOT:].reshape(2, PAWN_SLOTS)
-    worst += 2 * MAX_PAWNS * int(pawns.sum(axis=1).max())
+    for name in layout.terms:
+        # a term's block is its midgame half and then its endgame one, and
+        # each half is charged the counts a side can show of it
+        halves = weights[layout.block(name)].reshape(2, layout.widths[name])
+        worst += 2 * int((halves * np.array(BOUNDS[name])).sum(axis=1).max())
     return worst < 32767, worst
 
 
-def read_weights(path):
+def read_weights(path, layout):
     weights = json.loads(Path(path).read_text(encoding="utf-8"))
-    check_layout(len(weights), f"{path} holds a vector")
+    layout.check(len(weights), f"{path} holds a vector")
     return np.array(weights, dtype=np.float64)
 
 
-def table_scale(weights, shipped):
+def table_scale(weights, shipped, layout):
     """How much larger the table entries have grown, as the ratio of their
     root mean squares.
 
@@ -1009,8 +1053,8 @@ def table_scale(weights, shipped):
     overall scale are one degree of freedom, and a fit given enough licence
     will spend the loss on the scale rather than on the shape.
     """
-    fitted = np.asarray(weights)[:MATERIAL_SLOT]
-    before = np.asarray(shipped)[:MATERIAL_SLOT]
+    fitted = np.asarray(weights)[: layout.start["material"]]
+    before = np.asarray(shipped)[: layout.start["material"]]
     return float(
         math.sqrt(float(fitted @ fitted))
         / max(math.sqrt(float(before @ before)), 1e-12)
@@ -1105,7 +1149,8 @@ def report(corpus, named, k, out=None):
             corpus.counts[train],
         )
         print(
-            f"{name} scale {table_scale(weights, corpus.weights):.3f} own_k {own:.4f} "
+            f"{name} scale {table_scale(weights, corpus.weights, corpus.layout):.3f} "
+            f"own_k {own:.4f} "
             f"selection mse at own_k "
             f"{mean_squared_error(corpus.scores(np.asarray(weights, dtype=np.float64))[selection], corpus.results[selection], corpus.counts[selection], own):.6f}",
             file=out,
@@ -1209,7 +1254,7 @@ def cross_validate(corpus, penalties, start, frozen, iterations, out=None):
                 start,
                 iterations,
             )
-            if not bounds_hold(quantize(fitted))[0]:
+            if not bounds_hold(quantize(fitted), corpus.layout)[0]:
                 outside.add(penalty)
             errors[penalty][held] = squared_errors(
                 corpus.scores(fitted)[held], results, k
@@ -1298,7 +1343,7 @@ def choose_penalty(
         mean, error, naive, design = paired_difference(
             shipped, errors, counts, corpus.games[corpus.selection]
         )
-        refused = not bounds_hold(quantize(fitted))[0]
+        refused = not bounds_hold(quantize(fitted), corpus.layout)[0]
         print(
             f"penalty {penalty:g} selection mse {loss:.6f} vs shipped {mean:+.6f} "
             f"se {error:.6f} per position {naive:.6f} design {design:.1f}"
@@ -1493,12 +1538,12 @@ def learning_curve(
 
 
 def load(args):
-    weights, rows = parse_terms(
+    layout, weights, rows = parse_terms(
         Path(args.terms).read_text(encoding="utf-8").splitlines()
     )
     labels = parse_corpus(Path(args.corpus).read_text(encoding="utf-8").splitlines())
     sealed = sealed_pairs(args.sealed) if getattr(args, "sealed", None) else None
-    corpus = Corpus(weights, rows, labels, sealed)
+    corpus = Corpus(layout, weights, rows, labels, sealed)
     if not len(corpus):
         raise SystemExit("tune.py: no row of the extraction is in the corpus")
     for name, mask in (("train", corpus.train), ("selection", corpus.selection)):
@@ -1516,12 +1561,13 @@ def command_loss(args):
     )
     named = [("shipped", corpus.weights)]
     for path in args.weights or []:
-        named.append((Path(path).stem, read_weights(path)))
+        named.append((Path(path).stem, read_weights(path, corpus.layout)))
     report(corpus, named, k)
     return 0
 
 
 def frozen_slots(
+    layout,
     free_material,
     held_tables=False,
     held_mobility=False,
@@ -1562,17 +1608,19 @@ def frozen_slots(
     arm passes follows from the one term it means to move and not from where
     that term sits in the vector.
     """
-    frozen = np.zeros(SLOTS, dtype=bool)
+    frozen = np.zeros(layout.slots, dtype=bool)
     if not free_material:
-        frozen[MATERIAL_SLOT:MOBILITY_SLOT] = True
+        frozen[layout.block("material")] = True
     if held_tables:
-        frozen[:MATERIAL_SLOT] = True
-    if held_mobility:
-        frozen[MOBILITY_SLOT:SHELTER_SLOT] = True
-    if held_shelter:
-        frozen[SHELTER_SLOT:PAWN_SLOT] = True
-    if held_pawn:
-        frozen[PAWN_SLOT:] = True
+        frozen[layout.block("midgame")] = True
+        frozen[layout.block("endgame")] = True
+    for held, name in (
+        (held_mobility, "mobility"),
+        (held_shelter, "shelter"),
+        (held_pawn, "pawn_structure"),
+    ):
+        if held:
+            frozen[layout.block(name)] = True
     return frozen
 
 
@@ -1580,6 +1628,7 @@ def command_cv(args):
     corpus = load(args)
     start = corpus.weights.copy()
     frozen = frozen_slots(
+        corpus.layout,
         args.free_material,
         args.hold_tables,
         args.hold_mobility,
@@ -1606,6 +1655,7 @@ def command_fit(args):
     corpus = load(args)
     start = corpus.weights.copy()
     frozen = frozen_slots(
+        corpus.layout,
         args.free_material,
         args.hold_tables,
         args.hold_mobility,
@@ -1627,7 +1677,7 @@ def command_fit(args):
         raise SystemExit("tune.py: every penalty on the grid left the tables too large")
     print(f"chose penalty {penalty:g}")
     rounded = quantize(fitted)
-    _, worst = bounds_hold(rounded)
+    _, worst = bounds_hold(rounded, corpus.layout)
     if args.out:
         Path(args.out).write_text(
             json.dumps([int(value) for value in rounded]),
@@ -1669,6 +1719,7 @@ def command_curve(args):
     shares = curve_shares(args.shares, args.draws)
     start = corpus.weights.copy()
     frozen = frozen_slots(
+        corpus.layout,
         args.free_material,
         args.hold_tables,
         args.hold_mobility,
@@ -1722,14 +1773,14 @@ def command_final(args):
     whatever file they arrive in.
     """
     corpus = load(args)
-    frozen = read_weights(args.weights)
+    frozen = read_weights(args.weights, corpus.layout)
     if np.any(frozen != np.rint(frozen)):
         raise SystemExit(
             "tune.py: the frozen vector is not the integers that would ship; "
             "quantize it first"
         )
     frozen = frozen.astype(np.int64)
-    holds, worst = bounds_hold(frozen)
+    holds, worst = bounds_hold(frozen, corpus.layout)
     if not holds:
         raise SystemExit(f"tune.py: the frozen vector's boardful is {worst} of 32767")
     corpus_sha = sha256_of(args.corpus)

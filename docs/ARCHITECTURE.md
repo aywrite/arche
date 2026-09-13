@@ -41,6 +41,9 @@ ones. All three are fitted to the engine's own archived games.
   derived state in sync. Debug builds recompute the derived state from
   scratch after every move and assert it matches, so a bug in an
   incremental update fails tests instead of misevaluating quietly.
+  It names no evaluation term: each one reads the boards it needs through
+  `pub(crate)` accessors and keeps its own counts and masks beside its
+  weights.
   Move generation also lives here. It is pseudo-legal: moves are generated
   without checking whether they leave the king in check, and `make_move`
   rejects the ones that do. When already in check the list is first
@@ -100,18 +103,31 @@ ones. All three are fitted to the engine's own archived games.
   by about 45 elo, so the error is carried knowingly and the bench prints
   the taint counters on every run. A `reference` configuration keeps the
   cautious search as a baseline for classifying future changes.
-- **eval.rs**: What a position scores. The board hosts an accumulator and
-  tells it about every piece placed, removed and moved, so material and the
-  piece square score are carried rather than counted; anything too dear to
-  keep in step is computed at the leaf instead. The king shelter is computed
-  at the leaf and then remembered under the pawns and the two king squares it
-  is a function of, in a small table the searcher owns, because a king move
-  rewrites a whole side's reading and there is nothing there to keep in step.
-  The pawn structure is remembered the same way in a table of its own, under
-  the pawn key alone: it reads neither king, so what misses is a pawn move
-  and the capture of a pawn, where the shelter's key misses on a king move
-  as well. Material that cannot mate is answered with a hard zero before any
-  of that, which is the one place the score is not a sum over the weights.
+- **eval/**: What a position scores, a file per leaf term and one for what
+  they share.
+  - **mod.rs**: The material values, the phase weights the taper is read at,
+    the accumulator, and the sum the search asks for. The board hosts the
+    accumulator and tells it about every piece placed, removed and moved, so
+    material and the piece square score are carried rather than counted;
+    anything too dear to keep in step is computed at the leaf instead.
+    Material that cannot mate is answered with a hard zero before any of
+    that, which is the one place the score is not a sum over the weights.
+    Also here is `TERMS`, a descriptor per leaf term (its name, how many
+    counts it is measured in, its weights and its counts), which is what the
+    tuner lays its slot vector out from.
+  - **mobility.rs**: How many squares each side's pieces cover. Read off the
+    board at every leaf and not remembered: a piece that moves changes what
+    every slider looking through its square sees.
+  - **shelter.rs**: What stands between each king and the board, its own
+    pawns and the enemy pawns coming for it. Computed at the leaf and then
+    remembered under the pawns and the two king squares it is a function of,
+    in a small table the searcher owns, because a king move rewrites a whole
+    side's reading and there is nothing there to keep in step.
+  - **pawn_structure.rs**: Each side's passed pawns by rank, its isolated
+    pawns and its doubled ones. Remembered the same way in a table of its
+    own, under the pawn key alone: it reads neither king, so what misses is a
+    pawn move and the capture of a pawn, where the shelter's key misses on a
+    king move as well.
 - **psqt.rs**: The piece square tables. Every piece has a second table
   for the endgame; both phases are packed into one integer so the taper
   costs one multiply.
@@ -146,7 +162,10 @@ ones. All three are fitted to the engine's own archived games.
   which is asserted on every row printed as well as over three suites in a
   test. A position drawn by material is turned away and counted in the header
   rather than fitted, because its score does not read the weights at all.
-  Driven by the `terms` argument, and read by `scripts/tune.py`.
+  Where the leaf terms stand in the vector comes from `eval::TERMS` rather
+  than from constants here, and the run prints that layout on a line of its
+  own so that what reads the rows keeps no copy of it. Driven by the `terms`
+  argument, and read by `scripts/tune.py`.
 - **tactics.rs**: 300 tactical positions with a pinned pass count, gated
   in CI.
 - **strategy.rs**: 1500 quiet positions, each move graded out of a

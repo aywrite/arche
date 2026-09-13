@@ -408,7 +408,25 @@ those changes, and any vector fitted against them, are refused rather than read:
 every slot they name exists in the layout that replaced them, so reading them
 would put the numbers on the wrong weights.
 
-The line after the header is `weights 812 <w0> <w1> ...`, the vector itself as
+The line after the header states that layout, so that what reads these rows
+holds no copy of it:
+
+```
+layout midgame 384 endgame 384 material 6 mobility 4 shelter 7 pawn_structure 8
+```
+
+The first three are runs of slots. The names after them are the leaf terms, in
+the order the vector holds them, and a term's number is the counts it is
+measured in per side and per half of the taper, so it takes twice that in
+slots, its midgame half first. The line is spelled off the same term list the
+engine lays its slots out from, so a term added there is named here without a
+second edit. `scripts/tune.py` reads its slots from this line and refuses a run
+naming a term it has no bounds for, since a term nobody has priced cannot be
+screened against the sixteen bits each half of a packed pair has to stay
+inside. A run that prints no layout line at all was printed by an engine older
+than the line, and is refused too.
+
+The line after that is `weights 812 <w0> <w1> ...`, the vector itself as
 the live tables hold it, so that nothing reading these rows transcribes
 psqt.rs. A transcription is the same failure as a reimplemented evaluation and
 quieter: a table copied out and left behind fits weights against a position it

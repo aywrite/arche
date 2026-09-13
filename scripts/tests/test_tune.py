@@ -26,6 +26,16 @@ import numpy as np
 import pytest
 import tune
 
+# The layout line an `arche terms` run prints today, which is what the rows
+# and the vectors below are built in. Written out here rather than asked of
+# tune.py, because what these tests are about is a file that reads its layout
+# off the run instead of holding one: a fixture that took the layout from
+# tune.py would agree with it whatever either of them said.
+LAYOUT_LINE = (
+    "layout midgame 384 endgame 384 material 6 mobility 4 shelter 7 pawn_structure 8"
+)
+LAYOUT = tune.Layout.of(LAYOUT_LINE)
+
 # A pawn, a knight, a bishop, a rook, a queen and a king, which is what the
 # material slots hold today.
 MATERIAL = [100, 310, 320, 500, 900, 10000]
@@ -54,8 +64,8 @@ def labels_of(mapping):
 def weights(entries=None):
     """A weight vector in the engine's layout, tables at nothing unless the
     caller names an entry."""
-    vector = [0] * tune.SLOTS
-    vector[tune.MATERIAL_SLOT : tune.MOBILITY_SLOT] = MATERIAL
+    vector = [0] * LAYOUT.slots
+    vector[LAYOUT.block("material")] = MATERIAL
     for slot, value in (entries or {}).items():
         vector[slot] = value
     return vector
@@ -67,7 +77,7 @@ def row(
     """One row in the shape `arche terms` prints it, with the evaluation it
     states worked out from the weights the same way the engine does. The fen
     is six fields, which is what the row's reader counts back from."""
-    evaluation = tune.reconstruct(coefficients, vector)
+    evaluation = tune.reconstruct(coefficients, vector, LAYOUT)
     terms = " ".join(f"{slot}:{coefficient}" for slot, coefficient in coefficients)
     return f"{identifier} {evaluation} {phase} {len(coefficients)} {terms} {fen}"
 
@@ -76,8 +86,10 @@ def extraction(rows, vector):
     header = (
         f"terms positions {len(rows)} in_check 0 unsettled 0 drawn 0 kept {len(rows)}"
     )
-    line = "weights {} {}".format(tune.SLOTS, " ".join(str(value) for value in vector))
-    return [header, line, *rows]
+    line = "weights {} {}".format(
+        LAYOUT.slots, " ".join(str(value) for value in vector)
+    )
+    return [header, LAYOUT_LINE, line, *rows]
 
 
 def test_the_divide_truncates_toward_zero():
@@ -98,10 +110,12 @@ def test_material_is_added_outside_the_divide():
     vector = weights({0: -1})
     # a knight and a pawn's worth of material, and a piece square numerator of
     # minus one, which does not divide by the taper
-    coefficients = [(0, 1), (tune.MATERIAL_SLOT, 1)]
-    assert tune.reconstruct(coefficients, vector) == 100 + tune.trunc_div(-1, 24)
+    coefficients = [(0, 1), (LAYOUT.start["material"], 1)]
+    assert tune.reconstruct(coefficients, vector, LAYOUT) == 100 + tune.trunc_div(
+        -1, 24
+    )
     folded = (100 * 24 - 1) // 24
-    assert folded != tune.reconstruct(coefficients, vector)
+    assert folded != tune.reconstruct(coefficients, vector, LAYOUT)
 
 
 def test_a_row_that_does_not_rebuild_stops_the_run():
@@ -109,8 +123,8 @@ def test_a_row_that_does_not_rebuild_stops_the_run():
     row. A row that does not rebuild means they have parted company, so it
     raises rather than being dropped and fitted around."""
     vector = weights({0: 30})
-    good = row("a", [(0, 24), (tune.MATERIAL_SLOT, 1)], vector)
-    _, rows = tune.parse_terms(extraction([good], vector))
+    good = row("a", [(0, 24), (LAYOUT.start["material"], 1)], vector)
+    _, _, rows = tune.parse_terms(extraction([good], vector))
     assert len(rows) == 1
     words = good.split(" ")
     words[1] = str(int(words[1]) + 1)
@@ -130,13 +144,13 @@ def test_a_row_reads_from_the_right_and_an_id_can_hold_spaces():
     walk over."""
     vector = weights({5: 12, 400: -7})
     fen = "rnbqkbnr/pppppppp/8/8/8/8/PPPPPPPP/RNBQKBNR w KQkq - 0 1"
-    coefficients = [(5, 24), (400, -3), (tune.MATERIAL_SLOT + 4, -1)]
+    coefficients = [(5, 24), (400, -3), (LAYOUT.start["material"] + 4, -1)]
     lines = [
         row("ruy lopez", coefficients, vector, 18, fen),
         row(fen, coefficients, vector, 18, fen),
         row("start", [], vector, 24, fen),
     ]
-    _, rows = tune.parse_terms(extraction(lines, vector))
+    _, _, rows = tune.parse_terms(extraction(lines, vector))
     assert [parsed.id for parsed in rows] == ["ruy lopez", fen, "start"]
     assert [parsed.fen for parsed in rows] == [fen, fen, fen]
     assert rows[0].phase == 18
@@ -145,12 +159,17 @@ def test_a_row_reads_from_the_right_and_an_id_can_hold_spaces():
 
 
 def test_a_weights_line_of_the_wrong_length_is_refused():
-    """The layout is a contract between two files, and a vector of another
-    length means one of them has changed and the other has not."""
+    """The run states its layout and then its vector, and a vector of another
+    length means the two do not describe the same engine."""
     with pytest.raises(ValueError, match="weights line"):
-        tune.parse_terms(["weights 3 1 2 3"])
+        tune.parse_terms([LAYOUT_LINE, "weights 3 1 2 3"])
     with pytest.raises(ValueError, match="no weights line"):
-        tune.parse_terms(["terms positions 0 in_check 0 unsettled 0 drawn 0 kept 0"])
+        tune.parse_terms(
+            [
+                "terms positions 0 in_check 0 unsettled 0 drawn 0 kept 0",
+                LAYOUT_LINE,
+            ]
+        )
 
 
 def test_a_header_without_the_drawn_count_is_refused():
@@ -164,8 +183,8 @@ def test_a_header_without_the_drawn_count_is_refused():
     right only for as long as nobody edited either copy. So the count is what
     is read, and a header without it refuses the whole run."""
     vector = weights()
-    lines = extraction([row("a", [(tune.MATERIAL_SLOT, 1)], vector)], vector)
-    _, rows = tune.parse_terms(lines)
+    lines = extraction([row("a", [(LAYOUT.start["material"], 1)], vector)], vector)
+    _, _, rows = tune.parse_terms(lines)
     assert len(rows) == 1
     for header in [
         "terms positions 1 in_check 0 unsettled 0 kept 1",
@@ -175,36 +194,66 @@ def test_a_header_without_the_drawn_count_is_refused():
             tune.parse_terms([header, *lines[1:]])
 
 
-@pytest.mark.parametrize(
-    ("count", "message"),
-    [
-        (518, "given an endgame table"),
-        (774, "before mobility"),
-        (782, "before the king's shelter"),
-        (790, "before the pawn storm"),
-        (796, "before the pawn structure"),
-    ],
-)
-def test_a_vector_of_an_earlier_layout_is_refused(tmp_path, count, message):
-    """518, 774, 782, 790 and 796 are the wrong lengths that would otherwise
-    read as right ones: every slot any of them names exists in the layout that
-    replaced it, so their numbers would land on the wrong weights rather than
-    failing to parse. Both doors a vector comes through say what changed."""
-    assert tune.SHARED_TABLE_SLOTS == 518
-    assert tune.NO_MOBILITY_SLOTS == 774
-    assert tune.NO_SHELTER_SLOTS == 782
-    assert tune.NO_STORM_SLOTS == 790
-    assert tune.NO_PAWN_SLOTS == 796
-    assert tune.SLOTS == 812
+@pytest.mark.parametrize("count", [518, 774, 782, 790, 796])
+def test_a_vector_of_an_earlier_layout_is_refused(tmp_path, count):
+    """518, 774, 782, 790 and 796 are the lengths the vector had before a
+    knight, a bishop, a rook and a queen were given an endgame table, before
+    mobility, before the king's shelter, before the pawn storm joined it and
+    before the pawn structure. Every slot any of them names exists in the
+    layout that replaced it, so their numbers would land on the wrong weights
+    rather than failing to parse. Both doors a vector comes through refuse
+    them."""
+    assert LAYOUT.slots == 812
     old = [0] * count
-    with pytest.raises(ValueError, match=message):
+    with pytest.raises(ValueError, match=f"of {count}, expected 812"):
         tune.parse_terms(
-            ["weights {} {}".format(len(old), " ".join(str(w) for w in old))]
+            [
+                LAYOUT_LINE,
+                "weights {} {}".format(len(old), " ".join(str(w) for w in old)),
+            ]
         )
     written = tmp_path / "fitted.json"
     written.write_text(json.dumps(old), encoding="utf-8")
-    with pytest.raises(ValueError, match=message):
-        tune.read_weights(written)
+    with pytest.raises(ValueError, match=f"of {count}, expected 812"):
+        tune.read_weights(written, LAYOUT)
+
+
+def test_a_header_without_a_layout_line_is_refused():
+    """The layout line is where this file learns its slots, so a run that
+    prints none leaves it nothing to read the numbers with.
+
+    Before the line the layout was written out here as well as in the engine,
+    and the two were edited together by hand. An extraction from an engine
+    older than the line is exactly the case that copy was wrong for: it parses
+    and every slot it names exists, so a layout assumed for it would be wrong
+    with nothing saying so. The run is refused instead, whether the line is
+    missing or comes after the vector it describes."""
+    vector = weights()
+    lines = extraction([row("a", [(LAYOUT.start["material"], 1)], vector)], vector)
+    assert lines[1] == LAYOUT_LINE
+    with pytest.raises(ValueError, match="states no layout"):
+        tune.parse_terms([lines[0], *lines[2:]])
+    with pytest.raises(ValueError, match="states no layout"):
+        tune.parse_terms([lines[0], lines[2], lines[1], *lines[3:]])
+
+
+def test_a_term_the_layout_names_and_nothing_prices_is_refused():
+    """A term this file has no bound for cannot be screened against the
+    packed halves, so a run that names one is refused rather than fitted.
+
+    A new term is priced here before it is fitted, which is one line and a
+    reason for it. The alternative is a fit that runs, prints a boardful that
+    leaves the new weights out of the figure, and says nothing about the one
+    thing nobody has checked yet. The same goes for a term whose width has
+    moved: the bound is per count, so a count added arrives with a width this
+    file does not cover."""
+    with pytest.raises(ValueError, match="no bounds for"):
+        tune.Layout.of(LAYOUT_LINE + " king_tropism 4")
+    with pytest.raises(ValueError, match="different number of counts"):
+        tune.Layout.of(LAYOUT_LINE.replace("shelter 7", "shelter 9"))
+    # and the terms it does price are priced count by count
+    for name in LAYOUT.terms:
+        assert len(tune.BOUNDS[name]) == LAYOUT.widths[name]
 
 
 def test_a_row_whose_id_opens_with_the_header_word_is_kept():
@@ -215,14 +264,26 @@ def test_a_row_whose_id_opens_with_the_header_word_is_kept():
     it."""
     vector = weights()
     lines = extraction(
-        [row("terms of the endgame", [(tune.MATERIAL_SLOT, 1)], vector)], vector
+        [row("terms of the endgame", [(LAYOUT.start["material"], 1)], vector)], vector
     )
-    _, rows = tune.parse_terms(lines)
+    _, _, rows = tune.parse_terms(lines)
     assert [parsed.id for parsed in rows] == ["terms of the endgame"]
     # and both shapes of the header are still skipped rather than read as rows
     header = "terms epd corpus.epd positions 1 in_check 0 unsettled 0 drawn 0 kept 1"
-    _, rows = tune.parse_terms([header, *lines])
+    _, _, rows = tune.parse_terms([header, *lines])
     assert [parsed.id for parsed in rows] == ["terms of the endgame"]
+
+
+def test_a_row_whose_id_opens_with_the_layout_word_is_kept():
+    """The layout line is the second word the reader claims, and it is claimed
+    with the space after it rather than on the six letters. An id that opens
+    with those letters and runs on is a row, so it is read as one."""
+    vector = weights()
+    lines = extraction(
+        [row("layouts of the endgame", [(LAYOUT.start["material"], 1)], vector)], vector
+    )
+    _, _, rows = tune.parse_terms(lines)
+    assert [parsed.id for parsed in rows] == ["layouts of the endgame"]
 
 
 def test_a_corpus_line_is_read_the_way_the_engine_reads_epd():
@@ -277,8 +338,8 @@ def test_the_groups_are_assigned_from_the_pair_and_not_the_game():
         "g00001p020": tune.Label(1.0, 1, key(1, TRAIN), key(9, CALIBRATION)),
         "g00002p020": tune.Label(0.0, 1, key(2, CALIBRATION), key(8, TRAIN)),
     }
-    shipped, parsed = tune.parse_terms(extraction(rows, vector))
-    corpus = tune.Corpus(shipped, parsed, labels)
+    _, shipped, parsed = tune.parse_terms(extraction(rows, vector))
+    corpus = tune.Corpus(LAYOUT, shipped, parsed, labels)
     assert [r.id for r in corpus.rows] == ["g00002p020"]
     assert corpus.sealed.positions == 1
     assert corpus.sealed.pairs == 1
@@ -292,8 +353,8 @@ def test_a_corpus_that_repeats_a_position_across_games_is_refused():
     vector = weights({0: 7})
     fen = "4k3/8/8/8/8/8/8/4K3 w - - 0 1"
     rows = [
-        row("g00001p020", [(0, 24), (tune.MATERIAL_SLOT, 1)], vector, 24, fen),
-        row("g00002p031", [(0, 24), (tune.MATERIAL_SLOT, 1)], vector, 24, fen),
+        row("g00001p020", [(0, 24), (LAYOUT.start["material"], 1)], vector, 24, fen),
+        row("g00002p031", [(0, 24), (LAYOUT.start["material"], 1)], vector, 24, fen),
     ]
     labels = {
         "g00001p020": (1.0, 1, key(1, TRAIN)),
@@ -312,7 +373,9 @@ def games_and_labels(vector, games, plies=4):
         for ply in range(plies):
             name = f"g{index:05d}p{ply:03d}"
             fen = f"4k3/8/8/8/8/{index}p/{ply}p/4K3 w - - 0 1"
-            rows.append(row(name, [(0, 24), (tune.MATERIAL_SLOT, 1)], vector, 24, fen))
+            rows.append(
+                row(name, [(0, 24), (LAYOUT.start["material"], 1)], vector, 24, fen)
+            )
             labels[name] = (float(index % 2), 1, key(index, slice_))
     return rows, labels
 
@@ -350,8 +413,8 @@ def test_a_position_is_bucketed_by_what_is_left_on_the_board():
 
 
 def corpus_of(rows, vector, labels):
-    _, parsed = tune.parse_terms(extraction(rows, vector))
-    return tune.Corpus(vector, parsed, labels_of(labels))
+    _, _, parsed = tune.parse_terms(extraction(rows, vector))
+    return tune.Corpus(LAYOUT, vector, parsed, labels_of(labels))
 
 
 def test_the_integer_score_is_the_evaluation_the_engine_gave():
@@ -361,11 +424,15 @@ def test_the_integer_score_is_the_evaluation_the_engine_gave():
     vector = weights({0: -30, 64: 17, 400: 5})
     rows = [
         row(
-            "a", [(0, 7), (64, -13), (tune.MATERIAL_SLOT, 1)], vector, 7, "a w - - 0 1"
+            "a",
+            [(0, 7), (64, -13), (LAYOUT.start["material"], 1)],
+            vector,
+            7,
+            "a w - - 0 1",
         ),
         row(
             "b",
-            [(0, -11), (400, 3), (tune.MATERIAL_SLOT + 3, -2)],
+            [(0, -11), (400, 3), (LAYOUT.start["material"] + 3, -2)],
             vector,
             11,
             "b w - - 0 1",
@@ -390,8 +457,8 @@ def test_the_occurrence_count_weights_the_loss():
     pulls the loss towards its own result."""
     vector = weights({0: 20})
     rows = [
-        row("a", [(0, 24), (tune.MATERIAL_SLOT, 1)], vector, 24, "a w - - 0 1"),
-        row("b", [(0, 24), (tune.MATERIAL_SLOT, 1)], vector, 24, "b w - - 0 1"),
+        row("a", [(0, 24), (LAYOUT.start["material"], 1)], vector, 24, "a w - - 0 1"),
+        row("b", [(0, 24), (LAYOUT.start["material"], 1)], vector, 24, "b w - - 0 1"),
     ]
     # two positions scored alike and labelled oppositely, so the only thing a
     # weight can move is which of the two the loss listens to
@@ -417,8 +484,8 @@ def test_a_slots_support_is_how_many_rows_it_appears_in():
     """A weight the corpus barely constrains says so before it ships."""
     vector = weights({0: 5})
     rows = [
-        row("a", [(0, 24), (tune.MATERIAL_SLOT, 1)], vector, 24, "a w - - 0 1"),
-        row("b", [(tune.MATERIAL_SLOT, 1)], vector, 24, "b w - - 0 1"),
+        row("a", [(0, 24), (LAYOUT.start["material"], 1)], vector, 24, "a w - - 0 1"),
+        row("b", [(LAYOUT.start["material"], 1)], vector, 24, "b w - - 0 1"),
     ]
     corpus = corpus_of(
         rows,
@@ -427,7 +494,7 @@ def test_a_slots_support_is_how_many_rows_it_appears_in():
     )
     support = corpus.support()
     assert support[0] == 1
-    assert support[tune.MATERIAL_SLOT] == 2
+    assert support[LAYOUT.start["material"]] == 2
     assert support[1] == 0
 
 
@@ -496,13 +563,13 @@ def test_the_optimiser_finds_the_bottom_of_a_bowl():
     longer than one, so a search that only backtracked would stall, and the
     bowl below is scaled to say that."""
 
-    centre = np.arange(tune.SLOTS, dtype=float)
+    centre = np.arange(LAYOUT.slots, dtype=float)
 
     def objective(x):
         slack = (x - centre) * 1e-4
         return float(slack @ slack), 2e-8 * (x - centre)
 
-    found, value = tune.lbfgs(objective, np.zeros(tune.SLOTS))
+    found, value = tune.lbfgs(objective, np.zeros(LAYOUT.slots))
     assert value < 1e-12
     assert np.max(np.abs(found - centre)) < 1e-3
 
@@ -511,10 +578,10 @@ def test_a_vector_the_engine_could_not_carry_is_refused():
     """Each half of a packed pair is an `i16` and a boardful of them is summed
     into one, so a fit that grew the tables past that is no candidate whatever
     it scores."""
-    inside, worst = tune.bounds_hold(np.array(weights()))
+    inside, worst = tune.bounds_hold(np.array(weights()), LAYOUT)
     assert inside and worst == 0
-    huge = np.array(weights({slot: 400 for slot in range(tune.MATERIAL_SLOT)}))
-    inside, worst = tune.bounds_hold(huge)
+    huge = np.array(weights({slot: 400 for slot in range(LAYOUT.start["material"])}))
+    inside, worst = tune.bounds_hold(huge, LAYOUT)
     assert not inside
     assert worst == 2 * 64 * 400
 
@@ -524,14 +591,17 @@ def test_the_mobility_weights_are_priced_too():
     it would be a vector priced at 774 of its 790 slots. The range stops at the
     shelter block, which the test below prices on its own."""
     one_each = weights(
-        {slot: 1 for slot in range(tune.MOBILITY_SLOT, tune.SHELTER_SLOT)}
+        {slot: 1 for slot in range(LAYOUT.start["mobility"], LAYOUT.start["shelter"])}
     )
-    _, worst = tune.bounds_hold(np.array(one_each))
-    assert worst == 2 * int(tune.MAX_COUNT.sum())
+    _, worst = tune.bounds_hold(np.array(one_each), LAYOUT)
+    assert worst == 2 * int(np.array(tune.BOUNDS["mobility"]).sum())
     huge = weights(
-        {slot: 5000 for slot in range(tune.MOBILITY_SLOT, tune.SHELTER_SLOT)}
+        {
+            slot: 5000
+            for slot in range(LAYOUT.start["mobility"], LAYOUT.start["shelter"])
+        }
     )
-    assert not tune.bounds_hold(np.array(huge))[0]
+    assert not tune.bounds_hold(np.array(huge), LAYOUT)[0]
 
 
 def test_the_shelter_weights_are_priced_too():
@@ -539,17 +609,25 @@ def test_the_shelter_weights_are_priced_too():
     colours, at the larger of the two halves, which here is the endgame one at
     ten a count."""
     vector = weights(
-        {tune.SHELTER_SLOT + index: 5 for index in range(tune.SHELTER_SLOTS)}
+        {
+            LAYOUT.start["shelter"] + index: 5
+            for index in range(LAYOUT.widths["shelter"])
+        }
         | {
-            tune.SHELTER_SLOT + tune.SHELTER_SLOTS + index: 10
-            for index in range(tune.SHELTER_SLOTS)
+            LAYOUT.start["shelter"] + LAYOUT.widths["shelter"] + index: 10
+            for index in range(LAYOUT.widths["shelter"])
         }
     )
-    inside, worst = tune.bounds_hold(np.array(vector))
+    inside, worst = tune.bounds_hold(np.array(vector), LAYOUT)
     assert inside
-    assert worst == 2 * tune.MAX_SHELTER * tune.SHELTER_SLOTS * 10
-    huge = weights({slot: 5000 for slot in range(tune.SHELTER_SLOT, tune.PAWN_SLOT)})
-    assert not tune.bounds_hold(np.array(huge))[0]
+    assert worst == 2 * tune.BOUNDS["shelter"][0] * LAYOUT.widths["shelter"] * 10
+    huge = weights(
+        {
+            slot: 5000
+            for slot in range(LAYOUT.start["shelter"], LAYOUT.start["pawn_structure"])
+        }
+    )
+    assert not tune.bounds_hold(np.array(huge), LAYOUT)[0]
 
 
 def test_the_pawn_structure_weights_are_priced_too():
@@ -557,17 +635,25 @@ def test_the_pawn_structure_weights_are_priced_too():
     at the larger of the two halves, which here is the endgame one at four a
     count."""
     vector = weights(
-        {tune.PAWN_SLOT + index: 3 for index in range(tune.PAWN_SLOTS)}
+        {
+            LAYOUT.start["pawn_structure"] + index: 3
+            for index in range(LAYOUT.widths["pawn_structure"])
+        }
         | {
-            tune.PAWN_SLOT + tune.PAWN_SLOTS + index: 4
-            for index in range(tune.PAWN_SLOTS)
+            LAYOUT.start["pawn_structure"] + LAYOUT.widths["pawn_structure"] + index: 4
+            for index in range(LAYOUT.widths["pawn_structure"])
         }
     )
-    inside, worst = tune.bounds_hold(np.array(vector))
+    inside, worst = tune.bounds_hold(np.array(vector), LAYOUT)
     assert inside
-    assert worst == 2 * tune.MAX_PAWNS * tune.PAWN_SLOTS * 4
-    huge = weights({slot: 5000 for slot in range(tune.PAWN_SLOT, tune.SLOTS)})
-    assert not tune.bounds_hold(np.array(huge))[0]
+    assert (
+        worst
+        == 2 * tune.BOUNDS["pawn_structure"][0] * LAYOUT.widths["pawn_structure"] * 4
+    )
+    huge = weights(
+        {slot: 5000 for slot in range(LAYOUT.start["pawn_structure"], LAYOUT.slots)}
+    )
+    assert not tune.bounds_hold(np.array(huge), LAYOUT)[0]
 
 
 def test_the_material_block_is_the_only_thing_outside_the_divide():
@@ -583,16 +669,17 @@ def test_the_material_block_is_the_only_thing_outside_the_divide():
     still ship at zero and theirs would not. The weights here are the
     fixture's for that reason, so the two answers differ whatever a fit
     holds."""
-    material = [slot for slot in range(tune.SLOTS) if tune.is_material(slot)]
-    assert material == list(range(tune.MATERIAL_SLOT, tune.MOBILITY_SLOT))
+    material = [slot for slot in range(LAYOUT.slots) if LAYOUT.is_material(slot)]
+    assert material == list(range(LAYOUT.start["material"], LAYOUT.start["mobility"]))
     assert not any(
-        tune.is_material(slot) for slot in range(tune.MOBILITY_SLOT, tune.SLOTS)
+        LAYOUT.is_material(slot)
+        for slot in range(LAYOUT.start["mobility"], LAYOUT.slots)
     )
-    vector = weights({tune.SHELTER_SLOT: 30})
-    vector[tune.MATERIAL_SLOT] = 100
+    vector = weights({LAYOUT.start["shelter"]: 30})
+    vector[LAYOUT.start["material"]] = 100
     # a pawn outside the divide, and a shelter count of a full phase inside it
-    coefficients = [(tune.SHELTER_SLOT, 24), (tune.MATERIAL_SLOT, 1)]
-    assert tune.reconstruct(coefficients, vector) == 130
+    coefficients = [(LAYOUT.start["shelter"], 24), (LAYOUT.start["material"], 1)]
+    assert tune.reconstruct(coefficients, vector, LAYOUT) == 130
 
 
 def test_a_fit_is_free_to_move_the_leaf_terms_weights():
@@ -600,11 +687,11 @@ def test_a_fit_is_free_to_move_the_leaf_terms_weights():
     material block's end instead, which is what it was before mobility, the
     twenty two weights of the two leaf terms would sit at zero through the fit
     and the arm would report a null result with nothing saying why."""
-    frozen = tune.frozen_slots(False)
-    assert frozen[tune.MATERIAL_SLOT : tune.MOBILITY_SLOT].all()
-    assert not frozen[tune.MOBILITY_SLOT :].any()
-    assert not frozen[: tune.MATERIAL_SLOT].any()
-    assert not tune.frozen_slots(True).any()
+    frozen = tune.frozen_slots(LAYOUT, False)
+    assert frozen[LAYOUT.start["material"] : LAYOUT.start["mobility"]].all()
+    assert not frozen[LAYOUT.start["mobility"] :].any()
+    assert not frozen[: LAYOUT.start["material"]].any()
+    assert not tune.frozen_slots(LAYOUT, True).any()
 
 
 def test_a_term_is_fitted_with_every_earlier_term_held():
@@ -613,14 +700,14 @@ def test_a_term_is_fitted_with_every_earlier_term_held():
     shelter fit that passed only that would have refitted mobility beside the
     shelter and called the pair king safety. The same again one term on: two
     holds leave the shelter free, and a pawn structure fit wants three."""
-    tables = tune.frozen_slots(False, True)
-    assert not tables[tune.MOBILITY_SLOT : tune.SHELTER_SLOT].any()
-    both = tune.frozen_slots(False, True, True)
-    assert both[: tune.SHELTER_SLOT].all()
-    assert not both[tune.SHELTER_SLOT : tune.PAWN_SLOT].any()
-    three = tune.frozen_slots(False, True, True, True)
-    assert three[: tune.PAWN_SLOT].all()
-    assert not three[tune.PAWN_SLOT :].any()
+    tables = tune.frozen_slots(LAYOUT, False, True)
+    assert not tables[LAYOUT.start["mobility"] : LAYOUT.start["shelter"]].any()
+    both = tune.frozen_slots(LAYOUT, False, True, True)
+    assert both[: LAYOUT.start["shelter"]].all()
+    assert not both[LAYOUT.start["shelter"] : LAYOUT.start["pawn_structure"]].any()
+    three = tune.frozen_slots(LAYOUT, False, True, True, True)
+    assert three[: LAYOUT.start["pawn_structure"]].all()
+    assert not three[LAYOUT.start["pawn_structure"] :].any()
 
 
 def test_a_refit_holds_the_terms_above_it_as_well_as_the_ones_below():
@@ -630,10 +717,10 @@ def test_a_refit_holds_the_terms_above_it_as_well_as_the_ones_below():
     the eight weights are the only thing that moves and a match reads them
     alone. Without the last hold the sixteen pawn weights move too, which is
     the confound `1b0862a` found the first time a hold was missing."""
-    refit = tune.frozen_slots(False, True, False, True, True)
-    assert refit[: tune.MOBILITY_SLOT].all()
-    assert not refit[tune.MOBILITY_SLOT : tune.SHELTER_SLOT].any()
-    assert refit[tune.SHELTER_SLOT :].all()
+    refit = tune.frozen_slots(LAYOUT, False, True, False, True, True)
+    assert refit[: LAYOUT.start["mobility"]].all()
+    assert not refit[LAYOUT.start["mobility"] : LAYOUT.start["shelter"]].any()
+    assert refit[LAYOUT.start["shelter"] :].all()
 
 
 def test_quantizing_rounds_to_nearest():
@@ -658,7 +745,7 @@ def sample(vector, count=30, plies=4):
             rows.append(
                 row(
                     name,
-                    [(0, 24), (tune.MATERIAL_SLOT, 1 if index % 2 else -1)],
+                    [(0, 24), (LAYOUT.start["material"], 1 if index % 2 else -1)],
                     vector,
                     24,
                     fen,
@@ -766,8 +853,8 @@ def test_a_fit_holds_the_material_values_unless_it_is_told_not_to(tmp_path, caps
         == 0
     )
     fitted = json.loads(out.read_text(encoding="utf-8"))
-    assert fitted[tune.MATERIAL_SLOT : tune.MOBILITY_SLOT] == MATERIAL
-    assert len(fitted) == tune.SLOTS
+    assert fitted[LAYOUT.start["material"] : LAYOUT.start["mobility"]] == MATERIAL
+    assert len(fitted) == LAYOUT.slots
 
 
 def test_a_ridge_is_chosen_on_the_selection_games(tmp_path, capsys):
@@ -986,7 +1073,9 @@ def test_final_scores_the_sealed_rows_and_only_those(tmp_path, capsys):
     scores = np.array(
         [
             tune.reconstruct(
-                [(0, 24), (tune.MATERIAL_SLOT, 1 if result == 1.0 else -1)], vector
+                [(0, 24), (LAYOUT.start["material"], 1 if result == 1.0 else -1)],
+                vector,
+                LAYOUT,
             )
             for _, result in sealed
         ],
@@ -1229,14 +1318,14 @@ def test_a_named_seal_holds_out_the_games_it_names_and_no_others():
     set."""
     vector = weights()
     rows, raw = sample(vector)
-    _, parsed = tune.parse_terms(extraction(rows, vector))
+    _, _, parsed = tune.parse_terms(extraction(rows, vector))
     labels = labels_of(raw)
     named = {min(label.pair for label in labels.values())}
-    corpus = tune.Corpus(vector, parsed, labels, named)
+    corpus = tune.Corpus(LAYOUT, vector, parsed, labels, named)
     assert corpus.sealed.checksum() == sealed_checksum(named)
     assert named.isdisjoint(corpus.pairs)
     assert set(corpus.groups) == {"train", "selection"}
-    drawn = tune.Corpus(vector, parsed, labels)
+    drawn = tune.Corpus(LAYOUT, vector, parsed, labels)
     assert drawn.sealed.checksum() != sealed_checksum(named)
 
 
@@ -1246,9 +1335,9 @@ def test_a_sealed_pair_no_game_of_the_corpus_holds_is_refused():
     That is worse than no reading at all, so it is refused."""
     vector = weights()
     rows, raw = sample(vector)
-    _, parsed = tune.parse_terms(extraction(rows, vector))
+    _, _, parsed = tune.parse_terms(extraction(rows, vector))
     with pytest.raises(ValueError, match="in no game of this corpus"):
-        tune.Corpus(vector, parsed, labels_of(raw), {"f" * 64})
+        tune.Corpus(LAYOUT, vector, parsed, labels_of(raw), {"f" * 64})
 
 
 def test_a_sealed_pair_with_no_row_is_counted_rather_than_refused():
@@ -1267,7 +1356,7 @@ def test_a_sealed_pair_with_no_row_is_counted_rather_than_refused():
     dropped = {name for name, label in labels.items() if label.pair == lonely}
     kept = [row for row in rows if row.split(" ", 1)[0] not in dropped]
     assert len(kept) < len(rows), "the fixture shares no pair"
-    _, parsed = tune.parse_terms(extraction(kept, vector))
-    corpus = tune.Corpus(vector, parsed, labels, {lonely})
+    _, _, parsed = tune.parse_terms(extraction(kept, vector))
+    corpus = tune.Corpus(LAYOUT, vector, parsed, labels, {lonely})
     assert corpus.sealed_without_rows == 1
     assert corpus.sealed.positions == 0
