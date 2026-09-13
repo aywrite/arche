@@ -319,7 +319,9 @@ def corpus(sourced, book_plies=BOOK_PLIES, sealed=None):
             result = result_for(white_result, board.turn)
             entry = entries.get(epd)
             if entry is None:
-                entries[epd] = Entry(f"g{read:05d}p{ply:03d}", key, result, played)
+                entries[epd] = Entry(
+                    f"g{read:05d}p{ply:03d}", key, result, played, sealed
+                )
             else:
                 entry.seen(key, result)
     # the pairs are known only once every game is read, and nothing above
