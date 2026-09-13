@@ -480,9 +480,9 @@ the evaluation answers with a hard zero rather than a sum over the weights.
 A row like that is not a thing a fit can read, since every weight vector
 scores it the same, so it is turned away rather than emitted. `tune.py`
 refuses a header that does not carry the count, because an extraction printed
-by an older engine holds those rows and would parse. If the yield ever leaves too few positions to fit 768 weights,
-dropping the pass is the fallback, and the header is what makes that a
-decision rather than a discovery.
+by an older engine holds those rows and would parse. If the yield ever leaves
+too few positions to fit 768 weights, dropping the pass is the fallback, and
+the header is what makes that a decision rather than a discovery.
 
 `epd <file>` reads a suite of its own instead of the bench's, on the residuals
 argument's terms, and the header names the file. A file that will not open,

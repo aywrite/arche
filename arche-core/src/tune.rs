@@ -6,10 +6,9 @@
 //! The evaluation is material plus a tapered piece square score plus a
 //! tapered mobility score plus a tapered king shelter score plus a tapered
 //! pawn structure score, and it is linear in the numbers those five are read
-//! from. So a position's score is a dot
-//! product: a coefficient for each of the weights it touches, against the
-//! weights themselves. This module writes the coefficients down, and a fit run
-//! outside the engine reads them.
+//! from. So a position's score is a dot product: a coefficient for each of
+//! the weights it touches, against the weights themselves. This module writes
+//! the coefficients down, and a fit run outside the engine reads them.
 //!
 //! It is linear everywhere but one. Material that cannot mate is answered with
 //! a hard zero, which is no dot product at all: every weight vector scores such
@@ -42,17 +41,19 @@
 //! at every leaf rather than a check on the first, so what pins them is the
 //! hand counts beside each helper in board.rs.
 //!
-//! On mobility the two no longer ask for the same kinds. The walk asks for all
-//! four, because it is offline and a coefficient for a kind worth nothing
+//! On mobility the two may ask for different kinds. The walk always asks for
+//! all four, because it is offline and a coefficient for a kind worth nothing
 //! today is what lets a later fit price it; `eval` asks only for the kinds
 //! whose weight is not zero, because a count multiplied by zero is not worth
-//! taking at every leaf. So the walk's row is the wider of the two, and the
-//! identity holds because the difference is exactly the kinds that score
-//! nothing. `eval_counts_a_kind_exactly_when_its_weight_is_not_zero` is what
-//! says the difference is that and not something else. Neither of the other
-//! two is split that way: both fits gave every one of their weights a value,
-//! the shelter's fourteen and the pawn structure's sixteen, so there is
-//! nothing in either to leave out.
+//! taking at every leaf. The refit priced all four, so the two sets are equal
+//! today and the walk's row is the wider of the two only while some weight
+//! rounds to nothing. The identity holds either way, because the difference
+//! is exactly the kinds that score nothing, and
+//! `eval_counts_a_kind_exactly_when_its_weight_is_not_zero` is what says the
+//! difference is that and not something else. Neither of the other two is
+//! split that way: both fits gave every one of their weights a value, the
+//! shelter's fourteen and the pawn structure's sixteen, so there is nothing
+//! in either to leave out.
 
 use crate::bench::Position;
 use crate::board::Board;

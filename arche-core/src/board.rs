@@ -1362,12 +1362,13 @@ impl Board {
     /// time. The king and the pawn have no count of their own: a king's is a
     /// danger signal rather than a scope one, and a pawn's is move generation.
     ///
-    /// Both `eval` and the tuner's walk read this, but no longer for the same
-    /// kinds. The walk asks for all four, because it is offline and its
-    /// coefficients are what prices a kind; `eval` asks for the kinds whose
-    /// weight is not zero, because a count multiplied by zero is not worth the
-    /// leaf it is taken at. What keeps the two honest is that the difference
-    /// between them is exactly the zero weights, which
+    /// Both `eval` and the tuner's walk read this, and they may ask for
+    /// different kinds. The walk always asks for all four, because it is
+    /// offline and its coefficients are what prices a kind; `eval` asks for
+    /// the kinds whose weight is not zero, because a count multiplied by zero
+    /// is not worth the leaf it is taken at. Since the refit priced all four
+    /// the two sets are equal today. What keeps them honest whether or not
+    /// they are is that the difference is exactly the zero weights, which
     /// `eval_counts_a_kind_exactly_when_its_weight_is_not_zero` pins. Within
     /// one set of kinds the counts are still one answer rather than two, so a
     /// second implementation of them would still be two chances to be wrong
