@@ -64,8 +64,8 @@ def sourced(text, run="-"):
     return (build_corpus.Sourced(run, game) for game in games(text))
 
 
-def build(text, book_plies=build_corpus.BOOK_PLIES, run="-"):
-    return build_corpus.corpus(sourced(text, run), book_plies)
+def build(text, book_plies=build_corpus.BOOK_PLIES, run="-", sealed=None):
+    return build_corpus.corpus(sourced(text, run), book_plies, sealed)
 
 
 def test_the_book_is_dropped_off_the_front_of_a_game():
@@ -224,6 +224,31 @@ def test_a_position_is_labelled_by_its_own_group_and_no_other():
     assert counts["repeated"] == 1
     assert counts["straddled"] == 1
     assert counts["dropped_appearances"] == 1
+
+
+def test_a_named_seal_decides_the_group_a_position_is_labelled_from(tmp_path):
+    """The seal `--sealed` names has to reach the labelling, not only the fit.
+
+    These two games fall in different groups by their keys, so the position they
+    share is labelled from the owning game alone and the other appearance is
+    dropped. Naming both pairs puts them in the calibration group together, and
+    the label is then the mean of the two. A corpus that took the flag and
+    ignored it would keep dropping the appearance, so its rows would be labelled
+    by a split the fit it is handed to does not use, which is the leak the shared
+    module exists to prevent wearing the clothes of the thing that prevents it.
+    """
+    text = moves_pgn(DIRECT, result="1-0") + moves_pgn(TRANSPOSED, result="0-1")
+    keys = [build_corpus.game_key(game) for game in games(text)]
+    # each game stands alone, so its pair key is its own key
+    assert len({groups.group_of(key) for key in keys}) == 2
+    named = tmp_path / "sealed.txt"
+    named.write_text("".join(f"{key}\n" for key in keys), encoding="utf-8")
+    entries, counts = build(text, book_plies=4, sealed=groups.sealed_pairs(named))
+    entry = next(iter(entries.values()))
+    assert entry.result == 0.5
+    assert entry.count == 2
+    assert entry.dropped == 0
+    assert counts["dropped_appearances"] == 0
 
 
 def test_a_position_two_games_of_one_group_reached_merges_as_before():
