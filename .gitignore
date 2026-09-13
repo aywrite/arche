@@ -10,10 +10,6 @@
 
 __pycache__/
 
-# what a pip install of scripts/ leaves behind, editable or not
-*.egg-info/
-/scripts/build/
-
 # profiling
 perf.data*
 callgrind.out*

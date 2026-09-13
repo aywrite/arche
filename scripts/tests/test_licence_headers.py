@@ -50,7 +50,7 @@ def test_every_source_file_states_its_licence():
 
 def test_the_walk_actually_finds_the_sources():
     # a walk that silently matched nothing would pass the test above forever.
-    # It finds sixty five today, exactly what `git ls-files` lists for these
+    # It finds seventy eight today, exactly what `git ls-files` lists for these
     # three suffixes; the floor is well under that, because what is being
     # caught is a walk that has stopped working rather than one that drifted
     # by a file or two.

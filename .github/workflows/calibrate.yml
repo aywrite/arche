@@ -351,7 +351,7 @@ jobs:
         with:
           fetch-depth: 0
 
-      - uses: ./.github/actions/match-tools
+      - uses: aywrite/mache/actions/setup@5d84b02cc270bb3ac6103676ee3a845656fb8fc0 # v0.1.0
         id: tools
 
       # the cache keeps the dependencies; the engine is built from an export
@@ -392,7 +392,7 @@ jobs:
           book_format=$(scripts/book.sh format "$BOOK")
           openings=$(scripts/book.sh count "$BOOK" "tools/${book_file}") \
             || { echo "::error::no openings in the book"; exit 1; }
-          start=$(python3 scripts/book_slice.py --openings "$openings" \
+          start=$(python3 -m mache.book_slice --openings "$openings" \
             --pairs "$PAIRS" --shards "$RUNGS" --shard "$INDEX" --seed "$SEED" \
             2> slice.txt) || { echo "::error::$(cat slice.txt)"; exit 1; }
           while read -r remark; do
@@ -451,6 +451,7 @@ jobs:
         if: always()
         env:
           FASTCHESS: ${{ steps.tools.outputs.fastchess }}
+          MACHE: ${{ steps.tools.outputs.version }}
         run: |
           # asked for again rather than read from the step that worked out the
           # slice, since this is written whether or not that step ran
@@ -467,6 +468,10 @@ jobs:
             echo "opponent_rating: ${RATING} on the ccrl blitz list"
             echo "build: scripts/build_at.sh for ${ENGINE_NAME}, scripts/opponent.sh for ${ENGINE}"
             echo "fastchess: ${FASTCHESS}"
+            # the tooling that reads the games as well as the harness that
+            # played them, so a figure can be read back against the version
+            # that produced it
+            echo "mache: ${MACHE}"
             echo "book: ${book_file}"
             echo "book_sha256: ${book_sha}"
             echo "book_openings: ${OPENINGS:-not counted, the rung did not get that far}"
@@ -540,6 +545,12 @@ jobs:
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
 
+      # The fit and nothing else: this job reads games rather than playing them,
+      # so there is no harness to build and no book to fetch.
+      - uses: aywrite/mache/actions/setup@5d84b02cc270bb3ac6103676ee3a845656fb8fc0 # v0.1.0
+        with:
+          estimator_only: true
+
       # one directory per artifact under rungs/, unless only one of them
       # arrived, which is extracted straight into rungs/; the find below takes
       # it either way. The attempt is in the pattern so that a rerun fits its
@@ -565,7 +576,7 @@ jobs:
           # to a crash or the clock still counts in the fit, because choosing
           # what to count after seeing it is not a measurement; the counts sit
           # beside the estimate instead
-          if python3 scripts/match_terminations.py gauntlet.pgn \
+          if python3 -m mache.match_terminations gauntlet.pgn \
               > terminations.txt 2> faults.txt; then
             while read -r remark; do
               echo "::warning::${remark}"
@@ -577,7 +588,7 @@ jobs:
           # anything the estimate wants to say about itself, a rung that played
           # no games or a fit the pairings disagree with, goes to stderr, so it
           # is picked up from there rather than parsed back out of the table
-          python3 scripts/rating_estimate.py \
+          python3 -m mache.rating_estimate \
             gauntlet.pgn "$ENGINE_NAME" "$LADDER_SPEC" > table.md 2> notes.txt \
             || { cat notes.txt >&2; exit 1; }
           # asked for again rather than cut out of the table, so that a change
@@ -585,7 +596,7 @@ jobs:
           # to the log as well as to the summary, for the reason the strength
           # workflow says at the same place
           cat table.md
-          line=$(python3 scripts/rating_estimate.py \
+          line=$(python3 -m mache.rating_estimate \
             gauntlet.pgn "$ENGINE_NAME" "$LADDER_SPEC" --line 2> /dev/null)
           echo "line=Estimated rating | ${line}" >> "$GITHUB_OUTPUT"
           echo "::notice::${line}"

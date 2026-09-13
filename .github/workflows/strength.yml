@@ -377,7 +377,7 @@ jobs:
         with:
           fetch-depth: 0
 
-      - uses: ./.github/actions/match-tools
+      - uses: aywrite/mache/actions/setup@5d84b02cc270bb3ac6103676ee3a845656fb8fc0 # v0.1.0
         id: tools
 
       # the cache keeps the dependencies; each side's engine is built from an
@@ -409,7 +409,7 @@ jobs:
           book_format=$(scripts/book.sh format "$BOOK")
           openings=$(scripts/book.sh count "$BOOK" "tools/${book_file}") \
             || { echo "::error::no openings in the book"; exit 1; }
-          start=$(python3 scripts/book_slice.py --openings "$openings" \
+          start=$(python3 -m mache.book_slice --openings "$openings" \
             --pairs "$PAIRS" --shards "$SHARDS" --shard "$SHARD" --seed "$SEED" \
             2> slice.txt) || { echo "::error::$(cat slice.txt)"; exit 1; }
           while read -r remark; do
@@ -471,6 +471,7 @@ jobs:
         if: always()
         env:
           FASTCHESS: ${{ steps.tools.outputs.fastchess }}
+          MACHE: ${{ steps.tools.outputs.version }}
         run: |
           # asked for again rather than read from the step that worked out the
           # slice, since this is written whether or not that step ran
@@ -484,6 +485,10 @@ jobs:
             echo "baseline_sha: ${BASELINE_SHA}"
             echo "build: scripts/build_at.sh, cargo build --release on an export of the commit"
             echo "fastchess: ${FASTCHESS}"
+            # the tooling that reads the games as well as the harness that
+            # played them, so a figure can be read back against the version
+            # that produced it
+            echo "mache: ${MACHE}"
             echo "book: ${book_file}"
             echo "book_sha256: ${book_sha}"
             echo "book_openings: ${OPENINGS:-not counted, the shard did not get that far}"
@@ -566,6 +571,12 @@ jobs:
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
 
+      # The estimate and nothing else: this job reads games rather than playing
+      # them, so there is no harness to build and no book to fetch.
+      - uses: aywrite/mache/actions/setup@5d84b02cc270bb3ac6103676ee3a845656fb8fc0 # v0.1.0
+        with:
+          estimator_only: true
+
       # one directory per artifact under shards/, which is where the estimate
       # reads a shard's name from. A single artifact is the exception: it is
       # extracted straight into shards/, and the find below takes it either
@@ -605,7 +616,7 @@ jobs:
             v[0-9]*.[0-9]*.[0-9]*) base="$PREVIOUS" ;;
             *) base="${BASELINE_SHA:0:8}" ;;
           esac
-          estimate=(python3 scripts/match_estimate.py "${games[@]}"
+          estimate=(python3 -m mache.match_estimate "${games[@]}"
                     --candidate "$CANDIDATE" --baseline "$base"
                     --tc "$TIME_CONTROL")
           if [ "$SPRT" = "true" ]; then
