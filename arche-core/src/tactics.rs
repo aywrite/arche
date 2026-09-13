@@ -155,6 +155,27 @@ mod tests {
                 .get("bm")
                 .unwrap_or_else(|| panic!("{} has no bm", position.id));
             assert!(!moves.trim().is_empty(), "{} has an empty bm", position.id);
+            // the file names its moves the way the engine writes its own, and
+            // `run_suite` decides a pass by comparing those strings. A `bm` the
+            // generator can never emit is therefore a position that can never
+            // pass, folded silently into `EXPECTED_PASSES` as though the search
+            // had missed it. The suite is converted from san by a script, so
+            // that is a conversion slip rather than a hypothetical. The
+            // strategic suite has carried this check since it was written.
+            let board = Board::from_fen(&position.fen).unwrap();
+            let generated: Vec<String> = board
+                .generate_moves()
+                .iter()
+                .map(|play| play.to_string())
+                .collect();
+            for wanted in moves.split_whitespace() {
+                assert!(
+                    generated.iter().any(|generated| generated == wanted),
+                    "{} names {}, which it does not offer",
+                    position.id,
+                    wanted
+                );
+            }
         }
     }
 
