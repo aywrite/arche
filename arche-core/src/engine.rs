@@ -647,15 +647,11 @@ pub struct AlphaBeta {
     /// The move ordering and its scratch buffer, search state like the
     /// limits above: one per engine, reused by every node.
     ordering: MoveOrdering,
-    /// The king shelter's memo, scratch on the same terms as the ordering.
-    /// Never cleared between searches: an entry is read only against the key
-    /// that wrote it, so what the last search left is a warm start and not a
-    /// stale answer.
-    shelter: eval::ShelterCache,
-    /// The pawn structure's memo, on the same terms. A second cache rather
-    /// than a wider entry in the shelter's, because the two are keyed on
-    /// different things: this one misses only on a pawn move.
-    pawns: eval::PawnCache,
+    /// What the leaf terms that remember themselves remember, scratch on the
+    /// same terms as the ordering. Never cleared between searches: an entry
+    /// is read only against the key that wrote it, so what the last search
+    /// left is a warm start and not a stale answer.
+    caches: eval::Caches,
     /// The residual sampler, or none, which is what every constructor here
     /// builds and what the engine plays and benches with. An engine with
     /// none takes no branch a search without a sampler did not take, which
@@ -749,8 +745,7 @@ impl AlphaBeta {
             stop: None,
             quiescence_nodes: 0,
             ordering: MoveOrdering::new(),
-            shelter: eval::ShelterCache::default(),
-            pawns: eval::PawnCache::default(),
+            caches: eval::Caches::default(),
             sampler: None,
             census: None,
             ledger: None,
@@ -1104,13 +1099,13 @@ impl AlphaBeta {
     }
 
     /// The score at this node, with the shelter and the pawn structure taken
-    /// from the engine's two memos.
+    /// from the engine's memos.
     ///
     /// `&mut self` for the memos alone. The score is the one `eval::eval`
     /// gives, so nothing about the tree turns on which of the two a node
     /// asked.
     fn eval(&mut self) -> Score {
-        crate::eval::eval_cached(&self.board, &mut self.shelter, &mut self.pawns)
+        crate::eval::eval_cached(&self.board, &mut self.caches)
     }
 
     /// The ply the quiet memories are indexed by at this node, or none when

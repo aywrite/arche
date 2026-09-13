@@ -78,7 +78,7 @@ impl Building {
 
 /// Pop the lowest set bit and return its index.
 #[inline(always)]
-fn pop_lsb(bb: &mut u64) -> u8 {
+pub(crate) fn pop_lsb(bb: &mut u64) -> u8 {
     let i = bb.trailing_zeros() as u8;
     *bb &= *bb - 1;
     i
@@ -155,7 +155,7 @@ const H8: u8 = 63;
 /// naming which half of the board it is confined to.
 const LIGHT_SQUARES: u64 = 0x55AA_55AA_55AA_55AA;
 
-static ZOBRIST: Zobrist = Zobrist::TABLE;
+pub(crate) static ZOBRIST: Zobrist = Zobrist::TABLE;
 
 /// What each square leaves of the castling rights, as the four bytes
 /// `CastlePermissions` is laid out in.
@@ -230,8 +230,6 @@ const fn castle_masks(leaving: bool) -> [u32; 64] {
 const NULL_HISTORY_SALT: u64 = 0x9e37_79b9_7f4a_7c15;
 
 static ATTACK_MASKS: AttackMasks = AttackMasks::new();
-static SHELTER_MASKS: ShelterMasks = ShelterMasks::new();
-static PAWN_MASKS: PawnMasks = PawnMasks::new();
 // the squares strictly between two aligned squares, and empty for a pair
 // that shares no line. What a piece must land on to block a slider on one
 // square checking a king on the other.
@@ -409,6 +407,16 @@ impl AttackMasks {
     }
 }
 
+/// The squares a knight on `from` attacks, whatever stands on them.
+///
+/// The one entry of the attack masks anything outside this file reads.
+/// A reader is opened on it because the evaluation asks what a knight
+/// covers; the rest of the table is the generator's own and stays here.
+#[inline]
+pub(crate) fn knight_attacks(from: u8) -> u64 {
+    ATTACK_MASKS.knights[from as usize]
+}
+
 /// Every square a side's pawns attack, as one span.
 ///
 /// A shift rather than a mask a pawn at a time, because the one caller wants
@@ -417,204 +425,13 @@ impl AttackMasks {
 /// down it; a pawn on the a file has no capture to its left and one on the h
 /// file none to its right, which is what the two masks drop before the shift
 /// carries a bit around into the next rank.
-const fn pawn_attacks(pawns: u64, color: Color) -> u64 {
+pub(crate) const fn pawn_attacks(pawns: u64, color: Color) -> u64 {
     const A_FILE: u64 = 0x0101_0101_0101_0101;
     const H_FILE: u64 = 0x8080_8080_8080_8080;
     match color {
         Color::White => ((pawns & !A_FILE) << 7) | ((pawns & !H_FILE) << 9),
         Color::Black => ((pawns & !H_FILE) >> 7) | ((pawns & !A_FILE) >> 9),
     }
-}
-
-/// The three files a king on `square` stands behind, as a bit per file.
-///
-/// A king on the a file or the h file is read against three files rather than
-/// two, by stepping the middle one in: the b file and the g file are the
-/// centres a corner king keeps. So every king square names three files and
-/// the counts off them are on one scale wherever the king stands.
-const fn king_files(square: u8) -> u8 {
-    let file = square % 8;
-    let centre = match file {
-        0 => 1,
-        7 => 6,
-        file => file,
-    };
-    0b111 << (centre - 1)
-}
-
-/// The three squares `ahead` ranks in front of a king on `square`, on the
-/// files [`king_files`] names, and empty where that rank is off the board.
-///
-/// `forward` is the direction the side's pawns push, so a white king is read
-/// up the board and a black king down it. A king that has walked far enough
-/// up is left with nothing in front of it, which is the answer rather than a
-/// case to rule out: a king off its own back ranks has no shelter, and what
-/// that is worth is for the weights to say.
-const fn shelter_rank(square: u8, forward: i8, ahead: i8) -> u64 {
-    let rank = (square / 8) as i8 + forward * ahead;
-    if rank < 0 || rank > 7 {
-        return 0;
-    }
-    // a file bit and a square index share their low three bits, so the byte
-    // shifted to the rank is the three squares on it
-    (king_files(square) as u64) << (rank * 8)
-}
-
-/// How many ranks in front of the king are masked. Three, which is as far as
-/// an enemy pawn is counted: for a king at home that is the rank its own pawns
-/// start on and the two beyond it.
-const RANKS_AHEAD: usize = 3;
-
-/// The squares in front of each king, and which files it stands behind.
-///
-/// `ahead` is indexed by how many ranks forward, then by `Color`'s
-/// discriminant the way the accumulator's material is, then by the king's
-/// square. A white king is read up the board and a black king down it, and the
-/// files are the same either way.
-///
-/// The same three masks serve both sides of the term. Read against this side's
-/// pawns they are the cover the king has, and against the other side's they
-/// are the pawns coming for it.
-struct ShelterMasks {
-    ahead: [[[u64; 64]; 2]; RANKS_AHEAD],
-    files: [u8; 64],
-}
-
-impl ShelterMasks {
-    /// Built at compile time, the way `AttackMasks` is.
-    const fn new() -> Self {
-        let mut masks = ShelterMasks {
-            ahead: [[[0; 64]; 2]; RANKS_AHEAD],
-            files: [0; 64],
-        };
-        let mut square = 0u8;
-        while square < 64 {
-            let i = square as usize;
-            masks.files[i] = king_files(square);
-            let mut rank = 0;
-            while rank < RANKS_AHEAD {
-                let ahead = rank as i8 + 1;
-                masks.ahead[rank][Color::White as usize][i] = shelter_rank(square, 1, ahead);
-                masks.ahead[rank][Color::Black as usize][i] = shelter_rank(square, -1, ahead);
-                rank += 1;
-            }
-            square += 1;
-        }
-        masks
-    }
-}
-
-/// A pawn's own file and the files beside it, as a bit per file.
-///
-/// [`king_files`] steps the middle file in at the two edges so that a king
-/// always names three; this does not, because the two are asking different
-/// questions. A white pawn on a4 is passed while black has no pawn on the a
-/// file or the b file, and a black pawn on the c file has nothing to say
-/// about it. Stepping in would let that pawn stop it.
-const fn pawn_files(square: u8) -> u8 {
-    let own = 1u8 << (square % 8);
-    // a shift off either end of the byte drops the bit, which is the edge
-    // case: the a file has no file to its left and the h file none to its
-    // right
-    own | (own << 1) | (own >> 1)
-}
-
-/// The squares on `files` on every rank strictly ahead of `square`, ahead
-/// meaning the direction `forward` pushes.
-const fn span_ahead(square: u8, forward: i8, files: u8) -> u64 {
-    let mut mask = 0;
-    let mut rank = (square / 8) as i8 + forward;
-    while rank >= 0 && rank < 8 {
-        mask |= (files as u64) << (rank * 8);
-        rank += forward;
-    }
-    mask
-}
-
-/// What stands in a pawn's way, as two masks a square names.
-///
-/// `front_span` is the pawn's file and the two beside it, on every rank ahead
-/// of it. A pawn of ours is passed when no pawn of theirs stands anywhere in
-/// it, which is the whole of the standard definition bar one clause.
-/// `file_ahead` is the same span without the neighbouring files, and it
-/// answers that clause: whether a pawn of ours is already in front of this
-/// one. It is kept as its own table rather than masked out of the first at
-/// the leaf, because a leaf term pays for every instruction it adds and a
-/// table costs half a kilobyte.
-///
-/// Indexed by `Color`'s discriminant and then the square, the way
-/// `ShelterMasks` is indexed and for the same reason. A white pawn is read up
-/// the board and a black one down it.
-struct PawnMasks {
-    front_span: [[u64; 64]; 2],
-    file_ahead: [[u64; 64]; 2],
-}
-
-impl PawnMasks {
-    /// Built at compile time, the way `ShelterMasks` is.
-    const fn new() -> Self {
-        let mut masks = PawnMasks {
-            front_span: [[0; 64]; 2],
-            file_ahead: [[0; 64]; 2],
-        };
-        let mut square = 0u8;
-        while square < 64 {
-            let i = square as usize;
-            let own = 1u8 << (square % 8);
-            let beside = pawn_files(square);
-            masks.front_span[Color::White as usize][i] = span_ahead(square, 1, beside);
-            masks.front_span[Color::Black as usize][i] = span_ahead(square, -1, beside);
-            masks.file_ahead[Color::White as usize][i] = span_ahead(square, 1, own);
-            masks.file_ahead[Color::Black as usize][i] = span_ahead(square, -1, own);
-            square += 1;
-        }
-        masks
-    }
-}
-
-/// A set of files put back on the board: every square on every file the byte
-/// names. What [`files_of`] undoes, and one multiply rather than eight
-/// shifts, since a byte times the a file's eight squares lands a copy of the
-/// byte on each rank.
-const fn spread(files: u8) -> u64 {
-    (files as u64) * 0x0101_0101_0101_0101
-}
-
-/// Every square strictly in front of one of `pawns`, on that pawn's own file.
-///
-/// The pawns shifted one rank on and then doubled three times, which carries
-/// them the seven ranks a board has. Seeded with the shift rather than with
-/// the pawns, so a pawn is never in its own fill, which is what leaves a lone
-/// pawn undoubled.
-const fn ahead_of(pawns: u64, color: Color) -> u64 {
-    match color {
-        Color::White => {
-            let mut filled = pawns << 8;
-            filled |= filled << 8;
-            filled |= filled << 16;
-            filled |= filled << 32;
-            filled
-        }
-        Color::Black => {
-            let mut filled = pawns >> 8;
-            filled |= filled >> 8;
-            filled |= filled >> 16;
-            filled |= filled >> 32;
-            filled
-        }
-    }
-}
-
-/// Which files a set of pawns stands on, as a bit per file.
-///
-/// The board folded in half three times, so the answer is three shifts, three
-/// ors and a narrowing rather than eight masked tests. Nothing here says how
-/// many pawns a file holds, which is all the two file counts want to know.
-const fn files_of(pawns: u64) -> u8 {
-    let folded = pawns | (pawns >> 32);
-    let folded = folded | (folded >> 16);
-    let folded = folded | (folded >> 8);
-    folded as u8
 }
 
 /// What each piece is worth to `see`, indexed by `Piece`. An ordering
@@ -695,10 +512,10 @@ pub struct Board {
     pub(crate) key: u64,
     /// The same kind of key over the pawns alone: both sides' pawns and the
     /// squares they stand on, and nothing else. Two positions with the same
-    /// pawns and different pieces share it, which is what a table keyed by
-    /// pawn structure wants. It carries no side to move, no castle rights
-    /// and no en passant square, so it says what the pawns are and not whose
-    /// turn it is.
+    /// pawns and different pieces share it, which is what anything
+    /// remembered under the pawns alone asks of a key. It carries no side to
+    /// move, no castle rights and no en passant square, so it says what the
+    /// pawns are and not whose turn it is.
     ///
     /// Kept in step beside the position key, and so by every path that moves
     /// a pawn or takes one off: `relocate_piece_index` for a push and for
@@ -938,10 +755,7 @@ impl Board {
     /// the quiet-only sections, with nothing tested per move.
     fn generate<const CAPTURES_ONLY: bool, const EVASIONS: bool>(&self) -> MoveList {
         let mut moves = Building::new();
-        let (color_mask, capture_mask) = match self.active_color {
-            Color::Black => (self.black, self.white),
-            Color::White => (self.white, self.black),
-        };
+        let (color_mask, capture_mask) = self.sides(self.active_color);
         let all_pieces = self.black | self.white;
         let attack_masks = &ATTACK_MASKS;
         let magic = &MAGIC;
@@ -1343,92 +1157,6 @@ impl Board {
             attackers |= magic.get_straight_move(index, occupied) & straight;
         }
         attackers
-    }
-
-    /// How many squares this side's knights, bishops, rooks and queens cover,
-    /// a count per piece kind in that order, which is the order
-    /// `eval::MOBILE_PIECES` names them in. `KINDS` says which of the four to
-    /// count; the rest are not looked at and answer zero.
-    ///
-    /// A piece's count is its attack set over the real occupancy, less the
-    /// squares this side stands on, less the squares an enemy pawn attacks. So
-    /// a friendly piece blocks a slider rather than being seen through, and a
-    /// square an enemy pawn covers is not somewhere a piece goes. An enemy
-    /// piece standing on a square keeps that square in the count, because
-    /// attacking it is the point. Pins are ignored: a pinned bishop counts its
-    /// squares, and the search is what knows it cannot move.
-    ///
-    /// The enemy pawns are taken as one span rather than probed a square at a
-    /// time. The king and the pawn have no count of their own: a king's is a
-    /// danger signal rather than a scope one, and a pawn's is move generation.
-    ///
-    /// Both `eval` and the tuner's walk read this, and they may ask for
-    /// different kinds. The walk always asks for all four, because it is
-    /// offline and its coefficients are what prices a kind; `eval` asks for
-    /// the kinds whose weight is not zero, because a count multiplied by zero
-    /// is not worth the leaf it is taken at. Since the refit priced all four
-    /// the two sets are equal today. What keeps them honest whether or not
-    /// they are is that the difference is exactly the zero weights, which
-    /// `eval_counts_a_kind_exactly_when_its_weight_is_not_zero` pins. Within
-    /// one set of kinds the counts are still one answer rather than two, so a
-    /// second implementation of them would still be two chances to be wrong
-    /// rather than a check on one, and the hand counts below are what pins
-    /// them. That is the exception to the rule `tune.rs` states in its header,
-    /// which names it.
-    ///
-    /// `KINDS` is a compile time set, so a kind left out of it costs nothing:
-    /// its loop is not compiled rather than skipped.
-    ///
-    /// Inlined by force. Left to itself llvm keeps this out of line even under
-    /// link time optimisation, and `eval` asks for it twice at every leaf and
-    /// every quiescence node. That call was three fifths of what the term cost
-    /// over the bench: 4.30 billion instructions without the attribute against
-    /// 3.76 billion with it.
-    #[inline(always)]
-    pub(crate) fn mobility_counts<const KINDS: u8>(
-        &self,
-        color: Color,
-    ) -> [i32; eval::MOBILE_PIECES.len()] {
-        let occupied = self.occupied();
-        let (ours, theirs) = match color {
-            Color::White => (self.white, self.black),
-            Color::Black => (self.black, self.white),
-        };
-        let scope = !(ours | pawn_attacks(self.pawns() & theirs, !color));
-        let attack_masks = &ATTACK_MASKS;
-        let magic = &MAGIC;
-        let mut counts = [0; 4];
-        if eval::counted(KINDS, 0) {
-            let mut knights = self.knights() & ours;
-            while knights != 0 {
-                let from = pop_lsb(&mut knights);
-                counts[0] += (attack_masks.knights[from as usize] & scope).count_ones() as i32;
-            }
-        }
-        if eval::counted(KINDS, 1) {
-            let mut bishops = self.bishops() & ours;
-            while bishops != 0 {
-                let from = pop_lsb(&mut bishops);
-                counts[1] += (magic.get_diagonal_move(from, occupied) & scope).count_ones() as i32;
-            }
-        }
-        if eval::counted(KINDS, 2) {
-            let mut rooks = self.rooks() & ours;
-            while rooks != 0 {
-                let from = pop_lsb(&mut rooks);
-                counts[2] += (magic.get_straight_move(from, occupied) & scope).count_ones() as i32;
-            }
-        }
-        if eval::counted(KINDS, 3) {
-            let mut queens = self.queens() & ours;
-            while queens != 0 {
-                let from = pop_lsb(&mut queens);
-                let attacks = magic.get_straight_move(from, occupied)
-                    | magic.get_diagonal_move(from, occupied);
-                counts[3] += (attacks & scope).count_ones() as i32;
-            }
-        }
-        counts
     }
 
     /// The least valuable piece of `set`: the bit of one such piece and what
@@ -2022,213 +1750,55 @@ impl Board {
     /// The six piece boards by name. Each is a constant index into `pieces`,
     /// so these read as the fields they replaced and compile to the same load.
     #[inline]
-    fn pawns(&self) -> u64 {
+    pub(crate) fn pawns(&self) -> u64 {
         self.pieces[Piece::Pawn as usize]
     }
 
     #[inline]
-    fn knights(&self) -> u64 {
+    pub(crate) fn knights(&self) -> u64 {
         self.pieces[Piece::Knight as usize]
     }
 
     #[inline]
-    fn bishops(&self) -> u64 {
+    pub(crate) fn bishops(&self) -> u64 {
         self.pieces[Piece::Bishop as usize]
     }
 
     #[inline]
-    fn rooks(&self) -> u64 {
+    pub(crate) fn rooks(&self) -> u64 {
         self.pieces[Piece::Rook as usize]
     }
 
     #[inline]
-    fn queens(&self) -> u64 {
+    pub(crate) fn queens(&self) -> u64 {
         self.pieces[Piece::Queen as usize]
     }
 
     #[inline]
-    fn kings(&self) -> u64 {
+    pub(crate) fn kings(&self) -> u64 {
         self.pieces[Piece::King as usize]
     }
 
     /// Where this side's king stands. Every board has exactly one king a side,
     /// which is what `from_fen` checks for: without a king this returns 64 and
     /// the attack masks are indexed off the end.
-    fn king_index(&self, color: Color) -> u8 {
-        let mask = match color {
-            Color::White => self.white,
-            Color::Black => self.black,
-        };
-        (self.kings() & mask).trailing_zeros() as u8
+    pub(crate) fn king_index(&self, color: Color) -> u8 {
+        let (ours, _) = self.sides(color);
+        (self.kings() & ours).trailing_zeros() as u8
     }
 
-    /// What the king shelter depends on and nothing else: both sides' pawns
-    /// and both kings' squares.
+    /// This side's pieces and the other side's, in that order.
     ///
-    /// `shelter_counts` reads the pawn boards and the two king squares and
-    /// nothing else, so two positions whose pawns and kings agree agree on
-    /// every count of it whatever else has moved. This key stands in for that
-    /// agreement rather than being it: two positions can share it and differ,
-    /// which takes a collision across the whole sixty four bits. The pawn key
-    /// already hashes the pawns of both colours and is kept in step move by
-    /// move, so this is that key with the two kings folded in, from the same
-    /// zobrist table the position key uses.
-    ///
-    /// Composed here rather than maintained beside `pawn_key`, because a
-    /// king move would then have to write it and the cost of this is two
-    /// loads and two xors at the one place that asks.
+    /// Named for what it returns, which is both of them. Every caller
+    /// wants the pair: a generator masks its targets with one and its
+    /// captures with the other, and a leaf term reads its own pawns
+    /// against the other side's.
     #[inline]
-    pub(crate) fn shelter_key(&self) -> u64 {
-        self.pawn_key
-            ^ ZOBRIST.get_piece_key(self.king_index(Color::White), Piece::King, Color::White)
-            ^ ZOBRIST.get_piece_key(self.king_index(Color::Black), Piece::King, Color::Black)
-    }
-
-    /// What stands between this side's king and the board, as seven counts in
-    /// the order `eval::SHELTER_TERMS` names them: this side's pawns one rank
-    /// in front of the king and two ranks in front, how many of the king's
-    /// three files hold no pawn of either colour, how many hold an enemy pawn
-    /// and none of this side's, and then the enemy pawns one, two and three
-    /// ranks in front of the king.
-    ///
-    /// All seven are read off the three files the king stands behind, which
-    /// `king_files` steps in at the two corners so that the counts mean the
-    /// same thing on every square. Pawns and nothing else: a piece in front of
-    /// the king shelters it too, but a term that pays for one pays a piece to
-    /// sit still, and the piece square tables already hold an opinion about
-    /// where a piece belongs. A pawn is the part of the cover the king cannot
-    /// get back.
-    ///
-    /// The last three are the storm, and they are the same masks read against
-    /// the other side's pawns. A pawn of ours on g3 is cover and a pawn of
-    /// theirs on g3 is not the absence of cover, it is a lever, so the two are
-    /// counted apart and each rank apart from the next: how far the storm has
-    /// come is most of what it is worth, and the weights are where that is
-    /// said. Three ranks is as far as it is followed, which for a king at home
-    /// reaches the fourth rank.
-    ///
-    /// The two file counts overlap the two pawn counts, since a file with no
-    /// pawn of ours on it adds nothing to either of those. They are kept apart
-    /// because they are different knowledge: a missing g pawn and a g pawn
-    /// pushed to g4 both leave the near count short, and only the first opens
-    /// the file to a rook.
-    ///
-    /// Nothing here is gated on the king standing at home. A king that has
-    /// walked up the board has no rank in front of it inside the masks and
-    /// counts nothing, so the term fades rather than falling off a cliff the
-    /// search could step over.
-    ///
-    /// Both `eval` and the tuner's walk read this, so the identity between
-    /// them cannot see a wrong count here. What pins it is the hand counts
-    /// beside this in the tests, the way the mobility counts are pinned.
-    #[inline]
-    pub(crate) fn shelter_counts(&self, color: Color) -> [i32; eval::SHELTER_TERMS] {
-        let masks = &SHELTER_MASKS;
-        let square = self.king_index(color) as usize;
-        let side = color as usize;
-        let (ours, theirs) = match color {
+    pub(crate) fn sides(&self, color: Color) -> (u64, u64) {
+        match color {
             Color::White => (self.white, self.black),
             Color::Black => (self.black, self.white),
-        };
-        let pawns = self.pawns();
-        let (our_pawns, their_pawns) = (pawns & ours, pawns & theirs);
-        let ahead =
-            |pawns: u64, rank: usize| (pawns & masks.ahead[rank][side][square]).count_ones() as i32;
-        // the king's files with no pawn of ours on them, split by whether the
-        // other side has one there
-        let files = masks.files[square];
-        let bare = files & !files_of(our_pawns);
-        let theirs_on = files_of(their_pawns);
-        let open = (bare & !theirs_on).count_ones() as i32;
-        let half_open = (bare & theirs_on).count_ones() as i32;
-        [
-            ahead(our_pawns, 0),
-            ahead(our_pawns, 1),
-            open,
-            half_open,
-            ahead(their_pawns, 0),
-            ahead(their_pawns, 1),
-            ahead(their_pawns, 2),
-        ]
-    }
-
-    /// What this side's pawns stand as, in the eight counts
-    /// `eval::PAWN_TERMS` names: its passed pawns by relative rank, the
-    /// second through the seventh, then its isolated pawns and its doubled
-    /// ones.
-    ///
-    /// A pawn of ours is passed when no pawn of theirs stands on its file or
-    /// either file beside it on any rank ahead of it, and no pawn of ours
-    /// stands ahead of it on its own file. The second clause is what leaves
-    /// the rear of a doubled pair out: the front pawn is the runner, and the
-    /// one behind it is going nowhere the front one has not gone first. What
-    /// stands on the square in front of the pawn is not read, so a passer a
-    /// knight has blockaded is counted as a passer. That is on purpose and it
-    /// is the first thing this term leaves out: the stop square reads the
-    /// pieces, and a term that reads the pieces cannot sit behind a key over
-    /// the pawns.
-    ///
-    /// A pawn is isolated when no pawn of ours stands on either file beside
-    /// it, and doubled when a pawn of ours stands behind it on its own file.
-    /// Both are counted per pawn rather than per file, so an isolated pair on
-    /// one file pays the isolated weight twice and a tripled file is doubled
-    /// two. Per pawn is what one coefficient can state; per file would want a
-    /// second table to say how many.
-    ///
-    /// Relative rank is the rank a pawn has come, so a white pawn's is its
-    /// rank and a black pawn's is nine less. The relative second is a real
-    /// bucket and not a rounding of the others: a pawn still at home is
-    /// passed the moment the enemy pawns on its three files are gone.
-    ///
-    /// Pawns and nothing else is read here, which is the property the pawn
-    /// hash rests on. Neither king, no piece and not the side to move: two
-    /// positions whose pawns agree agree on all eight counts, and
-    /// `Board::pawn_key` already stands for that agreement.
-    ///
-    /// Both `eval` and the tuner's walk read this, so the identity between
-    /// them cannot see a wrong count here, at the fitted weights or at zero.
-    /// What pins it is the hand counts beside this in the tests, the way the
-    /// shelter counts and the mobility counts are pinned.
-    #[inline]
-    pub(crate) fn pawn_structure_counts(&self, color: Color) -> [i32; eval::PAWN_TERMS] {
-        let masks = &PAWN_MASKS;
-        let side = color as usize;
-        let (ours, theirs) = match color {
-            Color::White => (self.white, self.black),
-            Color::Black => (self.black, self.white),
-        };
-        let pawns = self.pawns();
-        let (our_pawns, their_pawns) = (pawns & ours, pawns & theirs);
-        let mut counts = [0; eval::PAWN_TERMS];
-        let mut remaining = our_pawns;
-        while remaining != 0 {
-            let square = remaining.trailing_zeros() as usize;
-            remaining &= remaining - 1;
-            let relative = match color {
-                Color::White => square / 8,
-                Color::Black => 7 - square / 8,
-            };
-            // from_fen accepts a pawn on either back rank, knowingly, and the
-            // search has to survive one. Such a pawn has come no ranks or all
-            // eight and so names none of the six counted; it is left out of
-            // the passed count rather than folded into the nearest bucket,
-            // and it still counts toward the two below, which read its file
-            // and not its rank
-            if !(1..eval::PASSED_RANKS + 1).contains(&relative) {
-                continue;
-            }
-            if their_pawns & masks.front_span[side][square] == 0
-                && our_pawns & masks.file_ahead[side][square] == 0
-            {
-                counts[relative - 1] += 1;
-            }
         }
-        let files = files_of(our_pawns);
-        let beside = (files << 1) | (files >> 1);
-        counts[eval::PASSED_RANKS] = (our_pawns & spread(files & !beside)).count_ones() as i32;
-        counts[eval::PASSED_RANKS + 1] =
-            (our_pawns & ahead_of(our_pawns, color)).count_ones() as i32;
-        counts
     }
 
     /// Whether the side to move stands in check, read from the checkers
@@ -3708,33 +3278,6 @@ mod pawn_key {
     fn a_board_with_no_pawns_has_no_key() {
         let board = Board::from_fen("4k3/8/8/8/8/8/8/4K3 w - - 0 1").unwrap();
         assert_eq!(board.pawn_key, 0);
-    }
-
-    /// `shelter_key` is this key with the two kings folded in, which is what
-    /// the shelter cache is keyed on. What the shelter reads is the pawns and
-    /// the two king squares, so a piece that is neither has to leave it alone
-    /// and either king moving has to move it. A key that missed a king would
-    /// hand one position's shelter to another.
-    #[test]
-    fn the_shelter_key_follows_the_pawns_and_the_two_kings() {
-        let bare = Board::from_fen("4k3/pppppppp/8/8/8/8/PPPPPPPP/4K3 w - - 0 1").unwrap();
-
-        // the same pawns and the same two kings behind a boardful of other
-        // pieces, which the shelter does not read
-        let pieced =
-            Board::from_fen("rnbqk1nr/pppppppp/8/8/8/8/PPPPPPPP/RNBQK1NR w - - 0 1").unwrap();
-        assert_eq!(bare.shelter_key(), pieced.shelter_key());
-
-        // either king one square along
-        let ours = Board::from_fen("4k3/pppppppp/8/8/8/8/PPPPPPPP/5K2 w - - 0 1").unwrap();
-        let theirs = Board::from_fen("5k2/pppppppp/8/8/8/8/PPPPPPPP/4K3 w - - 0 1").unwrap();
-        assert_ne!(bare.shelter_key(), ours.shelter_key());
-        assert_ne!(bare.shelter_key(), theirs.shelter_key());
-        assert_ne!(ours.shelter_key(), theirs.shelter_key());
-
-        // and one pawn pushed, the pawn key being the rest of it
-        let pushed = Board::from_fen("4k3/pppppppp/8/8/8/7P/PPPPPPP1/4K3 w - - 0 1").unwrap();
-        assert_ne!(bare.shelter_key(), pushed.shelter_key());
     }
 }
 
@@ -5241,108 +4784,9 @@ mod gives_check {
 }
 
 #[cfg(test)]
-mod mobility {
-    use super::{ATTACK_MASKS, Board, Color, pawn_attacks};
-    use crate::eval::ALL_KINDS;
+mod pawn_spans {
+    use super::{ATTACK_MASKS, Color, pawn_attacks};
     use pretty_assertions::assert_eq;
-
-    /// The counts by hand, square by square, because nothing else pins them.
-    /// The tuner's identity folds a row against the live weights, which are
-    /// zero, so it is blind to a wrong count here and stays blind to one after
-    /// the fit: `eval` and the tuner's walk read the same helper, so the two
-    /// sides of the identity move together whatever the helper answers. These
-    /// cases are the only check this term has.
-    ///
-    /// Each case names what the count is made of. The two kings stand in
-    /// opposite corners and out of the way, so that nothing here is a count of
-    /// theirs and no piece is placed giving check.
-    #[test]
-    fn a_piece_covers_what_a_hand_count_says_it_does() {
-        for (fen, counts, why) in [
-            // a knight in the corner has two squares and one in the middle
-            // has all eight
-            (
-                "k7/8/8/8/8/8/8/N6K w - - 0 1",
-                [2, 0, 0, 0],
-                "a knight on a1",
-            ),
-            (
-                "k7/8/8/8/3N4/8/8/7K w - - 0 1",
-                [8, 0, 0, 0],
-                "a knight on d4",
-            ),
-            // rays of three, four, three and three
-            (
-                "k7/8/8/8/3B4/8/8/7K w - - 0 1",
-                [0, 13, 0, 0],
-                "a bishop on d4",
-            ),
-            // a rank and a file, less the square it stands on
-            (
-                "k7/8/8/8/3R4/8/8/7K w - - 0 1",
-                [0, 0, 14, 0],
-                "a rook on d4",
-            ),
-            (
-                "k7/8/8/8/3Q4/8/8/7K w - - 0 1",
-                [0, 0, 0, 27],
-                "a queen on d4",
-            ),
-            // the friendly pawn on d6 is not scope and is not seen through
-            // either, so the file gives d5, d3, d2 and d1 beside the rank
-            (
-                "k7/8/3P4/8/3R4/8/8/7K w - - 0 1",
-                [0, 0, 11, 0],
-                "a rook on d4 behind its own pawn",
-            ),
-            // the pawn on b7 covers c6, which is one of the knight's eight
-            (
-                "k7/1p6/8/8/3N4/8/8/7K w - - 0 1",
-                [7, 0, 0, 0],
-                "a knight on d4 against a pawn on b7",
-            ),
-            // the enemy rook stands on one of the same eight and keeps it:
-            // a square with something to take on it is still scope
-            (
-                "k7/8/2r5/8/3N4/8/8/7K w - - 0 1",
-                [8, 0, 0, 0],
-                "a knight on d4 against a rook on c6",
-            ),
-            // the enemy pawn stops the file at d6 rather than being seen
-            // through, so the file gives d5 and d6 beside the rank. This is
-            // the case that says the magic lookup is asked about the whole
-            // occupancy and not about this side's half of it
-            (
-                "8/2k5/3p4/8/3R4/8/8/6K1 w - - 0 1",
-                [0, 0, 12, 0],
-                "a rook on d4 in front of an enemy pawn",
-            ),
-        ] {
-            let board = Board::from_fen(fen).unwrap();
-            assert_eq!(
-                board.mobility_counts::<{ ALL_KINDS }>(Color::White),
-                counts,
-                "{}",
-                why
-            );
-        }
-    }
-
-    /// Black's count of a position is white's count of its reflection, so the
-    /// two colours are read the same way round.
-    #[test]
-    fn the_two_colours_count_the_same_squares() {
-        let white = Board::from_fen("7k/1p6/8/8/3N4/8/8/7K w - - 0 1").unwrap();
-        let black = Board::from_fen("7k/8/8/3n4/8/8/1P6/7K b - - 0 1").unwrap();
-        assert_eq!(
-            white.mobility_counts::<{ ALL_KINDS }>(Color::White),
-            black.mobility_counts::<{ ALL_KINDS }>(Color::Black)
-        );
-        assert_eq!(
-            white.mobility_counts::<{ ALL_KINDS }>(Color::Black),
-            [0, 0, 0, 0]
-        );
-    }
 
     /// The span is shifted rather than gathered a pawn at a time, and the
     /// shifts have to answer what the masks generation reads already say. A
@@ -5366,229 +4810,6 @@ mod mobility {
                 square
             );
         }
-    }
-}
-
-#[cfg(test)]
-mod shelter {
-    use super::{Board, Color, RANKS_AHEAD, SHELTER_MASKS, files_of, king_files};
-    use pretty_assertions::assert_eq;
-
-    /// The counts by hand, square by square, because nothing else pins them.
-    /// The tuner's identity folds a row against the live weights, which are
-    /// zero, so it is blind to a wrong count here and stays blind to one after
-    /// the fit: `eval` and the tuner's walk read the same helper, so the two
-    /// sides of the identity move together whatever the helper answers. These
-    /// cases are the only check this term has.
-    ///
-    /// Each case names what the count is made of, in the order the helper
-    /// returns them: our pawns one rank ahead and two, the king's files that
-    /// hold no pawn at all, the ones that hold an enemy pawn and none of ours,
-    /// and then the enemy pawns one, two and three ranks ahead. The other king
-    /// stands out of the way.
-    #[test]
-    fn a_king_shelters_behind_what_a_hand_count_says_it_does() {
-        for (fen, counts, why) in [
-            // three pawns where a castled king wants them
-            (
-                "k7/8/8/8/8/8/5PPP/6K1 w - - 0 1",
-                [3, 0, 0, 0, 0, 0, 0],
-                "a king on g1 behind f2, g2 and h2",
-            ),
-            // the g pawn one square further on is the far rank rather than
-            // the near one
-            (
-                "k7/8/8/8/8/6P1/5P1P/6K1 w - - 0 1",
-                [2, 1, 0, 0, 0, 0, 0],
-                "a king on g1 with the g pawn on g3",
-            ),
-            // the g file holds no pawn of either colour
-            (
-                "k7/8/8/8/8/8/5P1P/6K1 w - - 0 1",
-                [2, 0, 1, 0, 0, 0, 0],
-                "a king on g1 with no g pawn",
-            ),
-            // the same file with a black pawn on it is half open rather than
-            // open. The pawn is on g7, which is past the three ranks the
-            // storm is followed over, so it is a file and not a storm
-            (
-                "k7/6p1/8/8/8/8/5P1P/6K1 w - - 0 1",
-                [2, 0, 0, 1, 0, 0, 0],
-                "a king on g1 with a black pawn on g7",
-            ),
-            // h2 near, g3 far, and the f file holding a black pawn on f5,
-            // which is a rank further out than the storm reaches
-            (
-                "k7/8/8/5p2/8/6P1/7P/6K1 w - - 0 1",
-                [1, 1, 0, 1, 0, 0, 0],
-                "a king on g1 with the f file gone",
-            ),
-            // an enemy pawn standing on a rank in front of the king is not
-            // cover. It is the storm, counted by the rank it has reached
-            (
-                "k7/8/8/8/8/8/5PpP/6K1 w - - 0 1",
-                [2, 0, 0, 1, 1, 0, 0],
-                "a king on g1 with a black pawn on g2",
-            ),
-            (
-                "k7/8/8/8/8/6p1/5P1P/6K1 w - - 0 1",
-                [2, 0, 0, 1, 0, 1, 0],
-                "a king on g1 with a black pawn on g3",
-            ),
-            (
-                "k7/8/8/8/6p1/8/5P1P/6K1 w - - 0 1",
-                [2, 0, 0, 1, 0, 0, 1],
-                "a king on g1 with a black pawn on g4",
-            ),
-            // two ranks of storm at once, on two files
-            (
-                "k7/8/8/8/7p/6p1/5P1P/6K1 w - - 0 1",
-                [2, 0, 0, 1, 0, 1, 1],
-                "a king on g1 against pawns on g3 and h4",
-            ),
-            // a king in the corner is read against three files, so the f file
-            // it does not stand beside is still counted. Two files would
-            // leave this at nothing
-            (
-                "k7/8/8/8/8/8/6PP/7K w - - 0 1",
-                [2, 0, 1, 0, 0, 0, 0],
-                "a king on h1 behind g2 and h2",
-            ),
-            (
-                "k7/8/8/8/8/8/PPP5/K7 w - - 0 1",
-                [3, 0, 0, 0, 0, 0, 0],
-                "a king on a1 behind a2, b2 and c2",
-            ),
-            // a king off its own ranks has no rank in front of it inside the
-            // masks, so the pawns it left behind are not shelter
-            (
-                "k7/8/8/4K3/8/8/3PPP2/8 w - - 0 1",
-                [0, 0, 0, 0, 0, 0, 0],
-                "a king on e5 with its pawns at home",
-            ),
-            // a pawn on the file stops it counting as open wherever on the
-            // file it stands, so a passed pawn up the board is not a hole
-            // behind the king it left
-            (
-                "k7/6P1/8/8/8/8/8/6K1 w - - 0 1",
-                [0, 0, 2, 0, 0, 0, 0],
-                "a king on g1 whose only pawn is on g7",
-            ),
-            // the ranks in front of a king on the eighth are off the board
-            // rather than round the other side of it
-            (
-                "4K3/8/8/8/8/8/8/k7 w - - 0 1",
-                [0, 0, 3, 0, 0, 0, 0],
-                "a king on e8 with no pawns anywhere",
-            ),
-        ] {
-            let board = Board::from_fen(fen).unwrap();
-            assert_eq!(board.shelter_counts(Color::White), counts, "{}", why);
-        }
-    }
-
-    /// The same reading for black, whose king is measured down the board
-    /// rather than up it.
-    #[test]
-    fn a_black_king_is_measured_down_the_board() {
-        // the rank in front of a king on the first is off the board, and the
-        // three files all hold a white pawn and no black one
-        let board = Board::from_fen("7K/8/8/8/8/8/3PPP2/4k3 b - - 0 1").unwrap();
-        assert_eq!(board.shelter_counts(Color::Black), [0, 0, 0, 3, 0, 0, 0]);
-        // and the storm the other way up: the white pawn on g6 stands two
-        // ranks in front of a black king on g8, and is not its cover
-        let stormed = Board::from_fen("6k1/5ppp/6P1/8/8/8/8/6K1 b - - 0 1").unwrap();
-        assert_eq!(stormed.shelter_counts(Color::Black), [3, 0, 0, 0, 0, 1, 0]);
-    }
-
-    /// Black's count of a position is white's count of its reflection, so the
-    /// two colours are read the same way round.
-    #[test]
-    fn the_two_colours_count_the_same_squares() {
-        let white = Board::from_fen("k7/8/8/5p2/8/6P1/7P/6K1 w - - 0 1").unwrap();
-        let black = Board::from_fen("6k1/7p/6p1/8/5P2/8/8/K7 b - - 0 1").unwrap();
-        assert_eq!(
-            white.shelter_counts(Color::White),
-            black.shelter_counts(Color::Black)
-        );
-        // and the storm half of it, which the pair above leaves at zero
-        let stormed = Board::from_fen("k7/8/8/8/7p/6p1/5P1P/6K1 w - - 0 1").unwrap();
-        let mirrored = Board::from_fen("6k1/5p1p/6P1/7P/8/8/8/K7 b - - 0 1").unwrap();
-        assert_eq!(
-            stormed.shelter_counts(Color::White),
-            mirrored.shelter_counts(Color::Black)
-        );
-    }
-
-    /// Every square names three files, the two corners included, and the
-    /// three are the king's own file and its neighbours wherever there is
-    /// room for them.
-    #[test]
-    fn every_king_square_names_three_files() {
-        for square in 0..64u8 {
-            let files = king_files(square);
-            assert_eq!(files.count_ones(), 3, "the files of {}", square);
-            assert_eq!(
-                files & (1 << (square % 8)),
-                1 << (square % 8),
-                "the king's own file is not among the files of {}",
-                square
-            );
-            assert_eq!(
-                files.trailing_zeros() + 2,
-                7 - files.leading_zeros(),
-                "the files of {} are not three in a row",
-                square
-            );
-        }
-    }
-
-    /// Each mask holds the rank its index names, on those same three files,
-    /// and nothing where the board has run out.
-    #[test]
-    fn the_masks_hold_the_ranks_in_front_of_the_king() {
-        for square in 0..64u8 {
-            let rank = i32::from(square / 8);
-            for (side, forward) in [(Color::White, 1), (Color::Black, -1)] {
-                let i = side as usize;
-                for step in 0..RANKS_AHEAD {
-                    let mask = SHELTER_MASKS.ahead[step][i][square as usize];
-                    let target = rank + forward * (step as i32 + 1);
-                    if !(0..8).contains(&target) {
-                        assert_eq!(mask, 0, "{:?} on {} at {} ahead", side, square, step + 1);
-                        continue;
-                    }
-                    assert_eq!(mask.count_ones(), 3, "{:?} on {}", side, square);
-                    assert_eq!(
-                        files_of(mask),
-                        king_files(square),
-                        "{:?} on {} covers other files",
-                        side,
-                        square
-                    );
-                    let rank_mask = 0xffu64 << (target * 8);
-                    assert_eq!(
-                        mask & rank_mask,
-                        mask,
-                        "{:?} on {} is off its rank",
-                        side,
-                        square
-                    );
-                }
-            }
-        }
-    }
-
-    /// The fold down to a file a bit answers what a walk of the squares does.
-    #[test]
-    fn the_file_fold_answers_a_walk_of_the_squares() {
-        for square in 0..64u8 {
-            assert_eq!(files_of(1u64 << square), 1 << (square % 8), "{}", square);
-        }
-        let board = Board::from_fen("k7/8/8/5p2/8/6P1/7P/6K1 w - - 0 1").unwrap();
-        // white's pawns stand on g3 and h2, and black's on f5
-        assert_eq!(files_of(board.pawns() & board.white), 0b1100_0000);
-        assert_eq!(files_of(board.pawns() & board.black), 0b0010_0000);
     }
 }
 
@@ -5728,327 +4949,6 @@ mod evasion_targets {
             let board = Board::from_fen(fen).unwrap();
             assert!(!board.in_check(), "{fen} is in check");
             assert_eq!(board.evasions(), board.generate_moves(), "{fen}");
-        }
-    }
-}
-
-#[cfg(test)]
-mod pawn_structure {
-    use super::{Board, Color, PAWN_MASKS, ahead_of, files_of, pawn_files, spread};
-    use pretty_assertions::assert_eq;
-
-    /// The counts by hand, position by position, because nothing else pins
-    /// them. The tuner's identity folds a row against the live weights, which
-    /// are zero, so it is blind to a wrong count here, and it stays blind to
-    /// one after a fit: `eval` and the tuner's walk read this same helper, so
-    /// the two sides of the identity move together whatever it answers. These
-    /// cases are the only check this term has.
-    ///
-    /// Each case names the eight counts in the order the helper returns them:
-    /// the passed pawns on the relative second through the relative seventh,
-    /// then the isolated pawns, then the doubled ones. The other king stands
-    /// out of the way.
-    #[test]
-    fn pawns_count_as_a_hand_count_says_they_do() {
-        for (fen, counts, why) in [
-            // a pawn with nothing in front of it anywhere is passed, and a
-            // pawn with no pawn beside it is isolated. The lone pawn is both
-            (
-                "4k3/8/8/8/4P3/8/8/4K3 w - - 0 1",
-                [0, 0, 1, 0, 0, 0, 1, 0],
-                "a white pawn on e4 and no black pawn",
-            ),
-            // an enemy pawn on an adjacent file ahead of it stops it
-            (
-                "4k3/8/8/3p4/4P3/8/8/4K3 w - - 0 1",
-                [0, 0, 0, 0, 0, 0, 1, 0],
-                "the same against a black pawn on d5",
-            ),
-            // level is not ahead. A black pawn beside the white one has
-            // already been passed
-            (
-                "4k3/8/8/8/3pP3/8/8/4K3 w - - 0 1",
-                [0, 0, 1, 0, 0, 0, 1, 0],
-                "the same against a black pawn on d4",
-            ),
-            // the whole file ahead is read and not the next rank or two
-            (
-                "4k3/5p2/8/8/4P3/8/8/4K3 w - - 0 1",
-                [0, 0, 0, 0, 0, 0, 1, 0],
-                "the same against a black pawn on f7",
-            ),
-            // a pawn of ours in front of it stops it too, which is what
-            // leaves the rear of a doubled pair out of the passed count
-            (
-                "4k3/8/8/4P3/4P3/8/8/4K3 w - - 0 1",
-                [0, 0, 0, 1, 0, 0, 2, 1],
-                "white pawns on e4 and e5",
-            ),
-            // a tripled file is two doubled pawns and not one or three
-            (
-                "4k3/8/8/8/4P3/4P3/4P3/4K3 w - - 0 1",
-                [0, 0, 1, 0, 0, 0, 3, 2],
-                "white pawns on e2, e3 and e4",
-            ),
-            // the relative second is a real bucket. A pawn still at home is
-            // passed once the enemy pawns on its three files are gone
-            (
-                "4k3/8/8/8/8/8/4P3/4K3 w - - 0 1",
-                [1, 0, 0, 0, 0, 0, 1, 0],
-                "a white pawn on e2 with no black pawn",
-            ),
-            (
-                "4k3/4P3/8/8/8/8/8/4K3 w - - 0 1",
-                [0, 0, 0, 0, 0, 1, 1, 0],
-                "a white pawn on e7",
-            ),
-            // the stop square is not read, so a blockaded passer is a passer.
-            // On purpose: the stop square is the first thing this term leaves
-            // out, and a later arm has to be able to find the place it goes
-            (
-                "4k3/4n3/4P3/8/8/8/8/4K3 w - - 0 1",
-                [0, 0, 0, 0, 1, 0, 1, 0],
-                "a white pawn on e6 behind a black knight on e7",
-            ),
-            // a pawn two files away is no company
-            (
-                "4k3/8/8/8/8/8/P1P5/4K3 w - - 0 1",
-                [2, 0, 0, 0, 0, 0, 2, 0],
-                "white pawns on a2 and c2",
-            ),
-            (
-                "4k3/8/8/8/8/8/PP6/4K3 w - - 0 1",
-                [2, 0, 0, 0, 0, 0, 0, 0],
-                "white pawns on a2 and b2",
-            ),
-            // the two edge files at once. The file mask is a shift and not a
-            // rotate, so the a file has no neighbour off the left of the byte
-            // and the h file none off the right; a rotate would make each of
-            // these the other's neighbour and leave both counted as company
-            (
-                "4k3/8/8/8/8/8/P6P/4K3 w - - 0 1",
-                [2, 0, 0, 0, 0, 0, 2, 0],
-                "white pawns on a2 and h2",
-            ),
-            // the edge cases the file mask decides. A pawn on the a file is
-            // read against the a and b files and not against the c file, so
-            // stepping the mask in the way `king_files` steps it would let
-            // the pawn on c5 stop this one
-            (
-                "4k3/8/8/1p6/P7/8/8/4K3 w - - 0 1",
-                [0, 0, 0, 0, 0, 0, 1, 0],
-                "a white pawn on a4 against a black pawn on b5",
-            ),
-            (
-                "4k3/8/8/2p5/P7/8/8/4K3 w - - 0 1",
-                [0, 0, 1, 0, 0, 0, 1, 0],
-                "a white pawn on a4 against a black pawn on c5",
-            ),
-            (
-                "4k3/8/8/6p1/7P/8/8/4K3 w - - 0 1",
-                [0, 0, 0, 0, 0, 0, 1, 0],
-                "a white pawn on h4 against a black pawn on g5",
-            ),
-            // from_fen accepts a pawn on either back rank and the search has
-            // to survive one. It has come no ranks or all eight, so it names
-            // none of the six passed buckets, and it still counts toward the
-            // two that read its file
-            (
-                "4k3/8/8/8/8/8/8/3K1P2 w - - 0 1",
-                [0, 0, 0, 0, 0, 0, 1, 0],
-                "a white pawn on f1",
-            ),
-            (
-                "4k1P1/8/8/8/8/8/8/4K3 w - - 0 1",
-                [0, 0, 0, 0, 0, 0, 1, 0],
-                "a white pawn on g8",
-            ),
-        ] {
-            let board = Board::from_fen(fen).unwrap();
-            assert_eq!(board.pawn_structure_counts(Color::White), counts, "{}", why);
-        }
-    }
-
-    /// The same reading for black, whose pawns are measured down the board
-    /// rather than up it. Each case is the reflection of one above, so a
-    /// relative rank read the wrong way up shows as a count in the wrong
-    /// bucket rather than as no count at all.
-    #[test]
-    fn a_black_pawn_is_measured_down_the_board() {
-        for (fen, counts, why) in [
-            (
-                "4k3/8/8/4p3/8/8/8/4K3 w - - 0 1",
-                [0, 0, 1, 0, 0, 0, 1, 0],
-                "a black pawn on e5 and no white pawn",
-            ),
-            (
-                "4k3/8/8/4p3/3P4/8/8/4K3 w - - 0 1",
-                [0, 0, 0, 0, 0, 0, 1, 0],
-                "the same against a white pawn on d4",
-            ),
-            (
-                "4k3/8/8/4p3/4p3/8/8/4K3 w - - 0 1",
-                [0, 0, 0, 1, 0, 0, 2, 1],
-                "black pawns on e4 and e5",
-            ),
-            (
-                "4k3/8/8/8/8/8/4p3/4K3 w - - 0 1",
-                [0, 0, 0, 0, 0, 1, 1, 0],
-                "a black pawn on e2",
-            ),
-            (
-                "4k3/4p3/8/8/8/8/8/4K3 w - - 0 1",
-                [1, 0, 0, 0, 0, 0, 1, 0],
-                "a black pawn on e7",
-            ),
-        ] {
-            let board = Board::from_fen(fen).unwrap();
-            assert_eq!(board.pawn_structure_counts(Color::Black), counts, "{}", why);
-        }
-    }
-
-    /// Black's count of a position is white's count of its reflection, so the
-    /// two colours are read the same way round.
-    #[test]
-    fn the_two_colours_count_the_same_way() {
-        let white = Board::from_fen("4k3/P4p2/8/3P2p1/3P4/PP2p2p/1P6/4K3 w - - 0 1").unwrap();
-        let black = Board::from_fen("4k3/1p6/pp2P2P/3p4/3p2P1/8/p4P2/4K3 w - - 0 1").unwrap();
-        assert_eq!(
-            white.pawn_structure_counts(Color::White),
-            black.pawn_structure_counts(Color::Black)
-        );
-        assert_eq!(
-            white.pawn_structure_counts(Color::Black),
-            black.pawn_structure_counts(Color::White)
-        );
-    }
-
-    /// Nothing but the pawns decides the counts, which is the property the
-    /// pawn hash rests on. The same pawns behind different pieces, and with
-    /// the two kings somewhere else, count the same.
-    #[test]
-    fn nothing_but_the_pawns_is_counted() {
-        let bare = Board::from_fen("4k3/pp3ppp/8/8/8/8/PPP2PP1/4K3 w - - 0 1").unwrap();
-        let full =
-            Board::from_fen("r1bq1rk1/pp3ppp/2n5/8/8/2N5/PPP2PP1/R1BQK2R w KQ - 0 1").unwrap();
-        for color in [Color::White, Color::Black] {
-            assert_eq!(
-                bare.pawn_structure_counts(color),
-                full.pawn_structure_counts(color),
-                "{:?}",
-                color
-            );
-        }
-    }
-
-    /// A pawn's own file and the files beside it, and no more than that. The
-    /// edges are the case: two files there and not three, and not three with
-    /// the middle one stepped in the way `king_files` steps it.
-    #[test]
-    fn a_pawn_names_its_own_file_and_the_ones_beside_it() {
-        for square in 0..64u8 {
-            let file = u32::from(square % 8);
-            let files = pawn_files(square);
-            let expected = if file == 0 || file == 7 { 2 } else { 3 };
-            assert_eq!(files.count_ones(), expected, "the files of {}", square);
-            assert_eq!(
-                files & (1 << file),
-                1 << file,
-                "not its own file: {}",
-                square
-            );
-            assert_eq!(
-                files.trailing_zeros() + expected - 1,
-                7 - files.leading_zeros(),
-                "the files of {} are not in a row",
-                square
-            );
-        }
-    }
-
-    /// Each front span holds every rank ahead of the pawn and no rank level
-    /// with it or behind it, on the files the pawn names and no others.
-    #[test]
-    fn the_front_span_is_the_files_beside_the_pawn_on_the_ranks_ahead() {
-        for square in 0..64u8 {
-            let rank = i32::from(square / 8);
-            for (side, forward) in [(Color::White, 1), (Color::Black, -1)] {
-                let span = PAWN_MASKS.front_span[side as usize][square as usize];
-                let ranks = if forward == 1 { 7 - rank } else { rank };
-                assert_eq!(
-                    span.count_ones(),
-                    pawn_files(square).count_ones() * ranks as u32,
-                    "{:?} on {}",
-                    side,
-                    square
-                );
-                if span != 0 {
-                    assert_eq!(
-                        files_of(span),
-                        pawn_files(square),
-                        "{:?} on {} covers other files",
-                        side,
-                        square
-                    );
-                }
-                for step in 0..8i32 {
-                    let on_rank = span & (0xffu64 << (step * 8));
-                    let ahead = (step - rank) * forward > 0;
-                    assert_eq!(
-                        on_rank != 0,
-                        ahead,
-                        "{:?} on {} holds rank {}",
-                        side,
-                        square,
-                        step
-                    );
-                }
-            }
-        }
-    }
-
-    /// The file ahead is the front span with the neighbouring files taken
-    /// off, which is the relationship the two tables are built to have. Kept
-    /// as its own table rather than masked out at the leaf, so this is what
-    /// says the two agree.
-    #[test]
-    fn the_file_ahead_is_the_front_span_on_the_pawns_own_file() {
-        for square in 0..64u8 {
-            let own = spread(1u8 << (square % 8));
-            for side in [Color::White, Color::Black] {
-                let i = side as usize;
-                assert_eq!(
-                    PAWN_MASKS.file_ahead[i][square as usize],
-                    PAWN_MASKS.front_span[i][square as usize] & own,
-                    "{:?} on {}",
-                    side,
-                    square
-                );
-            }
-        }
-    }
-
-    /// The forward fill holds every square in front of a pawn and never the
-    /// pawn itself, which is what leaves a lone pawn undoubled.
-    #[test]
-    fn the_fill_starts_one_rank_in_front_of_the_pawn() {
-        for square in 0..64u8 {
-            let pawn = 1u64 << square;
-            for side in [Color::White, Color::Black] {
-                let filled = ahead_of(pawn, side);
-                assert_eq!(
-                    filled & pawn,
-                    0,
-                    "{:?} on {} is in its own fill",
-                    side,
-                    square
-                );
-                assert_eq!(
-                    filled, PAWN_MASKS.file_ahead[side as usize][square as usize],
-                    "{:?} on {}",
-                    side, square
-                );
-            }
         }
     }
 }
