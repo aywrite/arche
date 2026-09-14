@@ -6,9 +6,12 @@ use arche_core::Clock;
 use arche_core::Color;
 use std::time::Duration;
 
-/// Held back from every budget, so that we are not still thinking when the
-/// clock we were given has already run out.
-const MOVE_OVERHEAD_MS: u64 = 50;
+/// What the `Move Overhead` option starts at, in milliseconds. It is held back
+/// from every budget, so that we are not still thinking when the clock we were
+/// given has already run out. Fifty covers a local interface and a pipe. A
+/// network between the two costs more than that, which is why the amount is
+/// the interface's to set.
+pub const DEFAULT_MOVE_OVERHEAD_MS: u64 = 50;
 
 /// Moves we plan for when the time control does not say how many are left.
 ///
@@ -73,11 +76,16 @@ impl TimeControl {
 
     /// How long to search for, or `None` to search without a time limit.
     ///
+    /// The overhead is held back from whatever the clock words work out to.
+    /// It arrives from the caller rather than living here, because it is a
+    /// setting of the session and everything else in this struct is a word
+    /// off the `go` line.
+    ///
     /// Which kind of clock it is goes with it: a move time is a time the
     /// interface named, and everything else here is a share this side worked
     /// out for itself from a clock that keeps running. Only the second is a
     /// guess the search may spend less of, which is what `Clock` is for.
-    pub fn budget(&self) -> Option<Clock> {
+    pub fn budget(&self, overhead: u64) -> Option<Clock> {
         if self.infinite {
             return None;
         }
@@ -89,8 +97,7 @@ impl TimeControl {
             (None, None, Some(increment)) => percent(increment, INCREMENT_PERCENT),
             (None, None, None) => return None,
         };
-        let budget =
-            Duration::from_millis(spend.saturating_sub(MOVE_OVERHEAD_MS).max(MIN_BUDGET_MS));
+        let budget = Duration::from_millis(spend.saturating_sub(overhead).max(MIN_BUDGET_MS));
         Some(match self.move_time {
             Some(_) => Clock::Fixed(budget),
             None => Clock::Share(budget),
@@ -121,10 +128,14 @@ fn percent(value: u64, percent: u64) -> u64 {
 mod tests {
     use super::*;
 
-    fn millis(control: &TimeControl) -> Option<u64> {
+    fn millis_at(control: &TimeControl, overhead: u64) -> Option<u64> {
         control
-            .budget()
+            .budget(overhead)
             .map(|clock| clock.deadline().as_millis() as u64)
+    }
+
+    fn millis(control: &TimeControl) -> Option<u64> {
+        millis_at(control, DEFAULT_MOVE_OVERHEAD_MS)
     }
 
     fn clock(time: u64) -> TimeControl {
@@ -167,11 +178,11 @@ mod tests {
                 move_time: Some(500),
                 ..Default::default()
             }
-            .budget(),
+            .budget(DEFAULT_MOVE_OVERHEAD_MS),
             Some(Clock::Fixed(Duration::from_millis(450)))
         );
         assert_eq!(
-            clock(60_000).budget(),
+            clock(60_000).budget(DEFAULT_MOVE_OVERHEAD_MS),
             Some(Clock::Share(Duration::from_millis(2_950)))
         );
         assert_eq!(
@@ -179,9 +190,25 @@ mod tests {
                 increment: Some(1_000),
                 ..Default::default()
             }
-            .budget(),
+            .budget(DEFAULT_MOVE_OVERHEAD_MS),
             Some(Clock::Share(Duration::from_millis(700)))
         );
+    }
+
+    #[test]
+    fn the_overhead_is_whatever_the_option_was_set_to() {
+        // every other expectation here is written against the default. An
+        // interface reaching us over a network sets a larger one, and every
+        // budget moves by the difference rather than by a share of it
+        assert_eq!(millis_at(&clock(60_000), 0), Some(3_000));
+        assert_eq!(millis_at(&clock(60_000), 500), Some(2_500));
+        let move_time = TimeControl {
+            move_time: Some(500),
+            ..Default::default()
+        };
+        assert_eq!(millis_at(&move_time, 0), Some(500));
+        // and an overhead larger than the budget still leaves a move to play
+        assert_eq!(millis_at(&move_time, 5_000), Some(MIN_BUDGET_MS));
     }
 
     #[test]

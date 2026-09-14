@@ -55,9 +55,9 @@ the engine plays. Roughly in the order they look worth doing.
   cannot do is choose between two fits of one term: it favoured the first mobility fit
   while covering zero, and the games are what ranked the two
 - the rest of the uci protocol
-  - the only options advertised are `Hash`, the `Clear Hash` button and a `Threads` fixed at
-    one, so everything else an interface might set, `Ponder` among them, is refused rather
-    than acted on
+  - the only options advertised are `Hash`, the `Clear Hash` button, a `Threads` fixed at
+    one and `Move Overhead`, so everything else an interface might set, `Ponder` among
+    them, is refused rather than acted on
   - `ponderhit`, `debug` and `register` are not handled, so pondering is still out of reach
     even though `stop` is answered now
   - a move in a `position` line that cannot be played is reported the same way whether
