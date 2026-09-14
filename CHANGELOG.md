@@ -2,6 +2,48 @@
 
 All notable changes to this project will be documented in this file.
 
+## [0.4.4] - 2026-09-14
+
+### Features
+
+- *(eval)* Add a pawn structure term behind a pawn hash [bench 3882989]
+- *(eval)* Name the tuner's sealed games rather than drawing them from the key [bench 3882989]
+- *(eval)* Fit the sixteen pawn structure weights to our own games [bench 4066438] [elo +57 ±25 (sprt [0, 10] passed, 500 games, 10+0.1, vs 062fd3c259ddf12a7aead948c00a9be3a634e857)]
+- *(eval)* Add an insufficient material rule returning zero [bench 4089373] [elo +8 ±12 (sprt [-10, 0] passed, 1500 games, 10+0.1, vs acf076d)]
+- *(uci)* Budget a twentieth of the clock when no move count is given [elo +58 ±17 (sprt [0, 10] passed, 1000 games, 10+0.1, vs 561ad40)]
+- *(eval)* Hold the pawn structure weights through a fit [bench 4089373]
+- *(eval)* Refit the eight mobility weights on the whole archive [bench 3868987] [elo +76 ±25 (sprt [0, 10] passed, 500 games, 10+0.1, vs 2df11cb5b92afbea0561e5b34073230c262a220d)]
+- *(uci)* Add a Move Overhead option in place of the constant fifty
+
+### Bug Fixes
+
+- *(search)* Answer a move at a root whose fifty move counter has expired [bench 4089373]
+- *(eval)* Tell a seal drawn on the wrong archive from a pair with no rows [bench 4089373]
+- *(search)* Hold a line of check extensions to the ply rail [bench 3868987]
+
+### Refactor
+
+- *(eval)* Move each leaf term into a module of its own under eval/ [bench 3868987]
+
+### Documentation
+
+- *(eval)* Take a file the reader cannot open out of the mobility comment [bench 3868987]
+
+### Development
+
+- *(workspace)* Build for x86-64-v2 by default
+- *(release)* Ship the v2 build under the plain name
+- *(ci)* Have the book table say what commit its books come from
+- *(ci)* Take the match tools from the mache action instead of the tree
+- *(ci)* Point the match documentation at the tool that reads the games
+- *(docs)* Bring the readme, the roadmap and the map up to date with the code [bench 3868987]
+- *(bench)* Let the named seal reach the labelling, not only the fit
+- *(ci)* Read the published image's version, and pin the last loose action
+- *(docs)* Correct four comments that describe a tree the code has left [bench 3868987]
+- *(tactics)* Check a bm names a move the generator offers
+- *(ci)* Put the Cinnamon paragraph back over the Cinnamon block
+- *(tactics)* Write the strategy fixture as bytes so windows matches the pin
+
 ## [0.4.3] - 2026-09-12
 
 ### Features
