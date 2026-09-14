@@ -91,7 +91,10 @@ The binary is written to `target/release/arche`. The engine allocates a 256MB tr
 table on startup; `setoption name Hash value <megabytes>` gives it one of another size, between
 1 and 16384MB, and `setoption name Clear Hash` empties the one it has without resizing it. It
 searches on one thread and says so, so a `Threads` of anything but one is reported and then
-ignored.
+ignored. `setoption name Move Overhead value <milliseconds>` says how much of each budget to
+hold back for the wait between the search answering and the interface having the move. It
+takes 0 to 5000 and starts at 50, which suits an interface on this machine rather than one
+across a network.
 
 ## Strength
 

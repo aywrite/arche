@@ -4,7 +4,7 @@
 use crate::command::{Command, Keyword};
 use crate::params::{Param, Params};
 use crate::session::{self, SessionControl, SharedWriter, first_word, report_panics_to};
-use crate::time_control::TimeControl;
+use crate::time_control::{DEFAULT_MOVE_OVERHEAD_MS, TimeControl};
 use arche_core::Color;
 use arche_core::Engine;
 use arche_core::Limits;
@@ -50,6 +50,25 @@ const _: () = assert!(HASH_DEFAULT_MB >= HASH_MIN_MB && HASH_DEFAULT_MB <= HASH_
 /// nearest size we do offer is what it gets.
 fn clamp_hash(megabytes: u64) -> u64 {
     megabytes.clamp(HASH_MIN_MB, HASH_MAX_MB)
+}
+
+/// The `Move Overhead` option's range, in milliseconds. Zero is the bottom,
+/// since an interface on the same machine as the engine may cost nothing
+/// worth holding back. Five seconds is the top, which is more than a network
+/// needs and more than a fast time control can spare, so an interface that
+/// asks for it at 1+0 gets the floor a spent clock gets rather than a search.
+const OVERHEAD_MIN_MS: u64 = 0;
+const OVERHEAD_MAX_MS: u64 = 5_000;
+
+// the same build time check the Hash default gets, for the same reason. Only
+// the top of the range: a u64 cannot fall below a minimum of zero, and the
+// lint says so before the assertion would
+const _: () = assert!(DEFAULT_MOVE_OVERHEAD_MS <= OVERHEAD_MAX_MS);
+
+/// A `Move Overhead` held to the range the handshake advertises, the way a
+/// `Hash` is.
+fn clamp_overhead(millis: u64) -> u64 {
+    millis.clamp(OVERHEAD_MIN_MS, OVERHEAD_MAX_MS)
 }
 
 /// What kind of thing an option is, as the handshake says it.
@@ -98,6 +117,16 @@ const OPTIONS: &[UciOption] = &[
             max: 1,
         },
     },
+    // how much of each budget goes to everything between deciding on a move
+    // and the interface having it
+    UciOption {
+        name: "Move Overhead",
+        kind: OptionKind::Spin {
+            default: DEFAULT_MOVE_OVERHEAD_MS,
+            min: OVERHEAD_MIN_MS,
+            max: OVERHEAD_MAX_MS,
+        },
+    },
 ];
 
 impl UciOption {
@@ -118,6 +147,11 @@ pub struct UCI<T: Engine, W: Write> {
     author: String,
     name: String,
     version: String,
+
+    /// What the `Move Overhead` option is set to, held back from every budget
+    /// a `go` works out. It outlives a search and a game, since it describes
+    /// the connection rather than the position.
+    move_overhead: u64,
 
     engine: T,
     out: W,
@@ -163,6 +197,7 @@ impl<T: Engine, W: Write> UCI<T, W> {
             author: env!("CARGO_PKG_AUTHORS").to_string(),
             name: env!("CARGO_PKG_NAME").to_string(),
             version: env!("CARGO_PKG_VERSION").to_string(),
+            move_overhead: DEFAULT_MOVE_OVERHEAD_MS,
             engine,
             out,
         }
@@ -308,6 +343,7 @@ impl<T: Engine, W: Write> UCI<T, W> {
         match name.as_str() {
             "Hash" => self.set_hash(&params),
             "Threads" => self.set_threads(&params),
+            "Move Overhead" => self.set_move_overhead(&params),
             // a button is pressed rather than set, so there is no value to
             // read and nothing to say back. The table is emptied and the
             // rest of the search's memory is left alone: the killers and the
@@ -375,6 +411,32 @@ impl<T: Engine, W: Write> UCI<T, W> {
         Ok(())
     }
 
+    /// How much of each budget to hold back for everything between the search
+    /// answering and the interface having the move.
+    fn set_move_overhead(&mut self, params: &Params) -> Result<(), String> {
+        // parsed rather than counted, which is where this parts from set_hash.
+        // A count reads a value below zero as a spent clock, and a zero is
+        // inside this range, so a negative overhead would be taken as none at
+        // all without a word said. The word goes with the number for the
+        // reason set_hash reads one
+        let (word, millis) = match (params.value("value"), params.parse::<u64>("value")) {
+            (Some(word), Param::Read(millis)) => (word, millis),
+            (_, Param::Unreadable(word)) => {
+                return Err(format!("unrecognised Move Overhead value: {}", word));
+            }
+            _ => return Err("Move Overhead was sent without a value".to_string()),
+        };
+        let held = clamp_overhead(millis);
+        if held != millis {
+            self.say(format_args!(
+                "info string Move Overhead {} is outside {} to {}, using {}",
+                word, OVERHEAD_MIN_MS, OVERHEAD_MAX_MS, held
+            ));
+        }
+        self.move_overhead = held;
+        Ok(())
+    }
+
     /// A move that cannot be played leaves the position at the last one that
     /// could be, since the interface is expected to send the whole line again
     /// rather than to carry on from a position we rejected.
@@ -426,7 +488,11 @@ impl<T: Engine, W: Write> UCI<T, W> {
     /// rides into the search, and a go that holds its answer waits here
     /// for the stop that releases it.
     fn parse_go(&mut self, line: &str, control: &SessionControl) {
-        let go = Go::of(&Params::of(line), self.engine.active_color());
+        let go = Go::of(
+            &Params::of(line),
+            self.engine.active_color(),
+            self.move_overhead,
+        );
         let sp = SearchParameters::stoppable(go.depth, go.limits(), control.handle());
 
         // the closure writes while the engine is borrowed for the search, so
@@ -457,7 +523,8 @@ impl<T: Engine, W: Write> UCI<T, W> {
     }
 }
 
-/// What a `go` asked for, read once from the line. Each part is absent when
+/// What a `go` asked for, read once from the line, beside the one session
+/// setting its budget depends on. Each part read from the line is absent when
 /// the line did not name it.
 struct Go {
     /// The depth asked for. A depth past what the engine will search is a
@@ -472,10 +539,14 @@ struct Go {
     /// zero, which would stop the search before it had a move to report.
     nodes: Option<u64>,
     time: TimeControl,
+    /// What the session's `Move Overhead` stood at when the `go` arrived. Not
+    /// a word off the line like the rest, but the budget is worked out here
+    /// and this is one of the numbers it is worked out from.
+    overhead: u64,
 }
 
 impl Go {
-    fn of(params: &Params, color: Color) -> Self {
+    fn of(params: &Params, color: Color, overhead: u64) -> Self {
         Go {
             depth: params
                 .count("depth")
@@ -483,6 +554,7 @@ impl Go {
                 .map(|depth| depth.try_into().unwrap_or(u8::MAX).min(arche_core::MAX_PLY)),
             nodes: params.count("nodes").read(),
             time: TimeControl::of(params, color),
+            overhead,
         }
     }
 
@@ -490,7 +562,7 @@ impl Go {
     /// called, which `parse_go` does as the command arrives, and the search
     /// reports its elapsed time against the same start.
     fn limits(&self) -> Limits {
-        Limits::starting_now(self.time.budget(), self.nodes)
+        Limits::starting_now(self.time.budget(self.overhead), self.nodes)
     }
 
     /// Whether this `go` must sit on its answer until a `stop` arrives.
@@ -505,7 +577,7 @@ impl Go {
         self.time.infinite
             || (self.depth.is_none()
                 && self.nodes.unwrap_or(u64::MAX) == u64::MAX
-                && self.time.budget().is_none())
+                && self.time.budget(self.overhead).is_none())
     }
 }
 
@@ -850,7 +922,7 @@ mod tests {
         uci.handle("uci");
         let said = said(&uci);
         let lines: Vec<&str> = said.lines().collect();
-        assert_eq!(lines.len(), 6);
+        assert_eq!(lines.len(), 7);
         assert!(lines[0].starts_with("id name arche "));
         assert!(lines[1].starts_with("id author "));
         // the default is the engine's own, so an interface that sends no
@@ -864,7 +936,11 @@ mod tests {
             lines[4],
             "option name Threads type spin default 1 min 1 max 1"
         );
-        assert_eq!(lines[5], "uciok");
+        assert_eq!(
+            lines[5],
+            "option name Move Overhead type spin default 50 min 0 max 5000"
+        );
+        assert_eq!(lines[6], "uciok");
     }
 
     #[test]
@@ -1122,6 +1198,72 @@ go depth 3
     }
 
     #[test]
+    fn the_move_overhead_the_option_sets_is_held_back_from_the_budget() {
+        // the option through a whole session rather than through budget
+        // alone: what a setoption sets is what the go after it holds back
+        for (overhead, budget) in [(0, 500), (50, 450), (200, 300)] {
+            let asked = asked_of_engine(&format!(
+                "setoption name Move Overhead value {}\ngo movetime 500",
+                overhead
+            ));
+            assert_eq!(
+                asked.limits.clock(),
+                Some(Clock::Fixed(Duration::from_millis(budget))),
+                "overhead {}",
+                overhead
+            );
+        }
+    }
+
+    #[test]
+    fn a_move_overhead_inside_the_range_is_taken_in_silence() {
+        let mut uci = uci();
+        assert!(uci.handle("setoption name Move Overhead value 200"));
+        assert_eq!(uci.move_overhead, 200);
+        assert_eq!(said(&uci), "");
+    }
+
+    #[test]
+    fn a_move_overhead_outside_the_range_offered_is_clamped_and_said_back() {
+        assert_eq!(clamp_overhead(0), 0);
+        assert_eq!(clamp_overhead(50), 50);
+        assert_eq!(clamp_overhead(99999), 5000);
+        assert_eq!(clamp_overhead(u64::MAX), 5000);
+
+        let mut uci = uci();
+        assert!(uci.handle("setoption name Move Overhead value 99999"));
+        assert_eq!(
+            said(&uci),
+            "info string Move Overhead 99999 is outside 0 to 5000, using 5000\n"
+        );
+        assert_eq!(uci.move_overhead, 5000);
+    }
+
+    #[test]
+    fn a_move_overhead_that_cannot_be_read_leaves_the_one_in_force() {
+        for line in [
+            "setoption name Move Overhead value",
+            "setoption name Move Overhead value soon",
+            // below zero is outside the range advertised rather than a spent
+            // clock, so it is refused instead of being taken as no overhead
+            "setoption name Move Overhead value -100",
+        ] {
+            let mut uci = uci();
+            // set first, so what is kept is the overhead in force rather than
+            // the default it happened to start at
+            uci.handle("setoption name Move Overhead value 200");
+            assert!(uci.handle(line));
+            assert_eq!(uci.move_overhead, 200, "{}", line);
+            assert!(
+                said(&uci).starts_with("info string "),
+                "{}: {}",
+                line,
+                said(&uci)
+            );
+        }
+    }
+
+    #[test]
     fn an_option_we_do_not_have_is_reported_by_name() {
         let mut uci = uci();
         assert!(uci.handle("setoption name Nonsense value 1"));
@@ -1185,6 +1327,16 @@ go depth 3
         let mut uci = uci();
         assert!(uci.handle("setoption"));
         assert!(said(&uci).starts_with("info string setoption without an option name"));
+    }
+
+    #[test]
+    fn a_new_game_keeps_the_move_overhead_it_was_given() {
+        // it describes the connection rather than the position, so a new game
+        // is not a reason to forget it, and neither is the table size
+        let mut uci = uci();
+        uci.handle("setoption name Move Overhead value 200");
+        assert!(uci.handle("ucinewgame"));
+        assert_eq!(uci.move_overhead, 200);
     }
 
     #[test]
@@ -1280,7 +1432,7 @@ go depth 3
         assert_eq!(control.time, Some(0));
         assert_eq!(control.increment, Some(0));
         assert!(
-            control.budget().is_some(),
+            control.budget(DEFAULT_MOVE_OVERHEAD_MS).is_some(),
             "an unreadable clock must still bound the search"
         );
     }
@@ -1299,7 +1451,7 @@ go depth 3
             ("go infinite", None),
         ] {
             assert_eq!(
-                Go::of(&Params::of(line), Color::White).depth,
+                Go::of(&Params::of(line), Color::White, DEFAULT_MOVE_OVERHEAD_MS).depth,
                 depth,
                 "{}",
                 line
@@ -1705,9 +1857,11 @@ go depth 3
                 "name",
                 "value",
                 "Hash",
-                // the word an option name runs over, so a generated
-                // setoption can reach the phrase the name is read as
+                // the words an option name runs over, so a generated
+                // setoption can reach the phrases the names are read as
                 "Clear",
+                "Move",
+                "Overhead",
                 "Threads",
                 "startpos",
                 "fen",
@@ -2114,7 +2268,9 @@ go depth 3
 
     #[test]
     fn what_holds_its_answer_is_what_nothing_bounds() {
-        let holds = |line: &str| Go::of(&Params::of(line), Color::White).holds_its_answer();
+        let holds = |line: &str| {
+            Go::of(&Params::of(line), Color::White, DEFAULT_MOVE_OVERHEAD_MS).holds_its_answer()
+        };
         assert!(holds("go infinite"));
         assert!(holds("go"));
         // infinite outranks anything sent beside it, as the protocol says
@@ -2125,5 +2281,13 @@ go depth 3
         assert!(holds("go nodes 99999999999999999999999"));
         assert!(!holds("go movetime 500"));
         assert!(!holds("go wtime 1000"));
+        // the overhead shrinks a budget and never takes one away, so a go the
+        // clock bounds stays bounded however much of it is held back
+        let held_back = |line: &str| {
+            Go::of(&Params::of(line), Color::White, OVERHEAD_MAX_MS).holds_its_answer()
+        };
+        assert!(!held_back("go movetime 500"));
+        assert!(!held_back("go wtime 1000"));
+        assert!(held_back("go infinite"));
     }
 }
