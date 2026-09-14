@@ -1300,7 +1300,11 @@ impl AlphaBeta {
         let in_check = self.board.in_check();
         // kept past the stand pat for the margin below: a side in check has
         // none, which is what exempts its evasions from the margin
-        let standing = if in_check { None } else { Some(self.eval()) };
+        let standing = if in_check {
+            None
+        } else {
+            Some(crate::eval::eval_lazy(&self.board, &mut self.caches, beta))
+        };
         if let Some(score) = standing {
             if score >= beta {
                 return Ok(Value::clean(score));
