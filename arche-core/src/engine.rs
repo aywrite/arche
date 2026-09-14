@@ -20,19 +20,20 @@ use std::sync::Arc;
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::time;
 
-/// The rail a requested depth is held to, quiescence stops at, and the
+/// The rail a requested depth is held to, every search stops at, and the
 /// reported line is walked to. It is also how long the killer table is, so
-/// a node past it orders its quiet moves without one.
+/// a node past it would order its quiet moves without one.
 ///
-/// Not a bound on every line: a chain of check extensions can carry the
-/// full width search past any constant, and what really ends one is the
-/// repetition and fifty move rules. It is bounded well inside the two
-/// things that would break if a line outran them: the history ring, which
-/// holds a thousand and twenty four plies less the fifty move window, and
-/// the mate score window, which begins a thousand under the mate score.
-/// Sixty four would have fitted as comfortably; a hundred and twenty eight
-/// is bought because moving it later is a play change with a match behind
-/// it, and this is enough that it need never move again.
+/// A bound the full width search is told rather than left to reach: the
+/// check extension holds a node's depth where it was, so a line of checks
+/// is not ended by the depth running out, and `alpha_beta` ends one here.
+/// The rail is set well inside the two things that would break if a line
+/// outran them: the history ring, which holds a thousand and twenty four
+/// plies less the fifty move window, and the mate score window, which
+/// begins a thousand under the mate score. Sixty four would have fitted as
+/// comfortably; a hundred and twenty eight is bought because moving it
+/// later is a play change with a match behind it, and this is enough that
+/// it need never move again.
 pub const MAX_PLY: u8 = 128;
 // the root deepens by one more when it is in check, so a depth held to the
 // rail has to leave room for that inside a byte. A rail raised past this
@@ -1109,12 +1110,12 @@ impl AlphaBeta {
     }
 
     /// The ply the quiet memories are indexed by at this node, or none when
-    /// they are not consulted: the configuration has them off, or a chain of
-    /// check extensions has carried the line past the killer table. The rail
-    /// bounds quiescence and the reported line, and it does not bound a full
-    /// width line, so nothing proves the second case unreachable, though no
-    /// measured run has crossed it. A node past the rail orders the way a
-    /// node did before the memories arrived.
+    /// the configuration has them off or the ply is past the killer table.
+    /// The rail bounds a full width line as well as a capture search, so a
+    /// node a search reaches stands inside the table and the second test
+    /// never fires. It is what makes the index safe here rather than at
+    /// every caller, and a node past the rail would order the way a node
+    /// did before the memories arrived rather than reach off the end.
     fn memory_ply(&self) -> Option<usize> {
         if !self.config.move_memory {
             return None;
@@ -1878,6 +1879,20 @@ impl AlphaBeta {
         }
         if self.board.has_repeated() {
             return Ok(Value::tainted(0));
+        }
+        // The extension below holds a node's depth where it was, so a
+        // falling depth is not what ends a line of checks. What can end one
+        // is the repetition and fifty move rules, and neither is bound to
+        // fire first: a chain that captures keeps resetting the counter,
+        // and one that never repeats is never caught by the other. So a
+        // line can reach the ply a mate score stops being told from an eval
+        // by, and the ring a repetition is read out of, and the rail stops
+        // it here instead. The answer is the one quiescence gives at its
+        // own rail: a static eval, clean because it is a fact about the
+        // position. It gives up the mate a node standing here may be in,
+        // which is the trade the capture search already makes.
+        if self.board.line_ply >= MAX_PLY as usize {
+            return Ok(Value::clean(self.eval()));
         }
         let mut taint = Taint::default();
         if in_check {
@@ -3374,6 +3389,46 @@ mod search {
         let game = Board::from_fen("3R2k1/5ppp/8/8/8/8/8/6K1 b - - 0 1").unwrap();
         let mut e = engine(game);
         assert!(matches!(e.search(u8::MAX), SearchOutcome::GameOver));
+    }
+
+    /// The position the two below start from: black to move and in check,
+    /// so the extension fires at the first node either of them searches,
+    /// and the king has h7 to step out to, so there is a tree under it.
+    const IN_CHECK: &str = "3R2k1/5pp1/7p/8/8/8/8/6K1 b - - 0 1";
+
+    #[test]
+    fn a_full_width_line_stops_at_the_rail() {
+        // a node standing on the rail answers from the static eval, and
+        // answers from it whatever depth it still holds, which is the
+        // depth a line of checks would have left it
+        let mut e = engine(Board::from_fen(IN_CHECK).unwrap());
+        assert!(e.board.in_check());
+        e.board.line_ply = MAX_PLY as usize;
+
+        let Ok(railed) = e.alpha_beta(Score::MIN + 1, Score::MAX - 1, 4, true) else {
+            panic!("an unlimited search aborted");
+        };
+        assert_eq!(e.nodes, 1, "the node on the rail searched on");
+        assert_eq!(railed.score, e.eval());
+        // the one judgement in the rail: a static eval consulted no path
+        assert!(!railed.tainted);
+    }
+
+    #[test]
+    fn the_ply_under_the_rail_is_searched() {
+        // the boundary from the other side. The ply under the rail
+        // searches, and the one evasion it has is the node that rails, so
+        // the two of them are the whole count: a rail a ply early would
+        // answer here instead, and no rail at all would search on.
+        let mut e = engine(Board::from_fen(IN_CHECK).unwrap());
+        e.board.line_ply = MAX_PLY as usize - 1;
+
+        assert!(
+            e.alpha_beta(Score::MIN + 1, Score::MAX - 1, 4, true)
+                .is_ok(),
+            "an unlimited search aborted"
+        );
+        assert_eq!(e.nodes, 2, "the ply under the rail and the one it rails");
     }
 
     #[test]
@@ -5186,12 +5241,13 @@ mod search {
     }
 
     #[test]
-    fn a_line_past_the_rail_orders_without_the_killers() {
-        // the killer table is as long as the rail, and a full width line is
-        // not held to it: a chain of check extensions keeps the depth where
-        // it was and can carry a node past. The ply is refused there rather
-        // than indexed with, and this is what says so, since a bench at
-        // depth seven never gets near it
+    fn the_quiet_memories_refuse_a_ply_past_the_rail() {
+        // the killer table is as long as the rail, and every search stops
+        // at the rail, so no node one reaches indexes past the table. The
+        // ply is refused rather than indexed with anyway, which is what
+        // makes the index safe here rather than at every caller, and this
+        // is what says so, from a ply set by hand because a search no
+        // longer arrives at one
         let mut e = remembering(Board::new());
         assert_eq!(e.memory_ply(), Some(0));
         e.board.line_ply = MAX_PLY as usize - 1;
