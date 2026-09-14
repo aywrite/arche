@@ -203,12 +203,14 @@ def written(tmp_path, monkeypatch, text=None):
     """Run the script over a fixture, with the pin and the theme counts moved
     to what the fixture is, and give back what it wrote."""
     text = source() if text is None else text
+    # the script pins its source by the bytes on disk, so write those bytes
+    # rather than let a windows text write turn every newline into a carriage
+    # return and a newline the pin was not taken over
+    raw = text.encode("utf-8")
     source_file = tmp_path / "sts.epd"
-    source_file.write_text(text, encoding="utf-8")
+    source_file.write_bytes(raw)
     monkeypatch.setattr(
-        build_strategy,
-        "SOURCE_SHA256",
-        hashlib.sha256(text.encode("utf-8")).hexdigest(),
+        build_strategy, "SOURCE_SHA256", hashlib.sha256(raw).hexdigest()
     )
     monkeypatch.setattr(build_strategy, "THEMES", {"Undermine": 1})
     output = tmp_path / "strategy.epd"
