@@ -228,6 +228,39 @@ pub(crate) fn eval_cached(board: &Board, caches: &mut Caches) -> Score {
     sum(board, caches)
 }
 
+/// How far above beta the rest of the score has to stand before the mobility
+/// term is left out of it.
+pub(crate) const LAZY_MARGIN: i32 = 200;
+
+/// The score, or a score without the mobility term when the position stands
+/// far enough above `beta` that the term was not going to decide anything.
+///
+/// Every other part of the evaluation is either incremental or remembered, so
+/// the score without mobility costs a taper and nothing else, and mobility is
+/// the one term a leaf pays for in full. Where the rest of the score already
+/// clears beta by [`LAZY_MARGIN`] the stand pat was going to cut whatever
+/// mobility said, so the term is not counted and the partial score is what
+/// the node answers with.
+///
+/// This is not [`eval`]. The score it returns where it skips is not the score
+/// the position has, so a node that takes this reports a bound rather than an
+/// evaluation, and the tree is not the tree the exact score would search.
+/// Only the search calls it, and only at the stand pat; the tuner, the
+/// instruments and every other reader still ask [`eval`].
+pub(crate) fn eval_lazy(board: &Board, caches: &mut Caches, beta: Score) -> Score {
+    if board.drawn_by_material() {
+        return 0;
+    }
+    let rest = caches.shelter(board) + caches.pawn_structure(board);
+    let partial = board.eval.score(board.active_color, rest);
+    if i32::from(partial) - LAZY_MARGIN >= i32::from(beta) {
+        return partial;
+    }
+    board
+        .eval
+        .score(board.active_color, mobility::fold(board) + rest)
+}
+
 /// The evaluation's incremental state, hosted by the board and kept in step
 /// by being told about every piece placed, removed and relocated.
 #[derive(Debug, Copy, Clone, PartialEq, Eq)]
