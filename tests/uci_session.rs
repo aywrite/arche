@@ -364,6 +364,13 @@ fn a_setting_that_cannot_be_read_is_refused_on_stderr() {
             &["reductions", "every", "abc"],
             "unrecognised reductions every: abc",
         ),
+        // the terms argument runs no search, so it has no rate to be given
+        // a word for. Its suite is the setting that can fail to be read, and
+        // it is refused the same way
+        (
+            &["terms", "epd", "no/such/file.epd"],
+            "unrecognised terms epd: no/such/file.epd",
+        ),
     ] {
         let out = run_to_end(arguments);
         assert_eq!(out.status.code(), Some(2), "{:?}", arguments);

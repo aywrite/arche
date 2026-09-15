@@ -371,6 +371,47 @@ impl TermSettings {
 mod tests {
     use super::*;
 
+    /// The positions of a checked-in suite, read the way the argument reads
+    /// one, for a test to hold what the argument read against.
+    fn from_file(path: &str) -> Vec<bench::Position> {
+        bench::parse_epd(&std::fs::read_to_string(path).expect(path))
+    }
+
+    /// A file that opens and holds no position, which is the third way a
+    /// file can fail to be a suite. Nothing checked in is one, so it is
+    /// written for the test that asks and removed when that test is done.
+    /// The name carries the test's so two tests running at once do not share
+    /// a file.
+    struct Unpositioned {
+        path: String,
+    }
+
+    impl Unpositioned {
+        fn written(test: &str) -> Self {
+            let path = std::env::temp_dir().join(format!(
+                "arche-{}-{}-unpositioned.epd",
+                test,
+                std::process::id()
+            ));
+            std::fs::write(
+                &path,
+                "# a comment and nothing else
+
+",
+            )
+            .expect("the temp dir takes a file");
+            Unpositioned {
+                path: path.to_string_lossy().into_owned(),
+            }
+        }
+    }
+
+    impl Drop for Unpositioned {
+        fn drop(&mut self) {
+            let _ = std::fs::remove_file(&self.path);
+        }
+    }
+
     /// The settings alone, not a run: the argument searches the suite twice
     /// over and reading what it was asked for is the part worth pinning.
     #[test]
@@ -580,6 +621,70 @@ mod tests {
         ] {
             assert_eq!(
                 reduction_settings(&Params::of(line)).err(),
+                Some(what.to_string()),
+                "{line}"
+            );
+        }
+    }
+
+    /// The suite is the bench's own unless the line names a file, on the
+    /// residual sampler's terms exactly. It is the only setting there is:
+    /// the argument runs no search, so there is no depth, no rate and no cap
+    /// to read beside it.
+    #[test]
+    fn a_terms_argument_reads_the_suite_it_was_given() {
+        let bench = term_settings(&Params::of("terms")).expect("terms");
+        assert_eq!(bench.epd, None);
+        assert_eq!(bench.positions, bench::positions());
+
+        let path = concat!(env!("CARGO_MANIFEST_DIR"), "/arche-core/tactics.epd");
+        let line = format!("terms epd {path}");
+        let named = term_settings(&Params::of(&line)).expect(&line);
+        assert_eq!(named.epd.as_deref(), Some(path));
+        // a file other than the bench's, so a reader that checked the file
+        // and then handed back the bench's own positions is caught here
+        assert_eq!(named.positions, from_file(path));
+        assert_ne!(named.positions, bench::positions());
+    }
+
+    /// A file that is no suite is named rather than walked, on the two
+    /// readings the residual sampler's test pins: the file that will not
+    /// open, and the one that opens and holds no position a board will take.
+    #[test]
+    fn a_terms_suite_that_is_no_suite_is_named_rather_than_run() {
+        let manifest = concat!(env!("CARGO_MANIFEST_DIR"), "/Cargo.toml");
+        let empty = Unpositioned::written("terms");
+        for (line, what) in [
+            (
+                "terms epd no/such/file.epd".to_string(),
+                "epd: no/such/file.epd".to_string(),
+            ),
+            (format!("terms epd {manifest}"), format!("epd: {manifest}")),
+            (
+                format!("terms epd {}", empty.path),
+                format!("epd: {}", empty.path),
+            ),
+        ] {
+            assert_eq!(
+                term_settings(&Params::of(&line)).err(),
+                Some(what),
+                "{line}"
+            );
+        }
+    }
+
+    /// The refusal this argument makes that the other three cannot. They
+    /// read a number where the depth would be; this one has no depth, so a
+    /// number there is a word it does not know and is named as one.
+    #[test]
+    fn an_unreadable_terms_setting_is_named_rather_than_run() {
+        for (line, what) in [
+            ("terms 4", "word: 4"),
+            ("terms every 50", "word: every"),
+            ("terms epd suite.epd spare", "word: spare"),
+        ] {
+            assert_eq!(
+                term_settings(&Params::of(line)).err(),
                 Some(what.to_string()),
                 "{line}"
             );
