@@ -589,6 +589,13 @@ mod tests {
     /// The three read their depth by the same rule and their rate from their
     /// own default, which is the whole of what `sampling` had to keep true
     /// when it replaced three copies of it.
+    ///
+    /// The three defaults are the same number today, so the three lines that
+    /// name them cannot say which one a caller passed: swapping two of them
+    /// leaves this test, and the whole workspace with it, passing. That half
+    /// of the name is not checkable by value while the constants agree, and
+    /// the loop below checks the half that is, by handing the three commands
+    /// three rates that differ.
     #[test]
     fn every_instrument_defaults_to_the_benchs_depth_and_its_own_rate() {
         let residuals = residual_settings(&Params::of("residuals")).unwrap();
@@ -604,5 +611,14 @@ mod tests {
         assert_eq!(residuals.every, residual::DEFAULT_EVERY);
         assert_eq!(cutoffs.every, census::DEFAULT_EVERY);
         assert_eq!(reductions.every, reduction::DEFAULT_EVERY);
+
+        for (command, word, default) in [
+            (&RESIDUALS, "residuals", 11),
+            (&CUTOFFS, "cutoffs", 22),
+            (&REDUCTIONS, "reductions", 33),
+        ] {
+            let read = sampling(&Params::of(word), command, default).expect(word);
+            assert_eq!(read.every, default, "{word} took a rate not its own");
+        }
     }
 }
