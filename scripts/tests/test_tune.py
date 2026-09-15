@@ -32,7 +32,8 @@ import tune
 # off the run instead of holding one: a fixture that took the layout from
 # tune.py would agree with it whatever either of them said.
 LAYOUT_LINE = (
-    "layout midgame 384 endgame 384 material 6 mobility 4 shelter 7 pawn_structure 8"
+    "layout midgame 384 endgame 384 material 6 mobility 4 shelter 7 "
+    "pawn_structure 8 king_attack 4"
 )
 LAYOUT = tune.Layout.of(LAYOUT_LINE)
 
@@ -194,18 +195,18 @@ def test_a_header_without_the_drawn_count_is_refused():
             tune.parse_terms([header, *lines[1:]])
 
 
-@pytest.mark.parametrize("count", [518, 774, 782, 790, 796])
+@pytest.mark.parametrize("count", [518, 774, 782, 790, 796, 812])
 def test_a_vector_of_an_earlier_layout_is_refused(tmp_path, count):
-    """518, 774, 782, 790 and 796 are the lengths the vector had before a
+    """518, 774, 782, 790, 796 and 812 are the lengths the vector had before a
     knight, a bishop, a rook and a queen were given an endgame table, before
-    mobility, before the king's shelter, before the pawn storm joined it and
-    before the pawn structure. Every slot any of them names exists in the
-    layout that replaced it, so their numbers would land on the wrong weights
-    rather than failing to parse. Both doors a vector comes through refuse
-    them."""
-    assert LAYOUT.slots == 812
+    mobility, before the king's shelter, before the pawn storm joined it,
+    before the pawn structure and before the king attack zone. Every slot any
+    of them names exists in the layout that replaced it, so their numbers
+    would land on the wrong weights rather than failing to parse. Both doors a
+    vector comes through refuse them."""
+    assert LAYOUT.slots == 820
     old = [0] * count
-    with pytest.raises(ValueError, match=f"of {count}, expected 812"):
+    with pytest.raises(ValueError, match=f"of {count}, expected 820"):
         tune.parse_terms(
             [
                 LAYOUT_LINE,
@@ -214,7 +215,7 @@ def test_a_vector_of_an_earlier_layout_is_refused(tmp_path, count):
         )
     written = tmp_path / "fitted.json"
     written.write_text(json.dumps(old), encoding="utf-8")
-    with pytest.raises(ValueError, match=f"of {count}, expected 812"):
+    with pytest.raises(ValueError, match=f"of {count}, expected 820"):
         tune.read_weights(written, LAYOUT)
 
 
@@ -651,7 +652,35 @@ def test_the_pawn_structure_weights_are_priced_too():
         == 2 * tune.BOUNDS["pawn_structure"][0] * LAYOUT.widths["pawn_structure"] * 4
     )
     huge = weights(
-        {slot: 5000 for slot in range(LAYOUT.start["pawn_structure"], LAYOUT.slots)}
+        {
+            slot: 5000
+            for slot in range(
+                LAYOUT.start["pawn_structure"], LAYOUT.start["king_attack"]
+            )
+        }
+    )
+    assert not tune.bounds_hold(np.array(huge), LAYOUT)[0]
+
+
+def test_the_king_attack_weights_are_priced_too():
+    """And the last block of the four. What one knight, one bishop, one rook
+    and one queen can show of the ring, a side, both colours, at the larger of
+    the two halves, which here is the endgame one at seven a count."""
+    vector = weights(
+        {
+            LAYOUT.start["king_attack"] + index: 5
+            for index in range(LAYOUT.widths["king_attack"])
+        }
+        | {
+            LAYOUT.start["king_attack"] + LAYOUT.widths["king_attack"] + index: 7
+            for index in range(LAYOUT.widths["king_attack"])
+        }
+    )
+    inside, worst = tune.bounds_hold(np.array(vector), LAYOUT)
+    assert inside
+    assert worst == 2 * int(np.array(tune.BOUNDS["king_attack"]).sum()) * 7
+    huge = weights(
+        {slot: 5000 for slot in range(LAYOUT.start["king_attack"], LAYOUT.slots)}
     )
     assert not tune.bounds_hold(np.array(huge), LAYOUT)[0]
 
@@ -699,7 +728,8 @@ def test_a_term_is_fitted_with_every_earlier_term_held():
     change as that term. Holding the tables alone leaves mobility free, so a
     shelter fit that passed only that would have refitted mobility beside the
     shelter and called the pair king safety. The same again one term on: two
-    holds leave the shelter free, and a pawn structure fit wants three."""
+    holds leave the shelter free, a pawn structure fit wants three and a king
+    attack fit wants four."""
     tables = tune.frozen_slots(LAYOUT, False, True)
     assert not tables[LAYOUT.start["mobility"] : LAYOUT.start["shelter"]].any()
     both = tune.frozen_slots(LAYOUT, False, True, True)
@@ -707,7 +737,10 @@ def test_a_term_is_fitted_with_every_earlier_term_held():
     assert not both[LAYOUT.start["shelter"] : LAYOUT.start["pawn_structure"]].any()
     three = tune.frozen_slots(LAYOUT, False, True, True, True)
     assert three[: LAYOUT.start["pawn_structure"]].all()
-    assert not three[LAYOUT.start["pawn_structure"] :].any()
+    assert not three[LAYOUT.start["pawn_structure"] : LAYOUT.start["king_attack"]].any()
+    four = tune.frozen_slots(LAYOUT, False, True, True, True, True)
+    assert four[: LAYOUT.start["king_attack"]].all()
+    assert not four[LAYOUT.start["king_attack"] :].any()
 
 
 def test_a_refit_holds_the_terms_above_it_as_well_as_the_ones_below():
@@ -717,10 +750,22 @@ def test_a_refit_holds_the_terms_above_it_as_well_as_the_ones_below():
     the eight weights are the only thing that moves and a match reads them
     alone. Without the last hold the sixteen pawn weights move too, which is
     the confound `1b0862a` found the first time a hold was missing."""
-    refit = tune.frozen_slots(LAYOUT, False, True, False, True, True)
+    refit = tune.frozen_slots(LAYOUT, False, True, False, True, True, True)
     assert refit[: LAYOUT.start["mobility"]].all()
     assert not refit[LAYOUT.start["mobility"] : LAYOUT.start["shelter"]].any()
     assert refit[LAYOUT.start["shelter"] :].all()
+
+
+def test_the_king_attack_hold_freezes_its_eight_slots_and_no_more():
+    """The newest term's hold is the one a refit of an older term needs, and a
+    hold that reached past its own block would freeze nothing else for the
+    fit to notice. So this says which slots it takes: the eight the term
+    occupies, its four midgame weights and its four endgame ones, and not one
+    slot either side of them."""
+    held = tune.frozen_slots(LAYOUT, True, held_king_attack=True)
+    assert held.sum() == 8
+    assert held[LAYOUT.block("king_attack")].all()
+    assert not held[: LAYOUT.start["king_attack"]].any()
 
 
 def test_quantizing_rounds_to_nearest():

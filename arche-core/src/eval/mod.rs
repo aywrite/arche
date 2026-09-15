@@ -15,6 +15,7 @@
 //! read off, its weights with the fit that produced them, its fold and its
 //! memo where it has one.
 
+mod king_attack;
 mod mobility;
 mod pawn_structure;
 mod shelter;
@@ -59,7 +60,7 @@ pub(crate) fn phase_weight(piece: Piece) -> i32 {
 ///
 /// Four fields, and between them they are the whole of what the tuner needs
 /// to lay a term out, price it and read its coefficients off a position. The
-/// evaluation does not go through here: [`sum`] names the three folds
+/// evaluation does not go through here: [`sum`] names the four folds
 /// directly, so the hot path costs no indirect call and the descriptor is
 /// free to be the offline seam it is for.
 pub(crate) struct Term {
@@ -103,6 +104,12 @@ pub(crate) const TERMS: &[Term] = &[
         width: pawn_structure::COUNTS,
         weight: pawn_structure::weight,
         counts: pawn_structure::counts,
+    },
+    Term {
+        name: "king_attack",
+        width: king_attack::COUNTS,
+        weight: king_attack::weight,
+        counts: king_attack::counts,
     },
 ];
 
@@ -184,10 +191,16 @@ impl Memo for Caches {
 /// two remembered terms taken from `memo`.
 ///
 /// Everything incremental is read off the board's accumulator; a term
-/// computed at the leaf is added here, from the board itself. The three leaf
-/// terms are summed before the call, which is exact since all three are pairs
+/// computed at the leaf is added here, from the board itself. The four leaf
+/// terms are summed before the call, which is exact since all four are pairs
 /// on one scale, and it is what keeps one divide however many such terms
 /// there are.
+///
+/// The king attack zone is behind [`king_attack::SCORED`], which is false
+/// while its eight weights are zero. A count multiplied by nothing scores
+/// nothing, and llvm does not take the walk that produces it out on that
+/// ground, so the summand is dropped here instead: at a constant false the
+/// call is not compiled rather than computed and thrown away.
 ///
 /// Material that cannot mate reads zero before any of it. That is the one
 /// place in the evaluation that is not a dot product against the weights,
@@ -201,7 +214,14 @@ fn sum(board: &Board, memo: &mut impl Memo) -> Score {
     if board.drawn_by_material() {
         return 0;
     }
-    let leaf = mobility::fold(board) + memo.shelter(board) + memo.pawn_structure(board);
+    let leaf = mobility::fold(board)
+        + memo.shelter(board)
+        + memo.pawn_structure(board)
+        + if king_attack::SCORED {
+            king_attack::fold(board)
+        } else {
+            0
+        };
     board.eval.score(board.active_color, leaf)
 }
 
@@ -352,11 +372,11 @@ impl Accumulator {
     /// say it.
     ///
     /// `leaf` is the leaf terms [`eval`] reads off the board, mobility, the
-    /// king's shelter and the pawn structure summed, as a packed pair on the
-    /// same scale. The pair joins the piece square pair before the
-    /// interpolation rather than being tapered beside it, so the two share one
-    /// divide. A second divide would answer a centipawn away wherever a
-    /// numerator is negative and does not divide evenly, and
+    /// king's shelter, the pawn structure and the king attack zone summed, as
+    /// a packed pair on the same scale. The pair joins the piece square pair
+    /// before the interpolation rather than being tapered beside it, so the
+    /// two share one divide. A second divide would answer a centipawn away
+    /// wherever a numerator is negative and does not divide evenly, and
     /// `tune::reconstruct` folds a whole row with one.
     #[inline]
     fn score(&self, side: Color, leaf: i32) -> Score {
@@ -379,7 +399,8 @@ impl Accumulator {
 #[cfg(test)]
 mod evaluate {
     use super::{
-        Board, Caches, TERMS, TOTAL_PHASE, eval, eval_cached, mobility, pawn_structure, shelter,
+        Board, Caches, TERMS, TOTAL_PHASE, eval, eval_cached, king_attack, mobility,
+        pawn_structure, shelter,
     };
     use crate::board::fens;
     use crate::misc::{Color, File, coordinate_to_index};
@@ -817,34 +838,71 @@ mod evaluate {
             let priced = (0..term.width).any(|index| {
                 mg_value((term.weight)(index)) != 0 || eg_value((term.weight)(index)) != 0
             });
-            assert!(priced, "{} is worth nothing at either end", term.name);
+            // every term is priced but the king attack zone, which ships at
+            // zero weight until its fit lands. A nominal weight in the
+            // meantime would move the bench, and the commit that added the
+            // counts claims the bench is the one below it. Written as an
+            // equality rather than an exemption, so the fit that prices the
+            // term fails here until this line goes with it
+            assert_eq!(
+                priced,
+                term.name != "king_attack",
+                "{} is worth {} at either end",
+                term.name,
+                if priced { "something" } else { "nothing" }
+            );
         }
     }
 
-    /// The table names the three leaf terms the sum adds, which is what makes
+    /// Four weights that differ from each other at both ends of the taper,
+    /// for the king attack zone, whose shipped eight are zero and say nothing
+    /// about a fold.
+    const KING_ATTACK_TRIAL: [i32; king_attack::COUNTS] =
+        [pack(11, 2), pack(-7, 13), pack(3, -5), pack(29, 41)];
+
+    /// The table names the four leaf terms the sum adds, which is what makes
     /// the tuner's row and the evaluation the same arithmetic.
     ///
     /// The sum is hand written rather than a walk over the table, so this is
-    /// the one place the two lists are held against each other. A term added
-    /// to the table and left out of the sum would print coefficients the
+    /// the one place the two lists are held against each other. A priced term
+    /// added to the table and left out of the sum would print coefficients the
     /// evaluation never reads, and the tuner's identity would fail on the
     /// first position that touched it; this says which of the two is wrong.
+    ///
+    /// An unpriced term stands outside that guard until its fit. The king
+    /// attack zone is skipped at the leaf while its weights are zero, so a sum
+    /// that dropped it altogether would add up the same and this test would
+    /// pass. What it can say meanwhile is that the term is there and that its
+    /// counts are not level here, which is why it reads the fold against
+    /// weights of its own rather than the shipped ones.
     #[test]
     fn the_table_names_the_terms_the_sum_adds() {
         let names: Vec<&str> = TERMS.iter().map(|term| term.name).collect();
-        assert_eq!(names, ["mobility", "shelter", "pawn_structure"]);
+        assert_eq!(
+            names,
+            ["mobility", "shelter", "pawn_structure", "king_attack"]
+        );
         // two queens and a rook against none, a king in each corner of the
         // board and pawns of both colours on six files, so that no one of the
-        // three folds to nothing and the test says something about each
-        let board = Board::from_fen("3k4/P4p2/8/3P2p1/3P4/PP2p2p/1P6/QQ4KR w - - 0 1").unwrap();
+        // three folds to nothing and the test says something about each. The
+        // queen on a4 bears on d7 and e8 of the black king's ring, which is
+        // what leaves the fourth term's counts unlevel too
+        let board = Board::from_fen("3k4/P4p2/8/3P2p1/Q2P4/PP2p2p/1P6/1Q4KR w - - 0 1").unwrap();
         for (name, term) in [
             ("mobility", mobility::fold(&board)),
             ("shelter", shelter::fold(&board)),
             ("pawn structure", pawn_structure::fold(&board)),
+            (
+                "king attack",
+                king_attack::fold_with(&board, &KING_ATTACK_TRIAL),
+            ),
         ] {
             assert_ne!(term, 0, "{} is level here, so it says nothing", name);
         }
-        let leaf = mobility::fold(&board) + shelter::fold(&board) + pawn_structure::fold(&board);
+        let leaf = mobility::fold(&board)
+            + shelter::fold(&board)
+            + pawn_structure::fold(&board)
+            + king_attack::fold(&board);
         assert_eq!(eval(&board), board.eval.score(board.active_color, leaf));
     }
 }

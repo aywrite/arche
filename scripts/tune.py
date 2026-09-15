@@ -122,12 +122,22 @@ FIXED_BLOCKS = ("midgame", "endgame", "material")
 # eight counts at eight is far past any position, and the looseness is on the
 # safe side.
 #
+# The king attack zone is the most one piece of each kind can show on the eight
+# square ring of a centred king. A knight's eight targets lie on a ring of
+# Chebyshev radius two and at most two of them fall in a three by three block,
+# so two is exact. A bishop reaches at most two as well, since a diagonal
+# through the block runs into the king's square and stops there, and is given
+# three. A rook on d3 against a king on e4 reaches d4, d5, e3 and f3, so four is
+# exact. A queen on g5 against a king on e4 reaches f5, e5, d5, f4 and e3, and
+# is given six. A side with two knights shows more, as it does for mobility.
+#
 # One entry per count rather than one per term, so a term that grows a count
 # arrives here with a width this file does not cover and is refused too.
 BOUNDS = {
     "mobility": (8, 13, 14, 27),
     "shelter": (3,) * 7,
     "pawn_structure": (8,) * 8,
+    "king_attack": (2, 3, 4, 6),
 }
 
 
@@ -1573,6 +1583,7 @@ def frozen_slots(
     held_mobility=False,
     held_shelter=False,
     held_pawn=False,
+    held_king_attack=False,
 ):
     """Which weights a fit holds where they are.
 
@@ -1593,8 +1604,9 @@ def frozen_slots(
     after the tables and before the shelter, and the shelter is one for the
     same reason again. Each term earns a hold as it is fitted, and a fit of
     the newest term names every hold below it, so a shelter fit passes
-    `--hold-tables --hold-mobility` and a pawn structure fit passes
-    `--hold-tables --hold-mobility --hold-shelter`. Holding the tables alone
+    `--hold-tables --hold-mobility`, a pawn structure fit passes
+    `--hold-tables --hold-mobility --hold-shelter` and a king attack fit adds
+    `--hold-pawn` to those three. Holding the tables alone
     leaves the eight mobility weights free, which is a refit of mobility
     beside the newer term and the attribution the holds exist to keep. That is
     not hypothetical: `1b0862a` found half of the king safety fit's apparent
@@ -1604,9 +1616,9 @@ def frozen_slots(
     fitting again on a corpus grown since, and then every term is older than
     the fit rather than newer: a mobility refit holds the tables below it and
     the shelter and the pawn structure above, and moves the eight weights
-    alone. `--hold-pawn` is what the upper end of that needs. Which holds an
-    arm passes follows from the one term it means to move and not from where
-    that term sits in the vector.
+    alone. `--hold-pawn` and `--hold-king-attack` are what the upper end of
+    that needs. Which holds an arm passes follows from the one term it means
+    to move and not from where that term sits in the vector.
     """
     frozen = np.zeros(layout.slots, dtype=bool)
     if not free_material:
@@ -1618,6 +1630,7 @@ def frozen_slots(
         (held_mobility, "mobility"),
         (held_shelter, "shelter"),
         (held_pawn, "pawn_structure"),
+        (held_king_attack, "king_attack"),
     ):
         if held:
             frozen[layout.block(name)] = True
@@ -1634,6 +1647,7 @@ def command_cv(args):
         args.hold_mobility,
         args.hold_shelter,
         args.hold_pawn,
+        args.hold_king_attack,
     )
     errors, outside = cross_validate(
         corpus, args.penalties, start, frozen, args.iterations
@@ -1661,6 +1675,7 @@ def command_fit(args):
         args.hold_mobility,
         args.hold_shelter,
         args.hold_pawn,
+        args.hold_king_attack,
     )
     k = args.k or fit_k(
         corpus.scores(corpus.weights)[corpus.train],
@@ -1725,6 +1740,7 @@ def command_curve(args):
         args.hold_mobility,
         args.hold_shelter,
         args.hold_pawn,
+        args.hold_king_attack,
     )
     k = args.k or fit_k(
         corpus.scores(corpus.weights)[corpus.train],
@@ -1922,7 +1938,13 @@ def main(argv=None):
         command.add_argument(
             "--hold-pawn",
             action="store_true",
-            help="hold the sixteen pawn structure weights, which a refit of "
+            help="hold the sixteen pawn structure weights, which a fit for a "
+            "term added after them passes alongside the three holds above",
+        )
+        command.add_argument(
+            "--hold-king-attack",
+            action="store_true",
+            help="hold the eight king attack zone weights, which a refit of "
             "a term below them passes so that term moves alone",
         )
     fit = commands.choices["fit"]
