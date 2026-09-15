@@ -107,12 +107,12 @@ the engine plays. Roughly in the order they look worth doing.
   run's record in the planning repository
 - an evaluation term is allowed 5% of the search, and mobility is over it. The figure had
   no home in the repository but the king safety bullet this list used to carry, so it is
-  written here instead of being lost with it. Measured on the bench at the commit that
-  cached the shelter: `mobility_with` takes 334,907,944 instructions of 3,950,062,514,
-  which is 8.48%, and the shelter with its cache takes 133,627,554, which is 3.38%.
-  Mobility has been over the budget since the fit that priced it and nothing has charged
-  it since, so either it wants the treatment the shelter has just had or the 5% wants
-  restating as what it is, which is a rule of thumb nothing enforces
+  written here instead of being lost with it. The 8.48% this bullet used to quote predates
+  the refit that priced all four kinds; measured again at `378c148` the term is 13.5% of
+  the bench. The 5% is a rule of thumb and nothing enforces it, which the games have now
+  said outright: the term was made 6% cheaper across the whole search and 6,000 of them
+  could not see it. So the ceiling is the thing under question rather than the term. The
+  reasoning and the numbers are in the planning repository
 - a held-out loss on our own games cannot resolve a fit of the piece square tables one way
   or the other, so an sprt is what decides a re-tune. Measured 2026-09-10 over 1,812
   archived games, 100,726 quiet positions across 1,807 of them: the shipped weights score
@@ -429,3 +429,16 @@ of these again without saying what is different this time.
   so that the pawn board is not consulted as well for the fifty move reset.
   0.2% more instructions: carrying the value across the block costs more
   than the load it saves.
+- Sharing the slider attack sets between the mobility count and the move generator at the
+  same node, so a slider of the side to move is probed once instead of twice. Not built:
+  the whole saving is bounded at 0.385% of the run and writing the sets costs 0.781%,
+  because the stand pat cuts three quarters of quiescence evaluations before they generate
+  anything at all.
+- Lazy mobility, leaving the term out at the quiescence stand pat when the rest of the
+  score already clears beta by a margin. Built and played at three margins, 6,000 games at
+  10+0.1 under sprt [0, 10]: +1 ±8 over 4,000 games at a margin of a hundred, and nothing
+  the other two could see either. The mechanism does work, skipping the term at 71% of
+  evaluations for 6.05% off the run to a fixed depth, and no game can tell. Branches
+  `eval/lazy-mobility`, `eval/lazy-mobility-200` and `eval/lazy-mobility-50` hold the code
+  and the entry in the planning repository holds the pairs, so any of the three tests
+  resumes rather than restarts.
