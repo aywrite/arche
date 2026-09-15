@@ -208,11 +208,7 @@ pub fn residual_settings(params: &Params) -> Result<ResidualSettings, String> {
         None => SearchConfig::default(),
         Some(word) => SearchConfig::with_taint(word).ok_or_else(|| format!("taint: {word}"))?,
     };
-    let epd = params.value("epd").map(str::to_string);
-    let positions = match &epd {
-        None => bench::positions(),
-        Some(path) => read_epd(path)?,
-    };
+    let (epd, positions) = suite(params)?;
     Ok(ResidualSettings {
         depth,
         every,
@@ -221,6 +217,23 @@ pub fn residual_settings(params: &Params) -> Result<ResidualSettings, String> {
         epd,
         positions,
     })
+}
+
+/// The suite an instrument was asked for: the file the line named, and the
+/// positions read from it or the bench's own.
+///
+/// Three of the four arguments take a suite and the reading is two decisions
+/// rather than one. The path is kept because the report's header states it,
+/// and the positions are read here rather than at the run so that a file
+/// which is no suite is refused before the minutes are spent. Written once
+/// so the two cannot come apart on one of the three.
+fn suite(params: &Params) -> Result<(Option<String>, Vec<bench::Position>), String> {
+    let epd = params.value("epd").map(str::to_string);
+    let positions = match &epd {
+        None => bench::positions(),
+        Some(path) => read_epd(path)?,
+    };
+    Ok((epd, positions))
 }
 
 /// The positions of an epd file, or the path that could not be read as a
@@ -306,11 +319,7 @@ pub struct ReductionSettings {
 
 pub fn reduction_settings(params: &Params) -> Result<ReductionSettings, String> {
     let Sampling { depth, every, cap } = sampling(params, &REDUCTIONS, reduction::DEFAULT_EVERY)?;
-    let epd = params.value("epd").map(str::to_string);
-    let positions = match &epd {
-        None => bench::positions(),
-        Some(path) => read_epd(path)?,
-    };
+    let (epd, positions) = suite(params)?;
     Ok(ReductionSettings {
         depth,
         every,
@@ -351,11 +360,7 @@ pub struct TermSettings {
 
 pub fn term_settings(params: &Params) -> Result<TermSettings, String> {
     TERMS.claim(params)?;
-    let epd = params.value("epd").map(str::to_string);
-    let positions = match &epd {
-        None => bench::positions(),
-        Some(path) => read_epd(path)?,
-    };
+    let (epd, positions) = suite(params)?;
     Ok(TermSettings { epd, positions })
 }
 
