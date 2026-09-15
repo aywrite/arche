@@ -856,7 +856,9 @@ fn entry(board: &Board, play: Play, value: Value, depth: u8, bound: Bound) -> Pv
 
 #[cfg(test)]
 mod tests {
-    use super::{Bound, NARROW_WIDTHS, Play, Pv, STALE_AFTER_SEARCHES, TranspositionTable, Value};
+    use super::{
+        Bound, NARROW_WIDTHS, Play, Pv, STALE_AFTER_SEARCHES, Score, TranspositionTable, Value,
+    };
     use crate::engine::MAX_PLY;
     use crate::misc::{Piece, PromotePiece};
     use pretty_assertions::assert_eq;
@@ -1021,6 +1023,55 @@ mod tests {
             table.probe(&board, -100, 10, 5, true, false),
             Probe::Order(_)
         ));
+    }
+
+    #[test]
+    fn a_mate_score_is_stored_relative_to_its_own_node() {
+        // Every other test in this module works at ply zero, where both
+        // conversions are the identity, so not one of them can tell a
+        // working conversion from a broken one: flipping the sign of
+        // `score_from_tt` leaves them all passing and moves only the bench's
+        // node count, which says nothing about mates. What an entry holds is
+        // the distance from the node that stored it, so a mate stored nine
+        // plies down the line and read back two plies down has to come back
+        // seven plies nearer the root. An ordinary score is not touched
+        // either way, which is the other half of the conversion.
+        use super::Probe;
+        const STORED_AT: usize = 9;
+        const PROBED_AT: usize = 2;
+        const TO_MATE: usize = 3;
+
+        let play = Play::new(0, 1, None, None, false, false);
+        for (stored, wanted, what) in [
+            (
+                Value::mated(STORED_AT + TO_MATE),
+                Value::mated(PROBED_AT + TO_MATE),
+                "a mate against the side to move",
+            ),
+            (
+                -Value::mated(STORED_AT + TO_MATE),
+                -Value::mated(PROBED_AT + TO_MATE),
+                "a mate for the side to move",
+            ),
+            (
+                Value::clean(50),
+                Value::clean(50),
+                "an ordinary score, which no ply moves",
+            ),
+        ] {
+            // a table of its own, so the three stores never meet in a slot
+            let mut table = TranspositionTable::with_capacity(4).expect("a table of a few buckets");
+            let mut board = crate::board::Board::new();
+
+            board.line_ply = STORED_AT;
+            table.record_best(&board, play, stored, 5);
+
+            board.line_ply = PROBED_AT;
+            match table.probe(&board, Score::MIN + 1, Score::MAX - 1, 5, false, false) {
+                Probe::Cut(value) => assert_eq!(value.score, wanted.score, "{what}"),
+                other => panic!("{what} did not cut: {other:?}"),
+            }
+        }
     }
 
     #[test]
