@@ -8,11 +8,13 @@
 //! What an entry holds is this module's own business: nothing outside names
 //! the entry, its bound, the sixteen byte packing or the form a score is
 //! stored in. That is where the room is for what the table does not do yet.
-//! Fail low nodes are not stored at all, and a cutoff no move can be
-//! attributed to, which is what null move pruning or a static cutoff would
-//! want to record, has nowhere to go while an entry must name a play. The two
-//! bytes already set aside for the static evaluation are the same bet. Each is
-//! a change to this file and to none of its callers.
+//! A cutoff no move can be attributed to, which is what null move pruning or
+//! a static cutoff would want to record, has nowhere to go while an entry
+//! must name a play. A node no move raised alpha at is not that case: it
+//! names the move that came closest, and `record_ceiling` stores it as a
+//! ceiling over what the position is worth. The two bytes already set aside
+//! for the static evaluation are the same bet. Each is a change to this file
+//! and to none of its callers.
 
 use crate::board::Board;
 use crate::misc::Score;
