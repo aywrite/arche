@@ -46,6 +46,15 @@ compare: depth, index, band8_15, band16p, hist_milli (1000 * history //
 history_max, and zero when nothing in the list has any), killer, tt_move,
 tt_score_only, eval_beta, alpha_gap, generated, searched.
 
+The split is by fen by default. `--group-by` takes a file naming, for each
+ledger on the command line, the group its rows belong to, and splits by group
+instead, so a ledger recorded one root at a time can hold every row of a root
+on one side. Rows from one root are not exchangeable: they share a parent node
+and most of a feature vector, and a split that does not respect them reads
+back a holdout the fit has half seen. `--drop` leaves a feature out of the fit
+and gives the engine a zero for its constant, which is how a weight that is
+only identified on a thin slice of the rows is priced.
+
 numpy and nothing else. The fit is Newton's method with an L2 penalty, written
 out, which is what the tuner beside this does for the same reason.
 """
@@ -175,11 +184,44 @@ def attention(row):
     return 1 if row["label"] == "harmful" else 0
 
 
+def key_parity(key):
+    """Which half a key belongs to. The first bit of its sha256, so the same
+    key lands on the same side every run and no order of the rows moves it."""
+    return hashlib.sha256(key.encode("utf-8")).digest()[0] & 1
+
+
 def fen_parity(fen):
     """Which half a position belongs to. By the fen and not by the row, so that
     two rows from one position cannot land on opposite sides and let the
     holdout score a position the fit has already seen."""
-    return hashlib.sha256(fen.encode("utf-8")).digest()[0] & 1
+    return key_parity(fen)
+
+
+def read_groups(path):
+    """The group each ledger's rows belong to, as a name to key mapping.
+
+    Two whitespace separated columns, the ledger's file name and its group
+    key, and anything after a hash is a comment. The ledger row carries the
+    fen and nothing about the root it was recorded from, so the attribution
+    has to come from outside: one ledger per root, or per small chunk of
+    roots, and this file saying which.
+    """
+    groups = {}
+    for number, line in enumerate(
+        Path(path).read_text(encoding="utf-8").splitlines(), 1
+    ):
+        text = line.split("#", 1)[0].strip()
+        if not text:
+            continue
+        words = text.split()
+        if len(words) != 2:
+            sys.exit(f"{path}:{number}: not a ledger name and a group key: {line}")
+        name, key = words
+        if groups.setdefault(name, key) != key:
+            sys.exit(f"{path}:{number}: {name} is already in group {groups[name]}")
+    if not groups:
+        sys.exit(f"{path}: names no group")
+    return groups
 
 
 def features_of(row):
@@ -264,6 +306,70 @@ def auc_of(scores, y):
     if ones == 0 or zeros == 0:
         return float("nan")
     return (ranks[positive].sum() - ones * (ones + 1) / 2) / (ones * zeros)
+
+
+def bootstrap_auc(scores, y, units, draws=200, seed=20260915):
+    """The standard error of an auc, by resampling the units the rows came in.
+
+    A row is not the unit when the split is by group: rows from one root move
+    together, so resampling rows alone would report an error bar for a sample
+    that was never drawn. `units` is the group each row belongs to, as integer
+    codes, or a distinct code per row when the rows really are the unit.
+
+    Returns nan when the rows come from fewer than two units, since every draw
+    is then the same sample and its spread of zero would read as precision,
+    and when fewer than two draws produce an auc at all, which a holdout with
+    almost no attention in it can do.
+    """
+    order = np.argsort(units, kind="mergesort")
+    sorted_units = units[order]
+    starts = np.searchsorted(sorted_units, np.arange(sorted_units[-1] + 1), "left")
+    ends = np.searchsorted(sorted_units, np.arange(sorted_units[-1] + 1), "right")
+    present = np.where(ends > starts)[0]
+    if len(present) < 2:
+        return float("nan")
+    rng = np.random.default_rng(seed)
+    areas = []
+    for _ in range(draws):
+        drawn = rng.choice(present, size=len(present), replace=True)
+        rows = np.concatenate([order[starts[one] : ends[one]] for one in drawn])
+        area = auc_of(scores[rows], y[rows])
+        if not np.isnan(area):
+            areas.append(area)
+    if len(areas) < 2:
+        return float("nan")
+    return float(np.std(areas, ddof=1))
+
+
+def print_auc(name, scores, y, units, draws):
+    """One held-out auc with its bootstrap standard error, or why there is
+    none: a stratum of one class has no area under its curve."""
+    area = auc_of(scores, y)
+    if np.isnan(area):
+        print(f"  {name:<28} {len(y):>9} rows  {int(y.sum()):>7} attention   auc none")
+        return
+    error = bootstrap_auc(scores, y, units, draws)
+    print(
+        f"  {name:<28} {len(y):>9} rows  {int(y.sum()):>7} attention"
+        f"   auc {area:.4f} +/- {error:.4f}"
+    )
+
+
+def print_holdout_aucs(scores, y, depth, units, draws):
+    """The held-out quality, over every row, over the rows the gate can act on
+    and one depth at a time.
+
+    The engine's gate is reached at depth four and up, so an auc over every row
+    is carried by the depth three rows that outnumber them and is not the
+    number the gate would be chosen on.
+    """
+    print(f"\nholdout auc, bootstrap standard error over {draws} draws:")
+    print_auc("all rows", scores, y, units, draws)
+    deep = depth >= 4
+    print_auc("gate reachable (depth 4+)", scores[deep], y[deep], units[deep], draws)
+    for one in sorted(set(depth.tolist())):
+        at = depth == one
+        print_auc(f"depth {one}", scores[at], y[at], units[at], draws)
 
 
 def rate(values):
@@ -352,16 +458,23 @@ def print_trivial_gate(X, y, train, hold):
         )
 
 
-def write_csvs(out_dir, X, y, depth, rows, train, hold, weights, intercept):
-    """The two halves and the fitted weights, for reading back by hand."""
+def write_csvs(out_dir, X, y, depth, rows, groups, train, hold, weights, intercept):
+    """The two halves and the fitted weights, for reading back by hand.
+
+    The group goes in the row beside the fen, so a half can be checked
+    against the map that produced it rather than taken on the script's
+    word.
+    """
     out_dir.mkdir(parents=True, exist_ok=True)
-    header = ",".join([*FEATURES, "attention", "depth", "fen"])
+    header = ",".join([*FEATURES, "attention", "depth", "group", "fen"])
     for mask, name in ((train, "train.csv"), (hold, "holdout.csv")):
         with (out_dir / name).open("w", encoding="utf-8") as out:
             out.write(header + "\n")
             for at in np.where(mask)[0]:
                 cells = ",".join(str(int(value)) for value in X[at])
-                out.write(f'{cells},{int(y[at])},{depth[at]},"{rows[at]["fen"]}"\n')
+                out.write(
+                    f'{cells},{int(y[at])},{depth[at]},{groups[at]},"{rows[at]["fen"]}"\n'
+                )
     with (out_dir / "weights.txt").open("w", encoding="utf-8") as out:
         out.write("# logistic regression on the reduction ledger\n")
         out.write(f"# fixed point scale 2^{SHIFT} = {1 << SHIFT}\n")
@@ -386,18 +499,45 @@ def main(argv=None):
         help="what `arche reductions` printed, one file or several",
     )
     parser.add_argument(
+        "--group-by",
+        type=Path,
+        help="a file naming each ledger and the group its rows belong to,"
+        " which is then what train and holdout are split by",
+    )
+    parser.add_argument(
+        "--drop",
+        action="append",
+        default=[],
+        choices=FEATURES,
+        help="leave a feature out of the fit, and out of the engine's"
+        " constants, which can be given more than once",
+    )
+    parser.add_argument(
+        "--bootstrap",
+        type=int,
+        default=200,
+        help="how many resamples the held-out auc's standard error is taken"
+        " over, resampling groups where there are groups",
+    )
+    parser.add_argument(
         "--out-dir",
         type=Path,
         help="where to write the two halves and the weights, if anywhere",
     )
     args = parser.parse_args(argv)
 
+    named = read_groups(args.group_by) if args.group_by else None
     rows = []
+    groups = []
     for path in args.ledger:
         header, read, skipped = parse_file(path)
         print(f"{path.name}: {header}")
         print(f"  {len(read)} scouts, {skipped} skipped rows left out")
         rows.extend(read)
+        if named is not None:
+            if path.name not in named:
+                sys.exit(f"{args.group_by} names no group for {path.name}")
+            groups.extend([named[path.name]] * len(read))
     if not rows:
         sys.exit("no scouts in the ledger, nothing to fit")
 
@@ -408,38 +548,60 @@ def main(argv=None):
         seen[0] += 1
         seen[1] += row["scout"] == "high"
         seen[2] += attention(row)
-    for depth in sorted(depths):
-        rows_at, high, attention_at = depths[depth]
-        print(f"  depth {depth}: {rows_at} rows, {high} high, {attention_at} attention")
+    for depth_at in sorted(depths):
+        rows_at, high, attention_at = depths[depth_at]
+        print(
+            f"  depth {depth_at}: {rows_at} rows, {high} high, {attention_at} attention"
+        )
 
     X = np.array([features_of(row) for row in rows], dtype=float)
     y = np.array([attention(row) for row in rows], dtype=float)
     depth = np.array([row["depth"] for row in rows])
-    parity = np.array([fen_parity(row["fen"]) for row in rows])
+    if named is not None:
+        keys = groups
+        parity = np.array([key_parity(key) for key in groups])
+        print(f"\nsplit by group: {len(set(groups))} groups over {len(rows)} rows")
+    else:
+        keys = [row["fen"] for row in rows]
+        parity = np.array([fen_parity(row["fen"]) for row in rows])
+        print("\nsplit by fen")
     train = parity == 0
     hold = parity == 1
     print(
-        f"\nsplit by fen: train {train.sum()} rows"
-        f" ({int(y[train].sum())} attention),"
+        f"train {train.sum()} rows ({int(y[train].sum())} attention),"
         f" holdout {hold.sum()} rows ({int(y[hold].sum())} attention)"
     )
     if not train.any() or not hold.any():
         sys.exit("one half of the split is empty, the ledger is too small to fit")
 
-    weights, intercept = fit_logistic(X[train], y[train])
+    # the unit the bootstrap resamples is the unit the split was made by: the
+    # group when there is one and the fen otherwise, since rows of one fen
+    # were kept on one side and have to be drawn together too
+    codes = {}
+    units = np.array(
+        [codes.setdefault(keys[at], len(codes)) for at in np.where(hold)[0]]
+    )
+
+    kept = [at for at, name in enumerate(FEATURES) if name not in args.drop]
+    if not kept:
+        sys.exit("every feature was dropped, there is nothing to fit")
+    if args.drop:
+        print(f"dropped from the fit: {', '.join(sorted(set(args.drop)))}")
+    fitted, intercept = fit_logistic(X[train][:, kept], y[train])
+    weights = np.zeros(len(FEATURES))
+    weights[kept] = fitted
     fixed = quantize(weights)
     fixed_intercept = quantize([intercept])[0]
     print(f"\nweights, fixed point at a scale of 2^{SHIFT} = {1 << SHIFT}:")
-    for name, raw, one in zip(FEATURES, weights, fixed):
-        print(f"  {CONSTANTS[name]:<26} {one:>8d}    ({raw:.6f})")
+    for at, (name, raw, one) in enumerate(zip(FEATURES, weights, fixed)):
+        note = "dropped" if at not in kept else f"{raw:.6f}"
+        print(f"  {CONSTANTS[name]:<26} {one:>8d}    ({note})")
     print(f"  {CONSTANTS['intercept']:<26} {fixed_intercept:>8d}    ({intercept:.6f})")
 
     scores = (X.astype(np.int64) @ fixed + fixed_intercept).astype(float)
-    print(
-        f"\nholdout auc: {auc_of(scores[hold], y[hold]):.4f}"
-        f"   train auc: {auc_of(scores[train], y[train]):.4f}"
-    )
+    print(f"\ntrain auc: {auc_of(scores[train], y[train]):.4f}")
     print(f"holdout attention rate over every row: {rate(y[hold]):.3f}%")
+    print_holdout_aucs(scores[hold], y[hold], depth[hold], units, args.bootstrap)
 
     deep = depth[hold] >= 4
     print_table(
@@ -449,7 +611,9 @@ def main(argv=None):
     print_trivial_gate(X, y, train, hold)
 
     if args.out_dir:
-        write_csvs(args.out_dir, X, y, depth, rows, train, hold, weights, intercept)
+        write_csvs(
+            args.out_dir, X, y, depth, rows, keys, train, hold, weights, intercept
+        )
     return 0
 
 

@@ -16,6 +16,10 @@ zero, and one row worth attention, which is what a few hundred rows of this
 data looks like: the rate is under a percent. So the sample covers the parse
 and the run, and the planted case below covers the fit, because a fit on one
 positive row says nothing about whether the arithmetic is right.
+
+The grouped split is tested on planted rows too. What it has to hold is that a
+group goes to one side whole, since the leak it exists to close is a holdout
+row sharing a parent with a training row.
 """
 
 import subprocess
@@ -29,9 +33,10 @@ from conftest import SCRIPTS
 
 SCRIPT = SCRIPTS / "fit_attention.py"
 SAMPLE = Path(__file__).resolve().parent / "reductions_sample.txt"
+NL = chr(10)
 
 
-def row(index, attention, fen_id, depth=6, history=0, history_max=0):
+def row(index, attention, fen_id, depth=6, history=0, history_max=0, alpha_gap=19):
     """One ledger row, in the eighteen fields reduction.rs prints.
 
     A fail high is a row worth attention on its own and has no label to give,
@@ -40,7 +45,7 @@ def row(index, attention, fen_id, depth=6, history=0, history_max=0):
     scout, label = ("high", "-") if attention else ("low", "harmless")
     return (
         f"{depth} zw {index} {index + 1} 30 {history} {history_max} plain miss"
-        f" -20 19 -120 {scout} 139 6 {label} 1"
+        f" -20 {alpha_gap} -120 {scout} 139 6 {label} 1"
         f" 8/8/8/8/8/8/8/K6k w - - 0 {fen_id}"
     )
 
@@ -176,6 +181,137 @@ class TestFitting:
         # a few hundred rows can hold no attention at all, and an ordering
         # that separates one class from an empty one is not a score of one
         alone = fit_attention.auc_of(np.array([1.0, 2.0, 3.0]), np.zeros(3))
+        assert np.isnan(alone)
+
+
+class TestGrouping:
+    def map_of(self, tmp_path, text):
+        path = tmp_path / "map.txt"
+        path.write_text(text)
+        return path
+
+    def two_ledgers(self, tmp_path):
+        for name, first in (("a.txt", 0), ("b.txt", 1000)):
+            rows = [row(at % 20, at % 20 < 4, first + at) for at in range(200)]
+            (tmp_path / name).write_text(ledger(rows))
+        return [str(tmp_path / "a.txt"), str(tmp_path / "b.txt")]
+
+    def test_a_map_reads_its_two_columns_and_skips_its_comments(self, tmp_path):
+        path = self.map_of(
+            tmp_path,
+            "# where these came from" + NL + NL + "a.txt g1" + NL + "b.txt g2" + NL,
+        )
+        assert fit_attention.read_groups(path) == {"a.txt": "g1", "b.txt": "g2"}
+
+    def test_a_ledger_in_two_groups_stops_the_run(self, tmp_path):
+        # a ledger whose rows are claimed by two groups has no group, and
+        # guessing one is what the grouped split exists to stop
+        path = self.map_of(tmp_path, "a.txt g1" + NL + "a.txt g2" + NL)
+        with pytest.raises(SystemExit) as raised:
+            fit_attention.read_groups(path)
+        assert "already in group g1" in str(raised.value)
+
+    def test_a_line_that_is_not_a_name_and_a_key_stops_the_run(self, tmp_path):
+        path = self.map_of(tmp_path, "a.txt" + NL)
+        with pytest.raises(SystemExit):
+            fit_attention.read_groups(path)
+
+    def test_a_ledger_with_no_group_named_stops_the_run(self, tmp_path):
+        ledgers = self.two_ledgers(tmp_path)
+        path = self.map_of(tmp_path, "a.txt g1" + NL)
+        done = run(*ledgers, "--group-by", str(path))
+        assert done.returncode != 0
+        assert "names no group for b.txt" in done.stderr
+
+    def test_a_group_lands_on_one_side_whole(self, tmp_path):
+        # the two ledgers hold different positions, so a split by fen puts
+        # rows of both in both halves and a split by group cannot
+        ledgers = self.two_ledgers(tmp_path)
+        by_fen = run(*ledgers, "--bootstrap", "10")
+        assert by_fen.returncode == 0, by_fen.stderr
+        assert "train 200 rows" not in by_fen.stdout
+        # "one" and "two" hash to opposite sides, which is the split
+        path = self.map_of(tmp_path, "a.txt one" + NL + "b.txt two" + NL)
+        done = run(*ledgers, "--group-by", str(path), "--bootstrap", "10")
+        assert done.returncode == 0, done.stderr
+        assert "split by group: 2 groups over 400 rows" in done.stdout
+        assert "train 200 rows" in done.stdout
+        assert "holdout 200 rows" in done.stdout
+
+    def test_the_key_and_not_the_row_order_decides_the_side(self):
+        assert fit_attention.key_parity("g1") == fit_attention.key_parity("g1")
+        assert fit_attention.fen_parity("8/8/8/8/8/8/8/K6k w - - 0 1") == (
+            fit_attention.key_parity("8/8/8/8/8/8/8/K6k w - - 0 1")
+        )
+
+
+class TestDropping:
+    def test_a_dropped_feature_gets_a_zero_and_is_said_to_be_dropped(self, tmp_path):
+        # the engine reads a constant for every feature, so a feature left out
+        # of the fit has to arrive as a zero rather than be missing
+        rows = [row(at % 20, at % 20 < 4, at) for at in range(400)]
+        path = tmp_path / "ledger.txt"
+        path.write_text(ledger(rows))
+        done = run(str(path), "--drop", "alpha_gap", "--bootstrap", "10")
+        assert done.returncode == 0, done.stderr
+        assert "dropped from the fit: alpha_gap" in done.stdout
+        assert "ATTENTION_ALPHA_GAP               0    (dropped)" in done.stdout
+
+    def test_a_dropped_feature_is_left_out_of_the_fit_and_not_only_the_print(
+        self, tmp_path
+    ):
+        # every column is constant but alpha_gap, which alone carries the
+        # attention. Kept, it orders the holdout; dropped, nothing is left to
+        # order it by and every score ties
+        rows = [
+            row(5, at % 5 == 0, at, alpha_gap=200 if at % 5 == 0 else 19)
+            for at in range(400)
+        ]
+        path = tmp_path / "ledger.txt"
+        path.write_text(ledger(rows))
+
+        def holdout_auc(*extra):
+            done = run(str(path), "--bootstrap", "10", *extra)
+            assert done.returncode == 0, done.stderr
+            line = next(one for one in done.stdout.splitlines() if "all rows" in one)
+            return float(line.split("auc ")[1].split()[0])
+
+        assert holdout_auc() > 0.9
+        assert holdout_auc("--drop", "alpha_gap") == 0.5
+
+    def test_a_feature_that_is_not_one_is_refused(self, tmp_path):
+        rows = [row(at % 20, at % 20 < 4, at) for at in range(40)]
+        path = tmp_path / "ledger.txt"
+        path.write_text(ledger(rows))
+        done = run(str(path), "--drop", "mobility")
+        assert done.returncode != 0
+
+
+class TestBootstrap:
+    def test_the_error_is_taken_over_the_groups_and_not_the_rows(self):
+        # twenty groups of twenty rows, each group separating its two
+        # classes by its own amount. Resampling rows averages that spread away
+        # and reports an error bar for a sample nobody drew. Resampling groups
+        # carries it, so the group error has to be the larger
+        rng = np.random.default_rng(3)
+        units, scores, y = [], [], []
+        for group in range(20):
+            apart = rng.uniform(-2.0, 6.0)
+            labels = np.tile([0.0, 1.0], 10)
+            units += [group] * 20
+            y += list(labels)
+            scores += list(labels * apart + rng.normal(0, 1, 20))
+        units = np.array(units)
+        scores = np.array(scores)
+        y = np.array(y)
+        by_row = fit_attention.bootstrap_auc(scores, y, np.arange(len(y)), draws=100)
+        by_group = fit_attention.bootstrap_auc(scores, y, units, draws=100)
+        assert by_group > 2 * by_row
+
+    def test_one_class_in_every_draw_has_no_error(self):
+        alone = fit_attention.bootstrap_auc(
+            np.arange(10.0), np.zeros(10), np.arange(10), draws=5
+        )
         assert np.isnan(alone)
 
 
