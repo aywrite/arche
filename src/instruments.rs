@@ -586,6 +586,63 @@ mod tests {
         }
     }
 
+    /// The suite is the bench's own unless the line names a file, on the
+    /// residual sampler's terms exactly. It is the only setting there is:
+    /// the argument runs no search, so there is no depth, no rate and no cap
+    /// to read beside it.
+    #[test]
+    fn a_terms_argument_reads_the_suite_it_was_given() {
+        let bench = term_settings(&Params::of("terms")).expect("terms");
+        assert_eq!(bench.epd, None);
+        assert_eq!(bench.positions, bench::positions());
+
+        let path = concat!(env!("CARGO_MANIFEST_DIR"), "/arche-core/bench.epd");
+        let line = format!("terms epd {path}");
+        let named = term_settings(&Params::of(&line)).expect(&line);
+        assert_eq!(named.epd.as_deref(), Some(path));
+        // the same file the bench compiles in, so the two agree
+        assert_eq!(named.positions, bench::positions());
+    }
+
+    /// A file that is no suite is named rather than walked, on the two
+    /// readings the residual sampler's test pins: the file that will not
+    /// open, and the one that opens and holds no position a board will take.
+    #[test]
+    fn a_terms_suite_that_is_no_suite_is_named_rather_than_run() {
+        let manifest = concat!(env!("CARGO_MANIFEST_DIR"), "/Cargo.toml");
+        for (line, what) in [
+            (
+                "terms epd no/such/file.epd".to_string(),
+                "epd: no/such/file.epd".to_string(),
+            ),
+            (format!("terms epd {manifest}"), format!("epd: {manifest}")),
+        ] {
+            assert_eq!(
+                term_settings(&Params::of(&line)).err(),
+                Some(what),
+                "{line}"
+            );
+        }
+    }
+
+    /// The refusal this argument makes that the other three cannot. They
+    /// read a number where the depth would be; this one has no depth, so a
+    /// number there is a word it does not know and is named as one.
+    #[test]
+    fn an_unreadable_terms_setting_is_named_rather_than_run() {
+        for (line, what) in [
+            ("terms 4", "word: 4"),
+            ("terms every 50", "word: every"),
+            ("terms epd suite.epd spare", "word: spare"),
+        ] {
+            assert_eq!(
+                term_settings(&Params::of(line)).err(),
+                Some(what.to_string()),
+                "{line}"
+            );
+        }
+    }
+
     /// The three read their depth by the same rule and their rate from their
     /// own default, which is the whole of what `sampling` had to keep true
     /// when it replaced three copies of it.
