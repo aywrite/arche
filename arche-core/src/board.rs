@@ -409,12 +409,23 @@ impl AttackMasks {
 
 /// The squares a knight on `from` attacks, whatever stands on them.
 ///
-/// The one entry of the attack masks anything outside this file reads.
-/// A reader is opened on it because the evaluation asks what a knight
-/// covers; the rest of the table is the generator's own and stays here.
+/// One of the two entries of the attack masks anything outside this file
+/// reads. A reader is opened on it because the evaluation asks what a knight
+/// covers; the slider entries are the generator's own and stay here.
 #[inline]
 pub(crate) fn knight_attacks(from: u8) -> u64 {
     ATTACK_MASKS.knights[from as usize]
+}
+
+/// The squares a king on `from` attacks, whatever stands on them, which is
+/// eight in the middle of the board, five on an edge and three in a corner.
+///
+/// The other reader, opened for the same reason: the evaluation counts what
+/// the enemy pieces bear on around a king, and those squares are this mask.
+/// The king's own square is not in it.
+#[inline]
+pub(crate) fn king_attacks(from: u8) -> u64 {
+    ATTACK_MASKS.kings[from as usize]
 }
 
 /// Every square a side's pawns attack, as one span.

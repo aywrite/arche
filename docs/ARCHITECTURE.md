@@ -22,12 +22,15 @@ and one per colour, with one bit per square. Most operations on them compile
 down to one or two instructions. The search is alpha beta with iterative
 deepening, quiescence search and a transposition table. Evaluation is
 material plus piece square tables, tapered between middlegame and endgame,
-plus three terms counted at the leaf: piece mobility, priced for the knight,
+plus four terms counted at the leaf: piece mobility, priced for the knight,
 the bishop, the rook and the queen; king safety, which counts the pawns in
 front of each king, the open files beside it and the enemy pawns coming for
-it; and pawn structure, which
-counts each side's passed pawns by rank, its isolated pawns and its doubled
-ones. All three are fitted to the engine's own archived games.
+it; pawn structure, which counts each side's passed pawns by rank, its
+isolated pawns and its doubled ones; and the king attack zone, which counts
+how many squares of each king's ring the other side's pieces bear on. Three
+of the four are fitted to the engine's own archived games. The king attack
+weights are all zero until their fit, and the leaf skips that term's counts
+while they are.
 
 ## Code map: arche-core
 
@@ -128,6 +131,13 @@ ones. All three are fitted to the engine's own archived games.
     own, under the pawn key alone: it reads neither king, so what misses is a
     pawn move and the capture of a pawn, where the shelter's key misses on a
     king move as well.
+  - **king_attack.rs**: How many squares of the enemy king's ring each side's
+    knights, bishops, rooks and queens attack, off the same attack sets
+    mobility walks but with nothing taken out of them. Skipped at the leaf
+    while its weights are zero, and read at every leaf once a fit prices
+    them. Not remembered either way: what it depends on is the whole occupancy
+    and a side's pieces, which is the position, and a table under that key was
+    measured for mobility and turned down on the memory it cost.
 - **psqt.rs**: The piece square tables. Every piece has a second table
   for the endgame; both phases are packed into one integer so the taper
   costs one multiply.

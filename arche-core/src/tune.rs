@@ -5,10 +5,11 @@
 //!
 //! The evaluation is material plus a tapered piece square score plus a
 //! tapered mobility score plus a tapered king shelter score plus a tapered
-//! pawn structure score, and it is linear in the numbers those five are read
-//! from. So a position's score is a dot product: a coefficient for each of
-//! the weights it touches, against the weights themselves. This module writes
-//! the coefficients down, and a fit run outside the engine reads them.
+//! pawn structure score plus a tapered king attack score, and it is linear
+//! in the numbers those six are read from. So a position's score is a dot
+//! product: a coefficient for each of the weights it touches, against the
+//! weights themselves. This module writes the coefficients down, and a fit
+//! run outside the engine reads them.
 //!
 //! It is linear everywhere but one. Material that cannot mate is answered with
 //! a hard zero, which is no dot product at all: every weight vector scores such
@@ -33,7 +34,7 @@
 //! and a helper shared between them is not. The accumulator the search keeps
 //! is neither read nor duplicated.
 //!
-//! The three leaf terms are the exception, and it is deliberate. The walk
+//! The four leaf terms are the exception, and it is deliberate. The walk
 //! asks each term in `eval::TERMS` for its counts through the descriptor, and
 //! what it reaches is the function `eval` reads, so the identity cannot see a
 //! wrong count at any weights, fitted or zero. A second count here would be a
@@ -55,10 +56,12 @@
 //! rounds to nothing. The identity holds either way, because the difference
 //! is exactly the kinds that score nothing, and
 //! `eval_counts_a_kind_exactly_when_its_weight_is_not_zero` is what says the
-//! difference is that and not something else. Neither of the other two is
-//! split that way: both fits gave every one of their weights a value, the
+//! difference is that and not something else. None of the other three is
+//! split that way. Both fits gave every one of their weights a value, the
 //! shelter's fourteen and the pawn structure's sixteen, so there is nothing
-//! in either to leave out.
+//! in either to leave out, and the king attack zone's eight are all zero
+//! until the fit that prices them, which leaves the walk and `eval` reading
+//! the same four counts there too.
 
 use crate::bench::Position;
 use crate::board::Board;
@@ -734,6 +737,83 @@ mod tests {
         assert_eq!(eval::eval(&white), eval::eval(&black));
     }
 
+    /// Every piece bearing on the enemy king's ring writes both ends of the
+    /// taper too, and its count is hand counted rather than read back off the
+    /// board.
+    ///
+    /// The identity says nothing at all about these eight slots. The eight
+    /// weights are zero until the fit, so a king attack coefficient written
+    /// to the wrong slot, doubled, or left out entirely reproduces every row
+    /// of the corpus and every reconstruction test above. What is asserted
+    /// here is the coefficient itself, against a count worked out by hand
+    /// from the position below.
+    #[test]
+    fn every_king_attack_count_writes_both_ends_of_the_taper() {
+        // one white piece of each kind that carries a weight, and no black
+        // piece of any of them to cancel a coefficient out. The black king on
+        // g8 has the ring f7, g7, h7, f8 and h8
+        let fen = "6k1/R7/4N2Q/8/8/3B4/8/6K1 w - - 0 1";
+        let board = Board::from_fen(fen).unwrap();
+        let terms = Terms::of(&board);
+        assert_eq!(terms.phase, 8);
+        assert_ne!(
+            terms.phase,
+            TOTAL_PHASE - terms.phase,
+            "the two ends hold the same share here, so this test cannot tell them apart"
+        );
+        let coefficient = |slot: usize| {
+            terms
+                .coefficients
+                .iter()
+                .find(|(named, _)| usize::from(*named) == slot)
+                .map_or(0, |(_, coefficient)| *coefficient)
+        };
+        for (index, count, why) in [
+            // the knight on e6 has f8 and g7 of its eight
+            (0, 2, "knight"),
+            // the bishop on d3 has h7, up e4, f5 and g6
+            (1, 1, "bishop"),
+            // the rook on a7 has f7, g7 and h7 along the rank
+            (2, 3, "rook"),
+            // the queen on h6 has h7 and h8 up the file and g7 and f8 up the
+            // diagonal
+            (3, 4, "queen"),
+        ] {
+            let (start, width) = term("king_attack");
+            assert_eq!(
+                coefficient(start + index),
+                count * terms.phase,
+                "{} midgame",
+                why
+            );
+            assert_eq!(
+                coefficient(start + width + index),
+                count * (TOTAL_PHASE - terms.phase),
+                "{} endgame",
+                why
+            );
+        }
+    }
+
+    /// A position and its reflection with the colours swapped state the same
+    /// row here too, so the king attack counts are signed and slotted the same
+    /// way for both sides and each side reads the other king's ring.
+    #[test]
+    fn a_mirrored_position_states_the_same_king_attack_row() {
+        let white = Board::from_fen("4k3/8/2N5/8/8/5b2/8/4K3 w - - 0 1").unwrap();
+        let black = Board::from_fen("4k3/8/5B2/8/8/2n5/8/4K3 b - - 0 1").unwrap();
+        let terms = Terms::of(&white);
+        assert!(
+            terms
+                .coefficients
+                .iter()
+                .any(|(slot, _)| usize::from(*slot) >= term("king_attack").0),
+            "no king attack coefficient here, so this test says nothing about one"
+        );
+        assert_eq!(terms, Terms::of(&black));
+        assert_eq!(eval::eval(&white), eval::eval(&black));
+    }
+
     /// A position whose piece square numerator is negative and does not
     /// divide by twenty four evenly, which is what the two tests below need
     /// to tell two readings of the arithmetic apart. A knight a side would
@@ -1169,7 +1249,7 @@ mod tests {
     /// way, so every row of the corpus reconstructs whichever side it is put
     /// on, and it would go on reconstructing until the fit gave those weights a
     /// value. The predicate is arithmetic on slot numbers, so it is pinned as
-    /// that instead. All three leaf terms are asked about, since what the material
+    /// that instead. All four leaf terms are asked about, since what the material
     /// block ends at has moved once already.
     #[test]
     fn the_material_values_are_the_only_weights_outside_the_divide() {
