@@ -12,10 +12,11 @@ publish = false
 [lib]
 bench = false #https://bheisler.github.io/criterion.rs/book/faq.html#cargo-bench-gives-unrecognized-option-errors-for-valid-command-line-options
 
-# The ten unsafe blocks here are the move list's initialised prefix, the
-# castling rights as the word they occupy, and the static exchange gain
-# array. Each carries a SAFETY note and the argument holds, but nothing
-# checked mechanically that it kept holding.
+# The eleven unsafe blocks here are the move list's initialised prefix, the
+# castling rights as the word they occupy, the static exchange gain array,
+# and the `madvise` that asks for the transposition table's huge pages.
+# Each carries a SAFETY note and the argument holds, but nothing checked
+# mechanically that it kept holding.
 #
 # This is the half a compiler can check. Without it the body of an
 # `unsafe fn` is unsafe throughout, so a new unsafe operation added inside
@@ -28,6 +29,19 @@ unsafe_op_in_unsafe_fn = "deny"
 
 [dependencies]
 smallvec = "1.15.1"
+# One call, the `madvise` that puts the transposition table on huge pages.
+# This crate had one runtime dependency and the count was worth keeping,
+# so what the second one buys is written down: between a tenth and a fifth
+# of the search's rate on the 256MB table a game is played with, and more
+# on a larger one, measured in the commit that added it. Stable rust does
+# not reach `madvise` without either this or a raw syscall, and the
+# syscall is an architecture's worth of unsafe assembly spent on keeping a
+# number in deny.toml down. libc is in the lock file already, since
+# proptest reaches it, so this adds an edge and no package. It is asked
+# for on linux alone, which is where the advice exists, so the macos and
+# windows builds still have the one dependency.
+[target.'cfg(target_os = "linux")'.dependencies]
+libc = "0.2"
 
 [dev-dependencies]
 proptest = "1.7"
