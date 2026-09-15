@@ -208,11 +208,7 @@ pub fn residual_settings(params: &Params) -> Result<ResidualSettings, String> {
         None => SearchConfig::default(),
         Some(word) => SearchConfig::with_taint(word).ok_or_else(|| format!("taint: {word}"))?,
     };
-    let epd = params.value("epd").map(str::to_string);
-    let positions = match &epd {
-        None => bench::positions(),
-        Some(path) => read_epd(path)?,
-    };
+    let (epd, positions) = suite(params)?;
     Ok(ResidualSettings {
         depth,
         every,
@@ -221,6 +217,23 @@ pub fn residual_settings(params: &Params) -> Result<ResidualSettings, String> {
         epd,
         positions,
     })
+}
+
+/// The suite an instrument was asked for: the file the line named, and the
+/// positions read from it or the bench's own.
+///
+/// Three of the four arguments take a suite and the reading is two decisions
+/// rather than one. The path is kept because the report's header states it,
+/// and the positions are read here rather than at the run so that a file
+/// which is no suite is refused before the minutes are spent. Written once
+/// so the two cannot come apart on one of the three.
+fn suite(params: &Params) -> Result<(Option<String>, Vec<bench::Position>), String> {
+    let epd = params.value("epd").map(str::to_string);
+    let positions = match &epd {
+        None => bench::positions(),
+        Some(path) => read_epd(path)?,
+    };
+    Ok((epd, positions))
 }
 
 /// The positions of an epd file, or the path that could not be read as a
@@ -306,11 +319,7 @@ pub struct ReductionSettings {
 
 pub fn reduction_settings(params: &Params) -> Result<ReductionSettings, String> {
     let Sampling { depth, every, cap } = sampling(params, &REDUCTIONS, reduction::DEFAULT_EVERY)?;
-    let epd = params.value("epd").map(str::to_string);
-    let positions = match &epd {
-        None => bench::positions(),
-        Some(path) => read_epd(path)?,
-    };
+    let (epd, positions) = suite(params)?;
     Ok(ReductionSettings {
         depth,
         every,
@@ -351,11 +360,7 @@ pub struct TermSettings {
 
 pub fn term_settings(params: &Params) -> Result<TermSettings, String> {
     TERMS.claim(params)?;
-    let epd = params.value("epd").map(str::to_string);
-    let positions = match &epd {
-        None => bench::positions(),
-        Some(path) => read_epd(path)?,
-    };
+    let (epd, positions) = suite(params)?;
     Ok(TermSettings { epd, positions })
 }
 
@@ -580,6 +585,63 @@ mod tests {
         ] {
             assert_eq!(
                 reduction_settings(&Params::of(line)).err(),
+                Some(what.to_string()),
+                "{line}"
+            );
+        }
+    }
+
+    /// The suite is the bench's own unless the line names a file, on the
+    /// residual sampler's terms exactly. It is the only setting there is:
+    /// the argument runs no search, so there is no depth, no rate and no cap
+    /// to read beside it.
+    #[test]
+    fn a_terms_argument_reads_the_suite_it_was_given() {
+        let bench = term_settings(&Params::of("terms")).expect("terms");
+        assert_eq!(bench.epd, None);
+        assert_eq!(bench.positions, bench::positions());
+
+        let path = concat!(env!("CARGO_MANIFEST_DIR"), "/arche-core/bench.epd");
+        let line = format!("terms epd {path}");
+        let named = term_settings(&Params::of(&line)).expect(&line);
+        assert_eq!(named.epd.as_deref(), Some(path));
+        // the same file the bench compiles in, so the two agree
+        assert_eq!(named.positions, bench::positions());
+    }
+
+    /// A file that is no suite is named rather than walked, on the two
+    /// readings the residual sampler's test pins: the file that will not
+    /// open, and the one that opens and holds no position a board will take.
+    #[test]
+    fn a_terms_suite_that_is_no_suite_is_named_rather_than_run() {
+        let manifest = concat!(env!("CARGO_MANIFEST_DIR"), "/Cargo.toml");
+        for (line, what) in [
+            (
+                "terms epd no/such/file.epd".to_string(),
+                "epd: no/such/file.epd".to_string(),
+            ),
+            (format!("terms epd {manifest}"), format!("epd: {manifest}")),
+        ] {
+            assert_eq!(
+                term_settings(&Params::of(&line)).err(),
+                Some(what),
+                "{line}"
+            );
+        }
+    }
+
+    /// The refusal this argument makes that the other three cannot. They
+    /// read a number where the depth would be; this one has no depth, so a
+    /// number there is a word it does not know and is named as one.
+    #[test]
+    fn an_unreadable_terms_setting_is_named_rather_than_run() {
+        for (line, what) in [
+            ("terms 4", "word: 4"),
+            ("terms every 50", "word: every"),
+            ("terms epd suite.epd spare", "word: spare"),
+        ] {
+            assert_eq!(
+                term_settings(&Params::of(line)).err(),
                 Some(what.to_string()),
                 "{line}"
             );
