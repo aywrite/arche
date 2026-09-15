@@ -47,7 +47,130 @@ pub const TABLE_BYTES: usize = 16 * 1024 * 1024;
 /// in the refit's commit, and the suite is not a gate.
 pub const EXPECTED_PASSES: usize = 224;
 
+/// The count the suite may not go under, whatever a commit says it meant to
+/// spend.
+///
+/// Held apart from `EXPECTED_PASSES` and moved only on its own account. The
+/// exact count is a tripwire: it says the suite moved, and a change that
+/// meant to move it updates the number and the tripwire is rearmed one notch
+/// lower. Nothing in that stops the number walking down a few positions at a
+/// time until the suite says nothing at all, because each step is small and
+/// each is argued for on its own.
+///
+/// Two hundred and ten is fourteen under where the count stands and eleven
+/// under the lowest it has been gated at (221, on the model gated two ply
+/// reduction). Since the suite was first gated the count has been 243, 241,
+/// 240, 237, 236, 229, 221, 226, 227, 228, 231 and 224, and the largest
+/// single step in that list is eight. So one change spending fourteen is
+/// spending most of two of the largest steps ever taken, and this fails
+/// rather than being written down and rearmed. Lowering the floor is a
+/// commit whose whole subject is lowering the floor.
+pub const FLOOR: usize = 210;
+
+// The snapshot cannot be set under the floor without moving the floor, and
+// the build says so rather than the suite run, which is a job of its own and
+// runs on three platforms. Strictly under, not equal: a floor standing on
+// the snapshot would fail on the next arm that spends one position, and
+// whoever raised it would raise both, which is the ratchet the floor is
+// there to refuse.
+const _: () = assert!(EXPECTED_PASSES > FLOOR);
+
+/// A position the engine has knowingly given up, with what bought it and the
+/// version its acceptance runs out at.
+///
+/// This is what tells a change that spent seven positions and said which
+/// from a change that spent seventy and said nothing. It is not a second
+/// floor and it does not enter the count: the suite still has to match
+/// `EXPECTED_PASSES` exactly and still has to clear `FLOOR`. What the list
+/// adds is that a loss taken on purpose is named, and that naming it does
+/// not settle the matter for ever.
+#[derive(Debug, Clone, Copy)]
+pub struct AcceptedLoss {
+    /// The suite id, as `tactics.epd` writes it.
+    pub id: &'static str,
+    /// What the position was spent on.
+    pub why: &'static str,
+    /// The first version at which the acceptance no longer holds. At that
+    /// version the tests fail until someone either wins the position back or
+    /// writes down a fresh reason and a later version.
+    pub until: &'static str,
+}
+
+/// The losses accepted so far.
+///
+/// Empty. The suite misses seventy six positions at the pinned depth and
+/// none of them has been read one at a time, so there is nothing here that
+/// would be a record rather than a guess. The next change that lowers
+/// `EXPECTED_PASSES` is the first that writes here, naming what it spent.
+pub const ACCEPTED_LOSSES: &[AcceptedLoss] = &[];
+
 const SUITE: &str = include_str!("../tactics.epd");
+
+/// A version as three numbers, for holding an expiry against the crate's
+/// own. Anything after the patch number is dropped, so an acceptance that
+/// runs out at 0.6.0 has run out by the time 0.6.0-rc1 is built. A part that
+/// is not a number reads as zero, which means a mistyped expiry has already
+/// run out rather than lasting for ever: the direction to fail in.
+fn version_triple(version: &str) -> (u32, u32, u32) {
+    let mut parts = version
+        .split(['.', '-', '+'])
+        .map(|part| part.parse::<u32>().unwrap_or(0));
+    (
+        parts.next().unwrap_or(0),
+        parts.next().unwrap_or(0),
+        parts.next().unwrap_or(0),
+    )
+}
+
+/// What is wrong with the allowlist, read against the suite it names
+/// positions in and the version in force. Empty when nothing is.
+///
+/// Cheap: it runs no search, so the default test run holds the list to this
+/// rather than leaving it to the suite job.
+pub fn accepted_loss_faults(
+    accepted: &[AcceptedLoss],
+    suite: &[Position],
+    version: &str,
+) -> Vec<String> {
+    let now = version_triple(version);
+    let mut faults = Vec::new();
+    for (at, loss) in accepted.iter().enumerate() {
+        if !suite.iter().any(|position| position.id == loss.id) {
+            faults.push(format!("{} is not a position in the suite", loss.id));
+        }
+        if accepted[..at].iter().any(|earlier| earlier.id == loss.id) {
+            faults.push(format!("{} is accepted twice", loss.id));
+        }
+        if loss.why.trim().is_empty() {
+            faults.push(format!("{} is accepted for no stated reason", loss.id));
+        }
+        if now >= version_triple(loss.until) {
+            faults.push(format!(
+                "{} was accepted until {} and this is {}: win it back or write down a new reason",
+                loss.id, loss.until, version
+            ));
+        }
+    }
+    faults
+}
+
+/// Accepted losses the run found passing. An acceptance nothing is spending
+/// any more comes off the list rather than sitting on it, since a list that
+/// keeps entries it no longer needs stops being read.
+pub fn stale_acceptances<'a>(
+    accepted: &'a [AcceptedLoss],
+    report: &Report,
+) -> Vec<&'a AcceptedLoss> {
+    accepted
+        .iter()
+        .filter(|loss| {
+            report
+                .positions
+                .iter()
+                .any(|position| position.id == loss.id && position.passed)
+        })
+        .collect()
+}
 
 /// The suite's positions, in the order the file lists them.
 pub fn positions() -> Vec<Position> {
@@ -199,6 +322,18 @@ mod tests {
                 )
             })
             .collect();
+        // the floor first, and with a message of its own: under the floor
+        // is a different event from off the snapshot, and the number to
+        // reach for is not the same number
+        assert!(
+            report.passes() >= FLOOR,
+            "the suite is under its floor of {}: {} of {} at depth {}. This is not a snapshot to update. Missed:\n{}",
+            FLOOR,
+            report.passes(),
+            report.positions.len(),
+            DEPTH,
+            missed.join("\n")
+        );
         assert_eq!(
             report.passes(),
             EXPECTED_PASSES,
@@ -208,5 +343,76 @@ mod tests {
             DEPTH,
             missed.join("\n")
         );
+        let stale = stale_acceptances(ACCEPTED_LOSSES, &report);
+        assert!(
+            stale.is_empty(),
+            "the suite finds these again, so they are not losses to accept: {}",
+            stale
+                .iter()
+                .map(|loss| loss.id)
+                .collect::<Vec<_>>()
+                .join(", ")
+        );
+    }
+
+    #[test]
+    fn the_accepted_losses_name_real_positions_and_have_not_run_out() {
+        // the half of the allowlist that costs no search, so the default run
+        // holds it rather than the suite job, which is ignored and runs on
+        // three platforms
+        let faults = accepted_loss_faults(ACCEPTED_LOSSES, &positions(), env!("CARGO_PKG_VERSION"));
+        assert!(faults.is_empty(), "{}", faults.join("\n"));
+    }
+
+    #[test]
+    fn a_fault_in_the_allowlist_is_named() {
+        // the check above passes over an empty list, so this is what says it
+        // can fail: one made up list carrying each fault once
+        let suite = positions();
+        let accepted = [
+            AcceptedLoss {
+                id: "no.such.position",
+                why: "a typo, or a position the suite no longer carries",
+                until: "99.0.0",
+            },
+            AcceptedLoss {
+                id: "WAC.001",
+                why: "",
+                until: "99.0.0",
+            },
+            AcceptedLoss {
+                id: "WAC.001",
+                why: "the same position named twice",
+                until: "99.0.0",
+            },
+            AcceptedLoss {
+                id: "WAC.002",
+                why: "accepted against a version already past",
+                until: "0.0.1",
+            },
+        ];
+        let faults = accepted_loss_faults(&accepted, &suite, "0.4.4");
+        assert_eq!(faults.len(), 4, "{}", faults.join("\n"));
+        assert!(faults[0].contains("not a position in the suite"));
+        assert!(faults[1].contains("no stated reason"));
+        assert!(faults[2].contains("accepted twice"));
+        assert!(faults[3].contains("write down a new reason"));
+
+        // and a sound entry against a version it outlives raises nothing
+        let sound = [AcceptedLoss {
+            id: "WAC.003",
+            why: "spent on something the commit names",
+            until: "99.0.0",
+        }];
+        assert!(accepted_loss_faults(&sound, &suite, "0.4.4").is_empty());
+    }
+
+    #[test]
+    fn an_expiry_is_read_to_the_patch_number_and_no_further() {
+        // a pre-release of the version an acceptance runs out at has run out
+        assert_eq!(version_triple("0.4.4"), (0, 4, 4));
+        assert_eq!(version_triple("0.6.0-rc1"), (0, 6, 0));
+        assert!(version_triple("0.6.0-rc1") >= version_triple("0.6.0"));
+        assert!(version_triple("0.5.9") < version_triple("0.6.0"));
     }
 }
