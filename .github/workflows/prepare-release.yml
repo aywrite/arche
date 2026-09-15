@@ -51,12 +51,20 @@ jobs:
 
       - uses: taiki-e/install-action@d438492cf8a250514fa2d34b30bc3c0dc37c65ff # v2.87.8
         with:
-          # cliff.toml is written against the version 2 template syntax
-          tool: cargo-binstall,git-cliff@2
+          # pinned exactly, because these two write the release commit and the
+          # changelog and a tool that floats makes a release unreproducible.
+          # these are the versions that cut v0.4.4. cliff.toml is written
+          # against git-cliff's version 2 template syntax, so a major bump here
+          # is a template change as well as a version one. dependabot bumps the
+          # `uses:` line above but not a version inside `tool:`, so these two
+          # are bumped by hand
+          tool: cargo-binstall@1.23.0,git-cliff@2.14.1
 
       - name: Install cargo-release
         run: |
-          cargo binstall --no-confirm cargo-release
+          # pinned for the reason above. installed here rather than through the
+          # action, which does not carry cargo-release
+          cargo binstall --no-confirm cargo-release@1.1.5
           # binstall can exit zero without installing anything, so fail here
           # rather than several steps later with a confusing error
           cargo release --version
