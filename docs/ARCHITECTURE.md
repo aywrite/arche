@@ -27,10 +27,8 @@ the bishop, the rook and the queen; king safety, which counts the pawns in
 front of each king, the open files beside it and the enemy pawns coming for
 it; pawn structure, which counts each side's passed pawns by rank, its
 isolated pawns and its doubled ones; and the king attack zone, which counts
-how many squares of each king's ring the other side's pieces bear on. Three
-of the four are fitted to the engine's own archived games. The king attack
-weights are all zero until their fit, and the leaf skips that term's counts
-while they are.
+how many squares of each king's ring the other side's pieces bear on. All
+four are fitted to the engine's own archived games.
 
 ## Code map: arche-core
 
@@ -133,9 +131,9 @@ while they are.
     king move as well.
   - **king_attack.rs**: How many squares of the enemy king's ring each side's
     knights, bishops, rooks and queens attack, off the same attack sets
-    mobility walks but with nothing taken out of them. Skipped at the leaf
-    while its weights are zero, and read at every leaf once a fit prices
-    them. Not remembered either way: what it depends on is the whole occupancy
+    mobility walks but with nothing taken out of them. Read at every leaf,
+    and skipped only if its weights are all zero. Not remembered: what it
+    depends on is the whole occupancy
     and a side's pieces, which is the position, and a table under that key was
     measured for mobility and turned down on the memory it cost.
 - **psqt.rs**: The piece square tables. Every piece has a second table

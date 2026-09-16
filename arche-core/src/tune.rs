@@ -57,11 +57,9 @@
 //! is exactly the kinds that score nothing, and
 //! `eval_counts_a_kind_exactly_when_its_weight_is_not_zero` is what says the
 //! difference is that and not something else. None of the other three is
-//! split that way. Both fits gave every one of their weights a value, the
-//! shelter's fourteen and the pawn structure's sixteen, so there is nothing
-//! in either to leave out, and the king attack zone's eight are all zero
-//! until the fit that prices them, which leaves the walk and `eval` reading
-//! the same four counts there too.
+//! split that way. Their fits gave every one of their weights a value, the
+//! shelter's fourteen, the pawn structure's sixteen and the king attack
+//! zone's eight, so there is nothing in any of them to leave out.
 
 use crate::bench::Position;
 use crate::board::Board;
@@ -741,12 +739,12 @@ mod tests {
     /// taper too, and its count is hand counted rather than read back off the
     /// board.
     ///
-    /// The identity says nothing at all about these eight slots. The eight
-    /// weights are zero until the fit, so a king attack coefficient written
-    /// to the wrong slot, doubled, or left out entirely reproduces every row
-    /// of the corpus and every reconstruction test above. What is asserted
-    /// here is the coefficient itself, against a count worked out by hand
-    /// from the position below.
+    /// The identity reads these eight slots against the fitted weights, so it
+    /// catches a coefficient written to the wrong slot only where the two
+    /// weights differ, and it cannot tell a count that is wrong in the walk
+    /// from the same count wrong in `eval`, since both read one function. What
+    /// is asserted here is the coefficient itself, against a count worked out
+    /// by hand from the position below.
     #[test]
     fn every_king_attack_count_writes_both_ends_of_the_taper() {
         // one white piece of each kind that carries a weight, and no black

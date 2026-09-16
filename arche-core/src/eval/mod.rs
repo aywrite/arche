@@ -196,11 +196,11 @@ impl Memo for Caches {
 /// on one scale, and it is what keeps one divide however many such terms
 /// there are.
 ///
-/// The king attack zone is behind [`king_attack::SCORED`], which is false
-/// while its eight weights are zero. A count multiplied by nothing scores
-/// nothing, and llvm does not take the walk that produces it out on that
-/// ground, so the summand is dropped here instead: at a constant false the
-/// call is not compiled rather than computed and thrown away.
+/// The king attack zone is behind [`king_attack::SCORED`], which is true at
+/// the fitted weights and would be false if all eight were zero. A count
+/// multiplied by nothing scores nothing, and llvm does not take the walk that
+/// produces it out on that ground, so at a constant false the summand is not
+/// compiled rather than computed and thrown away.
 ///
 /// Material that cannot mate reads zero before any of it. That is the one
 /// place in the evaluation that is not a dot product against the weights,
@@ -838,27 +838,9 @@ mod evaluate {
             let priced = (0..term.width).any(|index| {
                 mg_value((term.weight)(index)) != 0 || eg_value((term.weight)(index)) != 0
             });
-            // every term is priced but the king attack zone, which ships at
-            // zero weight until its fit lands. A nominal weight in the
-            // meantime would move the bench, and the commit that added the
-            // counts claims the bench is the one below it. Written as an
-            // equality rather than an exemption, so the fit that prices the
-            // term fails here until this line goes with it
-            assert_eq!(
-                priced,
-                term.name != "king_attack",
-                "{} is worth {} at either end",
-                term.name,
-                if priced { "something" } else { "nothing" }
-            );
+            assert!(priced, "{} is worth nothing at either end", term.name);
         }
     }
-
-    /// Four weights that differ from each other at both ends of the taper,
-    /// for the king attack zone, whose shipped eight are zero and say nothing
-    /// about a fold.
-    const KING_ATTACK_TRIAL: [i32; king_attack::COUNTS] =
-        [pack(11, 2), pack(-7, 13), pack(3, -5), pack(29, 41)];
 
     /// The table names the four leaf terms the sum adds, which is what makes
     /// the tuner's row and the evaluation the same arithmetic.
@@ -868,13 +850,6 @@ mod evaluate {
     /// added to the table and left out of the sum would print coefficients the
     /// evaluation never reads, and the tuner's identity would fail on the
     /// first position that touched it; this says which of the two is wrong.
-    ///
-    /// An unpriced term stands outside that guard until its fit. The king
-    /// attack zone is skipped at the leaf while its weights are zero, so a sum
-    /// that dropped it altogether would add up the same and this test would
-    /// pass. What it can say meanwhile is that the term is there and that its
-    /// counts are not level here, which is why it reads the fold against
-    /// weights of its own rather than the shipped ones.
     #[test]
     fn the_table_names_the_terms_the_sum_adds() {
         let names: Vec<&str> = TERMS.iter().map(|term| term.name).collect();
@@ -884,18 +859,15 @@ mod evaluate {
         );
         // two queens and a rook against none, a king in each corner of the
         // board and pawns of both colours on six files, so that no one of the
-        // three folds to nothing and the test says something about each. The
+        // four folds to nothing and the test says something about each. The
         // queen on a4 bears on d7 and e8 of the black king's ring, which is
-        // what leaves the fourth term's counts unlevel too
+        // what leaves the king attack counts unlevel
         let board = Board::from_fen("3k4/P4p2/8/3P2p1/Q2P4/PP2p2p/1P6/1Q4KR w - - 0 1").unwrap();
         for (name, term) in [
             ("mobility", mobility::fold(&board)),
             ("shelter", shelter::fold(&board)),
             ("pawn structure", pawn_structure::fold(&board)),
-            (
-                "king attack",
-                king_attack::fold_with(&board, &KING_ATTACK_TRIAL),
-            ),
+            ("king attack", king_attack::fold(&board)),
         ] {
             assert_ne!(term, 0, "{} is level here, so it says nothing", name);
         }

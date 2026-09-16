@@ -15,9 +15,9 @@ search, principal variation search, reverse futility pruning, a null move pass a
 reduction. Captures are ordered by what a static exchange evaluation says the swap wins, with
 MVV-LVA breaking the ties between the ones it prices alike, and the quiet moves by the ones that
 have cut off before. Evaluation is material, piece square tables, piece mobility, the
-pawns standing in front of each king, and pawn structure, tapered between a middlegame
-and an endgame score. The tables and the three leaf terms were fitted to the engine's
-own games; the material values are hand set.
+pawns standing in front of each king, pawn structure, and the squares around each king the
+enemy pieces attack, tapered between a middlegame and an endgame score. The tables and the
+four leaf terms were fitted to the engine's own games; the material values are hand set.
 
 ### Background
 

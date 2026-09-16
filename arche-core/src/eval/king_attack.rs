@@ -25,18 +25,73 @@ pub(crate) const COUNTS: usize = mobility::PIECES.len();
 /// What one attacked square of the enemy king's ring is worth to each of
 /// [`mobility::PIECES`], as the packed pairs the taper is read from.
 ///
-/// Unfitted. All eight halves are zero, so [`SCORED`] is false, the leaf does
-/// not take the counts at all, and the evaluation is the one the commit below
-/// this counted: the same bench, the same two suite totals, and the claim of
-/// the commit that added the counts is that they moved none of them. The
-/// counts are here for the tuner's rows, which state a coefficient per column
-/// whatever weight stands beside it, so a corpus extracted from this build is
-/// what a fit prices them on.
+/// Fitted 2026-09-16 by `scripts/tune.py` over the whole archived strength
+/// run: 310 artifacts and 50,677 games, whose 6,623,970 post-book plies gave
+/// 6,227,777 positions and 2,890,773 quiet rows, extracted by `arche terms` at
+/// the 820 slot layout. The corpus is sha256 `a0798d51`, built with the sealed
+/// pairs named, and those are sha256 `a723887f`. The rows are sha256
+/// `6001063b` and the fitted vector is sha256 `f65aa57e`. K was held at 1.0821
+/// and the games split by pair: 16,300 pairs and 32,516 games trained, 5,528
+/// pairs and 11,030 games chose the ridge, and 3,498 pairs and 6,985 games
+/// were sealed. The sealed file names 3,501 pairs over 6,995 games. Three of
+/// those pairs reach no row, which accounts for at most six of the ten missing
+/// games, and where the other four went is not established. The 768 table
+/// entries, the six material values, the eight mobility weights, the fourteen
+/// shelter weights and the sixteen pawn structure ones were all held, so these
+/// eight are the only thing that moved.
 ///
-/// The fit replaces this block with the provenance one the other three terms
-/// carry. `every_term_writes_the_counts_its_width_claims` in the module above
-/// names this term as the unfitted one and fails until that happens.
-static KING_ATTACK: [i32; COUNTS] = [pack(0, 0); COUNTS];
+/// The fit's figure is the sealed group's: a paired difference of -0.000143
+/// against a standard error of 0.000059 at a design factor of 3.2. The sealed
+/// group was opened once, at 2026-09-16T10:28:31Z, after the vector was frozen
+/// and over 417,778 positions that no fit and no ridge choice had read. It
+/// scores 0.079520 at zero and 0.079377 at these rounded weights. That is 2.42
+/// standard errors from zero, outside its interval.
+///
+/// The selection group read -0.000395 against a standard error of 0.000052 at
+/// the same design factor, scoring 0.085901 at zero and 0.085506 at the fit
+/// before it was rounded (0.085496 after). By the rule the fit was registered
+/// with, that a disagreement wider than the mobility refit's 1.85 standard
+/// errors means the sealed figure is the one quoted, the selection group's
+/// -0.000395 overstated the fit.
+///
+/// Two things in the sealed reading were recorded before any game was played.
+/// The first is its size. It is about a third of the selection group's, and
+/// about 3.2 standard errors from it, where the mobility refit's two readings
+/// were 1.85 apart and the king safety fit's 0.68. The sealed games are the
+/// strength runs played since the mobility refit's corpus was built, and most
+/// of them are the lazy mobility arms, whose candidates skipped the mobility
+/// term at most quiescence stand pats and so reached positions a different
+/// evaluation chose. The second is where it pays. By phase the sealed reading
+/// is -0.000088 at six pieces or fewer, -0.000414 from seven to twelve and
+/// +0.000366 at thirteen or more, so on those games the fullest boards read
+/// slightly worse at these weights. The selection group read -0.000261,
+/// -0.000811 and +0.000008 over the same buckets, the fullest boards level.
+/// Neither group prints a standard error per bucket.
+///
+/// The ridge is zero, which the grid ranked first. The check that would have
+/// overruled it is a largest weight on the column with the least support, and
+/// that is not what happened: the largest weight is the rook's 27, and the
+/// rook column is the best supported of the four. A midgame coefficient is
+/// written in 16.2% of the training rows for the knight, 27.0% for the bishop,
+/// 30.5% for the rook and 17.4% for the queen. Little of that is on a full
+/// board. A sample of every twentieth of all 2,890,773 rows, across all three
+/// groups and reading positions only, finds a rook bearing on the enemy ring
+/// from 0.6% of the sides with thirteen or more pieces left, against 21.7% of
+/// the sides over the sampled rows. The sample spans every group, so it is a
+/// different population from the training row shares above.
+///
+/// The learning curve is flat from an eighth of the training pairs. Five
+/// draws of 2,038 pairs read -0.000346 to -0.000397 against the whole set's
+/// -0.000395, so the corpus is not what limits eight weights.
+///
+/// [`SCORED`] is true at these weights, so the leaf counts the ring at every
+/// evaluation. What that costs is in the commit that landed this.
+///
+/// `bounds_hold` charges one piece of each kind two squares of the ring for a
+/// knight, three for a bishop, four for a rook and six for a queen, both sides
+/// counted. That puts this term at 584 in the midgame and the whole vector's
+/// boardful at 9,762, against the 32,767 a half has to stay inside.
+static KING_ATTACK: [i32; COUNTS] = [pack(11, 3), pack(20, -2), pack(27, -3), pack(17, 9)];
 
 /// The weight of one of the four pieces that carries one, as the packed pair.
 /// The tuner's seam asks through [`super::TERMS`], so that a slot names the
@@ -47,13 +102,13 @@ pub(crate) const fn weight(index: usize) -> i32 {
 
 /// Whether [`super::sum`] takes this term at the leaf: true when one of the
 /// four [`KING_ATTACK`] weights is not zero at one end of the taper or the
-/// other. All eight halves are zero today, so it is false and no leaf asks
-/// [`counts_of`] anything.
+/// other. The 2026-09-16 fit priced all eight halves, so it is true and every
+/// leaf asks [`counts_of`] for both sides.
 ///
 /// Derived from the weights rather than written out, which is how
-/// [`mobility::SCORED_KINDS`] is derived, and it means the fit that prices the
-/// columns turns the term on by replacing the weights and editing nothing
-/// else.
+/// [`mobility::SCORED_KINDS`] is derived. The fit turned the term on by
+/// replacing the weights and editing nothing else, and weights put back to
+/// zero would turn it off the same way.
 ///
 /// A count at a zero weight is not folded away by the compiler. Multiplying
 /// the counts by nothing leaves the walk over the pieces standing, and llvm
@@ -158,26 +213,17 @@ pub(crate) fn counts(board: &Board, color: Color, into: &mut [i32]) {
 /// What white's bearing on the black king stands ahead by, as a packed pair on
 /// the scale the piece square pair is on.
 ///
-/// Nothing at the weights that ship, since all eight halves are zero, and the
-/// sum does not call it at all while [`SCORED`] is false. The fold is written
-/// now rather than with the fit so that the sum names this term from the
-/// commit the counts arrive in, and so that what the fit moves is eight
-/// numbers and not the shape of the evaluation.
+/// The sum calls it only while [`SCORED`] is true. It was written in the
+/// commit the counts arrived in, at zero weight, so that what the fit moved
+/// was eight numbers and not the shape of the evaluation.
 #[inline]
 pub(crate) fn fold(board: &Board) -> i32 {
     fold_with(board, &KING_ATTACK)
 }
 
 /// The same fold against weights named by the caller.
-///
-/// Visible to the module above rather than private, which is what the other
-/// three leaf terms keep theirs. [`KING_ATTACK`] is zero, so the shipped fold
-/// answers nothing on every position and can say nothing about how the four
-/// pairs are read, and `the_table_names_the_terms_the_sum_adds` has to read it
-/// against weights of its own to say anything at all. The fit puts that back
-/// and this goes private again.
 #[inline]
-pub(super) fn fold_with(board: &Board, weights: &[i32; COUNTS]) -> i32 {
+fn fold_with(board: &Board, weights: &[i32; COUNTS]) -> i32 {
     let white = counts_of(board, Color::White);
     let black = counts_of(board, Color::Black);
     let mut packed = 0;
@@ -196,10 +242,8 @@ mod tests {
     /// The counts by hand, square by square, because nothing else pins them.
     /// The tuner's identity folds a row against the live weights, and `eval`
     /// and the walk read this same function, so the two sides of the identity
-    /// move together whatever it answers. At the zero weights that ship the
-    /// identity says less than that: the coefficients are multiplied by
-    /// nothing, so a wrong sign or a wrong half of a pair is invisible to it.
-    /// These cases are the only check this term has.
+    /// move together whatever it answers. These cases are what pins the
+    /// counts themselves.
     ///
     /// The black king stands on e8 unless the case says otherwise, so its ring
     /// is d7, e7, f7, d8 and f8. The white king stands off every line the case
@@ -383,7 +427,7 @@ mod tests {
     /// [`counts_of`].
     ///
     /// Black's king on g8 has the ring f7, g7, h7, f8 and h8. White's knight
-    /// on e6 has f8 and g7. Its bishop on d3 has h7 up the long diagonal. Its
+    /// on e6 has f8 and g7. Its bishop on d3 has h7, through e4, f5 and g6. Its
     /// rook on a7 has d7 and e7 and f7 along the rank, of which f7 alone is in
     /// the ring, and then g7 and h7 as well, which is three. Its queen on h6
     /// has h7 and h8 up the file and g7 and f8 up the diagonal, which is four.
@@ -407,12 +451,12 @@ mod tests {
 
     /// What the fold does with weights that are not the shipped ones.
     ///
-    /// The shipped ones are zero, so they would say nothing here at all. What
-    /// the packing does with a pair, and which of the four pieces each pair
-    /// belongs to, stay invisible until a fit prices the columns. So this
-    /// hands the fold four pairs that differ from each other at both ends and
-    /// asserts the packed pair against the arithmetic: white's count less
-    /// black's, piece by piece, each half of the pair summed on its own.
+    /// Nothing holds the shipped weights apart from each other, so a pair
+    /// read into the wrong piece's slot or a half read off the wrong end could
+    /// land on the right number by accident. So this hands the fold four pairs
+    /// that differ at both ends and asserts the packed pair against the
+    /// arithmetic: white's count less black's, piece by piece, each half of the
+    /// pair summed on its own.
     #[test]
     fn the_king_attack_fold_reads_white_less_black_piece_by_piece() {
         let board = Board::from_fen(BEARING).unwrap();
@@ -431,11 +475,6 @@ mod tests {
         let packed = super::fold_with(&board, &TRIAL);
         assert_ne!(midgame, 0, "black less white would answer the same here");
         assert_eq!((mg_value(packed), eg_value(packed)), (midgame, endgame));
-        assert_eq!(
-            super::fold(&board),
-            0,
-            "the shipped weights are not zero, so the bench pin and this term's own doc block are stale"
-        );
     }
 
     /// What the leaf is allowed to leave out, which is the whole of the
@@ -449,8 +488,8 @@ mod tests {
     /// else, read here off the array a second way, and then a weight put back
     /// into each half of each column in turn.
     ///
-    /// A fit that prices the term flips this to true and the leaf starts
-    /// counting, with no line here or in the sum to edit.
+    /// The fit priced the term, so the constant is true. Weights put back to
+    /// zero would turn it off with no line here or in the sum to edit.
     #[test]
     fn the_term_is_counted_exactly_when_a_weight_is_not_zero() {
         let priced = (0..COUNTS).any(|index| {

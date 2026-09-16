@@ -27,10 +27,20 @@ the engine plays. Roughly in the order they look worth doing.
   left no weight at zero, so nothing is skipped at the leaf now. King safety counts the
   pawns on the two ranks in front of the king, the open and half open files beside it,
   and the enemy pawns on the three ranks in front of it, and all fourteen of its weights
-  are fitted. What is not measured at all is the squares the enemy pieces attack around
-  the king, which wants the attack sets the mobility count already walks. The storm is followed
-  three ranks and no further, so a pawn four ranks out is not counted, and a storm pawn
-  blocked by one of ours counts the same as a free one. Pawn structure counts a side's
+  are fitted. The storm is followed three ranks and no further, so a pawn four ranks out
+  is not counted, and a storm pawn blocked by one of ours counts the same as a free one.
+  The squares the enemy pieces attack around the king are counted too: for each side,
+  how many squares of the other king's ring its knights, bishops, rooks and queens bear
+  on, off the attack sets the mobility count already walks, with a square two pieces
+  attack counted twice. All eight of its weights are fitted, trained on 32,516 of the
+  archive's 50,677 games with every other term held. The fit's figure is the sealed
+  group's -0.000143 against a standard error of 0.000059. The selection group read
+  -0.000395 against 0.000052, about 3.2 standard errors away, and by the rule the fit
+  was registered with that disagreement means the selection group overstated it. On the
+  sealed games the boards with thirteen or more pieces left read slightly worse. What it
+  leaves out is how the attack adds up: the count is priced per square, where an attack
+  by several pieces is usually taken as worth more than the sum of its parts, and neither
+  safe checks nor the ring's defenders are read. Pawn structure counts a side's
   passed pawns by the rank they have reached, its isolated pawns and its doubled ones,
   read off the two pawn boards alone and remembered under the pawn key, and all sixteen
   of its weights are fitted. The seventh rank is the one to distrust: a passed pawn there
@@ -111,7 +121,13 @@ the engine plays. Roughly in the order they look worth doing.
   the refit that priced all four kinds; measured again at `378c148` the term is 13.5% of
   the bench. The 5% is a rule of thumb and nothing enforces it, which the games have now
   said outright: the term was made 6% cheaper across the whole search and 6,000 of them
-  could not see it. So the ceiling is the thing under question rather than the term. The
+  could not see it. So the ceiling is the thing under question rather than the term.
+  The king attack zone is over it as well. Measured at its fit with callgrind over
+  `arche bench` at depth 7, its fold and its counts forced out of line, the term is
+  558,628,090 of 4,854,634,752 instructions, 11.5%, and mobility is 11.4% of the same run.
+  The run costs 1,175 instructions a node against 1,040 before the fit, 13.0% more. The
+  counts are a second walk over the pieces mobility already walks, and taking both in one
+  walk is the change that would bring the term down. The
   reasoning and the numbers are in the planning repository
 - a held-out loss on our own games cannot resolve a fit of the piece square tables one way
   or the other, so an sprt is what decides a re-tune. Measured 2026-09-10 over 1,812

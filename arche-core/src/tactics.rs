@@ -44,8 +44,9 @@ pub const TABLE_BYTES: usize = 16 * 1024 * 1024;
 /// the same duty and a heavier one: this is the tactical tripwire, and it had
 /// moved by one in each direction across every evaluation arm before the
 /// 2026-09-13 mobility refit took it down seven at once. What that bought is
-/// in the refit's commit, and the suite is not a gate.
-pub const EXPECTED_PASSES: usize = 224;
+/// in the refit's commit, and the suite is not a gate. The 2026-09-16 king
+/// attack fit took it up thirteen.
+pub const EXPECTED_PASSES: usize = 237;
 
 /// The count the suite may not go under, whatever a commit says it meant to
 /// spend.
@@ -57,14 +58,14 @@ pub const EXPECTED_PASSES: usize = 224;
 /// time until the suite says nothing at all, because each step is small and
 /// each is argued for on its own.
 ///
-/// Two hundred and ten is fourteen under where the count stands and eleven
-/// under the lowest it has been gated at (221, on the model gated two ply
-/// reduction). Since the suite was first gated the count has been 243, 241,
-/// 240, 237, 236, 229, 221, 226, 227, 228, 231 and 224, and the largest
-/// single step in that list is eight. So one change spending fourteen is
-/// spending most of two of the largest steps ever taken, and this fails
-/// rather than being written down and rearmed. Lowering the floor is a
-/// commit whose whole subject is lowering the floor.
+/// Two hundred and ten was fourteen under where the count stood when the
+/// floor was set, and is eleven under the lowest it has been gated at (221, on
+/// the model gated two ply reduction). Since the suite was first gated the
+/// count has been 243, 241, 240, 237, 236, 229, 221, 226, 227, 228, 231, 224
+/// and 237, and the largest single step down in that list is eight. So one
+/// change spending fourteen is spending most of two of the largest steps ever
+/// taken, and this fails rather than being written down and rearmed. Lowering
+/// the floor is a commit whose whole subject is lowering the floor.
 pub const FLOOR: usize = 210;
 
 // The snapshot cannot be set under the floor without moving the floor, and
@@ -98,7 +99,7 @@ pub struct AcceptedLoss {
 
 /// The losses accepted so far.
 ///
-/// Empty. The suite misses seventy six positions at the pinned depth and
+/// Empty. The suite misses sixty three positions at the pinned depth and
 /// none of them has been read one at a time, so there is nothing here that
 /// would be a record rather than a guess. The next change that lowers
 /// `EXPECTED_PASSES` is the first that writes here, naming what it spent.
