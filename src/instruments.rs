@@ -471,13 +471,15 @@ mod tests {
         assert_eq!(bench.epd, None);
         assert_eq!(bench.positions, bench::positions());
 
-        let path = concat!(env!("CARGO_MANIFEST_DIR"), "/arche-core/bench.epd");
+        let path = concat!(env!("CARGO_MANIFEST_DIR"), "/arche-core/tactics.epd");
         let line = format!("residuals 4 epd {path}");
         let named = residual_settings(&Params::of(&line)).expect(&line);
         assert_eq!(named.depth, 4);
         assert_eq!(named.epd.as_deref(), Some(path));
-        // the same file the bench compiles in, so the two agree
-        assert_eq!(named.positions, bench::positions());
+        // a file other than the bench's, so a reader that checked the file
+        // and then handed back the bench's own positions is caught here
+        assert_eq!(named.positions, from_file(path));
+        assert_ne!(named.positions, bench::positions());
     }
 
     /// A file that is no suite is named rather than searched, and the file
@@ -486,6 +488,7 @@ mod tests {
     #[test]
     fn a_residuals_suite_that_is_no_suite_is_named_rather_than_run() {
         let manifest = concat!(env!("CARGO_MANIFEST_DIR"), "/Cargo.toml");
+        let empty = Unpositioned::written("residuals");
         for (line, what) in [
             (
                 "residuals 4 epd no/such/file.epd".to_string(),
@@ -494,6 +497,10 @@ mod tests {
             (
                 format!("residuals 4 epd {manifest}"),
                 format!("epd: {manifest}"),
+            ),
+            (
+                format!("residuals 4 epd {}", empty.path),
+                format!("epd: {}", empty.path),
             ),
         ] {
             assert_eq!(
@@ -584,13 +591,15 @@ mod tests {
         assert_eq!(bench.epd, None);
         assert_eq!(bench.positions, bench::positions());
 
-        let path = concat!(env!("CARGO_MANIFEST_DIR"), "/arche-core/bench.epd");
+        let path = concat!(env!("CARGO_MANIFEST_DIR"), "/arche-core/tactics.epd");
         let line = format!("reductions 4 epd {path}");
         let named = reduction_settings(&Params::of(&line)).expect(&line);
         assert_eq!(named.depth, 4);
         assert_eq!(named.epd.as_deref(), Some(path));
-        // the same file the bench compiles in, so the two agree
-        assert_eq!(named.positions, bench::positions());
+        // a file other than the bench's, so a reader that checked the file
+        // and then handed back the bench's own positions is caught here
+        assert_eq!(named.positions, from_file(path));
+        assert_ne!(named.positions, bench::positions());
     }
 
     /// A file that is no suite is refused before the run, the way the
@@ -598,6 +607,7 @@ mod tests {
     #[test]
     fn a_reductions_suite_that_is_no_suite_is_named_rather_than_run() {
         let manifest = concat!(env!("CARGO_MANIFEST_DIR"), "/Cargo.toml");
+        let empty = Unpositioned::written("reductions");
         for (line, what) in [
             (
                 "reductions 4 epd no/such/file.epd".to_string(),
@@ -606,6 +616,10 @@ mod tests {
             (
                 format!("reductions 4 epd {manifest}"),
                 format!("epd: {manifest}"),
+            ),
+            (
+                format!("reductions 4 epd {}", empty.path),
+                format!("epd: {}", empty.path),
             ),
         ] {
             assert_eq!(
