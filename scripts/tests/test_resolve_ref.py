@@ -7,8 +7,13 @@ The fixture is a local upstream standing in for github, so every form a
 workflow input can take is resolved offline: a commit already present, a
 branch or tag that has to be fetched, and a bare number meaning a pull
 request's head.
+
+The trigger the script is run under is an argument here rather than whatever
+this process inherited, since these tests themselves run inside a workflow and
+would otherwise be checking the trigger that happened to start them.
 """
 
+import os
 import subprocess
 import sys
 from pathlib import Path
@@ -58,13 +63,20 @@ def clone(tmp_path):
     return clone
 
 
-def resolve(clone, ref):
+def resolve(clone, ref, event=None):
+    """Run the script with the named trigger, or with none, which is what a
+    machine that is not a runner looks like."""
+    environment = dict(os.environ)
+    environment.pop("GITHUB_EVENT_NAME", None)
+    if event is not None:
+        environment["GITHUB_EVENT_NAME"] = event
     return subprocess.run(
         [str(SCRIPT), ref],
         cwd=clone,
         check=False,
         capture_output=True,
         text=True,
+        env=environment,
     )
 
 
@@ -105,3 +117,45 @@ def test_a_ref_that_exists_nowhere_fails(clone):
 def test_a_number_with_no_pull_request_fails(clone):
     result = resolve(clone, "999")
     assert result.returncode != 0
+
+
+# What the script refuses, and what that refusal is and is not. It builds a ref
+# somebody without write access can choose, so it runs only under the triggers
+# where the ref was chosen by somebody who can already push. The trigger is the
+# one part of that a step can read: the permissions a job was given and the
+# secrets it holds are not visible from a script at all.
+
+
+def test_a_dispatch_is_how_the_match_workflows_run(clone):
+    assert resolve(clone, "v1.0.0", "workflow_dispatch").returncode == 0
+
+
+def test_a_push_is_how_the_release_workflow_runs(clone):
+    assert resolve(clone, "v1.0.0", "push").returncode == 0
+
+
+def test_no_trigger_at_all_is_a_machine_that_is_not_a_runner(clone):
+    assert resolve(clone, "v1.0.0").returncode == 0
+
+
+def test_pull_request_target_is_refused(clone):
+    result = resolve(clone, "7", "pull_request_target")
+    assert result.returncode != 0
+    assert "pull_request_target" in result.stderr
+    assert result.stdout == ""
+
+
+def test_workflow_run_is_refused(clone):
+    result = resolve(clone, "7", "workflow_run")
+    assert result.returncode != 0
+    assert "workflow_run" in result.stderr
+
+
+def test_a_comment_event_is_refused(clone):
+    result = resolve(clone, "7", "issue_comment")
+    assert result.returncode != 0
+    assert "issue_comment" in result.stderr
+
+
+def test_the_refusal_covers_a_named_ref_and_not_only_a_number(clone):
+    assert resolve(clone, "v1.0.0", "pull_request_target").returncode != 0
