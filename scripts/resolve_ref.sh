@@ -13,6 +13,32 @@
 # each having their own idea of what a ref is.
 set -euo pipefail
 
+# Refuse outside the triggers where the ref was chosen by somebody who can
+# already push here. A number is a pull request, whose head anybody can write,
+# and the caller builds and runs whatever this prints. Under a trigger such as
+# pull_request_target or workflow_run the job also holds this repository's
+# secrets and a token that can write to it, and the two together hand a fork
+# the repository.
+#
+# GITHUB_EVENT_NAME is what this checks, because it is the only part of that
+# worth checking from here. The runner sets it on every job, an env block
+# cannot override a GITHUB_ name, and a workflow called with workflow_call sees
+# the event of the workflow that called it, so a call through a reusable
+# workflow is checked as well. It is not a check on permissions or on secrets:
+# a step cannot read either, and docs/DEVELOPMENT.md says what that leaves
+# open. Unset means this is not a runner at all, where there is nothing to
+# take.
+case "${GITHUB_EVENT_NAME-}" in
+    "" | workflow_dispatch | push | schedule | release) ;;
+    *)
+        echo "resolve_ref.sh: refusing to resolve a ref under" \
+            "${GITHUB_EVENT_NAME}. It builds a ref that somebody without" \
+            "write access can choose, and that trigger runs with this" \
+            "repository's secrets." >&2
+        exit 1
+        ;;
+esac
+
 ref=${1:?usage: resolve_ref.sh <branch|tag|commit|pull request number>}
 
 if [ "$ref" -eq "$ref" ] 2>/dev/null; then

@@ -531,6 +531,42 @@ most of what it claimed. It is not enough to settle a difference of five, so the
 release match is a check on the batch rather than a measurement of any change in
 it.
 
+### The triggers a match can run under
+
+`scripts/resolve_ref.sh` turns a workflow input into a commit. A number is a
+pull request, so it fetches `refs/pull/<n>/head`, and the job then builds that
+commit and plays it. That is code somebody without write access wrote, running
+on a runner.
+
+It is safe here. Both match workflows run from the actions tab, which needs
+write access to the repository, they declare `contents: read` at the top, and
+neither is given a secret. It is not safe in general. Wired to
+`pull_request_target`, to `workflow_run` or to a comment event, the same script
+would run a fork's branch in a job holding this repository's secrets and a
+token that can write to it.
+
+So the script refuses. It runs under `workflow_dispatch`, `push`, `schedule`
+and `release`, which are the triggers where the ref was chosen by somebody who
+can already push here, and exits non-zero under anything else. With no
+`GITHUB_EVENT_NAME` at all it runs, since that is a machine and not a runner. A
+workflow called with `workflow_call` sees the event of the workflow that called
+it, so the release workflow's call is checked too.
+
+**What that does not cover.** The trigger is the only part of this a script can
+read. A job's `permissions:` block is exposed to nothing running inside the
+job, and the repository's secrets are not enumerable either: a secret reaches a
+step only when a step above passes it, and its absence from the environment
+says nothing about what else the job could be handed. So the check says the ref
+came from somebody with write access. It does not say the job is unprivileged,
+and a `workflow_dispatch` workflow that granted `contents: write` and passed a
+secret would pass it.
+
+The rest is the workflow's to declare and not the script's to detect. The
+`permissions: contents: read` at the top of `strength.yml` and `calibrate.yml`,
+and the fact that neither names a secret, are what make the pull request number
+input safe to offer. Anyone reusing this has to write those two lines
+themselves. A script cannot check them and does not pretend to.
+
 ### Which openings are played
 
 Strength and Calibrate both take a `book` input, and the books it can name are
