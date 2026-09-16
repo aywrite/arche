@@ -231,8 +231,8 @@ impl MoveOrdering {
             .count()
     }
 
-    /// The killers standing at a ply. Read by `model_gate` in the search, so
-    /// this is a hot path and not only an instrument's: the attention score
+    /// The killers standing at a ply. Read by the late move decision, so this
+    /// is a hot path and not only an instrument's: the attention score
     /// the deep reduction and the late move pruning gate on carries whether
     /// the move is a killer here. Read by the cutoff census as well, which
     /// asks before a cutoff is remembered, and by the tests that check a
@@ -243,8 +243,8 @@ impl MoveOrdering {
 
     /// What the history table holds for one of `color`'s moves: the score
     /// `order_quiets` would rank it by, read without teaching anything.
-    /// Read by `model_gate` in the search, which is a feature of the
-    /// attention score, and by the cutoff census.
+    /// Read by the late move decision, which scores it as a feature of the
+    /// attention model, and by the cutoff census.
     pub(crate) fn history_score(&self, color: Color, m: &Play) -> i32 {
         self.history[color as usize][m.from as usize][m.to as usize]
     }

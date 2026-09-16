@@ -134,9 +134,10 @@ class TestFeatures:
         assert self.milli(history=250, history_max=1000) == 250
 
     def test_a_history_below_zero_counts_as_none(self):
-        # engine.rs takes the larger of the score and nought before dividing,
-        # so a move the table has marked down and a move it knows nothing
-        # about read alike at the gate. 607 rows of the sample are this case
+        # late_move.rs takes the larger of the score and nought before
+        # dividing, so a move the table has marked down and a move it knows
+        # nothing about read alike at the gate. 607 rows of the sample are
+        # this case
         assert self.milli(history=-4000, history_max=1000) == 0
 
     def test_nothing_in_the_list_having_any_divides_nothing(self):
@@ -172,7 +173,7 @@ class TestFitting:
         assert fit_attention.auc_of(scores[parity == 1], y[parity == 1]) > 0.9
 
     def test_the_quantisation_is_the_scale_the_engine_reads(self):
-        # engine.rs sums the ATTENTION_ constants as integers, so the weights
+        # late_move.rs sums the ATTENTION_ constants as integers, so the weights
         # have to arrive as integers at 1024 times their float value
         assert fit_attention.SHIFT == 10
         assert list(fit_attention.quantize([1.0, -0.5, 0.0])) == [1024, -512, 0]

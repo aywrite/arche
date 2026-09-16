@@ -72,8 +72,16 @@ four are fitted to the engine's own archived games.
   properly), reverse futility pruning (answer a node from its evaluation
   when that is already far above what the opponent can accept), null move
   pruning (answer it from a reduced search of the position left by passing
-  the move), the late move reduction (scout a quiet move tried late a ply
-  shallower and trust it when it comes back low) and the check extension.
+  the move) and the check extension.
+- **late_move.rs**: What a node does with a quiet move its ordering put
+  late. The late move reduction scouts such a move a ply shallower and
+  trusts the answer when it comes back low, at nodes deep enough to keep a
+  full width ply under the scout. Behind it stands the attention model, a
+  logistic regression over what the node knows about the move, fitted
+  offline and carried as integers: under one threshold it deepens the scout
+  to two plies, and under the second, the deadest band, the node does not
+  search the move at all. One call answers for one move, and the features
+  it scores are the ones the reduction ledger records.
 - **ordering.rs**: The order moves are tried in. The transposition table's
   move first, then the captures the swap prices as winning or even, by
   what each wins with most valuable victim / least valuable attacker
@@ -218,9 +226,9 @@ four are fitted to the engine's own archived games.
 Most of `scripts/` is measurement plumbing, described in DEVELOPMENT.md
 where each measurement is, or in the script's own header where it is not.
 `fit_attention.py` is the second kind: it fits the thirteen `ATTENTION_*`
-integers `engine.rs` carries, from a `reductions` ledger. The four below are
-the offline half of the evaluation tuner, and they have tests under
-`scripts/tests` gated by the Scripts workflow:
+integers `late_move.rs` carries, from a `reductions` ledger. The four
+below are the offline half of the evaluation tuner, and they have tests
+under `scripts/tests` gated by the Scripts workflow:
 
 - **groups.py**: Which of the three groups a pair of games falls in. The unit
   is the pair, because a run plays every opening twice with the colours

@@ -2654,6 +2654,10 @@ pub(crate) mod fens {
     /// shuffle rooks in: a8b8 a1b1 b8a8 b1a1 comes straight back to it.
     pub const SHUFFLE: &str =
         "r4rk1/1pp1qppp/p1np1n2/2b1p1B1/2B1P1b1/P1NP1N2/1PP1QPPP/R4RK1 b - - 3 19";
+    /// A node the late move reduction applies to, and the two kinds of move
+    /// at it: the rook can take the pawn on e4 and has quiet moves besides,
+    /// one of which checks along the rank.
+    pub const A_CAPTURE_AND_QUIETS: &str = "7k/8/8/8/R3p3/8/8/7K w - - 0 1";
     /// A sharp middlegame: white's knight on g5 and bishop on d3 are aimed at
     /// the castled black king while the white king is still on e1. Sharp
     /// enough that a wrongly reused score would move the verdict, which is

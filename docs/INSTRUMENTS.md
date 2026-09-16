@@ -289,9 +289,13 @@ reduction fen`, whitespace separated with the fen last so a row parses left
 to right. `depth` is the reducing node's, its check extension included.
 `index`, `searched`, `generated`, `history` and `history_max` are the
 census's columns, read at the decision, `history` signed and `history_max`
-clamped at zero as they are there; `killer` says whether the move stood in
-a killer slot, and `tt` is the census's three-state. Every reduced move is
-quiet, so `history` is never priced by a class instead.
+clamped at zero as they are there. `history_max` is the one of them the
+node holds rather than reads afresh: it is walked at the node's first
+gated or staged move and read back for the rest, exactly as the gate
+reads it, so a row says the largest the score was read against and not
+the largest by the time the staging ran. `killer` says whether the move
+stood in a killer slot, and `tt` is the census's three-state. Every
+reduced move is quiet, so `history` is never priced by a class instead.
 `eval_beta` and `alpha_gap` are the node's own static evaluation against
 its two bounds, computed at record time for kept events alone by stepping
 the move back and replaying it, for the census's reason: an eval forced at
