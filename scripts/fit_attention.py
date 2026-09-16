@@ -7,7 +7,7 @@
     arche reductions 8 every 1 cap 2000000 > ledger.txt
     scripts/fit_attention.py ledger.txt
 
-The engine carries thirteen `ATTENTION_*` integers in `arche-core/src/engine.rs`
+The engine carries thirteen `ATTENTION_*` integers in `arche-core/src/late_move.rs`
 and reads them as a dot product against a late quiet move's features. This is
 where they come from: a logistic regression over the reduction ledger, split by
 fen so a position cannot be in both halves, quantized to fixed point at a scale
@@ -38,7 +38,7 @@ whitespace separated fields with the fen last,
 The ledger at 5217271 had seventeen, without `reduction`, and its history was
 never negative. Both have moved since, so this parser reads the current format
 and follows the engine in two places: a negative history counts as no history,
-the way `engine.rs` clamps it before dividing, and a row the pruning skipped
+the way `late_move.rs` clamps it before dividing, and a row the pruning skipped
 outright is not a scout and is left out of the fit.
 
 Features, all integers, so that the engine's gate is a dot product and a
@@ -66,7 +66,7 @@ from pathlib import Path
 
 import numpy as np
 
-# fixed point scale, 2**10 = 1024, which is the scale engine.rs reads the
+# fixed point scale, 2**10 = 1024, which is the scale late_move.rs reads the
 # ATTENTION_ constants at
 SHIFT = 10
 
@@ -86,7 +86,7 @@ FEATURES = [
     "searched",
 ]
 
-# what each weight is called in arche-core/src/engine.rs, so the fit can be
+# what each weight is called in arche-core/src/late_move.rs, so the fit can be
 # read straight across into the constants
 CONSTANTS = {name: f"ATTENTION_{name.upper()}" for name in FEATURES}
 CONSTANTS["band8_15"] = "ATTENTION_BAND8_15"
@@ -225,7 +225,7 @@ def read_groups(path):
 
 
 def features_of(row):
-    """The feature vector, computed the way engine.rs computes it at the gate.
+    """The feature vector, computed the way late_move.rs computes it at the gate.
 
     A history below zero is a move the table has marked down. The engine takes
     the larger of the score and nought before dividing, so nothing in the list
@@ -486,7 +486,7 @@ def write_csvs(out_dir, X, y, depth, rows, groups, train, hold, weights, interce
 
 
 def quantize(weights):
-    """Float weights as the integers engine.rs reads, at a scale of 2**SHIFT."""
+    """Float weights as the integers late_move.rs reads, at a scale of 2**SHIFT."""
     return np.round(np.asarray(weights) * (1 << SHIFT)).astype(np.int64)
 
 

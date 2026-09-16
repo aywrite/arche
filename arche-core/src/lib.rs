@@ -7,6 +7,7 @@ mod board;
 pub mod census;
 mod engine;
 mod eval;
+mod late_move;
 mod limits;
 mod magic;
 mod misc;

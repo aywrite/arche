@@ -42,6 +42,7 @@ use crate::bench::Position;
 use crate::board::Board;
 use crate::census;
 use crate::engine::{AlphaBeta, Engine, SearchConfig, SearchOutcome, SearchParameters};
+use crate::late_move;
 use crate::misc::Score;
 use crate::play::Play;
 use crate::recorder::{self, DEPTH_SPREAD, Window};
@@ -101,30 +102,22 @@ impl Scout {
     }
 }
 
-/// The move loop's half of an event: what the node knew about the reduced
-/// move at the moment it decided to scout it. Staged on the engine while
-/// the ledger is armed, and finished by `windowed` when the scout answers.
+/// The move loop's half of an event: the reduced move and what the node
+/// knew about it at the moment it decided to scout it. Held in the move
+/// loop while the ledger is armed and handed to `windowed`, which finishes
+/// the event when the scout answers.
+///
+/// The features come from `late_move::features`, which is the one place
+/// they are derived: the gate's call and this one are the same function
+/// over the same node, so a row cannot say something the score did not.
 #[derive(Clone, Copy, Debug)]
-pub struct Staged {
+pub(crate) struct Staged {
     /// The move, kept so the recorder can step it back for the node's own
     /// evaluation and replay it.
-    pub play: Play,
-    /// The move's place among the searched moves, the census's count: the
-    /// table's move, when it was searched, is 0.
-    pub index: usize,
-    /// The moves the node generated, as the census records it.
-    pub generated: usize,
-    /// The history table's score for the move at the decision. Signed, as
-    /// the census's column is. Every reduced move is quiet, so there is no
-    /// class to price it by instead.
-    pub history: i32,
-    /// The largest history score among the node's generated quiets,
-    /// clamped at zero, the denominator `history` is read against.
-    pub history_max: i32,
-    /// Whether the move stood in one of the node's killer slots.
-    pub killer: bool,
-    /// What the node's table probe had given it, the census's three-state.
-    pub tt: census::Table,
+    pub(crate) play: Play,
+    /// What the node knew about the move, in the units the columns below
+    /// are printed in.
+    pub(crate) features: late_move::Features,
 }
 
 /// One reduced scout answering.
