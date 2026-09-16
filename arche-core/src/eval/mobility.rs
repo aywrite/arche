@@ -139,27 +139,36 @@ const fn scored_kinds() -> u8 {
 /// time. The king and the pawn have no count of their own: a king's is a
 /// danger signal rather than a scope one, and a pawn's is move generation.
 ///
-/// Both [`super::eval`] and the tuner's walk read this, and they may ask for
-/// different kinds. The walk always asks for all four, because it is offline
-/// and its coefficients are what prices a kind; the evaluation asks for the
-/// kinds whose weight is not zero, because a count multiplied by zero is not
-/// worth the leaf it is taken at. Since the refit priced all four the two
-/// sets are equal today. What keeps them honest whether or not they are is
-/// that the difference is exactly the zero weights, which
-/// `eval_counts_a_kind_exactly_when_its_weight_is_not_zero` pins. Within one
-/// set of kinds the counts are still one answer rather than two, so a second
-/// implementation of them would still be two chances to be wrong rather than a
-/// check on one, and the hand counts below are what pins them. That is the
-/// exception to the rule `tune.rs` states in its header, which names it.
+/// The tuner's walk reads this. The evaluation does not: it reads the same
+/// counts off the shared walk in `eval/mod.rs`, which takes the king attack
+/// zone's counts off the same attack sets, and
+/// `the_shared_walk_counts_what_each_term_counts_alone` holds that walk to
+/// this function kind by kind.
+///
+/// The two may ask for different kinds. The tuner's walk always asks for all
+/// four, because it is offline and its coefficients are what prices a kind;
+/// the evaluation asks for the kinds whose weight is not zero, because a count
+/// multiplied by zero is not worth the leaf it is taken at. Since the refit
+/// priced all four the two sets are equal today. What keeps them honest
+/// whether or not they are is that the difference is exactly the zero
+/// weights, which `eval_counts_a_kind_exactly_when_its_weight_is_not_zero`
+/// pins.
+///
+/// The shared walk is a second statement of these counts, and it is held to
+/// this one position by position. A count wrong in the same way in both would
+/// still pass that test and the tuner's identity, so the hand counts below are
+/// what pins the counts themselves. That is the exception to the rule
+/// `tune.rs` states in its header, which names it.
 ///
 /// `KINDS` is a compile time set, so a kind left out of it costs nothing:
 /// its loop is not compiled rather than skipped.
 ///
 /// Inlined by force. Left to itself llvm keeps this out of line even under
-/// link time optimisation, and the evaluation asks for it twice at every leaf
-/// and every quiescence node. That call was three fifths of what the term cost
-/// over the bench: 4.30 billion instructions without the attribute against
-/// 3.76 billion with it.
+/// link time optimisation, and when the evaluation read this it asked for it
+/// twice at every leaf and every quiescence node. That call was three fifths
+/// of what the term cost over the bench: 4.30 billion instructions without the
+/// attribute against 3.76 billion with it. The shared walk is inlined by force
+/// for the same reason.
 #[inline(always)]
 pub(crate) fn counts_of<const KINDS: u8>(board: &Board, color: Color) -> [i32; COUNTS] {
     let occupied = board.occupied();
@@ -207,16 +216,26 @@ pub(crate) fn counts(board: &Board, color: Color, into: &mut [i32]) {
 }
 
 /// What white's mobility stands ahead by, as a packed pair on the scale the
-/// piece square pair is on.
+/// piece square pair is on, given each side's counts.
 ///
-/// Only [`SCORED_KINDS`] are counted. A kind whose weight is zero contributes
-/// nothing however many squares it covers, so counting it is work no score
-/// can see. The rule is what is written down, not a list: when the first fit
-/// left six of the eight weights at zero, leaving three of the four kinds out
-/// took a bit over a third off what the term cost. The refit priced all four,
-/// so today this counts every kind and the skip is waiting for a weight to
-/// round to nothing again.
+/// The sum does not call [`counts_of`] for these. It takes them from the walk
+/// in `eval/mod.rs` that reads the king attack counts off the same attack
+/// sets, and that walk counts only [`SCORED_KINDS`]. A kind whose weight is
+/// zero contributes nothing however many squares it covers, so counting it is
+/// work no score can see. The rule is what is written down, not a list: when
+/// the first fit left six of the eight weights at zero, leaving three of the
+/// four kinds out took a bit over a third off what the term cost. The refit
+/// priced all four, so today every kind is counted and the skip is waiting for
+/// a weight to round to nothing again.
 #[inline]
+pub(crate) fn fold_counts(white: [i32; COUNTS], black: [i32; COUNTS]) -> i32 {
+    weigh(&MOBILITY, white, black)
+}
+
+/// The fold with the counts taken by [`counts_of`] over [`SCORED_KINDS`],
+/// which is what the sum answered before it shared a walk with the king
+/// attack zone. The tests hold the sum to it.
+#[cfg(test)]
 pub(crate) fn fold(board: &Board) -> i32 {
     fold_with::<SCORED_KINDS>(board, &MOBILITY)
 }
@@ -230,10 +249,18 @@ pub(crate) fn fold(board: &Board) -> i32 {
 /// own through here anyway, over all four kinds, because what they pin is the
 /// fold rather than the fit: a permuted [`MOBILITY`] would be a different
 /// evaluation and not a wrong one.
-#[inline]
+#[cfg(test)]
 fn fold_with<const KINDS: u8>(board: &Board, weights: &[i32; COUNTS]) -> i32 {
-    let white = counts_of::<KINDS>(board, Color::White);
-    let black = counts_of::<KINDS>(board, Color::Black);
+    weigh(
+        weights,
+        counts_of::<KINDS>(board, Color::White),
+        counts_of::<KINDS>(board, Color::Black),
+    )
+}
+
+/// White's counts less black's, piece by piece, against `weights`.
+#[inline]
+fn weigh(weights: &[i32; COUNTS], white: [i32; COUNTS], black: [i32; COUNTS]) -> i32 {
     let mut packed = 0;
     for ((weight, white), black) in weights.iter().zip(white).zip(black) {
         packed += weight * (white - black);
@@ -249,10 +276,10 @@ mod tests {
     use pretty_assertions::assert_eq;
 
     /// The counts by hand, square by square, because nothing else pins them.
-    /// The tuner's identity folds a row against the live weights, and `eval`
-    /// and the walk read this same function, so the two sides of the identity
-    /// move together whatever it answers. These cases are the only check this
-    /// term has.
+    /// The tuner's identity folds a row against the live weights, and the
+    /// tuner reads this function and `eval` reads a walk held to it, so the
+    /// two sides of the identity move together whatever it answers. These
+    /// cases are the only check this term has.
     ///
     /// Each case names what the count is made of. The two kings stand in
     /// opposite corners and out of the way, so that nothing here is a count of
@@ -326,6 +353,7 @@ mod tests {
                 "{}",
                 why
             );
+            super::super::evaluate::the_shared_walk_agrees(&board, why);
         }
     }
 
@@ -407,8 +435,12 @@ mod tests {
     /// What the evaluation is allowed to leave out, which is the whole of the
     /// contract between it and the tuner's walk.
     ///
-    /// The walk counts all four kinds and the evaluation counts
-    /// [`SCORED_KINDS`], so the two no longer read one answer. What makes that
+    /// The tuner's walk counts all four kinds and the evaluation counts
+    /// [`SCORED_KINDS`], so the two no longer read one answer. The evaluation
+    /// takes those counts off the shared walk in `eval/mod.rs`, and this reads
+    /// `counts_of::<SCORED_KINDS>`, which
+    /// `the_shared_walk_counts_what_each_term_counts_alone` holds that walk
+    /// to. What makes that
     /// safe is the size of the difference and nothing else: a count multiplied
     /// by zero adds nothing, so a kind worth zero can go uncounted without
     /// moving a score, and any other kind cannot. So this asserts the
@@ -440,7 +472,7 @@ mod tests {
                     scored[index],
                     if priced { all[index] } else { 0 },
                     "{:?} is worth {} in the midgame and {} in the ending, so it should be \
-                     {}, and eval counted {} of its {} squares",
+                     {}, and counts_of::<SCORED_KINDS> counted {} of its {} squares",
                     piece,
                     mg_value(weight),
                     eg_value(weight),

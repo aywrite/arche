@@ -20,7 +20,8 @@ mod mobility;
 mod pawn_structure;
 mod shelter;
 
-use crate::board::Board;
+use crate::board::{Board, king_attacks, knight_attacks, pawn_attacks, pop_lsb};
+use crate::magic::MAGIC;
 use crate::misc::{Color, Piece, Score};
 use crate::psqt::{PieceSquareTables, eg_value, mg_value};
 
@@ -196,11 +197,15 @@ impl Memo for Caches {
 /// on one scale, and it is what keeps one divide however many such terms
 /// there are.
 ///
+/// Mobility and the king attack zone are read off one walk over each side's
+/// pieces, [`attack_counts`], rather than a walk each.
+///
 /// The king attack zone is behind [`king_attack::SCORED`], which is true at
 /// the fitted weights and would be false if all eight were zero. A count
 /// multiplied by nothing scores nothing, and llvm does not take the walk that
 /// produces it out on that ground, so at a constant false the summand is not
-/// compiled rather than computed and thrown away.
+/// compiled rather than computed and thrown away, and the walk takes no ring
+/// counts.
 ///
 /// Material that cannot mate reads zero before any of it. That is the one
 /// place in the evaluation that is not a dot product against the weights,
@@ -214,15 +219,104 @@ fn sum(board: &Board, memo: &mut impl Memo) -> Score {
     if board.drawn_by_material() {
         return 0;
     }
-    let leaf = mobility::fold(board)
+    let (white_scope, white_ring) =
+        attack_counts::<{ mobility::SCORED_KINDS }, { king_attack::SCORED }>(board, Color::White);
+    let (black_scope, black_ring) =
+        attack_counts::<{ mobility::SCORED_KINDS }, { king_attack::SCORED }>(board, Color::Black);
+    let leaf = mobility::fold_counts(white_scope, black_scope)
         + memo.shelter(board)
         + memo.pawn_structure(board)
         + if king_attack::SCORED {
-            king_attack::fold(board)
+            king_attack::fold_counts(white_ring, black_ring)
         } else {
             0
         };
     board.eval.score(board.active_color, leaf)
+}
+
+/// One side's mobility counts and its king attack counts, from one walk over
+/// its knights, bishops, rooks and queens.
+///
+/// Each piece's attack set is taken once, the knight's mask or the magic
+/// probes over the whole occupancy, and read twice: against mobility's scope
+/// for the first array and against the enemy king's ring for the second. The
+/// two terms ask the same question of every piece and differ only in the mask
+/// the answer is read against, so the probes are what they share and each
+/// keeps its own mask and its own column.
+///
+/// `KINDS` says which of the four kinds mobility counts, as
+/// [`mobility::counts_of`] reads it, and `RING` whether the ring is counted at
+/// all. Both are compile time, so a count that is not asked for is not
+/// compiled, down to the loop over a kind neither term wants. A count left out
+/// answers zero.
+///
+/// This is a second statement of the two terms' counts, and on purpose. Each
+/// term keeps its own [`mobility::counts_of`] and [`king_attack::counts_of`],
+/// which the tuner reads through [`TERMS`] and the hand counts pin, and
+/// `the_shared_walk_counts_what_each_term_counts_alone` holds this walk to the
+/// two of them over the bench, tactical and strategic suites. It lives here
+/// rather than in either term's file because it is the sum's arrangement of
+/// the two and has no other caller, and a term file holding it would compute
+/// the other term's counts.
+///
+/// Inlined by force, for the reason `mobility::counts_of` gives.
+#[inline(always)]
+fn attack_counts<const KINDS: u8, const RING: bool>(
+    board: &Board,
+    color: Color,
+) -> ([i32; mobility::COUNTS], [i32; king_attack::COUNTS]) {
+    let occupied = board.occupied();
+    let (ours, theirs) = board.sides(color);
+    let scope = !(ours | pawn_attacks(board.pawns() & theirs, !color));
+    let ring = if RING {
+        king_attacks(board.king_index(!color))
+    } else {
+        0
+    };
+    let magic = &MAGIC;
+    let mut scoped = [0; mobility::COUNTS];
+    let mut bearing = [0; king_attack::COUNTS];
+    let mut read = |index: usize, attacks: u64| {
+        if mobility::counted(KINDS, index) {
+            scoped[index] += (attacks & scope).count_ones() as i32;
+        }
+        if RING {
+            bearing[index] += (attacks & ring).count_ones() as i32;
+        }
+    };
+    let walked = |index: usize| mobility::counted(KINDS, index) || RING;
+    if walked(0) {
+        let mut knights = board.knights() & ours;
+        while knights != 0 {
+            let from = pop_lsb(&mut knights);
+            read(0, knight_attacks(from));
+        }
+    }
+    if walked(1) {
+        let mut bishops = board.bishops() & ours;
+        while bishops != 0 {
+            let from = pop_lsb(&mut bishops);
+            read(1, magic.get_diagonal_move(from, occupied));
+        }
+    }
+    if walked(2) {
+        let mut rooks = board.rooks() & ours;
+        while rooks != 0 {
+            let from = pop_lsb(&mut rooks);
+            read(2, magic.get_straight_move(from, occupied));
+        }
+    }
+    if walked(3) {
+        let mut queens = board.queens() & ours;
+        while queens != 0 {
+            let from = pop_lsb(&mut queens);
+            read(
+                3,
+                magic.get_straight_move(from, occupied) | magic.get_diagonal_move(from, occupied),
+            );
+        }
+    }
+    (scoped, bearing)
 }
 
 /// The score with the shelter and the pawn structure computed every time.
@@ -876,5 +970,70 @@ mod evaluate {
             + pawn_structure::fold(&board)
             + king_attack::fold(&board);
         assert_eq!(eval(&board), board.eval.score(board.active_color, leaf));
+    }
+
+    /// Holds [`super::attack_counts`] to [`mobility::counts_of`] and
+    /// [`king_attack::counts_of`] on one position, for both colours.
+    ///
+    /// Five instantiations are asked. All four kinds with the ring is the
+    /// walk with nothing skipped, and the live constants are the one the sum
+    /// compiles. Two more leave out a different half of the kinds each, one
+    /// with the ring and one without, so that the skips answer zero where they
+    /// skip and the standalone count everywhere else. The last asks for no
+    /// kind and no ring, where every count has to answer zero. The term tests
+    /// call this on their hand count positions, which is why it is not a test
+    /// of its own.
+    pub(super) fn the_shared_walk_agrees(board: &Board, why: &str) {
+        fn held<const KINDS: u8, const RING: bool>(board: &Board, color: Color, why: &str) {
+            let scope = mobility::counts_of::<{ mobility::ALL_KINDS }>(board, color);
+            let ring = king_attack::counts_of(board, color);
+            let expected = (
+                std::array::from_fn(|index| {
+                    if mobility::counted(KINDS, index) {
+                        scope[index]
+                    } else {
+                        0
+                    }
+                }),
+                if RING { ring } else { [0; king_attack::COUNTS] },
+            );
+            assert_eq!(
+                super::attack_counts::<KINDS, RING>(board, color),
+                expected,
+                "{} for {:?}, counting kinds {:04b} and the ring {}",
+                why,
+                color,
+                KINDS,
+                RING
+            );
+        }
+        for color in [Color::White, Color::Black] {
+            held::<{ mobility::ALL_KINDS }, true>(board, color, why);
+            held::<{ mobility::SCORED_KINDS }, { king_attack::SCORED }>(board, color, why);
+            held::<0b0101, false>(board, color, why);
+            held::<0b1010, true>(board, color, why);
+            held::<0, false>(board, color, why);
+        }
+    }
+
+    /// The walk the sum reads mobility and the king attack zone off answers
+    /// what the two terms' own counts answer, on every position of the bench,
+    /// tactical and strategic suites and the shared fens.
+    ///
+    /// The tuner reads the standalone counts and the evaluation reads the
+    /// walk, so the tuner's identity holds the two together only at the live
+    /// constants and only through the fold. This holds them count by count,
+    /// and under the skips as well.
+    #[test]
+    fn the_shared_walk_counts_what_each_term_counts_alone() {
+        let mut fens: Vec<String> = fens::CORE.iter().map(|f| f.to_string()).collect();
+        fens.extend(crate::bench::positions().into_iter().map(|p| p.fen));
+        fens.extend(crate::tactics::positions().into_iter().map(|p| p.fen));
+        fens.extend(crate::strategy::positions().into_iter().map(|p| p.fen));
+        assert!(fens.len() > 1_500, "{} positions", fens.len());
+        for fen in fens {
+            let board = Board::from_fen(&fen).unwrap_or_else(|e| panic!("{}: {}", fen, e));
+            the_shared_walk_agrees(&board, &fen);
+        }
     }
 }

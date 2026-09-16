@@ -35,26 +35,30 @@
 //! is neither read nor duplicated.
 //!
 //! The four leaf terms are the exception, and it is deliberate. The walk
-//! asks each term in `eval::TERMS` for its counts through the descriptor, and
-//! what it reaches is the function `eval` reads, so the identity cannot see a
-//! wrong count at any weights, fitted or zero. A second count here would be a
-//! second chance to be wrong about a term that is read at every leaf rather
-//! than a check on the first, so what pins them is the hand counts beside each
-//! term in `eval/`.
+//! asks each term in `eval::TERMS` for its counts through the descriptor. For
+//! shelter and pawn structure what it reaches is the function `eval` reads, so
+//! the identity cannot see a wrong count at any weights, fitted or zero. For
+//! mobility and the king attack zone, `eval` reads a shared walk that
+//! `the_shared_walk_counts_what_each_term_counts_alone` holds to these
+//! functions. That test catches the two disagreeing, and neither it nor the
+//! identity can see a count wrong the same way in both. A second count here
+//! would be a second chance to be wrong about a term that is read at every
+//! leaf rather than a check on the first, so what pins them is the hand counts
+//! beside each term in `eval/`.
 //!
 //! The layout is that list too. Where a term stands in the vector, what its
 //! weights are and how many counts it carries all come off `eval::TERMS`, so a
 //! term added there is laid out, priced and walked here without an edit, and
 //! the run's layout line states the result for `scripts/tune.py` to read.
 //!
-//! On mobility the two may ask for different kinds. The walk always asks for
-//! all four, because it is offline and a coefficient for a kind worth nothing
-//! today is what lets a later fit price it; `eval` asks only for the kinds
-//! whose weight is not zero, because a count multiplied by zero is not worth
-//! taking at every leaf. The refit priced all four, so the two sets are equal
-//! today and the walk's row is the wider of the two only while some weight
-//! rounds to nothing. The identity holds either way, because the difference
-//! is exactly the kinds that score nothing, and
+//! On mobility the two may ask for different kinds. The tuner's walk always
+//! asks for all four, because it is offline and a coefficient for a kind worth
+//! nothing today is what lets a later fit price it; `eval` asks only for the
+//! kinds whose weight is not zero, because a count multiplied by zero is not
+//! worth taking at every leaf. The refit priced all four, so the two sets are
+//! equal today and the tuner's row is the wider of the two only while some
+//! weight rounds to nothing. The identity holds either way, because the
+//! difference is exactly the kinds that score nothing, and
 //! `eval_counts_a_kind_exactly_when_its_weight_is_not_zero` is what says the
 //! difference is that and not something else. None of the other three is
 //! split that way. Their fits gave every one of their weights a value, the
@@ -741,10 +745,12 @@ mod tests {
     ///
     /// The identity reads these eight slots against the fitted weights, so it
     /// catches a coefficient written to the wrong slot only where the two
-    /// weights differ, and it cannot tell a count that is wrong in the walk
-    /// from the same count wrong in `eval`, since both read one function. What
-    /// is asserted here is the coefficient itself, against a count worked out
-    /// by hand from the position below.
+    /// weights differ. Nor can it see a count that is wrong in the tuner's walk
+    /// and wrong the same way in the shared walk `eval` reads, which
+    /// `the_shared_walk_counts_what_each_term_counts_alone` holds to the
+    /// function the tuner's walk reads. What is asserted here is the
+    /// coefficient itself, against a count worked out by hand from the
+    /// position below.
     #[test]
     fn every_king_attack_count_writes_both_ends_of_the_taper() {
         // one white piece of each kind that carries a weight, and no black
