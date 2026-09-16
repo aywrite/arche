@@ -411,9 +411,9 @@ colour and counts that square if the ring holds it, and a square this side
 already stands on or an enemy pawn covers is still attacked. A ring square two
 pieces attack is counted twice, once per attacker, and two rooks on the
 seventh rank of a king on e8 read six between them rather than the three
-squares they share. Pawns and kings carry no column. The eight weights are
-zero until the fit that prices them, so the leaf does not take these counts at
-all today and the rows carry their coefficients all the same.
+squares they share. Pawns and kings carry no column. The rows carry the
+coefficients whatever the weights hold, which is how the fit that priced the
+eight weights read them before any of them was worth anything.
 
 The vector was 518 until a knight, a bishop, a rook and a queen were given an
 endgame table of their own, since each of the four had handed one array to
@@ -816,7 +816,7 @@ reason, `--hold-shelter` the fourteen shelter ones, `--hold-pawn` the sixteen
 pawn structure ones and `--hold-king-attack` the eight king attack ones. Each
 term earns a hold of its own as it is fitted, and a fit of the newest term
 names every hold below it, so the shelter was fitted under two, the pawn
-structure under three and the king attack zone is to be fitted under four.
+structure under three and the king attack zone under four.
 
 A term already in the tree can be worth fitting again on a corpus grown since,
 and then the holds are not a ladder downward. Every other term is older than
