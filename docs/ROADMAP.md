@@ -121,14 +121,14 @@ the engine plays. Roughly in the order they look worth doing.
   the refit that priced all four kinds; measured again at `378c148` the term is 13.5% of
   the bench. The 5% is a rule of thumb and nothing enforces it, which the games have now
   said outright: the term was made 6% cheaper across the whole search and 6,000 of them
-  could not see it. So the ceiling is the thing under question rather than the term.
-  The king attack zone is over it as well. Measured at its fit with callgrind over
-  `arche bench` at depth 7, its fold and its counts forced out of line, the term is
-  558,628,090 of 4,854,634,752 instructions, 11.5%, and mobility is 11.4% of the same run.
-  The run costs 1,175 instructions a node against 1,040 before the fit, 13.0% more. The
-  counts are a second walk over the pieces mobility already walks, and taking both in one
-  walk is the change that would bring the term down. The
-  reasoning and the numbers are in the planning repository
+  could not see it. So the ceiling is the thing under question rather than the term. The
+  reasoning and the numbers are in the planning repository. The king attack zone costs
+  less than the 5%. It was 11.5% of the run as a walk of its own at its fit, and it now
+  takes its counts in mobility's walk. Measured with callgrind over `arche bench` at
+  depth 7, the shared walk forced out of line, the walk is 777,417,417 of 4,600,409,835
+  instructions, 16.9%, and the same walk without the ring is 576,199,267, so the ring is
+  201,218,150 of them, 4.4%, and 4.8% with its fold. The shipped build costs 1,085
+  instructions a node against 1,040 before the term, 4.3% more
 - a held-out loss on our own games cannot resolve a fit of the piece square tables one way
   or the other, so an sprt is what decides a re-tune. Measured 2026-09-10 over 1,812
   archived games, 100,726 quiet positions across 1,807 of them: the shipped weights score

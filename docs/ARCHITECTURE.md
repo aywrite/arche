@@ -115,10 +115,15 @@ four are fitted to the engine's own archived games.
     that, which is the one place the score is not a sum over the weights.
     Also here is `TERMS`, a descriptor per leaf term (its name, how many
     counts it is measured in, its weights and its counts), which is what the
-    tuner lays its slot vector out from.
+    tuner lays its slot vector out from. And the one walk over each side's
+    knights, bishops, rooks and queens that mobility and the king attack zone
+    both read at the leaf: each piece's attack set is probed once and read
+    against both terms' masks.
   - **mobility.rs**: How many squares each side's pieces cover. Read off the
-    board at every leaf and not remembered: a piece that moves changes what
-    every slider looking through its square sees.
+    board at every leaf, through the walk it shares with the king attack
+    zone, and not remembered: a piece that moves changes what every slider
+    looking through its square sees. The term keeps its own count of the same
+    squares, which the tuner reads and a test holds the shared walk to.
   - **shelter.rs**: What stands between each king and the board, its own
     pawns and the enemy pawns coming for it. Computed at the leaf and then
     remembered under the pawns and the two king squares it is a function of,
@@ -131,11 +136,13 @@ four are fitted to the engine's own archived games.
     king move as well.
   - **king_attack.rs**: How many squares of the enemy king's ring each side's
     knights, bishops, rooks and queens attack, off the same attack sets
-    mobility walks but with nothing taken out of them. Read at every leaf,
-    and skipped only if its weights are all zero. Not remembered: what it
-    depends on is the whole occupancy
-    and a side's pieces, which is the position, and a table under that key was
-    measured for mobility and turned down on the memory it cost.
+    mobility walks but with nothing taken out of them. Read at every leaf off
+    the walk it shares with mobility, and skipped only if its weights are all
+    zero. The term keeps its own count as well, for the tuner's rows, and the
+    shared walk has to agree with it. Not remembered: what it depends on is
+    the whole occupancy and a side's pieces, which is the position, and a
+    table under that key was measured for mobility and turned down on the
+    memory it cost.
 - **psqt.rs**: The piece square tables. Every piece has a second table
   for the endgame; both phases are packed into one integer so the taper
   costs one multiply.

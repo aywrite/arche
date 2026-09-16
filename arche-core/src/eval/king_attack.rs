@@ -18,8 +18,8 @@ use crate::psqt::{eg_value, mg_value, pack};
 
 /// How many counts the term is measured in, which is one per piece that
 /// carries a weight. The same four as mobility, in the order
-/// [`mobility::PIECES`] names them, so a walk that one day takes both readings
-/// at once writes each into the slot the other uses.
+/// [`mobility::PIECES`] names them, so the walk in `eval/mod.rs` that takes
+/// both readings at once writes each into the slot the other uses.
 pub(crate) const COUNTS: usize = mobility::PIECES.len();
 
 /// What one attacked square of the enemy king's ring is worth to each of
@@ -103,7 +103,7 @@ pub(crate) const fn weight(index: usize) -> i32 {
 /// Whether [`super::sum`] takes this term at the leaf: true when one of the
 /// four [`KING_ATTACK`] weights is not zero at one end of the taper or the
 /// other. The 2026-09-16 fit priced all eight halves, so it is true and every
-/// leaf asks [`counts_of`] for both sides.
+/// leaf counts the ring for both sides.
 ///
 /// Derived from the weights rather than written out, which is how
 /// [`mobility::SCORED_KINDS`] is derived. The fit turned the term on by
@@ -165,13 +165,17 @@ const fn scored(weights: &[i32; COUNTS]) -> bool {
 /// mostly the same pawn one rank on; a king bearing on the other king's ring is
 /// the opposition, which the endgame table prices.
 ///
-/// Both [`super::eval`] and the tuner's walk read this, so the identity
-/// between them cannot see a wrong count here. What pins it is the hand counts
-/// in the tests below, the way the mobility counts are pinned.
+/// The tuner's walk reads this, and the evaluation reads the same counts off
+/// the walk in `eval/mod.rs` it shares with mobility, which
+/// `the_shared_walk_counts_what_each_term_counts_alone` holds to this
+/// function. So neither the identity nor that test can see a wrong count
+/// here. What pins it is the hand counts in the tests below, the way the
+/// mobility counts are pinned.
 ///
-/// Inlined by force, for the reason `mobility::counts_of` gives: the
-/// evaluation asks for it twice at every leaf and every quiescence node, and
-/// llvm leaves a walk this shape out of line when it is left to itself.
+/// Inlined by force, for the reason `mobility::counts_of` gives: when the
+/// evaluation read this it asked for it twice at every leaf and every
+/// quiescence node, and llvm leaves a walk this shape out of line when it is
+/// left to itself.
 #[inline(always)]
 pub(crate) fn counts_of(board: &Board, color: Color) -> [i32; COUNTS] {
     let occupied = board.occupied();
@@ -211,21 +215,38 @@ pub(crate) fn counts(board: &Board, color: Color, into: &mut [i32]) {
 }
 
 /// What white's bearing on the black king stands ahead by, as a packed pair on
-/// the scale the piece square pair is on.
+/// the scale the piece square pair is on, given each side's counts.
 ///
-/// The sum calls it only while [`SCORED`] is true. It was written in the
-/// commit the counts arrived in, at zero weight, so that what the fit moved
-/// was eight numbers and not the shape of the evaluation.
+/// The sum calls it only while [`SCORED`] is true, and does not call
+/// [`counts_of`] for the counts. It takes them from the walk in `eval/mod.rs`
+/// that reads mobility's counts off the same attack sets, so a piece's attack
+/// set is probed once for the two terms rather than once for each.
 #[inline]
+pub(crate) fn fold_counts(white: [i32; COUNTS], black: [i32; COUNTS]) -> i32 {
+    weigh(&KING_ATTACK, white, black)
+}
+
+/// The fold with the counts taken by [`counts_of`], which is what the sum
+/// answered before it shared a walk with mobility. The tests hold the sum to
+/// it.
+#[cfg(test)]
 pub(crate) fn fold(board: &Board) -> i32 {
     fold_with(board, &KING_ATTACK)
 }
 
 /// The same fold against weights named by the caller.
-#[inline]
+#[cfg(test)]
 fn fold_with(board: &Board, weights: &[i32; COUNTS]) -> i32 {
-    let white = counts_of(board, Color::White);
-    let black = counts_of(board, Color::Black);
+    weigh(
+        weights,
+        counts_of(board, Color::White),
+        counts_of(board, Color::Black),
+    )
+}
+
+/// White's counts less black's, piece by piece, against `weights`.
+#[inline]
+fn weigh(weights: &[i32; COUNTS], white: [i32; COUNTS], black: [i32; COUNTS]) -> i32 {
     let mut packed = 0;
     for ((weight, white), black) in weights.iter().zip(white).zip(black) {
         packed += weight * (white - black);
@@ -240,10 +261,10 @@ mod tests {
     use pretty_assertions::assert_eq;
 
     /// The counts by hand, square by square, because nothing else pins them.
-    /// The tuner's identity folds a row against the live weights, and `eval`
-    /// and the walk read this same function, so the two sides of the identity
-    /// move together whatever it answers. These cases are what pins the
-    /// counts themselves.
+    /// The tuner's identity folds a row against the live weights, and the
+    /// tuner reads this function and `eval` reads a walk held to it, so the
+    /// two sides of the identity move together whatever it answers. These
+    /// cases are what pins the counts themselves.
     ///
     /// The black king stands on e8 unless the case says otherwise, so its ring
     /// is d7, e7, f7, d8 and f8. The white king stands off every line the case
@@ -366,6 +387,7 @@ mod tests {
         ] {
             let board = Board::from_fen(fen).unwrap();
             assert_eq!(counts_of(&board, color), counts, "{}", why);
+            super::super::evaluate::the_shared_walk_agrees(&board, why);
         }
     }
 
