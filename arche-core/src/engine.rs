@@ -1567,44 +1567,53 @@ impl AlphaBeta {
             }
             // the node's facts as this move is decided, built here rather
             // than once for the node because alpha rises as the node
-            // searches and the list is sorted under the loop above
-            let mut node = late_move::Node {
-                depth,
-                alpha,
-                beta,
-                edges,
-                in_check,
-                ply,
-                tt,
-                moves: &moves,
-                eval: &mut eval,
-                history_max: &mut history_max,
-            };
-            let verdict = late_move::decide(&self.deciding(), &mut node, m, searched);
-            let reduction = match verdict {
-                late_move::Verdict::Skip => {
-                    // never made, so whether it was even legal is never
-                    // learned; skipping an illegal move is a no-op, since
-                    // the loop would have passed over it anyway. `searched`
-                    // stands where it was and nothing is taught about the
-                    // move
-                    if self.ledger.is_some() {
-                        let staged = self.staged_reduction(m, searched, &mut node);
-                        self.ledger_skip(staged, depth, alpha, beta);
+            // searches and the list is sorted under the loop above, and
+            // only where the node admits a reduction at all: most moves
+            // are searched whole, and writing the facts out for each of
+            // them measured a percent of the run. The ledger's staged half
+            // is carried to the scout as a parameter so the reduced moves
+            // inside it cannot mistake it for their own
+            let (reduction, staged) =
+                if late_move::admits(&self.config, depth, searched, in_check, alpha, beta, edges) {
+                    let mut node = late_move::Node {
+                        depth,
+                        alpha,
+                        beta,
+                        edges,
+                        in_check,
+                        ply,
+                        tt,
+                        moves: &moves,
+                        eval: &mut eval,
+                        history_max: &mut history_max,
+                    };
+                    match late_move::decide(&self.deciding(), &mut node, m, searched) {
+                        late_move::Verdict::Skip => {
+                            // never made, so whether it was even legal is never
+                            // learned; skipping an illegal move is a no-op,
+                            // since the loop would have passed over it anyway.
+                            // `searched` stands where it was and nothing is
+                            // taught about the move
+                            if self.ledger.is_some() {
+                                let staged = self.staged_reduction(m, searched, &mut node);
+                                self.ledger_skip(staged, depth, alpha, beta);
+                            }
+                            continue;
+                        }
+                        late_move::Verdict::Scout(reduction) => {
+                            let staged = if reduction > 0 && self.ledger.is_some() {
+                                Some(self.staged_reduction(m, searched, &mut node))
+                            } else {
+                                None
+                            };
+                            (reduction, staged)
+                        }
                     }
-                    continue;
-                }
-                late_move::Verdict::Scout(reduction) => reduction,
-            };
+                } else {
+                    (0, None)
+                };
             // read by the census's row
             let reduced = reduction > 0;
-            // the ledger's staged half, carried to the scout as a parameter
-            // so the reduced moves inside it cannot mistake it for their own
-            let staged = if reduced && self.ledger.is_some() {
-                Some(self.staged_reduction(m, searched, &mut node))
-            } else {
-                None
-            };
             let Some(value) = self.search_child(
                 m,
                 alpha,
