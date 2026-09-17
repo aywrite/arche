@@ -3495,8 +3495,11 @@ mod perft_edge_cases {
     use pretty_assertions::assert_eq;
 
     /// Shapes the six standard perft positions do not reach. Each count was
-    /// checked against python-chess rather than transcribed.
-    const CASES: [(&str, u8, u64, &str); 24] = [
+    /// checked against python-chess rather than transcribed. The last four
+    /// put the shapes the evasion mask has a rule for at the root: a double
+    /// check with pieces able to take a checker, an en passant capture
+    /// answering a check, and a promotion that does.
+    const CASES: [(&str, u8, u64, &str); 28] = [
         (
             "3k4/3p4/8/K1P4r/8/8/8/8 b - - 0 1",
             6,
@@ -3606,10 +3609,12 @@ mod perft_edge_cases {
             "moving into check is not legal",
         ),
         (
+            // the bishop behind the vacated square misses the king, so the
+            // capture stands
             "8/8/8/2k5/2pP4/8/B7/4K3 b - d3 0 3",
             1,
             8,
-            "en passant would expose the king",
+            "en passant takes the checker with a bishop behind the capturer",
         ),
         (
             "r1bqkbnr/pppppppp/n7/8/8/P7/1PPPPPPP/RNBQKBNR w KQkq - 2 2",
@@ -3642,6 +3647,40 @@ mod perft_edge_cases {
             1,
             6,
             "en passant uncovers a bishop on a diagonal the capturer never stood on",
+        ),
+        (
+            // the knight and the rook check together; the queen could take
+            // the rook and the knight the knight, each answering one check
+            // and not the other, so only the king may move
+            "r3k3/8/8/8/8/5n2/3Nr3/R2QK2R w Qq - 0 1",
+            5,
+            1_381_393,
+            "double check with a piece able to take each checker",
+        ),
+        (
+            // the bishop and the knight check together; the queen could
+            // take the knight and the pawn the bishop
+            "r2qk2r/8/p4N2/1B6/8/8/8/4K3 b kq - 0 1",
+            5,
+            1_014_262,
+            "double check against black",
+        ),
+        (
+            // the pawn giving check is the one taken en passant, from
+            // either side of it
+            "4k3/8/1n6/2pPpP2/5K2/8/1R6/8 w - e6 0 1",
+            5,
+            447_179,
+            "en passant takes the checker",
+        ),
+        (
+            // the rook checks along the rank; promoting on a1 takes it and
+            // promoting on b1 blocks it. the white version is "promoting
+            // gets out of check" above
+            "7K/6P1/8/8/8/8/1p6/R3k3 b - - 0 1",
+            5,
+            306_360,
+            "promotion by black takes or blocks the checker",
         ),
     ];
 
