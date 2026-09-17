@@ -20,26 +20,20 @@ use std::mem::MaybeUninit;
 pub(crate) const MOVE_LIST_INLINE: usize = 64;
 pub type MoveList = SmallVec<[Play; MOVE_LIST_INLINE]>;
 
-/// The widest a generated list can be.
-///
-/// The most moves a legal position has ever been shown to offer is 218, and
-/// generation adds nothing to that: it walks the same pieces to the same
-/// squares and only declines to ask whether the mover's king is left in
-/// check. This is more than twice that, because `from_fen` bounds neither
-/// the number of pieces nor what they are (a position with nine queens is
-/// accepted and played from), so the margin is against a position no game
-/// reaches rather than against the generator. Nothing here is initialised,
-/// so the width costs stack and no instructions, and the stack it costs is
-/// one frame's: the buffer is gone before the search recurses.
+/// The widest a generated list can be. No legal position has been shown to
+/// offer more than 218 moves, but `from_fen` bounds neither the number of
+/// pieces nor what they are (nine queens is accepted and played from), so
+/// the margin is against a parsed position rather than the generator. The
+/// buffer is uninitialised and lives in one frame, so the width costs stack
+/// and nothing else.
 const MAX_GENERATED: usize = 512;
 
 /// A move list while it is being generated: a plain array and a length.
 ///
-/// Pushing to the `SmallVec` asks whether the list has spilled, and so where
-/// its buffer is, and then whether it is full, before it can store anything.
-/// Generation pushes about twenty two times a call and a million and a half
-/// times a search, and both answers are the same every time. Here a push is
-/// a store and an increment, and the list is built once at the end.
+/// A `SmallVec` push asks whether the list has spilled and whether it is
+/// full before it stores anything, and both answers are the same for every
+/// one of the million and a half pushes a search makes. Here a push is a
+/// store and an increment, and the list is built once at the end.
 struct Building {
     moves: [MaybeUninit<Play>; MAX_GENERATED],
     len: usize,
@@ -48,11 +42,10 @@ struct Building {
 impl Building {
     #[inline(always)]
     fn new() -> Self {
-        // nothing is written here, and that is the point: giving every entry
-        // a value first costs a store each, and `Play` has no zero value to
-        // memset (`None` for the piece a move captures is a niche rather
-        // than a zero), so an initialiser here measured slower than the
-        // pushing it replaced.
+        // `Play` has no zero value to memset (`None` for the captured piece
+        // is a niche), so an initialiser costs a store per entry, and one
+        // here measured thirteen percent slower than the pushing it replaced
+        // (49747fa).
         Self {
             moves: [const { MaybeUninit::uninit() }; MAX_GENERATED],
             len: 0,
@@ -84,9 +77,8 @@ pub(crate) fn pop_lsb(bb: &mut u64) -> u8 {
     i
 }
 
-/// One ply of history: everything `undo_move` needs that the move itself does
-/// not carry, being the rights and counters the move cleared and the key and
-/// checkers it replaced.
+/// One ply of history: what `undo_move` needs that the move itself does not
+/// carry.
 #[derive(Debug, Copy, Clone, PartialEq, Eq)]
 struct PlayState {
     play: Play,
@@ -98,9 +90,8 @@ struct PlayState {
     checkers: u64,
 }
 
-/// The play a pass records. A pass is not a move and has none of its own, so
-/// this is a placeholder: nothing plays it back, and `undo_null_move` reads it
-/// only to check in a debug build that the ply it is taking back was a pass.
+/// The play a pass records in the history. Nothing plays it back; it only
+/// lets a debug build check that the ply being taken back was a pass.
 const NULL_PLAY: Play = Play {
     from: 0,
     to: 0,
@@ -110,14 +101,13 @@ const NULL_PLAY: Play = Play {
     castle: false,
 };
 
-// Plies of history the board can record, as a ring. Only the fifty move window
-// is ever read back, so this has to cover that plus the depth of the current
-// search rather than the whole game.
+// Plies of history the board records, as a ring. Only the fifty move window
+// is ever read back, so this has to cover that plus the depth of a search,
+// not the whole game.
 const MAX_GAME_SIZE: usize = 1024;
 
-/// Where a ply is recorded. The history is a ring, so a game played past
-/// MAX_GAME_SIZE plies, or a position parsed at a move number past it, wraps
-/// rather than running off the end.
+/// Where a ply is recorded. A game past MAX_GAME_SIZE plies, or a position
+/// parsed at a move number past it, wraps rather than running off the end.
 fn history_index(ply: usize) -> usize {
     ply % MAX_GAME_SIZE
 }
@@ -145,48 +135,35 @@ const F8: u8 = 61;
 const G8: u8 = 62;
 const H8: u8 = 63;
 
-/// The light squares, as the board indexes them from a1 at zero. A square is
-/// light when its file and its rank sum to an odd number, so the first rank
-/// contributes b1, d1, f1 and h1 and the second the four squares beside them.
-///
-/// Held for one reader, `drawn_by_material`, which asks whether every bishop
-/// on the board stands on one colour. Nothing else in the tree has needed the
-/// colour of a square: the attack masks answer where a bishop goes without
-/// naming which half of the board it is confined to.
+/// The light squares, indexed from a1 at zero: a square is light when its
+/// file and rank sum to an odd number. Read by `drawn_by_material` alone.
 const LIGHT_SQUARES: u64 = 0x55AA_55AA_55AA_55AA;
 
 pub(crate) static ZOBRIST: Zobrist = Zobrist::TABLE;
 
 /// What each square leaves of the castling rights, as the four bytes
-/// `CastlePermissions` is laid out in.
+/// `CastlePermissions` is laid out in. A right is lost when a king or rook
+/// leaves its square or a rook is taken on one, and which right depends on
+/// the square alone, so the from and to entries are masked into the rights
+/// together.
 ///
-/// A right is lost when a king or a rook leaves its square, or when a rook
-/// is taken on one, and which right that is depends on the square alone. So
-/// the from square's entry and the to square's are masked into the rights
-/// together and no move is a case of its own. Every other square keeps all
-/// four, which is what nearly every move meets.
-///
-/// The two tables differ on e1 and e8 alone. Leaving one takes both of that
-/// side's rights; landing on one takes neither, because the piece standing
-/// there in a position that holds the rights is the king, and a move that
-/// took it would have ended the game. That holds of a parsed position as
-/// well as of a played one: `from_fen` drops a right whose king or rook is
-/// somewhere else.
+/// The tables differ on e1 and e8 alone: leaving one takes both of that
+/// side's rights, landing on one takes neither, because in a position that
+/// holds the rights the king stands there and a move taking it would have
+/// ended the game. `from_fen` drops a right whose king or rook is elsewhere,
+/// so that holds of a parsed position too.
 static CASTLE_LEAVING: [u32; 64] = castle_masks(true);
 static CASTLE_LANDING: [u32; 64] = castle_masks(false);
 
-/// The rights as the one word they occupy. Four `bool` fields at alignment
-/// one, four bytes with nothing between them, which `misc` asserts, so each
-/// byte is one right's own zero or one and masking two words together masks
-/// the rights a pair at a time. `CastlePermissions` already compares itself
-/// this way.
+/// The rights as the one word they occupy: four `bool` fields at alignment
+/// one, asserted in `misc` to come to four bytes, so each byte is one
+/// right's zero or one. `CastlePermissions` compares itself the same way.
 const fn castle_bits(rights: CastlePermissions) -> u32 {
     // SAFETY: the layout above, which `misc` holds to four bytes.
     unsafe { std::mem::transmute(rights) }
 }
 
-/// The other way round. Unsafe because only a word built by anding such
-/// words may take it: a byte that is a zero or a one stays one under an
+/// The other way round. A byte that is a zero or a one stays one under an
 /// and, and any other byte is not a `bool` at all.
 ///
 /// # Safety
@@ -223,16 +200,14 @@ const fn castle_masks(leaving: bool) -> [u32; 64] {
     masks
 }
 
-/// What a pass folds into the key it records in the history, so that the
-/// entry matches nothing. See `make_null_move` and `has_repeated` for why an
-/// entry a pass wrote must never answer a repetition test. Odd, so it changes
-/// every key it is applied to, and otherwise arbitrary.
+/// Folded into the key a pass records in the history, so the entry matches
+/// nothing: `has_repeated` says why a pass must never answer a repetition
+/// test. Odd, so it changes every key, and otherwise arbitrary.
 const NULL_HISTORY_SALT: u64 = 0x9e37_79b9_7f4a_7c15;
 
 static ATTACK_MASKS: AttackMasks = AttackMasks::new();
-// the squares strictly between two aligned squares, and empty for a pair
-// that shares no line. What a piece must land on to block a slider on one
-// square checking a king on the other.
+// the squares strictly between two aligned squares, empty for a pair that
+// shares no line: what blocks a slider on one checking a king on the other
 static BETWEEN: [[u64; 64]; 64] = between_masks();
 
 const fn between_masks() -> [[u64; 64]; 64] {
@@ -261,15 +236,10 @@ const fn towards(from: i8, to: i8) -> i8 {
     }
 }
 
-/// Walk from `a` one square at a time in the direction of `b`, collecting what
-/// it passes over. A rank, a file or a diagonal is the only way that walk can
-/// land on `b`: for any other pair it steps off the board first, which is the
-/// empty answer an unaligned pair is meant to give.
-///
-/// The blocker-aware probes said the same thing when asked with only the
-/// endpoints occupied, and this owes nothing to the magic tables, which is what
-/// lets it be built at compile time. `a_ray_walk_finds_what_the_sliders_do`
-/// holds the two to each other.
+/// Walk from `a` towards `b` collecting what is passed over. Only an aligned
+/// pair is ever landed on; any other walk steps off the board first, which
+/// gives the empty answer. Built without the magic tables so it can be a
+/// `const`; `a_ray_walk_finds_what_the_sliders_do` holds the two together.
 const fn between_squares(a: u8, b: u8) -> u64 {
     if a == b {
         return 0;
@@ -309,11 +279,9 @@ const BLACK_CASTLES: [Castle; 2] = [(B8_C8_D8, [C8, D8], C8), (F8_G8, [F8, G8], 
 
 /// What a piece on each square attacks with nothing in the way.
 ///
-/// The two slider entries are not that. They are the whole rank and file, and
-/// the whole diagonals, edges and the square itself included, because what the
-/// search asks of them is only whether two squares share a line: that rules a
-/// slider out before the blocker-aware probe in `magic` is worth running.
-/// Nothing asks whether a square shares a line with itself.
+/// The two slider entries are the whole lines through the square, edges and
+/// the square itself included: they are only asked whether two squares share
+/// a line, to rule a slider out before the blocker-aware probe in `magic`.
 struct AttackMasks {
     black_pawns: [u64; 64],
     white_pawns: [u64; 64],
@@ -324,9 +292,8 @@ struct AttackMasks {
 }
 
 /// The squares one step from `from` in each of `steps`, a step that leaves
-/// the board dropped. Steps are a rank and a file, so a step off the side is
-/// caught by the file going out of range rather than by a per direction mask
-/// that would have to be got right eight times over.
+/// the board dropped. Steps are a rank and a file, so a step off the side
+/// is caught by the file going out of range.
 const fn stepped(from: u8, steps: &[(i8, i8)]) -> u64 {
     let rank = (from / 8) as i8;
     let file = (from % 8) as i8;
@@ -362,10 +329,10 @@ const fn rayed(from: u8, steps: &[(i8, i8)]) -> u64 {
     mask
 }
 
-/// The eight directions each leaper moves in, as a rank step and a file step.
-/// A pawn's are the squares it must stand on to attack the one indexed, which
-/// is the mirror of what it attacks: a white pawn takes upwards, so it stands
-/// one rank below.
+/// The directions each leaper moves in, as a rank step and a file step. A
+/// pawn's are the squares it must stand on to attack the one indexed, the
+/// mirror of what it attacks: a white pawn takes upwards, so it stands one
+/// rank below.
 #[rustfmt::skip]
 const KING_STEPS: [(i8, i8); 8] = [
     (1, -1), (1, 0), (1, 1), (0, -1), (0, 1), (-1, -1), (-1, 0), (-1, 1),
@@ -380,9 +347,8 @@ const STRAIGHT_STEPS: [(i8, i8); 4] = [(1, 0), (-1, 0), (0, 1), (0, -1)];
 const DIAGONAL_STEPS: [(i8, i8); 4] = [(1, 1), (1, -1), (-1, 1), (-1, -1)];
 
 impl AttackMasks {
-    /// Built at compile time, which is why the walks above are in coordinates
-    /// rather than through the mailbox: a `const` leaves nothing to build on
-    /// startup and nothing to check on the way to a mask.
+    /// Built at compile time, which is why the walks above are in
+    /// coordinates rather than through the mailbox.
     const fn new() -> Self {
         let mut masks = AttackMasks {
             black_pawns: [0; 64],
@@ -407,35 +373,24 @@ impl AttackMasks {
     }
 }
 
-/// The squares a knight on `from` attacks, whatever stands on them.
-///
-/// One of the two entries of the attack masks anything outside this file
-/// reads. A reader is opened on it because the evaluation asks what a knight
-/// covers; the slider entries are the generator's own and stay here.
+/// The squares a knight on `from` attacks, whatever stands on them. Read by
+/// the evaluation; the slider entries stay the generator's own.
 #[inline]
 pub(crate) fn knight_attacks(from: u8) -> u64 {
     ATTACK_MASKS.knights[from as usize]
 }
 
-/// The squares a king on `from` attacks, whatever stands on them, which is
-/// eight in the middle of the board, five on an edge and three in a corner.
-///
-/// The other reader, opened for the same reason: the evaluation counts what
-/// the enemy pieces bear on around a king, and those squares are this mask.
-/// The king's own square is not in it.
+/// The squares a king on `from` attacks, whatever stands on them. The king's
+/// own square is not in it.
 #[inline]
 pub(crate) fn king_attacks(from: u8) -> u64 {
     ATTACK_MASKS.kings[from as usize]
 }
 
-/// Every square a side's pawns attack, as one span.
-///
-/// A shift rather than a mask a pawn at a time, because the one caller wants
-/// the whole span and asks for it at every leaf. A white pawn takes up the
-/// board, to a square one rank on and a file either side, and a black pawn
-/// down it; a pawn on the a file has no capture to its left and one on the h
-/// file none to its right, which is what the two masks drop before the shift
-/// carries a bit around into the next rank.
+/// Every square a side's pawns attack, as one span: a shift rather than a
+/// mask a pawn at a time, because the evaluation asks for the whole span at
+/// every leaf. The file masks stop the shift carrying a bit around into the
+/// next rank.
 pub(crate) const fn pawn_attacks(pawns: u64, color: Color) -> u64 {
     const A_FILE: u64 = 0x0101_0101_0101_0101;
     const H_FILE: u64 = 0x8080_8080_8080_8080;
@@ -446,94 +401,69 @@ pub(crate) const fn pawn_attacks(pawns: u64, color: Color) -> u64 {
 }
 
 /// What each piece is worth to `see`, indexed by `Piece`. An ordering
-/// oracle, not the evaluation: these say which capture to try first, and
-/// `eval::material` says what a position is worth, so either can move
-/// without silently dragging the other along. The king's price only has to
-/// dwarf every exchange the swap can build, without overflowing one. The
-/// ordering module reads the table's bounds to prove its bands apart.
+/// oracle, separate from `eval::material` so either can move without
+/// dragging the other along. The king's price has to dwarf every exchange
+/// the swap can build without overflowing one; the ordering module reads
+/// the table's bounds to prove its bands apart.
 pub(crate) const SEE_VALUES: [i32; 6] = [100, 300, 300, 500, 900, 10_000];
 
-/// The whole position with its history, which makes a board a little over
-/// forty kilobytes. Copying one is nothing next to a search and a great deal
-/// next to a node, so the search makes and unmakes moves on the one board;
-/// only `pv_line_from` and the tests clone, and the type is not `Copy`, so a
-/// copy has to be written as a clone.
+/// The whole position with its history, a little over forty kilobytes. The
+/// search makes and unmakes moves on the one board and never clones it; the
+/// type is not `Copy`, so a copy has to be written as a clone.
 ///
-/// Several fields restate the piece boards and are kept in step with them by
-/// every move made and unmade: `squares` says what stands where, `key` and
-/// `pawn_key` hash the position, `eval` carries the material and piece square
-/// totals, and `checkers` holds the pieces giving check. `key` also folds in
-/// the side to move, the castle rights and the en passant square, so none of
-/// those changes without it. In a debug build `debug_assert_state_in_step`
-/// recomputes the first four after every move, and `make_move` checks
-/// `checkers` beside it. The fields are written from this file and from tests
-/// that set a position up by hand; outside the crate the position is read
-/// through the accessors and moved through `try_make` and `try_undo`.
+/// `squares`, `key`, `pawn_key`, `eval` and `checkers` restate the piece
+/// boards and are kept in step with them by every move made and unmade.
+/// `key` also folds in the side to move, the castle rights and the en
+/// passant square. In a debug build `debug_assert_state_in_step` recomputes
+/// the first four after every move, and `make_move` checks `checkers`
+/// beside it. Outside the crate the position is read through the accessors
+/// and moved through `try_make` and `try_undo`.
 #[derive(Debug, PartialEq, Clone, Eq)]
 pub struct Board {
-    // One board per piece, indexed by `Piece`, rather than a field each.
-    // `move_accumulators` picks the one it is given a piece for, and as fields
-    // that pick was a six way match compiling to a jump table which the branch
-    // predictor missed about a fifth of the time. Indexing costs no branch.
-    // The accessors below are what everything else reads, so only the pick
-    // changed.
+    // One board per piece, indexed by `Piece`, rather than a field each: as
+    // fields the pick in `move_accumulators` was a six way jump table the
+    // branch predictor missed a quarter of the time. Indexing costs no
+    // branch, and the accessors below compile to the same loads the fields
+    // did.
     pieces: [u64; 6],
 
     white: u64,
     black: u64,
 
-    // what stands on each square, so that asking costs a load rather than a
-    // walk down the six boards above. Written by `move_accumulators` beside
-    // them, which is the one place a piece is put down or picked up, and read
-    // by `get_piece_index`, which generation asks once per capture, ordering
-    // once per move scored, and make and unmake once each. Sixty four bytes on
-    // a board that is already forty kilobytes, and the board is only copied
-    // outside the search.
-    //
-    // Not called a mailbox, though that is what it is, because this crate
-    // already calls the ten by ten sentinel grid in `magic` the mailbox and
-    // one name for two things is worse than a plain one here.
+    // what stands on each square, so asking costs a load rather than a walk
+    // down the six boards. Written by `move_accumulators`, the one place a
+    // piece is put down or picked up, and read by `get_piece_index`. Not
+    // called a mailbox because this crate already calls the sentinel grid in
+    // `magic` that.
     squares: [Option<Piece>; 64],
 
     pub(crate) active_color: Color,
     castle: CastlePermissions,
     en_passant: Option<Coordinate>,
     // the pieces giving check to the side to move, maintained by make_move
-    // from the move itself rather than recomputed by attack probes at every
-    // node. Empty when the side to move is not in check; holding the checkers
-    // rather than that fact is what lets the search refuse moves that cannot
-    // answer a check without playing them
+    // from the move rather than probed at every node. Holding the checkers
+    // rather than the fact of check is what lets the generator drop moves
+    // that cannot answer one without playing them
     checkers: u64,
 
     ply: usize,
-    // plies since the root of the search, counted up by every move and pass
-    // made and back down by every one unmade, and set to zero by `start_line`
-    // when a search begins. What a mate score's distance is measured in, and
-    // the depth the table adjusts such a score by
+    // plies since the root of the search, zeroed by `start_line`: what a
+    // mate score's distance is measured in
     pub(crate) line_ply: usize,
     move_number: usize,
     fifty_move_rule: usize,
 
-    // the evaluation's incremental state, told about every piece placed,
-    // removed and moved from one square to another. The eval module owns
-    // what it means; the board only keeps it in step
+    // the evaluation's incremental state. The eval module owns what it
+    // means; the board only keeps it in step
     pub(crate) eval: Accumulator,
 
     history: [Option<PlayState>; MAX_GAME_SIZE],
     pub(crate) key: u64,
-    /// The same kind of key over the pawns alone: both sides' pawns and the
-    /// squares they stand on, and nothing else. Two positions with the same
-    /// pawns and different pieces share it, which is what anything
-    /// remembered under the pawns alone asks of a key. It carries no side to
-    /// move, no castle rights and no en passant square, so it says what the
-    /// pawns are and not whose turn it is.
-    ///
-    /// Kept in step beside the position key, and so by every path that moves
-    /// a pawn or takes one off: `relocate_piece_index` for a push and for
-    /// the pawn doing the taking in a capture or en passant,
-    /// `move_accumulators` for the pawn being taken and for a promotion,
-    /// which takes a pawn out of the key and puts nothing back. A pass moves
-    /// no piece and leaves it alone.
+    /// The zobrist key over both sides' pawns alone: no side to move, castle
+    /// rights or en passant square, so two positions with the same pawns
+    /// behind different pieces share it. Kept in step by every path that
+    /// moves a pawn or takes one off; a promotion takes a pawn out and puts
+    /// nothing back.
     pub(crate) pawn_key: u64,
 }
 
@@ -571,26 +501,21 @@ impl Board {
         self.line_ply = 0;
     }
 
-    /// Play a move from outside the crate, which is where a move can be one
-    /// this position never generated: a move carried over from another
-    /// position, or from this one before something else was played. Such a
-    /// move is refused rather than made, and so is a legal-looking one that
-    /// leaves the king in check. True when the move was made.
+    /// Play a move from outside the crate, where it may be one this position
+    /// never generated (carried over from another position, or from this one
+    /// before something else was played). Such a move is refused, and so is
+    /// one that leaves the king in check. True when the move was made.
     ///
-    /// Checked by generating, the way `make_move_str` checks a name, rather
-    /// than by `is_pseudo_legal`, which passes on castling, en passant and
-    /// promotion and leaves them to generation.
+    /// Checked by generating rather than by `is_pseudo_legal`, which refuses
+    /// castling, en passant and promotion.
     pub fn try_make(&mut self, play: &Play) -> bool {
         self.generate_moves().contains(play) && self.make_move(play)
     }
 
-    /// Take back the last move `try_make` made. False when there is no move
-    /// behind this position to take back, which is a question of the history
-    /// and not of the ply: a position read from a fen starts at the ply its
-    /// move number says, with nothing behind it. The history keeps the last
-    /// `MAX_GAME_SIZE` plies, so a line longer than that cannot be taken all
-    /// the way back. `undo_move` itself does not check, since the search
-    /// never asks with an empty history.
+    /// Take back the last move `try_make` made. False when the history has
+    /// nothing behind this position: a position read from a fen starts at
+    /// the ply its move number says with nothing behind it, and the history
+    /// keeps only the last `MAX_GAME_SIZE` plies.
     pub fn try_undo(&mut self) -> bool {
         if self.ply == 0 {
             return false;
@@ -598,8 +523,7 @@ impl Board {
         let Some(last) = self.history[history_index(self.ply - 1)] else {
             return false;
         };
-        // a pass is made and unmade by the search alone, which never leaves
-        // one behind for a caller to find
+        // the search never leaves a pass behind for a caller to find
         debug_assert_ne!(last.play, NULL_PLAY, "the last ply was a pass");
         self.undo_move();
         true
@@ -607,31 +531,18 @@ impl Board {
 
     /// Whether this move is one `generate_moves` would produce here.
     ///
-    /// A probe checks the key a slot was stored under, so a hit is this
-    /// position and its move is one generated for it. Almost: a slot keeps
-    /// thirty two bits of the key and its index says another twenty or so,
-    /// and a long search sees enough positions for two of them to agree on
-    /// all of that. Rare, one probe in thousands of millions, and this is
-    /// what keeps rare from being ruinous.
+    /// A table hit is this position's entry, except on a key collision (the
+    /// slot in `transposition` gives the odds), when its move belongs to
+    /// another position. Ordering passes such a move over because it matches
+    /// nothing generated; playing it is worse, since `make_move` reads the
+    /// capture, promotion and castling fields as a description of this board
+    /// and a foreign move corrupts the position.
     ///
-    /// Ordering never had to care, because a move from another position
-    /// matches nothing in the generated list and is passed over. Playing one
-    /// does: `make_move` reads the capture, promotion and castling fields as a
-    /// description of this board, so a move belonging to a different one
-    /// corrupts the position rather than merely wasting a node.
-    ///
-    /// Answering no when the truth is yes is free: the caller falls back to
-    /// generating, which is what it would have done anyway. So the fiddly cases
-    /// are simply refused rather than checked, which keeps this cheap enough to
-    /// be worth asking on the way past.
-    ///
-    /// This is also `make_move`'s precondition written down, which it otherwise
-    /// does not have: it says what a move has to be for `make_move` to read its
-    /// fields as a description of this board. Keep it stated over the move and
-    /// the position alone, with nothing else assumed.
+    /// Answering no when the truth is yes is free, the caller generates as
+    /// it would have anyway, so castling, en passant and promotion are
+    /// refused rather than checked. This is also `make_move`'s precondition
+    /// written down: keep it stated over the move and the position alone.
     pub fn is_pseudo_legal(&self, m: &Play) -> bool {
-        // castling, en passant and promotion each carry conditions of their own
-        // that this would have to restate. They are rare, so let them generate.
         if m.castle || m.en_passant || m.promote.is_some() {
             return false;
         }
@@ -640,15 +551,13 @@ impl Board {
             Color::Black => self.black,
             Color::White => self.white,
         };
-        // the piece has to be ours, and cannot land on top of another of ours
         if !color_mask.is_bit_set(m.from) || color_mask.is_bit_set(m.to) {
             return false;
         }
         let Some(piece) = self.get_piece_index(m.from) else {
             return false;
         };
-        // make_move clears exactly the piece the move names, so the move has to
-        // name what is actually standing there
+        // make_move clears exactly the piece the move names
         if m.capture != self.get_piece_index(m.to) {
             return false;
         }
@@ -667,8 +576,7 @@ impl Board {
             }
             Piece::Pawn => {
                 let (rank, _) = index_to_coordinate(m.from);
-                // a pawn one step from the far rank only ever promotes, and
-                // promotions were refused above
+                // a pawn one step from the far rank only ever promotes
                 if match self.active_color {
                     Color::White => rank == 7,
                     Color::Black => rank == 2,
@@ -676,9 +584,6 @@ impl Board {
                     return false;
                 }
                 if m.capture.is_some() {
-                    // that the piece taken is really there, and is really
-                    // the one named, was settled above: all that is left is
-                    // whether a pawn on the from square attacks the to one
                     return match self.active_color {
                         Color::White => attack_masks.black_pawns[m.from as usize].is_bit_set(m.to),
                         Color::Black => attack_masks.white_pawns[m.from as usize].is_bit_set(m.to),
@@ -694,8 +599,6 @@ impl Board {
                 if m.to as isize == one {
                     return true;
                 }
-                // the double push, only from the rank it is allowed from and
-                // only when the square beyond is empty too
                 let from_start = match self.active_color {
                     Color::White => rank == 2,
                     Color::Black => rank == 7,
@@ -710,24 +613,18 @@ impl Board {
     }
 
     /// The subset of generate_moves that changes material, the captures and
-    /// the promoting pushes, in the same order, made without generating the
-    /// quiet moves only to filter them out.
+    /// the promoting pushes, in the same order.
     pub fn generate_captures(&self) -> MoveList {
         self.generate::<true, false>()
     }
 
-    /// The moves worth trying here: every pseudo legal one, less those that
-    /// cannot answer a check when there is one. Most of what full width
-    /// generation returns in check would only be refused by `make_move`, so
-    /// leaving it ungenerated spares the push, the sort and the make.
+    /// Every pseudo legal move, less those that cannot answer a check when
+    /// there is one; out of check it is `generate_moves`. Most of the full
+    /// list in check would only be refused by `make_move`, so leaving it
+    /// ungenerated spares the push, the sort and the make.
     ///
-    /// Correct whichever position it is asked of: out of check it is
-    /// `generate_moves`. The caller does not have to establish that it is in
-    /// check first, which is what the filter this replaced used to ask of it.
-    ///
-    /// The list is the one the filter returned, move for move and in the same
-    /// order, which `the_masked_generator_keeps_what_the_filter_kept` holds it
-    /// to against the filter itself.
+    /// The list is the one `retain_evasions` returns, move for move, which
+    /// `the_masked_generator_keeps_what_the_filter_kept` holds it to.
     #[inline]
     pub fn evasions(&self) -> MoveList {
         if self.in_check() {
@@ -741,14 +638,10 @@ impl Board {
         self.generate::<false, false>()
     }
 
-    /// The squares a move must land on to answer the check, for a mover that
-    /// is not the king. Capturing the sole checker or blocking its line are
-    /// the only two, and a double check leaves neither: nothing answers it
-    /// but a king move.
-    ///
-    /// En passant is not in here. The captured pawn does not stand on the to
-    /// square, so this mask misreads it, and the generator leaves those moves
-    /// unmasked the way the filter left them unexamined.
+    /// The squares a piece other than the king must land on to answer the
+    /// check: the sole checker or its line, and nothing under a double check.
+    /// En passant is left unmasked, since the captured pawn does not stand on
+    /// the to square and the mask would misread it.
     fn evasion_targets(&self) -> u64 {
         debug_assert!(self.checkers != 0, "asked of a position not in check");
         if self.checkers.count_ones() > 1 {
@@ -759,32 +652,24 @@ impl Board {
         self.checkers | BETWEEN[king][checker]
     }
 
-    /// The one generator behind generate_moves and generate_captures. The
-    /// const parameter is settled at compile time, so each wrapper
-    /// monomorphises into the equivalent of a hand-written copy: the captures
-    /// one masks every piece's targets with the opponent's pieces and drops
-    /// the quiet-only sections, with nothing tested per move.
+    /// The one generator behind the three lists. The const parameters are
+    /// settled at compile time, so each wrapper monomorphises with nothing
+    /// tested per move.
     fn generate<const CAPTURES_ONLY: bool, const EVASIONS: bool>(&self) -> MoveList {
         let mut moves = Building::new();
         let (color_mask, capture_mask) = self.sides(self.active_color);
         let all_pieces = self.black | self.white;
         let attack_masks = &ATTACK_MASKS;
         let magic = &MAGIC;
-        // the captures list keeps only the squares the opponent stands on,
-        // the full list keeps every square our own pieces do not. The king
-        // takes this one as it stands, which is why it is named
+        // the king takes this filter as it stands: it answers a check by
+        // leaving, not by landing on the checker's line
         let king_filter = if CAPTURES_ONLY {
             capture_mask
         } else {
             !color_mask
         };
-        // in check, everything but the king has to capture the checker or
-        // block it, so the squares that do neither come off the filter and
-        // those moves are never built. A double check leaves this zero,
-        // which is the same statement
         let evasion_filter = if EVASIONS { self.evasion_targets() } else { !0 };
         let target_filter = king_filter & evasion_filter;
-        // when every target is a capture there is nothing to ask per move
         let capture_at = |to: u8| {
             if CAPTURES_ONLY {
                 self.get_piece_index(to)
@@ -792,7 +677,6 @@ impl Board {
                 self.capture_on(to, capture_mask)
             }
         };
-        // knights
         let mut knights = self.knights() & color_mask;
         while knights != 0 {
             let from = pop_lsb(&mut knights);
@@ -802,7 +686,6 @@ impl Board {
                 moves.push(Play::new(from, to, capture_at(to), None, false, false));
             }
         }
-        // queens and rooks
         let mut queens_and_rooks = (self.queens() | self.rooks()) & color_mask;
         while queens_and_rooks != 0 {
             let from = pop_lsb(&mut queens_and_rooks);
@@ -812,7 +695,6 @@ impl Board {
                 moves.push(Play::new(from, to, capture_at(to), None, false, false));
             }
         }
-        // queens and bishops
         let mut queens_and_bishops = (self.queens() | self.bishops()) & color_mask;
         while queens_and_bishops != 0 {
             let from = pop_lsb(&mut queens_and_bishops);
@@ -822,9 +704,6 @@ impl Board {
                 moves.push(Play::new(from, to, capture_at(to), None, false, false));
             }
         }
-        // kings, which take the filter without the evasion mask: a king
-        // answers a check by leaving, not by landing on the checker's line,
-        // and `make_move` settles which squares it may step to
         let mut kings = self.kings() & color_mask;
         while kings != 0 {
             let from = pop_lsb(&mut kings);
@@ -836,10 +715,9 @@ impl Board {
             if CAPTURES_ONLY {
                 continue;
             }
-            // castling: the right is still held, the king is not in check,
-            // the squares between are empty, and the king does not pass
-            // through a square the opponent attacks. Both colours read the
-            // one rule below off their own row of the table
+            // castling: the right is held, the king is not in check, the
+            // squares between are empty, and the king does not pass through
+            // an attacked square
             let (king_square, opponent, held, castles) = match self.active_color {
                 Color::White => (
                     E1,
@@ -854,8 +732,6 @@ impl Board {
                     &BLACK_CASTLES,
                 ),
             };
-            // one probe of the king's square for both castles rather than
-            // one each, and none at all when neither right is left
             if (held[0] || held[1]) && !self.square_attacked(king_square, opponent) {
                 for (i, &(empty, passes, king_to)) in castles.iter().enumerate() {
                     if held[i]
@@ -867,7 +743,6 @@ impl Board {
                 }
             }
         }
-        // pawns
         let mut pawns = self.pawns() & color_mask;
         while pawns != 0 {
             let from = pop_lsb(&mut pawns);
@@ -876,14 +751,10 @@ impl Board {
                 Color::White => rank == 7,
                 Color::Black => rank == 2,
             };
-            // move diagonally and capture
             let pmoves: u64 = match self.active_color {
                 Color::White => attack_masks.black_pawns[from as usize] & capture_mask,
                 Color::Black => attack_masks.white_pawns[from as usize] & capture_mask,
             };
-            // a pawn's captures take the evasion mask like every other
-            // piece's: taking something that is not the checker leaves the
-            // king in check
             let mut targets = pmoves & evasion_filter;
             while targets != 0 {
                 let to = pop_lsb(&mut targets);
@@ -896,20 +767,16 @@ impl Board {
                     moves.push(Play::new(from, to, capture, None, false, false));
                 }
             }
-            // move forward. A promotion changes the material on the board the
-            // way a capture does, so the captures list keeps the promoting
-            // pushes and drops only the quiet ones: quiescence would otherwise
-            // stand a pawn on the seventh and score it as a pawn
+            // the captures list keeps the promoting pushes: quiescence would
+            // otherwise stand a pawn on the seventh and score it as a pawn
             if !CAPTURES_ONLY || can_promote {
                 let to = match self.active_color {
                     Color::White => from as isize + 8,
                     Color::Black => from as isize - 8,
                 };
-                // the square being empty is what lets the pawn through, and
-                // the double push needs the single one's square empty as
-                // well, so the evasion mask is asked of each push and not of
-                // the step they share: a double push can block a check the
-                // single push does not reach
+                // the evasion mask is asked of each push and not of the step
+                // they share: a double push can block a check the single
+                // push does not reach
                 if (0..64).contains(&to) && !all_pieces.is_bit_set(to as u8) {
                     let to = to as u8;
                     let blocks = evasion_filter.is_bit_set(to);
@@ -940,7 +807,6 @@ impl Board {
                     }
                 }
             }
-            // en passant
             if let Some(en_passant) = &self.en_passant {
                 let i = en_passant.as_index();
                 let can_en_passant = match self.active_color {
@@ -957,15 +823,13 @@ impl Board {
 
     /// Check everything maintained a piece at a time against the position it
     /// describes. Perft looks at none of it, so without this a mistake leaves
-    /// every count correct and shows up only as the engine evaluating or
-    /// transposing wrongly. Debug only: it walks the whole board.
+    /// every count correct and shows up as the engine evaluating or
+    /// transposing wrongly.
     ///
     /// Each recompute (the ones below and `Accumulator::recomputed`) is a
-    /// second implementation on purpose, and only worth having while it
-    /// stays one. Factoring shared code out of a recompute and the
-    /// piece-at-a-time path it is checked against would leave both sides
-    /// wrong together and this passing, which is worse than not checking at
-    /// all: do not tidy them into each other.
+    /// second implementation on purpose. Factoring shared code out of a
+    /// recompute and the path it checks would leave both wrong together and
+    /// this passing: do not tidy them into each other.
     fn debug_assert_state_in_step(&self) {
         debug_assert_eq!(
             self.eval,
@@ -983,15 +847,10 @@ impl Board {
             self.recompute_squares(),
             "squares out of step"
         );
-        // the recompute reads the castle rights and the en passant square as
-        // they stand, so the checks above cannot tell a field set against the
-        // rule: assert the rules themselves. A right belongs to a king and a
-        // rook standing where the castle moves them from, and a square to a
-        // pawn the side to move can take there. Both hold of a played
-        // position, since make_move gives up the rights of every square a
-        // king or rook leaves and records a square only for a double push
-        // that was answerable, and `from_fen` drops what a fen states past
-        // them.
+        // the key recompute reads the rights and the en passant square as
+        // they stand, so it cannot tell a field set against the rule: assert
+        // the rules themselves. Both hold of a played position, and
+        // `from_fen` drops what a fen states past them.
         debug_assert_eq!(
             self.castle,
             self.rights_the_pieces_bear_out(),
@@ -1005,10 +864,8 @@ impl Board {
         }
     }
 
-    /// The position key computed from the board rather than maintained as moves
-    /// are made, built the way `from_fen` builds it. `key` is meant to equal
-    /// this at all times, which `debug_assert_state_in_step` checks on every
-    /// move made.
+    /// The position key computed from the board, built the way `from_fen`
+    /// builds it. `key` is meant to equal this at all times.
     fn recompute_key(&self) -> u64 {
         let mut key = INITIAL_KEY;
         let mut occupied = self.white | self.black;
@@ -1028,13 +885,8 @@ impl Board {
         key
     }
 
-    /// The pawn key computed from the pawn boards rather than maintained as
-    /// moves are made. `pawn_key` is meant to equal this at all times, which
-    /// `debug_assert_state_in_step` checks on every move made.
-    ///
-    /// A second implementation on purpose, like the recomputes above: it
-    /// walks the pawns where the maintained key follows each one placed,
-    /// removed and relocated.
+    /// The pawn key computed from the pawn boards. `pawn_key` is meant to
+    /// equal this at all times.
     fn recompute_pawn_key(&self) -> u64 {
         let mut key = 0;
         let mut pawns = self.pawns();
@@ -1055,21 +907,16 @@ impl Board {
         self.white | self.black
     }
 
-    /// What stands on each square according to the piece boards, which is the
-    /// walk `get_piece_index` used to do before `squares` answered instead.
-    /// `squares` is meant to equal this at all times, which
-    /// `debug_assert_state_in_step` checks on every move made.
-    ///
-    /// All sixty four squares rather than the occupied ones alone, unlike the
-    /// recomputes above: an entry left behind on a square that has since been
-    /// emptied is exactly the drift worth catching, and walking the occupied
-    /// squares would never look at it.
+    /// What stands on each square according to the piece boards. `squares`
+    /// is meant to equal this at all times, over all sixty four squares: an
+    /// entry left behind on a square since emptied is the drift worth
+    /// catching, and a walk of the occupied squares would never look at it.
     fn recompute_squares(&self) -> [Option<Piece>; 64] {
-        // by popping the pieces off their boards rather than asking all
-        // sixty four squares what stands on them: this runs on every move
-        // of every debug test, and the per-square walk tripled the debug
-        // suite's time in ci. The answer is the same array either way, and
-        // the empty squares stay None by never being written
+        // popping the pieces off their boards rather than asking each square
+        // what stands on it: this runs on every move of every debug test,
+        // and the per-square walk took the debug half of ci from under five
+        // minutes to fourteen. The empty squares stay None by never being
+        // written
         let mut squares = [None; 64];
         for (index, board) in self.pieces.iter().enumerate() {
             let piece = Piece::PIECES[index];
@@ -1089,17 +936,14 @@ impl Board {
             Color::Black => (self.black, &attack_masks.black_pawns),
             Color::White => (self.white, &attack_masks.white_pawns),
         };
-        // pawns
         if (pawn_masks[index as usize] & self.pawns() & color_mask) > 0 {
             return true;
         }
 
-        // knights
         if (attack_masks.knights[index as usize] & self.knights() & color_mask) > 0 {
             return true;
         }
 
-        // bishops & queens
         let bishop_or_queen = (self.bishops() | self.queens()) & color_mask;
         if (attack_masks.diagonal[index as usize] & bishop_or_queen) > 0 {
             let move_mask = magic.get_diagonal_move(index, all);
@@ -1108,7 +952,6 @@ impl Board {
             }
         }
 
-        // rooks & queens
         let rook_or_queen = (self.rooks() | self.queens()) & color_mask;
         if (attack_masks.straight[index as usize] & rook_or_queen) > 0 {
             let move_mask = magic.get_straight_move(index, all);
@@ -1117,7 +960,6 @@ impl Board {
             }
         }
 
-        // kings
         if (attack_masks.kings[index as usize] & self.kings() & color_mask) > 0 {
             return true;
         }
@@ -1125,22 +967,18 @@ impl Board {
         false
     }
 
-    /// Every piece of either colour bearing on `index` through `occupied`,
-    /// the two halves put back together.
-    ///
-    /// The swap asks for the halves rather than this, since the steppers do
-    /// not change as it empties the square. What is left here is the whole
-    /// statement of what an attacker is, which the exhaustive model `see` is
-    /// checked against reads.
+    /// Every piece of either colour bearing on `index` through `occupied`.
+    /// The swap asks for the two halves separately; this is the whole
+    /// statement of an attacker, for the exhaustive model `see` is checked
+    /// against.
     #[cfg(test)]
     fn attackers_to(&self, index: u8, occupied: u64) -> u64 {
         (self.steppers_onto(index) | self.sliders_onto(index, occupied)) & occupied
     }
 
-    /// The pawns, knights and kings bearing on `index`. Nothing stands
-    /// between a stepper and the square it attacks, so this is the half of
-    /// `attackers_to` that does not depend on the occupancy, and a swap
-    /// works it out once rather than at every capture it prices.
+    /// The pawns, knights and kings bearing on `index`: the half of
+    /// `attackers_to` that does not depend on the occupancy, so a swap works
+    /// it out once rather than at every capture it prices.
     #[inline]
     fn steppers_onto(&self, index: u8) -> u64 {
         let attack_masks = &ATTACK_MASKS;
@@ -1151,8 +989,7 @@ impl Board {
         pawns | (attack_masks.knights[i] & self.knights()) | (attack_masks.kings[i] & self.kings())
     }
 
-    /// The bishops, rooks and queens bearing on `index` through `occupied`,
-    /// which is the half that does depend on what stands between.
+    /// The bishops, rooks and queens bearing on `index` through `occupied`.
     #[inline]
     fn sliders_onto(&self, index: u8, occupied: u64) -> u64 {
         let attack_masks = &ATTACK_MASKS;
@@ -1173,8 +1010,7 @@ impl Board {
     /// The least valuable piece of `set`: the bit of one such piece and what
     /// it is. `set` is a subset of one side's pieces.
     fn least_valuable(&self, set: u64) -> Option<(u64, Piece)> {
-        // every swap ends by asking this of an empty set, once per capture
-        // priced, and without the test that walks all six boards to say so
+        // every swap ends by asking this of an empty set
         if set == 0 {
             return None;
         }
@@ -1188,53 +1024,43 @@ impl Board {
     }
 
     /// Static exchange evaluation: what this capture wins, in centipawns,
-    /// once every profitable recapture on its square has been traded through.
-    /// The swap records the least valuable attacker capturing on both sides
-    /// until one side has none left, with sliders behind the piece that just
-    /// captured joining in as the line opens; the negamax fold over the
-    /// recorded stack then lets either side stop where continuing stands
-    /// worse than what it already has.
+    /// once every profitable recapture on its square has been traded
+    /// through. The least valuable attacker captures on each side in turn,
+    /// sliders behind a capturer joining as the line opens, and a negamax
+    /// fold over the recorded gains lets either side stop where continuing
+    /// stands worse.
     ///
     /// En passant is played exactly: the pawn taken is lifted from its own
-    /// square, not the target, so a slider it was blocking joins the swap.
-    /// A promotion is counted as the pawn it was, on both sides of the
-    /// exchange: the first capture still values the piece it takes, but the
-    /// queen that appears is worth a pawn to whoever takes it back. That
-    /// undervalues promoting captures, and the ordering promotions get is
-    /// theirs to fix. Pins are ignored: every attacker is assumed free to
-    /// capture, however its king stands. A move with no victim is worth zero
-    /// here; the callers only ask about captures.
+    /// square, so a slider it was blocking joins the swap. A promotion is
+    /// counted as the pawn it was on both sides of the exchange, which
+    /// undervalues promoting captures; the ordering promotions get is theirs
+    /// to fix. Pins are ignored. A move with no victim is worth zero.
     pub(crate) fn see(&self, m: &Play) -> i32 {
         let Some(victim) = m.capture else {
             return 0;
         };
         // more slots than pieces that could ever join one square's swap.
         // Every slot is written before it is read: `d` counts the swap up
-        // and the fold reads it down, so zero filling the array was a
-        // memset per capture ordered that nothing consumed
+        // and the fold reads it down
         let mut gain = [const { MaybeUninit::<i32>::uninit() }; 32];
         gain[0].write(SEE_VALUES[victim as usize]);
         let mut occupied = self.white | self.black;
         occupied &= !(1u64 << m.from);
         if m.en_passant {
-            // the pawn taken en passant does not stand on the target square
             let taken = match self.active_color {
                 Color::White => m.to - 8,
                 Color::Black => m.to + 8,
             };
             occupied &= !(1u64 << taken);
         }
-        // the piece standing on the target square, which the next capture
-        // takes
         let mut on_square = self
             .get_piece_index(m.from)
             .expect("a capture moves a piece of ours");
         let mut side = !self.active_color;
         let mut d = 0;
-        // the steppers bearing on the square are the same however the swap
-        // empties it, so they are found once here rather than at every
-        // capture. Masking by `occupied` is what drops the ones that have
-        // already captured, which is what the whole lookup did before
+        // the steppers do not change as the swap empties the square, so they
+        // are found once; masking by `occupied` drops the ones that have
+        // already captured
         let steppers = self.steppers_onto(m.to);
         loop {
             let side_mask = match side {
@@ -1251,8 +1077,8 @@ impl Board {
             let taken = unsafe { gain[d - 1].assume_init() };
             gain[d].write(SEE_VALUES[on_square as usize] - taken);
             // taking a king ends the swap: the side whose king would be
-            // taken could not legally have captured onto this square, which
-            // the fold below reads off the king's price
+            // taken could not legally have captured here, which the fold
+            // reads off the king's price
             if matches!(on_square, Piece::King) {
                 break;
             }
@@ -1260,8 +1086,8 @@ impl Board {
             on_square = piece;
             side = !side;
         }
-        // negamax over the stack: at each step the side to move keeps the
-        // better of stopping and the exchange it recorded
+        // at each step the side to move keeps the better of stopping and
+        // the exchange it recorded
         while d > 0 {
             // SAFETY: the loop above wrote every slot up to the `d` it left
             let (stop, go_on) = unsafe { (gain[d - 1].assume_init(), gain[d].assume_init()) };
@@ -1273,19 +1099,15 @@ impl Board {
     }
 
     /// How many times this position has already appeared, not counting the
-    /// position itself, and stopping once `enough` of them have been found.
-    /// Both callers name what they need: the search asks whether there was
-    /// one at all, and the draw rule whether there were two.
+    /// position itself, stopping once `enough` have been found.
     ///
-    /// Every other ply is looked at and the ones between are not. A key
-    /// carries the side to move, and every ply hands the move over, so an
-    /// entry an odd number of plies back belongs to the other side and can
-    /// never equal this key. Stepping in twos halves the walk and changes
-    /// no answer.
+    /// Every other ply is looked at: a key carries the side to move and
+    /// every ply hands the move over, so an entry an odd number of plies
+    /// back can never equal this key.
     fn prior_occurrences(&self, enough: usize) -> usize {
-        // only the fifty move window can hold a repetition, since a pawn move or
-        // a capture in between puts the position out of reach for good. A fen
-        // can claim a fifty move count longer than the history or the game
+        // only the fifty move window can hold a repetition, since a pawn
+        // move or a capture puts the position out of reach for good. A fen
+        // can claim a count longer than the history or the game
         let window = self.fifty_move_rule.min(self.ply).min(MAX_GAME_SIZE - 1);
         let mut found = 0;
         let mut back = 2;
@@ -1303,64 +1125,55 @@ impl Board {
         found
     }
 
-    /// The fifty move counter, as the fen prints it. Read by the residual
-    /// sampler, which puts it in a column of its own so that rows filter on
-    /// it without a fen being parsed to find it.
+    /// The fifty move counter, as the fen prints it.
     pub fn halfmove_clock(&self) -> usize {
         self.fifty_move_rule
     }
 
-    /// Whether the fifty move counter has run out.
-    ///
-    /// Not the same as drawn: a mate delivered on the hundredth half move
-    /// ends the game on it, before the side mated has a move to claim the
-    /// draw with, so a caller that can tell a mate has to ask that too.
+    /// Whether the fifty move counter has run out. Not the same as drawn: a
+    /// mate delivered on the hundredth half move ends the game before the
+    /// side mated has a move to claim the draw with, so a caller that can
+    /// tell a mate asks `has_legal_move` as well.
     pub fn fifty_move_expired(&self) -> bool {
         self.fifty_move_rule >= 100
     }
 
     /// Whether the fifty move counter stands within four plies of expiry:
     /// the horizon behind which the rule50 taint policy refuses every
-    /// transposition cutoff, as Stockfish does in its main search, and
-    /// here in quiescence besides.
+    /// transposition cutoff, as Stockfish does in its main search, and here
+    /// in quiescence besides.
     pub fn fifty_move_near_expiry(&self) -> bool {
         self.fifty_move_rule >= 96
     }
 
     /// True on the third occurrence, which is when a game is actually drawn.
-    ///
-    /// Nothing in the search calls it: the search takes a draw on the first
-    /// repetition instead, for the reason `has_repeated` gives. This is the
-    /// rule that one is measured against, and what the tests contrast it
-    /// with, so it is kept rather than inlined into them.
+    /// Nothing in the search calls it; it is the rule `has_repeated` is
+    /// measured against, and what the tests contrast it with.
     #[allow(dead_code)]
     pub(crate) fn is_repetition(&self) -> bool {
         self.prior_occurrences(2) >= 2
     }
 
     /// True once this position has come up before. Inside a search that is
-    /// already enough to call it a draw: a position reached twice can be
-    /// reached a third time by whichever side wants it, so neither can be made
-    /// to avoid it, and waiting for the third costs four plies of depth to see
-    /// something that is available now.
+    /// enough to call it a draw: a position reached twice can be reached a
+    /// third time by whichever side wants it, and waiting for the third
+    /// costs four plies of depth to see what is available now.
     ///
     /// A claim here is a claim that a legal path came back to this position,
-    /// which is why the entry a pass writes is salted and matches nothing. A
-    /// pass is not a move either side has, so a line through one is not a
-    /// path a rule knows about, and an unsalted entry would let a later real
+    /// which is why the entry a pass writes is salted. A pass is not a move
+    /// either side has, and an unsalted entry would let a later real
     /// position count the passed-from position as an occurrence and take a
-    /// draw no rule grants. Every real entry either side of a pass still
-    /// compares as it always did: the window is a range of plies rather than
-    /// a walk back from here, so removing one entry from it removes nothing
-    /// else. Engines that let a repetition be claimed through a pass differ
-    /// here, and this is the divergence.
+    /// draw no rule grants. The window is a range of plies rather than a
+    /// walk back from here, so the real entries either side of a pass still
+    /// compare as they always did. Engines that let a repetition be claimed
+    /// through a pass differ here.
     pub fn has_repeated(&self) -> bool {
         self.prior_occurrences(1) >= 1
     }
 
     /// Whether the side to move has a legal move at all. Asked only where a
-    /// draw rule and a mate could coincide, which is rare, so it plays the
-    /// moves rather than keeping anything incremental.
+    /// draw rule and a mate could coincide, so it plays the moves rather
+    /// than keeping anything incremental.
     pub fn has_legal_move(&mut self) -> bool {
         let moves = self.evasions();
         for m in &moves {
@@ -1376,13 +1189,10 @@ impl Board {
         self.make_move_impl::<true>(play)
     }
 
-    /// The one caller that never reads `checkers` is perft, which counts
-    /// with MAINTAIN_CHECKERS off: the legality probe runs unconditionally,
-    /// since the stale checkers cannot be consulted, and `checkers_given` is
-    /// skipped. History still saves and restores the field, so the board's
-    /// checkers are intact once the walk unwinds. `perft_as_played` counts
-    /// the same positions with it on, so what a game relies on is held to
-    /// the same numbers.
+    /// Perft counts with MAINTAIN_CHECKERS off: the legality probe then runs
+    /// unconditionally, since the stale checkers cannot be consulted, and
+    /// `checkers_given` is skipped. History still saves and restores the
+    /// field, so the board's checkers are intact once the walk unwinds.
     fn make_move_impl<const MAINTAIN_CHECKERS: bool>(&mut self, play: &Play) -> bool {
         self.history[history_index(self.ply)] = Some(PlayState {
             play: *play,
@@ -1394,22 +1204,12 @@ impl Board {
         });
 
         let opposing_color = !self.active_color;
-        // Update castling permissions. The from square's mask covers a king
-        // or a rook leaving, the to square's a rook being taken where it
-        // stands; a rook taken on its square is the only piece worth asking
-        // the to square about, since taking a king would have ended the game.
-        // Both squares are read from one table, so the handful of squares
-        // that take a right away cost the same as the sixty that do not.
         let old_castle = self.castle;
         let old_bits = castle_bits(old_castle);
         let bits = old_bits & CASTLE_LEAVING[play.from as usize] & CASTLE_LANDING[play.to as usize];
-        // XORing both the old and new castle keys removes the old permissions
-        // from the position key and adds the new ones. Asked first rather
-        // than folded unconditionally: the rights only change when a king or
-        // a rook leaves its square or a rook is taken on one, which is a
-        // handful of moves in a game, and on every other one the two keys are
-        // the same key and cancel. One comparison decides that, where folding
-        // both walked the four rights twice to arrive at nothing.
+        // the rights change on a handful of moves in a game; on every other
+        // one the old and new castle keys would cancel, so one comparison
+        // spares folding both
         if bits != old_bits {
             // SAFETY: every byte of `bits` is a byte of the old rights
             // anded with a byte of each mask, and all three are a `bool`'s
@@ -1418,20 +1218,18 @@ impl Board {
             self.key ^= ZOBRIST.castle_key(old_castle) ^ ZOBRIST.castle_key(self.castle);
         }
         if let Some(en_passant) = self.en_passant {
-            // the en passant rights of the previous position have expired
             self.key ^= ZOBRIST.en_passant_key(en_passant.as_index());
         }
         self.en_passant = None;
         self.fifty_move_rule += 1;
 
         if self.pawns().is_bit_set(play.from) {
-            // pawn moves reset the fifty move rule
             self.fifty_move_rule = 0;
             if (play.from as isize - play.to as isize).abs() == 16 {
-                // the square the pawn passed over only belongs in the key if
-                // something can be taken on it. Hashing it unconditionally
-                // makes one position hash two ways, which costs transposition
-                // hits and hides a repetition either side of a double push
+                // the square passed over belongs in the key only if a pawn
+                // can take on it. Hashing it unconditionally makes one
+                // position hash two ways, which costs transposition hits and
+                // hides a repetition either side of a double push
                 let passed = match self.active_color {
                     Color::White => play.to - 8,
                     Color::Black => play.to + 8,
@@ -1484,13 +1282,12 @@ impl Board {
         }
 
         let king_index = self.king_index(self.active_color);
-        // A move only exposes its own king when there was a check to walk
+        // A move can only expose its own king when there was a check to walk
         // back into, the king itself moved, a square on a line through the
-        // king was vacated, or en passant emptied a second square. Anything
-        // else keeps the king exactly as attacked as it was, which was not
-        // at all, so the probe has nothing to find. `checkers` still holds
-        // the mover's own checkers here: it is only replaced below, once the
-        // move has been allowed to stand.
+        // king was vacated, or en passant emptied a second square. Any other
+        // move leaves the king as unattacked as it was. `checkers` still
+        // holds the mover's own checkers here; it is replaced below once the
+        // move stands.
         let attack_masks = &ATTACK_MASKS;
         let could_expose_king = !MAINTAIN_CHECKERS
             || self.checkers != 0
@@ -1511,8 +1308,6 @@ impl Board {
             false
         } else {
             if MAINTAIN_CHECKERS {
-                // the piece that landed on the to square, once promotion has
-                // had its say
                 let landed = match play.promote {
                     Some(promote) => (&promote).into(),
                     None => from_piece,
@@ -1537,8 +1332,6 @@ impl Board {
         let play = history.play;
 
         let opposing_color = !self.active_color;
-        // castle rights, en passant and the fifty move counter cannot be
-        // recomputed from the move alone, they come back from the history
         self.castle = history.castle;
         self.en_passant = history.en_passant;
         self.fifty_move_rule = history.fifty_move_rule;
@@ -1549,7 +1342,6 @@ impl Board {
         }
 
         if play.en_passant {
-            // the captured pawn stood behind the to square, not on it
             let en_passant_index = match opposing_color {
                 Color::White => play.to - 8,
                 Color::Black => play.to + 8,
@@ -1583,31 +1375,22 @@ impl Board {
         }
 
         self.active_color = opposing_color;
-        // restore the position key exactly as it was before the move was made,
-        // this guarantees make/undo can never let the key drift out of sync
+        // the key comes back from the history rather than being unfolded, so
+        // make and undo cannot let it drift
         self.key = history.position_key;
         self.checkers = history.checkers;
     }
 
-    /// Hand the move to the other side without touching a piece.
+    /// Hand the move to the other side without touching a piece. Not a
+    /// chess move: the search passes to ask what a position is worth to a
+    /// side that does nothing.
     ///
-    /// Not a chess move, and nothing outside the search has any business
-    /// playing one: the search passes to ask what a position is worth to a
-    /// side that does nothing, which is a question about the tree rather than
-    /// about the game. No piece moves, so the piece boards, the squares and
-    /// the evaluation accumulators are all left exactly as they stand.
-    ///
-    /// A pass is a reversible ply. Nothing was captured and no pawn moved, so
-    /// the fifty move counter runs on, which near the horizon is the point:
-    /// passing does not buy the side to move its way out of a draw.
-    ///
-    /// The en passant square goes, as it does on any move: the right belonged
-    /// to the side that has just given the move away. The checkers come out
-    /// empty, because the side not to move is never in check, so the side
-    /// inheriting the move is not in check either.
-    ///
-    /// The history entry's key is salted, which is what keeps a pass out of
-    /// the repetition arithmetic; `has_repeated` has the reasoning.
+    /// The fifty move counter runs on, so near the horizon passing does not
+    /// buy the side to move its way out of a draw. The en passant square
+    /// goes, as on any move. The checkers come out empty, because the side
+    /// not to move is never in check. The history entry's key is salted to
+    /// keep the pass out of the repetition arithmetic; `has_repeated` has
+    /// the reasoning.
     pub(crate) fn make_null_move(&mut self) {
         debug_assert!(!self.in_check(), "a side in check cannot pass");
         self.history[history_index(self.ply)] = Some(PlayState {
@@ -1652,8 +1435,6 @@ impl Board {
         self.ply -= 1;
         self.line_ply -= 1;
         self.active_color = !self.active_color;
-        // the salt comes back off: what was recorded was this position's key
-        // with it on
         self.key = history.position_key ^ NULL_HISTORY_SALT;
         self.checkers = history.checkers;
 
@@ -1672,9 +1453,8 @@ impl Board {
         debug_assert!((self.black | self.white).is_bit_set(from));
         debug_assert!(!(self.black | self.white).is_bit_set(to));
         match promote_piece {
-            // a promotion is not a relocation: the piece that stands on the
-            // board afterwards is not the one that left, so what it is worth
-            // and what it counts for the phase both change
+            // a promotion is not a relocation: the material and the phase
+            // both change
             Some(promote) => {
                 self.clear_piece_index(from, piece, color);
                 self.set_piece_index(to, (&promote).into(), color);
@@ -1684,15 +1464,12 @@ impl Board {
     }
 
     /// The castle rights this position has the pieces for: a right whose king
-    /// or rook is not standing on the square the castle moves it from is
-    /// dropped.
+    /// or rook is not on the square the castle moves it from is dropped.
     ///
-    /// The generator asks the right, the empty squares and the attacked
-    /// squares, and takes the king from wherever it stands, so a right held
-    /// over a king somewhere else is a castle out of that square; make_move
-    /// then relocates whatever sits on the rook's corner as though it were the
-    /// rook. Only `from_fen` can produce such a right, since a played move
-    /// gives up the rights of every square a king or rook leaves.
+    /// The generator reads the right rather than the pieces, so a right held
+    /// over a king somewhere else is a castle out of that square, and
+    /// make_move relocates whatever sits on the rook's corner as though it
+    /// were the rook. Only `from_fen` can produce such a right.
     fn rights_the_pieces_bear_out(&self) -> CastlePermissions {
         let holds = |index: u8, piece: Piece, color: Color| {
             self.get_piece_and_color_index(index) == Some((piece, color))
@@ -1716,18 +1493,17 @@ impl Board {
     }
 
     /// Whether an en passant capture on this square is one this position can
-    /// actually make: the rank a double push crosses, a pawn of ours placed to
-    /// take there, the square itself empty, and the pawn the capture removes
-    /// standing behind it.
+    /// actually make: the rank a double push crosses, a pawn of ours placed
+    /// to take there, the square itself empty, and the pawn the capture
+    /// removes standing behind it.
     ///
     /// The pawn placed to take is make_move's own rule and says whether the
-    /// square belongs in the key. The rest is what the square claims and the
-    /// generator does not check, since the capture is emitted from the square
-    /// alone. Without them make_move clears a pawn from a square holding
-    /// something else, or lands the capturer on top of a piece nothing took.
+    /// square belongs in the key. The generator emits the capture from the
+    /// square alone and checks none of the rest; without them make_move
+    /// clears a pawn from a square holding something else, or lands the
+    /// capturer on top of a piece nothing took.
     fn en_passant_can_be_played(&self, index: u8) -> bool {
         let (rank, _) = index_to_coordinate(index);
-        // the rank the push crossed, which is the far side's third
         let crossed = match self.active_color {
             Color::White => 6,
             Color::Black => 3,
@@ -1735,8 +1511,7 @@ impl Board {
         if rank != crossed {
             return false;
         }
-        // where the pawn that pushed now stands, which is the square make_move
-        // clears. The rank above is what puts it on the board
+        // the rank check above is what keeps this on the board
         let taken = match self.active_color {
             Color::White => index - 8,
             Color::Black => index + 8,
@@ -1746,9 +1521,7 @@ impl Board {
             && self.get_piece_and_color_index(taken) == Some((Piece::Pawn, !self.active_color))
     }
 
-    /// Whether a pawn of this colour is placed to take on this square. A mask
-    /// holds the squares a pawn of that colour must stand on to attack the one
-    /// indexed, which is what is being asked here.
+    /// Whether a pawn of this colour is placed to take on this square.
     fn pawn_can_capture_on(&self, index: u8, capturer: Color) -> bool {
         let attack_masks = &ATTACK_MASKS;
         let (from, pawns) = match capturer {
@@ -1758,8 +1531,7 @@ impl Board {
         from & self.pawns() & pawns != 0
     }
 
-    /// The six piece boards by name. Each is a constant index into `pieces`,
-    /// so these read as the fields they replaced and compile to the same load.
+    /// The six piece boards by name, each a constant index into `pieces`.
     #[inline]
     pub(crate) fn pawns(&self) -> u64 {
         self.pieces[Piece::Pawn as usize]
@@ -1799,11 +1571,6 @@ impl Board {
     }
 
     /// This side's pieces and the other side's, in that order.
-    ///
-    /// Named for what it returns, which is both of them. Every caller
-    /// wants the pair: a generator masks its targets with one and its
-    /// captures with the other, and a leaf term reads its own pawns
-    /// against the other side's.
     #[inline]
     pub(crate) fn sides(&self, color: Color) -> (u64, u64) {
         match color {
@@ -1813,9 +1580,7 @@ impl Board {
     }
 
     /// Whether the side to move stands in check, read from the checkers
-    /// `make_move` maintains rather than by probing the king's square for an
-    /// attack. The two would answer the same; this one is for the search,
-    /// which asks at every node.
+    /// `make_move` maintains rather than by probing the king's square.
     pub fn in_check(&self) -> bool {
         self.checkers != 0
     }
@@ -1832,26 +1597,15 @@ impl Board {
     }
 
     /// Whether what stands on the board cannot mate, whoever is to move and
-    /// however the pieces are placed. A fact about the material, not about the
-    /// path: no repetition and no move count is read here.
+    /// however the pieces are placed. A fact about the material, not the
+    /// path.
     ///
-    /// Four signatures. Two bare kings; a lone minor, which cannot mate at
-    /// all; two knights against a bare king, where mate exists but cannot be
-    /// forced against a king that keeps out of the corner; and bishops all on
-    /// one square colour with no knight, which covers a bishop pair on one
-    /// colour, a bishop each on the same colour, and what promotions make of
-    /// them. A knight, or a bishop of the other colour, takes a position out
-    /// of the rule.
-    ///
-    /// Two minors that cancel, a knight each or bishops on opposite colours,
-    /// are drawn in practice and are left out. The evaluation already reads
-    /// them within a few centipawns of zero, and pricing the near drawn
-    /// endings is a longer rule than this one.
-    ///
-    /// The first line is the one nearly every position meets. A pawn, a rook
-    /// or a queen anywhere ends the question, so the rest runs only in
-    /// pawnless positions with no heavy piece, which is a small share of any
-    /// tree.
+    /// Four signatures: two bare kings; a lone minor; two knights against a
+    /// bare king, where mate exists but cannot be forced; and bishops all on
+    /// one square colour with no knight, whichever side owns them. Two
+    /// minors that cancel (a knight each, bishops on opposite colours) are
+    /// drawn in practice and left out: the evaluation already reads them
+    /// near zero, and pricing the near drawn endings is a longer rule.
     pub fn drawn_by_material(&self) -> bool {
         if self.pawns() | self.rooks() | self.queens() != 0 {
             return false;
@@ -1872,20 +1626,15 @@ impl Board {
             && (knights & self.white == 0 || knights & self.black == 0)
     }
 
-    /// The pieces checking the new side to move after the move just made,
-    /// asked of the board after the move. Answered from the move rather than
-    /// by probing the king square from scratch: only the piece that landed
-    /// can check directly, which a pawn or knight settles with a mask, and a
-    /// slider check needs the move to have touched a line through the king,
-    /// by landing a slider on one or vacating a square that sat on one. Any
-    /// slider a probe then finds is a check this move opened, because the
-    /// king stood unattacked before it. Castling and en passant displace a
-    /// second piece each and are rare, so they take the full probe instead
-    /// of restating its cases.
+    /// The pieces checking the new side to move, asked of the board after the
+    /// move. Answered from the move rather than by a full probe: only the
+    /// landed piece can check directly, and a slider check needs the move to
+    /// have landed a slider on a line through the king or vacated a square
+    /// on one, since the king stood unattacked before it. Castling and en
+    /// passant displace a second piece and take the full probe.
     ///
     /// The direct and slider findings accumulate rather than short circuit:
-    /// a move can uncover a slider while checking on its own, and a double
-    /// check is answered differently to a single one.
+    /// a double check is answered differently to a single one.
     fn checkers_given(&self, play: &Play, landed: Piece) -> u64 {
         let defender = self.active_color;
         let king = self.king_index(defender);
@@ -1941,27 +1690,17 @@ impl Board {
     }
 
     /// Whether this move checks the opponent, asked of the board before the
-    /// move is made. `checkers_given` answers the same question of the board
-    /// after it; this one is for a caller that wants the answer without
-    /// paying for make and unmake, which is what the late move reduction's
-    /// exemption asks.
+    /// move is made, for the pruning and reduction gates that want the
+    /// answer without paying for make and unmake.
     ///
-    /// The occupancy is edited to what the move leaves: the from square
-    /// emptied, the to square filled, and the extra square a castle or an en
-    /// passant capture touches besides. A direct check is the landed piece
-    /// attacking the king from its destination, a promotion attacking as the
-    /// piece it becomes. The slider probes run from the king over the edited
-    /// occupancy against our sliders as the move leaves them, so a discovered
-    /// check needs no case of its own: the probe sees through whatever the
-    /// move vacated. En passant empties the mover's square and the taken
-    /// pawn's at once, the double vacation a discovered check can need, and
-    /// castling is asked about the rook's destination, since a king cannot
-    /// check.
+    /// The occupancy is edited to what the move leaves, the extra square a
+    /// castle or en passant touches included, and the slider probes run
+    /// from the king over it against our sliders as the move leaves them,
+    /// so a discovered check needs no case of its own. Castling is asked
+    /// about the rook's destination, since a king cannot check.
     ///
-    /// Exact for any move `generate_moves` produces here. The oracle test
-    /// holds that over the legal ones; for a move `make_move` would refuse
-    /// the construction is the same and the answer is what the made board
-    /// would say, though no test makes a refused move to ask.
+    /// Exact for any move `generate_moves` produces here, which the oracle
+    /// test holds over the legal ones; no test makes a refused move to ask.
     pub fn gives_check(&self, m: &Play) -> bool {
         let king = self.king_index(!self.active_color);
         let attack_masks = &ATTACK_MASKS;
@@ -1974,9 +1713,7 @@ impl Board {
             Color::White => self.white,
             Color::Black => self.black,
         };
-        // our sliders as the move leaves them: the mover gone from its
-        // square, and standing on its destination when what landed there
-        // slides. The captured piece, if any, was never in these
+        // our sliders as the move leaves them
         let mut diagonal = (self.bishops() | self.queens()) & ours & !from_bit;
         let mut straight = (self.rooks() | self.queens()) & ours & !from_bit;
 
@@ -1988,8 +1725,6 @@ impl Board {
         };
         match landed {
             Piece::Pawn => {
-                // the mask holds the squares a pawn of our colour must stand
-                // on to attack the king's square
                 let masks = match self.active_color {
                     Color::White => &attack_masks.white_pawns,
                     Color::Black => &attack_masks.black_pawns,
@@ -2039,9 +1774,7 @@ impl Board {
             && magic.get_straight_move(king, occupied) & straight != 0
     }
 
-    /// The pieces checking the side to move, computed from the board rather
-    /// than maintained as moves are made, the way `square_attacked` asks its
-    /// question but keeping the attackers instead of stopping at the first.
+    /// The pieces checking the side to move, computed from the board.
     /// `checkers` is meant to equal this at all times.
     fn recompute_checkers(&self) -> u64 {
         let king = self.king_index(self.active_color);
@@ -2062,34 +1795,23 @@ impl Board {
         if attack_masks.straight[king as usize] & rook_or_queen != 0 {
             checkers |= magic.get_straight_move(king, all) & rook_or_queen;
         }
-        // a king cannot give check, so unlike square_attacked there is no
-        // king term
+        // a king cannot give check, so there is no king term
         checkers
     }
 
     /// Drop the moves that cannot answer the check the side to move stands
-    /// in. The legal answers to a check are moving the king, capturing the
-    /// sole checker, or blocking the sole checker's line, so a move doing
-    /// none of them can be refused without being played; the checker, its
-    /// line and the king are found once for the whole list rather than once
-    /// per move. The moves kept still go through `make_move`, which settles
-    /// pins and squares the king may not step to. Refusing here only spares
-    /// that work for moves it would certainly refuse. En passant is kept
-    /// unexamined: the captured pawn does not stand on the to square, so the
-    /// capture and block masks misread it, and it is rare.
+    /// in: everything but a king move, a capture of the sole checker or a
+    /// block of its line. En passant is kept unexamined, since the captured
+    /// pawn does not stand on the to square and the masks would misread it.
     ///
-    /// The generator masks its targets instead, so this is no longer on the
-    /// search's path. It is kept as the second implementation the masked
-    /// generator is held to, two ways of saying which moves answer a check,
-    /// pinned against each other by
-    /// `the_masked_generator_keeps_what_the_filter_kept` over a corpus of
-    /// positions in check. Do not fold it into the generator: then there
-    /// would be one statement of the rule and nothing to check it against.
+    /// The generator masks its targets instead, so this is off the search's
+    /// path. It is kept as the second statement of the rule that
+    /// `the_masked_generator_keeps_what_the_filter_kept` holds the generator
+    /// to: do not fold it into the generator.
     #[cfg(test)]
     fn retain_evasions(&self, moves: &mut MoveList) {
         debug_assert!(self.checkers != 0, "asked of a position not in check");
         let targets = if self.checkers.count_ones() > 1 {
-            // only the king can answer a double check
             0
         } else {
             let checker = self.checkers.trailing_zeros() as usize;
@@ -2097,10 +1819,6 @@ impl Board {
             self.checkers | BETWEEN[king][checker]
         };
         let kings = self.kings();
-        // Compacted in place rather than through `retain`, which reaches the
-        // list through its index operator once per move and asks each time
-        // whether the list has spilled to the heap. One slice taken here
-        // answers that once for the whole list.
         let list = moves.as_mut_slice();
         let mut kept = 0;
         for i in 0..list.len() {
@@ -2149,14 +1867,9 @@ impl Board {
         self.set_piece_index(index, piece, color);
     }
 
-    /// Move a piece between two squares, which is neither a placement nor a
-    /// removal.
-    ///
-    /// Clearing one square and setting the other says the same thing, but it
-    /// says it in halves that cancel: the piece never leaves the board, so
-    /// what it is worth and what it counts for the phase are the same on both
-    /// squares, and each board it stands on ends with the bits it started
-    /// with. Only the two squares differ, and only they are touched here.
+    /// Move a piece between two squares. A clear and a set say the same
+    /// thing in halves that cancel: the piece never leaves the board, so the
+    /// material and the phase are untouched and only the two squares differ.
     #[inline(always)]
     fn relocate_piece_index(&mut self, from: u8, to: u8, piece: Piece, color: Color) {
         debug_assert!(from != to);
@@ -2164,14 +1877,12 @@ impl Board {
         let moved =
             ZOBRIST.get_piece_key(from, piece, color) ^ ZOBRIST.get_piece_key(to, piece, color);
         self.key ^= moved;
-        // and the pawn key with it when it is a pawn that moved, on the same
-        // randoms and so on the value already in hand
+        // the pawn key uses the same randoms over the pawns alone
         if piece == Piece::Pawn {
             self.pawn_key ^= moved;
         }
         self.eval.relocate(from, to, piece, color);
 
-        // one board keeps its population, so the two bits flip together
         let both = (1u64 << from) | (1u64 << to);
         self.pieces[piece as usize] ^= both;
         match color {
@@ -2189,16 +1900,13 @@ impl Board {
         self.move_accumulators::<false>(index, piece, color);
     }
 
-    /// The two directions written once. They are the same walk with every
-    /// sign reversed, and `SET` is settled at compile time, so each caller
-    /// above monomorphises into what was spelled out twice before: no branch
-    /// on it survives into the search.
+    /// Put down or pick up a piece, the two directions written once. `SET`
+    /// is settled at compile time, so no branch on it survives into the
+    /// search.
     #[inline(always)]
     fn move_accumulators<const SET: bool>(&mut self, index: u8, piece: Piece, color: Color) {
         let piece_key = ZOBRIST.get_piece_key(index, piece, color);
         self.key ^= piece_key;
-        // the pawn key is the same randoms over the pawns alone, so it takes
-        // the value already loaded rather than a second lookup
         if piece == Piece::Pawn {
             self.pawn_key ^= piece_key;
         }
@@ -2210,9 +1918,8 @@ impl Board {
         } else {
             board.clear_bit(index);
         }
-        // and the same news told to `squares`. The callers above assert that a
-        // set lands on an empty square and a clear on an occupied one, so this
-        // never has to ask what was standing there
+        // the callers assert that a set lands on an empty square and a clear
+        // on an occupied one, so this never asks what was standing there
         self.squares[(index & 63) as usize] = if SET { Some(piece) } else { None };
 
         let side = match color {
@@ -2226,11 +1933,9 @@ impl Board {
         }
     }
 
-    /// What is being taken on the to square, without asking when nothing can
-    /// be. Most of the moves generated are quiet, so the mask of squares a
-    /// capture is even possible on is still worth a look first: it answers
-    /// from a register for the moves that are, and the load below is only
-    /// reached for the ones that might not be.
+    /// What is being taken on the to square. Most generated moves are quiet,
+    /// so the mask answers those from a register and the load is reached
+    /// only for the rest.
     #[inline(always)]
     fn capture_on(&self, to: u8, capture_mask: u64) -> Option<Piece> {
         if capture_mask.is_bit_set(to) {
@@ -2244,17 +1949,15 @@ impl Board {
     #[inline]
     pub(crate) fn get_piece_index(&self, index: u8) -> Option<Piece> {
         debug_assert!(index < 64);
-        // masked so the read carries no bounds check, which is the bargain the
-        // bitboard accessors already strike: the assert above is what catches
-        // a square off the board, and it is a debug assert, so the search pays
-        // nothing for it.
+        // masked so the read carries no bounds check; the debug assert is
+        // what catches a square off the board
         self.squares[(index & 63) as usize]
     }
 
     /// Walks the six piece boards rather than reading `squares`. The
-    /// recomputes reach a piece through here and everything else reaches one
-    /// through `get_piece_index`, which keeps a mistake in either from hiding
-    /// itself in the state check.
+    /// recomputes reach a piece through here and everything else through
+    /// `get_piece_index`, so a mistake in either cannot hide in the state
+    /// check.
     #[inline]
     pub(crate) fn get_piece_and_color_index(&self, index: u8) -> Option<(Piece, Color)> {
         let mask = 1u64 << index;
@@ -2287,11 +1990,10 @@ impl Board {
         self.get_piece_and_color_index(coordinate_to_index(rank, file))
     }
 
-    /// The material of each side, counted a bitboard at a time. Says the same
-    /// thing as the eval module's recompute and shares no code with it on
-    /// purpose: `from_fen` seeds the accumulator from this one, and the state
-    /// check compares it against that one. Collapse the two and a freshly
-    /// parsed board would be checked against the function that filled it in.
+    /// The material of each side, counted a bitboard at a time. Shares no
+    /// code with the eval module's recompute on purpose: `from_fen` seeds
+    /// the accumulator from this one and the state check compares it
+    /// against that one.
     pub(crate) fn material_value(&self) -> (u32, u32) {
         let mut white_value = 0;
         let mut black_value = 0;
@@ -2310,40 +2012,21 @@ impl Board {
     }
 
     /// The same count, walked over `evasions` rather than the whole pseudo
-    /// legal list.
-    ///
-    /// It has to come to the same number. Every legal move answers a check
-    /// when there is one, so the legal moves sit inside what `evasions`
-    /// returns, which sits inside what `generate_moves` returns; `make_move`
-    /// refuses the rest either way. So this is the masked generator held to
-    /// the counts the perft suites already pin, over every position they
-    /// reach rather than the handful a test can name. Perft itself walks
-    /// `generate_moves`, so without this the evasion mask has no exhaustive
-    /// check at all.
-    ///
-    /// The checkers are maintained here, as `perft_as_played` maintains
-    /// them, because that is what the mask is read off. The plain `perft`
-    /// leaves them stale, which no caller in the search does.
+    /// legal list. The legal moves sit inside what `evasions` returns and
+    /// `make_move` refuses the rest, so the count must not move: this holds
+    /// the evasion mask to the perft suites over every position they reach.
+    /// The checkers are maintained, since the mask is read off them.
     #[cfg(test)]
     pub(crate) fn perft_through_evasions(&mut self, depth: u8) -> u64 {
         self.perft_impl::<true, true>(depth)
     }
 
     /// The same count, walked the way the engine plays: checkers maintained
-    /// as each move is made, and the legality probe skipped wherever those
-    /// checkers say it can be.
-    ///
-    /// A correct board counts the same either way, which is the whole of
-    /// what this is for. The counts the perft suites pin are the accepted
-    /// ones, hand verified and exhaustive, but the walk that produced them
-    /// is not the walk a game takes: `checkers_given` and the skip it feeds
-    /// are compiled out of it. Asking for the same positions again this way
-    /// puts those two under the same counts. A skip that wrongly cleared a
-    /// move would let an illegal one stand and the count would rise; a
-    /// `checkers_given` that wrongly said no check would clear the skip the
-    /// same way. In a debug build the assertion beside `checkers_given`
-    /// catches the harmless direction too, over every move of every position
-    /// rather than the few thousand a proptest reaches.
+    /// and the legality probe skipped where they allow. Plain `perft`
+    /// compiles `checkers_given` and the skip out, so this is what holds
+    /// them to the suites' counts: a skip that wrongly cleared a move, or a
+    /// `checkers_given` that wrongly said no check, would let an illegal
+    /// move stand and the count rise.
     #[cfg(test)]
     pub(crate) fn perft_as_played(&mut self, depth: u8) -> u64 {
         self.perft_impl::<true, false>(depth)
@@ -2376,11 +2059,10 @@ impl Board {
 
     /// The position a fen describes, or what is wrong with the fen.
     ///
-    /// Validated only as far as what the search cannot survive: see the
-    /// checks below and the known limitations in `docs/ROADMAP.md` for what
-    /// an illegal position can still get away with. A field that describes
-    /// pieces the placement does not have is cut back rather than refused,
-    /// since the position itself is playable and only the field is not.
+    /// Validated only as far as what the search cannot survive; the known
+    /// limitations in `docs/ROADMAP.md` say what an illegal position can
+    /// still get away with. A castle right or en passant square the pieces
+    /// do not bear out is cut back rather than refused.
     pub fn from_fen(fen: &str) -> Result<Self, String> {
         let mut fen_iter = fen.split(' ');
         let position = fen_iter
@@ -2418,8 +2100,6 @@ impl Board {
             pieces: [0; 6],
             white: 0,
             black: 0,
-            // an empty board, filled in by the `set_piece` calls below along
-            // with everything else the accumulators carry
             squares: [None; 64],
 
             active_color: Color::from_char(active_color_token)
@@ -2430,7 +2110,6 @@ impl Board {
             line_ply: 0,
             move_number,
             en_passant: Coordinate::from_string(en_passant)?,
-            // filled in below, once the pieces are on the board
             checkers: 0,
             fifty_move_rule: half_move_clock
                 .parse::<usize>()
@@ -2439,19 +2118,15 @@ impl Board {
 
             history: EMPTY_HISTORY,
             key: INITIAL_KEY,
-            // an empty board has no pawns on it, and the `set_piece` calls
-            // below fold in each one that arrives
             pawn_key: 0,
         };
         if board.active_color == Color::Black {
             board.ply += 1;
         }
 
-        // parse out the pieces on the board
         let mut rank = 8;
-        // counted as a number rather than held as a File, because a complete
-        // rank ends one square past the h file, which is not a File a square
-        // can have
+        // a number rather than a File, because a complete rank ends one
+        // square past the h file
         let mut file = 0u8;
         for c in position.chars() {
             if rank < 1 {
@@ -2481,11 +2156,9 @@ impl Board {
             }
             file += step;
         }
-        // Everything below assumes a position which could actually arise, and
-        // crashes rather than playing badly when it could not. A king a side is
-        // what lets king_index return a real square, and the side which just
-        // moved being out of check is what stops the search replying by taking
-        // the king and emptying that square again.
+        // a king a side is what lets king_index return a real square, and
+        // the side which just moved being out of check is what stops the
+        // search replying by taking the king
         for color in [Color::White, Color::Black] {
             let mask = match color {
                 Color::White => board.white,
@@ -2502,22 +2175,17 @@ impl Board {
             return Err("Error parsing FEN: the side which is not to move is in check".to_string());
         }
 
-        // A right and an en passant square each describe pieces the rest of
-        // the fen need not agree with, and a field kept here is one the
-        // generator will play: see the two rules for what that costs. Each is
-        // cut back beside the key it belongs in, so the two never disagree.
+        // a right or a square the pieces do not bear out is one the generator
+        // would play; each is cut back before the key it belongs in is
+        // folded, so the two never disagree
         board.castle = board.rights_the_pieces_bear_out();
 
-        // fold the non-piece state into the position key so that keys are
-        // comparable between boards parsed from FEN and boards reached by
-        // playing moves
         if board.active_color == Color::Black {
             board.key ^= ZOBRIST.side;
         }
         board.key ^= ZOBRIST.castle_key(board.castle);
-        // make_move's own rule is the first of these, or a position parsed and
-        // the same one played would not hash alike, which is worse than what
-        // is being fixed
+        // the rule here has to be make_move's own, or a position parsed and
+        // the same one played would not hash alike
         if let Some(en_passant) = board.en_passant {
             if board.en_passant_can_be_played(en_passant.as_index()) {
                 board.key ^= ZOBRIST.en_passant_key(en_passant.as_index());
@@ -2527,24 +2195,17 @@ impl Board {
         }
         board.eval.seed_material(board.material_value());
         board.checkers = board.recompute_checkers();
-        // a parsed position must satisfy the same invariants a played one
-        // does, or the two ways of reaching a position drift apart
         board.debug_assert_state_in_step();
         Ok(board)
     }
 
     /// The position as a fen, all six fields, which `from_fen` reads back.
-    ///
-    /// The clocks are printed as well as the pieces, so the fifty move
-    /// counter travels with the position and a board printed here is scored
-    /// for a draw the way this one is. What does not travel is the path: a
-    /// fen names the position and nothing that was played to reach it, so a
-    /// board parsed back from one has no history to find a repetition in.
-    ///
-    /// The castle rights and the en passant square are printed as the board
-    /// holds them, which is after `from_fen` has cut back what the pieces do
-    /// not bear out. So a fen parsed and printed again may differ from the
-    /// one that arrived, and printing that one twice does not.
+    /// The clocks travel with the position; the path does not, so a board
+    /// parsed back has no history to find a repetition in. The rights and
+    /// the en passant square are printed as the board holds them, after
+    /// `from_fen` has cut them back, so a fen parsed and printed again may
+    /// differ from the one that arrived, and printing that one twice does
+    /// not.
     pub fn to_fen(&self) -> String {
         let mut fen = String::new();
         for rank in (1..=8).rev() {
@@ -2626,10 +2287,8 @@ impl fmt::Display for Board {
     }
 }
 
-/// Positions the test modules share, named for what they bring within reach.
-/// Kept here so a fen appears once, and so a suite that wants, say, a position
-/// with promotions available does not grow another copy with a different move
-/// counter.
+/// Positions the test modules share, named for what they bring within reach,
+/// so a fen appears once.
 #[cfg(test)]
 pub(crate) mod fens {
     /// The starting position.
@@ -2658,9 +2317,8 @@ pub(crate) mod fens {
     /// at it: the rook can take the pawn on e4 and has quiet moves besides,
     /// one of which checks along the rank.
     pub const A_CAPTURE_AND_QUIETS: &str = "7k/8/8/8/R3p3/8/8/7K w - - 0 1";
-    /// A sharp middlegame: white's knight on g5 and bishop on d3 are aimed at
-    /// the castled black king while the white king is still on e1. Sharp
-    /// enough that a wrongly reused score would move the verdict, which is
+    /// A sharp middlegame, white's pieces aimed at the castled black king:
+    /// sharp enough that a wrongly reused score moves the verdict, which is
     /// what the search tests want of it.
     pub const SHARP_MIDDLEGAME: &str =
         "r1b2rk1/ppp1qppp/4pn2/6N1/Qn1P4/2NBP3/PP3PPP/R3K2R w KQ - 9 12";
@@ -2748,14 +2406,11 @@ mod make_move {
         }
     }
 
-    /// The shuffle position with its move number wound on, so the board it
-    /// parses to stands at ply 1023. That is one short of the end of the
-    /// history ring, which the two tests below play across.
+    /// The shuffle position at ply 1023, one short of the end of the history
+    /// ring, which the two tests below play across.
     const NEAR_THE_WRAP: &str =
         "r4rk1/1pp1qppp/p1np1n2/2b1p1B1/2B1P1b1/P1NP1N2/1PP1QPPP/R4RK1 b - - 3 511";
 
-    /// The history is a ring, so a game long enough to run past the end of it
-    /// wraps instead. The cycle below is recorded either side of the wrap.
     #[test]
     fn a_repetition_is_still_seen_when_the_history_wraps() {
         let mut board = Board::from_fen(NEAR_THE_WRAP).unwrap();
@@ -2776,8 +2431,6 @@ mod make_move {
         assert!(board.is_repetition());
     }
 
-    /// Unmaking reads back the entry making wrote, so it has to agree about
-    /// where the wrap put it.
     #[test]
     fn moves_can_be_unmade_across_the_wrap() {
         let start = Board::from_fen(NEAR_THE_WRAP).unwrap();
@@ -2799,9 +2452,6 @@ mod make_move {
         assert_eq!(board.is_repetition(), false);
     }
 
-    /// The search does not wait for the third occurrence. Once a position has
-    /// come back once, either side can take the draw, so there is nothing to be
-    /// gained by spending four more plies of depth confirming it.
     #[test]
     fn has_repeated_fires_a_cycle_before_is_repetition() {
         let mut board = Board::from_fen(fens::SHUFFLE).unwrap();
@@ -2834,8 +2484,6 @@ mod null_move {
     use super::{Accumulator, Board};
     use pretty_assertions::{assert_eq, assert_ne};
 
-    /// A pass changes the position and unmaking it gives back a board equal
-    /// in every field, which is what the search relies on either side of one.
     #[test]
     fn a_pass_unmakes_back_to_the_position_it_left() {
         for fen in fens::CORE {
@@ -2849,10 +2497,8 @@ mod null_move {
         }
     }
 
-    /// No piece moves, so everything kept incrementally has to come out of a
-    /// pass equal to a recompute. The debug build asserts this inside the
-    /// pass itself; this says it in a release build too, which is where the
-    /// bench and the tactical suite run.
+    /// The debug build asserts this inside the pass itself; this says it in
+    /// a release build too.
     #[test]
     fn a_pass_leaves_the_derived_state_in_step() {
         for fen in fens::CORE {
@@ -2866,8 +2512,6 @@ mod null_move {
         }
     }
 
-    /// A pass captures nothing and moves no pawn, so the counter runs on,
-    /// and comes back where it was.
     #[test]
     fn a_pass_runs_the_fifty_move_counter_on() {
         let mut board = Board::from_fen("4k3/8/8/8/8/8/8/R3K3 w - - 37 40").unwrap();
@@ -2878,13 +2522,10 @@ mod null_move {
         assert_eq!(board.fifty_move_rule, 37);
     }
 
-    /// The en passant square goes with the move, as it does on any move: it
-    /// was the right of the side that has just passed the move on, and a
-    /// square nobody can take on fails the board's own check.
     #[test]
     fn a_pass_clears_the_en_passant_square() {
         // white has just pushed d2-d4 past a black pawn on e4, so the square
-        // it passed over is one black can take on and is in the key
+        // is one black can take on and is in the key
         let board = Board::from_fen("rnbqkbnr/pppp1ppp/8/8/3Pp3/8/PPP1PPPP/RNBQKBNR b KQkq d3 0 3")
             .unwrap();
         assert!(board.en_passant.is_some());
@@ -2896,11 +2537,10 @@ mod null_move {
         assert_eq!(passed.key, board.key);
     }
 
-    /// A line through a pass is not a path a repetition rule knows about, so
-    /// coming back to the position the pass was made from is not a draw. Both
-    /// rooks travel home again here, one of them in three moves and the other
-    /// in two, which is what lets an odd number of plies undo a pass; the key
-    /// assertion is what says an unsalted entry would have matched.
+    /// Coming back to the position a pass was made from is not a draw. One
+    /// rook travels home in three moves and the other in two, which is what
+    /// lets an odd number of plies undo a pass; the key assertion says an
+    /// unsalted entry would have matched.
     #[test]
     fn a_pass_is_not_a_prior_occurrence_of_the_position_it_passed_from() {
         let mut board = Board::from_fen("r6k/8/8/8/8/8/8/R6K w - - 0 1").unwrap();
@@ -2921,11 +2561,8 @@ mod castling_rights {
     use super::{CastlePermissions, castle_bits, castle_rights};
     use pretty_assertions::assert_eq;
 
-    /// The rule the two tables stand for, written the way make_move wrote
-    /// it before them: a match on the square the move leaves and a match on
-    /// the square it lands on. Kept here rather than deleted, so that what
-    /// the tables have to agree with is a second statement of the rule and
-    /// not the tables themselves.
+    /// The rule the two tables stand for, written the way make_move wrote it
+    /// before them, so the tables are held to a second statement of it.
     fn by_hand(mut rights: CastlePermissions, from: u8, to: u8) -> CastlePermissions {
         match from {
             A1 => rights.white_queen_side = false,
@@ -2997,26 +2634,21 @@ mod position_key {
     fn an_en_passant_square_no_pawn_can_take_fails_the_state_check() {
         use super::{Coordinate, ZOBRIST};
         let mut board = Board::new();
-        // e6 is out of reach of every white pawn at the start. Hash the bogus
-        // square into the key as well as the field, so the key still matches
-        // its recompute and only the rule itself can object: this is exactly
-        // the corruption the recompute comparison is blind to.
+        // e6 is out of reach of every white pawn at the start. The bogus
+        // square is hashed into the key as well, so the key still matches
+        // its recompute and only the rule itself can object
         board.en_passant = Coordinate::from_string("e6").unwrap();
         board.key ^= ZOBRIST.en_passant_key(board.en_passant.unwrap().as_index());
         board.debug_assert_state_in_step();
     }
 
-    /// The castle rights are held to their pieces the same way, and this is
-    /// the corruption that check exists for: the rights a fen states are the
-    /// squares the generator castles from.
     #[test]
     #[cfg(debug_assertions)]
     #[should_panic(expected = "a castle right without the king and rook for it")]
     fn a_castle_right_without_its_rook_fails_the_state_check() {
         use super::ZOBRIST;
         let mut board = Board::from_fen("4k3/8/8/8/8/8/8/4K3 w - - 0 1").unwrap();
-        // the right is folded into the key as well as the field, for the
-        // reason above
+        // folded into the key as well, for the reason above
         let without = board.castle;
         board.castle.white_king_side = true;
         board.key ^= ZOBRIST.castle_key(without) ^ ZOBRIST.castle_key(board.castle);
@@ -3052,9 +2684,7 @@ mod position_key {
 
     #[test]
     fn en_passant_no_one_can_take_is_not_in_the_key() {
-        // every black pawn is still on the seventh, so nothing can take on e3.
-        // Interfaces leave the square out of the key in that case, and a key
-        // which disagrees makes one position hash two ways
+        // every black pawn is still on the seventh, so nothing can take on e3
         let without =
             Board::from_fen("rnbqkbnr/pppppppp/8/8/4P3/8/PPPP1PPP/RNBQKBNR b KQkq - 0 1").unwrap();
         let with =
@@ -3065,9 +2695,7 @@ mod position_key {
 
     #[test]
     fn a_double_push_no_one_can_answer_hashes_like_the_position_without_it() {
-        // the same position played and parsed has to hash alike, which is the
-        // half of this that has to match make_move or the fix is worse than the
-        // problem
+        // the same position played and parsed has to hash alike
         let mut played = Board::from_fen("4k3/7p/8/8/8/8/P7/4K3 w - - 0 1").unwrap();
         let a2a4 = super::play_named(&played, "a2a4");
         assert!(played.make_move(&a2a4));
@@ -3095,8 +2723,6 @@ mod position_key {
 
     #[test]
     fn key_matches_fen_after_moves() {
-        // the key of a position reached by playing moves must equal the key of
-        // the same position parsed directly from FEN
         let mut board = Board::new();
 
         play_move(&mut board, "e2e4");
@@ -3104,23 +2730,21 @@ mod position_key {
             Board::from_fen("rnbqkbnr/pppppppp/8/8/4P3/8/PPPP1PPP/RNBQKBNR b KQkq e3 0 1").unwrap();
         assert_eq!(board.key, fen.key);
 
-        // after the reply the en passant rights expire and the key must no
-        // longer include them (this used to leave a stale en passant key)
+        // the en passant right expires on the reply (this used to leave a
+        // stale en passant key)
         play_move(&mut board, "g8f6");
         let fen = Board::from_fen("rnbqkb1r/pppppppp/5n2/8/4P3/8/PPPP1PPP/RNBQKBNR w KQkq - 1 2")
             .unwrap();
         assert_eq!(board.key, fen.key);
 
-        // moving the king drops white's castle rights, and the fen for the
-        // same position states the two black still holds
+        // moving the king drops white's castle rights
         play_move(&mut board, "e1e2");
         let fen =
             Board::from_fen("rnbqkb1r/pppppppp/5n2/8/4P3/8/PPPPKPPP/RNBQ1BNR b kq - 2 2").unwrap();
         assert_eq!(board.key, fen.key);
-        // the rights are in the key, so the same pieces with black's gone as
-        // well is a different position. A fen cannot make the other half of
-        // this point any more: one claiming the rights white just gave up has
-        // them dropped again by from_fen, since the king is no longer on e1
+        // the same pieces with black's rights gone too is a different
+        // position. A fen claiming the rights white gave up cannot make the
+        // other half of the point, since from_fen drops them again
         let none =
             Board::from_fen("rnbqkb1r/pppppppp/5n2/8/4P3/8/PPPPKPPP/RNBQ1BNR b - - 2 2").unwrap();
         assert_ne!(board.key, none.key);
@@ -3128,8 +2752,6 @@ mod position_key {
 
     #[test]
     fn key_is_path_independent() {
-        // reaching the same position via different move orders (with different
-        // numbers of double pawn pushes on the way) must produce the same key
         let mut a = Board::new();
         for m in ["e2e4", "d7d5", "g1f3", "b8c6"] {
             play_move(&mut a, m);
@@ -3138,8 +2760,8 @@ mod position_key {
         for m in ["g1f3", "d7d5", "e2e4", "b8c6"] {
             play_move(&mut b, m);
         }
-        // Note: both lines end with a knight move so any en passant rights
-        // created along the way have expired in both final positions
+        // both lines end with a knight move, so any en passant right on the
+        // way has expired
         assert_eq!(a.key, b.key);
     }
 }
@@ -3154,9 +2776,8 @@ mod pawn_key {
         assert!(board.make_move(&play), "failed to play {}", name);
     }
 
-    /// One position and one move for each way a pawn can appear, disappear or
-    /// travel. Each has to move the key, agree with the recompute once made,
-    /// and come back on the unmake.
+    /// One position and one move for each way a pawn can appear, disappear
+    /// or travel.
     #[test]
     fn every_pawn_event_moves_the_key_and_unmakes_back_to_it() {
         let cases = [
@@ -3190,9 +2811,6 @@ mod pawn_key {
         }
     }
 
-    /// A move that touches no pawn leaves the key exactly as it was, which is
-    /// what makes the key a name for the structure rather than for the
-    /// position.
     #[test]
     fn a_move_that_touches_no_pawn_leaves_the_key_alone() {
         let board = Board::from_fen(fens::MIDDLEGAME).unwrap();
@@ -3202,9 +2820,8 @@ mod pawn_key {
         assert_eq!(board.pawn_key, played.pawn_key);
     }
 
-    /// Every move of a position, made and unmade, against a recompute both
-    /// times. The debug build asserts this inside make_move; this says it in
-    /// a release build too.
+    /// The debug build asserts this inside make_move; this says it in a
+    /// release build too.
     #[test]
     fn the_key_survives_every_move_of_every_position() {
         for fen in fens::CORE {
@@ -3227,8 +2844,6 @@ mod pawn_key {
         }
     }
 
-    /// A pass moves no piece, so the pawns are where they were and so is the
-    /// key.
     #[test]
     fn a_pass_leaves_the_key_alone() {
         for fen in fens::CORE {
@@ -3242,8 +2857,6 @@ mod pawn_key {
         }
     }
 
-    /// The pieces are not in the key: two positions with the same pawns
-    /// behind different pieces are one structure and share it.
     #[test]
     fn the_same_pawns_behind_different_pieces_share_a_key() {
         let bare = Board::from_fen("4k3/pppppppp/8/8/8/8/PPPPPPPP/4K3 w - - 0 1").unwrap();
@@ -3252,9 +2865,6 @@ mod pawn_key {
         assert_ne!(bare.key, full.key);
     }
 
-    /// Nor is anything else the position key carries: the side to move, the
-    /// castle rights and the en passant square all change the key and leave
-    /// this one where it was.
     #[test]
     fn nothing_but_the_pawns_is_in_the_key() {
         let white = Board::from_fen("r3k2r/pppppppp/8/8/8/8/PPPPPPPP/R3K2R w KQkq - 0 1").unwrap();
@@ -3274,8 +2884,6 @@ mod pawn_key {
         assert_eq!(without.pawn_key, with.pawn_key);
     }
 
-    /// A position played to and the same position parsed have the same key,
-    /// which is what says `from_fen` builds it rather than inheriting one.
     #[test]
     fn a_played_position_and_a_parsed_one_agree() {
         let mut board = Board::new();
@@ -3287,8 +2895,6 @@ mod pawn_key {
         assert_ne!(board.pawn_key, Board::new().pawn_key);
     }
 
-    /// An empty board of pawns is an empty key, so a structure that trades
-    /// every pawn off comes back to where it started.
     #[test]
     fn a_board_with_no_pawns_has_no_key() {
         let board = Board::from_fen("4k3/8/8/8/8/8/8/4K3 w - - 0 1").unwrap();
@@ -3350,9 +2956,7 @@ mod perft {
         }
     }
 
-    /// The same counts again, walked over `evasions` rather than the whole
-    /// pseudo legal list. The masked generator drops only moves `make_move`
-    /// would refuse, so the count cannot move. See `perft_through_evasions`.
+    /// See `perft_through_evasions`.
     #[test]
     fn the_standard_positions_count_the_same_through_evasions() {
         for (description, fen, counts) in CASES {
@@ -3370,9 +2974,7 @@ mod perft {
         }
     }
 
-    /// The same counts, walked the way the engine plays: the numbers above
-    /// are the accepted ones, and this is what holds the game's own path to
-    /// them. See `perft_as_played`.
+    /// See `perft_as_played`.
     #[test]
     fn the_standard_positions_count_the_same_as_played() {
         for (description, fen, counts) in CASES {
@@ -3396,17 +2998,10 @@ mod in_step {
     use super::{Accumulator, Board, Color};
     use proptest::prelude::*;
 
-    /// Everything a board has to satisfy, whether it was played to or parsed.
-    ///
-    /// The recompute comparisons are what `debug_assert_state_in_step`
-    /// checks on every made move: state kept incrementally has to equal a
-    /// recompute from the pieces, or the search reads a score, a key or a
-    /// check that the position does not have. The rest cannot fail on a board
-    /// that was played to, because make_move never produces them, and can
-    /// fail on a board built from a string somebody sent us.
+    /// Everything a board has to satisfy, whether it was played to or
+    /// parsed: the recomputes `debug_assert_state_in_step` checks, and the
+    /// structural facts make_move never breaks but a parsed string can.
     pub(super) fn prop_assert_in_step(board: &Board) -> Result<(), TestCaseError> {
-        // one board a piece, so two of them sharing a bit is a square with
-        // two pieces on it and nothing downstream would notice
         let pieces = board.pieces;
         for (i, a) in pieces.iter().enumerate() {
             for b in &pieces[i + 1..] {
@@ -3467,10 +3062,10 @@ mod fen_parsing {
     use super::{Board, fens};
     use proptest::prelude::*;
 
-    /// A piece placement field that is always well formed: eight ranks of
-    /// eight squares with one king a side. Everything else about it is
-    /// random, pawns on the back rank included, because from_fen accepts
-    /// those knowingly and the search has to survive one.
+    /// A well formed placement field: eight ranks of eight squares with one
+    /// king a side. Everything else is random, pawns on the back rank
+    /// included, because from_fen accepts those and the search has to
+    /// survive one.
     fn placement() -> impl Strategy<Value = String> {
         (
             prop::collection::vec(
@@ -3493,8 +3088,7 @@ mod fen_parsing {
             any::<prop::sample::Index>(),
         )
             .prop_map(|(mut squares, white, black)| {
-                // exactly one king a side, put in last so nothing above can
-                // have taken the square or added a second
+                // the kings go in last, so nothing above can add a second
                 let white = white.index(64);
                 let mut black = black.index(64);
                 if black == white {
@@ -3532,11 +3126,9 @@ mod fen_parsing {
         ranks.join("/")
     }
 
-    /// A fen the parser will usually accept. This is the one that reaches the
-    /// coherence check below; a malformed fen is refused before there is a
-    /// board to check, so a generator that only produced those would be
-    /// asking nothing at all. The gives_check oracle borrows it for the same
-    /// reason it exists here: positions nobody thought to write down.
+    /// A fen the parser will usually accept, which is what reaches the
+    /// coherence checks below; the gives_check oracle borrows it for
+    /// positions nobody thought to write down.
     pub(super) fn well_formed_fen() -> impl Strategy<Value = String> {
         (
             placement(),
@@ -3554,8 +3146,7 @@ mod fen_parsing {
             })
     }
 
-    /// One rank of a placement field built out of parts that are plausible on
-    /// their own, which as a whole will almost never sum to eight.
+    /// One rank built of plausible parts that almost never sum to eight.
     fn rank() -> impl Strategy<Value = String> {
         prop::collection::vec(
             prop_oneof![
@@ -3575,9 +3166,8 @@ mod fen_parsing {
         .prop_map(|parts| parts.concat())
     }
 
-    /// A fen assembled from parts that are each plausible and together are
-    /// usually nonsense. This one is about the refusal path: every field can
-    /// be wrong in a different way, and none of them may crash the parser.
+    /// A fen whose every field can be wrong in a different way, for the
+    /// refusal path.
     fn malformed_fen() -> impl Strategy<Value = String> {
         (
             prop::collection::vec(rank(), 1..10usize),
@@ -3605,9 +3195,8 @@ mod fen_parsing {
             })
     }
 
-    /// A fen that was valid until one edit landed on it. Nearer to what a
-    /// buggy interface sends than anything assembled from parts, and it is
-    /// what reaches the paths only a nearly-right fen gets to.
+    /// A fen that was valid until one edit landed on it, which is nearer to
+    /// what a buggy interface sends than anything assembled from parts.
     fn mutated_fen() -> impl Strategy<Value = String> {
         (
             prop::sample::select(&fens::CORE[..]),
@@ -3633,16 +3222,11 @@ mod fen_parsing {
             })
     }
 
-    /// The coherence tests below say something only about the fens that are
+    /// The coherence tests say something only about the fens that are
     /// accepted, so a generator that stopped producing any would leave them
-    /// passing and asking nothing. This is what says so out loud.
-    ///
-    /// About a third get through, and the two thirds that do not are all one
-    /// rule: pieces scattered at random leave the side not to move in check
-    /// most of the time, and from_fen refuses those because the search would
-    /// answer by taking the king. So the floor is a tenth, well under what
-    /// the generator manages. What is being caught is a generator that has
-    /// collapsed to nearly nothing, not one that drifted by a few per cent.
+    /// passing vacuously. About a third get through (the rest leave the side
+    /// not to move in check), so a floor of a tenth catches a generator that
+    /// has collapsed, not one that drifted by a few per cent.
     #[test]
     fn the_generator_reaches_the_parser() {
         use proptest::strategy::ValueTree;
@@ -3662,10 +3246,8 @@ mod fen_parsing {
         );
     }
 
-    /// The printer's job: a position printed and parsed again is the same
-    /// position. No fen here has an en passant square, and the rights each
-    /// states have their pieces, so nothing the parser may cut back is in
-    /// one and the text comes back word for word too.
+    /// No fen here has anything the parser may cut back, so the text comes
+    /// back word for word too.
     #[test]
     fn a_printed_position_parses_back_to_itself() {
         for fen in [
@@ -3682,11 +3264,8 @@ mod fen_parsing {
         }
     }
 
-    /// The clocks are printed as well as the pieces, so a position eighty
-    /// half moves into a shuffle comes back eighty half moves in rather than
-    /// fresh. That is what the residual sampler needs of the printer: a
-    /// position it prints is scored for the fifty move rule the way the
-    /// search that printed it scored it.
+    /// The residual sampler needs a position it prints to be scored for the
+    /// fifty move rule the way the search that printed it scored it.
     #[test]
     fn the_clocks_travel_with_the_position() {
         let fen = "8/8/4k3/8/8/4K3/8/6R1 w - - 83 62";
@@ -3700,11 +3279,9 @@ mod fen_parsing {
             _ = Board::from_fen(&s);
         }
 
-        /// The parser cuts back a castle right and an en passant square the
-        /// pieces do not bear out, so the first print of a parsed fen need
-        /// not match the text that arrived. Printing it again does, and that
-        /// is what a caller who prints a position and parses it back depends
-        /// on.
+        /// The first print of a parsed fen need not match the text that
+        /// arrived, since the parser cuts back what the pieces do not bear
+        /// out. Printing it again does.
         #[test]
         fn printing_a_parsed_position_is_settled_after_one_pass(fen in well_formed_fen()) {
             if let Ok(board) = Board::from_fen(&fen) {
@@ -3715,10 +3292,9 @@ mod fen_parsing {
             }
         }
 
-        /// A refusal is always allowed. What is not allowed is accepting a
-        /// board that is not in step: the search trusts everything from_fen
-        /// hands it, and a key that does not match the pieces poisons the
-        /// table for the rest of the game.
+        /// A refusal is always allowed; accepting a board that is not in
+        /// step is not, since the search trusts everything from_fen hands
+        /// it.
         #[test]
         fn a_well_formed_fen_is_refused_or_coherent(fen in well_formed_fen()) {
             if let Ok(board) = Board::from_fen(&fen) {
@@ -3740,12 +3316,9 @@ mod fen_parsing {
             }
         }
 
-        /// The board a fen is accepted as being in step says nothing about
-        /// the moves it licenses. A castle right or an en passant square the
-        /// rest of the position does not agree with parses into a coherent
-        /// board and corrupts it one move later, when make_move reads the
-        /// right as a description of where the pieces are. So every legal
-        /// move is played and the board asked again.
+        /// A castle right or an en passant square the position does not
+        /// agree with parses into a coherent board and corrupts it one move
+        /// later, so every legal move is played and the board asked again.
         #[test]
         fn every_legal_move_of_a_well_formed_fen_leaves_the_board_in_step(fen in well_formed_fen()) {
             if let Ok(mut board) = Board::from_fen(&fen) {
@@ -3755,19 +3328,16 @@ mod fen_parsing {
                         super::in_step::prop_assert_in_step(&board)?;
                         board.undo_move();
                     }
-                    // by hand rather than prop_assert_eq, which would print
-                    // two boards and the thousand plies of history each
-                    // carries
+                    // not prop_assert_eq, which would print two boards and
+                    // the thousand plies of history each carries
                     prop_assert!(board == before, "{} did not unmake", m);
                 }
             }
         }
     }
 
-    /// The rows `rights_the_pieces_bear_out` is there for, and the position
-    /// that found it first. A right names pieces as well as a side, and what
-    /// the generator did with one whose pieces were elsewhere is written
-    /// over that function.
+    /// The rows `rights_the_pieces_bear_out` is there for, the first being
+    /// the position that found it.
     #[test]
     fn a_castle_right_without_the_king_and_rook_for_it_is_dropped() {
         for (fen, left, why) in [
@@ -3797,10 +3367,9 @@ mod fen_parsing {
         }
     }
 
-    /// An en passant square is a claim about the pawn that has just passed
-    /// over it, and the parser only asked whether anything could capture
-    /// there. A square with no pawn behind it produced a capture whose
-    /// make_move cleared a pawn from a square holding something else.
+    /// The parser once asked only whether anything could capture there, and
+    /// a square with no pawn behind it produced a capture whose make_move
+    /// cleared a pawn from a square holding something else.
     #[test]
     fn an_en_passant_square_the_position_does_not_bear_out_is_dropped() {
         for (fen, why) in [
@@ -3845,8 +3414,6 @@ mod fen_parsing {
         }
     }
 
-    /// The other half of the rule above: a square the position does bear out
-    /// is kept, which is what stops the check dropping every one of them.
     #[test]
     fn an_en_passant_square_with_the_pawn_behind_it_is_kept() {
         let board = Board::from_fen("rnbqkbnr/ppp1pppp/8/8/3pP3/8/PPPP1PPP/RNBQKBNR b KQkq e3 0 1")
@@ -3898,9 +3465,8 @@ mod fen_parsing {
         );
     }
 
-    /// Each of these parsed happily and then took the engine down on the first
-    /// search, which is the worst place to find out: mid game, from a position
-    /// the interface sent us.
+    /// Each of these parsed and then took the engine down on the first
+    /// search.
     #[test]
     fn a_position_which_could_not_arise_is_rejected_rather_than_searched() {
         for (fen, why) in [
@@ -3917,8 +3483,6 @@ mod fen_parsing {
         }
     }
 
-    /// The side to move being in check is the ordinary case and has to stay
-    /// accepted, which is what stops the check above rejecting real positions.
     #[test]
     fn a_position_where_the_side_to_move_is_in_check_is_accepted() {
         assert!(Board::from_fen("4k3/8/8/8/8/8/8/4R1K1 b - - 0 1").is_ok());
@@ -3930,11 +3494,8 @@ mod perft_edge_cases {
     use super::{Board, fens};
     use pretty_assertions::assert_eq;
 
-    /// Positions that the six standard perft positions do not reach: the two
-    /// en passant pins, en passant giving check, castling into or through an
-    /// attack, promoting out of check, and stalemate. Each entry was checked
-    /// against python-chess rather than transcribed, since a published table is
-    /// only worth as much as the copy of it.
+    /// Shapes the six standard perft positions do not reach. Each count was
+    /// checked against python-chess rather than transcribed.
     const CASES: [(&str, u8, u64, &str); 24] = [
         (
             "3k4/3p4/8/K1P4r/8/8/8/8 b - - 0 1",
@@ -4075,11 +3636,8 @@ mod perft_edge_cases {
             "castling with a knight on f2",
         ),
         (
-            // taking en passant empties two squares, and the one the
-            // captured pawn stood on is the one that mattered: it blocked
-            // the bishop's diagonal to the king. The capturing pawn comes
-            // from a square on no line through the king at all, so nothing
-            // about where it started says the capture is worth checking
+            // the captured pawn's square blocked the bishop's diagonal, and
+            // the capturer starts on no line through the king at all
             "1b5k/8/8/3Pp3/8/8/7K/8 w - e6 0 2",
             1,
             6,
@@ -4102,10 +3660,9 @@ mod perft_edge_cases {
         }
     }
 
-    /// The same cases through `evasions`. These are the shapes most likely
-    /// to catch the evasion mask out: the promotions that answer a check,
-    /// the en passant captures the mask deliberately does not examine, and
-    /// the pins that leave a move looking like an answer when it is not.
+    /// The shapes most likely to catch the evasion mask out: promotions that
+    /// answer a check, the en passant captures the mask does not examine,
+    /// and pins that leave a move looking like an answer.
     #[test]
     fn every_edge_case_counts_the_same_through_evasions() {
         for (fen, depth, expected, description) in CASES {
@@ -4121,10 +3678,7 @@ mod perft_edge_cases {
         }
     }
 
-    /// The same cases, walked the way the engine plays. These are the shapes
-    /// most likely to catch checkers maintenance out: the pins, the en
-    /// passant discoveries, the castles through an attacked square and the
-    /// promotions that answer a check.
+    /// The shapes most likely to catch checkers maintenance out.
     #[test]
     fn every_edge_case_counts_the_same_as_played() {
         for (fen, depth, expected, description) in CASES {
@@ -4147,8 +3701,7 @@ mod pseudo_legal {
     use super::{Board, Play};
     use crate::misc::Piece;
 
-    /// "d4" to the index the board uses, so the cases below read as squares
-    /// rather than as arithmetic.
+    /// "d4" to the index the board uses.
     fn sq(name: &str) -> u8 {
         let mut c = name.chars();
         let file = c.next().unwrap() as u8 - b'a';
@@ -4164,9 +3717,7 @@ mod pseudo_legal {
         Play::new(sq(from), sq(to), Some(piece), None, false, false)
     }
 
-    /// A middlegame with the kings castled on opposite wings, where no move
-    /// can castle, take en passant or promote. The test that refuses a foreign
-    /// move names its squares.
+    /// A middlegame where no move can castle, take en passant or promote.
     const OPPOSITE_WINGS: &str =
         "r2q1rk1/1b1nbppp/p2ppn2/1p6/3NPP2/1BN1B3/PPPQ2PP/2KR3R w - - 0 13";
 
@@ -4178,10 +3729,8 @@ mod pseudo_legal {
         OPPOSITE_WINGS,
     ];
 
-    /// The point of the check is to accept what the generator produces: a move
-    /// refused here is one the search declines to play early and has to find
-    /// again the slow way. Castling, en passant and promotions are refused on
-    /// purpose, and this pins that they are the only ones.
+    /// A move refused here is one the search has to find again the slow
+    /// way; this pins that the three refused kinds are the only ones.
     #[test]
     fn accepts_every_generated_move_but_the_refused_kinds() {
         for fen in POSITIONS {
@@ -4193,9 +3742,7 @@ mod pseudo_legal {
         }
     }
 
-    /// A move handed back for another position can say anything at all, and
-    /// make_move acts on what it says. These are the shapes that would corrupt
-    /// the board if they were played.
+    /// The shapes of foreign move that would corrupt the board if played.
     #[test]
     fn refuses_a_move_that_does_not_belong_to_this_position() {
         let board = Board::from_fen(OPPOSITE_WINGS).unwrap();
@@ -4217,13 +3764,12 @@ mod pseudo_legal {
         // a capture that forgets to say it is one
         assert!(!board.is_pseudo_legal(&quiet("d4", "e6")));
 
-        // and the moves those are variations of, so none of it passes vacuously
+        // and the moves those are variations of
         assert!(board.is_pseudo_legal(&quiet("d4", "f5")));
         assert!(board.is_pseudo_legal(&takes("d4", "e6", Piece::Pawn)));
     }
 
-    /// A pawn push is the one move whose legality turns on squares the move
-    /// itself never names.
+    /// A pawn push turns on squares the move itself never names.
     #[test]
     fn refuses_a_push_the_position_does_not_allow() {
         let board =
@@ -4262,9 +3808,8 @@ mod evasions {
 
     #[test]
     fn a_double_check_leaves_only_king_moves() {
-        // the knight on f6 and the rook on e1 both check, and no move
-        // answers both, so the king has to move. Black has a rook and a pawn
-        // with moves of their own for the filter to drop
+        // the knight on f6 and the rook on e1 both check; black has a rook
+        // and a pawn with moves of their own for the filter to drop
         let board = Board::from_fen("r3k3/7p/5N2/8/8/8/8/4R1K1 b - - 0 1").unwrap();
         assert_eq!(answers(&board), Vec::<String>::new());
         assert!(
@@ -4275,9 +3820,8 @@ mod evasions {
 
     #[test]
     fn a_slider_check_may_be_taken_or_blocked() {
-        // the rook on e1 checks up the file. The rook on a1 can take it and
-        // the knight can step in front of it at e2 or e6; the knight's other
-        // six moves and the rook's whole file answer nothing
+        // the rook on e1 checks up the file: the rook on a1 can take it and
+        // the knight can block at e2 or e6
         let board = Board::from_fen("4k3/8/8/8/3n4/8/8/r3R1K1 b - - 0 1").unwrap();
         assert_eq!(answers(&board), vec!["a1e1", "d4e2", "d4e6"]);
     }
@@ -4288,9 +3832,8 @@ mod random_games {
     use super::{Board, fens};
     use proptest::prelude::*;
 
-    /// Walks start from positions with different machinery in reach: the
-    /// opening with castling ahead of it, a tactical middlegame, a bare
-    /// endgame, and a position full of promotions.
+    /// Starts with different machinery in reach: castling, a tactical
+    /// middlegame, a bare endgame and promotions.
     const STARTS: [&str; 4] = [
         fens::START,
         fens::KIWIPETE,
@@ -4299,15 +3842,11 @@ mod random_games {
     ];
 
     proptest! {
-        /// Play a random line of moves, checking on every ply that the
-        /// incrementally maintained state agrees with a recompute, then unmake
-        /// the whole line and check that every position comes back exactly.
-        ///
-        /// The fixed-position reversible tests do this one ply deep from
-        /// positions somebody thought to write down; this walks lines nobody
-        /// did, and a failure arrives already shrunk to a short one. The same
-        /// walk sweeps is_pseudo_legal, whose fixed tests also only see
-        /// positions somebody chose.
+        /// Play a random line, checking every ply against a recompute, then
+        /// unmake the whole line. The fixed tests do this one ply deep from
+        /// positions somebody chose; this walks lines nobody did, and a
+        /// failure arrives already shrunk. The same walk sweeps
+        /// is_pseudo_legal and the evasion filter.
         #[test]
         fn a_random_line_stays_in_step_and_unmakes_exactly(
             start in prop::sample::select(&STARTS[..]),
@@ -4318,7 +3857,6 @@ mod random_games {
             for pick in picks {
                 let moves = board.generate_moves();
                 if moves.is_empty() {
-                    // checkmate or stalemate: the line is over
                     break;
                 }
                 for m in &moves {
@@ -4330,9 +3868,7 @@ mod random_games {
                         m
                     );
                 }
-                // every move the evasion filter drops has to be one
-                // make_move refuses: a legal evasion dropped would read as a
-                // mate to the search that trusts the filter
+                // a legal evasion dropped would read as a mate to the search
                 if board.in_check() {
                     let kept = board.evasions();
                     for m in &moves {
@@ -4353,8 +3889,6 @@ mod random_games {
                     })?;
                     line.push(before);
                 } else {
-                    // a move refused for leaving the king attacked has to
-                    // leave the board exactly as it found it
                     prop_assert_eq!(&board, &before, "a refused {} left a trace", play);
                 }
             }
@@ -4372,11 +3906,9 @@ mod between {
     use crate::bitboard::BitBoard;
     use pretty_assertions::assert_eq;
 
-    /// The table used to be built by probing the magic tables with only the two
-    /// endpoints occupied and intersecting what each end saw. The ray walk that
-    /// replaced it has to answer identically for every one of the four thousand
-    /// pairs, aligned and not, or a check would be answered with the wrong
-    /// squares.
+    /// The table used to be built by probing the magic tables with only the
+    /// two endpoints occupied; the ray walk has to answer identically for
+    /// every pair.
     #[test]
     fn a_ray_walk_finds_what_the_sliders_do() {
         let magic = &MAGIC;
@@ -4423,25 +3955,22 @@ mod see {
         assert_eq!(see_of("4k3/8/4p3/3p4/8/8/8/3RK3 w - - 0 1", "d1d5"), -400);
     }
 
-    /// Winning a piece does not end the story. The rook takes a queen a
-    /// rook defends, is taken back, and the swap prices queen for rook,
+    /// The rook takes a defended queen and is taken back: queen for rook,
     /// not the queen outright.
     #[test]
     fn a_won_piece_is_still_recaptured() {
         assert_eq!(see_of("3r3k/3q4/8/8/8/8/8/3R3K w - - 0 1", "d1d7"), 400);
     }
 
-    /// Doubled rooks against a defended pawn: the front rook takes, and the
-    /// one behind it joins the swap the moment the line opens. Without the
-    /// x-ray the same capture would read as losing the rook.
+    /// Doubled rooks against a defended pawn: without the x-ray the capture
+    /// would read as losing the rook.
     #[test]
     fn a_rook_behind_the_capturing_rook_joins_the_exchange() {
         assert_eq!(see_of("3rk3/8/8/3p4/8/8/3R4/3R2K1 w - - 0 1", "d2d5"), 100);
     }
 
-    /// The pawn is defended twice. The bishop could take the recapturing
-    /// pawn, but pressing on only feeds the second defender, so the swap
-    /// prices the capture as knight for pawn and stops there.
+    /// The pawn is defended twice: pressing on with the bishop only feeds
+    /// the second defender, so the swap stops at knight for pawn.
     #[test]
     fn the_swap_stops_rather_than_feed_the_second_defender() {
         assert_eq!(
@@ -4450,9 +3979,8 @@ mod see {
         );
     }
 
-    /// En passant lifts the taken pawn from its own square, not the target:
-    /// plain and defended cases first, then a rook backing the capture
-    /// through the square the taken pawn left.
+    /// Plain and defended cases, then a rook backing the capture through
+    /// the square the taken pawn left.
     #[test]
     fn en_passant_opens_the_taken_pawns_square() {
         assert_eq!(see_of("4k3/8/8/3pP3/8/8/8/4K3 w - d6 0 1", "e5d6"), 100);
@@ -4460,28 +3988,24 @@ mod see {
         assert_eq!(see_of("4k3/2p5/8/3pP3/8/8/8/3RK3 w - d6 0 1", "e5d6"), 100);
     }
 
-    /// A capture that promotes values the piece it takes. The queen that
-    /// appears is counted as the pawn it was, the documented approximation,
-    /// so the knight takes it back at a pawn's price and the exchange comes
-    /// to rook for pawn.
+    /// The queen that appears is counted as the pawn it was, so the knight
+    /// takes it back at a pawn's price: rook for pawn.
     #[test]
     fn a_promoting_capture_values_the_piece_taken() {
         assert_eq!(see_of("r3k3/1Pn5/8/8/8/8/8/4K3 w - - 0 1", "b7a8q"), 400);
     }
 
-    /// A king may recapture only where nothing answers it: with a second
-    /// rook behind the first the king cannot legally take, so the pawn is
-    /// simply won; without it the same capture loses the rook.
+    /// With a second rook behind the first the king cannot legally take, so
+    /// the pawn is simply won; without it the same capture loses the rook.
     #[test]
     fn a_king_capture_ends_the_sequence() {
         assert_eq!(see_of("8/8/2k5/3p4/8/8/3R4/3R2K1 w - - 0 1", "d2d5"), 100);
         assert_eq!(see_of("8/8/2k5/3p4/8/8/3R4/6K1 w - - 0 1", "d2d5"), -400);
     }
 
-    /// The model `see` answers within, played out in full: either side may
-    /// capture with any attacker or stop, and a taken king ends the line at
-    /// the king's price. Free choice of attacker, where `see` commits to the
-    /// least valuable, so agreement says the commitment loses nothing.
+    /// The model `see` answers within, played out in full with free choice
+    /// of attacker, where `see` commits to the least valuable: agreement
+    /// says the commitment loses nothing.
     fn exhaustive(board: &Board, target: u8, occupied: u64, on_square: Piece, side: Color) -> i32 {
         let side_mask = match side {
             Color::White => board.white,
@@ -4548,10 +4072,8 @@ mod see {
         }
     }
 
-    /// Every capture two plies deep from the core positions, plus the two
-    /// perft positions thick with captures and promotions, priced by `see`
-    /// and by the exhaustive negamax. The count asserts the walk really
-    /// visited the captures it was pointed at.
+    /// Every capture two plies deep from the core positions and the two
+    /// perft positions thick with captures, priced both ways.
     #[test]
     fn the_swap_agrees_with_an_exhaustive_negamax() {
         let mut priced = 0;
@@ -4628,10 +4150,8 @@ mod try_make {
 mod gives_check {
     use super::{Board, Play, fens, play_named};
 
-    /// What each claim is held to: make the move, read the check the board
-    /// maintains for the side now to move, and take the move back. `None`
-    /// for a move `make_move` refuses, which the walks skip and the named
-    /// cases never offer.
+    /// What each claim is held to: the check the board maintains once the
+    /// move is made. `None` for a move `make_move` refuses.
     fn made(board: &mut Board, m: &Play) -> Option<bool> {
         if board.make_move(m) {
             let checked = board.in_check();
@@ -4643,8 +4163,7 @@ mod gives_check {
     }
 
     /// Every legal move of every position reached, claimed before the move
-    /// is made and held to the made board's answer. The counts say what the
-    /// walk really asked, the way the see walk counts its captures.
+    /// is made and held to the made board's answer.
     fn walk(board: &mut Board, depth: usize, asked: &mut usize, checks: &mut usize) {
         let moves = board.generate_moves();
         for m in &moves {
@@ -4666,9 +4185,7 @@ mod gives_check {
         }
     }
 
-    /// The oracle over played positions: every legal move two plies deep
-    /// from the core positions, plus the two perft positions thick with
-    /// castling, promotions and en passant.
+    /// The oracle over played positions, two plies deep.
     #[test]
     fn the_claim_agrees_with_making_the_move() {
         let mut asked = 0;
@@ -4684,17 +4201,13 @@ mod gives_check {
         assert!(checks > 500, "only {} checks met", checks);
     }
 
-    /// The same oracle over positions nobody played to: fens from the
-    /// parser's own generator, pieces scattered at random, one ply deep.
-    /// The runner is the deterministic one, so the corpus is the same
-    /// corpus every run.
+    /// The same oracle over positions nobody played to, from the parser's
+    /// own generator on the deterministic runner, one ply deep.
     ///
-    /// The castle and en passant fields are dropped before parsing. Against
-    /// a random placement either is the known limitation the roadmap
-    /// records, a right or a square the position cannot have granted, and
-    /// playing the move it licenses corrupts the board it is claimed of.
-    /// Castling and en passant are covered by the played walk above, whose
-    /// rights are real, and by the named cases below.
+    /// The castle and en passant fields are dropped before parsing: against
+    /// a random placement either can license a move that corrupts the
+    /// board. Castling and en passant are covered by the played walk above
+    /// and the named cases below.
     #[test]
     fn the_claim_agrees_on_a_generated_corpus() {
         use proptest::strategy::{Strategy, ValueTree};
@@ -4736,28 +4249,24 @@ mod gives_check {
     }
 
     /// The cases with machinery of their own, named so a failure says which
-    /// rule broke rather than which random position found it. Each is also
-    /// held to the made board, so a wrong expectation here cannot stand.
+    /// rule broke. Each is also held to the made board, so a wrong
+    /// expectation here cannot stand.
     #[test]
     fn a_direct_check_is_seen_from_the_destination() {
-        // a quiet rook move to the king's file
         assert!(claims("3k4/8/8/8/8/8/8/R4K2 w - - 0 1", "a1d1"));
         assert!(!claims("3k4/8/8/8/8/8/8/R4K2 w - - 0 1", "a1b1"));
-        // a capture on the checking line: the rook lands on the file by
-        // taking the pawn that blocked it
+        // the rook lands on the file by taking the pawn that blocked it
         assert!(claims("3k4/8/8/3p4/8/8/8/3R1K2 w - - 0 1", "d1d5"));
-        // a pawn's two step ends beside the king's diagonal
         assert!(claims("8/8/8/2k5/8/8/1P6/4K3 w - - 0 1", "b2b4"));
         assert!(!claims("8/8/8/2k5/8/8/1P6/4K3 w - - 0 1", "b2b3"));
     }
 
     #[test]
     fn a_discovered_check_is_seen_through_the_vacated_square() {
-        // the knight leaves the rook's file: anywhere it goes discovers the
-        // check, and from f6 it checks on its own besides, the double check
+        // the knight leaves the rook's file, and from f6 checks on its own
+        // besides
         assert!(claims("4k3/8/8/8/4N3/8/8/4RK2 w - - 0 1", "e4f6"));
         assert!(claims("4k3/8/8/8/4N3/8/8/4RK2 w - - 0 1", "e4c3"));
-        // the same knight with no rook behind it checks from f6 alone
         assert!(claims("4k3/8/8/8/4N3/8/8/5K2 w - - 0 1", "e4f6"));
         assert!(!claims("4k3/8/8/8/4N3/8/8/5K2 w - - 0 1", "e4c3"));
     }
@@ -4773,27 +4282,21 @@ mod gives_check {
 
     #[test]
     fn a_castle_checks_with_the_rook() {
-        // the rook lands on f1 with the black king on the f file
         assert!(claims("5k2/8/8/8/8/8/8/4K2R w K - 0 1", "e1g1"));
         assert!(!claims("k7/8/8/8/8/8/8/4K2R w K - 0 1", "e1g1"));
-        // and on d1 from the other side
         assert!(claims("3k4/8/8/8/8/8/8/R3K3 w Q - 0 1", "e1c1"));
         assert!(!claims("2k5/8/8/8/8/8/8/R3K3 w Q - 0 1", "e1c1"));
     }
 
     #[test]
     fn en_passant_vacates_both_squares_at_once() {
-        // the rook's line to the king runs through the capturing pawn's
-        // square and the taken pawn's: the capture empties both, and no
-        // single vacation opens it
+        // the rook's line runs through both the capturer's square and the
+        // taken pawn's; the plain push empties only the first
         assert!(claims("8/8/8/1k2pP1R/8/8/8/4K3 w - e6 0 1", "f5e6"));
-        // the plain push empties only the mover's square and the taken
-        // pawn still blocks
         assert!(!claims("8/8/8/1k2pP1R/8/8/8/4K3 w - e6 0 1", "f5f6"));
-        // and the taken pawn's square alone: the bishop's diagonal runs
-        // through the pawn being taken and not through the taker
+        // the bishop's diagonal runs through the taken pawn alone
         assert!(claims("1k6/8/8/3Pp3/8/8/7B/4K3 w - e6 0 1", "d5e6"));
-        // en passant checking directly, the pawn landing beside the king
+        // and a direct check, the pawn landing beside the king
         assert!(claims("8/2k5/8/3pP3/8/8/8/4K3 w - d6 0 1", "e5d6"));
     }
 }
@@ -4803,11 +4306,9 @@ mod pawn_spans {
     use super::{ATTACK_MASKS, Color, pawn_attacks};
     use pretty_assertions::assert_eq;
 
-    /// The span is shifted rather than gathered a pawn at a time, and the
-    /// shifts have to answer what the masks generation reads already say. A
-    /// pawn attacks upward for white and downward for black, so the span of a
-    /// white pawn on a square is the mask of the black pawns that could attack
-    /// it, which is where the two files come off.
+    /// The shifts have to answer what the masks generation reads say. The
+    /// span of a white pawn on a square is the mask of the black pawns that
+    /// could attack it.
     #[test]
     fn the_pawn_span_is_what_the_attack_masks_hold() {
         for square in 0..64u8 {
@@ -4834,43 +4335,32 @@ mod evasion_targets {
     use super::{Board, MoveList};
     use pretty_assertions::assert_eq;
 
-    /// Positions whose evasions exercise a case the target mask has to get
-    /// right on its own, each with a piece able to reach the square the
-    /// mask must refuse. A case with nothing to refuse passes whatever the
-    /// mask says, which is how an earlier double check here let a mask
-    /// missing its double check rule through the whole suite.
+    /// Positions with a piece able to reach a square the target mask must
+    /// refuse. A case with nothing to refuse passes whatever the mask says,
+    /// which is how an earlier double check here let a mask missing its
+    /// double check rule through.
     const IN_CHECK: &[(&str, &str)] = &[
-        // a bishop checks along a5 to e1, and the only block a pawn can
-        // reach is b4, two squares ahead. Masking the step the two pushes
-        // share rather than each push would lose b2b4 here
+        // the only block a pawn can reach is b4, two squares ahead: masking
+        // the step the two pushes share would lose b2b4
         ("double push blocks", "4k3/8/8/b7/8/8/1P6/4K3 w - - 0 1"),
-        // a knight checks, so nothing can be interposed and only the king's
-        // moves and captures of the knight answer
         ("knight check", "4k3/8/8/8/8/5n2/8/4K3 w - - 0 1"),
-        // two checkers at once, which leaves the target mask empty. The
-        // queen can take the rook, which answers one check and not the
-        // other, so a mask that read only the first checker would keep a
-        // move the filter drops
+        // the queen can take the rook, which answers one check and not the
+        // other, so a mask that read only the first checker would keep it
         ("double check", "4k3/8/8/8/8/5n2/4r3/R2QK2R w KQ - 0 1"),
-        // a pawn gives the check and stands beside the king
         ("pawn check", "4k3/8/8/8/8/8/3p4/4K3 w - - 0 1"),
-        // a rook checks along the eighth rank and the pawn promotes onto
-        // the one square between, so a promoting push has to be kept
         ("promotion blocks", "r3K3/2P5/8/8/8/8/8/7k w - - 0 1"),
-        // the same rook taken by a promoting capture
         (
             "promotion takes the checker",
             "r3K3/1P6/8/8/8/8/8/7k w - - 0 1",
         ),
         // the checking pawn is the one taken en passant, which the mask
-        // deliberately does not examine: the pawn taken does not stand on
-        // the square captured to, so the mask would read it wrongly
+        // does not examine
         (
             "en passant takes the checker",
             "4k3/8/8/3pP3/4K3/8/8/8 w - d6 0 1",
         ),
-        // and an en passant that answers nothing, kept unexamined all the
-        // same and refused later by make_move
+        // an en passant that answers nothing, kept unexamined all the same
+        // and refused by make_move
         (
             "en passant answers nothing",
             "4k3/8/8/3pP3/8/6b1/8/3RK3 w - d6 0 1",
@@ -4887,9 +4377,8 @@ mod evasion_targets {
         (masked, filtered)
     }
 
-    /// Every position in check that a walk of `depth` plies from `fen`
-    /// reaches, handed to `visit`. Illegal moves are dropped by `make_move`
-    /// the way the search drops them.
+    /// Every position in check that a walk of `depth` plies reaches, handed
+    /// to `visit`.
     fn walk(board: &mut Board, depth: u8, visit: &mut impl FnMut(&Board)) {
         if board.in_check() {
             visit(board);
@@ -4898,8 +4387,6 @@ mod evasion_targets {
             return;
         }
         for m in board.generate_moves() {
-            // a refused move has already put the board back, which is the
-            // contract the search relies on
             if board.make_move(&m) {
                 walk(board, depth - 1, visit);
                 board.undo_move();
@@ -4916,8 +4403,7 @@ mod evasion_targets {
             assert_eq!(masked, filtered, "{name}: {fen}");
         }
 
-        // and over every position in check a short walk of the suite
-        // reaches, which is where the shapes nobody thought to name are
+        // and over every position in check a short walk reaches
         let mut seen = 0;
         for fen in fens::CORE
             .iter()
@@ -4935,11 +4421,9 @@ mod evasion_targets {
         }
         assert!(seen > 200, "the walk reached only {seen} positions");
 
-        // The corpus is only worth its shapes. A count of positions says
-        // nothing about whether the ones the mask can get wrong are in
-        // there, and the walk reaches no double check, no en passant in
-        // check and no promotion that answers one, which is why the named
-        // cases above carry those three and this says so.
+        // the walk reaches no double check, no en passant in check and no
+        // promotion that answers one, so the named cases have to carry
+        // those three
         let mut doubles = 0;
         let mut passing = 0;
         let mut promotions = 0;
@@ -4973,9 +4457,8 @@ mod drawn_by_material {
     use super::{A1, B1, Board, LIGHT_SQUARES};
     use pretty_assertions::assert_eq;
 
-    /// The same position with a named side to move. The rule reads the
-    /// material and not the path, so which side is to move cannot change its
-    /// answer, and both are asked of every case.
+    /// The same position with a named side to move: the rule reads the
+    /// material alone, so both sides are asked of every case.
     fn to_move(fen: &str, side: char) -> String {
         let mut fields = fen.split(' ');
         let board = fields.next().unwrap();
@@ -4984,14 +4467,11 @@ mod drawn_by_material {
         format!("{} {} {}", board, side, rest.join(" "))
     }
 
-    /// The colour mirror: the ranks reversed and the piece cases swapped.
-    ///
-    /// A vertical flip puts every bishop on the other square colour. So the
-    /// mirror of a case is a case the one colour rule has to answer the same
-    /// way for the opposite colour, which a rule that named light or dark
-    /// rather than agreement on one would fail. The fields after the side to
-    /// move are carried over, which is why every fen here holds no castling
-    /// right and no en passant square.
+    /// The colour mirror: ranks reversed and piece cases swapped. A vertical
+    /// flip puts every bishop on the other square colour, which a rule that
+    /// named light or dark rather than agreement on one would fail. The
+    /// fields after the side to move are carried over, so no fen here holds
+    /// a castling right or an en passant square.
     fn mirrored(fen: &str) -> String {
         let mut fields = fen.split(' ');
         let board = fields.next().unwrap();
@@ -5013,12 +4493,9 @@ mod drawn_by_material {
         format!("{} {} {}", ranks.join("/"), side, rest.join(" "))
     }
 
-    /// Every signature the rule names and every near neighbour it leaves out,
-    /// by hand, from both sides to move and mirrored.
-    ///
-    /// Nothing else pins these. The evaluation tests say the rule is read and
-    /// the search tests say what a drawn position scores, and both would pass
-    /// on a rule that answered one signature too many.
+    /// Every signature the rule names and every near neighbour it leaves
+    /// out. Nothing else pins these: the evaluation and search tests would
+    /// pass on a rule that answered one signature too many.
     #[test]
     fn material_that_cannot_mate_is_drawn_and_material_that_can_is_not() {
         for (fen, drawn, why) in [
@@ -5045,8 +4522,8 @@ mod drawn_by_material {
                 true,
                 "three bishops, all on one colour",
             ),
-            // a pawn on the board keeps the rule off, whatever else stands
-            // there. KBvKP is usually drawn and KNNvKP is sometimes won
+            // a pawn keeps the rule off: KBvKP is usually drawn and KNNvKP
+            // is sometimes won
             (
                 "4k3/8/8/4p3/8/8/8/4K1N1 w - - 0 1",
                 false,
@@ -5072,8 +4549,7 @@ mod drawn_by_material {
                 false,
                 "a bishop each on opposite colours",
             ),
-            // drawn in practice and outside the rule: the tables already read
-            // the cancelling pairs near zero
+            // drawn in practice and outside the rule
             ("4k1n1/8/8/8/8/8/8/4K1N1 w - - 0 1", false, "a knight each"),
             (
                 "4k1n1/8/8/8/8/8/8/4KB2 w - - 0 1",
@@ -5109,16 +4585,13 @@ mod drawn_by_material {
         }
     }
 
-    /// The start position, which the first line of the rule exits on and which
-    /// is the one case here that carries castling rights.
     #[test]
     fn the_start_position_is_not_drawn() {
         assert!(!Board::default().drawn_by_material());
     }
 
-    /// The mask against a walk of the squares. a1 is dark and b1 is light,
-    /// which is the statement a reader checks the constant by; the walk says
-    /// the other sixty two agree with the same arithmetic.
+    /// a1 is dark and b1 is light, which is what a reader checks the
+    /// constant by; the walk says the other sixty two agree.
     #[test]
     fn the_light_squares_are_the_squares_whose_file_and_rank_disagree() {
         assert_eq!(LIGHT_SQUARES & (1 << A1), 0, "a1 is dark");

@@ -10,12 +10,10 @@ pub trait BitBoard {
 
     /// Print the board as a rank and file grid.
     ///
-    /// One of three printers nothing calls: this one, `Board::attacked_print`
-    /// and the `Display` on `BaseConversions`. They are kept to be reached for
-    /// when the thing each prints comes out wrong, which is the only time
-    /// anyone wants to look at a raw bitboard, an attack map or the mailbox.
-    /// Deleting one because nothing calls it is deleting it for the reason it
-    /// exists.
+    /// One of three printers nothing calls (this, `Board::attacked_print` and
+    /// the `Display` on `BaseConversions`). They are kept for when a bitboard,
+    /// an attack map or the mailbox comes out wrong, which is the only time
+    /// anyone wants to look at one raw.
     #[allow(dead_code)]
     fn debug_print(&self);
 }
@@ -40,8 +38,7 @@ impl BitBoard for u64 {
     fn debug_print(&self) {
         println!("    a b c d e f g h");
         println!("  -----------------");
-        // the eighth rank first, the way the board display and a diagram write
-        // it, rather than in index order
+        // eighth rank first, as a diagram is drawn
         for rank in (1..=8).rev() {
             print!("{} |", rank);
             for file in File::VARIANTS {
