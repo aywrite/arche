@@ -32,9 +32,8 @@ impl BaseConversions {
     const STRAIGHT_STEPS: [isize; 4] = [10, -10, 1, -1]; // rooks and queens
     const DIAGONAL_STEPS: [isize; 4] = [9, -9, 11, -11]; // bishops and queens
 
-    /// Built at compile time, so there is nothing to build on startup and
-    /// nothing to check on the way to a step. A `const fn` has no `for`, hence
-    /// the two `while` walks over what is still a rank and a file.
+    /// Built at compile time. A `const fn` has no `for`, hence the `while`
+    /// walks.
     const fn new() -> Self {
         let mut base = BaseConversions {
             base_100_to_64: [Self::OFF_BOARD; 100],
@@ -100,17 +99,14 @@ pub(crate) static MAGIC: Magic = Magic::new();
 /// square of each, since a piece there blocks nothing behind it, and less the
 /// square the slider stands on.
 ///
-/// Trimming the ends is what keeps the mask small, and the mask is what sizes
-/// the table. A rook in a corner is blocked on twelve squares rather than
-/// fourteen, and every bit dropped halves what its square needs.
+/// Dropping the ends is what keeps the mask, and so the table, small: every
+/// bit dropped halves what the square's block needs.
 const fn blocker_mask(mailbox: &BaseConversions, from: u8, directions: [isize; 4]) -> u64 {
     let mut mask = 0u64;
     let mut d = 0;
     while d < directions.len() {
         let step = directions[d];
         let mut square = from;
-        // stop before the edge: a blocker on the last square of a ray has
-        // nothing behind it to block
         while let Some(next) = mailbox.step(square, step) {
             mask |= 1u64 << square;
             square = next;
@@ -125,14 +121,11 @@ const fn blocker_mask(mailbox: &BaseConversions, from: u8, directions: [isize; 4
 /// the rays outwards. Each ray runs until it meets a blocker, which it stops on
 /// because it may capture there.
 ///
-/// This is what the tables are built from, and it is also the answer a lookup
-/// has to agree with. A free function of the position alone so that it can be
-/// asked directly, rather than only being reachable while a table is filled in:
-/// `the_tables_answer_what_a_ray_walk_would` compares the two.
+/// What the tables are built from, and what the test holds a lookup to.
 ///
-/// The mailbox is handed in rather than read from `BASE_CONVERSIONS` so that
-/// the const build makes one and walks it a hundred thousand times, instead of
-/// materialising a copy of it at every step of every ray.
+/// The mailbox is a parameter rather than a read of `BASE_CONVERSIONS` so that
+/// the const build walks one copy instead of materialising the const at every
+/// step of every ray.
 const fn attacks_from(
     mailbox: &BaseConversions,
     from: u8,
@@ -184,9 +177,8 @@ fn blocker_configurations(mask: u64) -> Vec<u64> {
 
 /// How wide each kind's attack table is: the sum over the squares of two to the
 /// power of the bits in that square's blocker mask. Stated rather than counted
-/// because an array has to be sized before it is filled; `new` asserts that the
-/// masks fill it exactly, so a wrong number fails the build rather than the
-/// engine.
+/// because an array is sized before it is filled; `new` asserts that the masks
+/// fill it exactly, so a wrong number fails the build.
 const STRAIGHT_ATTACKS: usize = 102_400;
 const DIAGONAL_ATTACKS: usize = 5_248;
 
@@ -197,8 +189,7 @@ struct SliderTables<const ATTACKS: usize> {
     blocker_masks: [u64; 64],
     magics: [u64; 64],
     /// `64 - bits` for each square, so a probe shifts without subtracting
-    /// first. A shift, not a count of bits, which is what the same number was
-    /// called when it lived in two places.
+    /// first.
     shifts: [u8; 64],
     offsets: [u32; 64],
     attacks: [u64; ATTACKS],
@@ -211,7 +202,6 @@ impl<const ATTACKS: usize> SliderTables<ATTACKS> {
         let mut offsets = [0u32; 64];
         let mut attacks = [0u64; ATTACKS];
         let mut filled = 0usize;
-        // one mailbox for the whole build, walked by every ray below
         let mailbox = BASE_CONVERSIONS;
 
         let mut square = 0u8;
@@ -397,16 +387,12 @@ mod tests {
         }
     }
 
-    /// What the committed magics are held to. A magic indexing without
-    /// collisions is the weaker half, and the assert in `SliderTables::new`
-    /// makes that one every time the crate is built, so a constant that
-    /// collides fails the compile rather than a test. What is left to ask is
-    /// whether the table was filled in and read back the right way round, so
-    /// this walks the rays and asks the lookup to agree, over every square
-    /// and every blocker configuration its mask admits.
-    ///
-    /// Exhaustive rather than sampled: a mask never has more than twelve bits,
-    /// so the whole space is a hundred thousand or so lookups.
+    /// The assert in `SliderTables::new` already fails the build on a magic
+    /// that collides, so what is left to check is that the table was filled
+    /// in and read back the same way round: every square, every blocker
+    /// configuration its mask admits, lookup against ray walk. Exhaustive
+    /// rather than sampled because a mask has at most twelve bits, a hundred
+    /// thousand or so lookups in all.
     #[test]
     fn the_tables_answer_what_a_ray_walk_would() {
         let magic = &MAGIC;
@@ -438,9 +424,8 @@ mod tests {
 
     /// Prints a fresh set of constants to paste into this file. Ignored because
     /// it is only needed if the blocker masks or the table layout change, and
-    /// because the search is slow enough unoptimised to be worth not running by
-    /// accident: about fourteen seconds as invoked below, against under a
-    /// second with `--release`.
+    /// because unoptimised the search takes about fourteen seconds as invoked
+    /// below (under a second with `--release`).
     ///
     ///     cargo test -p arche-core regenerate_magics -- --ignored --nocapture
     #[test]
@@ -448,9 +433,8 @@ mod tests {
     fn regenerate_magics() {
         let mut state: u64 = 102938423890384;
 
-        // the searches are interleaved per square, the same order the original
-        // code consumed the generator in, so this reproduces the committed
-        // values
+        // interleaved per square, the order the original code consumed the
+        // generator in, so this reproduces the committed values
         let mut straight = Vec::with_capacity(64);
         let mut diagonal = Vec::with_capacity(64);
         for square in 0..64u8 {

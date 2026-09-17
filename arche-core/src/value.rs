@@ -4,23 +4,20 @@
 //! What a node is worth, and whether that worth describes the position or
 //! only the path taken to it.
 //!
-//! A score alone cannot say which it is. A repetition or a fifty move draw is
-//! true of the line that reached a position rather than of the position, so a
-//! zero read back down another line may be a draw that line cannot reach; the
-//! transposition table refuses such a score for a cutoff and keeps only the
-//! move. That fact has to travel with the score from the node that discovered
-//! it to the node that stores it, through every negation on the way, which is
-//! what this is for.
+//! A repetition or a fifty move draw is true of the line that reached a
+//! position, not of the position, so a zero read back down another line may
+//! be a draw that line cannot reach. The transposition table refuses such a
+//! score for a cutoff and keeps only the move, so the fact has to travel with
+//! the score, through every negation, from the node that found it to the
+//! node that stores it.
 //!
 //! Mate scores live here too. A mate is scored a fixed distance from
-//! `CHECKMATE_SCORE`, further for a longer line, so a faster mate always
-//! wins the comparison; everything within a thousand of it is a mate and
-//! nothing else can be, since a static eval is bounded by the material on
-//! the board, far below. The search asks `is_mate` before it prunes
-//! against a beta, because a cutoff there would leave a faster mate
-//! unsearched, and holds what a pass proved under the threshold with
-//! `below_the_mate_window`, because a pass is not a move and cannot force
-//! anything.
+//! `CHECKMATE_SCORE`, further for a longer line, so a faster mate wins the
+//! comparison. Everything within a thousand of it is a mate and nothing else
+//! can be. The search asks `is_mate` before it prunes against a bound,
+//! because a cutoff there would leave a faster mate unsearched, and caps what
+//! a pass proved with `below_the_mate_window`, because a pass is not a move
+//! and cannot force anything.
 
 use crate::misc::Score;
 
@@ -57,7 +54,7 @@ pub(crate) fn below_the_mate_window(score: Score) -> Score {
 pub struct Value {
     pub score: Score,
     /// True if the score flowed from a repetition or a fifty move draw
-    /// somewhere below it. See the docs on graph history interaction.
+    /// somewhere below it.
     pub tainted: bool,
 }
 
@@ -87,11 +84,10 @@ impl Value {
         Self { score, tainted }
     }
 
-    /// The side to move is mated, this many plies into the line. Clean by
-    /// definition: a mate is a property of the position, not of the path
-    /// that reached it. The shorter the line the further the score sits
-    /// below zero, so once a parent negates it, the faster mate is the
-    /// better one.
+    /// The side to move is mated, this many plies into the line. Clean, since
+    /// a mate is a property of the position. The shorter the line the further
+    /// the score sits below zero, so once a parent negates it the faster mate
+    /// is the better one.
     pub(crate) fn mated(line_ply: usize) -> Self {
         Self::clean(-CHECKMATE_SCORE + line_ply as Score)
     }
@@ -112,8 +108,7 @@ impl std::ops::Neg for Value {
 
 /// What a node has seen so far. The taint of a node is the taint of every
 /// child it looked at, not of the one it chose: a best move found beside a
-/// tainted score still stands on a comparison against that score. Each child
-/// is absorbed as it is searched, and the answer is stamped with the whole.
+/// tainted score still stands on a comparison against that score.
 #[derive(Copy, Clone, Debug, Default)]
 pub(crate) struct Taint(bool);
 

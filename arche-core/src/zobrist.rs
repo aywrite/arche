@@ -13,8 +13,8 @@ pub struct Zobrist {
 
 impl Zobrist {
     /// The keys, built at compile time. They only have to be well spread and
-    /// the same on both sides of a game, so there is nothing to be gained from
-    /// drawing them at startup.
+    /// the same on both sides of a game, so nothing is gained by drawing them
+    /// at startup.
     pub const TABLE: Zobrist = Self::build(0x3865_5440_d1b6_3d78);
 
     const fn build(seed: u64) -> Self {
@@ -102,9 +102,8 @@ mod keys {
     use super::Zobrist;
     use pretty_assertions::assert_eq;
 
-    /// The keys are constants rather than draws now, so this guards the seed and
-    /// the generator rather than a run of a prng: two equal keys would make two
-    /// different positions share a hash.
+    /// The keys are constants, so this guards the seed and the generator: two
+    /// equal keys would make two different positions share a hash.
     #[test]
     fn every_key_is_distinct() {
         let z = Zobrist::TABLE;

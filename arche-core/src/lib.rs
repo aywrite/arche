@@ -34,6 +34,5 @@ pub use misc::{Color, Score};
 pub use play::Play;
 pub use transposition::DEFAULT_TABLE_BYTES;
 
-/// The starting position, so that nothing setting a board up from scratch has
-/// to carry its own copy of the fen.
+/// The starting position.
 pub const STARTING_FEN: &str = "rnbqkbnr/pppppppp/8/8/8/8/PPPPPPPP/RNBQKBNR w KQkq - 0 1";

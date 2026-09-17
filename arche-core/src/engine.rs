@@ -21,78 +21,61 @@ use std::sync::Arc;
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::time;
 
-/// The rail a requested depth is held to, every search stops at, and the
-/// reported line is walked to. It is also how long the killer table is, so
-/// a node past it would order its quiet moves without one.
+/// The ply every search stops at: a requested depth is held to it, the
+/// full width search ends a line at it whatever depth the check extension
+/// has left, and the reported line is walked no further. It is also the
+/// killer table's length, so a node past it would order its quiets without
+/// one.
 ///
-/// A bound the full width search is told rather than left to reach: the
-/// check extension holds a node's depth where it was, so a line of checks
-/// is not ended by the depth running out, and `alpha_beta` ends one here.
-/// The rail is set well inside the two things that would break if a line
-/// outran them: the history ring, which holds a thousand and twenty four
-/// plies less the fifty move window, and the mate score window, which
-/// begins a thousand under the mate score. Sixty four would have fitted as
-/// comfortably; a hundred and twenty eight is bought because moving it
-/// later is a play change with a match behind it, and this is enough that
-/// it need never move again.
+/// It sits well inside the two things a longer line would break: the
+/// board's history ring (1024 plies, less the fifty move window) and the
+/// mate score window (a thousand under the mate score). Sixty four would
+/// fit; moving the rail is a play change with a match behind it, so it was
+/// set where it need not move again.
 pub const MAX_PLY: u8 = 128;
 // the root deepens by one more when it is in check, so a depth held to the
-// rail has to leave room for that inside a byte. A rail raised past this
-// fails the build rather than overflowing partway through a game.
+// rail has to leave room for that inside a byte
 const _: () = assert!(MAX_PLY < u8::MAX);
-// How far above beta a static eval has to stand, per ply still to search,
-// before a node is answered from it instead of searched: what the opponent
-// is allowed to win back over those plies. A pawn a ply. The bench argues
-// for a smaller margin and not by much, sixty through a hundred and twenty
-// spanning about five percent of the count and not monotone in between, so
-// what chose this figure is the depth four mate in two
-// the_mate_distance_survives_a_deeper_warm_search pins: eighty nine loses
-// it and ninety keeps it. A margin standing one notch from a mate it can
-// miss is not a margin, so this is the round number above that, and it
-// costs about two thirds of a percent of the tree over ninety.
-//
-// That boundary was between eighty five and ninety when the figure was
-// chosen, stood at ninety one before the piece square tables were fitted,
-// and is ninety now, so it moves both ways a change at a time and is a
-// measurement rather than a fact to read off this line. The round number
-// above it has been a hundred every time it has been read. What the shadow
-// lane says about the rest of the question is in docs/ROADMAP.md.
+// How far above beta the static eval has to stand, per ply still to
+// search, for a node to be answered from it: what the opponent may win
+// back over those plies, a pawn a ply. The bench argues for less and not
+// by much (sixty through a hundred and twenty span about five percent of
+// the count, not monotone). What fixes the figure is the depth four mate
+// in two that the_mate_distance_survives_a_deeper_warm_search pins: eighty
+// nine loses it and ninety keeps it. A margin one notch from a mate it can
+// miss is no margin, so this is the round number above that boundary, at
+// about two thirds of a percent of the tree over ninety. The boundary was
+// between eighty five and ninety when the figure was chosen, ninety one
+// before the piece square tables were fitted, and ninety at the last
+// reading, so it is re-measured rather than read off this line; the round
+// number above it has been a hundred each time. docs/ROADMAP.md has the
+// shadow lane's reading.
 const REVERSE_FUTILITY_MARGIN: Score = 100;
-// The depth the shortcut stops at. The margin grows by a fixed step a ply
-// and a straight line stops describing a tree quickly, which the bench
-// agrees with: four, six and eight are the same count to a tenth of a
-// percent, so the plies past this one are pruning nothing the shallower
-// ones had not already pruned, at a guess that gets worse the deeper it
-// is made.
+// The deepest node the margin may answer. The margin grows a fixed step a
+// ply, and the bench says the plies past this prune nothing: four, six and
+// eight are the same count to a tenth of a percent.
 const REVERSE_FUTILITY_MAX_DEPTH: u8 = 4;
-// How many plies shallower than the node that passes the pass itself is
-// searched. The whole point of a pass is that it is answered cheaply, so
-// this is what the shortcut costs; too large and the reduced search proves
-// nothing, too small and it costs what searching the moves would have. Two
-// is where this starts, and what moves it is a match rather than the bench.
+// How many plies shallower than the node the pass itself is searched: what
+// the shortcut costs. Too large and the reduced search proves nothing, too
+// small and it costs what searching the moves would have. Two is the
+// opening value; what moves it is a match, not the bench.
 const NULL_MOVE_REDUCTION: u8 = 2;
-// The shallowest depth a node may pass at, one more than the reduction so
-// that the reduced search is never asked for a depth below zero. At the
-// floor that search is quiescence, which still answers the question asked,
-// only from the captures alone.
+// One more than the reduction, so the reduced search is never asked for a
+// depth below zero. At the floor that search is quiescence.
 const NULL_MOVE_MIN_DEPTH: u8 = NULL_MOVE_REDUCTION + 1;
-// What a capture may still fall short of alpha by and be searched in
-// quiescence, with the captured piece counted as fully won: the positional
-// ground a capture can make up besides the piece it takes. One that falls
-// further is skipped rather than searched. Two hundred is the conventional
-// figure, and these piece values are the conventional ones, so nothing
-// argues for another.
+// How far short of alpha a capture may leave the standing eval, with the
+// captured piece counted as fully won, and still be searched in
+// quiescence: the positional ground a capture can make up beyond the
+// piece. Two hundred is the conventional figure for conventional piece
+// values.
 const DELTA_MARGIN: Score = 200;
 
 /// Which places in a node's move list the node made and searched, a bit
-/// each. What it is for is the history's malus: under a cutoff the quiet
-/// moves with a bit below the cutting move's place are the ones the node
-/// asked and got nothing from.
+/// each: under a cutoff the quiet moves with a bit below the cutting
+/// move's place are the history's malus.
 ///
-/// Four words rather than one. A position can hold two hundred and
-/// eighteen moves, and the list buffer is sixty four wide and spills past
-/// that, so a single word would drop the moves past the first sixty four
-/// with nothing to say it had.
+/// Four words: a position can hold two hundred and eighteen moves, and the
+/// list buffer is sixty four wide and spills past that.
 #[derive(Default)]
 struct Searched([u64; 4]);
 
@@ -106,21 +89,18 @@ impl Searched {
         self.0[place / 64] >> (place % 64) & 1 == 1
     }
 
-    /// How many places are marked, which the move loop holds to its own
-    /// count of the moves it searched. The two are kept by different
-    /// means, a bit at a place against a counter, so a mark left where
-    /// nothing was searched shows up at the next move the node searches
-    /// rather than as a malus somewhere else in the tree. That is what the
-    /// exclusions rest on: a move the model skipped and a move that turned
-    /// out illegal raise neither.
+    /// How many places are marked. The move loop holds this to its own
+    /// count of the moves it searched, so a stray mark shows up at the next
+    /// move searched rather than as a malus elsewhere in the tree; a move
+    /// the model skipped and a move that turned out illegal raise neither.
     fn count(&self) -> usize {
         self.0.iter().map(|word| word.count_ones() as usize).sum()
     }
 }
 
-/// What the protocol interface asks of an engine: positions in, answers out.
-/// How an implementation searches is its own business, which is why the
-/// deepening loop is required here rather than provided.
+/// What the protocol interface asks of an engine: positions in, answers
+/// out. The deepening loop is required rather than provided because how an
+/// implementation searches is its own business.
 pub trait Engine {
     fn parse_fen(&mut self, fen_string: &str) -> Result<(), String>;
 
@@ -133,53 +113,45 @@ pub trait Engine {
     fn make_move_str(&mut self, play: &str) -> bool;
 
     /// Give the engine a transposition table of `bytes` bytes, discarding
-    /// whatever the old one held. Reallocating rather than resizing in place
-    /// is what the protocol expects of a size change, since a bucket is
-    /// chosen from the number of buckets there are and every entry moves
-    /// when that number does.
+    /// whatever the old one held: a bucket is chosen from the number of
+    /// buckets there are, so every entry moves when that number does.
     ///
     /// False if the buckets could not be reserved, in which case the engine
-    /// keeps the table it had: the size arrives from an interface, which is
-    /// free to ask for more than the machine running us has, and a game is
-    /// better carried on with the old table than lost with no engine.
+    /// keeps the table it had: the size arrives from an interface, which
+    /// may ask for more than the machine has, and a game is better carried
+    /// on with the old table than lost with no engine.
     ///
-    /// The answer is the allocator's, so it catches a size larger than the
-    /// machine can address or than it will hand out. It is not a promise that
-    /// the memory is there to use: where the kernel overcommits, a size that
-    /// fits in ram and swap is granted here and the process killed later as
-    /// the entries are written.
+    /// The answer is the allocator's. It is not a promise that the memory
+    /// is there to use: where the kernel overcommits, a size that fits in
+    /// ram and swap is granted here and the process killed later as the
+    /// entries are written.
     #[must_use]
     fn set_table_bytes(&mut self, bytes: usize) -> bool;
 
-    /// Empty the transposition table and leave everything else as it is.
-    /// This is the protocol's `Clear Hash` button, which an interface
-    /// presses so that what comes next owes nothing to what was searched
-    /// before it. A size change empties the table too, by building another
-    /// one; this asks for the emptying alone and keeps the buckets that are
-    /// already there.
+    /// Empty the transposition table and leave everything else as it is:
+    /// the protocol's `Clear Hash`. A size change empties the table too, by
+    /// building another; this keeps the buckets.
     fn clear_table(&mut self);
 
-    /// The position, printed the way the board prints itself, for the
-    /// adapter to show a person. A string rather than a write to a handle:
-    /// the library never prints, and the adapter owns where its bytes go
-    /// and what lock they take to get there.
+    /// The position, printed the way the board prints itself. A string
+    /// rather than a write: the library never prints, and the adapter owns
+    /// where its bytes go and what lock they take.
     fn board_display(&self) -> String;
 
     fn perft(&mut self, depth: u8) -> u64;
 
     fn active_color(&self) -> Color;
 
-    /// Search each depth in turn until one is the last to finish. The caller
-    /// hears about every completed iteration through on_depth, which is where
-    /// a protocol adapter reports progress from; the library itself never
-    /// prints. A result's node count covers the whole deepening so far, not
-    /// the one iteration, which is what the uci info convention expects and
-    /// what makes it divisible by the time since the search began.
+    /// Search each depth in turn until one is the last to finish. Every
+    /// completed iteration is reported through `on_depth`, which is where a
+    /// protocol adapter reports progress from; the library never prints. A
+    /// result's node count covers the whole deepening so far, not the one
+    /// iteration, which is what the uci info convention expects and what
+    /// makes it divisible by the time since the search began.
     ///
     /// One report is not a completed iteration: the answer an aborted
     /// iteration replaces a completed one with is reported too, as a lower
-    /// bound, since it is what the search will be answering with and nothing
-    /// else would have named it.
+    /// bound, since nothing else would have named it.
     fn iterative_deepening_search(
         &mut self,
         search_options: SearchParameters,
@@ -197,12 +169,8 @@ pub struct SearchParameters {
     pub limits: Limits,
     /// Set by another thread to stop the search at the next poll, which is
     /// how the protocol's `stop` reaches a search already running. None for
-    /// a search nobody can interrupt, and a search with none counts exactly
-    /// the nodes it counted before there was a flag to read.
-    ///
-    /// It rides beside the limits rather than inside them because a limit
-    /// is a number the search owns and this is a word from elsewhere;
-    /// `Limits` stays `Copy` for it.
+    /// a search nobody can interrupt. Beside the limits rather than inside
+    /// them so that `Limits` stays `Copy`.
     pub stop: Option<Arc<AtomicBool>>,
 }
 
@@ -226,12 +194,10 @@ impl SearchParameters {
         }
     }
 
-    /// Everything one iteration may be stopped by, under the one rule:
-    /// until a depth has been answered there is nothing to answer with, so
-    /// nothing (not the clock, not the budget, not the flag) may stop
-    /// the search. Depth one is microseconds, and this is what makes every
-    /// `go` end in a real move rather than in a null one from a position
-    /// with moves.
+    /// Everything one iteration may be stopped by. Until a depth has been
+    /// answered there is nothing to answer with, so nothing (clock, budget
+    /// or flag) may stop the search; that is what makes every `go` end in a
+    /// real move.
     fn for_iteration(&self, answered: bool, spent: u64) -> (Limits, Option<Arc<AtomicBool>>) {
         let stop = if answered { self.stop.clone() } else { None };
         (self.limits.for_iteration(answered, spent), stop)
@@ -244,84 +210,61 @@ impl SearchParameters {
 }
 
 /// The policies a search runs under: the shortcuts it takes and the scores
-/// it trusts. Each one is a fact about the tree searched, so changing one
+/// it trusts. Each is a fact about the tree searched, so changing one
 /// moves the bench.
 ///
 /// Two configurations are named. The reference has every shortcut off and
-/// every refusal on: alpha-beta with a table that only speeds it up, which
-/// is why a position searched warm answers as it does cold, deepened as it
-/// does direct, and with a small table as with a large one. The tests hold
-/// the reference to that and it stays as it is when shortcuts arrive. A
-/// change claiming to be sound keeps those tests green whatever else it
-/// moves; a change that prunes moves the default and leaves the reference
-/// alone; and the two played against each other say what the shortcuts are
-/// worth. The default is what the engine plays with.
+/// every refusal on: alpha-beta with a table that only speeds it up, so a
+/// position searched warm answers as it does cold, deepened as it does
+/// direct, and with a small table as with a large one. The exactness tests
+/// hold the reference to that and a shortcut leaves it alone. The default
+/// is what the engine plays with, every shortcut on, and the two played
+/// against each other say what the shortcuts are worth.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub struct SearchConfig {
     /// What the search does about draw tainted transposition scores, the
     /// ones that describe the path that stored them rather than the
     /// position. The policies are the graph history experiment's arms;
-    /// what each costs and buys is measured, not written here: run
-    /// `bench hash <MB> taint <word>` against another word for the pair
-    /// as they stand.
+    /// what each costs is measured, not written here: run
+    /// `bench hash <MB> taint <word>` against another word.
     pub taint: TaintPolicy,
     /// Whether a node near the leaves may answer from its static evaluation
-    /// alone when that stands far enough above beta, rather than search for
-    /// the fail high it is all but certain to find. A shortcut, and a guess:
-    /// on in the default, off in the reference.
+    /// alone when that stands far enough above beta.
     pub reverse_futility: bool,
-    /// Whether a node may hand the move to the other side and answer from a
-    /// reduced search of that, rather than search its own moves, when the
-    /// pass alone already stands above beta. The second shortcut, and a
-    /// guess like the first: on in the default, off in the reference.
+    /// Whether a node whose eval already stands above beta may hand the
+    /// move to the other side and answer from a reduced search of that.
     pub null_move: bool,
     /// Whether quiescence may skip a capture that leaves the standing eval
-    /// a margin short of alpha with its piece counted as fully won, rather
-    /// than search it down to the answer it expects. The third shortcut,
-    /// and a guess like the other two: on in the default, off in the
-    /// reference.
+    /// a margin short of alpha with its piece counted as fully won.
     pub delta_margin: bool,
-    /// Whether quiescence may skip a capture the swap prices as losing,
-    /// rather than search the exchange it expects to lose. The fourth
-    /// shortcut, and a guess like the margin beside it: the swap sees no
-    /// pins and nothing beyond its square. On in the default, off in the
-    /// reference.
+    /// Whether quiescence may skip a capture the swap prices as losing. The
+    /// swap sees no pins and nothing beyond its square.
     pub see_pruning: bool,
     /// Whether a quiet move searched late at a full width node is scouted
     /// a ply shallower first, and searched at full depth only when the
-    /// scout comes back above alpha. The fifth shortcut, and a guess like
-    /// the four before it: a scout that fails low is trusted, and the move
-    /// it answered for is never searched at the depth the node has. On in
-    /// the default, off in the reference.
+    /// scout comes back above alpha. A scout that fails low is trusted.
     pub late_move_reductions: bool,
     /// Whether the scout of a late quiet the attention model prices as
-    /// dead runs two plies shallower rather than one, at nodes deep
-    /// enough for the scout to keep its full width ply, and never for a
-    /// move that gives check. The sixth shortcut, riding on the fifth: a
-    /// move the reduction never touches is never asked. On in the
-    /// default, off in the reference.
+    /// dead runs two plies shallower rather than one, at nodes deep enough
+    /// for the scout to keep its full width ply, and never for a move that
+    /// gives check. Rides on `late_move_reductions`: a move the reduction
+    /// never touches is never asked.
     pub deep_reductions: bool,
-    /// Whether a late quiet the attention model prices in its deadest
-    /// band is searched at all: at or under the pruning threshold the
-    /// move is dropped from the node, no scout, no search, and nothing
-    /// is learned about it. The seventh shortcut, riding on the fifth's
-    /// eligibility and the sixth's model, with the checking exemption
-    /// the sixth carries; its threshold is a deeper cut of the same
-    /// score. On in the default, off in the reference.
+    /// Whether a late quiet the attention model prices in its deadest band
+    /// is searched at all. Rides on the reduction's eligibility and the
+    /// deep reduction's model and checking exemption; its threshold is a
+    /// deeper cut of the same score.
     pub late_move_pruning: bool,
     /// Whether a node orders its quiet moves by what other nodes have
     /// learned: the killers for its distance from the root, and the history
-    /// table under them. On in the default, off in the reference, which
-    /// keeps the pinned reference tree the one alpha-beta and the capture
-    /// ordering alone produce.
+    /// table under them. Off in the reference, which keeps the pinned
+    /// reference tree the one alpha-beta and the capture ordering produce.
     ///
     /// Ordering rather than pruning, so under the reference the answer is
-    /// the same either way and only the size of the tree moves. Not so
-    /// under the default: a shortcut fires against the window a node was
-    /// searched under, that window comes from what its parent had already
-    /// found, and the order the parent searched in is what decides that.
-    /// So the default's move and score may move where the reference's may
-    /// not.
+    /// the same either way and only the tree moves. Under the default a
+    /// shortcut fires against the window the parent's search order
+    /// produced, so the default's move and score may move where the
+    /// reference's may not.
     pub move_memory: bool,
 }
 
@@ -400,8 +343,6 @@ impl SearchConfig {
     /// that is no policy. The default rather than the reference, so the
     /// word a bench's header prints names what it ran and can be handed
     /// back to it.
-    // the default with the taint switch set and the rest of them left as
-    // the default has them: the word names a policy, not a configuration
     pub fn with_taint(word: &str) -> Option<Self> {
         let taint = match word {
             "refuse" => TaintPolicy::Refuse,
@@ -418,53 +359,20 @@ impl SearchConfig {
 }
 
 impl Default for SearchConfig {
-    /// What the engine plays with: the table trusted behind the fifty
-    /// move guard, the first place the default and the reference part
-    /// company. The four policies played each other and refusing lost
-    /// about forty five elo to either trusting arm, paid in shallower
-    /// endgame search; the guard cost nothing a match could see and
-    /// covers the one regime where a wrong cutoff provably loses.
+    /// What the engine plays with: every shortcut on, the memories on, and
+    /// the table trusted behind the fifty move guard. The four taint
+    /// policies played each other and refusing lost about forty five elo to
+    /// either trusting arm, paid in shallower endgame search; the guard
+    /// cost nothing a match could see and covers the one regime where a
+    /// wrong cutoff provably loses. The shortcuts are guesses about the
+    /// tree rather than rules about a score, which is why the reference
+    /// keeps them off; the memories prune nothing and are off there only
+    /// so its tree stays the one the capture ordering produces.
     ///
-    /// Reverse futility is the second place they part company, and the
-    /// first that prunes: it halves the bench, and unlike the taint policy
-    /// it is a guess about a tree rather than a rule about a score, which
-    /// is why the reference keeps it off.
-    ///
-    /// The pass is the third, and the same kind of guess. It buys its
-    /// confidence with a reduced search where reverse futility buys it with
-    /// a margin, so it prunes where a margin cannot reach.
-    ///
-    /// The delta margin is the fourth, the same guess made in quiescence:
-    /// a capture that cannot reach alpha with its piece counted as fully
-    /// won is skipped rather than searched.
-    ///
-    /// The losing capture skip is the fifth, the same guess again: a
-    /// capture the swap prices as losing is skipped rather than searched
-    /// down to the exchange the swap already priced.
-    ///
-    /// The late move reductions are the sixth, the pass's guess made of a
-    /// move rather than a node: a quiet move tried late is scouted a ply
-    /// shallower, and a scout that fails low is trusted to have priced the
-    /// move.
-    ///
-    /// The deep reduction is the seventh, the same guess reaching further
-    /// where a model fitted on the ledger says the scout's word is
-    /// cheapest to trust: those moves are scouted two plies shallower,
-    /// and a quiet that gives check never is.
-    ///
-    /// The late move pruning is the eighth, the same model spending its
-    /// word where it is strongest: a late quiet priced in its deadest
-    /// band is not searched at all. Skipping a move can only lower this
-    /// node's answer, never raise it, so the node itself cuts nothing
-    /// falsely; the lowered answer still travels, as every bound does,
-    /// and what the guess risks is a good move written off, which is
-    /// what the threshold's band prices.
-    ///
-    /// The quiet memories are the ninth, and no kind of guess at all.
-    /// They prune nothing. What they move is how soon a node finds the move
-    /// that cuts it off, which is most of what alpha-beta costs. The
-    /// reference keeps them off so that its tree stays the one the capture
-    /// ordering and generation order produce.
+    /// The pruning cuts nothing falsely on its own account: skipping a move
+    /// can only lower this node's answer, never raise it, and the lowered
+    /// answer travels as every bound does. What it risks is a good move
+    /// written off, which the threshold's band prices.
     fn default() -> Self {
         Self {
             taint: TaintPolicy::Rule50,
@@ -494,45 +402,36 @@ pub struct AlphaBeta {
     /// limits themselves decide.
     next_check: u64,
     /// The flag another thread sets to stop the search, or none while
-    /// nothing may. `SearchParameters::for_iteration` arms it exactly as
-    /// it arms the clock, and `search_root`'s prologue writes what arrived
-    /// in its signature, so a search asked directly for a depth is never
-    /// interruptible and never reads it.
+    /// nothing may. Armed by `SearchParameters::for_iteration` exactly as
+    /// the clock is, and written by `search_root` from its signature, so a
+    /// search asked directly for a depth never reads one.
     stop: Option<Arc<AtomicBool>>,
-    /// The nodes quiescence visited, a part of nodes. Counted for the bench,
-    /// which reports what share of the tree the captures are. Never reset,
-    /// like the ghi counters: it runs over the engine's whole life, and the
-    /// bench reads it from an engine made for the one search
+    /// The nodes quiescence visited, a part of `nodes`. Counted for the
+    /// bench, which reports what share of the tree the captures are. Never
+    /// reset, like the ghi counters: the bench reads it from an engine made
+    /// for the one search.
     quiescence_nodes: u64,
-    /// The move ordering and its scratch buffer, search state like the
-    /// limits above: one per engine, reused by every node.
+    /// The move ordering and its scratch buffer: one per engine, reused by
+    /// every node.
     ordering: MoveOrdering,
-    /// What the leaf terms that remember themselves remember, scratch on the
-    /// same terms as the ordering. Never cleared between searches: an entry
-    /// is read only against the key that wrote it, so what the last search
+    /// The leaf terms' memos. Never cleared between searches: an entry is
+    /// read only against the key that wrote it, so what the last search
     /// left is a warm start and not a stale answer.
     caches: eval::Caches,
-    /// The residual sampler, or none, which is what every constructor here
-    /// builds and what the engine plays and benches with. An engine with
-    /// none takes no branch a search without a sampler did not take, which
-    /// is the claim the pinned node counts stand behind.
+    /// The residual sampler, or none, which is what every constructor
+    /// builds. An engine with none takes no branch a search without a
+    /// sampler did not take, which is what the pinned node counts stand on.
     sampler: Option<Sampler<Sample>>,
-    /// The cutoff census's reservoir, or none, on the sampler's terms
-    /// exactly: an engine without one searches the tree it always
-    /// searched.
+    /// The cutoff census's reservoir, or none, on the sampler's terms.
     census: Option<Sampler<census::Event>>,
-    /// The reduction ledger's reservoir, or none, on the census's terms
-    /// exactly.
+    /// The reduction ledger's reservoir, or none, on the same terms.
     ledger: Option<Sampler<reduction::Event>>,
 }
 
 /// What a search can be armed to record: the residual's sample, the cutoff
-/// census's event or the reduction ledger's.
-///
-/// The implementations are here and not beside the three event types,
-/// because what they name is a field of the engine and the fields are this
-/// module's. The word each run goes by rides along with them, being of no
-/// use anywhere the slot is not also known.
+/// census's event or the reduction ledger's. Implemented here rather than
+/// beside the event types because what each names is a field of the
+/// engine.
 pub(crate) trait Recorded: Sized {
     /// What the shared recording loop calls a run of this kind, which is
     /// how it names a position it cannot read.
@@ -593,29 +492,24 @@ impl AlphaBeta {
     }
 
     /// Arm a reservoir: have the search record what it does at the nodes
-    /// the reservoir's key picks, at the rate the reservoir was built with.
-    /// Off until this is called, and the callers are the three recorders
-    /// and the tests. Nothing the engine plays or benches with arms one.
+    /// the reservoir's key picks. Off until this is called; the callers are
+    /// the three recorders and the tests, and nothing the engine plays or
+    /// benches with arms one.
     pub(crate) fn arm<T: Recorded>(&mut self, sampler: Sampler<T>) {
         *T::slot(self) = Some(sampler);
     }
 
     /// The reservoir back with everything it collected, leaving the engine
-    /// recording nothing. None from an engine that was never armed.
-    ///
-    /// Handed back rather than emptied in place, so that one reservoir can
-    /// be carried across a run of searches and its countdown and its cap
-    /// then describe the whole run rather than restarting at each search
-    /// in it.
+    /// recording nothing. None from an engine that was never armed. Handed
+    /// back rather than emptied in place, so one reservoir can be carried
+    /// across a run of searches with its cap describing the whole run.
     pub(crate) fn disarm<T: Recorded>(&mut self) -> Option<Sampler<T>> {
         T::slot(self).take()
     }
 
     /// What the node knew about a move at the gate, gathered for a
     /// ledger row: the staged half of a scouted event, and the whole of
-    /// a skipped one. The features come from `late_move::features`, the
-    /// one place they are derived, so what a row says and what the gate
-    /// scored cannot be two readings of the node.
+    /// a skipped one.
     // cold and out of line behind a bare is_some, as `sample` is and for
     // `sample`'s measured reason.
     #[cold]
@@ -648,11 +542,11 @@ impl AlphaBeta {
     /// scout behind it. The search never makes a skipped move, so its
     /// legality is unknown at the decision; it is made and unmade around
     /// the record alone, and one that turns out illegal is not recorded,
-    /// since the skip denied it nothing. The fen and the sampling key
-    /// are the position the move leaves, as they are for a scouted
-    /// move, so the replay reads a skipped row exactly as it reads a
-    /// low one. The move is not among the searched, which is why the
-    /// row's searched count is its index and not one past it.
+    /// since the skip denied it nothing. The fen and the sampling key are
+    /// the position the move leaves, as for a scouted move, so the replay
+    /// reads a skipped row as it reads a low one. The move is not among
+    /// the searched, so the row's searched count is its index and not one
+    /// past it.
     #[cold]
     #[inline(never)]
     fn ledger_skip(&mut self, staged: reduction::Staged, depth: u8, alpha: Score, beta: Score) {
@@ -668,8 +562,8 @@ impl AlphaBeta {
         let key = reduction::sample_key(board.key, depth);
         ledger.event(key, || {
             let fen = board.to_fen();
-            // make and undo are exact inverses, which the debug builds
-            // assert against a recompute on every move made
+            // the node's own eval, by stepping back and replaying: undo and
+            // make are exact inverses, which the debug builds assert
             board.undo_move();
             let eval = i32::from(crate::eval::eval(board));
             assert!(
@@ -700,11 +594,9 @@ impl AlphaBeta {
 
     /// The scout's answer joining what the move loop staged: one reduced
     /// scout, offered to the ledger. The board here is the position the
-    /// reduced move left, which is the fen the row carries and the replay
-    /// searches; the eval is the reducing node's own, taken for kept
-    /// events alone by stepping the staged move back and replaying it,
-    /// which is what keeps an eval away from every scout the sampler
-    /// turns away.
+    /// reduced move left, which is the fen the row carries; the eval is the
+    /// reducing node's own, taken for kept events alone by stepping the
+    /// staged move back and replaying it.
     #[cold]
     #[inline(never)]
     #[allow(clippy::too_many_arguments)]
@@ -719,9 +611,6 @@ impl AlphaBeta {
         entered_at: u64,
     ) {
         let cost = self.nodes - entered_at;
-        // the fields are borrowed apart rather than through `self`, which
-        // is what lets the closure step the board while the sampler is
-        // held
         let board = &mut self.board;
         let Some(ledger) = self.ledger.as_mut() else {
             return;
@@ -729,8 +618,8 @@ impl AlphaBeta {
         let key = reduction::sample_key(board.key, depth);
         ledger.event(key, || {
             let fen = board.to_fen();
-            // make and undo are exact inverses, which the debug builds
-            // assert against a recompute on every move made
+            // undo and make are exact inverses, which the debug builds
+            // assert
             board.undo_move();
             let eval = i32::from(crate::eval::eval(board));
             assert!(
@@ -763,19 +652,16 @@ impl AlphaBeta {
     }
 
     /// One node answering out of the move loop, offered to the census:
-    /// which move cut it off and what company that move cut ahead of, or
-    /// the same portrait with no cutting move when the loop ran out.
+    /// which move cut it off and what it cut ahead of, or the same portrait
+    /// with no cutting move when the loop ran out.
     ///
-    /// `cutting` carries the move that cut and whether its answer came
-    /// through the reduced scout, or none for a held node. The killers and
-    /// the history are read before `cutoff` teaches them the move, so a row
-    /// says what the node knew when it chose and not what it learned. The
-    /// evaluation is computed here, inside the closure and so for kept
-    /// events alone: the column is exact rather than a cache read, and it
-    /// is off the measured path, where forcing an eval at every node to
-    /// fill it would change the engine.
-    // cold and out of line behind a bare is_some at each call site, as
-    // `sample` is and for `sample`'s measured reason.
+    /// `cutting` is none for a held node. The killers and the history are
+    /// read before `cutoff` teaches them the move, so a row says what the
+    /// node knew when it chose. The evaluation is computed inside the
+    /// closure, for kept events alone: exact rather than a cache read, and
+    /// off the measured path.
+    // cold and out of line behind a bare is_some at each call site, for
+    // `sample`'s measured reason
     #[cold]
     #[inline(never)]
     #[allow(clippy::too_many_arguments)]
@@ -793,9 +679,6 @@ impl AlphaBeta {
         entered_at: u64,
         cutting: Option<census::Cutting<'_>>,
     ) {
-        // the fields are borrowed apart rather than through `self`, which
-        // is what lets the closure read the board and the memories while
-        // the sampler is held
         let board = &self.board;
         let ordering = &self.ordering;
         let cost = self.nodes - entered_at;
@@ -804,9 +687,8 @@ impl AlphaBeta {
         };
         let key = census::sample_key(board.key, depth);
         census.event(key, || {
-            // the memories score a quiet move and nothing else, so the
-            // history columns hold to the same line: a capture or a
-            // promotion reads 0 and is priced by its class instead
+            // the memories score quiet moves alone, so a capture or a
+            // promotion reads 0 here and is priced by its class instead
             let quiet_history = |m: &Play| {
                 if m.capture.is_none() && m.promote.is_none() {
                     Some(ordering.history_score(board.active_color, m))
@@ -828,10 +710,9 @@ impl AlphaBeta {
                     history: quiet_history(cutting.play).unwrap_or(0),
                     reduced: cutting.reduced,
                 }),
-                // the denominator is clamped where the cutting move's own
-                // score is not, so a row whose history is negative is
-                // read against nothing rather than against another
-                // negative
+                // clamped where the cutting move's own score is not, so a
+                // negative history is read against nothing rather than
+                // against another negative
                 history_max: moves
                     .iter()
                     .filter_map(quiet_history)
@@ -847,22 +728,15 @@ impl AlphaBeta {
     }
 
     /// One node a shortcut has just answered, or a shadow candidate it was
-    /// measured against, offered to the sampler.
-    ///
-    /// The fen is built inside the closure, so an event the key turns away
-    /// costs a hash and nothing else, and an engine with no sampler costs
-    /// the option check alone. The live hooks sit on a return out of a node
-    /// rather than in the loop, so neither is on a path the search takes
-    /// more than once per cutoff; the shadow hook sits beside the margin
-    /// test it watches, once per node the test reads.
-    ///
-    /// The evaluation is passed in rather than taken again here, so a row
+    /// measured against, offered to the sampler. The fen is built inside
+    /// the closure, so an event the key turns away costs a hash and nothing
+    /// else. The evaluation is passed in rather than taken again, so a row
     /// states the number the gate really read.
-    // cold and out of line, and tested with a bare is_some at each call
-    // site: inlining the sample body grew alpha_beta enough to move other
-    // code, and the moved jump tables aliased in the branch predictor for
-    // half a million extra mispredicts on a bench 5. Counted with
-    // callgrind; the option check is all the hot path keeps.
+    // cold and out of line, behind a bare is_some at each call site:
+    // inlining the sample body grew alpha_beta enough to move other code,
+    // and the moved jump tables aliased in the branch predictor for half a
+    // million extra mispredicts on a bench 5, counted with callgrind. The
+    // option check is all the hot path keeps.
     #[cold]
     #[inline(never)]
     fn sample(
@@ -874,16 +748,12 @@ impl AlphaBeta {
         beta: Score,
         eval: Score,
     ) {
-        // the fields are borrowed apart rather than through `self`, which is
-        // what lets the closure read the board while the sampler is held
         let board = &self.board;
         let Some(sampler) = self.sampler.as_mut() else {
             return;
         };
-        // after the guard, so an engine with no sampler pays for no hash.
-        // Every call site checks the option before calling, so nothing
-        // reaches the arm above today; it stays because the guard belongs
-        // here rather than in the caller's hands alone
+        // the guard stays here as well as at the call sites, so an engine
+        // with no sampler pays for no hash whoever calls
         let key = crate::residual::sample_key(board.key, kind, depth);
         sampler.event(key, || Sample {
             fen: board.to_fen(),
@@ -897,23 +767,18 @@ impl AlphaBeta {
         });
     }
 
-    /// The score at this node, with the shelter and the pawn structure taken
-    /// from the engine's memos.
-    ///
-    /// `&mut self` for the memos alone. The score is the one `eval::eval`
-    /// gives, so nothing about the tree turns on which of the two a node
-    /// asked.
+    /// The score at this node, with the memoised terms read from the
+    /// engine's caches. `&mut self` for the memos alone: the score is the
+    /// one `eval::eval` gives.
     fn eval(&mut self) -> Score {
         crate::eval::eval_cached(&self.board, &mut self.caches)
     }
 
     /// The ply the quiet memories are indexed by at this node, or none when
     /// the configuration has them off or the ply is past the killer table.
-    /// The rail bounds a full width line as well as a capture search, so a
-    /// node a search reaches stands inside the table and the second test
-    /// never fires. It is what makes the index safe here rather than at
-    /// every caller, and a node past the rail would order the way a node
-    /// did before the memories arrived rather than reach off the end.
+    /// The rail stops every line inside the table, so the second test never
+    /// fires in a search; it is what makes the index safe here rather than
+    /// at every caller.
     fn memory_ply(&self) -> Option<usize> {
         if !self.config.move_memory {
             return None;
@@ -925,10 +790,9 @@ impl AlphaBeta {
         Some(ply)
     }
 
-    /// The move that cut this node off and the moves the node made and
-    /// searched before it, offered to the quiet memories. The move has
-    /// been unmade by the time this is called, so the board says which
-    /// side played it and how far the node stands from the root.
+    /// The move that cut this node off and the moves the node searched
+    /// before it, offered to the quiet memories. Called with the move
+    /// unmade, so the board says which side played it and the node's ply.
     fn remember_cutoff<'a>(
         &mut self,
         m: &Play,
@@ -963,26 +827,24 @@ impl AlphaBeta {
     }
 
     /// The policies this engine searches under. Asked by the residuals
-    /// replay's tests, which have to be able to say that the search
-    /// answering the sampled positions is the reference and not the default.
+    /// replay's tests, which have to say the search answering the sampled
+    /// positions is the reference and not the default.
     pub fn config(&self) -> SearchConfig {
         self.config
     }
 
     /// How much of the search's use of the transposition table depended on
-    /// the path taken rather than on the position. A measurement, not a
-    /// result: see the graph history interaction notes on the counters.
+    /// the path taken rather than on the position: see the graph history
+    /// notes on the counters.
     pub fn ghi(&self) -> GhiCounters {
         self.transpositions.ghi()
     }
 
-    /// Have the table keep the full key of every entry, so that what its
-    /// thirty two bit signature costs can be counted rather than guessed at.
-    /// The search is the same search either way, and the table starts empty:
-    /// see `TranspositionTable::audit_signatures`, which this is.
-    ///
-    /// False if there was not the memory for the keys, in which case nothing
-    /// is counted and the caller decides what to do about it.
+    /// Have the table keep the full key of every entry, so what its thirty
+    /// two bit signature costs can be counted: see
+    /// `TranspositionTable::audit_signatures`. The search is the same
+    /// either way, and the table starts empty. False if there was not the
+    /// memory for the keys, in which case nothing is counted.
     #[must_use]
     pub fn audit_signatures(&mut self) -> bool {
         self.transpositions.audit_signatures()
@@ -1000,10 +862,10 @@ impl AlphaBeta {
         self.quiescence_nodes
     }
 
-    /// Cooperative limit check. The limits say when to look at them again,
-    /// which is every few thousand nodes for the clock and the node budget
-    /// itself, exactly. The count is incremented after this is asked, so a
-    /// budget of n is n nodes visited.
+    /// Cooperative limit check. The limits say when to look at them again:
+    /// every few thousand nodes for the clock, and the node budget itself,
+    /// exactly. The count is incremented after this is asked, so a budget
+    /// of n is n nodes visited.
     fn poll_deadline(&mut self) -> Result<(), Aborted> {
         if self.nodes < self.next_check {
             return Ok(());
@@ -1011,9 +873,9 @@ impl AlphaBeta {
         self.check_limits()
     }
 
-    /// The slow half of poll_deadline, kept out of the search's own code:
-    /// reading the clock and arming the next check happen once in thousands
-    /// of nodes, and inlined at every poll they only made the hot loop larger.
+    /// The slow half of `poll_deadline`: reading the clock and arming the
+    /// next check happen once in thousands of nodes, and inlined at every
+    /// poll they only made the hot loop larger.
     #[cold]
     #[inline(never)]
     fn check_limits(&mut self) -> Result<(), Aborted> {
@@ -1021,9 +883,8 @@ impl AlphaBeta {
             return Err(Aborted);
         }
         // relaxed: the flag is the whole of what the two threads share, so
-        // there is nothing for it to publish and nothing to order it
-        // against. A few thousand nodes of latency is well under the
-        // millisecond an interface waiting on a bestmove can notice
+        // there is nothing to order it against, and a few thousand nodes
+        // of latency is well under what an interface can notice
         if self
             .stop
             .as_ref()
@@ -1046,18 +907,14 @@ impl AlphaBeta {
     }
 
     /// What a capture search makes of the position this engine holds, over
-    /// the open window.
+    /// the open window and under no limits, so what comes back is a value
+    /// and the search cannot be interrupted. Whether the shortcuts inside
+    /// it are on is the engine's configuration.
     ///
-    /// A door for the laboratory and not for the search. The tuner's quiet
-    /// test is the one caller: a position is kept when this comes back at
-    /// the static evaluation, so the side to move has nothing to win by
-    /// capturing. `quiescence` itself stays private, because a caller free
-    /// to choose the window could be handed a bound and read it as a value.
-    ///
-    /// The window is open and the limits unlimited, so what comes back is a
-    /// value and the search behind it cannot be interrupted. Whether the
-    /// shortcuts inside it are on is the engine's configuration, which is
-    /// the caller's to choose and the reference's in the one caller here.
+    /// A door for the laboratory, not the search: the tuner's quiet test
+    /// keeps a position when this comes back at the static evaluation.
+    /// `quiescence` itself stays private, because a caller free to choose
+    /// the window could be handed a bound and read it as a value.
     pub(crate) fn quiescence_value(&mut self) -> Score {
         self.limits = Limits::unlimited();
         self.stop = None;
@@ -1071,13 +928,9 @@ impl AlphaBeta {
     }
 
     fn quiescence(&mut self, mut alpha: Score, beta: Score) -> Result<Value, Aborted> {
-        // quiescence looks at captures and promotions, and evasions when in
-        // check, and never checks for a repetition: a capture cannot repeat a
-        // position, and the quiet moves here are evasions, so a cycle needs a
-        // line of nothing but mutual quiet checks, which MAX_PLY bounds and
-        // real positions do not sustain. That bound is the rail and not a
-        // budget: what ends a capture search is running out of captures, and
-        // the horizon gets the same resolution at whatever depth it sits
+        // no repetition check: a capture cannot repeat a position and the
+        // only quiet moves here are evasions, so a cycle needs a line of
+        // nothing but mutual quiet checks, which the rail bounds
         self.selective_depth = self.selective_depth.max(self.board.line_ply as u8);
         if self.board.line_ply >= MAX_PLY.into() {
             return Ok(Value::clean(self.eval()));
@@ -1087,18 +940,14 @@ impl AlphaBeta {
         self.nodes += 1;
         self.quiescence_nodes += 1;
 
-        // Standing pat is declining to move, which only the side not in check
-        // may do: the static eval is no floor for a side that has to get out
-        // of check and may have no quiet way to. The full search never enters
-        // here in check, the check extension searches those nodes full width,
-        // so a check seen here was delivered by a capture searched here.
-        // fail soft: what leaves this node is the best score actually seen,
-        // not the window edge it crossed. A caller learns how far past its
-        // window the position landed, and the table stores the tighter bound
+        // standing pat is declining to move, which a side in check cannot,
+        // so its static eval is no floor. The full search never enters here
+        // in check (the extension searches those nodes full width), so a
+        // check seen here was delivered by a capture searched here.
+        // fail soft: what leaves is the best score seen, not the window edge
         let mut best = Score::MIN + 1;
         let in_check = self.board.in_check();
-        // kept past the stand pat for the margin below: a side in check has
-        // none, which is what exempts its evasions from the margin
+        // none in check, which is what exempts evasions from the margin below
         let standing = if in_check { None } else { Some(self.eval()) };
         if let Some(score) = standing {
             if score >= beta {
@@ -1112,9 +961,7 @@ impl AlphaBeta {
 
         let mut best_move: Option<Play> = None;
         let old_alpha = alpha;
-        // a probe at depth zero: any stored bound is deep enough here, so
-        // quiescence takes the cutoffs the table can prove, under the same
-        // taint refusal the full width search applies
+        // a probe at depth zero: any stored bound is deep enough here
         let pv_play = match self.transpositions.probe(
             &self.board,
             alpha,
@@ -1127,62 +974,47 @@ impl AlphaBeta {
             Probe::Order(play) => Some(play),
             Probe::Miss => None,
         };
-        // in check the position is not quiet whatever the material says, so
-        // every evasion is searched, quiet or not. Most of what full width
-        // generation returns cannot answer a check and would only be refused
-        // by make_move, so it is dropped before it is even sorted
+        // in check every evasion is searched, quiet or not
         let mut moves = if in_check {
             self.board.evasions()
         } else {
             self.board.generate_captures()
         };
-        // quiescence orders captures and evasions, which is where the quiet
-        // memories have nothing to say, so it never reads them and never
-        // writes them either. What comes back is the front, the table's
-        // move and the captures the swap prices as winning or even, and
-        // every capture behind it is a losing one. Read now, because the
-        // sort's keys do not survive the recursion below
+        // no memories here: they say nothing about captures or evasions.
+        // `front` is the table's move and the captures the swap prices as
+        // winning or even; every capture behind it is a losing one. Read
+        // now, because the sort's keys do not survive the recursion below
         let front = self.ordering.order(&self.board, &mut moves, pv_play, None);
 
-        // quiescence itself never reads a draw, but a search told to trust
-        // tainted scores can cut on a tainted entry inside a capture tree,
-        // and that taint travels up through here like anywhere else
+        // quiescence never reads a draw itself, but a search trusting
+        // tainted scores can cut on one inside a capture tree
         let mut taint = Taint::default();
         let mut found_legal_move = false;
         for (i, m) in moves.iter().enumerate() {
-            // two skips, guesses about the capture tree that the reference
-            // does not make, under one set of exemptions. Promotions are
-            // exempt, because the piece that arrives is not the pawn that
-            // left and the swap prices it as the pawn; an evasion is exempt
-            // because a side in check has no standing eval to measure from
-            // and must answer the check; and a mate window alpha is exempt
-            // because a static eval cannot come near it, so against one the
-            // margin's arithmetic would skip every capture, the mating one
-            // included. The stand pat lifts alpha to the static eval, so
-            // alpha is inside the window only when it arrived there
-            // positive: a mate is already in hand and the question is
-            // whether a capture here mates faster. That is the mate the
-            // exemption rescues from the losing capture skip; a sacrifice
-            // that would find the first mate, with alpha nowhere near one,
-            // is skipped like any other capture the swap prices as losing
+            // two skips the reference does not make, under one set of
+            // exemptions. A promotion is exempt because the swap prices the
+            // arriving piece as the pawn that left. An evasion is exempt
+            // because a side in check has no standing eval to measure from.
+            // A mate window alpha is exempt because a static eval cannot
+            // come near it, so the margin's arithmetic would skip every
+            // capture, the mating one included; the stand pat lifts alpha
+            // to the eval, so alpha is inside the window only when it
+            // arrived there positive, a mate already in hand. A sacrifice
+            // that would find a first mate, with alpha nowhere near one, is
+            // skipped like any other losing capture
             if let (Some(standing), Some(captured)) = (standing, m.capture) {
                 if !is_mate(alpha) && m.promote.is_none() {
-                    // the delta margin: a capture that leaves the standing
-                    // eval short of alpha even with its piece counted as
-                    // fully won is expected to be worth less than alpha,
-                    // which the stand pat already said of the node
+                    // a capture short of alpha with its piece counted as
+                    // fully won is expected to be worth less than alpha
                     if self.config.delta_margin
                         && standing + crate::eval::material(captured) as Score + DELTA_MARGIN
                             < alpha
                     {
                         continue;
                     }
-                    // the losing captures: every capture the sort put
-                    // behind the front is one the swap prices as losing, so
-                    // the class is read off the order rather than from a
-                    // second swap. The swap already says what the exchange
-                    // comes to, and searching it would spend nodes finding
-                    // out
+                    // every capture behind the front is one the swap priced
+                    // as losing, so the class is read off the order rather
+                    // than from a second swap
                     if self.config.see_pruning && i >= front {
                         continue;
                     }
@@ -1215,8 +1047,8 @@ impl AlphaBeta {
         }
 
         if in_check && !found_legal_move {
-            // checkmate, at the end of a capture sequence: report it as the
-            // search does, so the line that forces it reads as the mate it is
+            // checkmate at the end of a capture sequence, scored as the full
+            // search scores one
             return Ok(Value::mated(self.board.line_ply));
         }
 
@@ -1237,34 +1069,24 @@ impl AlphaBeta {
     /// What can answer a full width node before a move of it is searched:
     /// the margin, then the pass. Each claims the position already stands
     /// above beta, the margin from the static eval alone and the pass from
-    /// a reduced search, which is dearer and reaches where a margin
-    /// cannot. Both are guesses about the tree, so the reference makes
-    /// neither. Nothing is stored on either: a transposition entry names
-    /// the play it was reached by, and no move was searched here to name
-    /// one.
+    /// a reduced search, which is dearer and reaches where a margin cannot.
+    /// Nothing is stored on either: an entry names the play it was reached
+    /// by, and no move was searched here.
     ///
-    /// The reasoning both stand on is quiescence's standing pat one ply
-    /// higher up: the side to move is under no obligation to make things
-    /// worse, so its static eval is a floor on what it can get. The three
-    /// gates they share are where that floor gives way. A side answering a
-    /// check cannot decline to move, so it has no floor. A side down to
-    /// pawns and a king is the material zugzwang happens to, where every
-    /// move is worse than the decline the rules refuse it. And a beta
-    /// belonging to a mate the other side is proving is cleared by every
-    /// eval, so a cutoff against one would leave the subtree holding a
-    /// faster mate unsearched; the positive half of that gate is belt and
-    /// braces, since material bounds every eval far below the window, and
-    /// it stands so the gate stays right if the eval ever grows terms that
-    /// reach higher. The eval is read once, under those gates, and serves
-    /// both shortcuts.
+    /// Both rest on quiescence's standing pat: the side to move need not
+    /// make things worse, so its static eval is a floor. The three shared
+    /// gates are where that floor gives way. A side in check cannot decline
+    /// to move. A side down to pawns and a king is the material zugzwang
+    /// happens to. And a beta inside the mate window is cleared by every
+    /// eval, so a cutoff against one would leave a faster mate unsearched;
+    /// the positive half of that gate is redundant while material bounds
+    /// the eval, and stands in case the eval grows terms that reach higher.
     ///
     /// A `Some` answers the node. A pass that failed answers nothing but
-    /// read whatever it read on the way, which it leaves in the node's
-    /// taint before handing back.
+    /// leaves whatever it read in the node's taint.
     ///
     /// Alpha is read by neither shortcut. It is here for the sampler, which
-    /// records what kind of window the node was asked under, and it costs a
-    /// register on a call that already takes five.
+    /// records the window the node was asked under.
     fn shortcuts(
         &mut self,
         alpha: Score,
@@ -1275,36 +1097,25 @@ impl AlphaBeta {
         taint: &mut Taint,
     ) -> Result<Option<Value>, Aborted> {
         let margin = self.config.reverse_futility && depth <= REVERSE_FUTILITY_MAX_DEPTH;
-        // a pass is refused twice in a row, or the search would be
-        // answering a position from a line neither side played anything
-        // in. Nothing reaches that gate as the eval gate below stands: a
-        // node passes only with its eval at or above beta, the pass under
-        // it is searched with the window turned round, and the eval turns
-        // round with it, so the second node never asks. The rule stands
-        // ready for the day that gate is dropped or given a margin. The
-        // depth gate leaves the reduction a search to answer with
+        // no pass directly under a pass, or the search would answer a
+        // position from a line neither side moved in. Unreachable while the
+        // eval gate below stands (a node passes only with its eval at or
+        // above beta, and the window and the eval turn round under it) and
+        // kept for the day that gate is dropped or given a margin
         let pass = self.config.null_move && can_null && depth >= NULL_MOVE_MIN_DEPTH;
         if (!margin && !pass) || in_check || !self.board.has_non_pawn_material() || is_mate(beta) {
             return Ok(None);
         }
         let eval = self.eval();
 
-        // What the margin claims is a lower bound, and `eval - margin` is
-        // it: the worst the assumption allows, and what has to clear beta
-        // for the cutoff to be one. The margin is what the opponent is
-        // allowed to win back over the plies left to search, and that part
-        // is the guess. Fail soft returns the bound that was proved rather
-        // than beta; returning `eval` would return a bound nothing here
-        // argues for, since the search never looked for a line that keeps
-        // the whole eval. The value is clean: a static eval is a fact
-        // about the position and consulted no path to reach it
+        // what the margin proves is a lower bound, `eval - margin`, and fail
+        // soft returns that rather than beta or the whole eval, which
+        // nothing here argues for. Clean: a static eval consulted no path
         if margin {
             let floor = eval.saturating_sub(REVERSE_FUTILITY_MARGIN * depth as Score);
-            // the shadow row: every candidate the margin test is about to
-            // read, offered whether or not it fires. The fired rows alone
-            // all stood a whole margin above beta, so the region a tighter
-            // margin would newly fire on has no data without these. Nothing
-            // is answered here; the test below runs exactly as it would have
+            // the shadow row: every candidate the margin test reads, fired
+            // or not, since the fired rows alone say nothing about the
+            // region a tighter margin would newly fire on
             if self.sampler.is_some() && eval >= beta {
                 self.sample(Shortcut::ShadowFutility, depth, floor, alpha, beta, eval);
             }
@@ -1316,11 +1127,9 @@ impl AlphaBeta {
             }
         }
 
-        // The pass spends a reduced search, so it is asked for only with
-        // the eval already above beta, where what is spent is spent on
-        // proving something that looks true. The window is a zero one: the
-        // question is only whether a pass beats beta, and that is the
-        // cheapest way to ask it
+        // the pass spends a reduced search, so it is asked for only with
+        // the eval already above beta, and over a zero window: the question
+        // is only whether a pass beats beta
         if pass && eval >= beta {
             self.board.make_null_move();
             let result = self.alpha_beta(-beta, -beta + 1, depth - 1 - NULL_MOVE_REDUCTION, false);
@@ -1329,14 +1138,13 @@ impl AlphaBeta {
             self.board.undo_null_move();
             let value = -result?;
             if value.score >= beta {
-                // a mate found through a pass is not a mate. The pass is not
-                // a move either side has, so what was proved is that the
-                // position is very good and not that it is won, and the
-                // score is held below the window a caller reads mates in
+                // a mate found through a pass is not a mate: the pass is
+                // not a move either side has, so what was proved is that
+                // the position is very good, and the score is held under
+                // the window a caller reads mates in
                 let score = below_the_mate_window(value.score);
                 // the board is back from the pass, so the fen the sampler
-                // prints here is the node itself, and the eval handed to it
-                // is the one this node's gate read
+                // prints is the node itself
                 if self.sampler.is_some() {
                     self.sample(Shortcut::NullMove, depth, score, alpha, beta, eval);
                 }
@@ -1349,16 +1157,13 @@ impl AlphaBeta {
     }
 
     /// One child of a full width node, or nothing when the move is not
-    /// legal here: make the move, search what it leaves, and answer from
-    /// this side of the board. The undo comes before the abort can
-    /// propagate, or the board would keep the aborted line; propagating is
-    /// what keeps the meaningless score of an aborted frame away from
-    /// every store above. The full width search enters every child through
-    /// here, so the window discipline in `windowed` is written once rather
-    /// than at three sites, and every caller says only whether its move is
-    /// the node's first, how many plies shallower its scout runs, with
-    /// zero meaning no scout at all, and what the ledger has staged about
-    /// the move, or nothing.
+    /// legal here. The undo comes before the abort can propagate, or the
+    /// board would keep the aborted line; propagating is what keeps an
+    /// aborted frame's meaningless score away from every store above. Every
+    /// child of the full width search enters through here, so the window
+    /// discipline in `windowed` is written once; `reduction` is how many
+    /// plies shallower the scout runs, zero for no scout, and `staged` is
+    /// what the ledger has about the move, or nothing.
     // one argument past clippy's limit, which is the staging travelling as
     // a parameter rather than as a field of the engine.
     #[inline(always)]
@@ -1383,22 +1188,16 @@ impl AlphaBeta {
 
     /// Principal variation search: the recursion behind one made move. The
     /// node's first move is searched with the window as it stands. Every
-    /// later move is asked a cheaper question first, a zero width search at
-    /// the same depth, which can only say whether the move beats alpha; one
-    /// that does, at a node whose own window is wider than the zero one, is
-    /// searched again with the full window for the score the node needs. A
-    /// zero width node never asks twice, since its window is the re-search
-    /// window already. Every pass negates through the same call, so a mate
-    /// score is adjusted per ply the same way on each.
+    /// later move is probed with a zero width search first, which can only
+    /// say whether it beats alpha; one that does, at a node whose window is
+    /// wider than the zero one, is searched again with the full window. A
+    /// zero width node never asks twice.
     ///
-    /// A reduced move is asked the cheapest question of all before any of
-    /// that: the same zero width search, `reduction` plies shallower, one
-    /// for the flat reduction and two where the deep reduction fires. A
-    /// scout that fails low answers for the move, which is the late move
-    /// reduction's guess; one that fails high has earned the full depth,
-    /// and the move goes on to the probe and the proof as an unreduced
-    /// move does. The windows are decided here and nowhere else, so the
-    /// scout is a stage in front of the probe rather than a copy of it.
+    /// A reduced move is scouted before any of that: the same zero width
+    /// search, `reduction` plies shallower. A scout that fails low answers
+    /// for the move, which is the late move reduction's guess; one that
+    /// fails high goes on to the probe and the proof as an unreduced move
+    /// does.
     ///
     /// A body of its own rather than `search_child`'s so that an abort from
     /// any pass runs through the one undo there.
@@ -1438,20 +1237,19 @@ impl AlphaBeta {
             if scout.score <= alpha {
                 return Ok(scout);
             }
-            // the scout's fail high is what asked for the full depth, so
-            // whatever it depended on, the passes below do too
+            // the scout's fail high asked for the full depth, so whatever
+            // it depended on, the passes below do too
             tainted = scout.tainted;
         }
         let probe = -self.alpha_beta(-alpha - 1, -alpha, depth - 1, true)?;
-        // `alpha + 1 >= beta` is the window being the zero one, spelt
-        // without the subtraction: `beta - alpha` overflows a Score when
-        // the window is the root's
+        // `alpha + 1 >= beta` is the zero window, spelt without the
+        // subtraction: `beta - alpha` overflows a Score at the root's window
         if probe.score <= alpha || alpha + 1 >= beta {
             return Ok(Value::with_taint(probe.score, probe.tainted || tainted));
         }
         let proof = -self.alpha_beta(-beta, -alpha, depth - 1, true)?;
-        // the probe's fail high is what asked for the second search, so
-        // whatever the probe's answer depended on, this one does too
+        // the probe's fail high asked for the proof, so the proof depends
+        // on whatever the probe did
         Ok(Value::with_taint(
             proof.score,
             proof.tainted || probe.tainted || tainted,
@@ -1460,13 +1258,12 @@ impl AlphaBeta {
 
     /// A fail high at a full width node: the move that proved it goes to
     /// the quiet memories with the moves the node searched before it and,
-    /// when the taint policy allows, to the table, and what comes back is
-    /// the node's answer. The one place a full width cutoff is acted on,
-    /// which is where the next thing a cutoff should feed lands.
+    /// when the taint policy allows, to the table. The one place a full
+    /// width cutoff is acted on.
     ///
-    /// `tried` is the node's own moves, not the whole list: what the
-    /// history marks down is what the node asked and got nothing from.
-    /// The captures among them are the memories' to pass over.
+    /// `tried` is the moves the node searched, not the whole list: what the
+    /// history marks down is what the node asked and got nothing from. The
+    /// captures among them are the memories' to pass over.
     fn cutoff<'a>(
         &mut self,
         m: &Play,
@@ -1484,11 +1281,10 @@ impl AlphaBeta {
         value
     }
 
-    /// One full width node. `can_null` is false only under a pass, which is
-    /// how two of them in a row are refused: a position neither side has
-    /// moved in is not one a reduced search says anything about. A parameter
-    /// rather than a field toggled around the call, so that reading the
-    /// recursion says which nodes may pass.
+    /// One full width node. `can_null` is false only directly under a
+    /// pass: a position neither side has moved in is not one a reduced
+    /// search says anything about. A parameter rather than a field toggled
+    /// around the call, so reading the recursion says which nodes may pass.
     fn alpha_beta(
         &mut self,
         mut alpha: Score,
@@ -1499,22 +1295,18 @@ impl AlphaBeta {
         self.poll_deadline()?;
         self.selective_depth = self.selective_depth.max(self.board.line_ply as u8);
         self.nodes += 1;
-        // what the census's cost column is measured from: nodes spent under
-        // this node are the counter at its answer less the counter here. A
-        // read of a field, no branch, so the disarmed search is unchanged
+        // what the census's cost column is measured from; read
+        // unconditionally so the disarmed search is unchanged
         let entered_at = self.nodes;
 
-        // every node here sits below the root, which search() owns: a
-        // repetition there is not a finished game because the engine still has
-        // to move, but from here on it is a draw either side can take
+        // every node here sits below the root, so a repetition is a draw
+        // either side can take; at the root the engine still has to move
         let in_check = self.board.in_check();
         if self.board.fifty_move_expired() {
-            // a mate delivered by the hundredth half move is a mate: the game
-            // ends on it, before the side mated has a move on which to claim
-            // the draw. Only asked here and not of a repetition, which cannot
-            // be a mate since the position would have ended the game the
-            // first time it came up, so the cost stays off the lines that
-            // repeat
+            // a mate delivered by the hundredth half move is a mate: the
+            // game ends on it before the side mated can claim the draw. Not
+            // asked of a repetition, which cannot be a mate (the position
+            // would have ended the game the first time it came up)
             if in_check && !self.board.has_legal_move() {
                 return Ok(Value::mated(self.board.line_ply));
             }
@@ -1525,17 +1317,13 @@ impl AlphaBeta {
         if self.board.has_repeated() {
             return Ok(Value::tainted(0));
         }
-        // The extension below holds a node's depth where it was, so a
-        // falling depth is not what ends a line of checks. What can end one
-        // is the repetition and fifty move rules, and neither is bound to
-        // fire first: a chain that captures keeps resetting the counter,
-        // and one that never repeats is never caught by the other. So a
-        // line can reach the ply a mate score stops being told from an eval
-        // by, and the ring a repetition is read out of, and the rail stops
-        // it here instead. The answer is the one quiescence gives at its
-        // own rail: a static eval, clean because it is a fact about the
-        // position. It gives up the mate a node standing here may be in,
-        // which is the trade the capture search already makes.
+        // the check extension holds a node's depth where it was, and a line
+        // of checks that keeps capturing and never repeats is ended by
+        // neither draw rule, so the rail ends it here, before the ring a
+        // repetition is read from and the ply a mate score stops being told
+        // from an eval by. The answer is quiescence's at its own rail: a
+        // static eval, clean because it consulted no path. It gives up the
+        // mate a node standing here may be in
         if self.board.line_ply >= MAX_PLY as usize {
             return Ok(Value::clean(self.eval()));
         }
@@ -1551,9 +1339,8 @@ impl AlphaBeta {
         let old_alpha = alpha;
         let mut found_legal_move = false;
         let mut best_move: Option<Play> = None;
-        // fail soft, as in quiescence: the node answers with the best score
-        // it saw, and a cutoff stores that score, a floor at least as tight
-        // as beta and usually tighter
+        // fail soft, as in quiescence: a cutoff stores the best score seen,
+        // a floor at least as tight as beta
         let mut best = Score::MIN + 1;
         let pv_play = match self.transpositions.probe(
             &self.board,
@@ -1563,32 +1350,25 @@ impl AlphaBeta {
             self.config.taint.refuses_tainted_cutoffs(),
             self.config.taint.guards_rule50(),
         ) {
-            // whatever the stored score depended on, whoever takes it now
-            // depends on too, which is what the value carries
             Probe::Cut(value) => return Ok(value),
             Probe::Order(play) => Some(play),
             Probe::Miss => None,
         };
 
-        // the shortcuts, after the table has had its say
         if let Some(value) = self.shortcuts(alpha, beta, depth, in_check, can_null, &mut taint)? {
             return Ok(value);
         }
 
-        // The table's move sorts ahead of everything else below, and when there
-        // is one it takes the cutoff nine times in ten. Searching it before
-        // generating means the nodes it cuts never generate or sort at all.
-        // The order is the one the sort would have produced either way, so the
-        // tree searched is unchanged.
+        // the table's move sorts ahead of everything else, and when there
+        // is one it takes the cutoff nine times in ten, so it is searched
+        // before the rest are generated: the nodes it cuts never generate
+        // or sort at all, and the tree searched is unchanged
         let mut tt_tried: Option<Play> = None;
         if let Some(tt) = pv_play {
             if self.board.is_pseudo_legal(&tt) {
                 tt_tried = Some(tt);
                 if let Some(value) = self.search_child(&tt, alpha, beta, depth, true, 0, None)? {
                     found_legal_move = true;
-                    // the table's move is searched before the rest are even
-                    // generated, so it taints this node the same way any other
-                    // child would
                     taint.absorb(value);
                     let tt_score = value.score;
                     if tt_score > best {
@@ -1597,10 +1377,8 @@ impl AlphaBeta {
                     }
                     if tt_score > alpha {
                         if tt_score >= beta {
-                            // the census sees the node before the cutoff
-                            // teaches the memories, and sees the list the
-                            // node holds, which here is none: nothing was
-                            // generated
+                            // before the cutoff teaches the memories; the
+                            // list is empty because nothing was generated
                             if self.census.is_some() {
                                 self.census_event(
                                     depth,
@@ -1620,11 +1398,9 @@ impl AlphaBeta {
                                     }),
                                 );
                             }
-                            // a cutoff is a cutoff wherever it is proved, so
-                            // the table's move earns its killer slot here as
-                            // any other move does in the loop below. Nothing
-                            // was searched before it, so there is nothing to
-                            // mark down
+                            // the table's move earns its killer slot as any
+                            // other cutting move does; nothing was searched
+                            // before it, so there is nothing to mark down
                             return Ok(self.cutoff(&tt, &[], taint, tt_score, depth));
                         }
                         alpha = tt_score;
@@ -1633,9 +1409,8 @@ impl AlphaBeta {
             }
         }
 
-        // whether the table's move was made and searched above, which is
-        // what its bit in the list below stands on. Read here because the
-        // loop's own moves move `found_legal_move` past it
+        // read before the loop moves `found_legal_move` past it: the
+        // table's move's bit in the list below stands on this
         let tt_searched = found_legal_move;
 
         let mut moves = if in_check {
@@ -1646,31 +1421,22 @@ impl AlphaBeta {
         let ply = self.memory_ply();
         let front = self.ordering.order(&self.board, &mut moves, pv_play, ply);
 
-        // how many moves this node has searched, which is what makes a
-        // quiet move late. The table's move, when it was searched, is the
-        // first of them
+        // how many moves the node has searched, which is what makes a quiet
+        // move late; the table's move, when searched, is the first
         let mut searched = usize::from(found_legal_move);
-        // which places in the list the node made and searched, which is
-        // what the history marks down under a cutoff. A move the model
-        // skipped or one that turned out illegal has no bit: neither was
-        // asked, so neither answered
+        // which places the node made and searched, the history's malus
+        // under a cutoff. A move the model skipped or one that turned out
+        // illegal has no bit
         let mut made = Searched::default();
-        // whether the second stage ever ran here, read by the census: the
-        // seam is a bool beside the call rather than a question the
-        // ordering is asked later
+        // whether the second stage ran here, read by the census
         let mut quiets_scored = false;
-        // the two dear features, each computed by the first move that needs
-        // it here and read back for the rest: the static eval by the first
-        // move the gate scores, the history denominator by the first move
-        // the gate scores or the ledger stages. A node no move reaches the
-        // gate at and nothing stages at pays for neither. Locals rather
-        // than fields of the node facts below, which are built afresh for
-        // each move
+        // the two dear features, computed by the first move that needs
+        // them and read back for the rest; locals rather than fields of
+        // the node facts below, which are built afresh for each move
         let mut eval: Option<i64> = None;
         let mut history_max: Option<i32> = None;
-        // what the node's table probe gave it, which the decision reads and
-        // both recorders print. Settled for the node: the probe and the
-        // table's move are behind it
+        // what the node's table probe gave it, settled here: the probe and
+        // the table's move are behind it
         let tt = census::Table::of(pv_play.is_some(), tt_tried.is_some());
         for i in 0..moves.len() {
             // the front did not cut this node off, so the rest of the list
@@ -1684,8 +1450,8 @@ impl AlphaBeta {
             }
             let m = &moves[i];
             if tt_tried == Some(*m) {
-                // searched before the list existed, so this is where its
-                // place in the list is known and its bit can be set
+                // searched before the list existed; this is where its place
+                // in the list is known
                 if tt_searched {
                     made.mark(i);
                 }
@@ -1708,7 +1474,6 @@ impl AlphaBeta {
             let verdict = late_move::decide(&self.deciding(), &mut node, m, searched);
             let reduction = match verdict {
                 late_move::Verdict::Skip => {
-                    // the deadest band is not searched at all. The move was
                     // never made, so whether it was even legal is never
                     // learned; skipping an illegal move is a no-op, since
                     // the loop would have passed over it anyway. `searched`
@@ -1722,13 +1487,10 @@ impl AlphaBeta {
                 }
                 late_move::Verdict::Scout(reduction) => reduction,
             };
-            // whether the move was reduced, which the census's row carries:
-            // a scout in front of the move is what the reduction is, so the
-            // plies the verdict asked for say it
+            // read by the census's row
             let reduced = reduction > 0;
-            // the ledger's staged half: what the node knows about the move
-            // it is about to scout, built only while the ledger is armed
-            // and handed to the scout rather than left on the engine
+            // the ledger's staged half, carried to the scout as a parameter
+            // so the reduced moves inside it cannot mistake it for their own
             let staged = if reduced && self.ledger.is_some() {
                 Some(self.staged_reduction(m, searched, &mut node))
             } else {
@@ -1754,8 +1516,6 @@ impl AlphaBeta {
                 searched,
                 "a bit for every move made and searched, and for no other"
             );
-            // a value built from a tainted child is tainted, whether or not
-            // it turns out to be the best one here
             taint.absorb(value);
             let score = value.score;
             if score > best {
@@ -1764,9 +1524,8 @@ impl AlphaBeta {
             }
             if score > alpha {
                 if score >= beta {
-                    // before the cutoff below teaches the memories, so the
-                    // row reads the killers and the history the node chose
-                    // under
+                    // before the cutoff teaches the memories, so the row
+                    // reads what the node chose under
                     if self.census.is_some() {
                         self.census_event(
                             depth,
@@ -1786,9 +1545,8 @@ impl AlphaBeta {
                             }),
                         );
                     }
-                    // the moves this node asked before the one that
-                    // answered: the malus's population, captures and all,
-                    // which the memories pass over
+                    // the moves searched before the one that answered,
+                    // captures and all, which the memories pass over
                     let tried = moves[..i]
                         .iter()
                         .enumerate()
@@ -1800,9 +1558,8 @@ impl AlphaBeta {
             }
         }
 
-        // the loop ran out: the held half of the census, recorded at the
-        // same rate, since a cut-only stream reproduces the very censoring
-        // the census exists to measure
+        // the held half of the census, recorded at the same rate: a
+        // cut-only stream would reproduce the censoring the census measures
         if self.census.is_some() {
             self.census_event(
                 depth,
@@ -1846,47 +1603,42 @@ impl AlphaBeta {
         AlphaBeta::with_table_bytes(board, DEFAULT_TABLE_BYTES)
     }
 
-    /// The root loop: the one node whose answer must include a play, which is
-    /// why it runs here rather than in alpha_beta. The root probes the
-    /// transposition table to order moves and stores its entry when done, but
-    /// never takes a stored score in place of searching: a stored score can
-    /// come from a line whose repetition and fifty move context differ from
-    /// the game being played, and the answer must not depend on one.
+    /// One fixed depth search of the root, the one node whose answer must
+    /// include a play. The root probes the table to order moves and stores
+    /// its entry when done, but never takes a stored score in place of
+    /// searching: a stored score can come from a line whose repetition and
+    /// fifty move context differ from the game being played.
     pub fn search(&mut self, depth: u8) -> SearchOutcome {
         self.transpositions.new_search();
         self.ordering.forget();
         self.search_within(depth, Limits::unlimited())
     }
 
-    /// One fixed depth search under the limits given for it. The deepening
-    /// loop hands each iteration its own, which is how depth one runs with
-    /// none.
+    /// One fixed depth search under the limits given. The deepening loop
+    /// hands each iteration its own, which is how depth one runs with none.
     ///
-    /// The caller owns the table's generation. `search` and the deepening
-    /// loop each start one with `new_search`, so that however many
-    /// iterations follow, what they store belongs to the one search and ages
-    /// together from the next. Calling this on its own skips that, and a
-    /// table whose generation never moves keeps every entry looking current:
-    /// nothing goes stale and the oldest entries are never the ones given up.
-    /// The quiet memories are the caller's on the same terms, and a search
-    /// asked for through here keeps whatever the search before it learned.
+    /// The caller owns the table's generation and the quiet memories.
+    /// `search` and the deepening loop each start a generation with
+    /// `new_search`, so what their iterations store ages together from the
+    /// next search; a caller that skips that leaves every entry looking
+    /// current, so nothing goes stale and the oldest entries are never the
+    /// ones given up. A search through here keeps whatever the memories
+    /// learned before it.
     pub fn search_within(&mut self, depth: u8, limits: Limits) -> SearchOutcome {
-        // nothing outside stops a search asked for directly
         self.search_root(depth, limits, None)
     }
 
-    /// The body of one fixed depth search. Everything that may interrupt
-    /// it arrives in the signature (the limits it spends, and the flag
-    /// that is the one interrupter from outside), and the prologue, not
-    /// the caller, writes the field the poll reads.
+    /// The body of one fixed depth search. Everything that may interrupt it
+    /// arrives in the signature, and the prologue, not the caller, writes
+    /// the fields the poll reads.
     fn search_root(
         &mut self,
         mut depth: u8,
         limits: Limits,
         stop: Option<Arc<AtomicBool>>,
     ) -> SearchOutcome {
-        // held to the rail here and not only at the interface, so a caller
-        // of the library cannot ask the check extension below to overflow
+        // held to the rail here and not only at the interface, so a library
+        // caller cannot ask the check extension below to overflow
         depth = depth.min(MAX_PLY);
         self.limits = limits;
         self.stop = stop;
@@ -1911,20 +1663,17 @@ impl AlphaBeta {
         let mut taint = Taint::default();
 
         // the entry here is the one the last iteration answered with, stored
-        // past the depth contest, and `MoveOrdering::order` puts the table's
-        // move ahead of every other. So a deepening search tries the previous
-        // depth's best first, which is what lets an aborted iteration's best
-        // replace it: see the Aborted arm of iterative_deepening_search
+        // past the depth contest, and `order` puts the table's move first.
+        // So a deepening search tries the previous depth's best first,
+        // which is what lets an aborted iteration's best replace it: see
+        // the Aborted arm of iterative_deepening_search
         let pv_play = self.transpositions.ordering_play(&self.board);
         let mut moves = self.board.generate_moves();
-        // the root orders as it always has: the swap below reasons about
-        // this list, and a killer moving a quiet move up it would be one
-        // more thing that reasoning has to hold for
+        // no memories at the root: the swap reasons about this order
         self.ordering.order(&self.board, &mut moves, pv_play, None);
-        // the soundness of replacing a completed answer with an aborted
-        // iteration's rests on that ordering, so a change that breaks it,
-        // say a root bonus outbidding the table move, fails here rather
-        // than silently answering with a move never compared to the old one
+        // the swap's soundness rests on that ordering, so a change that
+        // breaks it (a root bonus outbidding the table move, say) fails
+        // here rather than answering with a move never compared to the old
         if let Some(previous) = pv_play {
             debug_assert!(
                 moves
@@ -1935,8 +1684,8 @@ impl AlphaBeta {
             );
         }
 
-        // the root reduces nothing, by choice: its window is the full one,
-        // and its moves are few enough to search whole
+        // the root reduces nothing: its window is the full one, and its
+        // moves are few enough to search whole
         for m in &moves {
             match self.search_child(m, alpha, beta, depth, !found_legal_move, 0, None) {
                 Err(Aborted) => {
@@ -1956,31 +1705,26 @@ impl AlphaBeta {
         }
 
         if !found_legal_move {
-            // checkmate or stalemate: either way there is nothing to play.
-            //
-            // This is the only way out of this function without a move. An
-            // expired fifty move counter is not another one. That draw is
-            // claimable and not automatic (FIDE 9.3), so the side to move may
-            // still play, and a root asked for a move answers with one. The
-            // tree below scores the draw at every child the move does not
-            // reset, so what comes back is zero unless a capture or a pawn
-            // move is worth more.
+            // checkmate or stalemate, the only way out of here without a
+            // move. An expired fifty move counter is not another: that draw
+            // is claimable and not automatic (FIDE 9.3), so the side to
+            // move may still play, and the tree below scores the draw at
+            // every child the move does not reset
             return SearchOutcome::GameOver;
         }
 
         let play = best.expect("any legal move's score beats the opening alpha of Score::MIN + 1");
-        // stored past the depth contest: this is the move about to be
-        // answered, and the line reported for it is read back from this slot
+        // stored past the depth contest: the reported line is read back
+        // from this slot
         self.transpositions
             .record_answer(&self.board, play, taint.stamp(alpha), depth);
         SearchOutcome::Complete(self.result_for(play, alpha))
     }
 
-    /// Replay the line the table holds on a copy of the board, one stored move
-    /// at a time. Walking the positions rather than following a key from one
-    /// entry to the next is what lets the line be checked as it is built: the
-    /// board says whether a stored move is legal here, and whether the line has
-    /// reached a position it would be a draw to play on from.
+    /// Replay the line the table holds on a copy of the board, one stored
+    /// move at a time. Walking the positions is what lets the line be
+    /// checked as it is built: whether a stored move is legal here, and
+    /// whether the line has reached a draw.
     pub fn pv_line(&self) -> PvLine {
         self.pv_line_from(self.transpositions.intended_play(&self.board))
     }
@@ -1991,18 +1735,15 @@ impl AlphaBeta {
     /// the move the swap answers with has to be handed in.
     fn pv_line_from(&self, first: Option<Play>) -> PvLine {
         let mut line = Vec::new();
-        // a clone, so the search's own board is untouched by this
         let mut board = self.board.clone();
         let mut next = first;
         while line.len() < MAX_PLY as usize {
             let Some(play) = next else {
                 break;
             };
-            // a probe compares thirty two bits of the key, so what gets
-            // through is another position agreeing on those. Its move belongs
-            // to that position, and playing it here would print a line the
-            // rules do not allow. How often that happens is what the bench's
-            // signature audit counts
+            // a probe compares thirty two bits of the key, so the move may
+            // belong to another position; the signature audit counts how
+            // often
             if !board.generate_moves().contains(&play) {
                 break;
             }
@@ -2010,8 +1751,8 @@ impl AlphaBeta {
                 break;
             }
             line.push(play);
-            // the line is a draw from here, so whatever the table says comes
-            // next is a continuation that would never be played
+            // a draw from here, so whatever the table holds next would
+            // never be played
             if board.fifty_move_expired() || board.has_repeated() {
                 break;
             }
@@ -2060,31 +1801,25 @@ impl Engine for AlphaBeta {
         mut on_depth: impl FnMut(u8, &SearchResult, PvLine, ScoreBound),
     ) -> SearchOutcome {
         let mut best: Option<SearchResult> = None;
-        // each search() counts its own nodes, so the deepening totals them:
-        // what leaves here describes the whole search so far, which is the
-        // count the time elapsed so far can honestly divide
+        // each iteration counts its own nodes, so the deepening totals them
         let mut total_nodes: u64 = 0;
-        // no depth asked for means as deep as the engine goes, and what
-        // stops such a search is its clock or its budget. The rail is here
-        // so that a search under neither still ends
+        // no depth means as deep as the engine goes, which the rail ends
+        // for a search under neither clock nor budget
         let max_depth = match search_options.depth {
             // held to the rail, or the depths past it would each rerun it
             Some(depth) => depth.min(MAX_PLY),
             None => MAX_PLY,
         };
-        // one search, however many iterations: what the iterations store is
-        // one generation's, and ages together from the next go. The quiet
-        // memories start empty for the same reason and are kept from one
-        // iteration to the next for the opposite one: a killer found at
-        // depth six is what orders depth seven
+        // one search, however many iterations: what they store is one
+        // generation's, and the memories are kept from one iteration to the
+        // next, since a killer found at depth six is what orders seven
         self.transpositions.new_search();
         self.ordering.forget();
 
         for depth in 1..=max_depth {
-            // the soft bound: an iteration there is not enough of the clock
-            // left to get through is not begun at all, and what is in hand
-            // answers instead. The deadline stays as the backstop for the
-            // iteration that is begun and turns out to have been the last
+            // the soft bound: an iteration there is not enough clock left
+            // for is not begun, and what is in hand answers. The deadline
+            // stays as the backstop for an iteration that is begun
             if !search_options
                 .limits
                 .worth_another_iteration(best.is_some())
@@ -2094,40 +1829,25 @@ impl Engine for AlphaBeta {
             let (limits, stop) = search_options.for_iteration(best.is_some(), total_nodes);
             match self.search_root(depth, limits, stop) {
                 SearchOutcome::Aborted(deeper) => {
-                    // the interrupted iteration's best outranks the completed
-                    // depth's whenever it has one. The root searches full
-                    // window, so that score is exact over the moves it did
-                    // search, which makes it a lower bound on the position:
-                    // a deeper answer over fewer moves, and one the moves
-                    // never reached could only raise. ScoreBound is what
-                    // says so to whoever is reading the reports.
-                    //
-                    // The move it replaces is one of the moves searched: the
-                    // root orders by the table's entry for the position, which
-                    // is the answer the last iteration stored, so the previous
-                    // best is the first move this iteration tried. That
-                    // ordering is the whole of why the swap is sound. Without
-                    // it the new move would be better only over a subset the
-                    // old one need not belong to, and preferring it would mean
-                    // preferring a move that was never compared with the one
-                    // being given up.
+                    // the interrupted iteration's best outranks the
+                    // completed depth's whenever it has one. The root
+                    // searches full window, so that score is exact over the
+                    // moves it did search and a lower bound on the
+                    // position: the moves never reached could only raise
+                    // it. The swap is sound because the move it replaces is
+                    // among the moves searched: the root orders by the
+                    // table's entry, which is the last iteration's answer,
+                    // so the previous best was the first move tried.
+                    // Without that the new move would be better only over a
+                    // subset the old one need not belong to.
                     return SearchOutcome::Aborted(match deeper {
                         Some(mut result) => {
-                            // its count covers the whole deepening, as a
-                            // completed iteration's does
                             result.nodes += total_nodes;
-                            // no completed depth named this move, so the last
-                            // line the caller heard about opens with the one
-                            // being given up. Say this one, from the depth
-                            // that found it and as the bound it is, before it
+                            // no completed depth named this move, so it is
+                            // reported here, as the bound it is, before it
                             // is answered with
                             if best.as_ref().map(|had| had.best_move) != Some(result.best_move) {
                                 let pv = self.pv_line_from(Some(result.best_move));
-                                // the line is built from the move rather than
-                                // read from the root's entry, so it opens with
-                                // it whatever the table holds. The completed
-                                // depth checks the same thing of the line it
-                                // reports
                                 debug_assert_eq!(
                                     pv.line.first(),
                                     Some(&result.best_move),
@@ -2138,14 +1858,12 @@ impl Engine for AlphaBeta {
                             Some(result)
                         }
                         // nothing finished at this depth, so the last
-                        // completed one still answers; depth one runs without
-                        // limits, so there always is one
+                        // completed one still answers; depth one runs
+                        // without limits, so there always is one
                         None => best,
                     });
                 }
                 SearchOutcome::GameOver => {
-                    // checkmate, stalemate or a rule draw: deeper searches
-                    // cannot change it, so don't run them
                     return SearchOutcome::GameOver;
                 }
                 SearchOutcome::Complete(mut result) => {
@@ -2153,7 +1871,7 @@ impl Engine for AlphaBeta {
                     result.nodes = total_nodes;
                     let pv = self.pv_line();
                     // the root's entry was just stored past any leftover, so
-                    // the line the table tells opens with the move answered
+                    // the line opens with the move answered
                     debug_assert_eq!(
                         pv.line.first(),
                         Some(&result.best_move),
@@ -2166,15 +1884,14 @@ impl Engine for AlphaBeta {
         }
         match best {
             Some(result) => SearchOutcome::Complete(result),
-            // a depth of zero runs no iterations, so there is nothing to
-            // report beyond that no move was looked for
+            // a depth of zero runs no iterations
             None => SearchOutcome::Aborted(None),
         }
     }
 
     fn make_move_str(&mut self, play: &str) -> bool {
-        // a `Play` prints itself as the lower case coordinate notation the
-        // protocol sends, so the name is compared with that
+        // a `Play` prints itself as the coordinate notation the protocol
+        // sends
         for p in self.board.generate_moves() {
             if play == p.to_string() {
                 return self.board.make_move(&p);
@@ -2210,29 +1927,22 @@ impl fmt::Display for PvLine {
 /// The verdict of one fixed-depth search of the root.
 #[derive(Debug)]
 pub enum SearchOutcome {
-    /// The search finished the requested depth; its result can be trusted
-    /// without checking anything else.
+    /// The search finished the requested depth.
     Complete(SearchResult),
-    /// The root has no play to make: checkmate, stalemate, or a rule draw.
-    /// Searching deeper cannot change it.
+    /// The root has no play to make: checkmate or stalemate. Searching
+    /// deeper cannot change it.
     GameOver,
     /// A limit ran out partway through, carrying a best-so-far when the
-    /// root got far enough to have one. The root searches full window, so
-    /// that score is exact over the moves it did search, which makes it a
-    /// lower bound on the position: what it leaves out is the moves it
-    /// never reached, and they could only raise it. That is the
-    /// `ScoreBound::Lower` a report of one carries.
+    /// root got far enough to have one. Its score is a lower bound on the
+    /// position, `ScoreBound::Lower` in a report: exact over the moves the
+    /// root searched, and the moves it never reached could only raise it.
     Aborted(Option<SearchResult>),
 }
 
-/// What a reported score says about the position.
-///
-/// The deepening loop reports a completed depth and, when an aborted
-/// iteration's move replaces it, that move as well. The two are not the same
-/// claim: a completed depth searched every root move, and an aborted one
-/// searched some of them, so its score is what those are worth and the
-/// position may be worth more. Uci has a word for the second, `lowerbound`,
-/// which is what the adapter prints it as.
+/// What a reported score says about the position. A completed depth
+/// searched every root move; an aborted iteration searched some of them,
+/// so its score is what those are worth and the position may be worth
+/// more. Uci prints the second as `lowerbound`.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum ScoreBound {
     Exact,
@@ -2240,19 +1950,19 @@ pub enum ScoreBound {
 }
 
 /// The search hit a limit and unwound without finishing. The score of an
-/// aborted frame is meaningless, and returning this instead of a score is what
-/// keeps it out of the transposition table: propagation with `?` never reaches
-/// the stores.
+/// aborted frame is meaningless, and returning this instead of a score is
+/// what keeps it out of the transposition table: propagation with `?`
+/// never reaches the stores.
 struct Aborted;
 
 #[derive(Debug)]
 pub struct SearchResult {
     pub nodes: u64,
     /// How long the search took, measured over the same interval as the
-    /// nodes beside it, so that one divides the other honestly.
+    /// nodes beside it, so that one divides the other.
     pub elapsed: time::Duration,
-    /// How deep the deepest line went, quiescence's captures included, which
-    /// is the `seldepth` an info line reports.
+    /// How deep the deepest line went, quiescence's captures included: the
+    /// `seldepth` an info line reports.
     pub selective_depth: u8,
     pub best_move: Play,
     /// What the search made of `best_move`, from the side to move.
@@ -2287,10 +1997,9 @@ mod search {
     use std::sync::atomic::{AtomicBool, Ordering};
     use std::time;
 
-    /// The default table is 256MB, which is the right size to play with and
-    /// the wrong size to test with: one per test dominated both the memory and
-    /// the run time of the suite. This is still far larger than anything here
-    /// searches deeply enough to fill.
+    /// The default table is 256MB, and one per test dominated the memory
+    /// and the run time of the suite. This is still far larger than
+    /// anything here searches deeply enough to fill.
     const TABLE_BYTES: usize = 16 * 1024 * 1024;
 
     fn engine(board: Board) -> AlphaBeta {
@@ -2341,17 +2050,16 @@ mod search {
     }
 
     /// The reference search, for the tests that hold it to answering the
-    /// same whatever the table holds. They are the search's exactness
-    /// contract and stay green through every shortcut: a shortcut moves the
-    /// default, which `engine` builds, and not this.
+    /// same whatever the table holds: the exactness contract, which every
+    /// shortcut leaves green because a shortcut moves the default and not
+    /// this.
     fn reference(board: Board) -> AlphaBeta {
         AlphaBeta::with_config(board, TABLE_BYTES, SearchConfig::reference())
     }
 
-    /// The reference with the static shortcut switched on and nothing else
-    /// touched, which is what an arm is: whatever moves between this and
-    /// `reference` is reverse futility and not the taint policy the default
-    /// carries beside it.
+    /// The reference with reverse futility on and nothing else touched,
+    /// which is what an arm is: whatever moves between this and
+    /// `reference` is the one switch.
     fn shortcut(board: Board) -> AlphaBeta {
         AlphaBeta::with_config(
             board,
@@ -2363,9 +2071,7 @@ mod search {
         )
     }
 
-    /// The reference with the pass switched on and nothing else touched,
-    /// the arm reverse futility has one of beside it: whatever moves between
-    /// this and `reference` is the pass and nothing else.
+    /// The reference with the pass on.
     fn passing(board: Board) -> AlphaBeta {
         AlphaBeta::with_config(
             board,
@@ -2377,8 +2083,7 @@ mod search {
         )
     }
 
-    /// The reference with the quiet memories switched on and nothing else
-    /// touched, the third arm beside the two above. They order rather than
+    /// The reference with the quiet memories on. They order rather than
     /// prune, so whatever moves between this and `reference` is the tree
     /// and never the answer.
     fn remembering(board: Board) -> AlphaBeta {
@@ -2392,9 +2097,7 @@ mod search {
         )
     }
 
-    /// The reference with the losing capture skip switched on and nothing
-    /// else touched: whatever moves between this and `reference` is the
-    /// skip, and not the delta margin the default carries beside it.
+    /// The reference with the losing capture skip on.
     fn skipping(board: Board) -> AlphaBeta {
         AlphaBeta::with_config(
             board,
@@ -2406,9 +2109,8 @@ mod search {
         )
     }
 
-    /// The reference with the late move reductions switched on and nothing
-    /// else touched: whatever moves between this and `reference` is the
-    /// reduction, with no memories to order the quiets it reduces.
+    /// The reference with the late move reductions on, and no memories to
+    /// order the quiets it reduces.
     fn reducing(board: Board) -> AlphaBeta {
         AlphaBeta::with_config(
             board,
@@ -2420,9 +2122,7 @@ mod search {
         )
     }
 
-    /// The reduction with the deep reduction on top and nothing else
-    /// touched: whatever moves between this and `reducing` is the model
-    /// gated two ply scout.
+    /// `reducing` with the deep reduction on top.
     fn deep_reducing(board: Board) -> AlphaBeta {
         AlphaBeta::with_config(
             board,
@@ -2435,9 +2135,7 @@ mod search {
         )
     }
 
-    /// The deep reduction with the pruning on top and nothing else
-    /// touched: whatever moves between this and `deep_reducing` is the
-    /// skip.
+    /// `deep_reducing` with the pruning on top.
     fn pruning(board: Board) -> AlphaBeta {
         AlphaBeta::with_config(
             board,
@@ -2973,17 +2671,12 @@ mod search {
         assert_eq!(result.score, 0);
     }
 
-    /// A fifty move draw is claimable and not automatic, so a root whose
-    /// counter has expired still has to answer with a move.
-    ///
-    /// This used to report game over and the interface printed `bestmove
-    /// 0000`, which is a forfeit in any GUI that asks rather than
-    /// adjudicating. The counter reaching a hundred is a right the side to
-    /// move holds, not the end of the game: FIDE 9.3 makes it a claim, and
-    /// only seventy five moves under 9.6 ends a game without one.
-    ///
-    /// The score is zero because every move here leaves the counter running,
-    /// and the tree below answers a drawn path with zero.
+    /// A fifty move draw is claimable and not automatic (FIDE 9.3; only
+    /// seventy five moves under 9.6 ends a game without a claim), so a root
+    /// whose counter has expired still answers with a move. It used to
+    /// report game over, and the interface printed `bestmove 0000`, a
+    /// forfeit in any GUI that asks rather than adjudicating. The score is
+    /// zero because every move here leaves the counter running.
     #[test]
     fn a_root_whose_fifty_move_counter_has_expired_still_answers_with_a_move() {
         let game = Board::from_fen("5k2/1p3p1p/p3pK1P/P1P1P3/4bP2/8/8/8 w - - 100 112").unwrap();
@@ -3007,12 +2700,9 @@ mod search {
         assert_eq!(result.score, 0);
     }
 
-    /// A root that is mated on the hundredth half move is still game over,
-    /// and for the reason it always was: there is no legal move. The game
-    /// ended on the mate, before the side mated had a move to claim on.
-    ///
-    /// Without this the fix above would read as "the counter no longer ends
-    /// a search", which is not what it says.
+    /// A root mated on the hundredth half move is still game over: there is
+    /// no legal move, and the game ended on the mate before the side mated
+    /// had a move to claim on.
     #[test]
     fn a_mate_on_the_hundredth_half_move_is_still_game_over() {
         let game = Board::from_fen("7k/6Q1/6K1/8/8/8/8/8 b - - 100 112").unwrap();
@@ -3578,16 +3268,12 @@ mod search {
 
     #[test]
     fn draw_taint_is_still_recorded_and_never_trusted() {
-        // The pawn endgame carries the most draw traffic of the bench
-        // positions, so it is the one that exercises both halves of the graph
-        // history work. tainted_stores going to zero means taint propagation
-        // broke, and then the refusal in get_transposition is refusing nothing
-        // while the hole silently reopens. tainted_score_cutoffs is zero by
-        // construction while the refusal holds, so it moving means a probe
-        // path that consumes scores without the refusal guard was added.
-        // The refusal is a policy of the reference, so the reference is what
-        // is built: a default told one day to trust those scores is an
-        // experiment to measure, not a hole to find here.
+        // the pawn endgame carries the most draw traffic of the bench
+        // positions. tainted_stores at zero means taint propagation broke
+        // and the probe's refusal is refusing nothing; tainted_score_cutoffs
+        // moving off zero means a probe path without the refusal guard was
+        // added. The refusal is the reference's policy, so the reference is
+        // what is built
         let fen = fens::PAWN_ENDGAME;
         let mut e = reference(Board::from_fen(fen).unwrap());
         for depth in 1..=7 {
@@ -3709,10 +3395,8 @@ mod search {
 
     #[test]
     fn the_static_shortcut_looks_at_less_of_the_tree() {
-        // the switch has to reach the search: one the search never read
-        // would make every comparison with the reference a comparison of
-        // the reference with itself, and the bench's two pinned counts
-        // would move together instead of apart
+        // the switch has to reach the search, or every comparison with the
+        // reference would be of the reference with itself
         let mut e = shortcut(Board::from_fen(SHARP_MIDDLEGAME).unwrap());
         completed(e.search(6));
         let mut cold = reference(Board::from_fen(SHARP_MIDDLEGAME).unwrap());
@@ -3806,10 +3490,7 @@ mod search {
 
     #[test]
     fn passing_looks_at_less_of_the_tree() {
-        // the switch has to reach the search: one the search never read
-        // would make every comparison with the reference a comparison of
-        // the reference with itself, and the bench's two pinned counts
-        // would move together instead of apart
+        // the switch has to reach the search, as above
         let mut e = passing(Board::from_fen(SHARP_MIDDLEGAME).unwrap());
         completed(e.search(6));
         let mut cold = reference(Board::from_fen(SHARP_MIDDLEGAME).unwrap());
@@ -4062,8 +3743,8 @@ mod search {
         // the fourth, while the children stand at depth two and can reduce
         // nothing themselves. So the arm searches what the reference
         // searches, node for node, if and only if the node in check
-        // declines to reduce. That it declines is
-        // `a_node_in_check_reduces_nothing`, beside the decision
+        // declines to reduce; that it declines is
+        // `late_move::tests::a_node_in_check_reduces_nothing`
         let fen = "4r2k/8/8/8/8/8/2Q2N2/4K3 w - - 0 1";
         let board = Board::from_fen(fen).unwrap();
         assert!(board.in_check());
@@ -4087,13 +3768,13 @@ mod search {
     fn the_mate_window_searches_what_the_reference_searches() {
         // a zero width window inside the mate scores turns round at every
         // ply, so every node of the tree stands at one edge or the other
-        // and none of them reduces. The arm then searches what the
-        // reference searches, node for node, where the same node asked
-        // under an ordinary window reduces plenty. Depth five, so that the
-        // grandchildren, which a child cutting off on its first move
-        // leaves searching every move of theirs, stand at the floor with
-        // alpha the mate in hand. That either edge stands the decision
-        // down is `the_mate_window_stands_the_reduction_down`, beside it
+        // and none of them reduces: the arm searches what the reference
+        // searches, node for node, where the same node under an ordinary
+        // window reduces plenty. Depth five, so that the grandchildren,
+        // which a child cutting off on its first move leaves searching
+        // every move of theirs, stand at the floor with alpha the mate in
+        // hand. That either edge stands the decision down is
+        // `late_move::tests::the_mate_window_stands_the_reduction_down`
         let fen = SHARP_MIDDLEGAME;
         let mut e = reducing(Board::from_fen(fen).unwrap());
         let Ok(value) = e.alpha_beta(29_500, 29_501, 5, true) else {
@@ -4120,10 +3801,7 @@ mod search {
 
     #[test]
     fn reducing_looks_at_less_of_the_tree() {
-        // the switch has to reach the search: one the search never read
-        // would make every comparison with the reference a comparison of
-        // the reference with itself, and the bench's two pinned counts
-        // would move together instead of apart
+        // the switch has to reach the search, as above
         let mut e = reducing(Board::from_fen(SHARP_MIDDLEGAME).unwrap());
         completed(e.search(6));
         let mut cold = reference(Board::from_fen(SHARP_MIDDLEGAME).unwrap());
@@ -4187,9 +3865,8 @@ mod search {
 
     #[test]
     fn the_deep_reduction_looks_at_less_of_the_tree() {
-        // the switch has to reach the search, the reduction arm's own
-        // check made of the rung above it: what stands between these two
-        // engines is the model gated two ply scout alone
+        // the switch has to reach the search, measured against the rung
+        // below it
         let mut e = deep_reducing(Board::from_fen(SHARP_MIDDLEGAME).unwrap());
         completed(e.search(6));
         let mut one_ply = reducing(Board::from_fen(SHARP_MIDDLEGAME).unwrap());
@@ -4204,18 +3881,12 @@ mod search {
 
     #[test]
     fn the_pruning_reaches_the_search() {
-        // the switch has to reach the search, the arm's own check made
-        // of the rung above it: what stands between these two engines is
-        // the skip alone.
-        //
-        // It used to say so by asserting the pruning searched fewer nodes,
-        // which is not a property the skip has. Skipping a move changes the
-        // tree, and a changed tree changes what the table holds and what the
-        // ordering does with it, so the pruning can cost nodes as well as
-        // save them. Over the bench's eighteen positions at this depth the
-        // shipped weights never made it cost any; the 2026-09-13 mobility
-        // refit made it cost them on three, this position among them. What
-        // the switch owes is a different tree, which is what is asserted.
+        // the switch has to reach the search, measured against the rung
+        // below it. A different tree rather than a smaller one: skipping a
+        // move changes what the table holds and what the ordering does with
+        // it, so the pruning can cost nodes as well as save them, and the
+        // 2026-09-13 mobility refit made it cost them on three of the
+        // bench's positions at this depth, this one among them
         let mut e = pruning(Board::from_fen(SHARP_MIDDLEGAME).unwrap());
         completed(e.search(6));
         let mut deep = deep_reducing(Board::from_fen(SHARP_MIDDLEGAME).unwrap());
@@ -4249,10 +3920,9 @@ mod search {
 
     #[test]
     fn the_quiet_memories_look_at_less_of_the_tree_for_the_same_answer() {
-        // the switch has to reach the search, the way the two shortcuts'
-        // arms say it of theirs. This one owes more than they do. Nothing
-        // here prunes, so the root's full window search is worth what it
-        // was worth and only the tree that proved it may move.
+        // the switch has to reach the search, and this one owes more than
+        // the shortcuts do: nothing here prunes, so the root's score stands
+        // and only the tree that proved it may move
         let mut e = remembering(Board::from_fen(SHARP_MIDDLEGAME).unwrap());
         let result = completed(e.search(6));
         let mut cold = reference(Board::from_fen(SHARP_MIDDLEGAME).unwrap());
@@ -4378,33 +4048,20 @@ mod search {
 
     #[test]
     fn a_warm_cache_matches_cold_across_draw_context() {
-        // The same pieces hash to the same key whatever the fifty move counter
-        // says, so a search made a few plies from the draw fills the table
-        // with scores that are true of that path only. A fresh game reaching
-        // the same position must not read them: its search has the whole
-        // clock ahead of it.
+        // the same pieces hash to the same key whatever the fifty move
+        // counter says, so a search made a few plies from the draw fills
+        // the table with scores true of that path only, and a fresh game
+        // reaching the same position must not read them.
         //
-        // Six of white's moves here are worth the answer: c3a1, c3e1, c3b2,
-        // c3d2, c3b4 and c3d4 all reach it, measured a ply down from engines
-        // with nothing in their tables. That was already true one commit
-        // back, at a different score, so the tie is not something a fit
-        // made.
-        //
-        // What the near-draw table does to this search was also already
-        // true. Warming from it costs 20,579 nodes against the 16,179 a cold
-        // search takes, and one commit back it cost 25,452 against 15,980,
-        // while warming from an unrelated position leaves the node count
-        // identical to cold on both. So its entries have always reordered
-        // this search; what changed is only which of the six equal moves
-        // came back first, and asserting the move by name was passing on
-        // luck rather than on the property. The comment above this pair
-        // worried about exactly that.
-        //
-        // So the move is asserted by what it is worth rather than by its
-        // name. That is the property the table owes: a score read out of the
-        // draw context would be a score this position is not worth, and a
-        // move chosen on one would be a move that does not reach the
-        // answer.
+        // Six of white's moves here are worth the answer (c3a1, c3e1, c3b2,
+        // c3d2, c3b4 and c3d4, measured a ply down from cold engines). The
+        // near-draw table reorders this search (20,579 nodes warm against
+        // 16,179 cold at the last reading, where warming from an unrelated
+        // position leaves the count identical to cold), so which of the six
+        // comes back first is luck. So the move is asserted by what it is
+        // worth rather than by name: a score read out of the draw context
+        // would be one this position is not worth, and a move chosen on it
+        // would not reach the answer
         let near_draw = "5k2/1p3p1p/p3pK1P/P1P1P3/4bP2/2B5/8/8 w - - 96 112";
         let fresh = "5k2/1p3p1p/p3pK1P/P1P1P3/4bP2/2B5/8/8 w - - 0 1";
         let mut warm = reference(Board::from_fen(near_draw).unwrap());
@@ -4426,17 +4083,11 @@ mod search {
     #[test]
     fn a_skipping_search_matches_cold_across_draw_context_with_nothing_to_refuse() {
         // the skip policy keeps tainted scores out of the table instead of
-        // refusing them on the way back out, so it owes the same answer
-        // warm as cold, and it should get there without the refusal ever
-        // firing: what was never stored cannot need refusing. The root's
-        // answer slot is the stated exception, and the probe's guard on it
-        // is what keeps this test honest rather than lucky.
-        //
-        // The policy on the reference, as its refusing sibling above runs,
-        // since the answer is only owed there: the default's move may
-        // move with what the table holds, which `SearchConfig` says of it,
-        // and a reduction decided by the order the table produced is what
-        // made it do so here
+        // refusing them on the way out, so it owes the same answer warm as
+        // cold without the refusal ever firing. The root's answer slot is
+        // the stated exception. On the reference, since the answer is only
+        // owed there: the default's move may move with what the table
+        // holds, and a reduction decided by the table's order did so here
         let near_draw = "5k2/1p3p1p/p3pK1P/P1P1P3/4bP2/2B5/8/8 w - - 96 112";
         let fresh = "5k2/1p3p1p/p3pK1P/P1P1P3/4bP2/2B5/8/8 w - - 0 1";
         let skipping = SearchConfig {
@@ -4677,16 +4328,11 @@ mod search {
 
     #[test]
     fn quiescence_resolves_captures_past_the_depth_it_used_to_stop_at() {
-        // the old cap was twenty plies measured from the root, so no line
-        // could report a selective depth past it whatever the position. A
-        // sharp middlegame searched shallow reaches further than that in
-        // captures alone now. Depth five used to be the shallowest search
-        // that cleared the old cap with room to spare; principal variation
-        // search cut the tree enough that it stops at twenty exactly, and
-        // six clears by a single ply. Seven reached twenty eight until the
-        // late move reductions, under which it stops at nineteen and eight
-        // and nine clear by a single ply each, so this asks for ten, which
-        // reaches twenty seven
+        // the old cap was twenty plies from the root, so no line could
+        // report a selective depth past it. Each pruning change has moved
+        // which depth clears it with room to spare; ten reaches twenty
+        // seven under the late move reductions, where eight and nine clear
+        // by a single ply
         let mut e = engine(Board::from_fen(SHARP_MIDDLEGAME).unwrap());
         let result = completed(e.search(10));
         assert!(
@@ -5027,25 +4673,13 @@ mod sampling {
         }
     }
 
-    /// The window a real search hands the hook. Principal variation search
-    /// puts every child after a node's first inside a zero width window,
-    /// and at this depth that is where all but one of the shortcuts that
-    /// fire sit. The pass is asked for only under a zero width window, so
-    /// its rows carry one and that part is a rule. The margin is not: it
-    /// reads the eval against beta and nothing about the width, so a node
-    /// searched through an open window whose eval clears beta by the whole
-    /// margin would be answered by it too. This search holds no such node,
-    /// where it held one before the evaluation gained mobility and the
-    /// quiet moves a cutoff rate. That the count can be anything is the
-    /// point of pinning it: zero here is this tree's number and not a rule,
-    /// and `the_recorded_beta_is_the_one_the_gate_cleared` is what holds
-    /// the open window reachable at all. Shadow rows
-    /// are candidates recorded whether or not the margin test fires, so a
-    /// handful more arrive through open windows, inside the re-search a
-    /// zero width fail high asks for: the proof pass reopens the window and
-    /// is the one place an open window carries a finite beta. The open
-    /// column is pinned by `the_recorded_beta_is_the_one_the_gate_cleared`,
-    /// which drives the hook directly with both windows.
+    /// The window a real search hands the hook. The pass is asked for only
+    /// under a zero width window, so its rows carry one and that is a rule.
+    /// The margin reads the eval against beta and nothing about the width,
+    /// so an open window node could be answered by it; this tree holds no
+    /// such node, and zero is this tree's number rather than a rule.
+    /// `the_recorded_beta_is_the_one_the_gate_cleared` drives the hook
+    /// directly with both windows and pins the open column.
     #[test]
     fn the_windows_a_search_records_are_the_zero_ones() {
         let mut e = engine(SHARP_MIDDLEGAME);
@@ -5407,11 +5041,9 @@ mod reductions {
         e
     }
 
-    /// The staging the move loop would hand the scout, built here by hand:
-    /// these tests drive the two halves of the recorder rather than a move
-    /// loop, so the node's facts are named rather than reached. The depth
-    /// and the bounds are the scout's to carry and the features read
-    /// neither, so they stand at nothing.
+    /// The staging the move loop would hand the scout, built by hand:
+    /// these tests drive the recorder without a move loop. The features
+    /// read neither the depth nor the bounds, so both stand at nothing.
     fn staged(e: &AlphaBeta, m: &Play, searched: usize, ply: Option<usize>) -> reduction::Staged {
         let moves = e.board.generate_moves();
         let mut eval = None;

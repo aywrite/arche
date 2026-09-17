@@ -4,12 +4,11 @@
 //! The bench: a fixed suite of positions, each searched to a fixed depth with
 //! a fixed table, and what the searches counted.
 //!
-//! The search is deterministic, so the node count is exact and says the same
-//! thing on any machine: it moves if and only if the tree searched moves.
-//! That makes it the signature of a search change, which a commit that makes
-//! one states in its message. The speed is the other half, and it is what
-//! the match tools scale their time controls by, so the clock runs over the
-//! search alone and not over allocating the table.
+//! The search is deterministic, so the node count is exact and moves if and
+//! only if the tree searched moves. That makes it the signature of a search
+//! change, which an engine commit states in its `Bench:` trailer. The speed
+//! is what the match tools scale their time controls by, so the clock runs
+//! over the search alone and not over allocating the table.
 
 use crate::board::Board;
 use crate::engine::{AlphaBeta, Engine, SearchConfig, SearchOutcome, SearchParameters};
@@ -27,7 +26,6 @@ pub const DEPTH: u8 = 7;
 /// table, so this is part of what the numbers mean.
 pub const TABLE_BYTES: usize = 16 * 1024 * 1024;
 
-/// The suite, as epd: a four field fen and an id operation a line.
 const SUITE: &str = include_str!("../bench.epd");
 
 /// A position of the suite, as a full fen and the name the report gives it.
@@ -35,11 +33,9 @@ const SUITE: &str = include_str!("../bench.epd");
 pub struct Position {
     pub id: String,
     pub fen: String,
-    /// The operations the line carried, by opcode. `id` is lifted out
-    /// above because every reader wants it and a line without one is named
-    /// by its fen; the rest are left here for whichever reader knows what
-    /// they mean. The bench reads none of them, and the tactical suite
-    /// reads `bm`.
+    /// The operations the line carried, by opcode, for whichever reader
+    /// knows what they mean: the bench reads none, the tactical suite reads
+    /// `bm` and the strategic suite `points`.
     pub operations: HashMap<String, String>,
 }
 
@@ -61,13 +57,10 @@ pub fn parse_epd(text: &str) -> Vec<Position> {
             let mut words = line.split_whitespace();
             let fen: Vec<&str> = words.by_ref().take(4).collect();
             let fen = format!("{} 0 1", fen.join(" "));
-            // what is left is the operations, each an opcode and its
-            // operands and each ended by a semicolon. An operation with no
-            // operands is dropped: every opcode read here takes them, and
-            // one that does not would arrive as an empty string that no
-            // reader could tell from a missing one. The quotes around an id
-            // are epd syntax rather than part of the name, so they come off
-            // here and nothing below has to know they were ever there
+            // an operation with no operands is dropped: it would arrive as
+            // an empty string no reader could tell from a missing one. The
+            // quotes around an id are epd syntax rather than part of the
+            // name, so they come off here
             let operations: HashMap<String, String> = words
                 .collect::<Vec<&str>>()
                 .join(" ")
@@ -95,9 +88,9 @@ pub fn parse_epd(text: &str) -> Vec<Position> {
 #[derive(Debug, Clone)]
 pub struct PositionReport {
     pub id: String,
-    /// The move the search chose, and the score it gave it, from the side
-    /// to move. A policy that changes either has changed the answer and not
-    /// only the tree that found it.
+    /// The move the search chose and the score it gave it, from the side to
+    /// move: a change that moves either has changed the answer and not only
+    /// the tree that found it.
     pub play: Play,
     pub score: Score,
     pub nodes: u64,
@@ -150,9 +143,8 @@ impl Report {
         nps(self.nodes(), self.elapsed())
     }
 
-    /// What the signature audit counted over the whole suite, or none when
-    /// the run was not audited. A table a position, so the figures are added
-    /// up rather than read off one of them.
+    /// What the signature audit counted over the whole suite, summed over
+    /// the positions' tables, or none when the run was not audited.
     pub fn signatures(&self) -> Option<SignatureCounters> {
         self.positions
             .iter()
@@ -165,19 +157,16 @@ impl Report {
 }
 
 /// Counted in microseconds, so a position searched in well under a
-/// millisecond still gets a rate rather than its count times a thousand, and
-/// measured as at least one so the rate stays finite and the arithmetic whole.
+/// millisecond still gets a rate, and over at least one so the rate stays
+/// finite.
 fn nps(nodes: u64, elapsed: Duration) -> u64 {
     (nodes as u128 * 1_000_000 / elapsed.as_micros().max(1)) as u64
 }
 
 /// Runs a suite under the settings given. Each position gets a fresh engine
 /// and a fresh table, allocated before its clock starts, and is deepened to
-/// the depth the way a game would be, so the table is warm from each
-/// iteration to the next. A depth of zero runs no iteration and counts
-/// nothing, which is no bench at all, so it is searched as one. The bench
-/// the command prints runs the default configuration, the one the engine
-/// plays with; the reference is run the same way to pin its own counts.
+/// the depth the way a game would be. A depth of zero runs no iteration and
+/// counts nothing, so it is searched as one.
 pub fn run_suite(
     positions: &[Position],
     depth: u8,
@@ -190,13 +179,11 @@ pub fn run_suite(
 
 /// The same suite, with each table keeping the full key of every entry so
 /// that the report can say how often the thirty two bit signature accepted
-/// another position's entry. The tree searched is the tree `run_suite`
-/// searches: the audit counts and does nothing else, so the node counts are
-/// the same figures under either.
+/// another position's entry. The audit counts and does nothing else, so the
+/// tree and the node counts are `run_suite`'s.
 ///
 /// None if there was not the memory for the keys, which are half a table's
-/// size again. The caller says so rather than running unaudited: a report
-/// with no audit in it is not the report that was asked for.
+/// size again, rather than a report with no audit in it.
 pub fn run_audited_suite(
     positions: &[Position],
     depth: u8,
@@ -232,8 +219,8 @@ fn run(
                     position.id, other
                 ),
             };
-            // the search says how long it took, measured over the same
-            // interval as the nodes it counted
+            // measured by the search over the same interval as the nodes it
+            // counted
             let elapsed = result.elapsed;
             Some(PositionReport {
                 id: position.id.clone(),
@@ -270,8 +257,8 @@ fn share(part: u64, whole: u64) -> f64 {
 
 /// The report as the command prints it: a header naming the settings, a row
 /// a position, a total, the two signature audit lines when the run was
-/// audited, and last the one line the match tools read, which is
-/// `<nodes> nodes <nps> nps` and nothing else.
+/// audited, and last the one line the match tools read, `<nodes> nodes
+/// <nps> nps` and nothing else.
 impl fmt::Display for Report {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         writeln!(
@@ -373,14 +360,12 @@ impl fmt::Display for Report {
             sum(|p| p.skipped_stores),
             self.elapsed(),
         )?;
-        // one block for the whole suite, and only when the run was audited,
-        // so an ordinary report prints what it always printed. It goes above
-        // the last line because the last line is the one the match tools read
+        // only when the run was audited, and above the last line because the
+        // last line is the one the match tools read
         if let Some(counted) = self.signatures() {
-            // each figure is read against the expectation beside it, which
-            // is the comparisons over two to the width. The thirty two bit
-            // observation is a zero at this scale whether or not the
-            // instrument works, so the narrow widths are what say it does
+            // the thirty two bit observation is a zero at this scale whether
+            // or not the instrument works, so the narrow widths are what say
+            // it does
             writeln!(
                 f,
                 "signature audit: probes {}, hits {}, comparisons {}, \
@@ -394,18 +379,16 @@ impl fmt::Display for Report {
                 counted.false_accept_cutoffs,
                 counted.aliased_evictions,
             )?;
-            // the widths are cumulative, so each figure is read against the
-            // expectation beside it and never added to another's
             writeln!(f, "narrow signature: {}", narrow_widths(&counted))?;
         }
         write!(f, "{} nodes {} nps", self.nodes(), self.nps())
     }
 }
 
-/// The narrow accepts as one clause a width, joined into the audit's second
-/// line: `16 bit accepts 89 (92.965 expected), 24 bit accepts 0 (0.362
-/// expected)` and so on. The expectations share one denominator, so they
-/// fall by a factor of two to the difference in width.
+/// The narrow accepts as one clause a width: `16 bit accepts 89 (92.965
+/// expected), 24 bit accepts 0 (0.362 expected)` and so on. The widths are
+/// cumulative, so each figure is read against the expectation beside it and
+/// never added to another's.
 fn narrow_widths(counted: &SignatureCounters) -> String {
     counted
         .narrow()
@@ -432,17 +415,13 @@ mod tests {
         ] {
             let parsed = parse_epd(line);
             assert_eq!(parsed.len(), 1, "{line:?}");
-            // the fen and the id, which is what this one is about; the
-            // operations differ between the two lines and have a test of
-            // their own below
             assert_eq!(parsed[0].id, "bare kings", "{line:?}");
             assert_eq!(parsed[0].fen, "4k3/8/8/8/8/8/8/4K3 w - - 0 1", "{line:?}");
         }
     }
 
-    /// The bench reads none of these, so nothing else would notice if the
-    /// reader started dropping them. The tactical suite reads bm out of the
-    /// same map.
+    /// The bench reads none of these, so nothing else here would notice if
+    /// the reader started dropping them.
     #[test]
     fn every_operation_on_a_line_is_kept() {
         let parsed =
@@ -504,20 +483,16 @@ mod tests {
 
     #[test]
     fn the_report_says_what_each_search_chose_and_refused() {
-        // the move and score are what a policy changes when it changes
-        // anything that matters, and the refusals are what the default
-        // policy costs, so all three are columns of the report: two bench
-        // outputs diffed say whether the root moved, not only the tree.
-        // The same suite searched trusting tainted scores states that
-        // policy in its header, refuses nothing, and may choose otherwise
+        // two bench outputs diffed say whether the root moved, not only the
+        // tree, and the same suite searched trusting tainted scores states
+        // that policy in its header and refuses nothing
         let suite = parse_epd("8/2p5/3p4/KP5r/1R3p1k/8/4P1P1/8 w - - id \"rook and pawns\";");
         let refusing = run_suite(&suite, 7, 1 << 20, SearchConfig::reference());
         let text = refusing.to_string();
         let position = &refusing.positions[0];
         assert!(position.refused_cutoffs > 0, "{}", text);
-        // the columns are read by position, the way the header names them,
-        // so a value printed in the wrong column fails rather than being
-        // found somewhere else on the line
+        // the columns are read by position, so a value printed in the wrong
+        // column fails rather than being found elsewhere on the line
         let columns = |line: &str| {
             line.split_whitespace()
                 .map(str::to_string)
@@ -570,16 +545,14 @@ mod tests {
 
     #[test]
     fn a_depth_of_zero_is_searched_as_one() {
-        // a depth of zero runs no iteration and finds nothing, which is not
-        // a bench: there is nothing to count below one
         let suite = parse_epd("4k3/8/8/8/8/8/8/4K3 w - - id \"bare kings\";");
         let report = run_suite(&suite, 0, 1 << 20, SearchConfig::default());
         assert_eq!(report.depth, 1);
         assert!(report.positions[0].nodes > 0);
     }
 
-    /// A suite of two, enough for an audited run to have something to count
-    /// and little enough to search twice inside a test.
+    /// Two positions: enough for an audited run to count something, few
+    /// enough to search twice inside a test.
     fn small_suite() -> Vec<Position> {
         parse_epd(
             "r1b2rk1/ppp1qppp/4pn2/6N1/Qn1P4/2NBP3/PP3PPP/R3K2R w KQ - id \"sharp\";\n\
@@ -587,10 +560,8 @@ mod tests {
         )
     }
 
-    /// The shadow keys are allocated when the bench asks for them and at no
-    /// other time, so an ordinary run has nothing to report and prints what
-    /// it always printed. Asked of both configurations, since the reference
-    /// builds its engines the same way.
+    /// The shadow keys are allocated only when the bench asks for them, so
+    /// an ordinary run prints what it always printed.
     #[test]
     fn a_run_that_was_not_audited_keeps_no_keys() {
         for config in [SearchConfig::default(), SearchConfig::reference()] {
@@ -602,8 +573,7 @@ mod tests {
     }
 
     /// The audit counts and does nothing else, so the tree is the tree the
-    /// unaudited run searched. This says so at test scale; the pinned counts
-    /// below say it at the bench's.
+    /// unaudited run searched.
     #[test]
     fn an_audited_run_searches_the_same_tree() {
         let suite = small_suite();
@@ -621,19 +591,15 @@ mod tests {
         assert_eq!(played(&plain), played(&audited));
     }
 
-    /// The summary block, with each counter inside the one it is a part of:
-    /// a hit is a probe the slice accepted, a false accept is a hit whose
-    /// full key differed, a cutoff is a false accept a score was taken from.
-    /// The block sits above the last line, which is still the one the match
-    /// tools read.
+    /// The summary block, with each counter inside the one it is a part of,
+    /// above the last line the match tools read.
     ///
     /// The false accepts are pinned at zero rather than bounded. The
     /// expectation at this scale is about a ten thousandth of one, so a
-    /// count above zero is not the search finding a collision, it is the
-    /// instrument reading its own keys wrongly. That is the failure an
-    /// inequality here would sit through: a shadow key dropped on store, or
-    /// index arithmetic that looks a slot along, both make every probe read
-    /// as foreign and both pass a bound.
+    /// count above zero is the instrument reading its own keys wrongly, not
+    /// the search finding a collision. A shadow key dropped on store, or
+    /// index arithmetic a slot off, makes every probe read as foreign and
+    /// would pass a bound.
     #[test]
     fn an_audited_run_prints_a_summary_that_holds_together() {
         let report =
@@ -647,12 +613,10 @@ mod tests {
         );
         assert!(counted.false_accept_cutoffs <= counted.false_accepts);
         assert!(counted.comparisons > 0, "nothing was compared");
-        // the widths are cumulative, so every entry a wider signature would
-        // have accepted a narrower one would have accepted too, and the
-        // counts fall as the width rises. A suite this small usually counts
-        // nothing at any width, which leaves this guarding the shape of the
-        // printed line rather than saying much; the property is checked
-        // against real counts by `the_counts_fall_as_the_width_rises`
+        // the widths are cumulative, so the counts fall as the width rises.
+        // A suite this small usually counts nothing at any width; the
+        // property is checked against real counts by
+        // `the_counts_fall_as_the_width_rises`
         assert!(
             counted
                 .narrow_accepts
@@ -696,12 +660,7 @@ mod tests {
     }
 
     /// The expectations are the comparisons over two to the width, which is
-    /// arithmetic rather than a measurement and is pinned as such. A sixteen
-    /// bit signature takes a foreign entry sixty five thousand times more
-    /// often than the one the table runs, which is why its figure is large
-    /// enough at the bench's scale to be compared with its own expectation;
-    /// twenty four expects two hundred and fifty six times fewer again, so
-    /// what it takes to measure that one is a longer run.
+    /// arithmetic rather than a measurement and is pinned as such.
     #[test]
     fn an_expectation_is_the_comparisons_over_two_to_the_width() {
         let counted = SignatureCounters {
@@ -709,8 +668,8 @@ mod tests {
             ..Default::default()
         };
         assert_eq!(counted.expected_false_accepts(), 1.0);
-        // the narrow width less the chance the whole slice agreed as well,
-        // which is the one case the wide signature takes for itself
+        // less the chance the whole slice agreed as well, which the wide
+        // signature takes for itself
         assert_eq!(counted.expected_narrow_accepts(16), 65_536.0 - 1.0);
         assert_eq!(counted.expected_narrow_accepts(24), 256.0 - 1.0);
         assert_eq!(counted.expected_narrow_accepts(28), 16.0 - 1.0);
@@ -727,8 +686,7 @@ mod tests {
         assert!(none.narrow().all(|(_, _, expected)| expected == 0.0));
     }
 
-    /// The instrument is as deterministic as the search it watches, so a
-    /// figure printed today can be compared with one printed next year.
+    /// The instrument is as deterministic as the search it watches.
     #[test]
     fn two_audited_runs_count_the_same() {
         let suite = small_suite();
@@ -737,17 +695,12 @@ mod tests {
         assert_eq!(first.signatures(), second.signatures());
     }
 
-    /// The search is deterministic, so how many nodes the bench visits is an
-    /// exact figure rather than a timing, and it says the same thing on any
-    /// machine. It moves whenever move ordering, quiescence, the transposition
-    /// table or any pruning changes, including the many such changes that
-    /// leave the move finally played untouched, which is what makes it worth
-    /// pinning.
-    ///
-    /// A deliberate change to the search is expected to move these. Update
-    /// them in the same commit, from `arche bench`: the diff is then a
-    /// statement of how much less, or more, of the tree the engine now looks
-    /// at, position by position.
+    /// The node count is exact and the same on any machine, and it moves
+    /// whenever move ordering, quiescence, the transposition table or any
+    /// pruning changes, including the changes that leave the move played
+    /// untouched. A deliberate change to the search is expected to move
+    /// these: update them in the same commit, from `arche bench`, so the
+    /// diff states how much of each tree the engine now looks at.
     #[test]
     fn node_counts_have_not_moved() {
         let report = run_suite(&positions(), DEPTH, TABLE_BYTES, SearchConfig::default());
@@ -781,15 +734,12 @@ mod tests {
         );
     }
 
-    /// The reference search's counts, pinned apart from the default's. The
-    /// two are separate trees now that the default prunes: a change that
-    /// moves both touched the search they share, move ordering or the
-    /// table, say, and one that moves the default's alone is a shortcut,
-    /// which is what this pin standing still through one says. Pinned
-    /// shallower than the bench, which is cheaper and coarser: a twentieth
-    /// of the time, with a table under half full, so a change to what the
-    /// table keeps shows here less than it does at the bench's depth. The
-    /// pin stays where it is when that depth is raised.
+    /// The reference search's counts, pinned apart from the default's: a
+    /// change that moves both touched the search the two share, and one that
+    /// moves the default's alone is a shortcut. Pinned shallower than the
+    /// bench, which is cheaper and coarser (a twentieth of the time, with a
+    /// table under half full, so a change to what the table keeps shows here
+    /// less). The pin stays at this depth when the bench's is raised.
     #[test]
     fn reference_node_counts_have_not_moved() {
         const REFERENCE_DEPTH: u8 = 5;
