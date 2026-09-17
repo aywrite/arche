@@ -77,6 +77,16 @@ pub(crate) fn pop_lsb(bb: &mut u64) -> u8 {
     i
 }
 
+/// Which probe a made move needs before it stands: whether it could have
+/// exposed its own king, and along which kind of line if so.
+#[derive(Clone, Copy, PartialEq, Eq)]
+enum Exposure {
+    None,
+    Straight,
+    Diagonal,
+    Whole,
+}
+
 /// One ply of history: what `undo_move` needs that the move itself does not
 /// carry.
 #[derive(Debug, Copy, Clone, PartialEq, Eq)]
@@ -967,6 +977,22 @@ impl Board {
         false
     }
 
+    /// Whether a rook line (`STRAIGHT`) or a bishop line of `color`'s reaches
+    /// `index` through the occupancy as it stands: the one slider kind of
+    /// `square_attacked`, for the legality probe that knows which kind a
+    /// move could have opened.
+    #[inline(always)]
+    fn slider_reaches<const STRAIGHT: bool>(&self, index: u8, color: Color) -> bool {
+        let (theirs, _) = self.sides(color);
+        let all = self.black | self.white;
+        let magic = &MAGIC;
+        if STRAIGHT {
+            magic.get_straight_move(index, all) & (self.rooks() | self.queens()) & theirs != 0
+        } else {
+            magic.get_diagonal_move(index, all) & (self.bishops() | self.queens()) & theirs != 0
+        }
+    }
+
     /// Every piece of either colour bearing on `index` through `occupied`.
     /// The swap asks for the two halves separately; this is the whole
     /// statement of an attacker, for the exhaustive model `see` is checked
@@ -1283,27 +1309,47 @@ impl Board {
 
         let king_index = self.king_index(self.active_color);
         // A move can only expose its own king when there was a check to walk
-        // back into, the king itself moved, a square on a line through the
-        // king was vacated, or en passant emptied a second square. Any other
-        // move leaves the king as unattacked as it was. `checkers` still
-        // holds the mover's own checkers here; it is replaced below once the
-        // move stands.
+        // back into, the king itself moved, en passant emptied a second
+        // square, or a square on a line through the king was vacated. Any
+        // other move leaves the king as unattacked as it was. The first
+        // three take the full probe. The fourth takes one slider probe: the
+        // king stood unattacked, so the only attack the move can open runs
+        // through the square it left, a rook line or a bishop line and
+        // never both, and the landing square can only block a line. A
+        // probe from the king over the occupancy as it now stands reads
+        // every line of that kind at once, and any it finds open is the one
+        // the move opened. `checkers` still holds the mover's own checkers
+        // here; it is replaced below once the move stands.
         let attack_masks = &ATTACK_MASKS;
-        let could_expose_king = !MAINTAIN_CHECKERS
+        let probe = if !MAINTAIN_CHECKERS
             || self.checkers != 0
             || from_piece == Piece::King
             || play.en_passant
-            || attack_masks.straight[king_index as usize].is_bit_set(play.from)
-            || attack_masks.diagonal[king_index as usize].is_bit_set(play.from);
+        {
+            Exposure::Whole
+        } else if attack_masks.straight[king_index as usize].is_bit_set(play.from) {
+            Exposure::Straight
+        } else if attack_masks.diagonal[king_index as usize].is_bit_set(play.from) {
+            Exposure::Diagonal
+        } else {
+            Exposure::None
+        };
         self.active_color = opposing_color;
         self.key ^= ZOBRIST.side;
         self.debug_assert_state_in_step();
-        debug_assert!(
-            could_expose_king || !self.square_attacked(king_index, opposing_color),
-            "a move the filter cleared left the king attacked: {}",
+        let exposed = match probe {
+            Exposure::Whole => self.square_attacked(king_index, opposing_color),
+            Exposure::Straight => self.slider_reaches::<true>(king_index, opposing_color),
+            Exposure::Diagonal => self.slider_reaches::<false>(king_index, opposing_color),
+            Exposure::None => false,
+        };
+        debug_assert_eq!(
+            exposed,
+            self.square_attacked(king_index, opposing_color),
+            "the line probe and the full probe disagree after {}",
             play
         );
-        if could_expose_king && self.square_attacked(king_index, opposing_color) {
+        if exposed {
             self.undo_move();
             false
         } else {
