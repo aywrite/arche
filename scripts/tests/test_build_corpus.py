@@ -3,19 +3,11 @@
 
 """Tests for the tuning corpus builder.
 
-What is under test is the reading rather than the writing: which plies are the
-book's, which games are not play, which way round a result is read, and how a
-position two games reached is labelled. The epd it prints is what the engine
-parses, so the shape of a line is pinned as well.
-
-The game key has tests of its own, because two properties rest on it. The
-tuner's three groups are assigned from it, so it has to be the movetext's and
-nothing else or a re-extraction would move games between groups. And a position
-two games reached belongs to the group of the lower of their keys and is
-labelled by that group's games alone, which is what keeps a repeated position
-out of two groups at once and keeps a sealed game's result out of a label the
-fit reads. Two games can also key alike, and the counters say how many do,
-because a repeated game looks like nothing at all in the other numbers.
+What is under test is the reading: which plies are the book's, which games
+are not play, which way round a result is read, how a position two games
+reached is labelled, and the shape of the epd line the engine parses. The
+game key has tests of its own because the groups are assigned from it, so it
+has to be the movetext's and nothing else.
 """
 
 import hashlib
@@ -26,10 +18,8 @@ import chess.pgn
 import groups
 import pytest
 
-# Two move orders reaching the same position, which is how a test asks for one
-# position in two games. The keys are the movetexts', so which group each game
-# falls in is fixed, and the tests below assert what they need of it rather
-# than assuming it.
+# Two move orders reaching the same position. Which group each game falls in
+# is fixed by its movetext, and the tests assert what they need of it.
 DIRECT = "1. e4 e5 2. Nf3 Nc6 3. Bb5"
 TRANSPOSED = "1. Nf3 Nc6 2. e4 e5 3. Bb5"
 
@@ -40,9 +30,8 @@ def pgn(
     termination="normal",
     round_=None,
 ):
-    """One game in the shape a fastchess archive writes. The round is left
-    off unless a test asks for one, which is what an archive from before the
-    header was read looks like."""
+    """One game in the shape a fastchess archive writes, with no round unless
+    a test asks for one."""
     header = f'[Event "match"]\n[Result "{result}"]\n[Termination "{termination}"]\n'
     if round_ is not None:
         header += f'[Round "{round_}"]\n'
@@ -133,9 +122,7 @@ def test_a_game_with_no_result_is_dropped():
 
 
 def test_a_position_two_games_reached_carries_the_mean_of_them():
-    """Duplicates are a few per cent of the plies, so this is a small
-    correction. It is an exact one, and the count is what a weighted loss
-    reads."""
+    """The count is what a weighted loss reads."""
     entries, counts = build(pgn(result="1-0") + pgn(result="0-1"), book_plies=0)
     assert counts["games"] == 2
     # the two games are the same moves, so every position is a duplicate
@@ -148,9 +135,8 @@ def test_a_position_two_games_reached_carries_the_mean_of_them():
 
 
 def test_a_game_key_is_its_movetext_and_nothing_else():
-    """The key is what the tuner's three groups are assigned from, so it has to
-    be a property of the play. Two games of the same moves key alike whatever
-    their headers say, and a game one move different does not."""
+    """Two games of the same moves key alike whatever their headers say, and
+    a game one move different does not."""
     played = "1. e4 e5 2. Nf3 Nc6"
     first = next(games(moves_pgn(played, result="1-0")))
     same = next(games(moves_pgn(played, result="0-1")))
@@ -165,9 +151,8 @@ def test_a_game_key_is_its_movetext_and_nothing_else():
 
 
 def test_two_games_of_the_same_moves_are_counted():
-    """A repeated game and a repeated position look the same in every other
-    number, and a game whose movetext another game already had is one game's
-    evidence counted twice. Nothing else in the run says so."""
+    """A repeated game looks the same as a repeated position in every other
+    number."""
     entries, counts = build(pgn(result="1-0") + pgn(result="0-1"), book_plies=0)
     # the same moves, so the same key, whatever the two games ended in
     assert counts["games"] == 2
@@ -182,9 +167,8 @@ def test_two_games_of_the_same_moves_are_counted():
 
 
 def test_a_position_two_games_reached_belongs_to_the_lower_key():
-    """Grouping by the game loses the property that rows sharing a position
-    land on one side, because the games that reached it can fall in different
-    groups. The lowest key owns the position, which restores it."""
+    """The games that reached a position can fall in different groups, and
+    the lowest key owning it is what keeps the position on one side."""
     keys = sorted(
         build_corpus.game_key(game)
         for game in games(moves_pgn(DIRECT) + moves_pgn(TRANSPOSED))
@@ -202,13 +186,9 @@ def test_a_position_two_games_reached_belongs_to_the_lower_key():
 
 
 def test_a_position_is_labelled_by_its_own_group_and_no_other():
-    """The appearance in another group is dropped rather than meaned in.
-
-    These two games fall in different groups, so merging them would put the
-    result of a game in one group into a label the other group's fit reads. The
-    position takes the owning game's result alone and weighs one, and the
-    counters say an appearance went.
-    """
+    """These two games fall in different groups, so the position takes the
+    owning game's result alone and weighs one, and the counters say an
+    appearance went."""
     text = moves_pgn(DIRECT, result="1-0") + moves_pgn(TRANSPOSED, result="0-1")
     keys = dict(zip((build_corpus.game_key(game) for game in games(text)), (1.0, 0.0)))
     owner = min(keys)
@@ -228,14 +208,9 @@ def test_a_position_is_labelled_by_its_own_group_and_no_other():
 
 def test_a_named_seal_decides_the_group_a_position_is_labelled_from(tmp_path):
     """The seal `--sealed` names has to reach the labelling, not only the fit.
-
-    These two games fall in different groups by their keys, so the position they
-    share is labelled from the owning game alone and the other appearance is
-    dropped. Naming both pairs puts them in the calibration group together, and
-    the label is then the mean of the two. A corpus that took the flag and
-    ignored it would keep dropping the appearance, so its rows would be labelled
-    by a split the fit it is handed to does not use, which is the leak the shared
-    module exists to prevent wearing the clothes of the thing that prevents it.
+    These two games fall in different groups by their keys; naming both pairs
+    puts them in the calibration group together, and the label is then the
+    mean of the two rather than the owning game's alone.
     """
     text = moves_pgn(DIRECT, result="1-0") + moves_pgn(TRANSPOSED, result="0-1")
     keys = [build_corpus.game_key(game) for game in games(text)]
@@ -253,8 +228,7 @@ def test_a_named_seal_decides_the_group_a_position_is_labelled_from(tmp_path):
 
 def test_a_position_two_games_of_one_group_reached_merges_as_before():
     """Where both games are in one group nothing is dropped and the label is
-    the mean of the two, which is what the rule did everywhere before it was
-    made group-local."""
+    the mean of the two."""
     direct, transposed = f"{DIRECT} Nf6", f"{TRANSPOSED} Nf6"
     keys = [
         build_corpus.game_key(game)
@@ -390,10 +364,8 @@ def test_a_positions_run_and_round_are_the_owning_games():
 
 
 def test_the_two_games_of_a_round_are_one_pair():
-    """A strength run plays every opening twice with the colours reversed,
-    and the two games are one opening's evidence, so they key together and
-    land in one group. The pair's key is the two games' keys sorted, so it is
-    the same whichever the archive lists first."""
+    """The two games of a round key together, and the pair's key is the same
+    whichever the archive lists first."""
     first = moves_pgn("1. e4 e5 2. Nf3 Nc6", round_="1")
     # a different opening, so the two games share no position and each
     # entry says which game owns it
@@ -443,8 +415,7 @@ def test_a_round_the_pgn_did_not_name_pairs_nothing():
 
 def test_a_game_with_no_partner_is_a_pair_of_one():
     """No round, or a round the shard's clock stopped after the first game
-    of, leaves a game alone, and its pair key is its own so the split reads
-    it as it did before pairs existed."""
+    of, leaves a game alone with its own key as its pair key."""
     entries, counts = build(pgn(round_="9"), book_plies=8)
     entry = next(iter(entries.values()))
     assert entry.played.pair == entry.key
@@ -453,10 +424,9 @@ def test_a_game_with_no_partner_is_a_pair_of_one():
 
 
 def test_a_paired_opening_is_never_split_across_the_groups():
-    """The acceptance check: two colour-reversed games of one round whose
-    own keys fall in different groups. Split by the game they would hold
-    half an opening out and drop the position both reached from one of them;
-    split by the pair they are one group's evidence and nothing is dropped."""
+    """Two colour-reversed games of one round whose own keys fall in different
+    groups: split by the pair they are one group's evidence and nothing is
+    dropped."""
     text = moves_pgn(DIRECT, result="1-0", round_="1") + moves_pgn(
         TRANSPOSED, result="0-1", round_="1"
     )

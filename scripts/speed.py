@@ -4,16 +4,13 @@
 
 """Measure one engine's bench against another's and print the Speed trailer.
 
-A rate on its own says nothing across machines, and a single pair of runs
-says nothing on one: this box swings ten percent between runs. So the two
-binaries take turns, which side goes first alternating each round, the
-medians are compared, and the spread of the rounds is printed beside the
-change so a reader can tell a claim from noise. The node counts and the
-time to depth are printed too, since a search change moves them and a speed
-change must not, and time to depth is what nps cannot see: nps normalises
-for the size of the tree by construction, so a search that visits fewer
-nodes at the same cost each finishes sooner while the rate says nothing
-happened.
+A single pair of runs says nothing: this box swings ten percent between runs.
+So the two binaries take turns, which side goes first alternating each round,
+the medians are compared, and the spread of the rounds is printed beside the
+change. The node counts and the time to depth are printed too: a search change
+moves the counts and a speed change must not, and nps normalises for the size
+of the tree, so a search that visits fewer nodes at the same cost each
+finishes sooner while the rate says nothing happened.
 
     speed.py <base binary> <candidate binary> [--rounds N] [--depth D]
              [--base-ref SHA]
@@ -48,8 +45,8 @@ def last_line(text: str) -> tuple[int, int] | None:
 
 def bench(binary: str, depth: int | None) -> tuple[int, int]:
     command = [binary, "bench"] + ([str(depth)] if depth is not None else [])
-    # stdin closed, so a binary from before the bench existed, which would
-    # start its uci loop and wait, ends instead
+    # stdin closed, so a binary from before the bench existed does not sit in
+    # its uci loop waiting
     output = subprocess.run(
         command,
         check=True,
@@ -67,10 +64,9 @@ def bench(binary: str, depth: int | None) -> tuple[int, int]:
 def measure(base: str, candidate: str, rounds: int, depth: int | None) -> Measured:
     measured = Measured()
     for round_ in range(rounds):
-        # which side runs first alternates, so a machine warming up or
-        # cooling down through the rounds leans on neither. The side is
-        # carried along rather than read back from the path, which the two
-        # sides may share when an engine is measured against itself
+        # alternating, so a machine warming up or cooling down leans on
+        # neither side. The side is carried rather than read off the path,
+        # which both share when an engine is measured against itself
         order = [(True, base), (False, candidate)]
         if round_ % 2:
             order.reverse()
@@ -92,30 +88,23 @@ def spread(rates: list[int]) -> float:
 
 def change(base: float, candidate: float) -> float:
     """The candidate against the base, as a percentage. Below zero is less of
-    whatever was counted, which for a time is faster and for a rate is slower,
-    so what it reads as is left to the caller to say."""
+    whatever was counted: faster for a time, slower for a rate."""
     return 100.0 * (candidate - base) / base
 
 
 def seconds(nodes: int, rates: list[int]) -> list[float]:
-    """How long each round took. The bench prints a count and a rate rather
-    than a time, and the count is the same every round, so one divided by the
-    other is the time exactly rather than an estimate of it.
-
-    Taken a round at a time rather than from the median rate, because a median
-    over an even number of rounds is the mean of the middle two and does not
-    survive being divided into.
+    """How long each round took: the count divided by the rate, which is exact
+    since the count is the same every round. A round at a time rather than
+    from the median rate, because a median over an even number of rounds is
+    the mean of the middle two and does not survive being divided into.
     """
     return [nodes / rate for rate in rates]
 
 
 def time_to_depth(measured: Measured) -> tuple[float, float]:
-    """The median seconds each side spent reaching the bench's depth.
-
-    This is what a change to the tree is worth and what the rate cannot see.
-    It is not the better number, it is the other one: a change can shrink the
-    tree and make every node dearer at the same time, and only the two
-    together say what happened.
+    """The median seconds each side spent reaching the bench's depth. Not the
+    better number but the other one: a change can shrink the tree and make
+    every node dearer at once, and only the two together say what happened.
     """
     base = statistics.median(seconds(measured.base_nodes, measured.base_nps))
     candidate = statistics.median(
@@ -124,33 +113,27 @@ def time_to_depth(measured: Measured) -> tuple[float, float]:
     return base, candidate
 
 
-# Said when the counts differ, because neither number is a claim at that point
-# and the trailer on its own would read like one.
+# Said when the counts differ, because the trailer on its own would then read
+# as a claim it is not.
 COUNTS_DIFFER = """the node counts differ, so this is a search change as well as a speed
 one. nps only says what a node costs. Time to depth is what the change is
 worth at this depth, and whether the new tree is the right one is for
 games to say."""
 
-# Said when the change between the medians is smaller than the spread of the
-# rounds it came from, so a reader is not left to weigh the two percentages
-# against each other and read the headline anyway.
+# Said when the change between the medians is inside the spread of the rounds.
 NO_CLAIM = """the change is inside the spread, so the medians make no claim; the
 fastest column is the steadier comparison when the machine was not
 quiet"""
 
 
 def summary(measured: Measured) -> list[str]:
-    """The report's middle: one row per side and the change under each
-    column, so the percentages sit beneath the numbers they compare.
+    """One row per side and the change under each column.
 
-    The fastest column is there because nothing that shares the machine
-    ever makes a run faster, so each side's best round is its least
-    interfered one: on a quiet box it agrees with the medians, and on a
-    loaded runner it is the comparison that survives the load.
-
-    When the counts match, the change row leaves nodes and time empty: the
-    nodes have not moved, and the time is the rate again upside down, so a
-    percentage in either cell would say nothing the nps cell does not.
+    The fastest column is there because nothing sharing the machine ever
+    makes a run faster, so each side's best round is its least interfered one
+    and the comparison that survives a loaded runner. When the counts match,
+    the change row leaves nodes and time empty: the time is then the rate
+    upside down and would say nothing the nps cell does not.
     """
     base_seconds, candidate_seconds = time_to_depth(measured)
     base_rate = statistics.median(measured.base_nps)
@@ -198,7 +181,7 @@ def summary(measured: Measured) -> list[str]:
 
 def trailer(base: list[int], candidate: list[int], base_ref: str) -> str:
     """The Speed trailer: the change between medians, and the wider of the
-    two sides' spreads, which is what the change has to be read against."""
+    two sides' spreads."""
     change = 100.0 * (statistics.median(candidate) - statistics.median(base))
     change /= statistics.median(base)
     widest = max(spread(base), spread(candidate))
@@ -231,18 +214,15 @@ def main(argv: list[str]) -> int:
     base_rate = statistics.median(measured.base_nps)
     candidate_rate = statistics.median(measured.candidate_nps)
     if measured.base_nodes != measured.candidate_nodes:
-        # set off on its own, since it is the part a reader skims past and
-        # the one that says the trailer below is not the whole story. The
-        # trailer stays the last line, which is what speed.sh is piped into
+        # the trailer stays the last line, which is what speed.sh reads
         print()
         print(COUNTS_DIFFER)
     widest = max(spread(measured.base_nps), spread(measured.candidate_nps))
     # a spread of exactly zero is a perfectly repeatable measurement, where
-    # any change at all is a claim. When the counts differ the block above
-    # has already said no number here is one, and the fastest pair it would
-    # point at compares rates over different trees, so the gate stays out
-    # of it. Compared at full precision: the one divergence a reader can
-    # see is a printed tie, where either reading of it is fair
+    # any change is a claim. When the counts differ the block above has
+    # already said no number here is one, and the fastest pair it would point
+    # at compares rates over different trees. Compared at full precision, so
+    # the one divergence a reader can see is a printed tie
     if (
         measured.base_nodes == measured.candidate_nodes
         and widest > 0

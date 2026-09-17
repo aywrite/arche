@@ -1,16 +1,11 @@
 # SPDX-License-Identifier: GPL-3.0-or-later
 # Copyright (C) 2022-2026 Andrew Wright
 
-"""The commit scope list is kept in four places, and they have to agree.
-
-The commit-msg hook holds the scopes it accepts. cliff.toml names the build
-scopes, which go under Development whatever their type. The trailer check
-names the engine scopes, which need a bench. And DEVELOPMENT.md has a table
-of each kind. A scope added to the hook and not the others lands a commit in
-the wrong changelog section, or lets an engine commit through with no bench
-stated, and nothing else would notice. The hook is the gate, so that is the
-direction checked: a scope the others name and the hook does not is one no
-commit can carry.
+"""The commit scope list is kept in four places, and they have to agree: the
+commit-msg hook, cliff.toml (the build scopes), the trailer check (the engine
+scopes) and the tables in DEVELOPMENT.md. A scope added to the hook and not
+the others lands a commit in the wrong changelog section, or lets an engine
+commit through with no bench, and nothing else would notice.
 """
 
 import re

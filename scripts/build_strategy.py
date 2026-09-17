@@ -5,23 +5,19 @@
 """Convert the Strategic Test Suite to the epd the strategic suite reads.
 
 The suite grades rather than passes or fails: each position carries ten moves
-with a score out of a hundred, and a position is worth what the move the
-search settles on is worth. The source names those moves twice, once in san
-and once in the coordinate notation the engine already speaks, so the
-conversion is a matter of keeping the right column and no san parser or
-python-chess is needed here.
+with a score out of a hundred. The source names those moves in san and in
+coordinate notation, so the conversion keeps the right column and needs no
+san parser.
 
     python3 scripts/build_strategy.py STS1-STS15_LAN_v5.epd arche-core/strategy.epd
 
-The source is pinned below at a commit and by its checksum, because that
-repository revises positions on its default branch, and the checksum is
-written into the header of what this produces. It is not rerun to refresh the
-committed file, though: a suite that is already gating on a number is added to
-rather than rebuilt, for the reason its own header gives.
+The source is pinned at a commit and by its checksum, because that repository
+revises positions on its default branch. It is not rerun to refresh the
+committed file: a suite already gating on a number is added to rather than
+rebuilt, for the reason its header gives.
 
-Everything that will not read raises rather than being skipped. The result is
-committed and gates a build, so a line nobody is sure of is worth less than no
-file at all.
+Everything that will not read raises rather than being skipped, since the
+result gates a build.
 """
 
 import argparse
@@ -31,12 +27,10 @@ import sys
 from collections.abc import Iterator
 from pathlib import Path
 
-# The Strategic Test Suite, fifteen themes of a hundred positions, in the copy
-# fsmosca/STS-Rating publishes. Version five is the one taken: it scores ten
-# moves where version three scores four, so the engine's move is usually
-# somewhere on the scale and the total moves smoothly rather than snapping to
-# zero, and grading already handles a position with two nearly equal moves,
-# which is what version six's filter exists to remove.
+# The Strategic Test Suite in the copy fsmosca/STS-Rating publishes. Version
+# five scores ten moves where version three scores four, so the total moves
+# smoothly rather than snapping to zero; version six only filters out
+# positions with two nearly equal moves, which grading already handles.
 SOURCE_URL = (
     "https://raw.githubusercontent.com/fsmosca/STS-Rating/{ref}"
     "/epd/STS1-STS15_LAN_v5.epd"
@@ -44,10 +38,9 @@ SOURCE_URL = (
 SOURCE_REF = "4e36977090c3a93ea57d5f34e13e42df422634d3"
 SOURCE_SHA256 = "471ce06a56670ee7994f717790b91a9d47143bc40ce600c9eb91f4b53739d7be"
 
-# The themes the source carries and how many positions each holds. Named
-# rather than counted, so a source that has been revised under the pin, or a
-# neighbouring file handed over by mistake, fails here instead of producing a
-# suite that looks like this one and is not.
+# The themes the source carries and how many positions each holds, so a
+# revised or wrong source fails here rather than producing a suite that looks
+# like this one.
 THEMES = {
     "Undermine": 100,
     "Open Files and Diagonals": 100,
@@ -67,24 +60,20 @@ THEMES = {
 }
 
 # One line of the third theme spells it with the last two words the other way
-# round. Both spellings mean the theme, and a report that grouped by the name
-# as written would print it twice, so the odd one out is folded into the
-# spelling the other ninety nine use. It is the only edit made to a theme
-# name: two of them are abbreviated in the source, AKPC and AT, and are left
-# as the source writes them, because expanding them would be a guess.
+# round, and is folded into the spelling the other ninety nine use. The only
+# edit made to a theme name: AKPC and AT are left abbreviated as the source
+# writes them, since expanding them would be a guess.
 SPELLINGS = {
     "Knight Outposts/Centralization/Repositioning": (
         "Knight Outposts/Repositioning/Centralization"
     ),
 }
 
-# `STS(v1.0) Undermine.001`. The version tag goes with exactly one theme, so
-# it says nothing the theme does not; it comes off, and that it says nothing
-# is checked rather than assumed.
+# `STS(v1.0) Undermine.001`. The version tag goes with exactly one theme, which
+# is checked, so it comes off.
 IDENTIFIER = re.compile(r"^STS\((?P<tag>v[\d.]+)\)\s+(?P<name>\S.*?)\.(?P<number>\d+)$")
 
-# The coordinate notation the engine speaks: two squares and an optional
-# promotion piece.
+# The coordinate notation the engine speaks.
 MOVE = re.compile(r"^[a-h][1-8][a-h][1-8][qrbn]?$")
 
 HEADER = """\
@@ -147,10 +136,9 @@ HEADER = """\
 
 
 # The three readers below are scripts/build_tactics.py's, copied rather than
-# imported: that script reads san and so imports python-chess at the top, and
-# importing it here would make this script need a library it has no use for
-# and that ci does not install. `operations_of` differs anyway, since the
-# quotes come off an operand here.
+# imported because that script imports python-chess at the top, which this
+# one has no use for. `operations_of` differs anyway: the quotes come off an
+# operand here.
 def split_operations(text: str) -> list[str]:
     """The `;` separated operations of an epd line, with the separators inside
     a quoted operand left alone."""
@@ -171,11 +159,8 @@ def split_operations(text: str) -> list[str]:
 
 def operations_of(text: str) -> dict[str, str]:
     """The operations of an epd line as opcode to operand, with the quotes
-    around an operand taken off.
-
-    An opcode twice on one line raises rather than taking the last of them.
-    A second `c9` would quietly convert the wrong ten moves and a second `c8`
-    would quietly rescore them, and neither line is one to guess at.
+    around an operand taken off. An opcode twice on one line raises: a second
+    `c9` would quietly convert the wrong moves and a second `c8` rescore them.
     """
     found = {}
     for operation in split_operations(text):
@@ -204,12 +189,10 @@ def positions(text: str) -> Iterator[tuple[int, str, dict[str, str]]]:
 
 
 def graded_moves(number: int, operations: dict[str, str]) -> list[tuple[str, int]]:
-    """The `c9` moves paired with their `c8` scores, in the source's order.
-
-    The two are separate operations holding separate lists, so everything
-    that could have them disagree is checked: their lengths, that a score is
-    a whole number the suite's hundred covers, that a move is a move, and that
-    no move is graded twice.
+    """The `c9` moves paired with their `c8` scores, in the source's order,
+    with the two lists checked to line up: their lengths, that a score is a
+    whole number from one to a hundred, that a move is a move, and that no
+    move is graded twice.
     """
     for opcode in ("c8", "c9"):
         if not operations.get(opcode):
@@ -251,12 +234,10 @@ def identify(number: int, operations: dict[str, str]) -> tuple[str, str, str]:
 
 
 def convert(text: str, expected: dict[str, int] | None = None) -> list[str]:
-    """Convert the source suite to epd lines the engine can read.
-
-    Each line keeps its fen, names its highest scoring move in bm, and carries
-    every graded move with its score in a points operation. What the source
-    said twice is dropped: `c0` and `c7` are the same moves in san, `c8` and
-    `c9` are now in points, and `Ae` names the analysis the header names.
+    """Convert the source suite to epd lines the engine can read: the fen, the
+    highest scoring moves in bm, and every graded move with its score in a
+    points operation. `c0` and `c7` (the same moves in san), `c8` and `c9`
+    (now in points) and `Ae` (the analysis the header names) are dropped.
     """
     expected = THEMES if expected is None else expected
     converted = []
@@ -290,8 +271,7 @@ def convert(text: str, expected: dict[str, int] | None = None) -> list[str]:
 
 
 def shared_tops(lines: list[str]) -> list[str]:
-    """The ids of the converted lines whose top score is shared, which is a
-    thing about the source worth printing rather than passing over."""
+    """The ids of the converted lines whose top score is shared."""
     shared = []
     for line in lines:
         operations = operations_of(line.split(None, 4)[4])

@@ -8,25 +8,18 @@ set -euo pipefail
 
 version="${1:?usage: changelog.sh <version>}"
 
-# Everything since the last full release rather than since the last tag, so that
-# a release preceded by candidates still lists all of its changes. git-cliff has
-# --ignore-tags, but it does not affect the range --unreleased picks.
+# Since the last full release rather than the last tag, so a release preceded
+# by candidates still lists all of its changes. git-cliff's --ignore-tags does
+# not affect the range --unreleased picks.
 #
-# The || true is what keeps pipefail from killing the script when there is no
-# full release yet: grep exits 1 on finding nothing, and the empty answer is
-# the answer.
+# grep exits 1 on finding nothing, and under pipefail the || true is what
+# makes the empty answer the answer.
 previous=$(git tag --list 'v[0-9]*' --sort=-v:refname | grep -v -- '-' | head -1 || true)
 
-# A candidate does get a section, because the github release is created from the
-# section matching the tag and there is nothing to create it from otherwise. It
-# is a preview rather than a record though: it covers the same range the release
-# will, so whatever is written next replaces it rather than joining it, and the
-# release at the end of a run of candidates reads as though none of them
-# happened.
-#
-# Dropping any section for this version too makes the hook safe to run twice
-# over, which is worth having because the only sign that it had would be a
-# changelog with the same release in it twice.
+# A candidate gets a section, since the github release is created from the
+# section matching the tag. It covers the same range the release will, so the
+# next section written replaces it. Dropping any section for this version too
+# makes the hook safe to run twice over.
 if [ -f CHANGELOG.md ]; then
   awk -v version="$version" '
     # the version is what is inside the brackets, so that the date after them,

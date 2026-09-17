@@ -3,13 +3,11 @@
 
 """Tests for the defaults of the inputs Strength and Calibrate are called with.
 
-Some of their inputs are workflow_call inputs and not boxes on the actions
-tab. A workflow_call default is not applied to a run started from the tab, so
-every one of those reaches a dispatch run empty unless the expression that
-reads it repeats the default itself. Nothing in the workflow says so, and a
-run that lost one plays on a table of nothing or publishes under no marker
-rather than failing, so what is checked here is that each of them is read as
-inputs.<name> || <default>.
+A workflow_call default is not applied to a run started from the actions tab,
+so an input that is not also a box there reaches a dispatch run empty unless
+the expression that reads it repeats the default. A run that lost one plays
+on a table of nothing or publishes under no marker rather than failing, so
+what is checked is that each is read as inputs.<name> || <default>.
 """
 
 import re

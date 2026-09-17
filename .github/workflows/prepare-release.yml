@@ -44,33 +44,29 @@ jobs:
 
       - uses: Swatinem/rust-cache@6323deb102c322ba6fcbdcafc7e3dddab59af2b6 # v2.9.2
         with:
-          # this job installs cargo-release into CARGO_HOME/bin, which this
-          # action caches by default. restoring that cache made the install
-          # below a no-op without the binary actually being there.
+          # the action caches CARGO_HOME/bin by default, and a restored cache
+          # made the cargo-release install below a no-op with no binary there
           cache-bin: false
 
       - uses: taiki-e/install-action@d438492cf8a250514fa2d34b30bc3c0dc37c65ff # v2.87.8
         with:
-          # pinned exactly, because these two write the release commit and the
-          # changelog and a tool that floats makes a release unreproducible.
-          # these are the versions that cut v0.4.4. cliff.toml is written
-          # against git-cliff's version 2 template syntax, so a major bump here
-          # is a template change as well as a version one. dependabot bumps the
-          # `uses:` line above but not a version inside `tool:`, so these two
-          # are bumped by hand
+          # pinned exactly, since a tool that floats makes a release
+          # unreproducible: these write the release commit and the changelog,
+          # and these versions cut v0.4.4.
+          # cliff.toml is written against git-cliff's version 2 template
+          # syntax, so a major bump is a template change too. dependabot does
+          # not bump a version inside `tool:`, so these are bumped by hand
           tool: cargo-binstall@1.23.0,git-cliff@2.14.1
 
       - name: Install cargo-release
         run: |
-          # pinned for the reason above. installed here rather than through the
-          # action, which does not carry cargo-release
+          # the action does not carry cargo-release
           cargo binstall --no-confirm cargo-release@1.1.5
-          # binstall can exit zero without installing anything, so fail here
-          # rather than several steps later with a confusing error
+          # binstall can exit zero without installing anything
           cargo release --version
 
-      # the release workflow runs these again, but failing here means nothing is
-      # created at all, rather than a pull request that has to be closed again
+      # the release workflow runs these again, but failing here creates
+      # nothing rather than a pull request to close
       - name: Run the tests
         run: cargo test --workspace --locked --release
 
@@ -79,8 +75,7 @@ jobs:
           git config user.name "${{ github.actor }}"
           git config user.email "${{ github.actor_id }}+${{ github.actor }}@users.noreply.github.com"
 
-      # no tag here, tag-release.yml makes it once this lands, so that it points
-      # at the commit that is on master rather than one on a branch
+      # no tag here: tag-release.yml tags the commit once it is on master
       - name: Bump the version and write the changelog
         run: cargo release ${{ inputs.level }} --execute --no-confirm --no-tag
 
@@ -91,8 +86,7 @@ jobs:
           echo "version=${version}" >> "$GITHUB_OUTPUT"
           echo "branch=release/v${version}" >> "$GITHUB_OUTPUT"
 
-      # master only takes changes through a pull request, so the release commit
-      # goes through one like anything else
+      # master only takes changes through a pull request
       - name: Push the release branch
         run: |
           git switch -c "${{ steps.version.outputs.branch }}"

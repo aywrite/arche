@@ -5,10 +5,8 @@
 
 A repository of two commits whose one file says which commit it is, and a
 cargo that "builds" by writing a fake engine printing that file: what is
-under test is that the binary asked for is the commit's, that the working
-tree is never touched to get it, and that the build lands where cargo is
-told to put things. The build command and the path it leaves its binary at
-are arguments, so builds of other shapes are here as well.
+under test is that the binary is the commit's, that the working tree is never
+touched, and that the build lands where cargo is told to put things.
 """
 
 import os
@@ -116,12 +114,9 @@ def test_the_build_lands_where_cargo_is_told_to_put_it(repo, tmp_path):
 
 @pytest.mark.skipif(shutil.which("cargo") is None, reason="needs cargo")
 def test_a_commit_that_changed_the_source_is_built_afresh(tmp_path):
-    # the one test through real cargo, because the failure it guards
-    # against is cargo's: an export stamped with the commit's time looks
-    # older than the last build and is handed that binary back, and an
-    # export sharing the tree's target directory is taken for the tree.
-    # Two commits of a crate that prints which one it is, then the tree
-    # changed again: each build has to say what its own source says
+    # the one test through real cargo, because the failure it guards against
+    # is cargo's freshness check handing an older build back. Two commits of
+    # a crate that prints which one it is, then the tree changed again
     repo = tmp_path / "repo"
     (repo / "src").mkdir(parents=True)
 
@@ -148,8 +143,7 @@ def test_a_commit_that_changed_the_source_is_built_afresh(tmp_path):
     git("commit", "-aqm", "second")
     says("tree")
 
-    # cargo's own configuration comes through, rustup's home among it; the
-    # target directory does not, or the build would land in the caller's
+    # rustup's home comes through; the caller's target directory does not
     env = {
         k: v
         for k, v in os.environ.items()
@@ -179,8 +173,7 @@ def test_a_commit_that_changed_the_source_is_built_afresh(tmp_path):
 def test_the_build_and_the_binary_it_leaves_can_be_given(repo, tmp_path):
     repo, _git, shims = repo
     # a build of its own, leaving its binary where the default build would
-    # not look for one. It runs from the root of the export, which is what
-    # $PWD is, so the fake engine it writes prints that tree's file
+    # not look. $PWD is the root of the export
     made = (
         "mkdir -p made\n"
         "printf '#!/usr/bin/env bash\\ncat %s/which.txt\\n' \"$PWD\" > made/engine\n"
@@ -197,8 +190,7 @@ def test_the_build_and_the_binary_it_leaves_can_be_given(repo, tmp_path):
 
 def test_the_path_can_be_given_on_its_own(repo, tmp_path):
     repo, _git, shims = repo
-    # the two defaults are taken apart from each other: naming the path
-    # leaves the default build command, which is what produces the binary
+    # naming the path leaves the default build command
     result = build(repo, shims, "HEAD", tmp_path / "three", "../release/arche")
     assert result.returncode == 0, result.stderr
     assert prints(tmp_path / "three") == "second\n"
@@ -207,9 +199,7 @@ def test_the_path_can_be_given_on_its_own(repo, tmp_path):
 
 def test_an_empty_path_takes_the_default(repo, tmp_path):
     repo, _git, shims = repo
-    # a build named without a path, which is how a workflow passes one. The
-    # empty argument is the default, so the binary goes where the default
-    # build would have left it
+    # a build named without a path, which is how a workflow passes one
     made = (
         "mkdir -p ../release\n"
         "printf '#!/usr/bin/env bash\\ncat %s/which.txt\\n' \"$PWD\" > ../release/arche\n"
@@ -222,9 +212,8 @@ def test_an_empty_path_takes_the_default(repo, tmp_path):
 
 def test_the_build_is_given_the_exports_target_directory(repo, tmp_path):
     repo, _git, shims = repo
-    # a caller's cargo reads CARGO_TARGET_DIR when it is not told a directory,
-    # and the one it must not read is the tree's: an export sharing that is
-    # taken for the tree and hands the tree's binary back
+    # a build command that is not told a directory reads CARGO_TARGET_DIR,
+    # and the one it must not read is the tree's
     theirs = tmp_path / "theirs"
     said = tmp_path / "said"
     build_command = (

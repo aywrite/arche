@@ -5,7 +5,6 @@ let
   rustBuildTargetTriple = "x86_64-pc-windows-gnu";
   rustBuildHostTriple = "x86_64-unknown-linux-gnu";
 
-  # Our windows cross package set.
   pkgs-cross-mingw = import pkgs.path {
     crossSystem = {
         config = "x86_64-w64-mingw32";
@@ -61,8 +60,7 @@ pkgs.mkShell rec {
     '';
   # A set RUSTFLAGS replaces .cargo/config.toml rather than adding to it, so
   # the default target level is restated here. Without it this shell would
-  # build the baseline while the documentation says v2, and every figure
-  # taken in it would be about four percent of instructions off.
+  # build the baseline while the documentation says v2.
   RUSTFLAGS = (builtins.map (a: ''-L ${a}/lib'') [
     mingw_w64
     mingw_w64_pthreads_w_static

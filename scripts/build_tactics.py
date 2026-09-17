@@ -4,21 +4,16 @@
 
 """Convert a published tactical suite to the notation the engine speaks.
 
-Published suites name their best moves in san: `Rxb2`, `Ra8#`, `O-O`. San
-cannot be read without a board, because `Rxb2` does not say which rook. The
-engine speaks coordinate notation, `a1b2` and `e7e8q`, and has no san parser,
-and writing one means the disambiguation rules, the check and mate suffixes,
-castling and promotion, every one of them easy to get subtly wrong for a file
-that is read once. So the conversion happens here, once, with python-chess,
-and its result is committed: ci then needs neither the network nor python to
-run the suite.
+Published suites name their best moves in san (`Rxb2`, `Ra8#`, `O-O`), which
+cannot be read without a board. The engine speaks coordinate notation and has
+no san parser, so the conversion happens here, once, with python-chess, and
+the result is committed.
 
     python3 scripts/build_tactics.py wac.epd arche-core/tactics.epd
 
-The source is pinned below at a commit rather than named by a branch, so what
-this produced can be produced again. It is not rerun to refresh the committed
-file, though: a suite that is already gating on a number is added to rather
-than rebuilt, for the reason its own header gives.
+The source is pinned at a commit. It is not rerun to refresh the committed
+file: a suite already gating on a number is added to rather than rebuilt, for
+the reason its header gives.
 """
 
 import argparse
@@ -28,23 +23,16 @@ from pathlib import Path
 
 import chess
 
-# Win At Chess, Fred Reinfeld's 300 tactical positions, in the epd encoding
-# that has been passed around since the 1990s. This copy has not changed since
-# 2004 and its fens and bm moves agree move for move with the copies in
-# pd/benthos and dimock/chess, which were checked against it rather than
-# trusted.
+# Win At Chess, Fred Reinfeld's 300 tactical positions. This copy has not
+# changed since 2004, and its fens and bm moves were checked move for move
+# against the copies in pd/benthos and dimock/chess.
 SOURCE_URL = "https://github.com/jwiegley/emacs-chess/blob/{ref}/wac.epd"
 SOURCE_REF = "9605600c114e3981b3c2e30d4e39c8f032a64c3d"
 
-# The two operations kept. `bm` is the suite, and `id` is what a failure names
-# the position by, which is the difference between a report that can be looked
-# up and a count.
-#
-# Everything else is dropped. The suite as published carries `acd`, `acn`,
-# `acs`, `ce` and `pv` on some lines: the depth, node count, seconds, score
-# and principal variation of one run of one engine from 2004. They describe
-# that engine rather than the position, nothing here reads them, and a stale
-# score sitting beside a position would sooner or later be read as a target.
+# `bm` is the suite and `id` is what a failure names the position by. The
+# `acd`, `acn`, `acs`, `ce` and `pv` some lines carry are one 2004 engine's
+# analysis, and a stale score beside a position would sooner or later be read
+# as a target.
 KEPT = ("bm", "id")
 
 HEADER = """\
@@ -118,13 +106,10 @@ def positions(text: str) -> Iterator[tuple[int, str, dict[str, str]]]:
 def convert(text: str) -> list[str]:
     """Convert a san suite to epd lines whose bm moves are coordinate moves.
 
-    Anything that will not parse raises rather than being skipped: a move, a
-    fen, a position with no bm or no id. A suite that quietly drops the
-    positions it could not read gates on a number that means something other
-    than what it claims -- "241 of 300" would be counting a smaller suite than
-    it names -- and the positions missing from it would be the interesting
-    ones, since a move that is hard to read tends to sit in a position that is
-    hard to search.
+    Anything that will not parse raises rather than being skipped: a suite
+    that quietly dropped the positions it could not read would gate on a
+    smaller suite than it names, and the missing positions would be the
+    interesting ones.
     """
     converted = []
     for number, fen, operations in positions(text):

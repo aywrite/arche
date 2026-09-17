@@ -4,13 +4,9 @@
 """Tests for the workflow ref resolver.
 
 The fixture is a local upstream standing in for github, so every form a
-workflow input can take is resolved offline: a commit already present, a
-branch or tag that has to be fetched, and a bare number meaning a pull
-request's head.
-
-The trigger the script is run under is an argument here rather than whatever
-this process inherited, since these tests themselves run inside a workflow and
-would otherwise be checking the trigger that happened to start them.
+workflow input can take is resolved offline. The trigger the script runs
+under is an argument rather than inherited, since these tests run inside a
+workflow themselves.
 """
 
 import os
@@ -54,8 +50,7 @@ def clone(tmp_path):
     clone = tmp_path / "clone"
     git(tmp_path, "clone", "-q", str(upstream), str(clone))
 
-    # everything after the clone only exists upstream, like a push made
-    # after a workflow's checkout
+    # everything after the clone only exists upstream
     (upstream / "README").write_text("two\n")
     git(upstream, "commit", "-aqm", "second")
     git(upstream, "branch", "-q", "feature")
@@ -119,11 +114,9 @@ def test_a_number_with_no_pull_request_fails(clone):
     assert result.returncode != 0
 
 
-# What the script refuses, and what that refusal is and is not. It builds a ref
-# somebody without write access can choose, so it runs only under the triggers
-# where the ref was chosen by somebody who can already push. The trigger is the
-# one part of that a step can read: the permissions a job was given and the
-# secrets it holds are not visible from a script at all.
+# The script runs only under the triggers where the ref was chosen by somebody
+# who can already push. The trigger is the one part of that a step can read:
+# a job's permissions and secrets are not visible from a script.
 
 
 def test_a_dispatch_is_how_the_match_workflows_run(clone):

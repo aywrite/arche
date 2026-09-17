@@ -1,12 +1,10 @@
 name: Tag release
 
-# Tags master whenever the version in Cargo.toml is one that has not been
-# released yet, which in practice means when a release pull request from
-# prepare-release.yml has just been merged.
+# Tags master whenever the version in Cargo.toml has not been released yet,
+# which is when a release pull request from prepare-release.yml has merged.
 #
-# This deliberately looks at the version rather than the commit message. The
-# message of the merged commit depends on whether the pull request was merged,
-# squashed or rebased, whereas the version is the thing being released.
+# The version rather than the commit message, because the merged commit's
+# message depends on whether the pull request was merged, squashed or rebased.
 
 on:
   push:
@@ -52,10 +50,9 @@ jobs:
           git tag -a "$TAG" -m "chore: Release $TAG"
           git push origin "$TAG"
 
-      # a tag pushed with GITHUB_TOKEN does not trigger the tag filter on the
-      # release workflow, github suppresses that to avoid workflows setting each
-      # other off. workflow_dispatch is the documented exception, so start it
-      # explicitly, at the new tag.
+      # a tag pushed with GITHUB_TOKEN does not trigger the release workflow's
+      # tag filter, so that workflows cannot set each other off.
+      # workflow_dispatch is the documented exception.
       - name: Start the release workflow
         if: steps.version.outputs.needed == 'true'
         env:

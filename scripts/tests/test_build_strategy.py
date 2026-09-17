@@ -3,12 +3,10 @@
 
 """Tests for the strategic suite converter.
 
-The source grades ten moves a position and names them twice, once in san and
-once in coordinate notation, so the conversion keeps a column rather than
-parsing a move. What is under test is therefore the checking: the two lists
-that have to line up, the id the theme is read out of, the one theme spelt two
-ways, and that a line nobody is sure of stops the run rather than reaching a
-file that gates a build.
+The conversion keeps a column rather than parsing a move, so what is under
+test is the checking: the two lists that have to line up, the id the theme is
+read out of, the one theme spelt two ways, and that a line nobody is sure of
+stops the run.
 """
 
 import hashlib
@@ -53,9 +51,7 @@ def test_the_best_move_is_the_highest_scoring_one_and_not_the_first():
 
 
 def test_every_move_at_the_top_score_is_named():
-    # the source has sixty eight of these, three of them with all ten moves
-    # level, and a converter that picked one of them would be picking it at
-    # random out of moves the source calls equal
+    # the source has sixty eight of these, three with all ten moves level
     line = convert(source(c8='c8 "100 100 23";'))[0]
     assert read(line)["bm"] == "f4f5 d4f2"
 
@@ -73,8 +69,8 @@ def test_the_version_tag_comes_off_the_id():
 
 
 def test_a_tag_that_names_two_themes_raises():
-    # the tag is dropped because it says nothing the theme does not, which is
-    # only true while each tag goes with one theme
+    # the tag is dropped because it says nothing the theme does not, which
+    # holds only while each tag goes with one theme
     text = source() + source(identifier='id "STS(v1.0) Square Vacancy.001";')
     with pytest.raises(ValueError, match="names both"):
         convert(text, {"Undermine": 1, "Square Vacancy": 1})
@@ -136,8 +132,6 @@ def test_a_move_graded_twice_raises():
 
 
 def test_an_opcode_twice_on_one_line_raises():
-    # taking the last of them would convert the wrong ten moves, or rescore
-    # the right ten, and say nothing about either
     with pytest.raises(ValueError, match="c9 appears twice"):
         convert(source(c9='c9 "f4f5 d4f2 f3g4"; c9 "a1a2 a2a3 a3a4";'))
     with pytest.raises(ValueError, match="c8 appears twice"):
@@ -145,8 +139,7 @@ def test_an_opcode_twice_on_one_line_raises():
 
 
 def test_two_positions_with_one_id_raise():
-    # the theme counts would still add up, and the engine's reader would then
-    # hold two positions it could not tell apart in a report
+    # the theme counts would still add up
     text = source() + source(fen=OTHER)
     with pytest.raises(ValueError, match="Undermine.001 is named twice"):
         convert(text, {"Undermine": 2})
@@ -203,9 +196,8 @@ def written(tmp_path, monkeypatch, text=None):
     """Run the script over a fixture, with the pin and the theme counts moved
     to what the fixture is, and give back what it wrote."""
     text = source() if text is None else text
-    # the script pins its source by the bytes on disk, so write those bytes
-    # rather than let a windows text write turn every newline into a carriage
-    # return and a newline the pin was not taken over
+    # bytes rather than text, so a windows write does not add carriage
+    # returns the pin was not taken over
     raw = text.encode("utf-8")
     source_file = tmp_path / "sts.epd"
     source_file.write_bytes(raw)
@@ -225,8 +217,7 @@ def test_the_header_pins_the_source_and_states_the_rule(tmp_path, monkeypatch):
     assert build_strategy.SOURCE_REF in header
     assert build_strategy.SOURCE_SHA256 in header
     assert "scripts/build_strategy.py" in header
-    # the licence asks that the notice travel with the work, and this file is
-    # the work travelling
+    # the licence asks that the notice travel with the work
     assert "MIT" in header and "Copyright (c) 2019 fsmosca" in header
     assert "Permission is hereby granted" in header
     assert "THE SOFTWARE IS PROVIDED" in header

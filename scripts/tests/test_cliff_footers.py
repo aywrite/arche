@@ -3,16 +3,13 @@
 
 """The changelog prints a trailer's whole value or none of it.
 
-A trailer is written to be read as one thing. `Speed: +6.4% (bench nps, 9
-interleaved rounds vs abc1234, spread 50.5%)` says the change and what it has
-to be read against, and the project's own rule is that a change inside its
-spread is a measurement making no claim. The template printed the first word
-and dropped the rest, so the changelog turned eighteen of twenty two
+`Speed: +6.4% (bench nps, 9 interleaved rounds vs abc1234, spread 50.5%)`
+says the change and what it has to be read against. The template once printed
+the first word and dropped the rest, which turned eighteen of twenty two
 non-claims into claims.
 
-git-cliff is a rust binary and is not installed to run the script tests, so
-what is checked here is the template rather than its output: every footer
-branch prints `footer.value` whole, with no filter cutting it down.
+git-cliff is not installed to run the script tests, so what is checked is the
+template: every footer branch prints `footer.value` whole, with no filter.
 """
 
 import re
@@ -22,8 +19,7 @@ import tomllib
 
 ROOT = Path(__file__).resolve().parent.parent.parent
 
-# the three trailers docs/DEVELOPMENT.md describes, which are the three the
-# template has a branch for
+# the three trailers docs/DEVELOPMENT.md describes
 FOOTERS = ("Bench", "Speed", "Elo")
 
 
@@ -49,8 +45,7 @@ def test_every_footer_prints_its_whole_value():
 
 
 def test_no_footer_is_cut_down_by_a_filter():
-    # split/first/truncate are the shapes this went wrong in: the value was
-    # printed through a filter that kept the first word
+    # the shapes this went wrong in
     for token, branch in footer_branches().items():
         for filtered in ("split(", "first", "truncate"):
             assert filtered not in branch, (

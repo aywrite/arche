@@ -6,35 +6,26 @@
 
     check_bench_pins.py <base> <head> [--acknowledged <file>]
 
-The bench is the sum of the per position counts that
-`node_counts_have_not_moved` pins, because the test runs the suite at the
-same depth, table size and config the bare command does, and the last line
-the command prints is that sum. The file holding the pins is found in each
-commit's own tree rather than named here, so a crate rename does not
-strand the check. So a commit's tree
-already states its own bench, twice: once in the message and once in the pins.
-This compares the two, reading both out of the commit rather than building it.
+The bench is the sum of the per position counts `node_counts_have_not_moved`
+pins, since the test runs the suite at the same depth, table size and config
+the bare command does. So a commit states its bench twice, in the message and
+in the pins, and this compares the two without building anything. The file
+holding the pins is found in each commit's own tree, so a crate rename does
+not strand the check.
 
-That makes it cheap enough to run on a push to master, which is where the
-gap was. The bench workflow verifies a pull request's commits by building
-each one, but a commit that is rebased before it lands is not the commit that
-was verified: if the base changed what the bench counts, the message that
-passed is stale by the time it arrives. Nothing rebuilt it afterwards, and
-`f1f0730` and `5b12f03` reached master saying 36130893 with trees counting
-35561814.
+Cheap enough to run on a push to master, which is where the gap was: the
+bench workflow builds a pull request's commits, but a commit rebased before
+it lands is not the commit that was built, and `f1f0730` and `5b12f03`
+reached master saying 36130893 with trees counting 35561814.
 
-A commit already on master cannot be rewritten, so a lapse that is history
-would fail every release after it and the check would be turned off rather
-than read. `acknowledged_bench_pins.txt` beside this script is the way one
-is written down instead: a `<sha> <stated> <pinned>` line a run reports and
-steps over. The numbers are part of the entry, so a commit acknowledged at
-one pair of figures is not acknowledged at another, and the list cannot grow
-into a way of ignoring the check.
+A commit on master cannot be rewritten, so a lapse that is history would fail
+every release after it. `acknowledged_bench_pins.txt` beside this script
+lists them as `<sha> <stated> <pinned>` lines a run reports and steps over;
+the numbers are part of the entry, so a commit acknowledged at one pair of
+figures is not acknowledged at another.
 
-What this does not check is whether the pins themselves are true, which is
-the other half. `cargo test --release` runs `node_counts_have_not_moved` on
-every push to master already, so between the two a landed commit's message,
-its pins and its tree all have to agree.
+Whether the pins themselves are true is the other half, which `cargo test
+--release` checks on every push to master.
 """
 
 import argparse
@@ -45,8 +36,7 @@ from pathlib import Path
 
 PINNED_TEST = "fn node_counts_have_not_moved"
 
-# the lapses already on master, read from beside the script so that the
-# release workflow needs no path of its own
+# the lapses already on master
 ACKNOWLEDGED = Path(__file__).resolve().parent / "acknowledged_bench_pins.txt"
 
 # ("some position", 1_234_567), as the pinned list writes them
@@ -54,11 +44,8 @@ PIN = re.compile(r'\(\s*"[^"]*"\s*,\s*([\d_]+)\s*\)')
 
 
 def run(*args: str, no_match_is_an_answer: bool = False) -> str:
-    """Ask git something, or die saying what was asked.
-
-    git grep exits one when it found nothing, which is an answer to the one
-    caller that asks it, not a death.
-    """
+    """Ask git something, or die saying what was asked. git grep exits one on
+    finding nothing, which is an answer to the one caller that asks it."""
     done = subprocess.run(["git", *args], capture_output=True, text=True, check=False)
     if done.returncode > (1 if no_match_is_an_answer else 0):
         sys.exit(f"git {' '.join(args)}: {done.stderr.strip()}")
@@ -66,13 +53,8 @@ def run(*args: str, no_match_is_an_answer: bool = False) -> str:
 
 
 def stated_bench(sha: str) -> str | None:
-    """The Bench trailer, read the way git reads it.
-
-    Git prints a value a line and a blank line after them, so the last line
-    with anything on it is the last Bench trailer, which is the one that
-    counts: openbench reads the last, and check_trailers.py holds a commit to
-    stating no other bench-like number after it.
-    """
+    """The last Bench trailer, read the way git reads it, which is the one
+    openbench reads. Git prints a blank line after the values."""
     values = [
         line
         for line in run(
@@ -103,10 +85,8 @@ def pinned_total(sha: str) -> int:
     """The sum of the counts pinned at this commit."""
     source = run("show", f"{sha}:{pins_path(sha)}")
     body = source.split(PINNED_TEST, 1)[1]
-    # only this test's own list: the next one pins the reference search, and
-    # the two are written the same way, so the walk has to stop at the
-    # bracket that closes this one rather than at the next thing that looks
-    # like an end
+    # only this test's list: the next test pins the reference search the same
+    # way, so the walk stops at the bracket that closes this one
     start = body.index("vec![") + len("vec![")
     depth = 1
     end = start
@@ -123,12 +103,9 @@ def pinned_total(sha: str) -> int:
 
 
 def acknowledged(path: Path) -> list[tuple[str, str, str]]:
-    """The lapses the list names, as `(sha, stated, pinned)`.
-
-    Blank lines and `#` comments are skipped. Anything else that is not those
-    three fields is an error rather than a line quietly passed over, since a
-    typo in this file would otherwise turn a check off without saying so.
-    """
+    """The lapses the list names, as `(sha, stated, pinned)`. Blank lines and
+    `#` comments are skipped; anything else that is not three fields is an
+    error, since a typo would otherwise turn the check off silently."""
     if not path.exists():
         sys.exit(f"{path}: no acknowledgement list there")
     entries = []

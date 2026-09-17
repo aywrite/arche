@@ -8,55 +8,35 @@
 #
 # The commit is exported with git archive into <target>/at/src, where
 # <target> is CARGO_TARGET_DIR or target/, and built with <target>/at as its
-# target directory. The working tree is never checked out: nothing here
-# moves the branch, the index or a file someone is half way through, and a
-# script building one commit to measure against another has nothing to put
-# back afterwards.
+# target directory. The working tree is never checked out, so nothing here
+# moves the branch, the index or a half written file.
 #
-# How the export is built, and where that build leaves its binary, are the
-# last two arguments. Both default to what this repository builds with, so a
-# caller naming neither gets what this script has always done. They are
-# arguments rather than a table keyed by engine, because the command belongs
-# to whoever is calling rather than to a list this script would have to be
-# told about, and the command is the rest of the line rather than one string
-# so that nothing here has to split or eval it.
-#
-# The build is given CARGO_TARGET_DIR, so a cargo command lands in the
-# export's target directory whether or not it says --target-dir. The default
-# command says it as well, which is one directory named twice and not two. A
-# build that is not cargo ignores the variable and has to leave its binary
-# where <built> says.
-#
-# <built> is read from the root of the export, which is where the build runs.
-# A build writing into the target directory names it from there rather than
-# by an absolute path nobody outside this script can compose: that directory
-# is the export's parent, which is what the default ../release/arche says.
+# The build command is the rest of the line rather than one string, so
+# nothing here has to split or eval it. It is given CARGO_TARGET_DIR, so a
+# cargo command lands in the export's target directory whether or not it
+# says --target-dir; a build that is not cargo has to leave its binary where
+# <built> says. <built> is read from the root of the export, which is where
+# the build runs, so the default ../release/arche names the export's parent.
 #
 # The export has a target directory of its own, and its files are stamped
-# with the time they were extracted rather than the commit's. Both are what
-# keep cargo honest. Cargo tells a crate fresh by its sources being older
-# than its last build, and names a workspace crate's build by the crate and
-# not by where it was built from: so an export stamped with the commit's
-# time looks older than whatever was built last and is handed that binary
-# back, and an export sharing the tree's target directory is taken for the
-# tree. The engine is built afresh for every commit; what the target
+# with the time they were extracted rather than the commit's. Both keep cargo
+# honest: cargo tells a crate fresh by its sources being older than its last
+# build, and names a workspace crate's build by the crate, so an export
+# stamped with the commit's time is handed the last build back, and an export
+# sharing the tree's target directory is taken for the tree. What the target
 # directory keeps across calls is the dependencies.
 #
-# Where the export lands decides which build configuration it is built
-# under, because cargo finds a config by walking up from where it builds.
-# An export inside the tree, which the default target directory puts it,
-# reads the tree's .cargo/config.toml and is built the way the tree is; an
-# export under a CARGO_TARGET_DIR outside the tree reads only its own and
-# is built the way its commit was. That is invisible while two commits
-# agree on their build configuration, which is nearly always, and it is
-# the whole difference when they do not: a comparison spanning a change to
+# Where the export lands decides which .cargo/config.toml it is built under,
+# because cargo finds a config by walking up from where it builds. Inside the
+# tree, which is where the default target directory puts it, the export is
+# built the way the tree is; under a CARGO_TARGET_DIR outside the tree it is
+# built the way its commit was. A comparison spanning a change to
 # .cargo/config.toml reads about zero from inside the tree and reads the
 # change from outside it.
 #
 # No --locked in the default command: a baseline old enough that its lock
 # file predates a registry change would refuse to build, and the pull
-# request's own tree is held to its lock file by the Rust workflow. A caller
-# naming a command of its own answers that for itself.
+# request's own tree is held to its lock file by the Rust workflow.
 set -euo pipefail
 
 ref=${1:?usage: build_at.sh <ref> <binary> [built [build command...]]}
@@ -70,9 +50,8 @@ sha=$(git rev-parse --verify "${ref}^{commit}") \
 target=$(realpath -m "${CARGO_TARGET_DIR:-target}")/at
 src="${target}/src"
 
-# The build command's default is taken here rather than beside its argument,
-# because the target directory it names is only known once CARGO_TARGET_DIR
-# has been read. An argument left empty is an argument nobody gave.
+# defaulted here because it names the target directory. An empty argument is
+# an argument nobody gave
 if [ "${#build[@]}" -eq 0 ]; then
     build=(cargo build --release --quiet --target-dir "$target")
 fi
@@ -81,8 +60,6 @@ rm -rf "$src"
 mkdir -p "$src"
 git archive "$sha" | tar -xm -C "$src"
 (cd "$src" && CARGO_TARGET_DIR="$target" "${build[@]}")
-# A build that put its binary somewhere else says so here rather than as
-# whatever cp makes of a path that is not there.
 [ -f "${src}/${built}" ] \
     || { echo "build_at.sh: the build left no ${built}" >&2; exit 1; }
 mkdir -p "$(dirname "$binary")"

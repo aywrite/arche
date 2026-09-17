@@ -8,13 +8,11 @@
 #
 # Builds the release binary first, unless ARCHE names one already built, from
 # the tree as it stands rather than as it is staged. The number is the
-# bench's last line, which is the count the hook checks and the one openbench
-# reads.
+# bench's last line, which is what the hook checks and openbench reads.
 set -euo pipefail
 
 if [ -z "${ARCHE:-}" ]; then
     cargo build --release --quiet
-    # where cargo put it, which CARGO_TARGET_DIR moves
     ARCHE="${CARGO_TARGET_DIR:-target}/release/arche"
 fi
 

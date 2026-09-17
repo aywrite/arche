@@ -1,12 +1,10 @@
 name: Docker
 
-# A pull request, and a push to master, build the image and smoke test it, so
-# a Dockerfile that no longer builds is found before a release rather than on
-# the day. Neither publishes: the image that runs is a release's, published
-# when the release workflow calls this one, so that it is only built once the
-# tests have passed and the release exists. The master build is also what
-# keeps the layer cache warm: a pull request can read master's cache and a
-# tag can, and neither can read the other's.
+# A pull request and a push to master build the image and smoke test it, so a
+# Dockerfile that no longer builds is found before a release. Neither
+# publishes: the image is published when the release workflow calls this one.
+# The master build also keeps the layer cache warm, since a pull request and a
+# tag can each read master's cache and neither can read the other's.
 on:
   push:
     branches: [ "master" ]
@@ -31,13 +29,11 @@ concurrency:
 jobs:
   build:
     runs-on: ubuntu-latest
-    # The arm64 half of the published image is built under emulation, which is
-    # slow enough to be worth a ceiling.
+    # the arm64 half of the published image is built under emulation
     timeout-minutes: 90
-    # the last two are the attestation's: the job asks github for a short lived
-    # signing certificate with its own oidc token, and files the result against
-    # this repository. They are the job's rather than the workflow's, which has
-    # none of its own
+    # the last two let the job ask github for a short lived signing
+    # certificate with its own oidc token and file the attestation against
+    # this repository
     permissions:
       contents: read
       packages: write
@@ -45,8 +41,8 @@ jobs:
       attestations: write
     outputs:
       digest: ${{ steps.push.outputs.digest }}
-      # named here rather than where it is used, because the env context is not
-      # one of the few a reusable workflow's inputs are allowed to read
+      # named here because a reusable workflow's inputs cannot read the env
+      # context
       image: ${{ env.REGISTRY }}/${{ env.IMAGE_NAME }}:${{ github.ref_name }}
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
@@ -55,9 +51,7 @@ jobs:
         id: version
         run: |
           # the same read as tag-release.yml and prepare-release.yml. A grep
-          # for the first line starting with version finds `version.workspace
-          # = true` in `[package]`, which holds no quote for cut to split on
-          # and passes straight through as the label
+          # for the first version line finds `version.workspace = true`
           version=$(python3 -c "import tomllib; print(tomllib.load(open('Cargo.toml','rb'))['workspace']['package']['version'])")
           echo "version=${version}" >> "$GITHUB_OUTPUT"
 
@@ -114,23 +108,16 @@ jobs:
           labels: ${{ steps.meta.outputs.labels }}
           cache-from: type=gha
           cache-to: type=gha,mode=max
-          # Buildkit's own attestations, which travel with the image in its
-          # index and are what `docker buildx imagetools inspect` reads. max
-          # provenance records the build arguments and the source as well as
-          # the materials, and the sbom lists what the runtime layer holds,
-          # which for an image that installs lichess-bot and its python
-          # dependencies is most of what an advisory would be about. Only set
-          # on this step: the smoke test build above loads into the local
-          # docker rather than pushing, and that exporter takes neither.
+          # Buildkit's own attestations, which travel in the image index and
+          # are what `docker buildx imagetools inspect` reads. Only on this
+          # step: the smoke test build loads into the local docker, and that
+          # exporter takes neither.
           provenance: mode=max
           sbom: true
 
-      # The one above travels with the image and is signed by the build. This
-      # one is github's, filed against this repository and looked up by digest,
-      # which is what `gh attestation verify` asks for and does not need the
-      # registry to be reachable. push-to-registry puts it beside the image as
-      # well, so a client that has the image has the attestation. How to check
-      # it is in docs/LICHESS.md.
+      # github's attestation, filed against this repository and looked up by
+      # digest, which is what `gh attestation verify` asks for. push-to-registry
+      # puts it beside the image as well. How to check it is in docs/LICHESS.md.
       - name: Attest the published image
         if: inputs.release
         uses: actions/attest-build-provenance@4d101475d8b20a2381f78447822ac1eab6504dd8 # v4.2.2

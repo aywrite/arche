@@ -55,25 +55,18 @@ jobs:
     - name: Run tests
       run: cargo test --workspace --locked
 
-  # The tactical and the strategic suites, on one platform, and gating.
+  # The tactical and the strategic suites, gating, on one platform: a fixed
+  # depth and table make their totals exact on any machine, and twenty seconds
+  # or more of searching is not worth paying three times over a matrix that
+  # would agree with itself. They are ignored in the default run and asked
+  # for by name, a step each, and the second runs whether or not the first
+  # passed.
   #
-  # A fixed depth with a fixed table makes what each of them counts exact and
-  # the same on any machine, which is the property that lets them fail a build
-  # rather than only print a number (the same property the bench gates on).
-  # Together they are twenty seconds or so of searching here and rather more
-  # on a runner, which is not worth paying for three times over a matrix that
-  # would agree with itself every time.
-  #
-  # Ignored in the default run for that reason, so this asks for them by name.
-  # A step each, and the second runs whether or not the first passed, so a
-  # change that moves both totals says both in one red run rather than two.
-  #
-  # The name filter is not a gate on its own: cargo test exits 0 when it
-  # matches nothing, so a renamed or moved test would keep this green having
-  # run nothing at all. Each step therefore ends in a grep for the line that
-  # says its test ran and passed. grep ends the pipeline, so its status is the
-  # step's under the default shell, which is bash -e without pipefail, and tee
-  # keeps the output in the log either way.
+  # cargo test exits 0 when the name filter matches nothing, so a renamed or
+  # moved test would keep this green having run nothing. Each step therefore
+  # ends in a grep for the line saying its test ran and passed. grep ends the
+  # pipeline, so its status is the step's under the default shell (bash -e
+  # without pipefail), and tee keeps the output in the log.
   tactics:
     runs-on: ubuntu-latest
     timeout-minutes: 15
@@ -93,10 +86,9 @@ jobs:
       RUSTUP_TOOLCHAIN: "1.85"
     steps:
     - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
-    # the trailing comment on this one is a toolchain rather than a version of
-    # the action: the ref names what to install, so the sha is whatever the
-    # 1.85 branch pointed at, and moving it would move this job off the version
-    # it exists to check. .github/dependabot.yml keeps it out of the bumps.
+    # the ref names the toolchain to install, not a version of the action, so
+    # a bump would move this job off the version it exists to check.
+    # .github/dependabot.yml keeps it out of the bumps.
     - uses: dtolnay/rust-toolchain@85c23e28f7ccc75a9a153d45d385d94a85464876 # 1.85
     - uses: Swatinem/rust-cache@6323deb102c322ba6fcbdcafc7e3dddab59af2b6 # v2.9.2
     - name: Check the workspace

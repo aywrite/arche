@@ -12,9 +12,8 @@ WORKDIR /src
 COPY Cargo.toml Cargo.lock ./
 COPY src ./src
 COPY arche-core ./arche-core
-# v2 is popcnt and sse4.2, everything a hosted runner or a vps has had for
-# fifteen years; the image is not the artifact a stranger with old hardware
-# reaches for, the release page's baseline build is
+# v2 is popcnt and sse4.2, which hosted runners and vps hardware have had for
+# fifteen years; old hardware is what the release page's baseline build is for
 ENV RUSTFLAGS="-C target-cpu=x86-64-v2"
 RUN cargo build --release --locked --bin arche
 

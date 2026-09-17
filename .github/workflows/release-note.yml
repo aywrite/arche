@@ -1,12 +1,10 @@
 name: Release note
 
 # Adds one line to the notes of a release, for the workflows that finish after
-# the release exists and have something to say about it.
+# the release exists.
 #
 # Editing release notes is a read and a write rather than an append, so every
-# workflow that adds a line has to take its turn. Keeping the turn taking here
-# means there is one queue rather than one per caller, and one place to look at
-# when a line goes missing.
+# caller takes its turn in the one queue here.
 
 on:
   workflow_call:
@@ -20,10 +18,8 @@ on:
         type: string
         required: true
 
-# No workflow level permissions. There is one job, it declares what it needs,
-# and a reusable workflow cannot grant itself more than its caller allowed
-# anyway, so a second more restrictive declaration up here would only be one
-# more thing to reason about on the last step of a release.
+# No workflow level permissions: the one job declares what it needs, and a
+# reusable workflow cannot grant itself more than its caller allowed.
 jobs:
   append:
     runs-on: ubuntu-latest
@@ -31,8 +27,7 @@ jobs:
     permissions:
       contents: write
     concurrency:
-      # Cancelling would lose the line rather than delay it, and these take
-      # seconds, so a caller that has waited its turn is left to finish.
+      # cancelling would lose the line rather than delay it
       group: release-notes-${{ github.ref_name }}
       cancel-in-progress: false
     steps:
@@ -45,9 +40,8 @@ jobs:
           LINE: ${{ inputs.line }}
           TAG: ${{ github.ref_name }}
         run: |
-          # the marker is an html comment, so it does not render but does let a
-          # rerun replace the line it wrote last time rather than add another
-          # cat -s closes up the blank line the deleted line leaves behind
+          # the marker is an html comment, so it does not render. cat -s closes
+          # up the blank line the deleted line leaves behind
           body=$(gh release view "$TAG" --json body -q .body \
                  | sed "/<!-- ${MARKER} -->/d" | cat -s)
           printf '%s\n\n%s <!-- %s -->\n' "$body" "$LINE" "$MARKER" > notes.md

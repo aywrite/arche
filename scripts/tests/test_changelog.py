@@ -4,9 +4,9 @@
 """Tests for the changelog pre-release hook.
 
 git-cliff is replaced by a shim that records how it was called and prepends a
-marker section, so what is under test is everything the script itself decides:
-which sections survive, what range the changelog is generated over, and that
-running the hook twice leaves the same bytes as running it once.
+marker section, so what is under test is what the script decides: which
+sections survive, what range the changelog covers, and that running the hook
+twice leaves the same bytes as running it once.
 """
 
 import os
@@ -124,9 +124,7 @@ def test_candidates_are_superseded_and_full_releases_kept(repo):
 
 
 def test_the_range_starts_at_the_last_full_release(repo):
-    # an rc tag newer than the release must not shorten the range, or the
-    # release after a run of candidates would only list what changed since
-    # the last candidate
+    # an rc tag newer than the release must not shorten the range
     subprocess.run(
         ["git", "tag", "v0.2.0-rc.1"], cwd=repo, check=True, capture_output=True
     )
@@ -137,8 +135,6 @@ def test_the_range_starts_at_the_last_full_release(repo):
 
 
 def test_running_twice_leaves_the_same_bytes_as_running_once(repo):
-    # the hook has to be safe to run twice over, so the section it wrote last
-    # time is dropped and rewritten rather than duplicated
     run(repo, "0.2.0")
     once = (repo / "CHANGELOG.md").read_bytes()
     result = run(repo, "0.2.0")
@@ -147,8 +143,6 @@ def test_running_twice_leaves_the_same_bytes_as_running_once(repo):
 
 
 def test_no_release_yet_covers_everything(repo):
-    # with no full release tagged there is no range to cut, the whole history
-    # is the changelog
     subprocess.run(
         ["git", "tag", "-d", "v0.1.0"], cwd=repo, check=True, capture_output=True
     )

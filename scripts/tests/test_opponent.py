@@ -3,13 +3,11 @@
 
 """Tests for the table of engines the calibration gauntlet can play.
 
-Building one needs the network and a compiler, which a test has neither of,
-so what is checked here is the table itself: that every engine it names is
-described completely, that an engine it does not name is refused rather than
-attempted, and that the ladder the workflow plays by default names engines
-the table knows. The last of those is the one that would otherwise go
-unnoticed, since a default that names an engine with no build fails a run
-rather than a check.
+Building one needs the network and a compiler, so what is checked is the
+table itself: that every engine it names is described completely, that an
+engine it does not name is refused rather than attempted, and that the
+default ladder names engines the table knows (which would otherwise fail a
+run rather than a check).
 """
 
 import subprocess
@@ -59,10 +57,8 @@ def test_every_engine_named_says_where_it_comes_from():
 
 
 def test_every_engine_named_has_a_build():
-    # the workflow reads the list to decide whether a ladder entry can be
-    # played at all, so a name in it with no build behind it would be refused
-    # after the clone rather than before the match. Asked of the shell rather
-    # than of the file, so that a function named in a comment does not pass
+    # asked of the shell rather than of the file, so that a function named in
+    # a comment does not pass
     for engine in engines():
         declared = subprocess.run(
             [
@@ -102,9 +98,8 @@ def test_the_default_ladder_names_engines_the_table_knows():
     known = engines()
     ladders = default_ladders()
     assert ladders, "the workflow has no ladder to check"
-    # one ladder written twice, once per trigger. A run from the actions tab
-    # and a run from a release play the same opponents or neither figure means
-    # what the other does
+    # one ladder written twice, once per trigger, or a run from the actions
+    # tab and a run from a release are not comparable
     assert len(set(ladders)) == 1, ladders
     for ladder in ladders:
         for rung in ladder.split(","):

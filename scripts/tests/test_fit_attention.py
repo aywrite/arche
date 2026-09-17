@@ -3,23 +3,15 @@
 
 """Tests for the attention model fit.
 
-The thirteen integers in the engine came from a ledger of 193,143 rows, which
-is not a test's budget and is not reproducible anyway: it was recorded before
-the deep reduction and the late move pruning existed, so the same command on
-today's engine records a different tree. What is held here instead is that the
-script reads the format it declares and that the fit is a fit.
+The engine's weights came from a ledger of 193,143 rows that cannot be
+reproduced (see the script), so what is held here is that the script reads
+the format it declares and that the fit is a fit.
 
 `reductions_sample.txt` is a real ledger, `arche reductions 8 every 220 cap
-800` on the bench suite at ccd1804. It has 791 rows over five depths, 205 of
-them skipped by the pruning, 607 with a history the table has marked below
-zero, and one row worth attention, which is what a few hundred rows of this
-data looks like: the rate is under a percent. So the sample covers the parse
-and the run, and the planted case below covers the fit, because a fit on one
-positive row says nothing about whether the arithmetic is right.
-
-The grouped split is tested on planted rows too. What it has to hold is that a
-group goes to one side whole, since the leak it exists to close is a holdout
-row sharing a parent with a training row.
+800` on the bench suite at ccd1804: 791 rows over five depths, 205 skipped by
+the pruning, 607 with a negative history, and one row worth attention, which
+is what a few hundred rows of this data looks like. The sample covers the
+parse and the run; the planted cases cover the fit and the grouped split.
 """
 
 import subprocess
@@ -37,11 +29,8 @@ NL = chr(10)
 
 
 def row(index, attention, fen_id, depth=6, history=0, history_max=0, alpha_gap=19):
-    """One ledger row, in the eighteen fields reduction.rs prints.
-
-    A fail high is a row worth attention on its own and has no label to give,
-    so it prints `-` there the way the engine does.
-    """
+    """One ledger row in the eighteen fields reduction.rs prints. A fail high
+    has no label and prints `-` there, the way the engine does."""
     scout, label = ("high", "-") if attention else ("low", "harmless")
     return (
         f"{depth} zw {index} {index + 1} 30 {history} {history_max} plain miss"
@@ -74,8 +63,6 @@ class TestParsing:
         assert {len(fit_attention.features_of(one)) for one in rows} == {12}
 
     def test_a_row_the_pruning_skipped_is_not_a_scout(self, tmp_path):
-        # a skipped move was never searched, so it is not a scout that failed
-        # one way or the other and has no place in what the scouts did
         text = ledger(
             [
                 row(4, False, 1),
@@ -90,9 +77,7 @@ class TestParsing:
         assert skipped == 1
 
     def test_a_row_of_the_wrong_width_stops_the_run(self, tmp_path):
-        # the format has moved once already, gaining the reduction column, and
-        # a parser that read the old width off the new rows would put every
-        # feature in the wrong column and fit something
+        # the format has moved once already, gaining the reduction column
         path = tmp_path / "ledger.txt"
         path.write_text(ledger([row(4, False, 1).replace(" 1 8/8", " 8/8")]))
         with pytest.raises(SystemExit) as raised:
@@ -134,10 +119,8 @@ class TestFeatures:
         assert self.milli(history=250, history_max=1000) == 250
 
     def test_a_history_below_zero_counts_as_none(self):
-        # late_move.rs takes the larger of the score and nought before
-        # dividing, so a move the table has marked down and a move it knows
-        # nothing about read alike at the gate. 607 rows of the sample are
-        # this case
+        # late_move.rs takes the larger of the score and nought before dividing.
+        # 607 rows of the sample are this case
         assert self.milli(history=-4000, history_max=1000) == 0
 
     def test_nothing_in_the_list_having_any_divides_nothing(self):
@@ -149,17 +132,14 @@ class TestFeatures:
         assert fit_attention.attention(self.one(scout="low", label="harmless")) == 0
 
     def test_the_two_halves_are_split_by_position_and_not_by_row(self):
-        # two rows of one position must land on the same side, or the holdout
-        # scores a position the fit has already seen
         fen = "8/8/8/8/8/8/8/K6k w - - 0 1"
         assert fit_attention.fen_parity(fen) == fit_attention.fen_parity(fen)
 
 
 class TestFitting:
     def test_a_planted_signal_comes_back_with_its_sign(self, tmp_path):
-        # attention iff the move is early, which is the shape the real ledger
-        # has, so the index weight has to come back negative and the model
-        # has to order the holdout better than a coin
+        # attention iff the move is early, so the index weight has to come
+        # back negative
         rows = [row(at % 20, at % 20 < 4, at) for at in range(400)]
         path = tmp_path / "ledger.txt"
         path.write_text(ledger(rows))
@@ -173,14 +153,11 @@ class TestFitting:
         assert fit_attention.auc_of(scores[parity == 1], y[parity == 1]) > 0.9
 
     def test_the_quantisation_is_the_scale_the_engine_reads(self):
-        # late_move.rs sums the ATTENTION_ constants as integers, so the weights
-        # have to arrive as integers at 1024 times their float value
         assert fit_attention.SHIFT == 10
         assert list(fit_attention.quantize([1.0, -0.5, 0.0])) == [1024, -512, 0]
 
     def test_one_class_alone_has_no_area_under_its_curve(self):
-        # a few hundred rows can hold no attention at all, and an ordering
-        # that separates one class from an empty one is not a score of one
+        # a few hundred rows can hold no attention at all
         alone = fit_attention.auc_of(np.array([1.0, 2.0, 3.0]), np.zeros(3))
         assert np.isnan(alone)
 
@@ -205,8 +182,6 @@ class TestGrouping:
         assert fit_attention.read_groups(path) == {"a.txt": "g1", "b.txt": "g2"}
 
     def test_a_ledger_in_two_groups_stops_the_run(self, tmp_path):
-        # a ledger whose rows are claimed by two groups has no group, and
-        # guessing one is what the grouped split exists to stop
         path = self.map_of(tmp_path, "a.txt g1" + NL + "a.txt g2" + NL)
         with pytest.raises(SystemExit) as raised:
             fit_attention.read_groups(path)
@@ -226,7 +201,7 @@ class TestGrouping:
 
     def test_a_group_lands_on_one_side_whole(self, tmp_path):
         # the two ledgers hold different positions, so a split by fen puts
-        # rows of both in both halves and a split by group cannot
+        # rows of both in both halves
         ledgers = self.two_ledgers(tmp_path)
         by_fen = run(*ledgers, "--bootstrap", "10")
         assert by_fen.returncode == 0, by_fen.stderr
@@ -248,8 +223,7 @@ class TestGrouping:
 
 class TestDropping:
     def test_a_dropped_feature_gets_a_zero_and_is_said_to_be_dropped(self, tmp_path):
-        # the engine reads a constant for every feature, so a feature left out
-        # of the fit has to arrive as a zero rather than be missing
+        # the engine reads a constant for every feature
         rows = [row(at % 20, at % 20 < 4, at) for at in range(400)]
         path = tmp_path / "ledger.txt"
         path.write_text(ledger(rows))
@@ -262,8 +236,7 @@ class TestDropping:
         self, tmp_path
     ):
         # every column is constant but alpha_gap, which alone carries the
-        # attention. Kept, it orders the holdout; dropped, nothing is left to
-        # order it by and every score ties
+        # attention; dropped, every score ties
         rows = [
             row(5, at % 5 == 0, at, alpha_gap=200 if at % 5 == 0 else 19)
             for at in range(400)
@@ -290,10 +263,9 @@ class TestDropping:
 
 class TestBootstrap:
     def test_the_error_is_taken_over_the_groups_and_not_the_rows(self):
-        # twenty groups of twenty rows, each group separating its two
-        # classes by its own amount. Resampling rows averages that spread away
-        # and reports an error bar for a sample nobody drew. Resampling groups
-        # carries it, so the group error has to be the larger
+        # twenty groups of twenty rows, each separating its two classes by
+        # its own amount. Resampling rows averages that spread away, so the
+        # group error has to be the larger
         rng = np.random.default_rng(3)
         units, scores, y = [], [], []
         for group in range(20):

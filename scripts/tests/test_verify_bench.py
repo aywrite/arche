@@ -48,8 +48,7 @@ def repo(tmp_path):
     shims.mkdir()
     cargo = shims / "cargo"
     # the fake engine counts whatever the file of the tree it was built from
-    # says, and an engine told to crash does, the way a broken commit's
-    # would. Built wherever --target-dir says, or target/
+    # says, and an engine told to crash does
     cargo.write_text(
         "#!/usr/bin/env bash\n"
         "dir=target\n"
@@ -122,8 +121,7 @@ def test_a_bench_that_crashes_is_reported_and_the_rest_still_counted(repo):
 
 
 def test_a_bench_line_that_git_does_not_read_as_a_trailer_is_not_one(repo):
-    # a Bench line with prose after it is body text to git, and the check
-    # reads trailers the way git does
+    # a Bench line with prose after it is body text to git
     repo, _git, commit, shims = repo
     base = commit(1, "docs(docs): Start")
     head = commit(100, "fix(search): One\n\nBench: 999\n\nMore prose after.")
@@ -133,8 +131,7 @@ def test_a_bench_line_that_git_does_not_read_as_a_trailer_is_not_one(repo):
 
 
 def test_the_working_tree_is_never_touched(repo):
-    # the commits are built from exports, not checkouts: a developer's
-    # branch, index and half written files are exactly as they were after
+    # the commits are built from exports, not checkouts
     repo, git, commit, shims = repo
     base = commit(1, "docs(docs): Start")
     commit(100, "fix(search): One\n\nBench: 100")
