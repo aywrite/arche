@@ -5,15 +5,13 @@ use crate::misc::index_to_coordinate;
 use crate::misc::{Piece, PromotePiece};
 use std::fmt;
 
-/// A move. Six bytes, which is what the fields happen to come to and what the
-/// search is tuned around: a move is copied into a move list, out of it, into
-/// the history and into the transposition table, several times per node.
-/// Widening it has been measured twice and was slower both times.
+/// A move. Six bytes, which is what the fields come to and what the search is
+/// tuned around: a move is copied several times per node, into and out of a
+/// move list, the history and the transposition table. Widening it has been
+/// measured twice and was slower both times.
 ///
-/// Outside the crate a move is a value: it comes out of `generate_moves`, a
-/// search result or a pv line, goes into `try_make`, and prints in coordinate
-/// notation. The fields stay in the crate so that a move handed to the board
-/// is one this crate generated.
+/// The fields stay in the crate so that a move handed to the board is one
+/// this crate generated.
 #[derive(Debug, Copy, Clone, PartialEq, Eq)]
 pub struct Play {
     pub(crate) from: u8,

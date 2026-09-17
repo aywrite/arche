@@ -6,23 +6,17 @@ use std::ops::Not;
 
 /// An evaluation, in centipawns.
 ///
-/// Sixteen bits is what engines generally store a score in, and the reason is
-/// the transposition table: a narrower score makes for a smaller entry, so a
-/// table of a given size holds more positions and more of it fits in cache.
-///
-/// The range is far wider than anything a score needs. Mate is thirty thousand,
-/// and an evaluation is bounded by the material on the board, which even with
-/// every pawn promoted to a queen comes to a little over ten thousand.
+/// Sixteen bits for the transposition table's sake: a narrower score makes a
+/// smaller entry, so a table of a given size holds more positions and more of
+/// it fits in cache. The range is ample. Mate is thirty thousand, and an
+/// evaluation is bounded by the material on the board, a little over ten
+/// thousand even with every pawn promoted to a queen.
 pub type Score = i16;
 
-/// One step of splitmix64, which turns a seed into a stream of well spread
-/// numbers. Small enough to run at compile time, which is what the zobrist
-/// keys need, and good enough for the magic search, which only wants candidates
-/// that are well spread rather than unpredictable.
-///
-/// Returns the value alongside the next state rather than taking a `&mut` so
-/// that draws chain, which is what the magic search wants when it needs three
-/// of them for one candidate.
+/// One step of splitmix64. Small enough to run at compile time, which the
+/// zobrist keys need, and well spread enough for the magic search, which does
+/// not need unpredictable. Returns the value alongside the next state rather
+/// than taking a `&mut`, so that draws chain.
 pub const fn split_mix(state: u64) -> (u64, u64) {
     let state = state.wrapping_add(0x9E37_79B9_7F4A_7C15);
     let mut z = state;
@@ -124,13 +118,11 @@ pub struct CastlePermissions {
 /// them left undefined.
 const _: () = assert!(std::mem::size_of::<CastlePermissions>() == 4);
 
-/// Compared as one word rather than a right at a time.
-///
-/// The derive reads a field, branches, and reads the next, which is the
-/// cheaper shape when the answer is usually no and the first field settles
-/// it. Here the answer is usually yes (the rights survive almost every move
-/// unchanged, which is what make asks this to find out), so all four are read
-/// either way, and reading them together is a comparison instead of four.
+/// Compared as one word rather than a right at a time. The derive reads a
+/// field and branches before the next, which pays off when the first field
+/// usually settles it. Here the answer is usually yes (the rights survive
+/// almost every move unchanged, which is what make asks this to find out), so
+/// all four are read either way, and one comparison beats four.
 impl PartialEq for CastlePermissions {
     #[inline]
     fn eq(&self, other: &Self) -> bool {
@@ -196,8 +188,6 @@ impl CastlePermissions {
 mod castle_permissions {
     use super::CastlePermissions;
 
-    /// Written in the order a fen writes them, so a round trip is the same
-    /// string back.
     #[test]
     fn every_set_of_rights_comes_back_as_it_went_in() {
         for rights in ["KQkq", "-", "Kq"] {
@@ -239,9 +229,6 @@ mod index_conversion {
     use super::coordinate_to_index;
     use super::index_to_coordinate;
 
-    /// All sixty four squares rather than a sample of them: the domain is
-    /// small enough to walk, so this says it of every square rather than of
-    /// most of them.
     #[test]
     fn every_index_survives_the_round_trip() {
         for index in 0u8..64 {
@@ -291,8 +278,8 @@ pub enum Piece {
 
 impl Piece {
     /// The pieces in discriminant order, for walking something indexed the
-    /// way `pieces` and the tables are. The assertion below is what holds
-    /// the order to the discriminants.
+    /// way `pieces` and the tables are. The assertion below holds the order
+    /// to the discriminants.
     pub const PIECES: [Piece; 6] = [
         Piece::Pawn,
         Piece::Knight,
@@ -303,10 +290,9 @@ impl Piece {
     ];
 }
 
-// nothing pins the enum's discriminants except these: the eval module's
-// material and phase tables, the piece square tables, `Zobrist` and mvv-lva
-// all index by them, so reordering the enum fails here rather than by
-// scoring a queen as a pawn
+// the material, phase, piece square, zobrist and mvv-lva tables all index by
+// the discriminants and nothing else pins them, so reordering the enum fails
+// here rather than by scoring a queen as a pawn
 const _: () = assert!(
     Piece::Pawn as usize == 0
         && Piece::Knight as usize == 1
