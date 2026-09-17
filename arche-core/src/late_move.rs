@@ -24,7 +24,7 @@
 
 use crate::board::Board;
 use crate::census;
-use crate::engine::{Edges, SearchConfig};
+use crate::engine::{RootBounds, SearchConfig};
 use crate::misc::Score;
 use crate::ordering::MoveOrdering;
 use crate::play::Play;
@@ -168,7 +168,7 @@ pub(crate) struct Node<'a> {
     pub(crate) alpha: Score,
     pub(crate) beta: Score,
     /// Which of those two the root opened with and no search has claimed.
-    pub(crate) edges: Edges,
+    pub(crate) root_bounds: RootBounds,
     /// Whether the side to move is in check here.
     pub(crate) in_check: bool,
     /// The node's distance from the root, or none past the rail, which is
@@ -270,14 +270,14 @@ pub(crate) fn decide(search: &Search, node: &mut Node, m: &Play, searched: usize
 /// scores is the margin family's exemption: a scout a ply short of the
 /// mate it is asked about can only say no.
 ///
-/// A beta that is still the root's own bound, which `edges` says,
+/// A beta that is still the root's own bound, which `root_bounds` says,
 /// stands the reduction down as well, and that one is a decision. A node
 /// whose beta is the root's is a node whose answer the root reports
 /// rather than bounds, and the policy is to search it whole: a late move
 /// trusted a ply short there costs the answer and not a bound. That
 /// records what the engine does and does not claim it is right; an arm
 /// that wants to reduce there lifts the flag and plays a match. Alpha's
-/// edge is not read, because a node whose alpha is the root's has every
+/// bit is not read, because a node whose alpha is the root's has every
 /// move failing low already, which is the reduction's guess rather than
 /// something it needs proved.
 ///
@@ -292,7 +292,7 @@ fn reduces(search: &Search, node: &Node, m: &Play, searched: usize) -> bool {
         node.in_check,
         node.alpha,
         node.beta,
-        node.edges,
+        node.root_bounds,
     ) && m.capture.is_none()
         && m.promote.is_none()
 }
@@ -309,7 +309,7 @@ pub(crate) fn admits(
     in_check: bool,
     alpha: Score,
     beta: Score,
-    edges: Edges,
+    root_bounds: RootBounds,
 ) -> bool {
     config.late_move_reductions
         && depth >= LATE_MOVE_MIN_DEPTH
@@ -317,7 +317,7 @@ pub(crate) fn admits(
         && !in_check
         && !is_mate(alpha)
         && !is_mate(beta)
-        && !edges.beta
+        && !root_bounds.beta
 }
 
 /// Whether a move `reduces` already accepted is scouted two plies
@@ -417,7 +417,7 @@ mod tests {
     };
     use crate::board::{Board, MoveList, fens, play_named};
     use crate::census::Table;
-    use crate::engine::{Edges, MAX_PLY, SearchConfig};
+    use crate::engine::{MAX_PLY, RootBounds, SearchConfig};
     use crate::misc::Score;
     use crate::ordering::MoveOrdering;
     use crate::play::Play;
@@ -464,7 +464,7 @@ mod tests {
         /// The node's facts besides its depth and bounds. A test that
         /// wants a killer slot, a table move or a root bound sets them.
         in_check: bool,
-        edges: Edges,
+        root_bounds: RootBounds,
         ply: Option<usize>,
         tt: Table,
         eval: Option<i64>,
@@ -481,7 +481,7 @@ mod tests {
                 config,
                 moves,
                 in_check: false,
-                edges: Edges::NEITHER,
+                root_bounds: RootBounds::NEITHER,
                 ply: None,
                 tt: Table::Miss,
                 eval: None,
@@ -512,7 +512,7 @@ mod tests {
                 depth,
                 alpha,
                 beta,
-                edges: self.edges,
+                root_bounds: self.root_bounds,
                 in_check: self.in_check,
                 ply: self.ply,
                 tt: self.tt,
@@ -536,7 +536,7 @@ mod tests {
                 depth: 0,
                 alpha: 0,
                 beta: 1,
-                edges: Edges::NEITHER,
+                root_bounds: RootBounds::NEITHER,
                 in_check: self.in_check,
                 ply: self.ply,
                 tt: self.tt,
@@ -704,21 +704,24 @@ mod tests {
     fn a_beta_that_is_still_the_roots_stands_the_reduction_down() {
         let mut s = Stand::new(fens::A_CAPTURE_AND_QUIETS, reducing());
         let quiet = play_named(&s.board, "a4a5");
-        let mut verdict = |edges| {
-            s.edges = edges;
+        let mut verdict = |root_bounds| {
+            s.root_bounds = root_bounds;
             s.verdict(&quiet, LATE_MOVE_THRESHOLD, LATE_MOVE_MIN_DEPTH, -100, 100)
         };
-        assert_eq!(verdict(Edges::NEITHER), Verdict::Scout(LATE_MOVE_REDUCTION));
-        assert_eq!(verdict(Edges::BOTH), Verdict::Scout(0));
         assert_eq!(
-            verdict(Edges {
+            verdict(RootBounds::NEITHER),
+            Verdict::Scout(LATE_MOVE_REDUCTION)
+        );
+        assert_eq!(verdict(RootBounds::BOTH), Verdict::Scout(0));
+        assert_eq!(
+            verdict(RootBounds {
                 alpha: false,
                 beta: true
             }),
             Verdict::Scout(0)
         );
         assert_eq!(
-            verdict(Edges {
+            verdict(RootBounds {
                 alpha: true,
                 beta: false
             }),
