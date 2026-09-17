@@ -480,6 +480,24 @@ fn sort_on_the_stack(
         "every move is either keyed or marked plain, and not both"
     );
     debug_assert!(front <= keys.len(), "the front is part of the keys");
+    // a list with nothing keyed is already in order, and one with a single
+    // key is a rotation: the keyed move goes to the head or to the foot
+    // and every other move keeps its place in the run. Between them the
+    // two are two lists in five at the first stage and one in four at the
+    // second, and both cost the whole copy below for nothing
+    match keys.len() {
+        0 => return,
+        1 => {
+            let place = (keys[0] & PLACE_MASK) as usize;
+            if front == 1 {
+                moves[..=place].rotate_right(1);
+            } else {
+                moves[place..].rotate_left(1);
+            }
+            return;
+        }
+        _ => {}
+    }
     for i in 1..keys.len() {
         let k = keys[i];
         let mut j = i;
@@ -1063,6 +1081,8 @@ mod stack_sort {
             vec![],
             vec![0],
             vec![-1],
+            vec![1],
+            vec![1, 0, 0],
             vec![0; full],
             (0..full)
                 .map(|i| i as i64 - 32)
