@@ -1,27 +1,17 @@
 name: Coverage
 
-# Which lines the tests reach, run by hand when somebody wants to know.
+# Which lines the tests reach, run by hand from the actions tab when somebody
+# wants to know.
 #
-# Its own workflow rather than a job in Rust, for the reason the Supply chain
-# one is: the trigger is what differs, and a job whose trigger differs would
-# either have to carry a condition or drag that workflow's whole matrix along
-# behind it every time this was asked for.
+# Its own workflow rather than a job in Rust because the trigger differs, and
+# by hand rather than on a schedule because of what it costs: instrumented,
+# the suite takes about eighteen minutes, sixteen of them the perft tests,
+# which instrumentation slows by roughly twenty times. Their depths are the
+# point of perft, so there is nothing to trim, and a number that gates nothing
+# should not spend that on a schedule nobody asked for.
 #
-# By hand rather than on a schedule or on a push because of what it costs.
-# Instrumented, the suite takes about eighteen minutes, and sixteen of those
-# are the perft tests: they make and unmake tens of millions of moves, which
-# instrumentation slows by roughly twenty times. There is nothing to trim
-# there: the depths are the whole point of perft, and cutting them would
-# leave the move generator reading as uncovered when it is the best covered
-# code here. So the cost is real, and a number that gates nothing should not
-# be spending it on a schedule nobody asked for.
-#
-# What it is for is the question "what have the tests never reached", which is
-# worth asking now and then and is not worth asking on every commit. Run it
-# from the actions tab against whatever ref you want the answer for.
-#
-# Note that a workflow_dispatch only appears in the actions tab once the file
-# is on the default branch.
+# A workflow_dispatch only appears in the actions tab once the file is on the
+# default branch.
 
 on:
   workflow_dispatch:
@@ -39,15 +29,13 @@ jobs:
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
       - uses: Swatinem/rust-cache@6323deb102c322ba6fcbdcafc7e3dddab59af2b6 # v2.9.2
-      # the instrumented build needs these, which rust-toolchain.toml
-      # deliberately does not ask for: cloning should not put them on the
-      # machine of somebody who is never going to run this
+      # not in rust-toolchain.toml, so a clone does not install them for
+      # somebody who will never run this
       - name: Install the llvm tools
         run: rustup component add llvm-tools-preview
       - uses: taiki-e/install-action@d438492cf8a250514fa2d34b30bc3c0dc37c65ff # v2.87.8
         with:
-          # a version rather than whatever is newest, for the reason the
-          # actions themselves are pinned
+          # pinned for the reason the actions are
           tool: cargo-llvm-cov@0.9.0
       - name: Measure coverage
         run: |
@@ -59,8 +47,7 @@ jobs:
             cat coverage.txt
             echo '```'
           } >> "$GITHUB_STEP_SUMMARY"
-      # --no-run reuses the profile data the step above produced rather than
-      # running the whole suite a second time to say the same thing
+      # --no-run reuses the profile data the step above produced
       - name: Write the lcov
         run: cargo llvm-cov --workspace --locked --no-run --lcov --output-path lcov.info
       - uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1

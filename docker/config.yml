@@ -1,8 +1,8 @@
 # lichess-bot configuration baked into the arche image.
 #
-# The token is taken from the LICHESS_BOT_TOKEN environment variable at startup,
-# so the placeholder below is never used. To change anything else, mount your own
-# file over /lichess-bot/config.yml. The full set of options is documented in
+# The token comes from the LICHESS_BOT_TOKEN environment variable, so the
+# placeholder below is never used. To change anything else, mount your own
+# file over /lichess-bot/config.yml. Every option is documented in
 # https://github.com/lichess-bot-devs/lichess-bot/blob/master/config.yml.default
 
 token: "set LICHESS_BOT_TOKEN instead"
@@ -16,10 +16,9 @@ engine:
   # cannot ponder.
   ponder: false
 
-  # Options sent as "setoption" once the engine has started. Arche advertises
-  # Hash, in megabytes, and a Threads fixed at one. Left commented out so that
-  # the engine keeps its own 256MB default; raising it here means raising the
-  # container's memory limit to match.
+  # Arche advertises Hash, in megabytes, and a Threads fixed at one. Left
+  # commented out so the engine keeps its own 256MB default; raising it means
+  # raising the container's memory limit to match.
   # uci_options:
   #   Hash: 256
 
@@ -38,9 +37,8 @@ engine:
     offer_draw_enabled: false
 
 challenge:
-  # Each engine process allocates a transposition table of its own, 256MB unless
-  # the Hash option above says otherwise, so playing several games at once needs
-  # a correspondingly larger memory limit on the container.
+  # each game is an engine process with a table of its own, 256MB unless Hash
+  # above says otherwise, so the container's memory limit has to cover them all
   concurrency: 1
   sort_by: "best"
   accept_bot: true

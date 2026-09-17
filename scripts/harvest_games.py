@@ -4,43 +4,22 @@
 
 """Download the strength runs' games into an archive, and rebuild the corpus.
 
-`build_corpus.py` turns a pile of pgns into the epd `arche terms` reads. Getting
-that pile was the step with no tooling: the artifacts sit on the runs and came
-down by hand, so the corpus grew when somebody remembered rather than when the
-games were played.
-
     python3 scripts/harvest_games.py --archive runs --out corpus.epd
 
-What it does is fetch every strength artifact that is not in the archive
-already, then rebuild the corpus from the whole archive. Running it twice in a
-row downloads nothing the second time, which is the point: it is meant to run
-after every arm, and an arm's games are gone for good if nobody runs it before
-the artifact expires.
+Fetches every strength artifact not already in the archive, then rebuilds the
+corpus from the whole archive with `build_corpus.py`. A second run downloads
+nothing, so it can run after every arm, and an arm's games are gone for good
+if nobody runs it before the artifact expires.
 
-## Only the strength runs
+Only the strength runs. A calibrate game is arche against another engine,
+which is a second source, and a loss change over a corpus of two sources
+cannot be attributed to either. The prefix also excludes the `gauntlet-<run>`
+artifacts still in the listing, the rungs' games concatenated, which
+calibrate stopped uploading in `dcf87b7`.
 
-A strength game is arche against arche. A calibrate game is arche against
-another engine, and `build_corpus.py` says what that would cost: the corpus
-carries the caveat that these are the engine's own games, so what the engine
-never reaches is unlabelled and its mistakes are labelled as if they were normal
-play. That caveat is only stateable while the corpus has one source, and a loss
-change measured over a corpus of two cannot be attributed to either. So the rule
-is not that a calibrate game is worse, it is that it is a different question.
-
-The prefix below is what enforces it, and it also excludes the `gauntlet-<run>`
-artifacts still in the listing. Those were the rungs' games concatenated, and
-calibrate stopped uploading them in `dcf87b7` when the rungs began playing at
-the same time, so what remains of them is residue that will expire on its own.
-
-## The rebuild is whole, not incremental
-
-A position two games reached belongs to the group of the lower of their keys and
-is labelled by that group's games alone, which is what keeps a sealed game's
-result out of a row the fit reads. That assignment depends on every game in the
-archive, so adding games changes labels on positions that were already there.
-Appending to an existing epd would leave those stale. The whole corpus is
-therefore rebuilt from the whole archive every time, and the archive rather than
-the epd is the thing that must not be lost.
+The rebuild is whole, not incremental: a position two games reached belongs
+to the group of the lower key, so adding games changes labels on positions
+already there. The archive rather than the epd is what must not be lost.
 """
 
 import argparse
@@ -51,21 +30,19 @@ from pathlib import Path
 
 import build_corpus
 
-# What the strength workflow names its artifact, which is the only prefix this
-# harvests. See the module docstring for why calibrate is not.
+# What the strength workflow names its artifacts.
 PREFIX = "strength-"
 
-# The file the archive writes once an artifact is down and intact. A directory
-# on its own is not the marker: an interrupted download leaves one behind, and a
-# run that silently skipped it would be taken for harvested ever after.
+# Written once an artifact is down and intact. A directory on its own is not
+# the marker, since an interrupted download leaves one behind.
 MARKER = ".harvested"
 
 REPO = "aywrite/arche"
 
 
 def gh(*arguments):
-    """One `gh` call, returning stdout. Replaced wholesale by the tests, which
-    is why every call this script makes goes through here."""
+    """One `gh` call, returning stdout. The tests replace this, so every call
+    goes through here."""
     finished = subprocess.run(
         ["gh", *arguments], check=True, capture_output=True, text=True
     )
@@ -73,11 +50,8 @@ def gh(*arguments):
 
 
 def artifacts(repo):
-    """Every artifact the repository holds, as the fields this reads.
-
-    `--jq` over the paginated listing gives one json object a line, so a page
-    boundary is not something this has to know about.
-    """
+    """Every artifact the repository holds, as the fields this reads. `--jq`
+    over the paginated listing gives one json object a line."""
     out = gh(
         "api",
         "--paginate",
@@ -91,10 +65,8 @@ def artifacts(repo):
 
 def fetch(repo, archive, artifact):
     """One artifact into `<archive>/<name>/`, with its marker written last.
-
-    The upload names four paths under `tools/`, so the artifact's own root is
-    that directory and what arrives here is `games.pgn` beside its manifest.
-    """
+    The upload names its paths under `tools/`, so what arrives is `games.pgn`
+    beside its manifest."""
     into = archive / artifact["name"]
     into.mkdir(parents=True, exist_ok=True)
     gh(
@@ -126,9 +98,7 @@ def harvest(repo, archive, listing):
             skipped.append(artifact["name"])
             continue
         if artifact["expired"]:
-            # unrecoverable, and the only outcome here worth a reader's
-            # attention: the games it held were never archived, and the run
-            # cannot be played again to produce them
+            # its games were never archived and cannot be played again
             expired.append(artifact["name"])
             continue
         try:
@@ -152,13 +122,9 @@ def pgns(archive):
 
 
 def gameless(archive):
-    """Artifacts the archive holds that carry no games.pgn.
-
-    A shard that died before it played uploads its manifest and no games, and
-    `if-no-files-found: warn` keeps the run green, so this arrives looking
-    exactly like a shard that played. Naming them is the difference between an
-    archive that is short and an archive that is short and says so.
-    """
+    """Artifacts the archive holds that carry no games.pgn: a shard that died
+    before it played uploads its manifest and no games, and `if-no-files-found:
+    warn` keeps the run green."""
     return sorted(
         marker.parent.name
         for marker in archive.glob(f"*/{MARKER}")
@@ -168,11 +134,8 @@ def gameless(archive):
 
 def soonest(archive, listing):
     """When the first strength artifact the archive does not hold expires.
-
-    Held artifacts are excluded because their games are already safe. Without
-    that the figure is the oldest live artifact's expiry whatever the archive
-    holds, so it reads as a deadline on a run where nothing is at risk.
-    """
+    Held artifacts are excluded, or the figure would read as a deadline on a
+    run where nothing is at risk."""
     waiting = [
         item["expires"]
         for item in listing
@@ -212,8 +175,7 @@ def main(argv=None):
         )
         return 1
     except subprocess.CalledProcessError as error:
-        # gh says what is wrong (a lapsed login, a rate limit) and check=True
-        # puts that inside the exception, where nothing would print it
+        # gh's own diagnosis (a lapsed login, a rate limit) is in the exception
         print("harvest_games.py: gh could not list the artifacts.", file=sys.stderr)
         print((error.stderr or "").strip(), file=sys.stderr)
         return 1
@@ -240,9 +202,7 @@ def main(argv=None):
         return 1
     print(f"archive holds {len(files)} pgn files")
     if args.out:
-        # a failed download still fails the run. Returning the builder's status
-        # alone would report success over an arm's games left on a run that
-        # expires, which is the loss this script exists to prevent
+        # a failed download still fails the run, whatever the builder returns
         sealed = ["--sealed", args.sealed] if args.sealed else []
         built = build_corpus.main([*files, "--out", args.out, *sealed])
         return built or (1 if failed else 0)

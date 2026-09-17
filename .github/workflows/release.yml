@@ -7,19 +7,16 @@ on:
   push:
     tags:
       - v[0-9]+.*
-  # run against a tag from the actions tab, either to redo a release or because
-  # the prepare release workflow started it, a tag it pushed itself does not set
-  # off the trigger above
+  # from the actions tab, to redo a release or because tag-release.yml started
+  # it: a tag pushed with GITHUB_TOKEN does not set off the trigger above
   workflow_dispatch:
 
 jobs:
-  # a tag can be pushed from anywhere, so the tests are run again here rather
-  # than trusting whatever ran on master
+  # a tag can be pushed from anywhere, so the tests run again here
   test:
     runs-on: ubuntu-latest
     steps:
-      # everything below expects to be looking at a release tag, which is not
-      # true if this was started by hand against a branch
+      # a run started by hand against a branch would otherwise get this far
       - name: Check this is a tag
         if: ${{ !startsWith(github.ref, 'refs/tags/') }}
         run: |
@@ -27,23 +24,20 @@ jobs:
           exit 1
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
-          # the bench ledger check walks every commit since the last release,
-          # so it needs the history and the tags, not the tag being built
+          # the bench pin check walks every commit since the last release
           fetch-depth: 0
       - uses: Swatinem/rust-cache@6323deb102c322ba6fcbdcafc7e3dddab59af2b6 # v2.9.2
       - name: Run tests
         run: cargo test --workspace --locked --release
-      # The changelog prints each commit's stated bench, so a release publishes
-      # whatever the messages say. This reads them against the counts the same
-      # commits pin, over the range the changelog covers. Lapses already on
-      # master are in scripts/acknowledged_bench_pins.txt and are reported
-      # rather than failed on; anything else stops the release.
+      # The changelog publishes each commit's stated bench, so the stated
+      # benches are read against the pins over the range the changelog covers.
+      # Lapses already on master are in scripts/acknowledged_bench_pins.txt
+      # and are reported rather than failed on.
       - name: Check the stated benches against the pins
         run: |
-          # The last full release, found the way scripts/changelog.sh finds it,
-          # so the range checked is the range the section covers. The tag being
-          # released is skipped: changelog.sh runs before that tag exists and
-          # this runs after it, and the newest tag is this one.
+          # the last full release, found the way scripts/changelog.sh finds
+          # it. The tag being released is skipped: changelog.sh ran before it
+          # existed
           previous=$(git tag --list 'v[0-9]*' --sort=-v:refname \
             | grep -v -- '-' | grep -v -x -- "${GITHUB_REF_NAME}" | head -1 || true)
           if [ -z "$previous" ]; then
@@ -73,15 +67,12 @@ jobs:
           - ubuntu-latest
           - macos-latest
           - windows-latest
-        # The x86-64 platforms get three builds: the baseline, and the v2
-        # and v3 microarchitecture levels, which is where popcnt and then
-        # avx2/bmi2 live. The evaluation counts pieces with count_ones and
-        # the generator pops bits with trailing_zeros, so the baseline build
-        # spells both out by hand and pays 4.8% more instructions over the
-        # bench for it. The node counts cannot move (the flags change
-        # instructions, not the search), which is what lets a variant be
-        # checked by running it. The mac runner is arm and needs no
-        # variants.
+        # Three x86-64 builds: the baseline, and the v2 and v3 levels, where
+        # popcnt and then avx2/bmi2 live. Without popcnt the baseline spells
+        # out count_ones and trailing_zeros by hand; v2 is 4.54% fewer
+        # instructions over the bench for the same tree (561ad40). The flags change
+        # instructions, not the search, so the node counts cannot move. The
+        # mac runner is arm and needs no variants.
         cpu: ["", x86-64-v2, x86-64-v3]
         exclude:
           - os: macos-latest
@@ -90,35 +81,29 @@ jobs:
             cpu: x86-64-v3
     runs-on: ${{ matrix.os }}
     env:
-      # the baseline names its level rather than leaving this empty. An
-      # empty value has to survive as a set variable to override
-      # .cargo/config.toml, and windows is not reliably kind to those; the
-      # explicit flag builds the same bytes and does not depend on it
+      # the baseline names its level rather than leaving this empty: an empty
+      # variable has to survive as set to override .cargo/config.toml, and
+      # windows is not reliable about that
       RUSTFLAGS: ${{ matrix.cpu && format('-C target-cpu={0}', matrix.cpu) || '-C target-cpu=x86-64' }}
-      # v2 takes the plain name, because it is what almost every machine
-      # downloading this can run and it is the faster build. The level a
-      # binary needs is in its name otherwise: -baseline for the one that
-      # runs on anything, -v3 for the one that wants avx2. The arm mac has
-      # one build and keeps the plain name, which is why the baseline
-      # suffix asks about the runner as well as the level.
+      # v2 takes the plain name, being what almost every machine can run and
+      # the faster build. The arm mac has one build and keeps the plain name
+      # too, which is why the baseline suffix asks about the runner.
       #
-      # An empty result has to be the last arm of this expression: github
-      # treats the empty string as false, so `cond && '' || other` would
-      # take the other branch.
+      # The empty result has to be the last arm: github treats the empty
+      # string as false, so `cond && '' || other` takes the other branch.
       VARIANT: ${{ matrix.cpu == 'x86-64-v3' && '-v3' || (matrix.cpu == '' && matrix.os != 'macos-latest') && '-baseline' || '' }}
-    # contents: write is the workflow's, restated because a job that declares
-    # permissions gets these and no others. The other two are the attestation's:
-    # the job asks github for a short lived signing certificate with its own
-    # oidc token, and files the result against this repository.
+    # a job that declares permissions gets these and no others, so contents:
+    # write is restated. The other two let the job ask github for a short
+    # lived signing certificate with its own oidc token and file the
+    # attestation against this repository.
     permissions:
       contents: write
       id-token: write
       attestations: write
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
-      # the variant is proven to run before it is shipped: the runner is
-      # newer than any level built here, so a build that would trap on its
-      # own instructions fails this step rather than a downloader's evening
+      # the runner is newer than any level built here, so a build that would
+      # trap on its own instructions fails here rather than after download
       - name: Run what is about to be shipped
         run: cargo run --release --locked -- bench 2
       - uses: taiki-e/upload-rust-binary-action@f0d45ae91ee7b8ee928de7a9d04d893a08bcbec6 # v1.30.2
@@ -129,39 +114,32 @@ jobs:
           zip: windows
           checksum: "sha256"
           archive: $bin-$tag-$target${{ env.VARIANT }}
-          # The readme links to the changelog and to docs/, so they travel
-          # with it; a relative link in the archive is dead otherwise.
+          # the readme's relative links to the changelog and docs/
           include: LICENSE,README.md,CHANGELOG.md,docs
           # (required) GitHub token for uploading assets to GitHub Releases.
           token: ${{ secrets.GITHUB_TOKEN }}
 
-      # The checksum above says a download arrived intact and nothing about
-      # where it came from, and it is published on the same page as the file it
-      # describes, so anyone who could replace one could replace both. The
-      # attestation is the other half: a signed statement that these bytes came
-      # out of this workflow, at this commit, which `gh attestation verify`
-      # checks with github rather than with the release page. How to run it is
-      # in the readme.
+      # The checksum says a download arrived intact and nothing about where it
+      # came from, and it is published beside the file it describes. The
+      # attestation is a signed statement that these bytes came out of this
+      # workflow at this commit, which `gh attestation verify` checks with
+      # github rather than with the release page. How to run it is in the
+      # readme.
       #
-      # The subject is the checksum file rather than the archives, because the
-      # action names that file in its sha256 output and it already lists every
-      # archive this runner built with its digest. A path would have had to know
-      # which of the two the platform produced, since the tar is built on unix
-      # and the zip on windows.
+      # The subject is the checksum file, which the action names in its sha256
+      # output and which lists every archive this runner built; a path would
+      # have to know whether the platform made the tar or the zip.
       - name: Attest what was built
         uses: actions/attest-build-provenance@4d101475d8b20a2381f78447822ac1eab6504dd8 # v4.2.2
         with:
           subject-checksums: ${{ steps.upload.outputs.sha256 }}
 
-  # Builds and publishes the lichess-bot image for the tag. It runs from here
-  # rather than from its own tag trigger so that it waits for the tests and for
-  # the release it writes to.
+  # Called from here rather than run from its own tag trigger so that it waits
+  # for the tests and for the release it writes to.
   docker:
     needs: create-release
-    # A called workflow cannot hold more than the job that calls it was given,
-    # so the two the image's attestation needs are granted here as well as
-    # declared there. Without them the build job asks for a signing certificate
-    # it is not allowed to have.
+    # a called workflow cannot hold more than its caller was given, so the two
+    # the image's attestation needs are granted here as well as declared there
     permissions:
       contents: write
       packages: write
@@ -171,18 +149,17 @@ jobs:
     with:
       release: true
 
-  # Plays the confirmation match against the previous release and adds the
-  # result to the release notes. Five hundred games at 30+0.3, split across five
-  # shards that play at once, which is about ninety minutes of wall clock rather
-  # than the seven hours one runner would take over them.
+  # The confirmation match against the previous release, added to the release
+  # notes. Five hundred games at 30+0.3 across five shards is about ninety
+  # minutes of wall clock.
   #
-  # The slower control is the point of it. A release is a batch of changes that
-  # were screened at 10+0.1, and a change that prunes or reduces can look better
-  # there than it is, because the tree it cut is worth more when both sides
-  # search deeper. Five hundred games settle about twenty five elo either side,
-  # which shows a batch that has given back most of what it claimed and cannot
-  # settle a difference of five, so the estimate is published with its margin
-  # and read as a check on the batch.
+  # The slower control is the point. A release is a batch of changes screened
+  # at 10+0.1, and a change that prunes or reduces can look better there than
+  # it is, because the tree it cut is worth more when both sides search
+  # deeper. Five hundred games settle about twenty five elo either side: enough
+  # to show a batch that gave back most of what it claimed, not enough to
+  # settle a difference of five, so the estimate is read as a check on the
+  # batch.
   strength:
     needs: create-release
     permissions:
@@ -194,22 +171,18 @@ jobs:
       time_control: 30+0.3
       publish: true
 
-  # Places the release on the ccrl scale by playing rated opponents, which says
-  # something the match against the previous release cannot: that one says which
-  # of the two is better, this one says roughly where both of them sit.
+  # Places the release on the ccrl scale by playing rated opponents.
   #
-  # After strength rather than alongside it, which costs the release the ninety
-  # minutes that match takes and buys two things: the two of them do not race to
-  # build and save the same fastchess cache from cold, and only two jobs are ever
-  # queued to edit the release notes, which is the most that queue holds without
-  # dropping one.
+  # After strength rather than alongside it, so the two do not race to build
+  # the same fastchess cache from cold and no more than two jobs are ever
+  # queued to edit the release notes, which is the most that queue holds
+  # without dropping one.
   #
-  # The condition is what makes that sequencing rather than dependency. Needing
-  # a job means needing it to have succeeded, and this needs nothing strength
-  # produces, so without the condition a strength match that failed or that had
-  # no previous release to measure against would take the rating estimate down
-  # with it. Cancelled is excluded so that calling off a release does not still
-  # spend an hour of runner on it.
+  # The condition makes that sequencing rather than dependency: this needs
+  # nothing strength produces, so a strength match that failed or had no
+  # previous release must not take the estimate down with it. Cancelled is
+  # excluded so that calling off a release does not still spend an hour of
+  # runner.
   calibrate:
     needs: [create-release, strength]
     if: ${{ !cancelled() && needs.create-release.result == 'success' }}

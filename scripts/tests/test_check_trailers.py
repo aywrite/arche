@@ -1,14 +1,8 @@
 # SPDX-License-Identifier: GPL-3.0-or-later
 # Copyright (C) 2022-2026 Andrew Wright
 
-"""Tests for the commit message trailer check.
-
-A commit that changes the engine has to say what the bench counts after it,
-a commit that claims speed has to say how much it measured, and an elo claim
-has to be in the one shape the changelog and the release notes read. The
-check runs as a commit-msg hook, so what is under test is which messages it
-lets through and what it says about the ones it does not.
-"""
+"""Tests for the commit message trailer check: which messages it lets through
+and what it says about the ones it does not."""
 
 import check_trailers
 
@@ -43,9 +37,7 @@ def test_every_engine_scope_and_type_is_covered():
 
 
 def test_a_bench_must_be_exactly_digits():
-    # the ci check reads the line with git's trailer parser and compares the
-    # value as printed, so the hook refuses what that would not match:
-    # commas, and whitespace on either side
+    # the ci check compares the value as git prints it
     for value in ["42,847,751", "5 ", " 5", "5\t"]:
         assert problems(f"{ENGINE}\n\nBench: {value}\n") == [
             f"Bench: must be a plain number, got {value}"
@@ -53,8 +45,7 @@ def test_a_bench_must_be_exactly_digits():
 
 
 def test_the_bench_trailer_must_be_the_last_bench_number_in_the_message():
-    # openbench reads the last `bench <number>` anywhere in the message, so
-    # a later trailer with one in it would be read in place of the bench
+    # openbench reads the last `bench <number>` anywhere in the message
     message = f"{ENGINE}\n\nBench: 42847751\nNote: the old bench 9 positions are gone\n"
     found = problems(message)
     assert found == [
@@ -118,14 +109,9 @@ def test_the_elo_format_is_fixed_when_present():
 
 
 def test_the_trailers_the_estimator_prints_are_accepted():
-    """The seam with the tool that prints them.
-
-    The estimator is in another repository now, so neither side can import the
-    other to check the shape they agree on. Its own tests pin these lines as
-    what it prints and this pins them as what the hook takes. A change to the
-    shape then fails on the side that made it, and the other side's literal is
-    where the conversation starts.
-    """
+    """The estimator is in another repository, so neither side can import the
+    other: its tests pin these lines as what it prints and this pins them as
+    what the hook takes."""
     for value in [
         "+191 ±321 (4 games, 30+0.3, vs ce8b662)",
         "+20 ±15 (sprt [0, 10] passed, 214 games, 30+0.3, vs ce8b662)",
@@ -135,13 +121,9 @@ def test_the_trailers_the_estimator_prints_are_accepted():
 
 
 def test_the_base_played_against_has_to_still_resolve():
-    """A branch name is not a base.
-
-    The figure belongs to the two builds that played, and a trailer is read
-    months later. `vs master` names whatever master is on the day it is read,
-    and the run's own artifacts are kept for ninety days, so after that
-    nothing says what was played. A commit or a release tag stays put.
-    """
+    """A branch name is not a base: `vs master` names whatever master is on
+    the day the trailer is read, and the run's artifacts are kept for ninety
+    days. A commit or a release tag stays put."""
     for value in [
         "+12 ±18 (sprt [-10, 0] inconclusive, 840 games, 10+0.1, vs master)",
         "-3 ±11 (500 games, 10+0.1, vs the previous release)",
@@ -167,8 +149,7 @@ def test_merges_fixups_and_the_release_bump_are_exempt():
 
 
 def test_only_the_final_paragraph_holds_trailers_as_git_reads_it():
-    # a Bench line followed by more prose is not a trailer to git, git-cliff
-    # or the ci check, so it must not be one to the hook either
+    # a Bench line followed by more prose is not a trailer to git
     message = f"{ENGINE}\n\nBench: 5\n\nMore prose after.\n"
     assert problems(message) == ["an engine commit needs a Bench: trailer"]
     # and other trailers in the same final paragraph are fine

@@ -9,10 +9,9 @@
 #                --trailer "$(scripts/speed.sh | tail -n 1)"
 #
 # Run before the commit exists, which is why the base is head and not its
-# parent. The base commit is built once, by build_at.sh, and its binary kept
-# under target/speed/<sha>/, so measuring again against the same commit costs
-# only the rounds. The tree is built as it stands, not as it is staged.
-# ROUNDS sets how many rounds there are, five by default.
+# parent. The base binary is kept under target/speed/<sha>/, so measuring
+# again against the same commit costs only the rounds. The tree is built as
+# it stands, not as it is staged. ROUNDS sets the rounds, five by default.
 set -euo pipefail
 
 base=$(git rev-parse --verify "${1:-HEAD}^{commit}")

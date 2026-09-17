@@ -3,11 +3,10 @@
 # Copyright (C) 2022-2026 Andrew Wright
 """Build a Polyglot opening book from the lichess-org/chess-openings data set.
 
-The data set (CC0) is a list of named openings given as PGN move sequences. Every
-line is replayed and each position/move pair is recorded, weighted by the number
-of named openings that pass through it. Mainline theory appears in many named
-variations and so ends up with a much higher weight than novelties such as
-1. Nh3, which keeps the "weighted_random" selection of lichess-bot sensible.
+Every named opening (CC0, given as a PGN move sequence) is replayed and each
+position/move pair recorded, weighted by how many named openings pass through
+it. Mainline theory therefore outweighs novelties such as 1. Nh3, which keeps
+lichess-bot's "weighted_random" selection sensible.
 """
 
 import argparse
@@ -23,7 +22,7 @@ import chess.polyglot
 ENTRY_STRUCT = struct.Struct(">QHHI")
 MAX_WEIGHT = 0xFFFF
 
-# Polyglot promotion codes, indexed the same way as chess.PIECE_TYPES.
+# Polyglot promotion codes.
 PROMOTION_CODES = {chess.KNIGHT: 1, chess.BISHOP: 2, chess.ROOK: 3, chess.QUEEN: 4}
 
 

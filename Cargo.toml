@@ -10,11 +10,9 @@ repository = "https://github.com/aywrite/arche"
 readme = "README.md"
 publish = false
 
-# A library as well as a binary. Everything in src/ was written to be driven
-# by an interface, and a binary is reachable from nothing, so a test outside
-# it had no way in. Both targets are named arche, which cargo allows and
-# which keeps `--bin arche`, what the release workflow asks for, meaning what
-# it always meant.
+# A library as well as a binary, so that a test outside src/ has a way in.
+# Both targets are named arche, which cargo allows and which keeps the
+# `--bin arche` the docker build and the release workflow ask for.
 [lib]
 name = "arche"
 path = "src/lib.rs"
@@ -23,15 +21,12 @@ path = "src/lib.rs"
 name = "arche"
 path = "src/main.rs"
 
-# This crate speaks a protocol and drives an engine; it has never needed an
-# unsafe block and there is no reason it should start. Forbid rather than
-# deny, because forbid cannot be lifted by an `allow` further down: the way
-# this line stops meaning anything is somebody deleting it, which is a diff
-# a reader will see, rather than an attribute tucked over one function.
-#
-# The engine crate does carry unsafe and says so in its own manifest. The
-# boundary is deliberate: the code that reads what an interface sent us is
-# the code that should be provably free of it.
+# This crate speaks a protocol and drives an engine and has never needed an
+# unsafe block. Forbid rather than deny, because forbid cannot be lifted by
+# an `allow` further down: the only way past this line is deleting it, which
+# is a diff a reader will see. The engine crate carries unsafe and says so in
+# its own manifest; the code that reads what an interface sent is the code
+# that should be free of it.
 [lints.rust]
 unsafe_code = "forbid"
 
@@ -57,11 +52,9 @@ arche-core = { path = "./arche-core" }
 # already the engine's, so this adds an edge rather than a package
 proptest = "1.7"
 
-# The tests are compiled optimised. What the debug run is there for is the
-# overflow checks and the board's state-in-step assertions, and cargo leaves
-# both on at any optimisation level, so nothing the run checks is given up
-# for the speed. Only `cargo test` reads this profile, so a plain
-# `cargo build` is untouched.
+# The tests are compiled optimised. The overflow checks and the board's
+# state-in-step assertions stay on at any opt-level, so nothing the run
+# checks is given up for the speed. Only `cargo test` reads this profile.
 [profile.test]
 opt-level = 2
 

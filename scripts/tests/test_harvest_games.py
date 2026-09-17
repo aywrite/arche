@@ -3,22 +3,12 @@
 
 """Tests for the games harvest.
 
-What is under test is the reading and the deciding, not the downloading. `gh` is
-replaced by a fake that records what it was asked for, so these pin the shape of
-the listing the script parses, which artifacts it takes, and the two properties
-that make it safe to run after every arm.
-
-The first is that running it twice downloads nothing the second time. The
-archive is append only and the marker is what says an artifact is down, so a
-second run over a current archive has to be free or nobody will run it often.
-
-The second is that it takes the strength runs and nothing else. Calibrate
-uploads its rungs' games, and those are arche against another engine where a
-strength game is arche against arche, so taking them would give the corpus a
-second source and cost it the caveat it states. The listing also still holds
-`gauntlet-<run>` artifacts, which were the rungs concatenated until `dcf87b7`
-stopped uploading them. A future reader will be tempted by both, which is why
-the exclusion is a test rather than a comment.
+`gh` is replaced by a fake that records what it was asked for, so these pin
+the shape of the listing the script parses, which artifacts it takes, that a
+second run downloads nothing, and that it takes the strength runs and nothing
+else: neither the calibrate rungs (a second source) nor the `gauntlet-<run>`
+residue. The exclusion is a test rather than a comment because a future reader
+will be tempted by both.
 """
 
 import json
@@ -95,8 +85,8 @@ def test_it_takes_the_strength_artifacts(fake, tmp_path):
 
 
 def test_it_takes_neither_the_calibrate_rungs_nor_the_gauntlet_residue(fake, tmp_path):
-    """A calibrate game is against another engine, which is a second source. The
-    gauntlet names are residue from before `dcf87b7` and go the same way."""
+    """A calibrate game is against another engine, and the gauntlet names are
+    residue from before `dcf87b7`."""
     double = fake(
         [
             artifact("calibrate-7-1-stockfish-sf16", run=7),
@@ -126,8 +116,8 @@ def test_a_second_run_downloads_nothing(fake, tmp_path):
 
 
 def test_an_interrupted_download_is_taken_again(fake, tmp_path):
-    """A directory is not the marker. An artifact whose download died leaves one
-    behind, and it has to be fetched again rather than counted as held."""
+    """A directory is not the marker: an artifact whose download died leaves
+    one behind."""
     (tmp_path / "strength-1-1-shard-0").mkdir()
     double = fake([artifact("strength-1-1-shard-0")])
     taken, skipped, _, _ = harvest_games.harvest(
@@ -195,9 +185,8 @@ def test_the_deadline_is_the_soonest_live_strength_artifact(fake, tmp_path):
 
 
 def test_an_artifact_already_held_is_not_a_deadline(fake, tmp_path):
-    """The figure is what is still at risk. Left unfiltered it is the oldest
-    live artifact's expiry whatever the archive holds, so it would read as a
-    deadline on a run where every game is already safe."""
+    """The figure is what is still at risk, not the oldest live artifact's
+    expiry whatever the archive holds."""
     rows = [artifact("strength-1-1-shard-0", expires="2026-11-02T00:00:00Z")]
     fake(rows)
     listing = harvest_games.artifacts("o/r")
@@ -207,8 +196,8 @@ def test_an_artifact_already_held_is_not_a_deadline(fake, tmp_path):
 
 
 def test_the_listing_asks_for_the_fields_it_parses(fake):
-    """The script reads four fields off each artifact, and a rename upstream
-    should fail here rather than produce an empty harvest."""
+    """A field renamed upstream should fail here rather than produce an empty
+    harvest."""
     double = fake([artifact("strength-1-1-shard-0")])
     rows = harvest_games.artifacts("o/r")
     recorded = double.asked
@@ -229,10 +218,8 @@ def test_the_listing_asks_for_the_fields_it_parses(fake):
 
 
 def test_a_failed_download_fails_the_run_even_with_out(fake, tmp_path, monkeypatch):
-    """The documented invocation passes --out, and that is the one where a failed
-    download has to reach the exit code. Returning the corpus builder's status
-    alone reports success over an arm's games left on a run that will expire,
-    which is the loss the script exists to prevent."""
+    """The documented invocation passes --out, and a failed download has to
+    reach the exit code there too, not only the builder's status."""
     built = []
     monkeypatch.setattr(
         harvest_games.build_corpus, "main", lambda argv: built.append(argv) or 0
@@ -294,8 +281,7 @@ def test_a_corpus_build_that_fails_fails_the_run(fake, tmp_path, monkeypatch):
 def test_a_gh_that_is_absent_is_reported_rather_than_raised(
     monkeypatch, tmp_path, capsys
 ):
-    """gh carries the diagnosis and check=True puts it inside the exception, so
-    without this the user gets a traceback and not the reason."""
+    """Without this the user gets a traceback and not the reason."""
 
     def missing(*arguments):
         raise FileNotFoundError(2, "No such file or directory", "gh")
@@ -321,9 +307,8 @@ def test_a_gh_that_cannot_authenticate_prints_what_gh_said(
 
 
 def test_an_artifact_held_without_games_is_named(fake, tmp_path, capsys):
-    """A shard that died before it played uploads its manifest and no games, and
-    `if-no-files-found: warn` keeps the run green, so it arrives looking exactly
-    like a shard that played."""
+    """A shard that died before it played uploads its manifest and no games,
+    and `if-no-files-found: warn` keeps the run green."""
     double = fake([artifact("strength-1-1-shard-0"), artifact("strength-2-1-shard-0")])
     double.empty = {"strength-1-1-shard-0"}
     harvest_games.harvest("o/r", tmp_path, harvest_games.artifacts("o/r"))

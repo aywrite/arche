@@ -1,14 +1,9 @@
 # SPDX-License-Identifier: GPL-3.0-or-later
 # Copyright (C) 2022-2026 Andrew Wright
 
-"""Tests for the tactical suite converter.
-
-The engine has no san parser, so a published suite's `bm Rxb2` is turned into
-the coordinate move the engine speaks before it is committed. What is under
-test is the part of that a hand written converter gets subtly wrong:
-disambiguation, the check and mate suffixes, castling and promotion, several
-acceptable moves on one line, and refusing rather than skipping a move it
-cannot read.
+"""Tests for the tactical suite converter: disambiguation, the check and mate
+suffixes, castling and promotion, several acceptable moves on one line, and
+refusing rather than skipping a move it cannot read.
 """
 
 import build_tactics
@@ -32,8 +27,7 @@ def test_a_san_move_becomes_a_coordinate_move():
 
 
 def test_the_id_survives_and_the_rest_of_the_operations_do_not():
-    # the suite carries one 2004 engine's analysis of the position beside it,
-    # which describes that engine rather than the position
+    # one 2004 engine's analysis of the position
     fen = "2rr3k/pp3pp1/1nnqbN1p/3pN3/2pP4/2P3Q1/PPB4P/R4RK1 w - -"
     source = (
         f"{fen} acd 4; acn 21146; acs 1; bm Qg6; ce 32764; "
@@ -93,8 +87,6 @@ def test_comments_and_blank_lines_are_skipped():
 
 
 def test_a_move_that_cannot_be_read_raises_rather_than_being_skipped():
-    # a suite that drops what it could not read gates on a number that means
-    # something other than what it claims
     for san in ["Rxb2", "Qz9", "O-O-O"]:
         with pytest.raises(ValueError) as raised:
             convert(f'{ITALIAN} bm {san}; id "WAC.777";')

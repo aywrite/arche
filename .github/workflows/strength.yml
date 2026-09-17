@@ -1,40 +1,33 @@
 name: Strength
 
 # Plays one version of the engine against another and reports the elo
-# difference. By default it is whatever it was run against versus the last full
-# release, which is what the release workflow wants. Both sides can be named
-# instead, as a branch, a tag, a commit or a pull request number, so a change
-# can be measured before it is merged and against something other than a
-# release.
+# difference. By default it is the ref this was run against versus the last
+# full release, which is what the release workflow wants. Both sides can be
+# named instead, as a branch, a tag, a commit or a pull request number.
 #
-# A runner plays about three and a third games a minute at 10+0.1 and about one
-# and a tenth at 30+0.3, and play is capped at 150 minutes, so a match worth
-# reading is more games than one job can hold. The games are split across shards
-# that play at the same time and are pooled afterwards. Each shard plays a slice
-# of the opening book of its own, chosen from the seed, so no two shards play
-# the same opening and the schedule can be played again from the manifest.
+# A runner plays about three and a third games a minute at 10+0.1 and about
+# one and a tenth at 30+0.3, and play is capped at 150 minutes, so a match
+# worth reading is split across shards that play at once and are pooled
+# afterwards. Each shard plays its own slice of the book, chosen from the seed,
+# so no two shards play the same opening and the schedule can be replayed from
+# the manifest.
 #
 # The estimate over the pooled games is worked out here rather than taken from
-# fastchess, which only ever sees the one shard it ran. The figure and its
-# interval are both read off pairs, since the two games of an opening are one
-# draw and not two, and a game the pairing left over is in the score and in
-# nothing else.
+# fastchess, which only sees its own shard. The figure and its interval are
+# read off pairs, since the two games of an opening are one draw and not two;
+# a game the pairing left over is in the score and in nothing else.
 #
-# Or ask the narrower question instead: sprt reads the same pooled games as a
-# sequential test of whether the candidate is stronger. A run is one batch of
-# it. The shards play their slices with nothing watching, the summary adds the
-# pairs they played to the pairs the earlier batches of the same test played
-# and judges the log likelihood ratio over all of them against the bounds. A
-# batch that settles it says passed or failed; one that does not says
-# inconclusive and the pairs to launch the next batch with. Looking at the
-# batch boundaries rather than after every game is what lets the shards play at
-# once and leaves the bounds meaning what they say.
+# sprt reads the same pooled games as a sequential test of whether the
+# candidate is stronger, and a run is one batch of it. The shards play their
+# slices with nothing watching; the summary adds their pairs to the pairs the
+# earlier batches played and judges the log likelihood ratio over all of them.
+# A batch that settles it says passed or failed; one that does not says
+# inconclusive and the pairs to launch the next batch with. Looking only at
+# batch boundaries is what lets the shards play at once and leaves the bounds
+# meaning what they say.
 #
-# Every run keeps what it would take to look into its own result: the games with
-# the search figures behind each move, the result block, the fastchess config
-# and a manifest of what was played on what. They go up a shard at a time, as
-# strength-<run id>-<attempt>-shard-<i>. The opening slices come from the seed,
-# and the seed is in every manifest, so the same schedule can be played again.
+# Every shard keeps its games, the result block, the fastchess config and a
+# manifest as strength-<run id>-<attempt>-shard-<i>.
 
 on:
   workflow_dispatch:
@@ -118,10 +111,8 @@ on:
         description: Append the result to the release notes for this tag
         type: boolean
         default: false
-      # What the match is played on rather than what it plays. None of these
-      # are boxes above: the form is already long, and these are not the
-      # questions the person running a match came to answer. A workflow
-      # calling this can name them.
+      # What the match is played on rather than what it plays, so not boxes
+      # on the actions tab. A workflow calling this can name them.
       hash_mb:
         description: The table both sides are given, in MB
         type: number
@@ -138,11 +129,9 @@ on:
         description: How long fastchess waits for an engine to answer uci
         type: number
         default: 20000
-      # What the release note this run writes is marked with, so a rerun
-      # replaces its own line rather than adding a second one. The job below
-      # repeats the default, as the env lines that read the other call inputs
-      # do, so the marker holds if publish is ever a box on the actions tab
-      # as well.
+      # Marks this workflow's line in the release notes, so a rerun replaces
+      # its own line. The job below repeats the default, as the env lines that
+      # read the other call inputs do.
       marker:
         description: Identifies this workflow's line in the release notes
         type: string
@@ -152,31 +141,26 @@ permissions:
   contents: read
 
 env:
-  # What the match is played on, from the inputs above. A workflow_call
-  # default is not applied to a run started from the actions tab, so each
-  # default is written here as well.
+  # A workflow_call default is not applied to a run started from the actions
+  # tab, so each default is written here as well as on the input.
   #
-  # 256MB is what the engine defaults to. Naming it here holds the two sides to
-  # the same table whatever a future default is, and puts the number in the
-  # manifest with the rest of what the match was played on.
+  # 256MB is what the engine defaults to. Naming it holds both sides to the
+  # same table whatever a future default is.
   HASH: ${{ inputs.hash_mb || 256 }}
   CONCURRENCY: ${{ inputs.concurrency || 2 }}
-  # The wall clock cap on play alone. The play job's timeout is worked out from
-  # it with half an hour over, so a shard stopped by the clock still keeps the
-  # games it did play. A hundred game shard is about ninety minutes at 30+0.3
-  # and half an hour at 10+0.1, so this is headroom for a slow runner rather
-  # than a budget to be spent.
+  # The wall clock cap on play alone; the play job's timeout is this plus half
+  # an hour, so a shard stopped by the clock still keeps its games. A hundred
+  # game shard is about ninety minutes at 30+0.3 and half an hour at 10+0.1,
+  # so this is headroom rather than a budget.
   MAX_MATCH_MINUTES: ${{ inputs.max_match_minutes || 150 }}
-  # The engine allocates its transposition table before it answers uci, which
-  # four copies starting at once can take longer over than the ten second
-  # default allows.
+  # The engine allocates its table before it answers uci, which four copies
+  # starting at once can take longer over than the ten second default.
   STARTUP_MS: ${{ inputs.startup_ms || 20000 }}
 
 jobs:
-  # Split out so the match can be skipped in one place rather than every step
-  # having to ask whether there is anything to compare against. It also works
-  # out the matrix, because a matrix cannot be built from a number: it is a
-  # list, so the list is made here and read back with fromJSON.
+  # Split out so the match can be skipped in one place when there is nothing
+  # to compare against. A matrix is a list, not a number, so the shard list is
+  # made here and read back with fromJSON.
   resolve:
     runs-on: ubuntu-latest
     timeout-minutes: 10
@@ -222,8 +206,8 @@ jobs:
             exit 0
           fi
 
-          # Release candidates are not a baseline worth measuring against, and a
-          # release is compared with the one before it rather than with itself.
+          # the last full release: no candidates, and not the tag being
+          # released
           tag=$(git tag --list 'v[0-9]*' --sort=-v:refname \
                 | grep -v -- '-' \
                 | grep -v -x "$GITHUB_REF_NAME" \
@@ -243,17 +227,15 @@ jobs:
           SPRT: ${{ inputs.sprt }}
           ELO0: ${{ inputs.elo0 }}
           ELO1: ${{ inputs.elo1 }}
-          # an emptied box arrives as the empty string, which is the same
-          # ask as the default: this batch is the first of its test
           PRIOR_PAIRS: ${{ inputs.prior_pairs }}
         run: |
           if [ "$SHARDS" -lt 1 ]; then
             echo "::error::shards must be at least one, got ${SHARDS}"
             exit 1
           fi
-          # The summary is the first thing that reads the sprt inputs, at the
-          # end, so a mistyped one would otherwise cost a batch that has
-          # already been played. The boxes take free text whatever they say
+          # checked here because the summary is otherwise the first thing to
+          # read the sprt inputs, after the batch has been played. The boxes
+          # take free text whatever their type says
           if [ "$SPRT" = "true" ]; then
             number='^-?[0-9]+(\.[0-9]+)?$'
             for value in "$ELO0" "$ELO1"; do
@@ -262,12 +244,11 @@ jobs:
                 exit 1
               fi
             done
-            # a count for each of the five scores a pair can end on, which is
-            # what the summary of the last batch printed. A ratio typed in
-            # here is the old shape of this box and is not one. The spaces a
-            # paste picks up are dropped rather than refused, as the summary
-            # drops them, and the digits are capped where the summary caps
-            # them
+            # a count for each of the five scores a pair can end on, as the
+            # last batch's summary printed them. A ratio is the old shape of
+            # this box and is refused. Pasted spaces are dropped, as the
+            # summary drops them, and the digits are capped at eight, where
+            # the summary caps them
             PRIOR_PAIRS="${PRIOR_PAIRS//[[:space:]]/}"
             if [ -n "$PRIOR_PAIRS" ] \
                && ! [[ "$PRIOR_PAIRS" =~ ^[0-9]{1,8}(,[0-9]{1,8}){4}$ ]]; then
@@ -280,9 +261,8 @@ jobs:
               exit 1
             fi
           fi
-          # every shard plays whole pairs, since a pair is the unit the games
-          # are read in, so its games are rounded down to an even number and the
-          # run plays a little under what was asked for
+          # whole pairs a shard, so the run plays a little under what was
+          # asked for
           pairs=$((GAMES / SHARDS / 2))
           if [ "$pairs" -lt 1 ]; then
             echo "::error::${GAMES} games across ${SHARDS} shards is under a pair each"
@@ -298,24 +278,19 @@ jobs:
             echo "::notice::$((pairs * 2)) games in each of ${SHARDS} shards, $((pairs * 2 * SHARDS)) in all${batch}"
           fi
           echo "pairs=${pairs}" >> "$GITHUB_OUTPUT"
-          # the list the matrix is built from, and the count of it, which is
-          # what the slices are cut for and what the summary counts against
           echo "shards=[$(seq -s, 0 $((SHARDS - 1)))]" >> "$GITHUB_OUTPUT"
           echo "count=${SHARDS}" >> "$GITHUB_OUTPUT"
 
-      # The book the shards play. The names are the blocks in scripts/book.sh,
-      # which is also where the file, the format and the sha256 come from, and
-      # a name it does not know is refused here rather than by a shard that has
-      # already built two engines.
+      # A book scripts/book.sh has no block for is refused here rather than by
+      # a shard that has already built two engines.
       - name: Work out the book
         id: book
         env:
           BOOK: ${{ inputs.book }}
         run: |
-          # the list is held rather than piped into grep, so that grep -q
-          # leaving early cannot fail the step under pipefail. -F and -x, so a
-          # box holding a metacharacter or nothing at all is a name the table
-          # does not have rather than a pattern
+          # held rather than piped into grep, so grep -q leaving early cannot
+          # fail the step under pipefail. -F and -x, so a box holding a
+          # metacharacter or nothing is an unknown name rather than a pattern
           known=$(scripts/book.sh list)
           if ! grep -Fxq -- "$BOOK" <<< "$known"; then
             echo "::error::book ${BOOK} is not one of $(tr '\n' ' ' <<< "$known")"
@@ -324,10 +299,9 @@ jobs:
           echo "::notice::playing the ${BOOK} book"
           echo "book=${BOOK}" >> "$GITHUB_OUTPUT"
 
-      # How long the play job is given. A job timeout takes an expression but
-      # expressions have no arithmetic, so the cap and the half hour over it
-      # are added up here. The half hour is what the builds before the match
-      # and the upload after it run in.
+      # A job timeout takes an expression but expressions have no arithmetic,
+      # so the cap and the half hour for the builds and the upload are added
+      # here.
       - name: Work out how long a shard is given
         id: timeout
         run: echo "minutes=$((MAX_MATCH_MINUTES + 30))" >> "$GITHUB_OUTPUT"
@@ -337,36 +311,29 @@ jobs:
     if: needs.resolve.outputs.baseline_sha != ''
     runs-on: ubuntu-latest
     strategy:
-      # one shard that fell over is a smaller sample and not a lost run, so the
-      # others play on and the summary reports what arrived
+      # a shard that fell over is a smaller sample, not a lost run
       fail-fast: false
       matrix:
         shard: ${{ fromJSON(needs.resolve.outputs.shards) }}
-    # the play cap with room for the builds before it, worked out in resolve
     timeout-minutes: ${{ fromJSON(needs.resolve.outputs.play_timeout) }}
     defaults:
       run:
-        # naming the shell is what turns on pipefail, without it a fastchess
-        # that died is hidden by the tee it is piped into
+        # naming the shell turns on pipefail, without which a fastchess that
+        # died is hidden by the tee it is piped into
         shell: bash
     env:
       SHARD: ${{ matrix.shard }}
-      # the shards the match is actually playing, which is what the slices are
-      # cut for
       SHARDS: ${{ needs.resolve.outputs.count }}
       PAIRS: ${{ needs.resolve.outputs.pairs }}
       TIME_CONTROL: ${{ inputs.time_control }}
-      # the book the resolve job accepted rather than the input it read, so a
-      # shard plays what was checked
       BOOK: ${{ needs.resolve.outputs.book }}
       SPRT: ${{ inputs.sprt }}
       ELO0: ${{ inputs.elo0 }}
       ELO1: ${{ inputs.elo1 }}
       PRIOR_PAIRS: ${{ inputs.prior_pairs }}
-      # the openings are taken in book order from an offset, so the seed picks
-      # the region of the book each shard plays rather than a shuffle. The run
-      # id is one nobody has to choose and no two runs share; a seed given by
-      # hand replays an earlier run
+      # the seed picks the region of the book each shard plays, not a shuffle.
+      # The run id is one no two runs share; a seed given by hand replays an
+      # earlier run
       SEED: ${{ inputs.seed || github.run_id }}
       CANDIDATE: ${{ needs.resolve.outputs.candidate_name }}
       CANDIDATE_SHA: ${{ needs.resolve.outputs.candidate_sha }}
@@ -380,14 +347,14 @@ jobs:
       - uses: aywrite/mache/actions/setup@26b95951ba6103ff840c2cee5659dc3ec79b5dd9 # v0.1.0
         id: tools
 
-      # the cache keeps the dependencies; each side's engine is built from an
-      # export of its commit, and the checkout stays on the ref this ran on
+      # the cache keeps the dependencies; each side is built from an export of
+      # its commit
       - uses: Swatinem/rust-cache@6323deb102c322ba6fcbdcafc7e3dddab59af2b6 # v2.9.2
 
       - name: Build both versions
         run: |
-          # a pull request head is not fetched by default and the resolve job
-          # ran on a different machine, so fetch anything not already here
+          # a pull request head is not fetched by default, and the resolve
+          # job's fetch was on another machine
           for sha in "$CANDIDATE_SHA" "$BASELINE_SHA"; do
             git cat-file -e "${sha}^{commit}" 2>/dev/null \
               || git fetch -q origin "$sha" \
@@ -396,13 +363,11 @@ jobs:
           scripts/build_at.sh "$CANDIDATE_SHA" tools/new
           scripts/build_at.sh "$BASELINE_SHA" tools/old
 
-      # Which openings this shard plays. The book is counted here rather than
-      # written down, because a book that changed size would otherwise move
-      # every shard but the first onto its neighbour's openings. What counting
-      # means depends on the book, a game for a pgn and a line for an epd,
-      # which is why scripts/book.sh is asked rather than grep. The file and
-      # the format are carried on from here because the match runs in tools/,
-      # where the script is not.
+      # The book is counted rather than written down, so a book that changed
+      # size cannot move every shard but the first onto its neighbour's
+      # openings. scripts/book.sh is asked rather than grep because what an
+      # opening is depends on the format. The file and the format are carried
+      # on because the match runs in tools/, where the script is not.
       - name: Work out the slice of the book
         run: |
           book_file=$(scripts/book.sh file "$BOOK")
@@ -423,24 +388,19 @@ jobs:
       - name: Play the shard
         working-directory: tools
         run: |
-          # only fastchess and the book are cached, but a rerun on the same
-          # runner would still find the last attempt's games lying here, and
-          # fastchess appends to a pgn it is given
+          # fastchess appends to a pgn it is given, and a rerun on the same
+          # runner can find the last attempt's here
           rm -f games.pgn result.txt config.json
-          # No -sprt, sharded or not. A shard that stopped itself the moment
-          # its own games settled the question would be one look per shard at a
-          # bound meant for one look, and its games would be a slice chosen by
-          # what they said. The shards play their pairs out and the summary
-          # runs the test over all of them at once.
+          # No -sprt, sharded or not. A shard that stopped itself when its own
+          # games settled the question would be one look per shard at a bound
+          # meant for one look, and its games a slice chosen by what they
+          # said. The summary runs the test over all the shards at once.
           #
-          # The pgn carries everything fastchess can record about a move, so a
-          # game that went wrong can be read for what the search was seeing at
-          # the time. tbhits is left off; there are no tablebases here.
+          # tbhits is left off the pgn: no tablebases here.
           #
-          # INT is the signal fastchess takes as a request to stop, report the
-          # games played so far and exit, and 124 is how timeout says it had to
-          # send it. A shard stopped that way played fewer games, and the
-          # summary says so rather than losing the run
+          # INT asks fastchess to stop, report the games so far and exit, and
+          # 124 is how timeout says it sent it. A shard stopped that way
+          # played fewer games, and the summary says so
           status=0
           timeout -k 60 -s INT "${MAX_MATCH_MINUTES}m" ./fastchess \
             -engine "name=$CANDIDATE" cmd=./new \
@@ -452,9 +412,6 @@ jobs:
             -pgnout file=games.pgn nodes=true seldepth=true nps=true \
               hashfull=true timeleft=true latency=true pv=true \
             | tee result.txt || status=$?
-          # what stopped the shard, for the manifest. The clock cap is the one
-          # reading a result has to know about, because it is the one that
-          # leaves the question the games were meant to settle unanswered
           if [ "$status" = "124" ]; then
             echo "STOPPED_BY=the ${MAX_MATCH_MINUTES} minute wall clock cap" >> "$GITHUB_ENV"
             echo "::warning::shard ${SHARD} hit the ${MAX_MATCH_MINUTES} minute cap before its game count"
@@ -464,17 +421,15 @@ jobs:
             echo "STOPPED_BY=fastchess, at the game count" >> "$GITHUB_ENV"
           fi
 
-      # What it would take to play this shard again, and what it was played on.
-      # Written whether or not it finished, since a shard that ended badly is
-      # the one that gets looked into.
+      # What it would take to play this shard again. Written whether or not it
+      # finished, since a shard that ended badly is the one looked into.
       - name: Write the manifest
         if: always()
         env:
           FASTCHESS: ${{ steps.tools.outputs.fastchess }}
           MACHE: ${{ steps.tools.outputs.version }}
         run: |
-          # asked for again rather than read from the step that worked out the
-          # slice, since this is written whether or not that step ran
+          # asked for again, since the slice step may not have run
           book_file=$(scripts/book.sh file "$BOOK") || book_file=unknown
           book_sha=$(sha256sum "tools/${book_file}" | cut -d' ' -f1) || book_sha=unknown
           toolchain=$(rustc -V) || toolchain=unknown
@@ -485,9 +440,8 @@ jobs:
             echo "baseline_sha: ${BASELINE_SHA}"
             echo "build: scripts/build_at.sh, cargo build --release on an export of the commit"
             echo "fastchess: ${FASTCHESS}"
-            # the tooling that reads the games as well as the harness that
-            # played them, so a figure can be read back against the version
-            # that produced it
+            # the tooling that reads the games, so a figure can be read back
+            # against the version that produced it
             echo "mache: ${MACHE}"
             echo "book: ${book_file}"
             echo "book_sha256: ${book_sha}"
@@ -507,8 +461,7 @@ jobs:
               echo "sprt: off"
             fi
             echo "wall_clock_cap_minutes: ${MAX_MATCH_MINUTES}"
-            # unset when the play step never got to the end, which is worth
-            # saying rather than leaving the games to look as if they ran out
+            # unset when the play step never reached its end
             echo "stopped_by: ${STOPPED_BY:-not recorded, the shard did not finish}"
             echo "runner: $(uname -a)"
             echo "cores: $(nproc)"
@@ -518,12 +471,9 @@ jobs:
           } > tools/manifest.txt
           cat tools/manifest.txt
 
-      # The games are the only record of what actually happened, and the
-      # summary job reads them back out of here rather than from a workspace it
-      # does not share. The attempt is in the name because an artifact cannot
-      # be uploaded twice under one name, and a rerun of the job keeps the run
-      # id: with the same seed it replays the same schedule, so both attempts
-      # are worth having
+      # The summary job reads the games from here. The attempt is in the name
+      # because an artifact cannot be uploaded twice under one name and a
+      # rerun keeps the run id.
       - name: Keep the games
         if: always()
         uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
@@ -535,19 +485,15 @@ jobs:
             tools/config.json
             tools/manifest.txt
           if-no-files-found: warn
-          # Ninety days, which is the maximum a public repository allows and
-          # was already the default in force. Written down because it is the
-          # corpus's shelf life and not a detail: a games artifact that expires
-          # takes an arm's games with it and they cannot be played again. An
-          # implicit default can be lowered for the repository by someone who
-          # is thinking about disk and not about the tuner.
+          # The maximum a public repository allows, written down because it is
+          # the tuning corpus's shelf life: an expired games artifact cannot be
+          # played again, and an implicit default can be lowered for the
+          # repository by someone thinking about disk.
           retention-days: 90
 
   summarise:
     needs: [resolve, play]
-    # a shard that timed out or failed leaves the others worth reading, so this
-    # runs on whatever arrived rather than only on a clean sweep. It still
-    # wants a baseline, which is what resolve says
+    # runs on whatever arrived, as long as there was a baseline to play
     if: always() && needs.resolve.result == 'success' && needs.resolve.outputs.baseline_sha != ''
     runs-on: ubuntu-latest
     timeout-minutes: 20
@@ -571,17 +517,15 @@ jobs:
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
 
-      # The estimate and nothing else: this job reads games rather than playing
-      # them, so there is no harness to build and no book to fetch.
+      # no harness to build and no book to fetch: this job only reads games
       - uses: aywrite/mache/actions/setup@26b95951ba6103ff840c2cee5659dc3ec79b5dd9 # v0.1.0
         with:
           estimator_only: true
 
-      # one directory per artifact under shards/, which is where the estimate
-      # reads a shard's name from. A single artifact is the exception: it is
-      # extracted straight into shards/, and the find below takes it either
-      # way. The attempt is in the pattern so that a rerun reads its own games
-      # rather than counting an earlier attempt's openings twice
+      # one directory per artifact under shards/, except that a single
+      # artifact is extracted straight into shards/; the find below takes
+      # either. The attempt is in the pattern so a rerun does not count an
+      # earlier attempt's games as well
       - uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v8.0.1
         with:
           pattern: strength-${{ github.run_id }}-${{ github.run_attempt }}-shard-*
@@ -595,23 +539,15 @@ jobs:
             echo "::error::no shard of attempt ${GITHUB_RUN_ATTEMPT} uploaded any games. Rerunning the failed jobs alone leaves the shards on the attempt that played them, so rerun all of them."
             exit 1
           fi
-          # The estimate is over every shard's games, counted from the games
-          # themselves rather than taken from a result block that only saw one
-          # of them. How the games ended is counted the same way: the losses a
-          # crash or the clock cost stay in the estimate, because choosing what
-          # to count after seeing it is not a measurement, and the counts sit
-          # beside it instead. Anything worth an alert comes back on stderr.
+          # The estimate is counted from every shard's games, not from a result
+          # block that saw one shard. Games lost to a crash or the clock stay
+          # in it, because choosing what to count after seeing it is not a
+          # measurement; the termination counts sit beside it. Remarks worth
+          # an alert come back on stderr.
           #
-          # An sprt reads the same pooled pairs a second way, as this batch
-          # of a sequential test: the estimate adds them to the pairs the
-          # earlier batches played and judges the ratio over all of them
-          # against the bounds. fastchess never ran the test, so there is no
-          # result block to take a verdict from and no second reading to
-          # disagree with this one
-          # What the trailer says it played against has to still name the same
-          # build when the trailer is read back. A release tag does, so it is
-          # kept as it is; anything else is a branch or a ref that moves, so
-          # the sha it resolved to today goes in instead of its name.
+          # The trailer's base has to name the same build when it is read back
+          # months later. A release tag does; anything else is a ref that
+          # moves, so the sha it resolved to today goes in instead.
           case "$PREVIOUS" in
             v[0-9]*.[0-9]*.[0-9]*) base="$PREVIOUS" ;;
             *) base="${BASELINE_SHA:0:8}" ;;
@@ -628,11 +564,9 @@ jobs:
             echo "::warning::${remark}"
           done < remarks.txt
 
-          # The report goes to the log as well as to the summary. The summary
-          # is read from the run's own web page and nowhere else, and the pair
-          # counts the next batch carries are in here, so a reader holding
-          # only the log had to recover them from the artifacts or go without.
-          # The artifacts expire and the log is what an api reaches.
+          # to the log as well as the summary: the summary is read from the
+          # run's web page and nowhere else, the pair counts the next batch
+          # needs are in here, and the artifacts expire
           cat report.md
 
           trailer=$("${estimate[@]}" --trailer)

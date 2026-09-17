@@ -4,17 +4,14 @@
 
 """Check the trailers a commit message carries against what its kind requires.
 
-A commit that changes the engine says what the bench counts after it, so the
-history states how much of the tree each change looks at; a commit that
-claims speed says how much it measured; and an elo claim is in the one shape
-the changelog and the release notes read. Runs as a commit-msg hook, given
-the file holding the message, and in ci over every commit of a pull request.
+An engine commit states its bench, a perf commit its speed, and an elo claim
+is in the one shape the changelog and the release notes read. Runs as a
+commit-msg hook, given the file holding the message, and in ci over every
+commit of a pull request.
 
-Trailers are read the way git reads them: the `Key: value` lines of the
-final paragraph, and nothing else. A Bench line with prose after it is body
-text to git, to the changelog and to the ci check, so it is body text here.
-
-The scopes and types are the engine half of the table in docs/DEVELOPMENT.md.
+Trailers are read the way git reads them: the `Key: value` lines of the final
+paragraph, and nothing else. The scopes and types are the engine half of the
+table in docs/DEVELOPMENT.md.
 """
 
 import re
@@ -27,26 +24,22 @@ SUBJECT = re.compile(r"^(?P<type>\w+)(\((?P<scope>[\w-]+)\))?!?: ")
 EXEMPT = ("Merge ", "fixup! ", "squash! ", "chore(release): prepare for ")
 TRAILER_LINE = re.compile(r"^[A-Za-z][\w-]*: ")
 TRAILER = re.compile(r"^(Bench|Speed|Elo): (.*)$")
-# what openbench's server reads the expected bench from: the last of these
-# anywhere in the message, so the trailer has to be it
+# openbench reads the expected bench from the last of these anywhere in the
+# message, so the trailer has to be it
 OPENBENCH = re.compile(r"(?:bench|nodes)[ :=]+([0-9,]+)", re.IGNORECASE)
 # one round shows no spread, so it is no measurement
 SPEED = re.compile(
     r"^[+-]\d+(\.\d+)?% \(bench nps, ([2-9]|\d{2,}) interleaved rounds "
     r"vs [0-9a-f]{7,40}, spread \d+(\.\d+)?%\)$"
 )
-# an sprt names its verdict: bounds alone would leave a passed test and a
-# failed one telling the same story
+# an sprt names its verdict, or a passed and a failed test would read alike
 SPRT = r"sprt \[-?\d+(\.\d+)?, -?\d+(\.\d+)?\] (passed|failed|inconclusive), "
-# What was played against has to name the same build when the trailer is read
-# back: a commit, or a release tag. A branch moves, so `vs master` says what
-# the figure was measured against only on the day it was written, and the run
-# that could have said more keeps its artifacts for ninety days.
+# a commit or a release tag, which still name the same build when the trailer
+# is read back months later; a branch moves
 BASE = r"(?:[0-9a-f]{7,40}|v\d+\.\d+\.\d+(?:-[0-9A-Za-z.]+)?)"
 PLAYED = rf"\d+ games, [^,()]+, vs {BASE}"
-# A match with no estimate to state says so. It still carries the verdict when
-# a test reached one, since a settled test says something a missing number does
-# not, so the bare form and the one that names an sprt are both accepted.
+# a match with no estimate says so, and still carries an sprt verdict when a
+# test reached one
 ELO = re.compile(
     rf"^(not measured( \({SPRT}{PLAYED}\))?"
     rf"|[+-]\d+ ±\d+ \(({SPRT})?{PLAYED}\))$"
@@ -88,8 +81,7 @@ def problems(message: str) -> list[str]:
         found.append("an engine commit needs a Bench: trailer")
     if "Bench" in trailers:
         value = trailers["Bench"]
-        # exactly digits: the ci check reads the line with git's trailer
-        # parser and compares the value as printed
+        # exactly digits: the ci check compares the value as git prints it
         if not re.fullmatch(r"\d+", value):
             found.append(f"Bench: must be a plain number, got {value}")
         else:

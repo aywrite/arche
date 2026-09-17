@@ -53,9 +53,8 @@ def test_the_last_line_is_read_for_nodes_and_rate():
 
 
 def test_the_change_is_between_medians_and_the_spread_is_the_wider_side():
-    # a rise first, whose spread is the base's four points over the lower
-    # median rather than the candidate's four over the higher one. Then a
-    # fall, which has to come back with its sign.
+    # the spread is the base's four points over the lower median, not the
+    # candidate's four over the higher one. Then a fall, with its sign
     base = [100, 102, 98, 101, 99]
     candidate = [103, 105, 101, 104, 102]
     assert speed.trailer(base, candidate, "a1b2c3d") == (
@@ -78,8 +77,7 @@ def test_the_rounds_alternate_which_side_runs_first(tmp_path):
 
 
 def test_the_sides_are_told_apart_even_when_they_are_one_binary(tmp_path):
-    # an engine measured against itself is the first thing anyone tries the
-    # tooling on, and its node count belongs to both sides, not to one
+    # an engine measured against itself is the first thing anyone tries
     engine = fake_engine(tmp_path, "engine", [100] * 4, nodes=100)
     measured = speed.measure(str(engine), str(engine), rounds=2, depth=1)
     assert (measured.base_nodes, measured.candidate_nodes) == (100, 100)
@@ -100,9 +98,8 @@ def test_the_time_is_taken_a_round_at_a_time_not_from_the_median_rate():
 
 
 def test_the_report_breaks_the_change_down_when_the_counts_differ(tmp_path, capsys):
-    # the case the breakdown is there for: the tree loses a tenth of itself
-    # and every node costs what it did, so the rate says nothing happened
-    # while the search finishes a tenth sooner
+    # the tree loses a tenth of itself at the same cost a node, so the rate
+    # says nothing happened while the search finishes a tenth sooner
     base = fake_engine(tmp_path, "base", [100] * 2, nodes=100)
     candidate = fake_engine(tmp_path, "candidate", [100] * 2, nodes=90)
     assert (
@@ -124,8 +121,7 @@ def test_the_report_breaks_the_change_down_when_the_counts_differ(tmp_path, caps
 
 
 def test_the_report_leaves_the_breakdown_out_when_the_counts_match(tmp_path, capsys):
-    # with the tree held still the time is the exact inverse of the rate, so
-    # printing both would be the same measurement twice
+    # with the tree held still the time is the inverse of the rate
     base = fake_engine(tmp_path, "base", [100] * 2, nodes=100)
     candidate = fake_engine(tmp_path, "candidate", [110] * 2, nodes=100)
     assert speed.main([str(base), str(candidate), "--rounds", "2"]) == 0
@@ -136,9 +132,8 @@ def test_the_report_leaves_the_breakdown_out_when_the_counts_match(tmp_path, cap
 
 
 def test_the_fastest_rounds_are_compared_beside_the_medians(tmp_path, capsys):
-    # a shared machine only ever slows a run, so each side's best round is
-    # its least interfered one: the loaded rounds drag the medians apart
-    # while the fastest pair still says nothing changed
+    # the loaded rounds drag the medians apart while the fastest pair still
+    # says nothing changed
     base = fake_engine(tmp_path, "base", [100, 80], nodes=100)
     candidate = fake_engine(tmp_path, "candidate", [90, 100], nodes=100)
     assert speed.main([str(base), str(candidate), "--rounds", "2"]) == 0
@@ -166,9 +161,7 @@ def test_a_change_outside_the_spread_stands_unqualified(tmp_path, capsys):
 
 
 def test_differing_counts_keep_the_no_claim_paragraph_out(tmp_path, capsys):
-    # the counts-differ block has already said no number here is a claim,
-    # and the fastest pair compares rates over different trees, so the
-    # gate pointing at it would mislead twice over
+    # the counts-differ block has already said no number here is a claim
     base = fake_engine(tmp_path, "base", [100, 104], nodes=100)
     candidate = fake_engine(tmp_path, "candidate", [101, 105], nodes=90)
     assert speed.main([str(base), str(candidate), "--rounds", "2"]) == 0
@@ -217,9 +210,8 @@ def test_the_trailer_passes_the_hook():
     sys.platform == "win32", reason="runs a shell script, which windows cannot"
 )
 def test_the_wrapper_builds_the_base_commit_and_measures_against_it(tmp_path):
-    # a repository of two commits, a cargo that "builds" by writing a fake
-    # engine wherever it is told to, and the wrapper measuring the second
-    # commit against the first
+    # a repository of two commits and a cargo that "builds" by writing a fake
+    # engine wherever it is told to
     repo = tmp_path / "repo"
     repo.mkdir()
 
@@ -242,8 +234,7 @@ def test_the_wrapper_builds_the_base_commit_and_measures_against_it(tmp_path):
     git("commit", "-qm", "first")
     (repo / "Cargo.toml").write_text('[package]\nname = "arche"\nversion = "2"\n')
     git("commit", "-aqm", "second")
-    # the tree is measured against the commit it will be made on top of,
-    # which is head: the trailer is produced before the commit exists
+    # the base is head: the trailer is produced before the commit exists
     base = git("rev-parse", "--short", "HEAD")
 
     shims = tmp_path / "shims"
@@ -278,6 +269,5 @@ def test_the_wrapper_builds_the_base_commit_and_measures_against_it(tmp_path):
     assert result.stdout.strip().endswith(
         f"Speed: +0.0% (bench nps, 2 interleaved rounds vs {base}, spread 0.0%)"
     )
-    # the base binary is kept, so measuring against the same commit again
-    # costs only the rounds
+    # the base binary is kept for the next measurement
     assert (repo / "target" / "speed" / base / "arche").exists()

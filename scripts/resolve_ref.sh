@@ -5,29 +5,21 @@
 # Resolve what a workflow was asked to play into a commit, and print it.
 #
 # A number is a pull request, whose head a checkout does not fetch. Anything
-# else is a branch, a tag or a commit, which a full clone may already have and
-# otherwise has to be asked for by name.
-#
-# Lives here rather than inside a workflow so that the shellcheck hook sees it,
-# and so that the two match workflows resolve a ref the same way rather than
-# each having their own idea of what a ref is.
+# else is a branch, a tag or a commit. A script rather than workflow text so
+# that shellcheck sees it and both match workflows resolve a ref the same way.
 set -euo pipefail
 
-# Refuse outside the triggers where the ref was chosen by somebody who can
-# already push here. A number is a pull request, whose head anybody can write,
-# and the caller builds and runs whatever this prints. Under a trigger such as
-# pull_request_target or workflow_run the job also holds this repository's
-# secrets and a token that can write to it, and the two together hand a fork
-# the repository.
+# The caller builds and runs whatever this prints, and a pull request head is
+# anybody's to write. Under pull_request_target, workflow_run or a comment
+# event the job also holds this repository's secrets and a write token, so
+# the two together would hand a fork the repository. Only the triggers where
+# the ref was chosen by somebody who can already push are allowed.
 #
-# GITHUB_EVENT_NAME is what this checks, because it is the only part of that
-# worth checking from here. The runner sets it on every job, an env block
-# cannot override a GITHUB_ name, and a workflow called with workflow_call sees
-# the event of the workflow that called it, so a call through a reusable
-# workflow is checked as well. It is not a check on permissions or on secrets:
-# a step cannot read either, and docs/DEVELOPMENT.md says what that leaves
-# open. Unset means this is not a runner at all, where there is nothing to
-# take.
+# GITHUB_EVENT_NAME is the one part of that a step can check: the runner sets
+# it on every job, an env block cannot override a GITHUB_ name, and a
+# workflow_call sees its caller's event. A step cannot read permissions or
+# secrets, and docs/DEVELOPMENT.md says what that leaves open. Unset means
+# this is not a runner at all.
 case "${GITHUB_EVENT_NAME-}" in
     "" | workflow_dispatch | push | schedule | release) ;;
     *)
@@ -47,7 +39,6 @@ if [ "$ref" -eq "$ref" ] 2>/dev/null; then
     exit 0
 fi
 
-# already here, so nothing to fetch
 if sha=$(git rev-parse --verify --quiet "${ref}^{commit}"); then
     echo "$sha"
     exit 0

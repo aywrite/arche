@@ -3,31 +3,23 @@ name: Bench
 # Checks on what commits say about themselves, and one measurement of what
 # they do.
 #
-# The pins job is the only one that runs on a push to master as well, because
-# it is the only one cheap enough to. A commit rebased before it lands is not
-# the commit the jobs below built, so a message they passed can be stale by
-# the time it arrives: the bench a tree counts is the sum of the counts it
-# pins, and that is read rather than built.
+# The pins job reads each commit's stated bench against the counts its own
+# tree pins. It is cheap, so it runs on a push to master as well: a commit
+# rebased before it lands is not the commit the bench job built, and its
+# message can be stale by the time it arrives.
 #
 # The trailers job runs the pre-commit hooks over the tree and the commit-msg
-# hooks over every commit, so a scope the changelog does not know, or an
-# engine commit with no bench stated, fails here rather than slipping past a
-# clone that never installed the hooks.
+# hooks over every commit, so a bad scope or a missing bench fails here rather
+# than slipping past a clone that never installed the hooks.
 #
 # The bench job builds each commit that states a bench and counts it. The
-# count is exact and the same on any machine, so this one gates: a commit
-# whose stated bench is not the bench is wrong, and a history whose numbers
-# cannot be trusted is worse than one with none. It runs on pull requests
-# alone, where building each commit is the price of proving the pins; on
-# master the Rust workflow's tests prove those, and the pins job holds the
-# messages to them.
+# count is exact and the same on any machine, so it gates. Pull requests only:
+# on master the Rust workflow's tests prove the pins and the pins job holds
+# the messages to them.
 #
 # The speed job measures the pull request against the commit it would land
-# on, both built and run on one runner in one job, the way scripts/speed.sh
-# measures a perf commit: the bench of each side in turn, the side that goes
-# first alternating, and the change between medians printed with the spread
-# it has to be read against. It reports and does not gate. A runner's rate is
-# context, not a claim; the count is the claim, and it has the job above.
+# on, the way scripts/speed.sh measures a perf commit, and reports without
+# gating: a runner's rate is context, not a claim.
 
 on:
   pull_request:
@@ -40,9 +32,8 @@ permissions:
 
 concurrency:
   group: ${{ github.workflow }}-${{ github.ref }}
-  # a superseded pull request run is worth cancelling; a push to master is
-  # not, since the commits it would have checked are already on master and
-  # nothing else will look at them
+  # a push to master is not cancelled: the commits it checks are already on
+  # master and nothing else will look at them
   cancel-in-progress: ${{ github.event_name == 'pull_request' }}
 
 env:
@@ -50,12 +41,6 @@ env:
 
 jobs:
   pins:
-    # What a landed commit says about itself, checked against what its own
-    # tree pins. The job below builds a pull request's commits, but a commit
-    # rebased before it lands is not the commit that was built: if the base
-    # changed what the bench counts, a message that passed is stale by the
-    # time it arrives, and nothing looked again. This is cheap enough to look
-    # again, on the commits as they actually landed.
     runs-on: ubuntu-latest
     timeout-minutes: 5
     steps:
@@ -93,14 +78,12 @@ jobs:
       - name: Install pre-commit
         run: python3 -m pip install --quiet pre-commit
       - name: Run the hooks over the tree
-        # fmt and cargo check are what the Rust workflow gates, on three
-        # platforms; run here as well they would only build the tree again
+        # the Rust workflow gates fmt and cargo check on three platforms
         env:
           SKIP: fmt,cargo-check
         run: pre-commit run --all-files --show-diff-on-failure
       - name: Run the commit-msg hooks over every commit
-        # reported even when the tree failed, so a pull request with both
-        # kinds of problem hears of both at once
+        # reported even when the tree failed, so both are heard of at once
         if: success() || failure()
         shell: bash
         run: |
@@ -140,7 +123,6 @@ jobs:
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
-          # both sides get built, so both need their history
           fetch-depth: 0
       - uses: Swatinem/rust-cache@6323deb102c322ba6fcbdcafc7e3dddab59af2b6 # v2.9.2
       - name: Build both sides
@@ -156,13 +138,11 @@ jobs:
         shell: bash
         run: |
           # nine rounds rather than the local five: a shared runner's rounds
-          # range further than a quiet box's, and the extra half minute buys
-          # medians a single loaded round cannot drag
+          # range further, and a single loaded round must not drag a median
           python3 scripts/speed.py ./base-arche ./pr-arche \
             --base-ref "${BASE_SHA:0:8}" --rounds 9 | tee speed.txt
       - name: Summarise
-        # a failed measurement is reported as one, not as whatever tee had
-        # written by the time speed.py gave up
+        # a failed measurement is reported as one, not as whatever tee wrote
         if: ${{ !cancelled() }}
         env:
           MEASURED: ${{ steps.measure.outcome }}
@@ -189,12 +169,11 @@ jobs:
           } > speed-summary.md
           cat speed-summary.md >> "$GITHUB_STEP_SUMMARY"
 
-      # A summary nobody opens is barely better than none, so put it where the
-      # change is being read. Done with the api rather than an action so there
-      # is one less thing to keep off a deprecated node.
+      # Put where the change is being read. The api rather than an action, so
+      # there is one less thing to keep off a deprecated node.
       - name: Post the summary to the pull request
-        # a fork's pull request gets a read only token, so there is nothing to
-        # post with and failing the job over it would help no one
+        # a fork's pull request gets a read only token, so there is nothing
+        # to post with
         if: ${{ !cancelled() && !github.event.pull_request.head.repo.fork }}
         env:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}

@@ -3,17 +3,12 @@
 
 """Tests for the table of opening books a match can be played on.
 
-Fetching one needs the network and fifteen megabytes, which a test has
-neither of, so what is checked here is the table itself: that every book it
-names is described completely, that a book it does not name is refused rather
-than fetched, that counting openings gives the right answer for each of the
-two formats, and that the default of each workflow names a book the table
-knows. The last of those is the one that would otherwise go unnoticed, since
-a default naming a book with no block fails a run rather than a check.
-
-The pin is checked too. The action that fetches the books reads it from here
-and builds its cache key from it, so a pin this table cannot print would mean a
-key naming nothing and a run restoring whatever the last one left.
+Fetching one needs the network, so what is checked is the table itself: that
+every book it names is described completely, that a book it does not name is
+refused rather than fetched, that counting openings is right for each format,
+that the default of each workflow names a book the table knows (which would
+otherwise fail a run rather than a check), and that the pin the fetch action
+builds its cache key from is printed.
 """
 
 import re
@@ -101,15 +96,13 @@ def test_every_book_named_says_what_it_plays_as():
         read = book("format", name)
         assert played.returncode == 0, played.stderr
         assert read.returncode == 0, read.stderr
-        # the format is the suffix, which is what fastchess is told twice: the
-        # file it opens and the format it reads it in
+        # the format is the suffix
         assert read.stdout.strip() in ("pgn", "epd"), read.stdout
         assert played.stdout.strip().endswith("." + read.stdout.strip())
 
 
 def test_every_book_named_is_described_completely():
-    # a book missing one of these is not in the list at all, so this is what
-    # the list is asserting as much as it is a check on the blocks
+    # a book missing one of these is not in the list at all
     for name in books():
         assert field("OPENINGS", name).isdigit(), name
         assert re.fullmatch(r"[0-9a-f]{64}", field("SHA256", name)), name
@@ -129,8 +122,8 @@ def test_a_book_the_table_does_not_know_is_refused(tmp_path):
 
 
 def test_a_name_that_is_not_a_name_is_refused(tmp_path):
-    # an associative array reads @ and * as every key rather than as a name
-    # nobody has used, and the book arrives from a text box
+    # an associative array reads @ and * as every key, and the book arrives
+    # from a text box
     for asked in ("", "@", "*", "8moves_v3 UHO_4060_v2"):
         assert book("file", asked).returncode != 0, asked
         assert book("fetch", asked, str(tmp_path)).returncode != 0, asked
@@ -138,9 +131,7 @@ def test_a_name_that_is_not_a_name_is_refused(tmp_path):
 
 
 def test_the_pin_is_printed_as_the_commit_it_is():
-    # What the action that fetches the books builds its cache key from. It is
-    # read from here rather than written down beside the key, so that a changed
-    # pin cannot leave a cache handing back the file fetched at the old one.
+    # what the action that fetches the books builds its cache key from
     printed = book("pin")
     assert printed.returncode == 0, printed.stderr
     assert re.fullmatch(r"[0-9a-f]{40}", printed.stdout.strip()), printed.stdout
@@ -154,8 +145,7 @@ def test_the_commands_it_does_not_have_are_refused():
 
 
 def test_counting_a_pgn_counts_its_games(tmp_path):
-    # the tag pair a game opens with, and a comment holding the same word,
-    # which is not an opening
+    # a comment holding the tag pair's word is not an opening
     played = tmp_path / "small.pgn"
     played.write_text(
         '[Event "?"]\n[Result "*"]\n\n1. e4 e5 *\n\n'
@@ -168,8 +158,7 @@ def test_counting_a_pgn_counts_its_games(tmp_path):
 
 
 def test_counting_an_epd_counts_its_lines(tmp_path):
-    # a blank line is not a position, which is the whole difference from the
-    # answer above: grepping for a tag pair here would count nothing at all
+    # a blank line is not a position
     played = tmp_path / "small.epd"
     played.write_text(
         "rnbqkbnr/pppppppp/8/8/8/8/PPPPPPPP/RNBQKBNR w KQkq -\n"
@@ -198,17 +187,14 @@ def test_both_workflows_default_to_a_book_the_table_knows():
     for workflow in WORKFLOWS:
         named = defaults(workflow)
         assert named, f"{workflow.name} has no book to check"
-        # one default written twice, once per trigger. A run from the actions
-        # tab and a run from a release play the same openings or neither
-        # figure means what the other does
+        # one default written twice, once per trigger, or a run from the
+        # actions tab and a run from a release are not comparable
         assert len(set(named)) == 1, named
         assert named[0] in known, f"{workflow.name} defaults to {named[0]}"
 
 
 def test_the_default_is_still_the_book_the_figures_were_played_on():
-    # every Strength and Calibrate figure in the ledger and the release notes
-    # was played on this one, so changing the default quietly would make new
-    # numbers incomparable with old ones
+    # every Strength and Calibrate figure so far was played on this one
     for workflow in WORKFLOWS:
         assert defaults(workflow) == ["8moves_v3", "8moves_v3"]
 

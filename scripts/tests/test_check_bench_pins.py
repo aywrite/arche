@@ -23,11 +23,8 @@ BENCH_RS = "arche-core/src/bench.rs"
 
 
 def source(counts, reference=(9_999_999,)):
-    """A bench.rs pinning these counts, and a reference list after it.
-
-    The second list is what a naive walk to the next end would swallow, so
-    every case here carries one.
-    """
+    """A bench.rs pinning these counts, and a reference list after it, which
+    a naive walk to the next end would swallow."""
 
     def listing(values):
         return "\n".join(
@@ -113,8 +110,7 @@ def test_a_stated_bench_that_is_not_the_sum_fails(repo):
 
 
 def test_the_reference_list_after_it_is_not_counted(repo):
-    # the bug this check was written with: walking to the next thing that
-    # looks like an end swallows the second list and inflates every sum
+    # the bug this check was written with
     base = repo.commit([1], "root")
     repo.commit([10, 20], "perf(search): x\n\nBench: 30")
     done = check(repo, base, "HEAD")
@@ -142,8 +138,7 @@ def test_one_mismatch_fails_the_lot_and_every_commit_is_reported(repo):
 
 
 def test_the_last_bench_trailer_is_the_one_compared(repo):
-    # openbench reads the last, and so does git; a message that restates it
-    # has to be held to the one that counts
+    # openbench reads the last, and so does git
     base = repo.commit([1], "root")
     repo.commit([10, 20], "perf(search): x\n\nBench: 999\nBench: 30")
     done = check(repo, base, "HEAD")
@@ -151,8 +146,6 @@ def test_the_last_bench_trailer_is_the_one_compared(repo):
 
 
 def test_pins_that_have_moved_are_an_error_rather_than_a_pass(repo):
-    # a rename that quietly stopped the check working would be worse than a
-    # failure, since nothing would say so
     base = repo.commit([1], "root")
     (repo.path / BENCH_RS).write_text("fn something_else_entirely() {}\n")
     repo.commit_tree("refactor(bench): rename\n\nBench: 60")
@@ -162,8 +155,7 @@ def test_pins_that_have_moved_are_an_error_rather_than_a_pass(repo):
 
 
 def test_the_pins_are_found_wherever_the_crate_puts_them(repo):
-    # the crate has been renamed once already; the check reads the pins out
-    # of each commit's own tree rather than a path fixed when it was written
+    # the crate has been renamed once already
     base = repo.commit([7], "root")
     moved = repo.path / "renamed-crate" / "src" / "bench.rs"
     moved.parent.mkdir(parents=True)
@@ -175,14 +167,9 @@ def test_the_pins_are_found_wherever_the_crate_puts_them(repo):
 
 
 class TestAcknowledged:
-    """The list of lapses already on master.
-
-    A commit that has landed cannot be rewritten, so a mismatch that is
-    already history would fail every release after it. The list is how one is
-    written down and stepped over, and it has to be narrow enough that it
-    cannot step over anything else: the numbers are part of the entry, so a
-    commit acknowledged at one pair of figures is not acknowledged at another.
-    """
+    """The list of lapses already on master, which has to be narrow enough
+    that it cannot step over anything else: the numbers are part of the
+    entry."""
 
     def listing(self, tmp_path, text):
         path = tmp_path / "acknowledged.txt"
@@ -205,8 +192,7 @@ class TestAcknowledged:
         assert done.returncode == 0, done.stdout + done.stderr
 
     def test_a_listed_commit_whose_numbers_moved_still_fails(self, repo, tmp_path):
-        # the entry is the lapse, not the commit: a commit that now states
-        # something else has not been looked at
+        # the entry is the lapse, not the commit
         base = repo.commit([1], "root")
         bad = repo.commit([10, 20], "perf(search): x\n\nBench: 61")
         listed = self.listing(tmp_path, f"{bad} 99 30\n")
@@ -230,8 +216,8 @@ class TestAcknowledged:
         assert "not-a-sha" in done.stderr
 
     def test_the_engine_s_own_list_covers_the_four_lapses_on_master(self):
-        # the seeded entries, so that an edit that empties the file is caught
-        # here rather than by a release failing months from now
+        # an edit that empties the file is caught here rather than by a
+        # release failing months from now
         text = (SCRIPT.parent / "acknowledged_bench_pins.txt").read_text()
         entries = [
             line.split()[0]
@@ -242,8 +228,8 @@ class TestAcknowledged:
 
 
 def test_two_files_of_pins_are_an_error(repo):
-    # one source of truth: two copies of the pinned test would let them
-    # disagree, and the check refuses to pick one
+    # two copies of the pinned test could disagree, and the check refuses to
+    # pick one
     base = repo.commit([5], "root")
     twin = repo.path / "arche-core" / "src" / "bench_twin.rs"
     twin.write_text(source([5]))

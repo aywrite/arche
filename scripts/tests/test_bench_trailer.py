@@ -65,8 +65,7 @@ def test_it_builds_and_prints_the_trailer(tmp_path):
 
 
 def test_the_build_is_read_from_where_cargo_was_told_to_put_it(tmp_path):
-    # CARGO_TARGET_DIR moves the build; reading target/ regardless would
-    # bench whatever stale binary sat there
+    # reading target/ regardless would bench whatever stale binary sat there
     shims = tmp_path / "shims"
     shims.mkdir()
     cargo = shims / "cargo"

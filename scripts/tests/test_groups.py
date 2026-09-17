@@ -1,13 +1,8 @@
 # SPDX-License-Identifier: GPL-3.0-or-later
 # Copyright (C) 2022-2026 Andrew Wright
 
-"""Tests for the tuner's split into three groups.
-
-The mapping is small and two scripts read it, which is why it is a file of its
-own and why it is tested where it lives rather than through either of them. A
-corpus built to one reading of it and fitted against another would print
-nothing about the disagreement.
-"""
+"""Tests for the tuner's split into three groups, tested where it lives
+rather than through either of the two scripts that read it."""
 
 import groups
 import pytest
@@ -15,8 +10,7 @@ import pytest
 
 def test_the_three_groups_are_assigned_by_the_first_byte_of_the_game_key():
     """Slices nought, one and two train, slice three chooses the ridge, and
-    slice four is not read. The key is the sha256 of the game's movetext, so
-    the group is a property of the play and a re-extraction moves nothing."""
+    slice four is not read."""
     assert [groups.group_of(f"{slice_:02x}" + "0" * 62) for slice_ in range(5)] == [
         "train",
         "train",
@@ -46,9 +40,7 @@ def sliced(byte):
 def test_a_named_seal_is_the_calibration_group_and_nothing_else_is():
     """The keys the caller names are sealed and every other pair splits three
     to one between training and selection, the pairs the key rule would have
-    sealed included. That is the point of naming them: the archive only grows,
-    so the fifth the key rule seals is the same fifth every time it is asked,
-    and a vector revised after a reading needs games nothing has read."""
+    sealed included."""
     sealed = {sliced(7)}
     assert groups.group_of(sliced(7), sealed) == "calibration"
     # slice four is what the key rule seals, and under a named seal it trains
@@ -70,19 +62,16 @@ def test_a_named_seal_is_the_calibration_group_and_nothing_else_is():
 
 
 def test_an_empty_seal_is_not_the_same_as_no_seal():
-    """`None` draws the group from the key and an empty set seals nothing.
-    The two are different answers and have to stay different, or a caller that
-    passed an empty set by accident would silently get the key rule's fifth
-    back and call it a seal."""
+    """`None` draws the group from the key and an empty set seals nothing; a
+    caller that passed an empty set by accident must not get the key rule's
+    fifth back and call it a seal."""
     assert groups.group_of(sliced(4), None) == "calibration"
     assert groups.group_of(sliced(4), set()) == "train"
 
 
 def test_a_seal_file_is_read_and_a_line_that_is_no_key_is_refused(tmp_path):
-    """The file says which runs it was drawn from, so comments and blank lines
-    are skipped. Anything else has to be a pair key: a typo that named no pair
-    is a game quietly not sealed, and the seal is the one thing nobody should
-    have to take on trust."""
+    """Comments and blank lines are skipped, and anything else has to be a
+    pair key: a typo that named no pair is a game quietly not sealed."""
     named = tmp_path / "sealed.txt"
     named.write_text(
         "# drawn 2026-09-12 from runs 34655239490 and 34656775686\n"

@@ -8,26 +8,21 @@
     scripts/fit_attention.py ledger.txt
 
 The engine carries thirteen `ATTENTION_*` integers in `arche-core/src/late_move.rs`
-and reads them as a dot product against a late quiet move's features. This is
-where they come from: a logistic regression over the reduction ledger, split by
-fen so a position cannot be in both halves, quantized to fixed point at a scale
-of 1024 so the gate is integer arithmetic and a compare.
+and reads them as a dot product against a late quiet move's features. They
+come from a logistic regression over the reduction ledger, split by fen so a
+position cannot be in both halves, quantized to fixed point at a scale of 1024.
 
-What the model is asked is which reduced scouts deserve attention, meaning the
-scout failed high or the replay called its fail low harmful. The rest are the
-dead region, and a threshold on the score is what the engine reduces harder or
-skips inside. The script prints the same score at four coverage targets, each
-threshold chosen on the training half and the coverage and attention rate read
-off the holdout half, which is the table `DEEP_REDUCTION_THRESHOLD` was picked
-from. It prints a two-feature gate on the index and the history fraction beside
-it, because a model is only worth carrying if it beats the obvious rule.
+A scout deserves attention when it failed high or the replay called its fail
+low harmful; the rest are the dead region the engine reduces harder or skips
+inside. The script prints the score at four coverage targets, each threshold
+chosen on the training half and read off the holdout half, which is the table
+`DEEP_REDUCTION_THRESHOLD` was picked from, and a two-feature gate on the
+index and the history fraction beside it, since a model is only worth carrying
+if it beats the obvious rule.
 
-The weights in the engine today were fitted on 193,143 rows recorded at commit
-5217271 and are not reproducible from this file alone: the ledger that produced
-them was recorded before the deep reduction and the late move pruning existed,
-so an engine running the command above now records a different tree. The
-command is the documented way to make a new ledger, not a way back to the old
-one.
+The weights in the engine were fitted on 193,143 rows recorded at commit
+5217271, before the deep reduction and the late move pruning existed, so the
+command above now records a different tree and cannot reproduce them.
 
 The row format is the one `arche-core/src/reduction.rs` prints today: eighteen
 whitespace separated fields with the fen last,
@@ -36,27 +31,21 @@ whitespace separated fields with the fen last,
     eval_beta alpha_gap alpha scout cost reference label reduction fen
 
 The ledger at 5217271 had seventeen, without `reduction`, and its history was
-never negative. Both have moved since, so this parser reads the current format
-and follows the engine in two places: a negative history counts as no history,
-the way `late_move.rs` clamps it before dividing, and a row the pruning skipped
-outright is not a scout and is left out of the fit.
+never negative.
 
-Features, all integers, so that the engine's gate is a dot product and a
-compare: depth, index, band8_15, band16p, hist_milli (1000 * history //
-history_max, and zero when nothing in the list has any), killer, tt_move,
-tt_score_only, eval_beta, alpha_gap, generated, searched.
+The parser follows the engine in two places: a negative history counts as no
+history, the way `late_move.rs` clamps it before dividing, and a row the pruning
+skipped is not a scout and is left out of the fit.
 
-The split is by fen by default. `--group-by` takes a file naming, for each
-ledger on the command line, the group its rows belong to, and splits by group
-instead, so a ledger recorded one root at a time can hold every row of a root
-on one side. Rows from one root are not exchangeable: they share a parent node
-and most of a feature vector, and a split that does not respect them reads
-back a holdout the fit has half seen. `--drop` leaves a feature out of the fit
-and gives the engine a zero for its constant, which is how a weight that is
-only identified on a thin slice of the rows is priced.
+Features, all integers: depth, index, band8_15, band16p, hist_milli (1000 *
+history // history_max, zero when nothing in the list has any), killer,
+tt_move, tt_score_only, eval_beta, alpha_gap, generated, searched.
 
-numpy and nothing else. The fit is Newton's method with an L2 penalty, written
-out, which is what the tuner beside this does for the same reason.
+`--group-by` names, for each ledger on the command line, the group its rows
+belong to, and splits by group instead of by fen, so a ledger recorded one
+root at a time keeps every row of a root on one side: rows from one root share
+a parent node and most of a feature vector. `--drop` leaves a feature out of
+the fit and gives the engine a zero for its constant.
 """
 
 import argparse
@@ -66,11 +55,10 @@ from pathlib import Path
 
 import numpy as np
 
-# fixed point scale, 2**10 = 1024, which is the scale late_move.rs reads the
-# ATTENTION_ constants at
+# the fixed point scale late_move.rs reads the ATTENTION_ constants at
 SHIFT = 10
 
-# the feature columns, in the order the engine sums them
+# in the order the engine sums them
 FEATURES = [
     "depth",
     "index",
@@ -86,16 +74,15 @@ FEATURES = [
     "searched",
 ]
 
-# what each weight is called in arche-core/src/late_move.rs, so the fit can be
-# read straight across into the constants
+# what each weight is called in arche-core/src/late_move.rs
 CONSTANTS = {name: f"ATTENTION_{name.upper()}" for name in FEATURES}
 CONSTANTS["band8_15"] = "ATTENTION_BAND8_15"
 CONSTANTS["band16p"] = "ATTENTION_BAND16P"
 CONSTANTS["intercept"] = "ATTENTION_INTERCEPT"
 
-# the eighteen fields of a row, up to the fen, which holds the rest of the line
+# the fields of a row, the fen holding the rest of the line
 COLUMNS = 18
-# the field names, in the order reduction.rs writes them
+# in the order reduction.rs writes them
 FIELDS = [
     "depth",
     "window",
@@ -119,12 +106,9 @@ FIELDS = [
 
 
 def parse_file(path):
-    """One ledger, as its header line and the rows that are scouts.
-
-    A skipped row is a move the pruning never searched. It carries a reference
-    and a label like a fail low does, but it is not a scout, and the model is
-    fitted on what the scouts did.
-    """
+    """One ledger, as its header line and the rows that are scouts. A skipped
+    row is a move the pruning never searched, and carries a reference and a
+    label like a fail low does without being a scout."""
     lines = path.read_text(encoding="utf-8").splitlines()
     if not lines or not lines[0].startswith("reductions depth"):
         sys.exit(f"{path}: not a reductions ledger, first line {lines[:1]}")
@@ -133,10 +117,9 @@ def parse_file(path):
     for number, line in enumerate(lines[1:], 2):
         if not line:
             break  # the blank line before the summary
-        # the fen is last and holds the rest of the line, so a row short of a
-        # column still splits into eighteen and every field after the missing
-        # one is read as the one before it. The width is not the check; the
-        # fields either side of the fen are
+        # the fen holds the rest of the line, so a row short of a column still
+        # splits into eighteen with every field shifted. The width is not the
+        # check; the fields either side of the fen are
         words = line.split(" ", COLUMNS - 1)
         if len(words) != COLUMNS:
             sys.exit(f"{path}:{number}: {len(words)} fields, not {COLUMNS}: {line}")
@@ -185,26 +168,22 @@ def attention(row):
 
 
 def key_parity(key):
-    """Which half a key belongs to. The first bit of its sha256, so the same
-    key lands on the same side every run and no order of the rows moves it."""
+    """Which half a key belongs to: the first bit of its sha256, so no order
+    of the rows moves it."""
     return hashlib.sha256(key.encode("utf-8")).digest()[0] & 1
 
 
 def fen_parity(fen):
-    """Which half a position belongs to. By the fen and not by the row, so that
-    two rows from one position cannot land on opposite sides and let the
-    holdout score a position the fit has already seen."""
+    """Which half a position belongs to, so two rows of one position cannot
+    land on opposite sides."""
     return key_parity(fen)
 
 
 def read_groups(path):
-    """The group each ledger's rows belong to, as a name to key mapping.
-
-    Two whitespace separated columns, the ledger's file name and its group
-    key, and anything after a hash is a comment. The ledger row carries the
-    fen and nothing about the root it was recorded from, so the attribution
-    has to come from outside: one ledger per root, or per small chunk of
-    roots, and this file saying which.
+    """The group each ledger's rows belong to, as a name to key mapping: two
+    whitespace separated columns, the ledger's file name and its group key,
+    with anything after a hash a comment. A ledger row says nothing about the
+    root it was recorded from, so the attribution has to come from outside.
     """
     groups = {}
     for number, line in enumerate(
@@ -226,11 +205,8 @@ def read_groups(path):
 
 def features_of(row):
     """The feature vector, computed the way late_move.rs computes it at the gate.
-
-    A history below zero is a move the table has marked down. The engine takes
-    the larger of the score and nought before dividing, so nothing in the list
-    being liked and everything in it being disliked are the same nothing here.
-    """
+    The engine takes the larger of the history and nought before dividing, so
+    a move the table has marked down reads as no history."""
     hist_milli = 0
     if row["history_max"] > 0:
         hist_milli = 1000 * max(row["history"], 0) // row["history_max"]
@@ -251,12 +227,9 @@ def features_of(row):
 
 
 def fit_logistic(X, y, l2=1.0, iters=500):
-    """Newton's method with an L2 penalty, on standardized columns.
-
-    The penalty is off the intercept: a prior on how large a weight should be
-    has nothing to say about the base rate. The standardization is folded back
-    out at the end, so the weights returned are on the raw integer scale the
-    engine reads.
+    """Newton's method with an L2 penalty, on standardized columns. The
+    penalty is off the intercept, and the standardization is folded back out
+    so the weights returned are on the raw integer scale the engine reads.
     """
     mu = X.mean(axis=0)
     sd = X.std(axis=0)
@@ -280,11 +253,8 @@ def fit_logistic(X, y, l2=1.0, iters=500):
 
 
 def auc_of(scores, y):
-    """The area under the roc curve, by ranks, with ties sharing a rank.
-
-    It is nan when every row is one class, which a small ledger can be: no
-    ordering separates one class from an empty one.
-    """
+    """The area under the roc curve, by ranks, with ties sharing a rank. nan
+    when every row is one class, which a small ledger can be."""
     order = np.argsort(scores, kind="mergesort")
     ranks = np.empty(len(scores), dtype=float)
     ranks[order] = np.arange(1, len(scores) + 1)
@@ -310,16 +280,12 @@ def auc_of(scores, y):
 
 def bootstrap_auc(scores, y, units, draws=200, seed=20260915):
     """The standard error of an auc, by resampling the units the rows came in.
+    `units` is the group each row belongs to as integer codes, or a distinct
+    code per row; rows from one root move together, so resampling rows alone
+    would report an error bar for a sample never drawn.
 
-    A row is not the unit when the split is by group: rows from one root move
-    together, so resampling rows alone would report an error bar for a sample
-    that was never drawn. `units` is the group each row belongs to, as integer
-    codes, or a distinct code per row when the rows really are the unit.
-
-    Returns nan when the rows come from fewer than two units, since every draw
-    is then the same sample and its spread of zero would read as precision,
-    and when fewer than two draws produce an auc at all, which a holdout with
-    almost no attention in it can do.
+    nan when the rows come from fewer than two units, since every draw is then
+    the same sample, and when fewer than two draws produce an auc at all.
     """
     order = np.argsort(units, kind="mergesort")
     sorted_units = units[order]
@@ -342,8 +308,8 @@ def bootstrap_auc(scores, y, units, draws=200, seed=20260915):
 
 
 def print_auc(name, scores, y, units, draws):
-    """One held-out auc with its bootstrap standard error, or why there is
-    none: a stratum of one class has no area under its curve."""
+    """One held-out auc with its bootstrap standard error, or none for a
+    stratum of one class."""
     area = auc_of(scores, y)
     if np.isnan(area):
         print(f"  {name:<28} {len(y):>9} rows  {int(y.sum()):>7} attention   auc none")
@@ -356,13 +322,9 @@ def print_auc(name, scores, y, units, draws):
 
 
 def print_holdout_aucs(scores, y, depth, units, draws):
-    """The held-out quality, over every row, over the rows the gate can act on
-    and one depth at a time.
-
-    The engine's gate is reached at depth four and up, so an auc over every row
-    is carried by the depth three rows that outnumber them and is not the
-    number the gate would be chosen on.
-    """
+    """The held-out auc over every row, over the rows the gate can act on
+    (depth four and up, where the depth three rows that outnumber them do not
+    carry the figure) and one depth at a time."""
     print(f"\nholdout auc, bootstrap standard error over {draws} draws:")
     print_auc("all rows", scores, y, units, draws)
     deep = depth >= 4
@@ -373,18 +335,15 @@ def print_holdout_aucs(scores, y, depth, units, draws):
 
 
 def rate(values):
-    """The share of `values` that are true, as a percentage, or nan when there
-    are none of them. A rate over no rows is not a zero."""
+    """The share of `values` that are true, as a percentage, or nan over no
+    rows."""
     return float(values.mean() * 100) if len(values) else float("nan")
 
 
 def operating_table(train_scores, hold_scores, hold_y, deep, targets=(90, 75, 50, 25)):
-    """What the dead region holds, at four coverage targets.
-
-    The threshold is a percentile of the training scores and everything read
-    off it is the holdout's, so the coverage is a promise made on one half and
-    checked on the other. `deep` marks the holdout rows at depth four and up,
-    which is where the engine's gate can reach.
+    """What the dead region holds at each coverage target. The threshold is a
+    percentile of the training scores and everything read off it is the
+    holdout's. `deep` marks the holdout rows at depth four and up.
     """
     table = []
     for target in targets:
@@ -427,8 +386,8 @@ def print_table(name, table):
 
 
 def print_trivial_gate(X, y, train, hold):
-    """The obvious rule, for the model to be worth more than: dead when the
-    move is late enough and the history table thinks little enough of it."""
+    """The obvious rule the model has to beat: dead when the move is late
+    enough and the history table thinks little enough of it."""
     index = X[:, FEATURES.index("index")]
     history = X[:, FEATURES.index("hist_milli")]
     print(
@@ -445,9 +404,8 @@ def print_trivial_gate(X, y, train, hold):
         if not usable:
             print(f"{target:>6}   none reachable")
             continue
-        # the lowest attention rate among the gates that cover the target, and
-        # the tightest coverage of those, since a gate that covers far more
-        # than it was asked for is not the gate that was asked for
+        # the lowest attention rate among the gates that cover the target,
+        # then the tightest coverage
         cut, floor, coverage, _ = min(usable, key=lambda one: (one[3], one[2]))
         dead = (index[hold] >= cut) & (history[hold] <= floor)
         print(
@@ -459,12 +417,9 @@ def print_trivial_gate(X, y, train, hold):
 
 
 def write_csvs(out_dir, X, y, depth, rows, groups, train, hold, weights, intercept):
-    """The two halves and the fitted weights, for reading back by hand.
-
-    The group goes in the row beside the fen, so a half can be checked
-    against the map that produced it rather than taken on the script's
-    word.
-    """
+    """The two halves and the fitted weights, for reading back by hand. The
+    group goes in the row beside the fen, so a half can be checked against
+    the map that produced it."""
     out_dir.mkdir(parents=True, exist_ok=True)
     header = ",".join([*FEATURES, "attention", "depth", "group", "fen"])
     for mask, name in ((train, "train.csv"), (hold, "holdout.csv")):
@@ -574,9 +529,7 @@ def main(argv=None):
     if not train.any() or not hold.any():
         sys.exit("one half of the split is empty, the ledger is too small to fit")
 
-    # the unit the bootstrap resamples is the unit the split was made by: the
-    # group when there is one and the fen otherwise, since rows of one fen
-    # were kept on one side and have to be drawn together too
+    # the bootstrap resamples the unit the split was made by
     codes = {}
     units = np.array(
         [codes.setdefault(keys[at], len(codes)) for at in np.where(hold)[0]]
