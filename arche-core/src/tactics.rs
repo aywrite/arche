@@ -34,7 +34,7 @@ pub const TABLE_BYTES: usize = 16 * 1024 * 1024;
 /// is the gate. A change that moves it in either direction updates this
 /// number in the same commit, which puts the movement in the diff, and a
 /// change that lowers it says what the positions were spent on.
-pub const EXPECTED_PASSES: usize = 237;
+pub const EXPECTED_PASSES: usize = 236;
 
 /// The count the suite may not go under, whatever a commit says it meant to
 /// spend.
@@ -47,7 +47,7 @@ pub const EXPECTED_PASSES: usize = 237;
 /// Two hundred and ten was fourteen under the count when the floor was set
 /// (224) and is eleven under the lowest the suite has been gated at (221).
 /// Since the suite was first gated the count has been 243, 241, 240, 237,
-/// 236, 229, 221, 226, 227, 228, 231, 224 and 237, and the largest single
+/// 236, 229, 221, 226, 227, 228, 231, 224, 237 and 236, and the largest single
 /// step down in that list is eight, so one change spending fourteen fails
 /// here rather than being written down and rearmed. Lowering the floor is a
 /// commit whose whole subject is lowering the floor.
@@ -78,12 +78,15 @@ pub struct AcceptedLoss {
     pub until: &'static str,
 }
 
-/// The losses accepted so far.
-///
-/// Empty: none of the positions the suite misses has been read one at a
-/// time, so nothing here would be a record rather than a guess. The next
-/// change that lowers `EXPECTED_PASSES` is the first that writes here.
-pub const ACCEPTED_LOSSES: &[AcceptedLoss] = &[];
+/// The losses accepted so far. Only the positions a change spent are read
+/// one at a time; the sixty three the suite missed before any of them were
+/// written are not here, because nothing about them is a record rather than
+/// a guess.
+pub const ACCEPTED_LOSSES: &[AcceptedLoss] = &[AcceptedLoss {
+    id: "WAC.120",
+    why: "the attention model refitted on our own games (2026-09-16) prunes or           reduces the line behind g5g6: at depth six the search plays h1g1, and           with this vector it does not find g5g6 through depth nine, where the           previous vector found it at six. Spent on a refit that read +8 +/-8           over 4,000 games, and worth winning back if a later fit sees it",
+    until: "0.6.0",
+}];
 
 const SUITE: &str = include_str!("../tactics.epd");
 
