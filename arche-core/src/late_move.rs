@@ -24,7 +24,7 @@
 
 use crate::board::Board;
 use crate::census;
-use crate::engine::SearchConfig;
+use crate::engine::{Edges, SearchConfig};
 use crate::misc::Score;
 use crate::ordering::MoveOrdering;
 use crate::play::Play;
@@ -167,6 +167,8 @@ pub(crate) struct Node<'a> {
     /// The bounds the node stands in as this move is reached.
     pub(crate) alpha: Score,
     pub(crate) beta: Score,
+    /// Which of those two the root opened with and no search has claimed.
+    pub(crate) edges: Edges,
     /// Whether the side to move is in check here.
     pub(crate) in_check: bool,
     /// The node's distance from the root, or none past the rail, which is
@@ -268,10 +270,16 @@ pub(crate) fn decide(search: &Search, node: &mut Node, m: &Play, searched: usize
 /// scores is the margin family's exemption: a scout a ply short of the
 /// mate it is asked about can only say no.
 ///
-/// The root's open bounds sit inside the mate window and a node's first
-/// child inherits them, so no node on the leftmost line reduces. That
-/// is a consequence of the exemption, not a decision about principal
-/// variation nodes; an arm that wants to reduce there has to lift it.
+/// A beta that is still the root's own bound, which `edges` says,
+/// stands the reduction down as well, and that one is a decision. A node
+/// whose beta is the root's is a node whose answer the root reports
+/// rather than bounds, and the policy is to search it whole: a late move
+/// trusted a ply short there costs the answer and not a bound. That
+/// records what the engine does and does not claim it is right; an arm
+/// that wants to reduce there lifts the flag and plays a match. Alpha's
+/// edge is not read, because a node whose alpha is the root's has every
+/// move failing low already, which is the reduction's guess rather than
+/// something it needs proved.
 ///
 /// A quiet move that gives check is reduced like any other: exempting
 /// checks was measured and lost (docs/ROADMAP.md).
@@ -285,6 +293,7 @@ fn reduces(search: &Search, node: &Node, m: &Play, searched: usize) -> bool {
         && m.promote.is_none()
         && !is_mate(node.alpha)
         && !is_mate(node.beta)
+        && !node.edges.beta
 }
 
 /// Whether a move `reduces` already accepted is scouted two plies
@@ -384,7 +393,7 @@ mod tests {
     };
     use crate::board::{Board, MoveList, fens, play_named};
     use crate::census::Table;
-    use crate::engine::{MAX_PLY, SearchConfig};
+    use crate::engine::{Edges, MAX_PLY, SearchConfig};
     use crate::misc::Score;
     use crate::ordering::MoveOrdering;
     use crate::play::Play;
@@ -429,8 +438,9 @@ mod tests {
         config: SearchConfig,
         moves: MoveList,
         /// The node's facts besides its depth and bounds. A test that
-        /// wants a killer slot or a table move sets them.
+        /// wants a killer slot, a table move or a root bound sets them.
         in_check: bool,
+        edges: Edges,
         ply: Option<usize>,
         tt: Table,
         eval: Option<i64>,
@@ -447,6 +457,7 @@ mod tests {
                 config,
                 moves,
                 in_check: false,
+                edges: Edges::NEITHER,
                 ply: None,
                 tt: Table::Miss,
                 eval: None,
@@ -477,6 +488,7 @@ mod tests {
                 depth,
                 alpha,
                 beta,
+                edges: self.edges,
                 in_check: self.in_check,
                 ply: self.ply,
                 tt: self.tt,
@@ -500,6 +512,7 @@ mod tests {
                 depth: 0,
                 alpha: 0,
                 beta: 1,
+                edges: Edges::NEITHER,
                 in_check: self.in_check,
                 ply: self.ply,
                 tt: self.tt,
@@ -656,6 +669,36 @@ mod tests {
                 -29_500
             ),
             Verdict::Scout(0)
+        );
+    }
+
+    /// The same bounds four ways, so what moves is the flag and nothing
+    /// else. Beta is the bound read: marked, the reduction is refused, and
+    /// what alpha's bit says makes no difference. The fourth case pins
+    /// that alpha's bit is never read.
+    #[test]
+    fn a_beta_that_is_still_the_roots_stands_the_reduction_down() {
+        let mut s = Stand::new(fens::A_CAPTURE_AND_QUIETS, reducing());
+        let quiet = play_named(&s.board, "a4a5");
+        let mut verdict = |edges| {
+            s.edges = edges;
+            s.verdict(&quiet, LATE_MOVE_THRESHOLD, LATE_MOVE_MIN_DEPTH, -100, 100)
+        };
+        assert_eq!(verdict(Edges::NEITHER), Verdict::Scout(LATE_MOVE_REDUCTION));
+        assert_eq!(verdict(Edges::BOTH), Verdict::Scout(0));
+        assert_eq!(
+            verdict(Edges {
+                alpha: false,
+                beta: true
+            }),
+            Verdict::Scout(0)
+        );
+        assert_eq!(
+            verdict(Edges {
+                alpha: true,
+                beta: false
+            }),
+            Verdict::Scout(LATE_MOVE_REDUCTION)
         );
     }
 

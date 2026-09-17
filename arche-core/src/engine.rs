@@ -388,6 +388,45 @@ impl Default for SearchConfig {
     }
 }
 
+/// Which of a node's two bounds is still the root's own bound rather than
+/// a score a search returned.
+///
+/// A bound the root opened with is one the tree under it has said nothing
+/// about, which is what the shortcuts and the late move reduction are
+/// refused on wherever beta is one: the principal variation exemption,
+/// written here rather than left to the mate window gates beside it.
+///
+/// Both at the root, flipped with the window at every ply, cleared on
+/// alpha when a child raises it, and neither on a zero window, whose two
+/// bounds a search produced.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub(crate) struct Edges {
+    pub(crate) alpha: bool,
+    pub(crate) beta: bool,
+}
+
+impl Edges {
+    /// The root's own window: both bounds are the ones it opened with.
+    pub(crate) const BOTH: Self = Self {
+        alpha: true,
+        beta: true,
+    };
+    /// Neither bound is the root's.
+    pub(crate) const NEITHER: Self = Self {
+        alpha: false,
+        beta: false,
+    };
+
+    /// The child's view of this node's bounds: its alpha is this node's
+    /// beta negated, and the other way about.
+    fn flipped(self) -> Self {
+        Self {
+            alpha: self.beta,
+            beta: self.alpha,
+        }
+    }
+}
+
 pub struct AlphaBeta {
     pub(crate) board: Board,
     config: SearchConfig,
@@ -426,6 +465,14 @@ pub struct AlphaBeta {
     census: Option<Sampler<census::Event>>,
     /// The reduction ledger's reservoir, or none, on the same terms.
     ledger: Option<Sampler<reduction::Event>>,
+    /// Whether the root this engine searches from opens at the full
+    /// window, which is what the debug assertion in `alpha_beta` stands
+    /// on: there a bound that is still the root's own is a mate score, so
+    /// a marked bound worth an ordinary score is a bit set where none
+    /// belongs. True of every search the engine runs; the one test that
+    /// has to open narrower clears it. The arm that narrows the root
+    /// takes the field and the assertion out together.
+    full_window_root: bool,
 }
 
 /// What a search can be armed to record: the residual's sample, the cutoff
@@ -488,6 +535,7 @@ impl AlphaBeta {
             sampler: None,
             census: None,
             ledger: None,
+            full_window_root: true,
         }
     }
 
@@ -1081,12 +1129,18 @@ impl AlphaBeta {
     /// eval, so a cutoff against one would leave a faster mate unsearched;
     /// the positive half of that gate is redundant while material bounds
     /// the eval, and stands in case the eval grows terms that reach higher.
+    /// A fourth gate stands beside them: a beta that is still the root's
+    /// own bound, which `edges` says. Nothing has claimed that bound, so
+    /// there is nothing here for the node to stand above.
     ///
     /// A `Some` answers the node. A pass that failed answers nothing but
     /// leaves whatever it read in the node's taint.
     ///
-    /// Alpha is read by neither shortcut. It is here for the sampler, which
-    /// records the window the node was asked under.
+    /// Alpha is read by neither shortcut, and nor is its edge. Alpha is
+    /// here for the sampler, which records the window the node was asked
+    /// under.
+    // one argument past clippy's limit, which is the edges.
+    #[allow(clippy::too_many_arguments)]
     fn shortcuts(
         &mut self,
         alpha: Score,
@@ -1094,6 +1148,7 @@ impl AlphaBeta {
         depth: u8,
         in_check: bool,
         can_null: bool,
+        edges: Edges,
         taint: &mut Taint,
     ) -> Result<Option<Value>, Aborted> {
         let margin = self.config.reverse_futility && depth <= REVERSE_FUTILITY_MAX_DEPTH;
@@ -1103,7 +1158,12 @@ impl AlphaBeta {
         // above beta, and the window and the eval turn round under it) and
         // kept for the day that gate is dropped or given a margin
         let pass = self.config.null_move && can_null && depth >= NULL_MOVE_MIN_DEPTH;
-        if (!margin && !pass) || in_check || !self.board.has_non_pawn_material() || is_mate(beta) {
+        if (!margin && !pass)
+            || in_check
+            || !self.board.has_non_pawn_material()
+            || is_mate(beta)
+            || edges.beta
+        {
             return Ok(None);
         }
         let eval = self.eval();
@@ -1132,7 +1192,15 @@ impl AlphaBeta {
         // is only whether a pass beats beta
         if pass && eval >= beta {
             self.board.make_null_move();
-            let result = self.alpha_beta(-beta, -beta + 1, depth - 1 - NULL_MOVE_REDUCTION, false);
+            // neither edge: the window is a zero one, and the gate above
+            // admitted this node only with a beta no longer the root's
+            let result = self.alpha_beta(
+                -beta,
+                -beta + 1,
+                depth - 1 - NULL_MOVE_REDUCTION,
+                false,
+                Edges::NEITHER,
+            );
             // undo before an abort can propagate, or the board would keep
             // the passed line
             self.board.undo_null_move();
@@ -1164,8 +1232,8 @@ impl AlphaBeta {
     /// discipline in `windowed` is written once; `reduction` is how many
     /// plies shallower the scout runs, zero for no scout, and `staged` is
     /// what the ledger has about the move, or nothing.
-    // one argument past clippy's limit, which is the staging travelling as
-    // a parameter rather than as a field of the engine.
+    // two arguments past clippy's limit: the staging travelling as a
+    // parameter rather than as a field of the engine, and the edges.
     #[inline(always)]
     #[allow(clippy::too_many_arguments)]
     fn search_child(
@@ -1176,12 +1244,13 @@ impl AlphaBeta {
         depth: u8,
         first: bool,
         reduction: u8,
+        edges: Edges,
         staged: Option<&reduction::Staged>,
     ) -> Result<Option<Value>, Aborted> {
         if !self.board.make_move(m) {
             return Ok(None);
         }
-        let result = self.windowed(alpha, beta, depth, first, reduction, staged);
+        let result = self.windowed(alpha, beta, depth, first, reduction, edges, staged);
         self.board.undo_move();
         Ok(Some(result?))
     }
@@ -1199,8 +1268,15 @@ impl AlphaBeta {
     /// fails high goes on to the probe and the proof as an unreduced move
     /// does.
     ///
+    /// The edges travel with the windows, so they are settled here too.
+    /// The first move and the proof take this node's window turned round,
+    /// so they take its edges turned round with it; the scout and the
+    /// probe take a zero window, which is this node's own question about
+    /// alpha rather than the window the root opened, so they take neither.
+    ///
     /// A body of its own rather than `search_child`'s so that an abort from
     /// any pass runs through the one undo there.
+    #[allow(clippy::too_many_arguments)]
     fn windowed(
         &mut self,
         alpha: Score,
@@ -1208,11 +1284,12 @@ impl AlphaBeta {
         depth: u8,
         first: bool,
         reduction: u8,
+        edges: Edges,
         staged: Option<&reduction::Staged>,
     ) -> Result<Value, Aborted> {
         if first {
             debug_assert!(reduction == 0, "a node's first move is never reduced");
-            return Ok(-self.alpha_beta(-beta, -alpha, depth - 1, true)?);
+            return Ok(-self.alpha_beta(-beta, -alpha, depth - 1, true, edges.flipped())?);
         }
         let mut tainted = false;
         if reduction > 0 {
@@ -1222,7 +1299,13 @@ impl AlphaBeta {
             // what the scout's cost is measured from: a read of a field,
             // no branch, so the disarmed search is unchanged
             let entered_at = self.nodes;
-            let scout = -self.alpha_beta(-alpha - 1, -alpha, depth - 1 - reduction, true)?;
+            let scout = -self.alpha_beta(
+                -alpha - 1,
+                -alpha,
+                depth - 1 - reduction,
+                true,
+                Edges::NEITHER,
+            )?;
             if let Some(staged) = staged {
                 self.ledger_event(
                     *staged,
@@ -1241,13 +1324,13 @@ impl AlphaBeta {
             // it depended on, the passes below do too
             tainted = scout.tainted;
         }
-        let probe = -self.alpha_beta(-alpha - 1, -alpha, depth - 1, true)?;
+        let probe = -self.alpha_beta(-alpha - 1, -alpha, depth - 1, true, Edges::NEITHER)?;
         // `alpha + 1 >= beta` is the zero window, spelt without the
         // subtraction: `beta - alpha` overflows a Score at the root's window
         if probe.score <= alpha || alpha + 1 >= beta {
             return Ok(Value::with_taint(probe.score, probe.tainted || tainted));
         }
-        let proof = -self.alpha_beta(-beta, -alpha, depth - 1, true)?;
+        let proof = -self.alpha_beta(-beta, -alpha, depth - 1, true, edges.flipped())?;
         // the probe's fail high asked for the proof, so the proof depends
         // on whatever the probe did
         Ok(Value::with_taint(
@@ -1285,13 +1368,31 @@ impl AlphaBeta {
     /// pass: a position neither side has moved in is not one a reduced
     /// search says anything about. A parameter rather than a field toggled
     /// around the call, so reading the recursion says which nodes may pass.
+    ///
+    /// `edges` says which of the two bounds handed in is still the root's
+    /// own, which is what stands the shortcuts and the reduction down on
+    /// the principal variation. Carried the same way and for the same
+    /// reason: a register per node rather than a field written and read
+    /// back around every child.
     fn alpha_beta(
         &mut self,
         mut alpha: Score,
         beta: Score,
         mut depth: u8,
         can_null: bool,
+        mut edges: Edges,
     ) -> Result<Value, Aborted> {
+        // scaffolding, and it stands on the root opening at the full
+        // window: every bound the root owns is inside the mate window
+        // there, so a marked bound worth an ordinary score is a bit set
+        // where none belongs. The arm that narrows the root takes the line
+        // out, since under a narrowed root a marked bound is a real score
+        // by design
+        debug_assert!(
+            !self.full_window_root
+                || ((!edges.alpha || is_mate(alpha)) && (!edges.beta || is_mate(beta))),
+            "a bound marked the root's is not one of the root's"
+        );
         self.poll_deadline()?;
         self.selective_depth = self.selective_depth.max(self.board.line_ply as u8);
         self.nodes += 1;
@@ -1355,7 +1456,9 @@ impl AlphaBeta {
             Probe::Miss => None,
         };
 
-        if let Some(value) = self.shortcuts(alpha, beta, depth, in_check, can_null, &mut taint)? {
+        if let Some(value) =
+            self.shortcuts(alpha, beta, depth, in_check, can_null, edges, &mut taint)?
+        {
             return Ok(value);
         }
 
@@ -1367,7 +1470,9 @@ impl AlphaBeta {
         if let Some(tt) = pv_play {
             if self.board.is_pseudo_legal(&tt) {
                 tt_tried = Some(tt);
-                if let Some(value) = self.search_child(&tt, alpha, beta, depth, true, 0, None)? {
+                if let Some(value) =
+                    self.search_child(&tt, alpha, beta, depth, true, 0, edges, None)?
+                {
                     found_legal_move = true;
                     taint.absorb(value);
                     let tt_score = value.score;
@@ -1404,6 +1509,9 @@ impl AlphaBeta {
                             return Ok(self.cutoff(&tt, &[], taint, tt_score, depth));
                         }
                         alpha = tt_score;
+                        // a score a search returned, so alpha is no longer
+                        // the bound the node arrived with
+                        edges.alpha = false;
                     }
                 }
             }
@@ -1464,6 +1572,7 @@ impl AlphaBeta {
                 depth,
                 alpha,
                 beta,
+                edges,
                 in_check,
                 ply,
                 tt,
@@ -1503,6 +1612,7 @@ impl AlphaBeta {
                 depth,
                 !found_legal_move,
                 reduction,
+                edges,
                 staged.as_ref(),
             )?
             else {
@@ -1555,6 +1665,8 @@ impl AlphaBeta {
                     return Ok(self.cutoff(m, tried, taint, score, depth));
                 }
                 alpha = score;
+                // as at the table's move above
+                edges.alpha = false;
             }
         }
 
@@ -1658,6 +1770,9 @@ impl AlphaBeta {
 
         let mut alpha = Score::MIN + 1;
         let beta = Score::MAX - 1;
+        // where the exemption starts: the root opened with both of these
+        // and proved neither, and they stay marked down the leftmost line
+        let mut edges = Edges::BOTH;
         let mut best: Option<Play> = None;
         let mut found_legal_move = false;
         let mut taint = Taint::default();
@@ -1687,7 +1802,7 @@ impl AlphaBeta {
         // the root reduces nothing: its window is the full one, and its
         // moves are few enough to search whole
         for m in &moves {
-            match self.search_child(m, alpha, beta, depth, !found_legal_move, 0, None) {
+            match self.search_child(m, alpha, beta, depth, !found_legal_move, 0, edges, None) {
                 Err(Aborted) => {
                     return SearchOutcome::Aborted(best.map(|play| self.result_for(play, alpha)));
                 }
@@ -1698,6 +1813,8 @@ impl AlphaBeta {
                     let score = value.score;
                     if score > alpha {
                         alpha = score;
+                        // the root's lower bound is a score from here on
+                        edges.alpha = false;
                         best = Some(*m);
                     }
                 }
@@ -1981,8 +2098,8 @@ mod search {
     use super::Board;
     use super::Engine;
     use super::{
-        Limits, MAX_PLY, Play, Score, ScoreBound, SearchConfig, SearchOutcome, SearchParameters,
-        SearchResult, TaintPolicy, Value,
+        Edges, Limits, MAX_PLY, Play, Score, ScoreBound, SearchConfig, SearchOutcome,
+        SearchParameters, SearchResult, TaintPolicy, Value,
     };
     use crate::board::{fens, fens::SHARP_MIDDLEGAME, play_named};
     use crate::late_move::{
@@ -2267,7 +2384,8 @@ mod search {
         let mut oracle = reference(Board::from_fen(FEN).unwrap());
         let m = play_named(&oracle.board, "h2h4");
         assert!(oracle.board.make_move(&m));
-        let Ok(exact) = oracle.windowed(Score::MIN + 2, Score::MAX, 2, true, 0, None) else {
+        let Ok(exact) = oracle.windowed(Score::MIN + 2, Score::MAX, 2, true, 0, Edges::BOTH, None)
+        else {
             panic!("an unlimited search aborted");
         };
 
@@ -2279,7 +2397,7 @@ mod search {
         let reply = play_named(&e.board, "c2c3");
         e.transpositions
             .record_ceiling(&e.board, reply, Value::clean(-alpha - 1), SEEDED_DEPTH);
-        let Ok(value) = e.windowed(alpha, beta, 2, false, 0, None) else {
+        let Ok(value) = e.windowed(alpha, beta, 2, false, 0, Edges::NEITHER, None) else {
             panic!("an unlimited search aborted");
         };
         assert_eq!(value.score, exact.score);
@@ -2755,7 +2873,7 @@ mod search {
         assert!(e.board.in_check());
         e.board.line_ply = MAX_PLY as usize;
 
-        let Ok(railed) = e.alpha_beta(Score::MIN + 1, Score::MAX - 1, 4, true) else {
+        let Ok(railed) = e.alpha_beta(Score::MIN + 1, Score::MAX - 1, 4, true, Edges::BOTH) else {
             panic!("an unlimited search aborted");
         };
         assert_eq!(e.nodes, 1, "the node on the rail searched on");
@@ -2774,7 +2892,7 @@ mod search {
         e.board.line_ply = MAX_PLY as usize - 1;
 
         assert!(
-            e.alpha_beta(Score::MIN + 1, Score::MAX - 1, 4, true)
+            e.alpha_beta(Score::MIN + 1, Score::MAX - 1, 4, true, Edges::BOTH)
                 .is_ok(),
             "an unlimited search aborted"
         );
@@ -3567,7 +3685,7 @@ mod search {
         let board = Board::from_fen("7k/5K1N/8/8/8/8/Q7/8 w - - 0 1").unwrap();
         let mut e = passing(board);
         let beta = e.eval();
-        let Ok(value) = e.alpha_beta(beta - 1, beta, 5, true) else {
+        let Ok(value) = e.alpha_beta(beta - 1, beta, 5, true, Edges::NEITHER) else {
             panic!("nothing was armed to abort this search");
         };
         assert!(
@@ -3600,7 +3718,7 @@ mod search {
         // the counter said.
         let board = Board::from_fen(ONLY_A_PASS_READS_THE_DRAW).unwrap();
         let mut e = passing(board);
-        let Ok(value) = e.alpha_beta(-1, 0, 3, true) else {
+        let Ok(value) = e.alpha_beta(-1, 0, 3, true, Edges::NEITHER) else {
             panic!("nothing was armed to abort this search");
         };
         assert_eq!(value, Value::tainted(0));
@@ -3618,7 +3736,7 @@ mod search {
         let mut e = passing(board);
         let beta = e.eval();
         assert!(beta > 0, "the pass has to fail, so beta must beat a draw");
-        let Ok(value) = e.alpha_beta(beta - 1, beta, 3, true) else {
+        let Ok(value) = e.alpha_beta(beta - 1, beta, 3, true, Edges::NEITHER) else {
             panic!("nothing was armed to abort this search");
         };
         assert!(value.tainted, "the failed pass left no taint behind it");
@@ -3645,8 +3763,13 @@ mod search {
     /// shallower than the probe would be, as `windowed` asks it.
     /// What it costs and what it answers, from the parent's side.
     fn scout(e: &mut AlphaBeta, alpha: Score, depth: u8) -> (u64, Value) {
-        let Ok(value) = e.alpha_beta(-alpha - 1, -alpha, depth - 1 - LATE_MOVE_REDUCTION, true)
-        else {
+        let Ok(value) = e.alpha_beta(
+            -alpha - 1,
+            -alpha,
+            depth - 1 - LATE_MOVE_REDUCTION,
+            true,
+            Edges::NEITHER,
+        ) else {
             panic!("an unlimited search aborted");
         };
         (e.nodes, -value)
@@ -3662,7 +3785,15 @@ mod search {
         // value. The probe it stood in for is dearer, which is the saving.
         const DEPTH: u8 = 3;
         let mut oracle = at_reducible_child(SearchConfig::reference());
-        let Ok(exact) = oracle.windowed(Score::MIN + 2, Score::MAX, DEPTH, true, 0, None) else {
+        let Ok(exact) = oracle.windowed(
+            Score::MIN + 2,
+            Score::MAX,
+            DEPTH,
+            true,
+            0,
+            Edges::BOTH,
+            None,
+        ) else {
             panic!("an unlimited search aborted");
         };
         let alpha = exact.score + 500;
@@ -3673,15 +3804,23 @@ mod search {
         assert!(scout_value.score <= alpha, "the scout did not fail low");
 
         let mut e = at_reducible_child(SearchConfig::reference());
-        let Ok(value) = e.windowed(alpha, alpha + 1, DEPTH, false, LATE_MOVE_REDUCTION, None)
-        else {
+        let Ok(value) = e.windowed(
+            alpha,
+            alpha + 1,
+            DEPTH,
+            false,
+            LATE_MOVE_REDUCTION,
+            Edges::NEITHER,
+            None,
+        ) else {
             panic!("an unlimited search aborted");
         };
         assert_eq!(e.nodes, scout_nodes);
         assert_eq!(value, scout_value);
 
         let mut probe = at_reducible_child(SearchConfig::reference());
-        let Ok(unreduced) = probe.windowed(alpha, alpha + 1, DEPTH, false, 0, None) else {
+        let Ok(unreduced) = probe.windowed(alpha, alpha + 1, DEPTH, false, 0, Edges::NEITHER, None)
+        else {
             panic!("an unlimited search aborted");
         };
         assert!(unreduced.score <= alpha);
@@ -3704,7 +3843,15 @@ mod search {
         // and the proof runs at the full window.
         const DEPTH: u8 = 3;
         let mut oracle = at_reducible_child(SearchConfig::reference());
-        let Ok(exact) = oracle.windowed(Score::MIN + 2, Score::MAX, DEPTH, true, 0, None) else {
+        let Ok(exact) = oracle.windowed(
+            Score::MIN + 2,
+            Score::MAX,
+            DEPTH,
+            true,
+            0,
+            Edges::BOTH,
+            None,
+        ) else {
             panic!("an unlimited search aborted");
         };
         let alpha = exact.score - 500;
@@ -3717,7 +3864,9 @@ mod search {
 
         let mut then_probed = at_reducible_child(SearchConfig::reference());
         scout(&mut then_probed, alpha, DEPTH);
-        let Ok(unreduced) = then_probed.windowed(alpha, beta, DEPTH, false, 0, None) else {
+        let Ok(unreduced) =
+            then_probed.windowed(alpha, beta, DEPTH, false, 0, Edges::NEITHER, None)
+        else {
             panic!("an unlimited search aborted");
         };
         assert!(
@@ -3726,7 +3875,15 @@ mod search {
         );
 
         let mut e = at_reducible_child(SearchConfig::reference());
-        let Ok(value) = e.windowed(alpha, beta, DEPTH, false, LATE_MOVE_REDUCTION, None) else {
+        let Ok(value) = e.windowed(
+            alpha,
+            beta,
+            DEPTH,
+            false,
+            LATE_MOVE_REDUCTION,
+            Edges::NEITHER,
+            None,
+        ) else {
             panic!("an unlimited search aborted");
         };
         assert_eq!(e.nodes, then_probed.nodes);
@@ -3753,11 +3910,23 @@ mod search {
         assert!(evasions.iter().all(|m| m.capture.is_none()));
 
         let mut e = reducing(Board::from_fen(fen).unwrap());
-        let Ok(value) = e.alpha_beta(-10_000, 10_000, LATE_MOVE_MIN_DEPTH - 1, true) else {
+        let Ok(value) = e.alpha_beta(
+            -10_000,
+            10_000,
+            LATE_MOVE_MIN_DEPTH - 1,
+            true,
+            Edges::NEITHER,
+        ) else {
             panic!("an unlimited search aborted");
         };
         let mut cold = reference(Board::from_fen(fen).unwrap());
-        let Ok(expected) = cold.alpha_beta(-10_000, 10_000, LATE_MOVE_MIN_DEPTH - 1, true) else {
+        let Ok(expected) = cold.alpha_beta(
+            -10_000,
+            10_000,
+            LATE_MOVE_MIN_DEPTH - 1,
+            true,
+            Edges::NEITHER,
+        ) else {
             panic!("an unlimited search aborted");
         };
         assert_eq!(e.nodes, cold.nodes);
@@ -3777,20 +3946,20 @@ mod search {
         // `late_move::tests::the_mate_window_stands_the_reduction_down`
         let fen = SHARP_MIDDLEGAME;
         let mut e = reducing(Board::from_fen(fen).unwrap());
-        let Ok(value) = e.alpha_beta(29_500, 29_501, 5, true) else {
+        let Ok(value) = e.alpha_beta(29_500, 29_501, 5, true, Edges::NEITHER) else {
             panic!("an unlimited search aborted");
         };
         let mut cold = reference(Board::from_fen(fen).unwrap());
-        let Ok(expected) = cold.alpha_beta(29_500, 29_501, 5, true) else {
+        let Ok(expected) = cold.alpha_beta(29_500, 29_501, 5, true, Edges::NEITHER) else {
             panic!("an unlimited search aborted");
         };
         assert_eq!(e.nodes, cold.nodes);
         assert_eq!(value, expected);
 
         let mut e = reducing(Board::from_fen(fen).unwrap());
-        assert!(e.alpha_beta(-1, 0, 5, true).is_ok());
+        assert!(e.alpha_beta(-1, 0, 5, true, Edges::NEITHER).is_ok());
         let mut cold = reference(Board::from_fen(fen).unwrap());
-        assert!(cold.alpha_beta(-1, 0, 5, true).is_ok());
+        assert!(cold.alpha_beta(-1, 0, 5, true, Edges::NEITHER).is_ok());
         assert!(
             e.nodes < cold.nodes,
             "nothing was reduced outside the mate window: {} against {}",
@@ -3825,16 +3994,28 @@ mod search {
         // is spending its word on
         const DEPTH: u8 = DEEP_REDUCTION_MIN_DEPTH;
         let mut oracle = at_reducible_child(SearchConfig::reference());
-        let Ok(exact) = oracle.windowed(Score::MIN + 2, Score::MAX, DEPTH, true, 0, None) else {
+        let Ok(exact) = oracle.windowed(
+            Score::MIN + 2,
+            Score::MAX,
+            DEPTH,
+            true,
+            0,
+            Edges::BOTH,
+            None,
+        ) else {
             panic!("an unlimited search aborted");
         };
         let alpha = exact.score + 500;
         assert!(!super::is_mate(alpha));
 
         let mut alone = at_reducible_child(SearchConfig::reference());
-        let Ok(scout_value) =
-            alone.alpha_beta(-alpha - 1, -alpha, DEPTH - 1 - DEEP_REDUCTION, true)
-        else {
+        let Ok(scout_value) = alone.alpha_beta(
+            -alpha - 1,
+            -alpha,
+            DEPTH - 1 - DEEP_REDUCTION,
+            true,
+            Edges::NEITHER,
+        ) else {
             panic!("an unlimited search aborted");
         };
         let scout_value = -scout_value;
@@ -3842,16 +4023,30 @@ mod search {
         assert!(scout_value.score <= alpha, "the scout did not fail low");
 
         let mut e = at_reducible_child(SearchConfig::reference());
-        let Ok(value) = e.windowed(alpha, alpha + 1, DEPTH, false, DEEP_REDUCTION, None) else {
+        let Ok(value) = e.windowed(
+            alpha,
+            alpha + 1,
+            DEPTH,
+            false,
+            DEEP_REDUCTION,
+            Edges::NEITHER,
+            None,
+        ) else {
             panic!("an unlimited search aborted");
         };
         assert_eq!(e.nodes, scout_nodes);
         assert_eq!(value, scout_value);
 
         let mut shallower = at_reducible_child(SearchConfig::reference());
-        let Ok(one_ply) =
-            shallower.windowed(alpha, alpha + 1, DEPTH, false, LATE_MOVE_REDUCTION, None)
-        else {
+        let Ok(one_ply) = shallower.windowed(
+            alpha,
+            alpha + 1,
+            DEPTH,
+            false,
+            LATE_MOVE_REDUCTION,
+            Edges::NEITHER,
+            None,
+        ) else {
             panic!("an unlimited search aborted");
         };
         assert!(one_ply.score <= alpha);
@@ -4375,8 +4570,8 @@ mod search {
 #[cfg(test)]
 mod sampling {
     use super::{
-        AlphaBeta, Board, Engine, REVERSE_FUTILITY_MARGIN, REVERSE_FUTILITY_MAX_DEPTH, Score,
-        SearchConfig, SearchParameters, Taint,
+        AlphaBeta, Board, Edges, Engine, REVERSE_FUTILITY_MARGIN, REVERSE_FUTILITY_MAX_DEPTH,
+        Score, SearchConfig, SearchParameters, Taint,
     };
     use crate::board::fens::SHARP_MIDDLEGAME;
     use crate::recorder::{Sampled, Sampler, Window};
@@ -4406,7 +4601,8 @@ mod sampling {
         );
         e.arm(Sampler::<Sample>::every(1));
         let mut taint = Taint::default();
-        let Ok(answered) = e.shortcuts(alpha, beta, depth, false, true, &mut taint) else {
+        let Ok(answered) = e.shortcuts(alpha, beta, depth, false, true, Edges::NEITHER, &mut taint)
+        else {
             panic!("nothing here searches under a limit, so nothing can abort");
         };
         assert!(answered.is_some(), "no shortcut fired at depth {}", depth);
@@ -4587,6 +4783,43 @@ mod sampling {
         assert_eq!(narrow[0].window, Window::Zero);
     }
 
+    /// The exemption at this gate: the same beta answers the node with
+    /// neither bound marked and answers nothing when it is still the
+    /// root's own. The refusal comes before the eval is read, so the node
+    /// spends no search and the sampler is offered no row.
+    #[test]
+    fn a_beta_that_is_still_the_roots_answers_no_shortcut() {
+        let eval = engine(SHARP_MIDDLEGAME).eval();
+        // past the margin's depth, so the pass is what answers, and six
+        // hundred under the evaluation, so it answers comfortably. The
+        // pass's own reduced search is sampled for the shortcuts it takes,
+        // so the row looked for here is named rather than counted
+        let beta = eval - 600;
+        let taken = shortcut_at(SearchConfig::default(), beta - 500, beta, 5);
+        assert!(taken.iter().any(|s| s.kind == Shortcut::NullMove));
+
+        let mut e = engine(SHARP_MIDDLEGAME);
+        e.arm(Sampler::<Sample>::every(1));
+        let mut taint = Taint::default();
+        let Ok(answered) = e.shortcuts(
+            beta - 500,
+            beta,
+            5,
+            false,
+            true,
+            Edges {
+                alpha: false,
+                beta: true,
+            },
+            &mut taint,
+        ) else {
+            panic!("nothing here searches under a limit, so nothing can abort");
+        };
+        assert!(answered.is_none(), "a shortcut answered the root's beta");
+        assert_eq!(e.nodes, 0, "the refusal searched something");
+        assert!(collected(&mut e).taken.is_empty());
+    }
+
     /// The seam the shadow exists for: a candidate the margin declines is
     /// recorded all the same. The live rows cannot show one, since every
     /// node they describe cleared the margin; only the shadow sees the
@@ -4600,7 +4833,9 @@ mod sampling {
         let mut e = engine(SHARP_MIDDLEGAME);
         e.arm(Sampler::<Sample>::every(1));
         let mut taint = Taint::default();
-        let Ok(answered) = e.shortcuts(beta - 500, beta, 1, false, true, &mut taint) else {
+        let Ok(answered) =
+            e.shortcuts(beta - 500, beta, 1, false, true, Edges::NEITHER, &mut taint)
+        else {
             panic!("nothing here searches under a limit, so nothing can abort");
         };
         assert!(answered.is_none(), "the margin fired under its floor");
@@ -4625,7 +4860,9 @@ mod sampling {
         let mut e = engine(SHARP_MIDDLEGAME);
         e.arm(Sampler::<Sample>::every(1));
         let mut taint = Taint::default();
-        let Ok(answered) = e.shortcuts(beta - 500, beta, 1, false, true, &mut taint) else {
+        let Ok(answered) =
+            e.shortcuts(beta - 500, beta, 1, false, true, Edges::NEITHER, &mut taint)
+        else {
             panic!("nothing here searches under a limit, so nothing can abort");
         };
         assert!(answered.is_none());
@@ -5024,7 +5261,7 @@ mod cutoffs {
 /// reductions command's business.
 #[cfg(test)]
 mod reductions {
-    use super::{AlphaBeta, Board, Score};
+    use super::{AlphaBeta, Board, Edges, Score};
     use crate::board::fens::SHARP_MIDDLEGAME;
     use crate::census::Table;
     use crate::late_move;
@@ -5052,6 +5289,7 @@ mod reductions {
             depth: 0,
             alpha: 0,
             beta: 1,
+            edges: Edges::NEITHER,
             in_check: false,
             ply,
             tt: Table::Miss,
@@ -5119,7 +5357,7 @@ mod reductions {
         // alpha stands far above anything the position is worth, and
         // under the mate window, so the scout fails low and is trusted
         let (alpha, beta): (Score, Score) = (5000, 5001);
-        let Ok(value) = e.windowed(alpha, beta, 3, false, 1, Some(&staged)) else {
+        let Ok(value) = e.windowed(alpha, beta, 3, false, 1, Edges::NEITHER, Some(&staged)) else {
             panic!("an unlimited search aborted");
         };
         assert!(value.score <= alpha, "the scout did not fail low");
@@ -5183,7 +5421,7 @@ mod reductions {
         let staged = staged(&e, &m, 6, None);
         assert!(e.board.make_move(&m));
         let (alpha, beta): (Score, Score) = (5000, 5001);
-        let Ok(value) = e.windowed(alpha, beta, 4, false, 2, Some(&staged)) else {
+        let Ok(value) = e.windowed(alpha, beta, 4, false, 2, Edges::NEITHER, Some(&staged)) else {
             panic!("an unlimited search aborted");
         };
         assert!(value.score <= alpha, "the scout did not fail low");
@@ -5210,7 +5448,7 @@ mod reductions {
         let staged = staged(&e, &m, 4, None);
         assert!(e.board.make_move(&m));
         let (alpha, beta): (Score, Score) = (-5000, -4999);
-        let Ok(_) = e.windowed(alpha, beta, 3, false, 1, Some(&staged)) else {
+        let Ok(_) = e.windowed(alpha, beta, 3, false, 1, Edges::NEITHER, Some(&staged)) else {
             panic!("an unlimited search aborted");
         };
         let sampled = e
@@ -5228,6 +5466,73 @@ mod reductions {
             "the cost {} counts more than the scout of a search of {}",
             row.cost,
             e.nodes
+        );
+    }
+
+    /// The exemption threaded through the recursion rather than read at
+    /// one gate. The bounds are real on both sides, far enough inside the
+    /// mate scores that the mate window gates say nothing, so the only
+    /// thing that can keep a scout off the root's beta is the flag. A bit
+    /// dropped at a call site or a flip forgotten shows up as an open node
+    /// reducing against a beta of twenty thousand, which the ledger
+    /// records. The other error, a bit left set on a bound a search
+    /// produced (a clear forgotten where alpha is raised), can only add
+    /// refusals and is invisible here; the debug assertion in `alpha_beta`
+    /// is what catches that one, on every search that opens wide.
+    ///
+    /// Twenty thousand is above anything the evaluation produces and under
+    /// the mate threshold, so an open window carrying it can only have the
+    /// root's beta: an open window's beta is either the root's or the
+    /// negation of a raised alpha, and a raised alpha is a child's score. A
+    /// zero window can carry it too, under a node whose first child was
+    /// mated, which is why the count is of open rows.
+    ///
+    /// The second half is what makes the first one a claim: the same
+    /// search with neither bound marked reduces against that beta plenty.
+    #[test]
+    fn no_open_node_reduces_against_a_beta_that_is_still_the_roots() {
+        const ALPHA: Score = -20_000;
+        const BETA: Score = 20_000;
+
+        // every row of the search, since a count of none is a claim about
+        // all of them and a reservoir at its cap describes a share
+        fn rows_at_the_roots_beta(edges: Edges) -> (usize, usize) {
+            let mut e = AlphaBeta::with_table_bytes(
+                Board::from_fen(SHARP_MIDDLEGAME).unwrap(),
+                TABLE_BYTES,
+            );
+            e.arm(Sampler::<reduction::Event>::with_cap(1, usize::MAX));
+            // narrower than the window the debug assertion stands on,
+            // which is the whole point of it here
+            e.full_window_root = false;
+            let Ok(_) = e.alpha_beta(ALPHA, BETA, 6, true, edges) else {
+                panic!("an unlimited search aborted");
+            };
+            let sampled = e
+                .disarm::<reduction::Event>()
+                .expect("a ledger was installed")
+                .drain();
+            assert_eq!(sampled.overflowed, 0, "the ledger described a share");
+            let at_beta = sampled
+                .taken
+                .iter()
+                .filter(|row| {
+                    row.window == Window::Open
+                        && i32::from(row.alpha) - row.alpha_gap - row.eval_beta == i32::from(BETA)
+                })
+                .count();
+            (at_beta, sampled.taken.len())
+        }
+
+        let (marked, rows) = rows_at_the_roots_beta(Edges::BOTH);
+        assert!(rows > 0, "the tree held no reduction to read either way");
+        assert_eq!(marked, 0, "a scout was reduced against the root's beta");
+
+        let (unmarked, _) = rows_at_the_roots_beta(Edges::NEITHER);
+        assert!(
+            unmarked > 0,
+            "nothing reduced against that beta with neither bound marked, \
+             so the count above was no claim"
         );
     }
 }
