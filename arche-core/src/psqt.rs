@@ -5,11 +5,8 @@ use crate::misc::Color;
 use crate::misc::Piece;
 
 /// Flip a table top to bottom, so that a table written with the eighth rank
-/// first reads correctly for a board that indexes a1 as zero.
-///
-/// Written as a `while` rather than with iterators so that it can run at compile
-/// time: the tables are then constants in the binary rather than something built
-/// on startup.
+/// first reads correctly for a board that indexes a1 as zero. A `while` so
+/// that it runs at compile time.
 const fn mirror(array: &[i16; 64]) -> [i16; 64] {
     let mut mirrored: [i16; 64] = [0; 64];
     let mut rank = 0;
@@ -25,14 +22,11 @@ const fn mirror(array: &[i16; 64]) -> [i16; 64] {
 }
 
 /// Both halves of a tapered score in one word: the midgame value in the low
-/// sixteen bits and the endgame value in the high ones.
-///
-/// Summing a boardful of these is one add rather than two, which is what lets
-/// the accumulator carry two numbers for what it cost to carry one. A negative
-/// midgame value borrows from the endgame half, which `eg_value` undoes by
-/// adding the borrow back before it shifts. Negation needs no unpacking
-/// either: negating the sum negates both halves, which is what lets the
-/// accumulator subtract a black piece the way it subtracts a white one.
+/// sixteen bits and the endgame value in the high ones, so summing a boardful
+/// is one add rather than two. A negative midgame value borrows from the
+/// endgame half, which `eg_value` undoes by adding the borrow back before it
+/// shifts. Negating the sum negates both halves, so the accumulator subtracts
+/// a black piece packed.
 ///
 /// The halves are only independent while each stays inside an `i16`. A
 /// boardful of these tables reaches about sixteen hundred either way, so there
@@ -66,34 +60,26 @@ const fn packed(mg: [i16; 64], eg: [i16; 64]) -> [i32; 64] {
 }
 
 // These started as https://www.chessprogramming.org/Simplified_Evaluation_Function
-// and were fitted from there. The ridge below pulls toward the page's numbers
-// rather than toward zero, so the page is still where they come from.
+// and were fitted from there; the ridge pulls toward the page's numbers rather
+// than toward zero.
 //
-// They are written the way the page prints them, with the eighth rank in the
-// top row, so the first entry is a8 and the last is h1. The board counts the
-// other way, a1 being index zero, which is why black takes the tables as
-// written and white takes them mirrored.
+// They are written the way the page prints them, eighth rank first, so the
+// first entry is a8 and the last h1. The board counts a1 as index zero, which
+// is why black takes the tables as written and white takes them mirrored.
 //
 // Fitted 2026-09-10 by `scripts/tune.py` over 1,812 archived strength-run
-// games at 10+0.1, whose 229,018 post-book plies gave 220,369 positions and
-// 100,726 quiet rows in 1,807 of them, extracted by `arche terms` at d17622f,
-// with K held at 1.3902 and the games split 1,064 that trained, 372 that
-// chose the ridge of 3e-7 and 371 that were sealed. The sealed group scores
-// 0.084551 at the weights these replace and 0.082797 at these, a paired
-// difference of -0.001754 against a standard error of 0.000674 over its
-// games, and rounding the fit to integers cost nothing: 0.082778 read with
-// the engine's own arithmetic.
+// games at 10+0.1, 100,726 quiet rows extracted by `arche terms` at d17622f,
+// K held at 1.3902, at a ridge of 3e-7. The sealed group scores 0.084551 at
+// the weights these replace and 0.082797 at these, a paired difference of
+// -0.001754 against a standard error of 0.000674, and rounding the fit to
+// integers cost nothing (0.082778 with the engine's own arithmetic). Commit
+// 96bad35 is the report. Material was held at its shipped values because
+// `eval::material` is read by the delta margin in quiescence, and moving it
+// would change the search tree for a reason that is not the evaluation's
+// accuracy.
 //
-// The commit that wrote these numbers is the report. It holds what the
-// selection group said, what the four new endgame tables learned, and what
-// the games said afterwards. Material was held at its shipped values,
-// because `eval::material` is read by the delta margin in quiescence and
-// moving it would change the search tree for a reason that is not the
-// evaluation's accuracy.
-//
-// A fitted table is not a round number a person can read, which is what the
-// paragraphs above are for. What each table is for is in the tests below, and
-// they pin the shapes rather than the entries.
+// The tests below pin what each table is for, the shapes rather than the
+// entries.
 
 #[rustfmt::skip]
 const PAWNS: [i16; 64] = [
@@ -157,9 +143,9 @@ const QUEENS: [i16; 64] = [
 
 // The king is the piece the two phases disagree about most, and the page gives
 // a table for each: hidden behind its own pawns while there are pieces to
-// hide from, and in the middle of the board once there are not. A single table
-// cannot say both, which is why the king carried a table of zeroes until the
-// score was tapered.
+// hide from, in the middle of the board once there are not. One table cannot
+// say both, which is why the king carried a table of zeroes until the score
+// was tapered.
 
 #[rustfmt::skip]
 const KING: [i16; 64] = [
@@ -185,14 +171,12 @@ const KING_END: [i16; 64] = [
     -51, -30, -30, -31, -31, -29, -28, -48,
 ];
 
-/// The pawn is the other one, and here the page has nothing to offer: it
-/// prints a single pawn table, and that table is a middlegame one. It pushes
-/// the two centre pawns and holds the rest back to shelter a castled king,
-/// which is why a pawn still at home on d2 scores less there than one on a2.
-/// With no pieces left to shelter from, none of that is true and only the
-/// distance to promotion is. The table this started from was a ramp, one
-/// number a rank and the same on every file; the fit kept the climb and let
-/// the files differ by a few centipawns around it.
+/// The page prints a single pawn table, and it is a middlegame one: it pushes
+/// the two centre pawns and holds the rest back to shelter a castled king.
+/// With no pieces left to shelter from, only the distance to promotion is
+/// true. This started as a ramp, one number a rank and the same on every
+/// file; the fit kept the climb and let the files differ by a few centipawns
+/// around it.
 #[rustfmt::skip]
 const PAWNS_END: [i16; 64] = [
      0,  0,  0,  0,  0,  0,  0,  0,
@@ -205,21 +189,14 @@ const PAWNS_END: [i16; 64] = [
      0,  0,  0,  0,  0,  0,  0,  0,
 ];
 
-// The other four had no endgame table at all until this arm. Each handed its
-// one array to both ends of the taper, so a knight on the rim was worth the
-// same at move fifteen and at move seventy, and the fit above is the first
-// thing that has been able to say otherwise.
-//
-// What it said is worth reading before these numbers are. Each of the four
-// came back about two centipawns rms from its midgame twin, against nineteen
-// for the pawn and forty three for the king, and what difference there is
-// sits on the first three ranks rather than near the enemy king or on the
-// seventh, which is where endgame piece placement is supposed to diverge. On
-// this corpus the two ends of the taper have almost nothing different to say
-// about a knight, a bishop, a rook or a queen. That is a measurement and not
-// a failure to fit: the games these were fitted on are the engine's own, and
-// an engine that could not tell the two ends apart is not going to have
-// played the positions that would say so.
+// The other four handed one array to both ends of the taper until d17622f.
+// The fit moved each about two centipawns rms from its midgame twin, against
+// nineteen for the pawn and forty three for the king, and the difference sits
+// on the first three ranks rather than near the enemy king or on the seventh,
+// where endgame piece placement is supposed to diverge. On this corpus the
+// two ends have almost nothing different to say about a knight, a bishop, a
+// rook or a queen: the games are the engine's own, and an engine that could
+// not tell the two ends apart did not play the positions that would say so.
 //
 // Written out and not aliased. `const KNIGHTS_END: [i16; 64] = KNIGHTS;`
 // would hold nearly these numbers and move both tables when one is edited.
@@ -272,27 +249,23 @@ const QUEENS_END: [i16; 64] = [
     -20, -10, -10,  -5,  -5, -10, -10, -20,
 ];
 
-/// The entries are `i32` rather than a machine word because every piece that is
-/// set or cleared reads one, which is several times per move made or unmade, and
-/// the twelve tables are then 3072 bytes rather than 6144 and stay in L1
-/// alongside everything else the search is touching. Each entry is a packed
-/// pair rather than one value, so the width buys both phases rather than range:
-/// see `pack`.
+/// The entries are `i32` rather than a machine word because every piece set
+/// or cleared reads one, several times per move made or unmade, and the
+/// twelve tables are then 3072 bytes and stay in L1. Each entry is a packed
+/// pair, so the width buys both phases rather than range: see `pack`.
 ///
 /// One array picked by arithmetic rather than a table per colour and piece
-/// picked by a match. The match compiled to a jump table, and reading it was
-/// the largest single source of mispredicted indirect branches in the search:
-/// the piece being placed is whatever the position holds, so the branch
-/// predictor has nothing to go on and missed it about half the time. The kings
-/// take a row of their own rather than a case of their own, which is what
-/// leaves the pick with nothing to branch on.
+/// picked by a match. The match compiled to a jump table and was the largest
+/// single source of mispredicted indirect branches in the search, missed
+/// about half the time, since the piece being placed is whatever the position
+/// holds. The kings take a row of their own so the pick has nothing to branch
+/// on.
 pub struct PieceSquareTables {
     tables: [[i32; 64]; 12],
 }
 
 impl PieceSquareTables {
-    /// The packed pair for a piece on a square. Both phases at once, since a
-    /// caller accumulating them wants one read and one add rather than two.
+    /// The packed pair for a piece on a square, both phases at once.
     #[inline]
     pub fn get_value(&self, index: usize, piece: Piece, color: Color) -> i32 {
         self.tables[Self::table_index(piece, color)][index]
@@ -308,12 +281,8 @@ impl PieceSquareTables {
         }
     }
 
-    /// Built at compile time, so there is nothing to construct on startup and
-    /// nothing to synchronise on when reading it.
-    ///
-    /// Written in the order `table_index` reads it: the six pieces as `Piece`
-    /// declares them for white, then the same six for black. Every piece hands
-    /// two tables of its own to the pair.
+    /// Built at compile time, in the order `table_index` reads it: the six
+    /// pieces as `Piece` declares them for white, then the same six for black.
     pub const TABLES: PieceSquareTables = PieceSquareTables {
         tables: [
             packed(mirror(&PAWNS), mirror(&PAWNS_END)),
@@ -396,13 +365,10 @@ mod tests {
     const CORNERS: [(File, u8); 4] = [(File::A, 1), (File::H, 1), (File::A, 8), (File::H, 8)];
 
     /// The four squares a table scores lowest, in the order `white_table`
-    /// walks them.
-    ///
-    /// Four squares rather than the whole tie at the minimum, which is what
-    /// `extremes` gives. A hand written table put its four corners at one
-    /// number and a fit breaks that tie by a centipawn, so a test naming the
-    /// tie set fails on a re-tune while the shape it is about is intact.
-    /// Which four squares a table likes least is the durable statement.
+    /// walks them. Four squares rather than the whole tie at the minimum,
+    /// which `extremes` gives: a fit breaks a hand written table's tie by a
+    /// centipawn, and which four squares a table likes least is the durable
+    /// statement.
     fn worst_four(piece: Piece, half: fn(i32) -> i32) -> Squares {
         let mut squares = white_table(piece, half);
         squares.sort_by_key(|(file, rank, value)| (*value, *rank, *file as usize));
@@ -425,10 +391,8 @@ mod tests {
     /// packed pair.
     type Half = (&'static str, fn(i32) -> i32);
 
-    /// Both ends, since every piece has a table at each of them and a shape
-    /// test that walked one would say nothing about the other. The name is
-    /// for the failure message: a shape that moved is worth knowing which
-    /// half it moved in.
+    /// Both ends, since every piece has a table at each of them. The name is
+    /// for the failure message.
     const HALVES: [Half; 2] = [("midgame", mg_value), ("endgame", eg_value)];
 
     fn on_the_edge(file: File, rank: u8) -> bool {
@@ -436,31 +400,22 @@ mod tests {
     }
 
     /// The tables are written with the eighth rank first and the board indexes
-    /// a1 as zero, so it is easy to hand each colour the other one's table. Both
-    /// colours are then wrong together, which leaves the two of them still
-    /// mirroring each other and the evaluation still symmetric. Nothing but an
-    /// assertion about which way up a table is will notice, so these name the
-    /// squares rather than compare the colours.
-    ///
-    /// They name the squares and not the numbers. What a square is worth is
-    /// something a fit may move, and a pin on the number would fail every
-    /// re-tune while saying nothing about whether the table still meant what
-    /// it used to. What each table is for is the durable statement, and it is
-    /// the one worth failing on.
-    ///
-    /// White's squares alone: `the_two_colours_are_reflections_of_each_other`
-    /// walks every piece on every square, so black's follow from white's and
-    /// naming them here would only say the same thing twice.
+    /// a1 as zero, so it is easy to hand each colour the other one's table.
+    /// Both colours are then wrong together and the evaluation still
+    /// symmetric, so only an assertion about which way up a table is will
+    /// notice. These name the squares and not the numbers: what a square is
+    /// worth is something a fit may move, and a pin on the number would fail
+    /// every re-tune while saying nothing about whether the table still meant
+    /// what it did. White's squares alone, since
+    /// `the_two_colours_are_reflections_of_each_other` makes black's follow.
     #[test]
     fn a_white_pawn_is_worth_more_the_closer_it_gets_to_promoting() {
         let e = |rank| value(Piece::Pawn, Color::White, File::E, rank);
         assert!(e(7) > e(4) && e(4) > e(2), "{}, {}, {}", e(2), e(4), e(7));
     }
 
-    /// A pawn cannot stand on either back rank, so neither table says
-    /// anything about those sixteen squares and both leave them at nothing.
-    /// Sixteen of the seven hundred and sixty eight table entries have no
-    /// support in any corpus, and this is which ones.
+    /// A pawn cannot stand on either back rank, so those sixteen entries have
+    /// no support in any corpus and both tables leave them at nothing.
     #[test]
     fn a_pawn_scores_nothing_on_a_rank_it_cannot_stand_on() {
         for file in File::VARIANTS {
@@ -639,12 +594,8 @@ mod tests {
     }
 
     /// The endgame pawn table climbs toward promotion and the midgame one
-    /// does not, which is the whole of the difference between them.
-    ///
-    /// The table this arm started from said it by being a ramp: one number a
-    /// rank, the same on every file. The fit kept the climb and let the files
-    /// differ by a few centipawns around it, so what is asserted is the
-    /// rank's total across the files rather than the file being ignored.
+    /// does not. The fit let the files differ by a few centipawns around the
+    /// climb, so what is asserted is the rank's total across the files.
     #[test]
     fn a_pawn_is_worth_more_the_nearer_it_promotes_in_the_ending() {
         let rank_total = |half: fn(i32) -> i32, rank| {
@@ -663,8 +614,7 @@ mod tests {
                 rank_total(eg_value, rank - 1)
             );
         }
-        // and the ending pays for the advance more than the middlegame does,
-        // on every rank a pawn can stand on
+        // and the ending pays for the advance more than the middlegame does
         for rank in 2..=7 {
             assert!(
                 rank_total(eg_value, rank) > rank_total(mg_value, rank),
@@ -673,12 +623,10 @@ mod tests {
             );
         }
         // the middlegame is no climb at all: a pawn that has left the second
-        // rank has left the shelter of a castled king, and the table does not
-        // pay it for the step
+        // rank has left the shelter of a castled king
         assert!(rank_total(mg_value, 3) < rank_total(mg_value, 2));
-        // shelter in the middlegame, where the same rank is not one number:
-        // a pawn on d2 is held back to cover a castled king and one on a2 is
-        // not
+        // and the same rank is not one number there: a pawn on d2 is held
+        // back to cover a castled king and one on a2 is not
         assert_ne!(
             value(Piece::Pawn, Color::White, File::D, 2),
             value(Piece::Pawn, Color::White, File::A, 2)
@@ -686,15 +634,9 @@ mod tests {
     }
 
     /// The four pieces given an endgame table have one that says something,
-    /// however little. The fit found about two centipawns rms between each of
-    /// them and its midgame twin, which is small beside the pawn's nineteen
-    /// and the king's forty three, and a run that left one of the four an
-    /// exact copy would mean the vector never reached the file rather than
+    /// however little: a run that left one of the four an exact copy of its
+    /// midgame twin would mean the vector never reached the file rather than
     /// that the corpus had nothing to say.
-    ///
-    /// This replaces the pin that asked for the opposite. Until the fit the
-    /// four were copies entry for entry, which is what said the commit that
-    /// added them changed no evaluation.
     #[test]
     fn the_four_new_endgame_tables_no_longer_hold_their_midgame_numbers() {
         for piece in [Piece::Knight, Piece::Bishop, Piece::Rook, Piece::Queen] {
@@ -710,10 +652,8 @@ mod tests {
     }
 
     /// Each of the four is written out rather than aliased to its midgame
-    /// twin. `const KNIGHTS_END: [i16; 64] = KNIGHTS;` holds nearly the same
-    /// numbers, passes every test above, and moves both tables when one is
-    /// edited. Nothing at run time can tell the copy from the alias, so this
-    /// reads the source and asks whether the numbers are there.
+    /// twin. Nothing at run time can tell the copy from the alias, so this
+    /// reads the source.
     #[test]
     fn each_new_endgame_table_is_written_out_rather_than_aliased() {
         let source = include_str!("psqt.rs");
@@ -726,29 +666,15 @@ mod tests {
     /// Every piece reads its own two tables, in the order `table_index` asks
     /// for them.
     ///
-    /// Handing one piece's table to another is a change the tests above
-    /// mostly cannot see. A bishop's table and a queen's pass each other's
-    /// shape tests, since both are worst in the corners and best off the
-    /// edges, and so do three of the four endgame tables against each other.
-    /// While the four were copies of their midgame twins the copy pin caught
-    /// a swap between them, because a swapped pair stops matching its own
-    /// midgame half. The fit made the halves differ and that pin went with
-    /// it, so the eight tables of those four pieces had nothing left holding
-    /// them in their own rows.
-    ///
-    /// Which array a row names is a question about the source and not about
-    /// what any array holds, so this reads the source, the way the aliasing
-    /// test above does. It pins names rather than numbers, so a re-tune does
-    /// not move it, and so it says nothing about which numbers are in each
-    /// array. That is the test below.
-    ///
-    /// An exchange is not invisible at run time: it moves the evaluation, so
-    /// the bench pins and the uci session's node budget move with it. What
-    /// those cannot do is catch one in a commit that re-tunes, since a
-    /// re-tune rewrites them anyway. Of the 28 ways to exchange two of the
-    /// eight tables this fires on all 28, and on four of them it is the only
-    /// test in this file that fires: the four are a piece's own two halves
-    /// exchanged, which the test below cannot see either.
+    /// The shape tests mostly cannot see one piece handed another's table: a
+    /// bishop's and a queen's pass each other's, and so do three of the four
+    /// endgame tables. The bench pins would move, but a commit that re-tunes
+    /// rewrites them anyway. Which array a row names is a question about the
+    /// source, so this reads the source, the way the aliasing test does, and
+    /// pins names rather than numbers; which numbers are in each array is the
+    /// test below. Of the 28 ways to exchange two of the eight tables this
+    /// fires on all 28, and on the four that exchange a piece's own two
+    /// halves it is the only test in this file that does.
     #[test]
     fn every_piece_reads_its_own_two_tables() {
         const PIECES: [&str; 6] = ["PAWNS", "KNIGHTS", "BISHOPS", "ROOKS", "QUEENS", "KING"];
@@ -778,28 +704,17 @@ mod tests {
     }
 
     /// Each of the four keeps its own numbers, which the test above cannot
-    /// say. That one reads which array a row names; exchanging two arrays'
-    /// contents leaves every name where it was and passes it.
+    /// say: exchanging two arrays' contents leaves every name where it was.
     ///
-    /// What separates the eight is the fit itself. It moved each of the four
-    /// endgame tables about two centipawns from its midgame twin, so a
-    /// piece's two halves are nearer each other than either is to any of the
-    /// other ten tables. The closest pair of pieces is the bishop and the
+    /// The fit moved each endgame table about two centipawns from its midgame
+    /// twin, so a piece's two halves are nearer each other than either is to
+    /// any of the other ten tables. The closest pair is the bishop and the
     /// queen: the bishop's halves are 81 apart summed over the sixty four
-    /// squares, and the nearer of the two to any table of another piece is
-    /// 172 from it, so the margin is a factor of two rather than a
-    /// centipawn.
-    ///
-    /// A checksum of each table would catch more, and the comment on the
-    /// shape tests says why it is not what is wanted here: a pin on the
-    /// numbers fails every re-tune while saying nothing about whether the
-    /// table still means what it did, and a checksum recomputed by the
-    /// re-tune that carries an exchange blesses it. This holds of the fit's
-    /// own shape instead, so a re-tune leaves it standing.
-    ///
-    /// Of the 28 ways to exchange two of the eight tables it fires on 24. The
-    /// four it cannot see are a piece's own two halves exchanged, and the two
-    /// centipawns above are what says that is nearly no exchange at all.
+    /// squares, and the nearer of the two to any other piece's table is 172
+    /// from it. A checksum would catch more and is not wanted, for the reason
+    /// the shape tests give, and because a re-tune that carries an exchange
+    /// would recompute it and bless it. This fires on 24 of the 28 exchanges;
+    /// the four it cannot see are a piece's own two halves.
     #[test]
     fn each_of_the_four_stays_nearest_its_own_midgame_twin() {
         let entries = |piece, half: fn(i32) -> i32| -> Vec<i32> {

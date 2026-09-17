@@ -3,11 +3,10 @@
 
 //! What stands between each king and the board, and what that is worth.
 //!
-//! The term owns its counts, the masks they are read off, its weights, its
-//! fold and the memo the search hands it. All seven counts are read off the
-//! king's square, so a king move rewrites the side's whole reading and a pawn
-//! move changes it wherever the pawn stood. There is nothing here for
-//! `Accumulator::count` to add and take away a piece at a time.
+//! All seven counts are read off the king's square, so a king move rewrites
+//! the side's whole reading and a pawn move changes it wherever the pawn
+//! stood. There is nothing here for `Accumulator::count` to add and take away
+//! a piece at a time.
 
 use super::pawn_structure::files_of;
 use crate::board::{Board, ZOBRIST};
@@ -45,39 +44,32 @@ const fn king_files(square: u8) -> u8 {
 
 /// The three squares `ahead` ranks in front of a king on `square`, on the
 /// files [`king_files`] names, and empty where that rank is off the board.
-///
-/// `forward` is the direction the side's pawns push, so a white king is read
-/// up the board and a black king down it. A king that has walked far enough
-/// up is left with nothing in front of it, which is the answer rather than a
-/// case to rule out: a king off its own back ranks has no shelter, and what
-/// that is worth is for the weights to say.
+/// `forward` is the direction the side's pawns push. A king that has walked
+/// far enough up is left with nothing in front of it, which is the answer
+/// rather than a case to rule out: what a king with no shelter is worth is
+/// for the weights to say.
 const fn shelter_rank(square: u8, forward: i8, ahead: i8) -> u64 {
     let rank = (square / 8) as i8 + forward * ahead;
     if rank < 0 || rank > 7 {
         return 0;
     }
-    // a file bit and a square index share their low three bits, so the byte
-    // shifted to the rank is the three squares on it
+    // a file bit and a square index share their low three bits
     (king_files(square) as u64) << (rank * 8)
 }
 
 /// The squares in front of each king, and which files it stands behind.
-///
 /// `ahead` is indexed by how many ranks forward, then by `Color`'s
-/// discriminant the way the accumulator's material is, then by the king's
-/// square. The colour is an index because the ranks in front of a king run
-/// opposite ways for the two; the files do not, and one entry serves both.
-///
-/// The same three masks serve both sides of the term. Read against this side's
-/// pawns they are the cover the king has, and against the other side's they
-/// are the pawns coming for it.
+/// discriminant, then by the king's square; the ranks in front of a king run
+/// opposite ways for the two colours and the files do not. Read against this
+/// side's pawns the masks are the king's cover, and against the other side's
+/// the storm.
 struct Masks {
     ahead: [[[u64; 64]; 2]; RANKS_AHEAD],
     files: [u8; 64],
 }
 
 impl Masks {
-    /// Built at compile time, the way the attack masks in `board` are.
+    /// Built at compile time.
     const fn new() -> Self {
         let mut masks = Masks {
             ahead: [[[0; 64]; 2]; RANKS_AHEAD],
@@ -106,55 +98,33 @@ static MASKS: Masks = Masks::new();
 /// read from.
 ///
 /// Fitted 2026-09-12 by `scripts/tune.py` over the whole archived strength
-/// run: 28,675 games (27,133 at 10+0.1, 1,500 at 30+0.3 and 42 at 2+0.02),
-/// whose 3,711,074 post-book plies gave 3,536,193 positions and 1,623,149
-/// quiet rows in 28,618 of them, extracted by `arche terms` at 4e5bd7d, with
-/// K held at 1.2071 and the games split 17,192 that trained, 5,654 that chose
-/// the ridge of 1e-8 and 5,772 that were sealed. The 768 table entries, the
-/// six material values and the eight mobility weights were all held where
-/// they stand, so these fourteen are the only thing that moved. Every number
-/// here is of the rounded vector that ships. The selection group scores
-/// 0.090395 at zero and 0.089746 at these, a paired difference of -0.000649
-/// against a standard error of 0.000116 over its 5,654 games, at a design
-/// factor of 3.9. That is outside its interval, which the mobility fit's
-/// reading was not.
-///
-/// The sealed group was opened once, after the games had accepted this
-/// vector, over 5,772 games and 324,273 positions no fit and no ridge choice
-/// had read. It scores 0.090914 at zero and 0.090377 at these, a paired
-/// difference of -0.000537 against a standard error of 0.000118 at a design
-/// factor of 3.9. That is outside its interval, and 0.68 standard errors
-/// from the selection group's reading, so the two groups agree. The piece
-/// square fit's two did not.
+/// run, 28,675 games and 1,623,149 quiet rows extracted by `arche terms` at
+/// 4e5bd7d, K held at 1.2071, every other weight held, at a ridge of 1e-8.
+/// The sealed group, opened once after the games had accepted this vector,
+/// scores 0.090914 at zero and 0.090377 at these, a paired difference of
+/// -0.000537 against a standard error of 0.000118 over its 5,772 games at a
+/// design factor of 3.9, which is 0.68 standard errors from the selection
+/// group's -0.000649. Commits d84f36d and 577c2e4 hold the rest.
 ///
 /// Not one of the fourteen rounded to nothing, so every count is priced and
 /// none can be left uncounted at the leaf the way `mobility::SCORED_KINDS`
 /// leaves a mobility kind. [`Cache`] is what pays for the seven instead.
 ///
-/// Two of the storm's three signs are not what the term was named for. An
-/// enemy pawn one rank in front of the king reads 11 and 35, and three ranks
-/// out reads 14, so the fit likes the near storm where the term expected it
-/// to fear it, and only the middle rank is negative. Our own cover is worth
-/// 21 in the midgame and -26 in the ending, which reads as a king that wants
-/// to be active rather than covered. The corpus is the first place to look
-/// and not the term: 66.4% of its appearances have six or fewer pieces left
-/// on the board and 6.0% have thirteen or more of the fourteen, so the
-/// midgame half of the taper, which is the half king safety is about, is
-/// fitted on the thinnest slice of the games. The count with the oddest
-/// weight is also the thinnest supported: an enemy pawn one rank in front of
-/// a king carries a coefficient in 4.65% of the rows against 47.83% for the
-/// near cover, because a king usually takes such a pawn and the position is
-/// then not quiet. The loss says these fourteen score the corpus better than
-/// zero did, and that is all it says.
+/// Two of the storm's three signs are not what the term was named for: an
+/// enemy pawn one rank in front of the king reads 11 and 35 and three ranks
+/// out reads 14, and our own cover reads -26 in the ending. The corpus is the
+/// first place to look: 66.4% of its appearances have six or fewer pieces
+/// left and 6.0% thirteen or more, so the midgame half is fitted on the
+/// thinnest slice of the games, and the near storm count carries a
+/// coefficient in 4.65% of the rows against 47.83% for the near cover,
+/// because a king usually takes such a pawn and the position is then not
+/// quiet. docs/ROADMAP.md carries this as a known limitation.
 ///
-/// A side's seven counts come to eighteen at the very most. Five of them are
-/// at most three pawns each, and the other two share three files between them
-/// rather than reaching three each. Against these weights the largest total
-/// any legal set of counts reaches on one side is 168 in the midgame half and
-/// -207 in the ending half, so a boardful of both colours leaves the sixteen
-/// bits `pack` gives each half a long way off. Six of the fourteen are past
-/// single figures, which the paragraph here said they would not be while they
-/// were all zero.
+/// A side's seven counts come to eighteen at most: five are at most three
+/// pawns each, and the two file counts share three files between them.
+/// Against these weights the largest total one side reaches is 168 in the
+/// midgame half and -207 in the ending half, a long way inside the sixteen
+/// bits `pack` gives each half.
 static SHELTER: [i32; COUNTS] = [
     pack(10, -11),
     pack(21, -26),
@@ -165,28 +135,20 @@ static SHELTER: [i32; COUNTS] = [
     pack(14, -6),
 ];
 
-/// The weight of one of the seven counts, as the packed pair. The tuner's
-/// seam asks through [`super::TERMS`], so that a slot names the live weight
-/// rather than a copy of it, the way it reads the tables.
+/// The weight of one count, as the packed pair, read through
+/// [`super::TERMS`] so that a slot names the live weight rather than a copy.
 pub(crate) fn weight(index: usize) -> i32 {
     SHELTER[index]
 }
 
 /// What this term depends on and nothing else: both sides' pawns and both
-/// kings' squares.
-///
-/// [`counts_of`] reads the pawn boards and the two king squares and nothing
-/// else, so two positions whose pawns and kings agree agree on every count of
-/// it whatever else has moved. This key stands in for that agreement rather
-/// than being it: two positions can share it and differ, which takes a
-/// collision across the whole sixty four bits. The pawn key already hashes the
-/// pawns of both colours and is kept in step move by move, so this is that key
-/// with the two kings folded in, from the same zobrist table the position key
-/// uses.
+/// kings' squares, as `Board::pawn_key` with the two kings folded in from the
+/// same zobrist table the position key uses. Two positions can share it and
+/// differ only by a collision across the whole sixty four bits.
 ///
 /// Composed here rather than maintained beside `Board::pawn_key`, because a
-/// king move would then have to write it and the cost of this is two loads and
-/// two xors at the one place that asks.
+/// king move would then have to write it, and this costs two loads and two
+/// xors at the one place that asks.
 #[inline]
 pub(crate) fn key(board: &Board) -> u64 {
     board.pawn_key
@@ -194,42 +156,30 @@ pub(crate) fn key(board: &Board) -> u64 {
         ^ ZOBRIST.get_piece_key(board.king_index(Color::Black), Piece::King, Color::Black)
 }
 
-/// What stands between this side's king and the board, as seven counts in the
-/// order [`COUNTS`] names them: this side's pawns one rank in front of the
-/// king and two ranks in front, how many of the king's three files hold no
-/// pawn of either colour, how many hold an enemy pawn and none of this side's,
-/// and then the enemy pawns one, two and three ranks in front of the king.
+/// What stands between this side's king and the board, as the seven counts
+/// [`COUNTS`] names, all read off the three files the king stands behind.
 ///
-/// All seven are read off the three files the king stands behind, which
-/// [`king_files`] steps in at the two corners so that the counts mean the
-/// same thing on every square. Pawns and nothing else: a piece in front of
-/// the king shelters it too, but a term that pays for one pays a piece to
-/// sit still, and the piece square tables already hold an opinion about
-/// where a piece belongs. A pawn is the part of the cover the king cannot
-/// get back.
+/// Pawns and nothing else: a piece in front of the king shelters it too, but
+/// a term that pays for one pays a piece to sit still, and the piece square
+/// tables already hold an opinion about where a piece belongs. The last three
+/// are the storm, the same masks read against the other side's pawns: a pawn
+/// of theirs on g3 is a lever and not the absence of cover, so the two are
+/// counted apart and each rank apart from the next. Three ranks is as far as
+/// it is followed, which for a king at home reaches the fourth rank.
 ///
-/// The last three are the storm, and they are the same masks read against
-/// the other side's pawns. A pawn of ours on g3 is cover and a pawn of
-/// theirs on g3 is not the absence of cover, it is a lever, so the two are
-/// counted apart and each rank apart from the next: how far the storm has
-/// come is most of what it is worth, and the weights are where that is
-/// said. Three ranks is as far as it is followed, which for a king at home
-/// reaches the fourth rank.
+/// The two file counts overlap the two pawn counts and are kept apart because
+/// they are different knowledge: a missing g pawn and a g pawn pushed to g4
+/// both leave the near count short, and only the first opens the file to a
+/// rook.
 ///
-/// The two file counts overlap the two pawn counts, since a file with no
-/// pawn of ours on it adds nothing to either of those. They are kept apart
-/// because they are different knowledge: a missing g pawn and a g pawn
-/// pushed to g4 both leave the near count short, and only the first opens
-/// the file to a rook.
+/// Nothing is gated on the king standing at home. A king that has walked up
+/// the board has no rank in front of it inside the masks and counts nothing,
+/// so the term fades rather than falling off a cliff the search could step
+/// over.
 ///
-/// Nothing here is gated on the king standing at home. A king that has
-/// walked up the board has no rank in front of it inside the masks and
-/// counts nothing, so the term fades rather than falling off a cliff the
-/// search could step over.
-///
-/// Both the evaluation and the tuner's walk read this, so the identity
-/// between them cannot see a wrong count here. What pins it is the hand counts
-/// in the tests below, the way the mobility counts are pinned.
+/// The evaluation and the tuner's walk both read this, so the identity
+/// between them cannot see a wrong count here; the hand counts in the tests
+/// below are what pin it.
 #[inline]
 pub(crate) fn counts_of(board: &Board, color: Color) -> [i32; COUNTS] {
     let masks = &MASKS;
@@ -271,14 +221,10 @@ pub(crate) fn fold(board: &Board) -> i32 {
     fold_with(board, &SHELTER)
 }
 
-/// The same fold against weights named by the caller.
-///
-/// The live weights are the fit's now, and the two halves of every one of
-/// them differ, so the sign of this term, the order of the seven counts and
-/// the packing all show in an evaluation the engine prints and in the rows
-/// the tuner's walk states. The tests still supply weights of their own
-/// through here, because what they pin is the fold rather than the fit: a
-/// permuted [`SHELTER`] would be a different evaluation and not a wrong one.
+/// The same fold against weights named by the caller. The tests supply
+/// weights of their own because what they pin is the fold rather than the
+/// fit: a permuted [`SHELTER`] would be a different evaluation and not a
+/// wrong one.
 #[inline]
 fn fold_with(board: &Board, weights: &[i32; COUNTS]) -> i32 {
     let white = counts_of(board, Color::White);
@@ -294,61 +240,49 @@ fn fold_with(board: &Board, weights: &[i32; COUNTS]) -> i32 {
 /// a mask rather than a remainder.
 ///
 /// Eight thousand entries at sixteen bytes is a hundred and twenty eight
-/// kilobytes, which is past the first level cache and inside the second.
-/// The size was measured rather than reasoned about. Callgrind over the
-/// bench with the cache simulated, at eleven, twelve, thirteen and fourteen
-/// bits, reads 3,968,905,639, 3,958,897,319, 3,950,063,019 and 3,943,552,801
-/// instructions against last level misses of 284,996, 285,117, 286,191 and
-/// 292,291. Each bit buys fewer instructions than the one before it and the
-/// misses are flat until fourteen, where they turn up by six thousand. So
-/// this is the last size the memory does not notice, and the whole range is
-/// within two thirds of a percent of instructions: the constant is not
-/// load bearing and a later working set can move it.
+/// kilobytes, past the first level cache and inside the second. Measured with
+/// callgrind over the bench, cache simulated, at eleven, twelve, thirteen and
+/// fourteen bits (066784c): 3,968,905,639, 3,958,897,319, 3,950,063,019 and
+/// 3,943,552,801 instructions against last level misses of 284,996, 285,117,
+/// 286,191 and 292,291. Thirteen is the last size the memory does not
+/// notice, and the whole range is within two thirds of a percent of
+/// instructions, so the constant is not load bearing and a later working set
+/// can move it.
 const CACHE_BITS: usize = 13;
 pub(super) const CACHE_SLOTS: usize = 1 << CACHE_BITS;
 
-/// One remembered shelter score, under the key that decides it.
-///
-/// The whole key is kept rather than the bits the index does not use, so a
-/// hit is a hit on the position's pawns and kings and not on a tag that
-/// happens to agree. A wrong hit here would be a silently wrong evaluation,
-/// which is the one error a search does not report, and sixty four bits of
-/// key costs four bytes against the alternative.
+/// One remembered shelter score, under the whole key rather than the bits
+/// the index does not use, so a hit is a hit on the position's pawns and
+/// kings and not on a tag that happens to agree. A wrong hit would be a
+/// silently wrong evaluation, and the whole key costs four bytes.
 #[derive(Copy, Clone)]
 struct Entry {
     key: u64,
     packed: i32,
 }
 
-/// The king shelter, remembered by what it depends on.
-///
-/// The term reads both sides' pawns and the two king squares and nothing
-/// else, so a position that agrees with a remembered one on those scores the
-/// same however its pieces stand. Most moves in a search are piece moves,
-/// which leave every one of those alone, so the score computed at one leaf
-/// answers a great many of the leaves after it.
+/// The king shelter, remembered by what it depends on. Most moves in a search
+/// are piece moves, which leave the pawns and the kings alone, so the score
+/// computed at one leaf answers a great many of the leaves after it.
 ///
 /// Direct mapped and never cleared. An entry is only ever read against the
 /// key that wrote it, so a stale one is a miss rather than a wrong answer,
-/// and a search that begins with the last search's entries begins with a warm
-/// cache. That is also what leaves the node counts alone: the cache changes
-/// how a score is arrived at and not what it is, so the counts are the ones
-/// the weights alone produce.
+/// and a search begins with the last search's entries warm. The cache changes
+/// how a score is arrived at and not what it is, so the node counts are the
+/// ones the weights alone produce.
 ///
 /// Owned by the searcher rather than by the board, because it is scratch and
-/// not position. A board carries what it would take to undo a move and
-/// compares equal to another board holding the same position; a cache does
-/// neither, and one thread's cache is its own.
+/// not position: a board compares equal to another holding the same position,
+/// and one thread's cache is its own.
 pub(super) struct Cache {
     entries: Box<[Entry]>,
 }
 
 impl Default for Cache {
     fn default() -> Self {
-        // an empty entry is key zero holding a score of zero, so a position
-        // whose pawns and kings xor to nothing would read it as its own and
-        // take nothing from it. That is a sixty four bit coincidence, which
-        // is the same one a wrong hit needs anywhere else in the table
+        // an empty entry is key zero holding zero, so a position whose pawns
+        // and kings xor to nothing would read it as its own: the same sixty
+        // four bit coincidence a wrong hit needs anywhere else in the table
         Cache {
             entries: vec![Entry { key: 0, packed: 0 }; CACHE_SLOTS].into_boxed_slice(),
         }
@@ -381,13 +315,9 @@ mod tests {
     use crate::psqt::{eg_value, mg_value, pack};
     use pretty_assertions::assert_eq;
 
-    /// A remembered score is read back rather than recomputed, which is the
-    /// whole point of the cache and is not visible in what it answers.
-    ///
-    /// Asked twice for one position, the second answer comes from the entry
-    /// the first wrote. There is no counter to read, so this says it the way
-    /// a caller could: the entry the key lands on holds the score after the
-    /// first call, and holds it under that key and no other.
+    /// A remembered score is read back rather than recomputed, which is not
+    /// visible in what the cache answers: the entry the key lands on holds the
+    /// score after the first call, under that key and no other.
     #[test]
     fn a_score_is_remembered_under_the_key_that_wrote_it() {
         let board = Board::from_fen(fens::MIDDLEGAME).unwrap();
@@ -401,11 +331,9 @@ mod tests {
         assert_eq!(cache.get(&board), first);
     }
 
-    /// The key is the pawn key with the two kings folded in, which is what
-    /// the cache is keyed on. What the term reads is the pawns and the two
-    /// king squares, so a piece that is neither has to leave it alone and
-    /// either king moving has to move it. A key that missed a king would hand
-    /// one position's shelter to another.
+    /// A piece that is neither a pawn nor a king leaves the key alone, and
+    /// either king moving moves it. A key that missed a king would hand one
+    /// position's shelter to another.
     #[test]
     fn the_shelter_key_follows_the_pawns_and_the_two_kings() {
         let bare = Board::from_fen("4k3/pppppppp/8/8/8/8/PPPPPPPP/4K3 w - - 0 1").unwrap();
@@ -428,17 +356,10 @@ mod tests {
         assert_ne!(key(&bare), key(&pushed));
     }
 
-    /// The counts by hand, square by square, because nothing else pins them.
-    /// The tuner's identity folds a row against the live weights, and `eval`
-    /// and the tuner's walk read the same helper, so the two sides of the
-    /// identity move together whatever the helper answers. These cases are the
-    /// only check this term has.
-    ///
-    /// Each case names what the count is made of, in the order the helper
-    /// returns them: our pawns one rank ahead and two, the king's files that
-    /// hold no pawn at all, the ones that hold an enemy pawn and none of ours,
-    /// and then the enemy pawns one, two and three ranks ahead. The other king
-    /// stands out of the way.
+    /// The counts by hand, because nothing else pins them: `eval` and the
+    /// tuner's walk read the same helper, so the identity between them moves
+    /// with whatever it answers. Each case names the seven counts in the
+    /// helper's order; the other king stands out of the way.
     #[test]
     fn a_king_shelters_behind_what_a_hand_count_says_it_does() {
         for (fen, counts, why) in [
@@ -668,16 +589,9 @@ mod tests {
         pack(5, 19),
     ];
 
-    /// What the fold does with weights that are not the shipped ones.
-    ///
-    /// The shipped weights would do here now that they are not zero. Weights
-    /// of this test's own are kept anyway, because the shipped ones are the
-    /// fit's and will move again: a pin written against them would have to
-    /// be rewritten by every refit, and what it is pinning is the fold. So
-    /// this hands the fold seven pairs that differ from each other at both
-    /// ends and asserts the packed pair against the arithmetic: white's count
-    /// less black's, count by count, each half of the pair summed on its
-    /// own.
+    /// What the fold does with weights that are not the shipped ones, which
+    /// are the fit's and will move again: white's count less black's, count
+    /// by count, each half of the pair summed on its own.
     #[test]
     fn the_shelter_fold_reads_white_less_black_count_by_count() {
         let board = Board::from_fen(SHELTERED).unwrap();

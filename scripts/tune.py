@@ -16,79 +16,50 @@ that pair is for:
         --weights fit.json --log final.log
     python3 scripts/tune.py curve --terms rows.txt --corpus corpus.epd --out curve.json
 
-`loss` is the triage instrument. A weight vector is scored over the whole
-corpus in one matrix-vector product, which is milliseconds, so a candidate can
-be killed before it costs a match. `cv` is how one way of fitting is compared
-with another: it refits over five folds of whole games and scores every row
-under the fold that held its game out. `fit` is the tuner, and it chooses its
-ridge on the selection group. `final` opens the sealed group: it scores a
-frozen vector there once, and the log it appends to is what refuses a second
-opening of the same games. `curve` asks whether the corpus is big enough, by
-refitting on draws of the training pairs at five sizes and reading every fit
-on the same selection group.
+`loss` scores a weight vector over the whole corpus in one matrix-vector
+product. `cv` compares ways of fitting by refitting over five folds of whole
+games. `fit` is the tuner, and chooses its ridge on the selection group.
+`final` opens the sealed group once against a frozen vector, and the log it
+appends to refuses a second opening of the same games. `curve` refits on draws
+of the training pairs at several sizes, to ask whether the corpus is big
+enough.
 
-The unit of all of it is the game and not the position. Positions inside one
-game share a label and are a move apart, so a split that separates positions
-still leaves a held-out row's answer sitting beside it in the training set, and
-an interval taken over positions counts a game's worth of rows as a game's
-worth of evidence. Neither is a detail. Splitting on the position rather than
-the game left 1,805 of the corpus's 1,809 games with rows on both sides and
-made the interval about four times too narrow, and it chose a ridge two orders
-of magnitude off the one whole games choose.
+The unit is the game and not the position. Positions inside one game share a
+label and are a move apart, so a split on positions leaves a held-out row's
+answer beside it in the training set, and an interval over positions counts
+one game's evidence many times. Measured on the 1,809 game corpus this was
+written for, a split on positions left 1,805 games with rows on both sides,
+made the interval about four times too narrow, and chose a ridge two orders
+of magnitude off the one whole games choose; `groups.py` has the rest of that
+measurement.
 
-There are three groups and not two. Three fifths of the games train, a fifth
-chooses the ridge, and a fifth is not read here at all. The last is what makes
-a later coverage claim mean anything: a group a fit has been ranked against
-has already had the labels influence it, so the claim has to be made on a group
-nothing has looked at. That is not a rule to remember. The calibration rows are
-not in the matrices the loss and the fit read, so no command that fits or
-scores can reach a calibration row. `final` can, by design and once: it takes a vector
-already quantized to the integers that would ship, writes the corpus, its
-sealed games, the extraction and the vector it was given into a log by
-checksum before it reads anything, and refuses a corpus or a set of sealed
-games the log already names. A vector revised after that reading needs sealed
-games this corpus did not hold, and the same games under a new filename or a
-re-extraction are not that.
+There are three groups: three fifths of the games train, a fifth chooses the
+ridge, and a fifth is sealed. The calibration rows are not in the matrices the
+loss and the fit read, so no command but `final` can reach one. `final` takes
+a vector already quantized to the integers that would ship, logs the corpus,
+the sealed games, the extraction and the vector by checksum before it reads
+anything, and refuses a corpus or a set of sealed games the log already names.
+No sealed game's result reaches a label a fit sees either: `build_corpus.py`
+labels a position from its own group's games alone and drops the appearances
+in other groups rather than merging them.
 
-No command but `final` reads a sealed row, and no sealed game's result reaches
-a label a fit sees. The rows are held apart because they are not in the matrices at
-all, and the labels because `build_corpus.py` labels a position from its own
-group's games alone: a position that games in different groups reached belongs
-to the group of the lowest key, its result and its count are that group's
-appearances, and the appearances elsewhere are dropped rather than merged in.
-What the dropping costs is those appearances and a little weight on the
-positions common enough to recur, which is the price of a group that means what
-it says.
-
-The objective is occurrence weighted. A unique position carries the weight of
-how many times the corpus reached it, which is what the corpus's `count`
-operand says, and every loss, interval and share printed here reads it. The
-corpus is scored on the distribution the engine will run on rather than on the
-distribution deduplication leaves behind.
+The objective is occurrence weighted: a unique position carries the weight of
+how many times the corpus reached it, which is the corpus's `count` operand.
 
 Nothing here knows how to evaluate a position. The engine states the
-coefficients and states the weights, and `reconstruct` below folds one row back
-against the other and has to give the integer the row says the engine gave it.
-That is checked on every row read, so a corpus this cannot rebuild stops the
-run rather than being fitted.
+coefficients and the weights, `reconstruct` folds one against the other and
+has to give the integer the row says the engine gave, and that is checked on
+every row read. Nor does it know where the weights stand: `Layout` reads the
+slots off the layout line the run prints. What stays here is `BOUNDS`, the
+price of each term against the packed halves.
 
-Nor does it know where the weights stand. The run prints a layout line naming
-every block of the vector and how wide it is, and `Layout` reads its slots off
-that, so an extraction from an engine whose terms this file has no bounds for
-is refused by name rather than fitted on to the wrong weights. What stays here
-is the price of each term: a term the run names and `BOUNDS` does not is one
-nobody has screened against the packed halves yet.
+Three details of the arithmetic a python reader gets wrong: the divide
+truncates toward zero where `//` floors, the material is added outside the
+divide, and the phase is capped before the coefficients are written. Each has
+a test in `scripts/tests/test_tune.py`.
 
-Three details of that arithmetic are the ones a python reader gets wrong. The
-divide truncates toward zero where `//` floors, and on a negative numerator
-that does not divide evenly the two differ by a centipawn. The material is
-added outside the divide rather than scaled into it. And the phase is capped
-before the coefficients are written, which the engine has already done by the
-time a row is printed. Each has a test in `scripts/tests/test_tune.py`.
-
-What the numbers are not: there is no loss-to-elo mapping here and this does
-not print one. The job is to rank candidates and to reject the ones that cannot
-help. The sprt says elo.
+There is no loss-to-elo mapping here. The job is to rank candidates and reject
+the ones that cannot help; the sprt says elo.
 """
 
 import argparse
@@ -103,36 +74,23 @@ from pathlib import Path
 import numpy as np
 from groups import CALIBRATION, group_of, sealed_pairs
 
-# The three blocks of the vector that are not leaf terms, in the order the
-# layout line prints them. Each is a run of slots and not a width per half of
-# the taper: the midgame table entries, the endgame ones, then the material
-# values.
+# The blocks of the vector that are not leaf terms, in the order the layout
+# line prints them. Each is a run of slots, not a width per half of the taper.
 FIXED_BLOCKS = ("midgame", "endgame", "material")
 
-# What one side can show of each of a term's counts, which is what a weight is
-# priced against in bounds_hold. A term the layout names and this does not is
-# refused rather than fitted: a new term has to be priced before a fit can say
-# whether its weights stay inside the packed halves.
+# The most one side can show of each of a term's counts, which is what a
+# weight is priced against in bounds_hold. A term the layout names and this
+# does not is refused rather than fitted. One entry per count, so a term that
+# grows a count is refused too.
 #
-# Mobility is the most one knight, one bishop, one rook and one queen can each
-# cover, the twenty seven being a queen in the middle of an empty board. The
-# shelter is three pawns on each of the five ranks counted and three files,
-# which the open and half open counts share rather than reach each. The pawn
-# structure is eight, since that is how many pawns a side has; charging all
-# eight counts at eight is far past any position, and the looseness is on the
-# safe side.
-#
-# The king attack zone is the most one piece of each kind can show on the eight
-# square ring of a centred king. A knight's eight targets lie on a ring of
-# Chebyshev radius two and at most two of them fall in a three by three block,
-# so two is exact. A bishop reaches at most two as well, since a diagonal
-# through the block runs into the king's square and stops there, and is given
-# three. A rook on d3 against a king on e4 reaches d4, d5, e3 and f3, so four is
-# exact. A queen on g5 against a king on e4 reaches f5, e5, d5, f4 and e3, and
-# is given six. A side with two knights shows more, as it does for mobility.
-#
-# One entry per count rather than one per term, so a term that grows a count
-# arrives here with a width this file does not cover and is refused too.
+# Mobility: one knight, one bishop, one rook and one queen, the twenty seven
+# being a queen in the middle of an empty board. Shelter: three pawns on each
+# of the five ranks and three files, which the open and half open counts
+# share. Pawn structure: eight pawns a side, charged on every count, which is
+# loose on the safe side. King attack zone: the most one piece of each kind
+# can show on the eight squares round a centred king (a knight reaches two, a
+# bishop two and is given three, a rook four, a queen five and is given six).
+# A side with two knights shows more, as it does for mobility.
 BOUNDS = {
     "mobility": (8, 13, 14, 27),
     "shelter": (3,) * 7,
@@ -143,19 +101,12 @@ BOUNDS = {
 
 class Layout:
     """Where every block of the weight vector stands, read off the layout line
-    the run printed rather than written out here.
+    the run printed. A layout kept here would parse any extraction and price
+    its coefficients against weights that stand somewhere else.
 
-    The engine lays its slots out from one list of terms and states the result
-    on that line, so this file learns the layout from the extraction it is
-    reading rather than keeping one of its own. A layout kept here is the
-    failure this seam is here to prevent. Such a run parses and every slot it
-    names exists, so nothing about it looks wrong while its coefficients are
-    priced against weights that stand somewhere else.
-
-    A term's width is the counts it is measured in per side and per half of
-    the taper, so it takes twice that in slots, its midgame half first. The
-    three fixed blocks are stated as slots because neither half of the tables
-    is a half of anything.
+    A term's width is its counts per side per half of the taper, so it takes
+    twice that in slots, midgame half first. The fixed blocks are stated as
+    slots.
     """
 
     def __init__(self, widths):
@@ -203,10 +154,8 @@ class Layout:
         return cls(widths)
 
     def is_material(self, slot):
-        """Whether a slot is one of the material values, which are the only
-        weights added outside the taper's divide. Everything else is inside
-        it, the tables and every leaf term alike, which is what
-        `Accumulator::score` does with them."""
+        """Whether a slot is a material value, which are the only weights
+        `Accumulator::score` adds outside the taper's divide."""
         start = self.start["material"]
         return start <= slot < start + self.widths["material"]
 
@@ -217,58 +166,43 @@ class Layout:
         return slice(self.start[name], self.start[name] + size)
 
     def check(self, count, what):
-        """Refuse a vector of any length but this run's, and say so.
-
-        The layout is the run's rather than this file's now, so a length that
-        does not match is a vector from a different engine or a different
-        extraction. Which one it was is no longer guessable from the length,
-        and it does not need to be: the line names its terms, so a run this
-        file cannot fit has already been refused by name.
-        """
+        """Refuse a vector of any length but this run's: it is from another
+        engine or another extraction."""
         if count != self.slots:
             raise ValueError(f"{what} of {count}, expected {self.slots}")
 
 
-# What the opening's pieces come to on the scale the taper is read at, which is
-# what the piece square half of a row divides by.
+# What the opening's pieces come to on the taper's scale, which the piece
+# square half of a row divides by.
 TOTAL_PHASE = 24
 
 # The pieces the phase buckets count: neither pawns nor kings, both colours.
 PIECES_COUNTED = "nbrqNBRQ"
 
-# The buckets the game-corpus report stratified by, and the harness after it.
+# The buckets the game-corpus report stratified by.
 BUCKETS = ("0-6", "7-12", "13+")
 
-# How many folds a cross validated comparison uses. Five, so each fit reads
-# four fifths of the games and every row is scored once.
 FOLDS = 5
 
-# The fields of a fen: the board, the side to move, the castling rights, the
-# en passant square and the two clocks. What a row's reader counts back from.
+# The fields of a fen, which a row's reader counts back from.
 FEN_FIELDS = 6
 
-# What the run's header line opens with, in the two shapes `Report`'s
-# `Display` writes it: the bench's own suite reads as absent and any other
-# file is named. Matched in full rather than on the word alone, because an id
-# can open with that word too and a row skipped for looking like a header
-# would leave the corpus a position short with nothing said about it.
+# What the header line opens with, in the two shapes `Report`'s `Display`
+# writes it. Matched in full rather than on the first word, because an id can
+# open with that word too.
 HEADERS = ("terms positions ", "terms epd ")
 
 # The counts the header ends with, in the order `Report`'s `Display` writes
-# them. Read from the right hand end for the same reason a row is: the suite in
-# the middle of the line is a file name and can hold anything, and the counts
-# at the end cannot.
+# them, read from the right because the suite name in the middle can hold
+# anything.
 #
-# `drawn` is the one that has to be here. A header without it was printed by an
-# engine whose evaluation had no drawn material rule, so its rows were
-# extracted before the rule and a fit over them would fit an evaluation the
-# engine no longer runs. This file cannot tell which of those rows the rule
-# would have turned away without holding a second copy of the rule, which the
-# seam forbids, so it refuses the extraction instead.
+# `drawn` is the one that has to be here. A header without it was printed by
+# an engine with no drawn material rule, and a fit over its rows would fit an
+# evaluation the engine no longer runs. This file cannot find those rows
+# without a second copy of the rule, so it refuses the extraction.
 HEADER_COUNTS = ("positions", "in_check", "unsettled", "drawn", "kept")
 
-# What the layout line opens with. An extraction that carries no such line is
-# refused, and `no_layout` says why.
+# What the layout line opens with.
 LAYOUT = "layout "
 
 
@@ -288,13 +222,8 @@ def check_header(line):
 
 
 def no_layout(why):
-    """Why an extraction with no layout line is refused rather than read.
-
-    The header says what the run turned away and the layout line says where
-    its weights stand. A run that prints the first and not the second was
-    printed by an engine older than the line, so this file would have to
-    assume a layout for it, which is the duplication the line was added to end.
-    """
+    """Why an extraction with no layout line is refused: it was printed by an
+    engine older than the line, and this file would have to assume a layout."""
     return (
         f"a terms run whose header carries no layout line ({why}): it was printed "
         "by an engine that states no layout, so where its weights stand "
@@ -304,8 +233,8 @@ def no_layout(why):
 
 def trunc_div(numerator, denominator):
     """Rust's integer `/`, which truncates toward zero where python's `//`
-    floors. On a negative numerator that does not divide evenly the two differ
-    by one, which is a centipawn of evaluation."""
+    floors; on a negative numerator that does not divide evenly the two differ
+    by a centipawn."""
     quotient = abs(numerator) // denominator
     return quotient if numerator >= 0 else -quotient
 
@@ -329,22 +258,17 @@ def reconstruct(coefficients, weights, layout):
 
 
 def fold_of(key, folds=FOLDS):
-    """Which fold a game falls in, by the second byte of its key. Whole games,
-    for the same reason the groups are whole games.
-
-    The second byte and not the first, because the first is what `groups.py`
-    put the game in its group by. Folding on it would make one fold the
-    selection group and leave another empty.
-    """
+    """Which fold a game falls in, by the second byte of its key. The first
+    byte is what `groups.py` assigns the group by, and folding on it would
+    make one fold the selection group and leave another empty."""
     if len(key) < 4:
         raise ValueError(f"a game key that is no sha256: {key!r}")
     return int(key[2:4], 16) % folds
 
 
 def phase_bucket(fen):
-    """How many pieces that are neither pawns nor kings the position holds,
-    as one of three buckets. Counted off the fen's board field, which is a
-    label for reading the loss by and not an opinion about the position."""
+    """How many pieces that are neither pawns nor kings the position holds, as
+    one of three buckets."""
     board = fen.split(" ", 1)[0]
     pieces = sum(board.count(piece) for piece in PIECES_COUNTED)
     if pieces <= 6:
@@ -357,21 +281,13 @@ def phase_bucket(fen):
 def split_row(words):
     """The fields of one `arche terms` row, read from its right hand end.
 
-    A row is `id eval phase n slot:coefficient... fen`, and both ends of it
-    can hold spaces. A fen is six fields, and an epd id is whatever the file
-    put in the quotes: the bench's own suite names positions "ruy lopez" and
-    "king and pawn", and a line that names no id is called by its own fen, so
-    an id can be six fields itself. So the fields are found from the end whose
-    width is fixed. The fen is the last six, the coefficients are the run of
-    `slot:coefficient` in front of them, and what is left before the three
-    numbers is the id. The engine squeezes a name's whitespace to single
-    spaces before it ever prints one, so those fields joined back up are the
-    name the epd held.
-
-    The run of coefficients cannot walk back into the id whatever the id
-    holds, because the three numbers between them carry no colon. `n` is held
-    against the run rather than counted forward from, so the two ends of the
-    row have to agree.
+    A row is `id eval phase n slot:coefficient... fen`. An id can hold spaces
+    (the bench names positions "ruy lopez", and a line with no id is called by
+    its own fen), so the fields are found from the end whose width is fixed:
+    the fen is the last six, the coefficients the run of `slot:coefficient` in
+    front of them, and what is left before the three numbers is the id. The
+    walk back cannot reach into the id because the three numbers carry no
+    colon, and `n` is held against the run so the two ends have to agree.
     """
     if len(words) < FEN_FIELDS + 4:
         raise ValueError(f"a row of {len(words)} fields: {' '.join(words)!r}")
@@ -395,12 +311,8 @@ def split_row(words):
 
 
 class Row:
-    """One position: what the engine said it scored, and what of.
-
-    Which game it belongs to is not here. The extraction knows the position and
-    the corpus knows the game, and reading a game out of a row's name would be
-    reading it from the file that does not hold it.
-    """
+    """One position: what the engine said it scored, and what of. Which game
+    it belongs to is the corpus's to say, not the extraction's."""
 
     def __init__(self, identifier, evaluation, phase, coefficients, fen):
         self.id = identifier
@@ -415,8 +327,7 @@ def parse_terms(lines):
 
     Every row is rebuilt from the weights and held against the evaluation it
     states. A row that does not rebuild means this file's arithmetic and the
-    engine's have parted company, which is the one failure the seam exists to
-    catch, so it raises rather than dropping the row.
+    engine's have parted company, so it raises rather than dropping the row.
     """
     layout = None
     weights = None
@@ -472,17 +383,12 @@ class Label:
 
 
 def parse_corpus(lines):
-    """The label of each position, by id.
-
-    Read the way the engine reads epd, which is the point of reading it here
-    at all: the first four words are the position and what follows them is
-    operations, each an opcode and its operands, ended by a semicolon.
+    """The label of each position, by id, read the way the engine reads epd:
+    four words of position, then operations ended by semicolons.
 
     A row with no `game` or no `pair` operand is refused rather than given one
-    of its own. The pair is what the three groups are assigned from and the
-    game is what every interval is taken over, and a corpus built before either
-    existed would be split into one game per position, which is the leak the
-    game split was written to close arriving quietly through the back door.
+    of its own: a corpus from before either existed would be split into one
+    game per position, which is the leak the game split closes.
     """
     labels = {}
     for line in lines:
@@ -515,23 +421,11 @@ def parse_corpus(lines):
 class Sealed:
     """The calibration group, which nothing here reads but `final`.
 
-    Its rows are held apart rather than masked out. A mask is a convention: it
-    works while every caller remembers it, and the one that forgets is the one
-    that spends the group. These rows are not in the corpus's matrices at all,
-    so `loss`, `cv` and `fit` are handed a corpus that does not contain them
-    and cannot reach them by accident. Deleting the calibration rows from the
-    corpus file changes nothing any of the three prints, and a test says so.
-
-    What a run may say about it is how big it is, which is what the header
-    prints and what says the group exists. `unseal` is what the arm that holds
-    final weights calls, through `final`, once per set of sealed games, with
-    the log to say so.
-
-    The labels are held apart as well, and upstream of here. A position that a
-    training game and a calibration game both reached is labelled by whichever
-    of the two groups owns it and by that group's appearances alone, so no
-    result crosses the seal in either direction. What that costs is the dropped
-    appearances, which `build_corpus.py` counts.
+    Its rows are held apart rather than masked out: a mask works while every
+    caller remembers it. These rows are not in the corpus's matrices at all,
+    so `loss`, `cv` and `fit` cannot reach them by accident, and deleting them
+    from the corpus file changes nothing those three print. What a run may say
+    about the group is how big it is.
     """
 
     def __init__(self, layout, rows, labels, weights):
@@ -553,9 +447,8 @@ class Sealed:
         return len({self._labels[row.id].pair for row in self._rows})
 
     def checksum(self):
-        """The sha256 of the sealed pair keys, sorted: what names the sealed
-        games apart from the file they came in, so a re-extraction that adds
-        a run is still the same sealed games."""
+        """The sha256 of the sorted sealed pair keys, which names the sealed
+        games apart from the file they came in."""
         keys = sorted({self._labels[row.id].pair for row in self._rows})
         return hashlib.sha256("\n".join(keys).encode("utf-8")).hexdigest()
 
@@ -565,7 +458,7 @@ class Sealed:
 
     def unseal(self):
         """The rows, loaded the way the corpus loads its own so they can be
-        scored, for the arm whose weights are final."""
+        scored."""
         opened = Corpus.__new__(Corpus)
         opened.sealed = None
         opened.layout = self._layout
@@ -581,36 +474,23 @@ class Sealed:
 class Corpus:
     """The joined rows, in the shape the loss and the fit read them.
 
-    The coefficients are held as three flat arrays, which is a sparse matrix
-    without a library: for each non-zero, which row it belongs to, which slot,
-    and what it is. Scoring is then one multiply and one `bincount`, and the
-    gradient is the same two the other way round, which is what makes scoring a
-    weight vector over the whole corpus a matter of milliseconds.
+    The coefficients are held as three flat arrays (row, slot, value), a sparse
+    matrix without a library, so scoring is one multiply and one `bincount`
+    and the gradient the same two the other way round. The tapered
+    coefficients and the material ones are kept apart because the material
+    half does not divide by the taper.
 
-    The piece square coefficients and the material ones are kept apart, because
-    the two enter the evaluation differently: the piece square half divides by
-    the taper and the material half does not.
-
-    The rows also carry which game each came from and which pair that game is
-    half of, because the pair is the unit the split is taken over and the game
-    the unit every interval is, and it is the corpus that says so rather than
-    the extraction.
-
-    The calibration group is not here. It is in `sealed`, which holds its rows
-    apart and scores them for `final` alone.
+    The calibration group is not here but in `sealed`.
     """
 
     def __init__(self, layout, weights, rows, labels, sealed=None):
         self.layout = layout
         joined = [row for row in rows if row.id in labels]
-        # a position appears in exactly one row, because build_corpus.py
-        # deduplicates by fen before it labels and gives the row the lowest key
-        # of the games that reached it, so no position is in two groups. a
-        # corpus that was not deduplicated could be, and would be the leak the
-        # fen split had in a new place, so it is refused rather than fitted
-        # around. checked over every row and not only the ones that are kept,
-        # because a fen in both a training game and the sealed group is the
-        # same fault
+        # build_corpus.py deduplicates by fen before it labels, so no position
+        # is in two groups. A corpus that was not deduplicated would be the
+        # fen split's leak in a new place, so it is refused. Checked over
+        # every row, since a fen in both a training game and the sealed group
+        # is the same fault
         first = {}
         for row in joined:
             owner = first.setdefault(row.fen, labels[row.id].game)
@@ -621,10 +501,8 @@ class Corpus:
         groups = {row.id: group_of(labels[row.id].pair, sealed) for row in joined}
         self.sealed_without_rows = 0
         if sealed is not None:
-            # two different things, and only one of them is a fault. A named
-            # pair the corpus does not hold at all is a seal drawn against
-            # another archive, and a reading taken under it would be over
-            # games nobody can name.
+            # a named pair the corpus does not hold at all is a seal drawn
+            # against another archive
             absent = sealed - {label.pair for label in labels.values()}
             if absent:
                 raise ValueError(
@@ -633,12 +511,9 @@ class Corpus:
                     f"drawn against a different archive"
                 )
             # a named pair the corpus holds that reaches no row is ordinary
-            # once the archive is large. Every position those two games saw
-            # was either claimed by a game with a lower key, which is what
-            # keeps a position in one group, or filtered out of the
-            # extraction as in check, unsettled or drawn. The pair is sealed
-            # and contributes nothing, so the group is smaller than the file
-            # says by that many, and what the reading is over is the rows
+            # once the archive is large: every position its games saw was
+            # claimed by a lower key or filtered out of the extraction. It is
+            # sealed and contributes nothing, which is counted, not a fault
             self.sealed_without_rows = len(
                 sealed - {labels[row.id].pair for row in joined}
             )
@@ -653,7 +528,7 @@ class Corpus:
 
     def _load(self, weights, kept, labels, groups):
         """The arrays over one set of rows: the corpus's own, or the sealed
-        group's the once it is opened."""
+        group's once it is opened."""
         self.rows = kept
         self.weights = np.array(weights, dtype=np.float64)
         self.evals = np.array([row.eval for row in kept], dtype=np.float64)
@@ -667,8 +542,6 @@ class Corpus:
         self.train = self.groups == "train"
         self.selection = self.groups == "selection"
         self.buckets = np.array([phase_bucket(row.fen) for row in kept])
-        # the two sides of the taper's divide. Material is added outside it
-        # and every other weight, mobility included, is inside
         tapered, material = [], []
         for index, row in enumerate(kept):
             for slot, coefficient in row.coefficients:
@@ -698,11 +571,8 @@ class Corpus:
 
     def scores(self, weights):
         """The evaluation of every position under the weights, real valued.
-
-        The truncating divide is dropped here. It is at most a centipawn and
-        the fit is not sensitive to it, and `integer_scores` is what puts it
-        back for the measurement that has to match the engine.
-        """
+        The truncating divide is at most a centipawn and the fit is not
+        sensitive to it; `integer_scores` puts it back."""
         rows, slots, values = self.tapered
         numerator = np.bincount(rows, values * weights[slots], minlength=len(self))
         rows, slots, values = self.material
@@ -710,13 +580,9 @@ class Corpus:
         return material + numerator / TOTAL_PHASE
 
     def integer_scores(self, weights):
-        """The same, at integer weights and with the truncation put back, which
-        is the evaluation the engine would give.
-
-        The divide is done on integers and toward zero, not by rounding a
-        float, so this is `trunc_div` a row at a time and not something near
-        it.
-        """
+        """The same at integer weights with the truncation put back, which is
+        the evaluation the engine would give. The divide is done on integers
+        toward zero, so this is `trunc_div` a row at a time."""
         weights = np.asarray(weights, dtype=np.int64)
         totals = []
         for rows, slots, values in (self.tapered, self.material):
@@ -730,8 +596,8 @@ class Corpus:
         return material + np.sign(numerator) * (np.abs(numerator) // TOTAL_PHASE)
 
     def scatter(self, per_row):
-        """A per-row quantity spread back over the slots, which is the gradient
-        of anything that reads the corpus through `scores`."""
+        """A per-row quantity spread back over the slots: the gradient of
+        anything that reads the corpus through `scores`."""
         rows, slots, values = self.tapered
         slot_count = self.layout.slots
         gradient = np.bincount(
@@ -743,8 +609,8 @@ class Corpus:
         )
 
     def support(self, mask=None):
-        """How many of the rows each slot appears in. A weight the corpus
-        barely constrains says so here rather than after it has shipped."""
+        """How many of the rows each slot appears in, so a weight the corpus
+        barely constrains is seen before it ships."""
         counts = np.zeros(self.layout.slots, dtype=np.int64)
         for rows, slots, _ in (self.tapered, self.material):
             picked = slots if mask is None else slots[mask[rows]]
@@ -753,8 +619,7 @@ class Corpus:
 
 
 def sigmoid(scores, k):
-    """Texel's, so that the number is comparable with published practice: the
-    logistic that turns a centipawn score into an expected result."""
+    """Texel's logistic from a centipawn score to an expected result."""
     return 1.0 / (1.0 + np.power(10.0, -k * scores / 400.0))
 
 
@@ -764,9 +629,8 @@ def mean_squared_error(scores, results, counts, k):
 
 
 def log_loss(scores, results, counts, k):
-    """The other scoring rule, printed beside the first. If the two disagree
-    about a candidate that is worth seeing, which is the only reason both are
-    here."""
+    """The other scoring rule, printed beside the first so a candidate the two
+    disagree about is seen."""
     predicted = np.clip(sigmoid(scores, k), 1e-12, 1 - 1e-12)
     terms = results * np.log(predicted) + (1 - results) * np.log(1 - predicted)
     return float(-np.sum(counts * terms) / np.sum(counts))
@@ -776,11 +640,10 @@ def fit_k(scores, results, counts, low=0.1, high=4.0, steps=60):
     """The scaling constant, by a golden section search over the training
     split at the shipped weights.
 
-    Fitted once and held for the rest of a run. K and the overall scale of the
-    weights are one degree of freedom, and the scale is not free: the reverse
-    futility margin, the delta margin and the ledger's eval column all read the
-    evaluation on the assumption that a pawn is about a hundred, so a fit at
-    liberty to rescale would retune all three without touching them.
+    Fitted once and held for the run. K and the overall scale of the weights
+    are one degree of freedom, and the scale is not free: the reverse futility
+    margin, the delta margin and the ledger's eval column all assume a pawn is
+    about a hundred, so a fit free to rescale would retune all three.
     """
     ratio = (math.sqrt(5.0) - 1.0) / 2.0
     left, right = low, high
@@ -801,16 +664,13 @@ def fit_k(scores, results, counts, low=0.1, high=4.0, steps=60):
 
 
 def squared_errors(scores, results, k):
-    """The per-position squared error, which is what a paired difference
-    between two weight vectors is taken over."""
+    """The per-position squared error a paired difference is taken over."""
     return (results - sigmoid(scores, k)) ** 2
 
 
 def weighted_quantile(values, weights, quantile):
     """The smallest value with at least the given share of the weight at or
-    under it, the weight being the appearances, so a position the corpus
-    reached often counts for what it is. No interpolation: the value returned
-    is one the corpus holds."""
+    under it. No interpolation: the value returned is one the corpus holds."""
     order = np.argsort(values)
     cumulative = np.cumsum(weights[order])
     index = int(np.searchsorted(cumulative, quantile * cumulative[-1]))
@@ -819,26 +679,15 @@ def weighted_quantile(values, weights, quantile):
 
 def paired_difference(first, second, counts, games):
     """The mean difference between two weight vectors' per-position errors, its
-    standard error taken over the games, the one a reader would get over the
-    positions, and the ratio of the two.
+    standard error taken over the games, the one over the positions, and the
+    ratio of the two.
 
     The two are scored on the same positions, so the difference is a paired
-    sample and its mean has an interval. A loss difference whose interval
-    covers zero is not a difference, which is why this never returns a bare
-    delta.
-
-    The interval is taken over games and not over positions. A game's hundred
-    odd positions share a result and differ by a move, so they move together,
-    and treating them as a hundred independent draws counts one game's evidence
-    a hundred times. The sum of each game's contributions to the mean is what
-    varies from game to game, so that is what the spread is taken of, which is
-    the usual cluster-robust interval with the game as the cluster.
-
-    Both are returned, because the naive one is worth printing rather than
-    describing. Their ratio is the design factor: it says what treating the
-    positions as independent would have claimed, and if it ever comes back near
-    one then the games were carrying no more dependence than the positions and
-    holding them out cost more than it bought.
+    sample and its mean has an interval; a difference whose interval covers
+    zero is not a difference. The interval is the cluster-robust one with the
+    game as the cluster, since a game's positions share a result and move
+    together. The naive interval is returned too, and the ratio is the design
+    factor: near one, the games carried no more dependence than the positions.
     """
     weight = counts / np.sum(counts)
     difference = second - first
@@ -860,13 +709,11 @@ def paired_difference(first, second, counts, games):
 def line_search(objective, x, direction, value, slope, length):
     """A step along the direction that lowers the loss, or none.
 
-    Both ways round, which is not the textbook default and is what this
-    problem needs. The loss is a mean over a hundred thousand positions and
-    the gradient with respect to one weight is of the order of a hundred
-    thousandth, so the first useful step is many times longer than one, and a
-    search that only ever backtracks would spend its whole budget getting
-    there. It steps out while the loss keeps falling and halves back when it
-    does not.
+    Both ways round: the loss is a mean over a hundred thousand positions and
+    the gradient per weight is of the order of a hundred thousandth, so the
+    first useful step is many times longer than one and a search that only
+    backtracks would spend its budget getting there. It steps out while the
+    loss keeps falling and halves back when it does not.
     """
     best = None
     for _ in range(60):
@@ -888,13 +735,8 @@ def line_search(objective, x, direction, value, slope, length):
 
 
 def lbfgs(objective, start, iterations=300, history=10, tolerance=1e-12):
-    """L-BFGS on the closed-form gradient.
-
-    The classic Texel local search walks one weight at a time over the whole
-    corpus per step, which for a vector this long is a great many passes. The
-    evaluation is linear in its weights, so the gradient is closed form and
-    none of that is needed.
-    """
+    """L-BFGS on the closed-form gradient, which the evaluation being linear in
+    its weights allows; Texel's one-weight-at-a-time walk is not needed."""
     x = np.array(start, dtype=np.float64)
     value, gradient = objective(x)
     olds, news, rhos = [], [], []
@@ -944,13 +786,12 @@ def lbfgs(objective, start, iterations=300, history=10, tolerance=1e-12):
 
 def objective_for(corpus, mask, k, start, penalty, frozen):
     """The loss and its gradient at a weight vector, over the rows the mask
-    picks, with a ridge toward the weights the arm started from.
+    picks, with a ridge toward the shipped weights.
 
-    Toward the shipped weights and not toward zero. It makes a re-tune
-    literally what the fit does; it leaves alone the one direction the corpus
-    cannot see, which is a constant added to both king tables and cancelling
-    between the colours; and it holds the slots with no support at all, the two
-    back ranks of the pawn tables, at exactly the zeroes they already are.
+    Toward the shipped weights and not toward zero: that leaves alone the one
+    direction the corpus cannot see (a constant on both king tables, which
+    cancels between the colours) and holds the slots with no support (the pawn
+    tables' back ranks) at the zeroes they already are.
     """
     results = corpus.results[mask]
     counts = corpus.counts[mask]
@@ -1006,32 +847,24 @@ def objective_for(corpus, mask, k, start, penalty, frozen):
 
 
 def quantize(weights):
-    """Round to nearest. The table entries are `i16` in the engine and the
-    material values `u32`, and what a rounded vector costs is measured rather
-    than assumed."""
+    """Round to nearest; what a rounded vector costs is measured, not assumed."""
     return np.rint(np.asarray(weights)).astype(np.int64)
 
 
 def bounds_hold(weights, layout):
     """Whether a quantized vector stays inside what the engine's arithmetic
-    can carry: each half of a packed pair is an `i16`, a boardful of them is
-    summed into one, and an evaluation over the mate threshold would be read as
-    a forced mate.
+    can carry: each half of a packed pair is an `i16` and a boardful of them
+    is summed into one. Priced as a one-sided boardful, both colours, with
+    every leaf term charged at what `BOUNDS` says a side can show.
 
-    A one-sided boardful, both colours, against the sixteen bits the halves
-    have to stay inside.
-
-    Every leaf term is in the same sum, so each is priced here too rather than
-    left out of a figure that reads as the whole vector, and what one side can
-    show of each of its counts is what `BOUNDS` names. All are screens rather
-    than proofs: a side that promoted could cover more, the worst a board can
-    be arranged into comes to 313 squares against the 62 mobility charges, a
-    side's open and half open files come to three between them rather than
-    three each, and eight pawns cannot fill the pawn term's sixty four charges
-    between them. Over the 1,809 positions of the three suites the largest
-    one-sided mobility difference was 37, so at the centipawn weights a fit
-    produces none of the figures is near the sixteen bits. What this catches is
-    a vector that has gone somewhere else entirely.
+    A screen rather than a proof: a side that promoted could cover more, and
+    the charges are loose (the worst board comes to 313 squares against the 62
+    mobility charges, open and half open files are three between them rather
+    than three each, eight pawns cannot fill the pawn term's sixty four).
+    Over the 1,809 positions of the three suites the largest one-sided
+    mobility difference was 37, so at centipawn weights nothing is near the
+    sixteen bits; what this catches is a vector that has gone somewhere else
+    entirely.
     """
     weights = np.abs(np.asarray(weights))
     tables = weights[: layout.start["material"]]
@@ -1039,8 +872,6 @@ def bounds_hold(weights, layout):
     endgame = tables[layout.widths["midgame"] :].reshape(6, 64)
     worst = 2 * max(int(midgame.max(axis=0).sum()), int(endgame.max(axis=0).sum()))
     for name in layout.terms:
-        # a term's block is its midgame half and then its endgame one, and
-        # each half is charged the counts a side can show of it
         halves = weights[layout.block(name)].reshape(2, layout.widths[name])
         worst += 2 * int((halves * np.array(BOUNDS[name])).sum(axis=1).max())
     return worst < 32767, worst
@@ -1054,14 +885,9 @@ def read_weights(path, layout):
 
 def table_scale(weights, shipped, layout):
     """How much larger the table entries have grown, as the ratio of their
-    root mean squares.
-
-    The figure a reader of a fit has to see. Material is held, so it anchors
-    the pawn at a hundred, but the tables are free to grow against it, and a
-    piece square half twice the size it was is a different evaluation for the
-    reverse futility margin and the delta margin to be read against. K and the
-    overall scale are one degree of freedom, and a fit given enough licence
-    will spend the loss on the scale rather than on the shape.
+    root mean squares. Material anchors the pawn at a hundred, but the tables
+    are free to grow against it, and a fit given enough licence will spend
+    the loss on the scale rather than the shape.
     """
     fitted = np.asarray(weights)[: layout.start["material"]]
     before = np.asarray(shipped)[: layout.start["material"]]
@@ -1088,12 +914,9 @@ def scored(corpus, weights, mask, k):
 
 
 def report(corpus, named, k, out=None):
-    """The loss table: each weight vector on each group it may be scored on,
-    pooled and stratified, with a paired difference against the first.
-
-    Two groups are scored and the third is named and left alone. Naming it is
-    what says it exists and how big it is, which is the whole of what a run may
-    say about a group whose value is that nothing has read it.
+    """The loss table: each weight vector on the training and selection groups,
+    pooled and stratified, with a paired difference against the first. The
+    sealed group is named with its size and left alone.
     """
     out = sys.stdout if out is None else out
     train, selection = corpus.train, corpus.selection
@@ -1136,9 +959,7 @@ def report(corpus, named, k, out=None):
     appearances = max(float(corpus.counts.sum()), 1.0)
     for bucket in BUCKETS:
         share = corpus.buckets == bucket
-        # the share is of the appearances and not of the unique positions,
-        # because the loss weights a position by how often the corpus reached
-        # it and a share read the other way describes a corpus nothing scores
+        # of the appearances, which is what the loss weights by
         seen = float(corpus.counts[share].sum())
         print(
             f"pieces {bucket} positions {int(share.sum())} "
@@ -1148,11 +969,9 @@ def report(corpus, named, k, out=None):
     print(f"k {k:.4f}", file=out)
     baseline = None
     for name, weights in named:
-        # the same loss with K refitted for this vector alone, which is the
-        # diagnostic that says whether a fit bought shape or only scale. K is
-        # held for every number beside it, because K and the overall scale of
-        # the weights are one degree of freedom and the reported figure has to
-        # mean the same thing for every vector
+        # K refitted for this vector alone says whether a fit bought shape or
+        # only scale; every other number holds K so it means the same thing
+        # for every vector
         own = fit_k(
             corpus.scores(np.asarray(weights, dtype=np.float64))[train],
             corpus.results[train],
@@ -1210,27 +1029,19 @@ def report(corpus, named, k, out=None):
 
 
 def cross_validate(corpus, penalties, start, frozen, iterations, out=None):
-    """Cross validation with whole games held out, which is how one way of
-    fitting is compared with another.
+    """Cross validation with whole games held out.
 
-    Five folds of the games the run may read, which is the training and
-    selection groups and not the sealed one: the corpus this is handed does not
-    hold the calibration rows, so no fold can contain one. Each fold refits on
-    four fifths of those games and is scored on the fifth, so every row is
-    scored by a fit that never read its game, and every row is scored once
-    rather than half of them being scored at all. K is fitted per fold on that
-    fold's training games at the shipped weights and held for the vectors
-    scored in it, which is the rule a single split already follows.
+    Five folds of the training and selection games (the corpus handed in does
+    not hold the sealed rows). Each fold refits on four fifths and is scored
+    on the fifth, so every row is scored once by a fit that never read its
+    game. K is fitted per fold on that fold's training games at the shipped
+    weights. This is not what the fit chooses its ridge on; it asks the wider
+    question of whether a way of fitting is worth anything, with every row
+    scored rather than a fifth of them.
 
-    This is not what the fit chooses its ridge on. The selection group is, and
-    it is a fifth of the games set aside for it. This answers the wider
-    question, which is whether a way of fitting is worth anything at all over
-    the corpus the run may read, and it answers it with every row scored rather
-    than a fifth of them.
-
-    Returns the per-row squared error each recipe earned on the fold that held
-    its game out, keyed by penalty, with the shipped weights under `shipped`,
-    and the penalties whose fits outgrew what the engine's arithmetic carries.
+    Returns the per-row squared error of each recipe on its held-out fold,
+    keyed by penalty with the shipped weights under `shipped`, and the
+    penalties whose fits outgrew the packed halves.
     """
     out = sys.stdout if out is None else out
     which = np.array([fold_of(game) for game in corpus.games])
@@ -1246,8 +1057,7 @@ def cross_validate(corpus, penalties, start, frozen, iterations, out=None):
             corpus.results[train],
             corpus.counts[train],
         )
-        # a fold is a fit for every penalty on the grid, so the line says what
-        # is starting rather than what has finished
+        # printed before the fits, which take a while
         print(
             f"fold {index} games {len(np.unique(corpus.games[held]))} "
             f"positions {int(held.sum())} k {k:.4f}",
@@ -1274,10 +1084,8 @@ def cross_validate(corpus, penalties, start, frozen, iterations, out=None):
 
 def cross_validated(corpus, errors, outside, out=None):
     """The cross validated loss of each recipe, and what it bought over the
-    shipped weights, with the interval taken over the games.
-
-    Returns the penalty that scored best among those the engine's arithmetic
-    can carry, or none if that is all of them.
+    shipped weights, with the interval taken over the games. Returns the best
+    penalty the engine's arithmetic can carry, or none.
     """
     out = sys.stdout if out is None else out
     weight = corpus.counts / np.sum(corpus.counts)
@@ -1296,8 +1104,6 @@ def cross_validated(corpus, errors, outside, out=None):
             + (" (outside the packed halves)" if refused else ""),
             file=out,
         )
-        # a vector the engine's arithmetic cannot carry is no candidate,
-        # whatever it scores
         if not refused and (best is None or loss < best[0]):
             best = (loss, penalty)
     return None if best is None else best[1]
@@ -1308,24 +1114,15 @@ def choose_penalty(
 ):
     """The ridge, chosen on the selection group.
 
-    Every penalty on the grid is fitted on the training games alone and scored
-    on the selection games, which no fit read. The lowest selection loss wins,
-    and a fit whose tables outgrew what the packed halves carry is no candidate
-    whatever it scores. `train` is the rows to fit on in place of the training
-    group, which is what the learning curve moves; the rows scored are the
-    selection group's whichever rows were fitted.
+    Every penalty on the grid is fitted on the training games and scored on
+    the selection games. The lowest selection loss wins, and a fit whose
+    tables outgrew the packed halves is no candidate whatever it scores.
+    `train` is the rows to fit on in place of the training group, which is
+    what the learning curve moves. The loss reported on the selection group
+    afterwards is the fit's own best case; an honest interval on a final
+    vector comes from the sealed group.
 
-    The selection group and never the calibration group. Ranking a grid is
-    model selection, and a group the labels have already influenced cannot
-    carry a distribution-free coverage claim afterwards. That is not enforced
-    here by remembering it: the calibration rows are not in this corpus at all.
-
-    What it costs is that the loss reported on the selection group afterwards
-    is the fit's own best case, since it is the number the grid was ranked on.
-    The sealed group is what an honest interval on a final vector comes from.
-
-    Returns the chosen penalty and the vector it fitted, or none and none if
-    the grid left nothing the engine can carry.
+    Returns the chosen penalty and the vector it fitted, or none and none.
     """
     out = sys.stdout if out is None else out
     train = corpus.train if train is None else train
@@ -1368,17 +1165,15 @@ def choose_penalty(
 
 
 # The sizes the learning curve fits at, as shares of the training pairs, and
-# how many independent draws each size below the whole gets. One draw is one
-# sample of a random variable, and the spread between draws is what says
-# whether the curve's shape is real.
+# how many independent draws each size below the whole gets. The spread
+# between draws is what says whether the curve's shape is real.
 CURVE_SHARES = (0.125, 0.25, 0.5, 0.75, 1.0)
 CURVE_DRAWS = 5
 
 
 def curve_shares(shares, draws):
     """The shares a curve fits at, sorted and deduplicated, each in (0, 1].
-    Refused rather than clamped: a share past the whole would fit the whole
-    again under another name, and one at or under nothing would draw nothing."""
+    Refused rather than clamped."""
     kept = sorted({float(share) for share in shares})
     if not kept or kept[0] <= 0.0 or kept[-1] > 1.0:
         raise SystemExit(
@@ -1403,28 +1198,17 @@ def learning_curve(
 ):
     """Held-out loss against the number of pairs it was fitted on.
 
-    The training pool is drawn by pair and never by position. The pair is the
-    independent unit: the two games of an opening share their first moves,
-    and a game's positions share a result. Each draw is taken afresh from the
-    whole pool, so a smaller draw is not a prefix of a larger one. The
-    selection group is fixed and every fit is read on it, which is what makes
-    the points comparable. The whole is fitted once, since there is nothing
-    to draw.
+    The training pool is drawn by pair, the independent unit, and each draw
+    is taken afresh from the whole pool. The selection group is fixed and
+    every fit is read on it. Nothing else moves: the ridge is ranked as `fit`
+    ranks it, and K is one number for every fit, since a K refitted per draw
+    would let a smaller draw change the scale as well as the tables.
 
-    Nothing else moves. The ridge is ranked on the selection group as `fit`
-    ranks it, the weighting is by appearances, and K is one number for every
-    fit: the one given, or the one fitted on the whole training group at the
-    shipped weights. A K refitted per draw would let a smaller draw change the
-    scale as well as the tables.
-
-    Each fit is recorded with the pairs it drew, its chosen penalty, its
-    selection loss at real weights and at the integers that would ship, and
-    the paired difference against the shipped weights with the interval
-    clustered on the game. The summary per share carries the mean loss over
-    the draws, the least and the most, and the mean interval. The spread
-    between draws says whether the shape is real; the interval within a draw
-    says whether that draw beat the shipped weights. They are different
-    questions. What the curve does not say is anything about elo.
+    Each fit is recorded with the pairs it drew, its penalty, its selection
+    loss at real and at integer weights, and the paired difference against
+    the shipped weights clustered on the game. The spread between draws says
+    whether the shape is real; the interval within a draw says whether that
+    draw beat the shipped weights.
     """
     out = sys.stdout if out is None else out
     pairs = np.unique(corpus.pairs[corpus.train])
@@ -1587,38 +1371,21 @@ def frozen_slots(
 ):
     """Which weights a fit holds where they are.
 
-    Material is held for a first fit. `eval::material` is read by the delta
-    margin in quiescence, so moving a material value changes which captures
-    quiescence skips, which changes the tree for a reason that has nothing to
-    do with the evaluation's accuracy. The material block alone: nothing else
-    after it is read by the search, and a freeze that ran to the end of the
-    vector would hold every leaf term's weights at zero through a fit and print
-    a null result with nothing saying why.
+    Material is held unless freed: the delta margin in quiescence reads
+    `eval::material`, so moving it changes the tree for a reason that has
+    nothing to do with the evaluation's accuracy. The material block alone; a
+    freeze that ran to the end of the vector would hold every leaf term at
+    zero and print a null result.
 
-    The tables are held when the fit is for a term added after them. They were
-    fitted on these same games, so refitting them beside a new term leaves a
-    match unable to say which of the two it measured. Held, the new weights are
-    the only thing that moved and the only thing the match can be reading.
-
-    Mobility is a hold of its own for that same reason, since it was fitted
-    after the tables and before the shelter, and the shelter is one for the
-    same reason again. Each term earns a hold as it is fitted, and a fit of
-    the newest term names every hold below it, so a shelter fit passes
-    `--hold-tables --hold-mobility`, a pawn structure fit passes
-    `--hold-tables --hold-mobility --hold-shelter` and a king attack fit adds
-    `--hold-pawn` to those three. Holding the tables alone
-    leaves the eight mobility weights free, which is a refit of mobility
-    beside the newer term and the attribution the holds exist to keep. That is
-    not hypothetical: `1b0862a` found half of the king safety fit's apparent
-    gain to be a mobility refit that no hold had stopped.
-
-    The ladder runs the other way too. A term already in the tree can be worth
-    fitting again on a corpus grown since, and then every term is older than
-    the fit rather than newer: a mobility refit holds the tables below it and
-    the shelter and the pawn structure above, and moves the eight weights
-    alone. `--hold-pawn` and `--hold-king-attack` are what the upper end of
-    that needs. Which holds an arm passes follows from the one term it means
-    to move and not from where that term sits in the vector.
+    Each term earns a hold as it is fitted, and every hold is a flag: nothing
+    is held that the caller did not name. A fit of the newest term passes
+    every hold below it, so a shelter fit passes `--hold-tables
+    --hold-mobility`, a pawn structure fit adds `--hold-shelter` and a king
+    attack fit adds `--hold-pawn`. Holding the tables but not mobility through
+    a shelter fit refits mobility beside the shelter: `1b0862a` found half of
+    the king safety fit's apparent gain to be that. A refit of an older term
+    holds the newer terms too, which is what `--hold-pawn` and
+    `--hold-king-attack` are for.
     """
     frozen = np.zeros(layout.slots, dtype=bool)
     if not free_material:
@@ -1653,9 +1420,8 @@ def command_cv(args):
         corpus, args.penalties, start, frozen, args.iterations
     )
     chosen = cross_validated(corpus, errors, outside)
-    # named so a reader cannot paste it into `fit --penalties` and think it is
-    # the ridge the fit would have picked: this is best over the folds, and the
-    # fit ranks the same grid on the selection games instead
+    # said in full so it is not pasted into `fit --penalties` as the ridge the
+    # fit would have picked
     print(
         "no penalty on the grid left the tables small enough"
         if chosen is None
@@ -1682,9 +1448,6 @@ def command_fit(args):
         corpus.results[corpus.train],
         corpus.counts[corpus.train],
     )
-    # the vector that ships is fitted on the training games alone and the ridge
-    # above it is ranked on the selection games, so neither has read the third
-    # group. that is what the third group is for
     penalty, fitted = choose_penalty(
         corpus, args.penalties, start, frozen, args.iterations, k
     )
@@ -1714,11 +1477,10 @@ def sha256_of(path):
 
 
 def opened_before(log, corpus_sha, sealed_sha):
-    """The log line that says these sealed games were opened, if one is
-    there. A line is `opened <when> corpus <sha256> sealed <sha256> ...`, and
-    both checksums are read: the corpus's, so a renamed file is the same
-    corpus, and the sealed games', so a re-extraction with a run appended is
-    the same sealed group."""
+    """The log line that says these sealed games were opened, if one is there.
+    A line is `opened <when> corpus <sha256> sealed <sha256> ...`, and either
+    checksum matching is a match: a renamed file is the same corpus, and a
+    re-extraction with a run appended is the same sealed group."""
     if not log.is_file():
         return None
     for line in log.read_text(encoding="utf-8").splitlines():
@@ -1779,14 +1541,10 @@ def command_curve(args):
 def command_final(args):
     """Open the sealed group once, against a frozen vector.
 
-    The order matters. The vector is checked to be the integers that would
-    ship, the log is checked for this corpus and these sealed games and the
-    line is written, and only then is a sealed row loaded, so a run that
-    opened the group and then failed has still said so. What it prints is the
-    frozen vector against the shipped one on the sealed rows, with the
-    interval clustered on the game, and the residual quantiles the tail claim
-    is made from. A second reading of the same sealed games is refused,
-    whatever file they arrive in.
+    The order matters: the vector is checked to be integers, the log is
+    checked and the line written, and only then is a sealed row loaded, so a
+    run that opened the group and then failed has still said so. A second
+    reading of the same sealed games is refused whatever file they arrive in.
     """
     corpus = load(args)
     frozen = read_weights(args.weights, corpus.layout)
@@ -1815,8 +1573,7 @@ def command_final(args):
         corpus.results[corpus.train],
         corpus.counts[corpus.train],
     )
-    # the line goes in before a sealed row is loaded, and the sizes it
-    # carries are the ones the header may print without opening the group
+    # logged before a sealed row is loaded
     when = datetime.datetime.now(datetime.timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ")
     with log.open("a", encoding="utf-8", newline="\n") as handle:
         handle.write(
@@ -1841,7 +1598,6 @@ def command_final(args):
             f"quantized_mse {numbers['quantized_mse']:.6f} "
             f"quantized_log {numbers['quantized_log']:.6f}"
         )
-        # the integer scores, which are the evaluation the engine would give
         errors[name] = squared_errors(numbers["integers"], opened.results, k)
         for bucket in BUCKETS:
             inside = opened.buckets == bucket
@@ -1895,8 +1651,7 @@ def main(argv=None):
             "built with one and read without it holds out the wrong games",
         )
     for name in ("loss", "fit", "final", "curve"):
-        # cv fits K per fold on that fold's training games, so there is no one
-        # constant for a caller to name
+        # cv fits K per fold, so there is no one constant to name
         commands.choices[name].add_argument(
             "--k", type=float, help="the scaling constant, if it is known"
         )

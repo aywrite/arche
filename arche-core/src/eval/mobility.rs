@@ -25,80 +25,52 @@ pub(crate) const COUNTS: usize = PIECES.len();
 /// pairs the taper is read from.
 ///
 /// Refitted 2026-09-13 by `scripts/tune.py` over the whole archived strength
-/// run: 259 artifacts across 54 runs, 43,675 games, whose 5,694,775 post-book
-/// plies gave 5,355,792 positions and 2,461,322 quiet rows, extracted by
-/// `arche terms` at 2105b55. The corpus is sha256 `b37ebf0c` and the rows are
-/// sha256 `49aa715a`. K was held at 1.1350 and the games split by pair:
-/// 12,743 pairs trained, 4,339 chose the ridge and 4,747 were sealed. The 768
-/// table entries, the six material values, the fourteen shelter weights and
-/// the sixteen pawn structure ones were all held, so these eight are the only
-/// thing that moved. Every number here is of the rounded vector that ships.
+/// run, 43,675 games and 2,461,322 quiet rows extracted by `arche terms` at
+/// 2105b55 (corpus sha256 `b37ebf0c`, rows `49aa715a`), K held at 1.1350,
+/// every other weight held, at a ridge of zero. The sealed group, opened once
+/// afterwards over 9,452 games, scores 0.080507 at the old weights and
+/// 0.079997 at these, a paired difference of -0.000510 against a standard
+/// error of 0.000107 at a design factor of 4.1; the selection group read
+/// -0.000798 against 0.000113, 1.85 standard errors away, so it overstates
+/// the fit by about a third. Commit 7e6ddd7 holds the rest.
 ///
-/// The selection group scores 0.087671 at the old weights and 0.086874 at
-/// these, a paired difference of -0.000798 against a standard error of
-/// 0.000113 at a design factor of 3.8. The sealed group, opened once
-/// afterwards over 4,747 pairs and 9,452 games that no fit and no ridge
-/// choice had read, scores 0.080507 and 0.079997, a paired difference of
-/// -0.000510 against a standard error of 0.000107 at a design factor of 4.1.
-/// Both are outside their intervals, and they are 1.85 standard errors apart,
-/// so the selection group overstates this fit by about a third. The king
-/// safety fit's two agreed to 0.68 and the pawn structure fit's to 0.15.
-///
-/// The first fit of this term read 1,812 games and priced one piece. This one
-/// reads twenty four times as many and prices all four, which is the whole of
-/// what changed: nothing about the term is different, the corpus simply has
-/// enough games to say something about a knight. A preliminary fit taken
-/// before the pawn structure term existed predicted `[5,6,5,1]` and
-/// `[0,2,2,7]`, and it came out `[4,6,4,1]` and `[1,3,4,7]`. Pawn structure
-/// took almost nothing away from mobility, despite both terms reading open
-/// lines.
-///
-/// The ridge is zero, which the grid ranked first, and here that is not the
-/// trap it was for the pawn structure fit. The vector quantizes identically
-/// at zero, 1e-8 and 1e-7, the largest weight is 7, and every one of the
-/// eight slots carries a coefficient in 37% to 70% of the training rows with
-/// summed coefficients in the tens of millions. There is no low leverage
-/// direction here for an unregularised fit to hide error in.
+/// The first fit read 1,812 games and priced one piece; this one reads twenty
+/// four times as many and prices all four, so [`SCORED_KINDS`] skips nothing
+/// and every kind is counted at every leaf again. The ridge of zero is not
+/// the trap it was for the pawn structure fit: the vector quantizes
+/// identically at zero, 1e-8 and 1e-7, the largest weight is 7, and every
+/// slot carries a coefficient in 37% to 70% of the training rows.
 ///
 /// By phase the sealed reading is -0.000160 at six pieces or fewer,
-/// -0.001725 from seven to twelve, and +0.000703 at thirteen or more. The
-/// term pays in the middlegame, barely in the ending, and costs something in
-/// the opening, which is the phase a mobility count would be expected to earn
-/// most. That is worth an ablation and is not one this arm ran.
-///
-/// Every weight is non-zero, so [`SCORED_KINDS`] has nothing left to skip and
-/// all four kinds are counted at every leaf again. What that costs is in the
-/// commit that landed this, and it is the larger half of the arm.
+/// -0.001725 from seven to twelve, and +0.000703 at thirteen or more, so the
+/// term costs something in the opening, the phase a mobility count would be
+/// expected to earn most. That is worth an ablation and is not one this arm
+/// ran.
 ///
 /// A count is at most twenty seven for a queen and a boardful comes to a few
-/// hundred, so a weight in single figures leaves the same order of magnitude
-/// in hand that `pack` asks for.
+/// hundred, so a weight in single figures leaves the order of magnitude in
+/// hand that `pack` asks for.
 const MOBILITY: [i32; COUNTS] = [pack(4, 1), pack(6, 3), pack(4, 4), pack(1, 7)];
 
-/// The weight of one of the four pieces that carries one, as the packed pair.
-/// The tuner's seam asks through [`super::TERMS`], so that a slot names the
-/// live weight rather than a copy of it, the way it reads the tables.
+/// The weight of one piece's count, as the packed pair, read through
+/// [`super::TERMS`] so that a slot names the live weight rather than a copy.
 pub(crate) const fn weight(index: usize) -> i32 {
     MOBILITY[index]
 }
 
 /// A set of [`PIECES`], a bit per index, which is what [`counts_of`] takes. A
-/// kind left out of the set is not counted and answers zero.
-///
-/// This is all four of them. The tuner's walk asks for it whatever the
-/// weights hold, because that walk is offline and its coefficients are what
-/// lets a later fit price a kind that is worth nothing today.
+/// kind left out of the set is not counted and answers zero. This is all
+/// four, which the tuner's walk asks for whatever the weights hold, since a
+/// coefficient for a kind worth nothing today is what lets a later fit price
+/// it.
 pub(crate) const ALL_KINDS: u8 = (1 << COUNTS) - 1;
 
 /// The kinds [`super::eval`] counts: the ones whose [`MOBILITY`] weight is not
-/// zero at one end of the taper or the other. The 2026-09-13 refit priced all
-/// eight weights, so this is now all four kinds and skips nothing.
-///
-/// Derived from the weights rather than written out, which is what made the
-/// refit start counting three kinds again rather than leaving them ignored at
-/// every leaf. It cost what the refit's commit records.
-/// `eval_counts_a_kind_exactly_when_its_weight_is_not_zero` is what holds the
-/// two together.
+/// zero at one end of the taper or the other, derived from the weights so a
+/// refit changes the set with nothing else edited. The 2026-09-13 refit
+/// priced all eight halves, so this is all four kinds.
+/// `eval_counts_a_kind_exactly_when_its_weight_is_not_zero` holds the two
+/// together.
 pub(crate) const SCORED_KINDS: u8 = scored_kinds();
 
 /// Whether `kinds` names the piece at `index` in [`PIECES`].
@@ -123,52 +95,35 @@ const fn scored_kinds() -> u8 {
 }
 
 /// How many squares this side's knights, bishops, rooks and queens cover, a
-/// count per piece kind in that order, which is the order [`PIECES`] names
-/// them in. `KINDS` says which of the four to count; the rest are not looked
-/// at and answer zero.
+/// count per piece kind in the order [`PIECES`] names them. `KINDS` is a
+/// compile time set of the kinds to count; a kind left out has its loop not
+/// compiled and answers zero.
 ///
 /// A piece's count is its attack set over the real occupancy, less the
-/// squares this side stands on, less the squares an enemy pawn attacks. So
-/// a friendly piece blocks a slider rather than being seen through, and a
-/// square an enemy pawn covers is not somewhere a piece goes. An enemy
-/// piece standing on a square keeps that square in the count, because
-/// attacking it is the point. Pins are ignored: a pinned bishop counts its
-/// squares, and the search is what knows it cannot move.
+/// squares this side stands on, less the squares an enemy pawn attacks. So a
+/// friendly piece blocks a slider rather than being seen through, a square an
+/// enemy pawn covers is not somewhere a piece goes, and an enemy piece's
+/// square stays in the count because attacking it is the point. Pins are
+/// ignored: the search is what knows a pinned bishop cannot move. The king
+/// and the pawn have no count of their own: a king's is a danger signal
+/// rather than a scope one, and a pawn's is move generation.
 ///
-/// The enemy pawns are taken as one span rather than probed a square at a
-/// time. The king and the pawn have no count of their own: a king's is a
-/// danger signal rather than a scope one, and a pawn's is move generation.
-///
-/// The tuner's walk reads this. The evaluation does not: it reads the same
-/// counts off the shared walk in `eval/mod.rs`, which takes the king attack
-/// zone's counts off the same attack sets, and
-/// `the_shared_walk_counts_what_each_term_counts_alone` holds that walk to
-/// this function kind by kind.
-///
-/// The two may ask for different kinds. The tuner's walk always asks for all
-/// four, because it is offline and its coefficients are what prices a kind;
-/// the evaluation asks for the kinds whose weight is not zero, because a count
-/// multiplied by zero is not worth the leaf it is taken at. Since the refit
-/// priced all four the two sets are equal today. What keeps them honest
-/// whether or not they are is that the difference is exactly the zero
-/// weights, which `eval_counts_a_kind_exactly_when_its_weight_is_not_zero`
-/// pins.
-///
-/// The shared walk is a second statement of these counts, and it is held to
-/// this one position by position. A count wrong in the same way in both would
-/// still pass that test and the tuner's identity, so the hand counts below are
-/// what pins the counts themselves. That is the exception to the rule
-/// `tune.rs` states in its header, which names it.
-///
-/// `KINDS` is a compile time set, so a kind left out of it costs nothing:
-/// its loop is not compiled rather than skipped.
+/// The tuner's walk reads this, always for all four kinds, because it is
+/// offline and its coefficients are what lets a later fit price a kind. The
+/// evaluation reads the shared walk in `eval/mod.rs` over [`SCORED_KINDS`],
+/// which `the_shared_walk_counts_what_each_term_counts_alone` holds to this
+/// function kind by kind and
+/// `eval_counts_a_kind_exactly_when_its_weight_is_not_zero` holds to the
+/// weights. A count wrong the same way in both would pass both and the
+/// tuner's identity, so the hand counts below are what pin the counts
+/// themselves; `tune.rs` names this as the exception to the rule its header
+/// states.
 ///
 /// Inlined by force. Left to itself llvm keeps this out of line even under
-/// link time optimisation, and when the evaluation read this it asked for it
-/// twice at every leaf and every quiescence node. That call was three fifths
-/// of what the term cost over the bench: 4.30 billion instructions without the
-/// attribute against 3.76 billion with it. The shared walk is inlined by force
-/// for the same reason.
+/// link time optimisation, and the evaluation asked for it twice at every
+/// leaf and every quiescence node: callgrind over the bench at 57f2116 read
+/// 4.30 billion instructions without the attribute against 3.76 billion with
+/// it. The shared walk is inlined by force for the same reason.
 #[inline(always)]
 pub(crate) fn counts_of<const KINDS: u8>(board: &Board, color: Color) -> [i32; COUNTS] {
     let occupied = board.occupied();
@@ -216,17 +171,11 @@ pub(crate) fn counts(board: &Board, color: Color, into: &mut [i32]) {
 }
 
 /// What white's mobility stands ahead by, as a packed pair on the scale the
-/// piece square pair is on, given each side's counts.
-///
-/// The sum does not call [`counts_of`] for these. It takes them from the walk
-/// in `eval/mod.rs` that reads the king attack counts off the same attack
-/// sets, and that walk counts only [`SCORED_KINDS`]. A kind whose weight is
-/// zero contributes nothing however many squares it covers, so counting it is
-/// work no score can see. The rule is what is written down, not a list: when
-/// the first fit left six of the eight weights at zero, leaving three of the
-/// four kinds out took a bit over a third off what the term cost. The refit
-/// priced all four, so today every kind is counted and the skip is waiting for
-/// a weight to round to nothing again.
+/// piece square pair is on, given each side's counts from the walk in
+/// `eval/mod.rs`, which counts only [`SCORED_KINDS`]: a kind whose weight is
+/// zero contributes nothing however many squares it covers. When the first
+/// fit left six of the eight weights at zero, leaving three kinds out took a
+/// bit over a third off what the term cost (7b0f38b).
 #[inline]
 pub(crate) fn fold_counts(white: [i32; COUNTS], black: [i32; COUNTS]) -> i32 {
     weigh(&MOBILITY, white, black)
@@ -242,12 +191,8 @@ pub(crate) fn fold(board: &Board) -> i32 {
 
 /// The same fold over the kinds `KINDS` names, against weights named by the
 /// caller. A kind outside `KINDS` counts zero and so has to be worth zero.
-///
-/// The live weights are the fit's now and no two of the four pairs agree, so
-/// the sign of this term, the order of the four pieces and the packing all
-/// show in an evaluation the engine prints. The tests supply weights of their
-/// own through here anyway, over all four kinds, because what they pin is the
-/// fold rather than the fit: a permuted [`MOBILITY`] would be a different
+/// The tests supply weights of their own because what they pin is the fold
+/// rather than the fit: a permuted [`MOBILITY`] would be a different
 /// evaluation and not a wrong one.
 #[cfg(test)]
 fn fold_with<const KINDS: u8>(board: &Board, weights: &[i32; COUNTS]) -> i32 {
@@ -275,15 +220,10 @@ mod tests {
     use crate::psqt::{eg_value, mg_value, pack};
     use pretty_assertions::assert_eq;
 
-    /// The counts by hand, square by square, because nothing else pins them.
-    /// The tuner's identity folds a row against the live weights, and the
-    /// tuner reads this function and `eval` reads a walk held to it, so the
-    /// two sides of the identity move together whatever it answers. These
-    /// cases are the only check this term has.
-    ///
-    /// Each case names what the count is made of. The two kings stand in
-    /// opposite corners and out of the way, so that nothing here is a count of
-    /// theirs and no piece is placed giving check.
+    /// The counts by hand, because nothing else pins them: the tuner reads
+    /// this function and `eval` reads a walk held to it, so the identity
+    /// between them moves with whatever it answers. The two kings stand in
+    /// opposite corners, out of the way and out of check.
     #[test]
     fn a_piece_covers_what_a_hand_count_says_it_does() {
         for (fen, counts, why) in [
@@ -337,9 +277,8 @@ mod tests {
                 "a knight on d4 against a rook on c6",
             ),
             // the enemy pawn stops the file at d6 and the ray does not carry
-            // past it, so the file gives d5 and d6 beside the rank. This is
-            // the case that says the magic lookup is asked about the whole
-            // occupancy and not about this side's half of it
+            // past it, so the file gives d5 and d6 beside the rank: the magic
+            // lookup is asked about the whole occupancy, not this side's half
             (
                 "8/2k5/3p4/8/3R4/8/8/6K1 w - - 0 1",
                 [0, 0, 12, 0],
@@ -398,14 +337,9 @@ mod tests {
     /// each other too, so a permutation of either array shows.
     const TRIAL: [i32; COUNTS] = [pack(11, 2), pack(-7, 13), pack(3, -5), pack(29, 41)];
 
-    /// What the fold does with weights that are not the shipped ones.
-    ///
-    /// The shipped weights would do here now that no two of them agree.
-    /// Weights of this test's own are kept anyway, because the shipped ones
-    /// are the fit's and will move again. This hands the fold four pairs that
-    /// differ from each other at both ends and asserts the packed pair against
-    /// the arithmetic: white's count less black's, piece by piece, each half
-    /// of the pair summed on its own.
+    /// What the fold does with weights that are not the shipped ones, which
+    /// are the fit's and will move again: white's count less black's, piece
+    /// by piece, each half of the pair summed on its own.
     #[test]
     fn the_mobility_fold_reads_white_less_black_piece_by_piece() {
         let board = Board::from_fen(COUNTED).unwrap();
@@ -433,26 +367,14 @@ mod tests {
     }
 
     /// What the evaluation is allowed to leave out, which is the whole of the
-    /// contract between it and the tuner's walk.
+    /// contract between it and the tuner's walk: the difference between
+    /// `counts_of::<ALL_KINDS>` and `counts_of::<SCORED_KINDS>` is exactly the
+    /// kinds whose weight is zero, kind by kind, and the two fold to the same
+    /// packed pair at the shipped weights. A later fit that puts a kind back
+    /// at zero fails here rather than being counted at every leaf for nothing.
     ///
-    /// The tuner's walk counts all four kinds and the evaluation counts
-    /// [`SCORED_KINDS`], so the two no longer read one answer. The evaluation
-    /// takes those counts off the shared walk in `eval/mod.rs`, and this reads
-    /// `counts_of::<SCORED_KINDS>`, which
-    /// `the_shared_walk_counts_what_each_term_counts_alone` holds that walk
-    /// to. What makes that
-    /// safe is the size of the difference and nothing else: a count multiplied
-    /// by zero adds nothing, so a kind worth zero can go uncounted without
-    /// moving a score, and any other kind cannot. So this asserts the
-    /// difference is exactly that, kind by kind, and then that the two fold to
-    /// the same packed pair at the shipped weights.
-    ///
-    /// A later fit that puts one of the four kinds back at zero fails here,
-    /// rather than being silently counted at every leaf for nothing.
-    ///
-    /// The position has to give every kind of both colours something to cover,
-    /// or a kind that is skipped and a kind that covers nothing read the same
-    /// and the test passes without having looked at anything.
+    /// The position has to give every kind of both colours something to
+    /// cover, or a skipped kind and a kind that covers nothing read the same.
     #[test]
     fn eval_counts_a_kind_exactly_when_its_weight_is_not_zero() {
         let board = Board::from_fen(fens::KIWIPETE).unwrap();
