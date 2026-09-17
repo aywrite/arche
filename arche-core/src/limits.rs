@@ -4,13 +4,11 @@
 //! What bounds a single search: the clock it may spend and the nodes it may
 //! visit, measured from the moment the search began.
 //!
-//! One value answers every question the search asks about stopping (whether
-//! it has run out, when to look again, whether another iteration is worth
-//! beginning, and how long it has been going), so that the count of nodes a
-//! search reports and the time it reports are read from the same place. A
-//! limit reached is what `SearchOutcome::Aborted` means; the depth asked for
-//! is not one of these, because reaching that is how a search finishes rather
-//! than how it is cut short.
+//! One value answers every question the search asks about stopping, so
+//! that the node count and the time a search reports are read from the
+//! same place. A limit reached is what `SearchOutcome::Aborted` means; the
+//! depth asked for is not one, since reaching it is how a search finishes
+//! rather than how it is cut short.
 
 use std::time::{Duration, Instant};
 
@@ -19,30 +17,24 @@ use std::time::{Duration, Instant};
 const POLL_INTERVAL: u64 = 3000;
 
 /// The share of a budget past which another iteration is not begun, as a
-/// percentage of it.
+/// percentage.
 ///
-/// An iteration of this search costs three or four times the whole of the
-/// deepening before it: over nine positions searched from cold, the elapsed
-/// time through depth d divided by the time through d+1 has a median of 0.29
-/// and quartiles of 0.21 and 0.33. So an iteration begun much past three
-/// tenths of the budget will not finish inside it, which is far short of the
-/// half a modern engine manages and is what a search with no pruning beyond
-/// the transposition table costs.
-///
-/// Finishing is no longer the line between worth and worthless, though, since
-/// an iteration cut short now answers with the root moves it did get through.
-/// What an iteration begun at share f gets done, at the median ratio, is
-/// (1-f)·0.29 / (f·0.71): all of itself at 0.29, three quarters at 0.35, half
-/// at 0.45 and two fifths at 0.5. The line goes where the iteration given up
-/// would have searched less than half of itself.
+/// An iteration costs three or four times the whole deepening before it:
+/// over nine positions searched from cold, the elapsed time through depth
+/// d divided by the time through d+1 had a median of 0.29 and quartiles of
+/// 0.21 and 0.33 (measured before any pruning beyond the transposition
+/// table; a modern engine manages about a half). An iteration cut short
+/// still answers with the root moves it got through, and at the median
+/// ratio an iteration begun at share f gets (1-f)·0.29 / (f·0.71) of
+/// itself done: three quarters at 0.35, half at 0.45, two fifths at 0.5.
+/// The line goes where the iteration given up would have searched less
+/// than half of itself.
 const SOFT_LIMIT_PERCENT: u128 = 45;
 
-/// The clock a search runs under, and what the caller meant by it.
-///
-/// A share of a game clock is this side's own guess at what the move is
-/// worth, so time left unspent on it is time still there for the moves after
-/// this one. A move time is not a guess and there is nothing to save it for:
-/// `go movetime 5000` asked for five seconds of thinking.
+/// The clock a search runs under, and what the caller meant by it. A share
+/// of a game clock is this side's guess at what the move is worth, so time
+/// left unspent is there for the moves after; a move time asked for
+/// exactly that much thinking and there is nothing to save it for.
 #[derive(Copy, Clone, Debug, PartialEq, Eq)]
 pub enum Clock {
     /// A share of a running game clock, worked out from what is left of it.
@@ -62,9 +54,8 @@ impl Clock {
 
 #[derive(Copy, Clone, Debug)]
 pub struct Limits {
-    /// When the search began. The clock is measured from here, and so is the
-    /// elapsed time reported beside a node count, which is what makes one
-    /// divisible by the other.
+    /// When the search began. The clock and the elapsed time reported
+    /// beside a node count are both measured from here.
     started: Instant,
     /// The clock the search runs under, or none for no clock.
     clock: Option<Clock>,
@@ -73,17 +64,15 @@ pub struct Limits {
 }
 
 impl Limits {
-    /// A search starting now under the clock and node budget given. This is
-    /// the constructor a protocol adapter calls when a `go` arrives, so that
-    /// the clock starts when the command does.
+    /// A search starting now under the clock and node budget given: what a
+    /// protocol adapter calls when a `go` arrives, so the clock starts with
+    /// the command.
     pub fn starting_now(clock: Option<Clock>, nodes: Option<u64>) -> Self {
         Self::starting_at(Instant::now(), clock, nodes.unwrap_or(u64::MAX))
     }
 
-    /// The same, from a stated moment. The other constructors are built on
-    /// it, and a test calls it directly to start a clock in the past, which is
-    /// how a search whose clock has already run out is asked for without
-    /// waiting for a real clock to pass.
+    /// The same from a stated moment, which lets a test start a clock in
+    /// the past rather than wait for one to run out.
     pub fn starting_at(started: Instant, clock: Option<Clock>, nodes: u64) -> Self {
         Self {
             started,
@@ -92,12 +81,11 @@ impl Limits {
         }
     }
 
-    /// No clock and no node budget: the search runs to the depth asked of it.
-    ///
-    /// Not the protocol's `go infinite`, which means search until `stop`.
-    /// Nothing here expresses that and nothing here should: a stop comes
-    /// from another thread rather than from a number, so it rides on
-    /// `SearchParameters` beside these and is read at the same poll.
+    /// No clock and no node budget: the search runs to the depth asked of
+    /// it. Not the protocol's `go infinite`, which means search until
+    /// `stop`: a stop comes from another thread rather than a number, so it
+    /// rides on `SearchParameters` beside these and is read at the same
+    /// poll.
     pub fn unlimited() -> Self {
         Self::starting_at(Instant::now(), None, u64::MAX)
     }
@@ -110,27 +98,23 @@ impl Limits {
                 .is_some_and(|clock| self.started.elapsed() >= clock.deadline())
     }
 
-    /// Whether another iteration of a deepening search is worth beginning.
-    ///
-    /// The deadline above is the backstop, which stops a search wherever it
-    /// happens to be; this is the deepening loop asking beforehand whether
-    /// there is enough of the budget left for the next depth to be worth
-    /// starting at all. What "enough" is, and the measurement behind it, is
+    /// Whether another iteration of a deepening search is worth beginning:
+    /// the deepening loop asking beforehand, where `expired` is the
+    /// backstop. What "enough" is, and the measurement behind it, is
     /// `SOFT_LIMIT_PERCENT`.
     ///
-    /// Only a share of a game clock is given up early, since only that leaves
-    /// the rest of it for the moves after this one. A named move time asked
-    /// for exactly that much thinking, and a node budget, a depth and an
-    /// unlimited search are not clocks at all. Neither is anything given up
-    /// before a depth has been answered, because until then there is nothing
-    /// to answer with.
+    /// Only a share of a game clock is given up early, since only that
+    /// leaves the rest for the moves after this one; a named move time
+    /// asked for that much thinking, and a node budget, a depth and an
+    /// unlimited search are not clocks. Nothing is given up before a depth
+    /// has been answered, since until then there is nothing to answer with.
     pub fn worth_another_iteration(&self, answered: bool) -> bool {
         if !answered {
             return true;
         }
         match self.clock {
-            // nanoseconds in a u128 rather than multiplying the durations
-            // themselves, which panics on a clock large enough to overflow
+            // nanoseconds in a u128: multiplying the durations themselves
+            // panics on a clock large enough to overflow
             Some(Clock::Share(budget)) => {
                 self.started.elapsed().as_nanos() * 100 < budget.as_nanos() * SOFT_LIMIT_PERCENT
             }
@@ -139,9 +123,9 @@ impl Limits {
     }
 
     /// The node count at which to look at the limits again: every
-    /// POLL_INTERVAL nodes for the clock, and the node budget itself,
-    /// exactly, which is what lets a fixed node search stop on the node it
-    /// names rather than at the next poll after it.
+    /// POLL_INTERVAL nodes for the clock, and the node budget itself
+    /// exactly, so a fixed node search stops on the node it names rather
+    /// than at the next poll after it.
     pub fn next_check_after(&self, nodes: u64) -> u64 {
         nodes.saturating_add(POLL_INTERVAL).min(self.nodes)
     }
@@ -161,12 +145,11 @@ impl Limits {
         self.nodes
     }
 
-    /// The limits one iteration of a deepening search runs under.
-    ///
-    /// Until a depth has completed there is no move to answer with, so
-    /// nothing may stop the search: neither the clock nor the budget is armed
-    /// and depth one runs to its end. After that the clock applies as it
-    /// stands, and the budget is what the iterations before this one left.
+    /// The limits one iteration of a deepening search runs under. Until a
+    /// depth has completed there is no move to answer with, so neither the
+    /// clock nor the budget is armed and depth one runs to its end. After
+    /// that the clock applies as it stands, and the budget is what the
+    /// iterations before this one left.
     pub fn for_iteration(&self, answered: bool, spent: u64) -> Self {
         if !answered {
             return Self::starting_at(self.started, None, u64::MAX);
@@ -174,9 +157,7 @@ impl Limits {
         Self {
             started: self.started,
             clock: self.clock,
-            // a search with no budget keeps none: subtracting from the
-            // sentinel would leave a number still past any real search, but
-            // saying so plainly costs less than explaining that
+            // a search with no budget keeps none
             nodes: if self.nodes == u64::MAX {
                 u64::MAX
             } else {
@@ -275,9 +256,9 @@ mod tests {
 
     #[test]
     fn an_iteration_is_not_begun_once_the_soft_share_of_a_clock_has_gone() {
-        // well clear of the boundary on both sides: the helper reads the
-        // clock again inside the call, so a test standing a millisecond
-        // from the share would fail on any scheduling stall that long
+        // well clear of the boundary on both sides: the call reads the
+        // clock again, so a test a millisecond from the share would fail on
+        // any scheduling stall that long
         let soft = Duration::from_millis(SOFT_LIMIT_PERCENT as u64 * 10);
         assert!(
             a_second_of(Clock::Share, soft - Duration::from_millis(50))
@@ -291,8 +272,6 @@ mod tests {
 
     #[test]
     fn a_named_move_time_is_spent_to_its_deadline() {
-        // the interface asked for this much thinking rather than for a move
-        // by some clock of its own, so there is nothing to save by stopping:
         // an elapsed share that a clock budget would refuse is still begun
         let late = Duration::from_millis(990);
         assert!(a_second_of(Clock::Fixed, late).worth_another_iteration(true));
@@ -301,8 +280,6 @@ mod tests {
 
     #[test]
     fn a_search_on_no_clock_begins_every_iteration_it_is_asked_for() {
-        // a node budget, a bare depth and an unlimited search all stop on
-        // something the elapsed time says nothing about
         assert!(
             Limits::starting_at(Instant::now(), None, 1_000).worth_another_iteration(true),
             "a node budget was cut short by the clock"
@@ -312,8 +289,6 @@ mod tests {
 
     #[test]
     fn the_first_iteration_is_begun_whatever_the_clock_says() {
-        // nothing has been answered yet, so stopping here would answer with
-        // no move at all
         assert!(already_spent().worth_another_iteration(false));
         assert!(!already_spent().worth_another_iteration(true));
     }
@@ -326,8 +301,7 @@ mod tests {
             Some(Clock::Share(Duration::from_secs(2))),
             u64::MAX,
         );
-        // a second has gone already, so the second iteration has one left and
-        // does not start the two seconds again
+        // the second iteration does not start the two seconds again
         assert!(limits.for_iteration(true, 0).elapsed() >= Duration::from_secs(1));
     }
 

@@ -5,19 +5,13 @@
 //! fixed depth with a fixed table, and how many of the points on offer the
 //! moves it chose were worth.
 //!
-//! The tactical suite says whether the search still finds the move. Nearly
-//! every position in it has one answer, and a change that makes the engine
-//! worse at quiet play can leave its count exactly where it was. This says
-//! whether the evaluation still prefers the same kind of position, which is
-//! the other half of the question, and a change that moves one and not the
-//! other is worth being able to see.
-//!
-//! It grades rather than passes or fails. Each position carries up to ten
-//! moves with a score out of a hundred, so a move that is second best is
-//! worth most of the points and the total moves by a little where a count of
-//! solved positions would not move at all.
-//!
-//! Deterministic for the reason the tactical suite is: a fixed depth and a
+//! The tactical suite says whether the search still finds the move, and a
+//! change that makes the engine worse at quiet play can leave its count
+//! where it was. This says whether the evaluation still prefers the same
+//! kind of position. It grades rather than passes or fails: each position
+//! carries up to ten moves with a score out of a hundred, so a second best
+//! move is worth most of the points and the total moves by a little where a
+//! count of solved positions would not move at all. A fixed depth and a
 //! fixed table make the total exact and the same on any machine, which is
 //! what lets it gate rather than only report.
 
@@ -26,19 +20,15 @@ use crate::engine::SearchConfig;
 use crate::tactics;
 use std::fmt;
 
-/// The depth every position is searched to.
+/// The depth every position is searched to, the tactical suite's six, and
+/// part of what the total below means.
 ///
-/// The same six the tactical suite uses, and part of what the total below
-/// means the way the bench's depth is part of what its node count means. The
-/// suite takes 57.4, 60.3, 61.9 and 63.3 percent of its points at depths four
-/// to seven, so it discriminates at any of them; what decides is the clock.
-/// Six takes about thirteen seconds here, where seven takes thirty five for
-/// another one and a half points, and the two fifths of the points it leaves
-/// are already plenty of room for the total to move in either direction.
-///
-/// Five times the positions of the tactical suite for not much more than its
-/// time: a quiet middlegame cuts off far sooner than a Win At Chess tactic
-/// does.
+/// The suite takes 57.4, 60.3, 61.9 and 63.3 percent of its points at depths
+/// four to seven, so it discriminates at any of them; what decides is the
+/// clock. Six takes about thirteen seconds here, where seven takes thirty
+/// five for another one and a half points. Five times the tactical suite's
+/// positions for not much more than its time, since a quiet middlegame cuts
+/// off far sooner than a tactic does.
 pub const DEPTH: u8 = 6;
 
 /// The table every position is searched with, part of the total for the same
@@ -46,11 +36,8 @@ pub const DEPTH: u8 = 6;
 pub const TABLE_BYTES: usize = 16 * 1024 * 1024;
 
 /// How many of the suite's points the search takes at that depth with that
-/// table.
-///
-/// Exact, not a floor. A change that raises it has to update this number in
-/// the same commit, which is what puts the improvement in the diff rather
-/// than leaving it to be noticed later or not at all.
+/// table. Exact, not a floor: a change that moves it updates this number in
+/// the same commit, which puts the movement in the diff.
 pub const EXPECTED_POINTS: u32 = 100176;
 
 const SUITE: &str = include_str!("../strategy.epd");
@@ -67,11 +54,9 @@ pub fn theme(id: &str) -> &str {
 }
 
 /// A position's graded moves and what each is worth, in the order the file
-/// lists them, which is the source's order of preference.
-///
-/// The file is generated and committed, so a line that does not read is a
-/// broken suite rather than an input to be handled: it panics the way the
-/// tactical suite's reader does.
+/// lists them, which is the source's order of preference. The file is
+/// generated and committed, so a line that does not read is a broken suite
+/// and panics.
 pub fn points(position: &Position) -> Vec<(&str, u32)> {
     let operand = position
         .operations
@@ -107,7 +92,7 @@ pub struct ThemeReport {
     /// The points on offer, which is the top score of each position.
     pub available: u32,
     /// How many of the positions the search played a top scoring move in,
-    /// which is what the tactical suite's pass count measures.
+    /// the tactical suite's measure.
     pub top_moves: usize,
 }
 
@@ -126,8 +111,7 @@ impl ThemeReport {
 #[derive(Debug, Clone)]
 pub struct Report {
     pub depth: u8,
-    /// The table the run used, which is part of what the totals mean and so
-    /// is carried rather than read back off the constant.
+    /// The table the run used, part of what the totals mean.
     pub table_bytes: usize,
     pub themes: Vec<ThemeReport>,
 }
@@ -160,8 +144,7 @@ impl Report {
 
 impl fmt::Display for Report {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
-        // the name column is as wide as the widest theme, one of which runs
-        // to three words joined by slashes
+        // the name column is as wide as the widest theme
         let width = self
             .themes
             .iter()
@@ -206,14 +189,11 @@ impl fmt::Display for Report {
     }
 }
 
-/// Runs the suite under the settings given.
-///
-/// The search itself is the tactical suite's runner, which already deepens
-/// each position the way a game would and reports the move it settled on.
-/// With `bm` holding the top scoring moves its `passed` says the search
-/// played one of them, so all that is left here is to look the move it played
-/// up in the position's points, which is nothing when it played something the
-/// source did not grade.
+/// Runs the suite under the settings given. The search is the tactical
+/// suite's runner; with `bm` holding the top scoring moves its `passed` says
+/// the search played one of them, and the move it played is looked up in
+/// the position's points, which is nothing for a move the source did not
+/// grade.
 pub fn run_suite(
     positions: &[Position],
     depth: u8,
@@ -266,10 +246,10 @@ mod tests {
     use crate::board::Board;
     use std::collections::HashSet;
 
-    /// The points on offer, which is what the shares this suite prints are
-    /// taken out of and what the development notes publish beside the total.
-    /// A line whose top score changed would move it and leave the total
-    /// where it was, so it is pinned here rather than only printed.
+    /// The points on offer, which the shares are taken out of and
+    /// docs/DEVELOPMENT.md quotes beside the total. A line whose top score
+    /// changed would move it and leave the total where it was, so it is
+    /// pinned rather than only printed.
     const AVAILABLE: u32 = 149_703;
 
     #[test]
@@ -279,10 +259,9 @@ mod tests {
                 .unwrap_or_else(|e| panic!("{} does not parse: {}", position.id, e));
             let graded = points(position);
             assert!(!graded.is_empty(), "{} grades no moves", position.id);
-            // the file names its moves the way the engine writes its own, so
-            // a move the position does not offer is a file the search can
-            // never score against, and castling is where the two notations
-            // would part company first
+            // a move the position does not offer is one the search can never
+            // score against, and castling is where the two notations would
+            // part company first
             let generated: Vec<String> = board
                 .generate_moves()
                 .iter()
@@ -311,8 +290,8 @@ mod tests {
                 .filter(|&&(_, score)| score == top)
                 .map(|&(play, _)| play)
                 .collect();
-            // exactly the moves at the top score, no more and no less: one
-            // dropped from a tie would call a best move a miss
+            // exactly the moves at the top score: one dropped from a tie
+            // would call a best move a miss
             assert_eq!(
                 named,
                 scoring,
@@ -357,9 +336,7 @@ mod tests {
 
     /// Ignored because it searches all fifteen hundred positions. A job of
     /// its own runs it in ci, and `cargo test --workspace --release --
-    /// --ignored` runs it by hand; leaving it in the default run would spend
-    /// those minutes on three platforms that would agree with each other
-    /// every time.
+    /// --ignored` runs it by hand.
     #[test]
     #[ignore]
     fn the_strategy_suite_scores_what_it_scored_before() {

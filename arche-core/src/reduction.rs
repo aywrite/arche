@@ -4,39 +4,31 @@
 //! The reduction ledger: what each sampled reduced scout decided, and
 //! whether a fail low it was trusted on threw a move away.
 //!
-//! The late move reduction trusts a scout. A quiet move searched late is
-//! asked a zero width question a ply shallower, and a scout that fails low
-//! answers for the move at the node's full depth: the move is never
-//! searched at the depth the node has. The census records what the
-//! ordering earned; this ledger records what trusting the scout decided,
-//! one event per sampled reduced scout, taken in `windowed` where the
-//! scout's answer comes back. The features on a row are the ones the
-//! decision could have read cheaply, which is what a reduction policy
-//! would be fit on.
+//! The late move reduction trusts a scout: a quiet move searched late is
+//! asked a zero width question a ply shallower, and a scout that fails
+//! low answers for the move at the node's full depth. This ledger records
+//! what trusting the scout decided, one event per sampled reduced scout,
+//! taken in `windowed` where the scout's answer comes back. The features
+//! on a row are the ones the decision could have read cheaply, which is
+//! what a reduction policy would be fit on.
 //!
-//! The label comes from a replay. A fail low is the trusted answer, so the
-//! replay asks the counterfactual the trust skipped: the reference search,
-//! on the position the move left, to the full depth the move was denied,
-//! over the full window. The row is `harmful` when that answer, seen from
-//! the node that reduced, stands above the alpha the scout was read
-//! against: the full search would have raised alpha on a move the scout
-//! wrote off. A fail high needs no replay, because the mechanism already
-//! re-searched the move; its cost is the wasted scout, which the row
-//! prices in nodes. The high rows stay in the stream at the same rate all
-//! the same: they are the denominator a policy's propensities are read
-//! against, and the wasted-cost column.
+//! The label comes from a replay of the counterfactual the trust skipped:
+//! the reference search on the position the move left, to the full depth
+//! the move was denied, over the full window. The row is `harmful` when
+//! that answer, seen from the node that reduced, stands above the alpha
+//! the scout was read against. A fail high needs no replay, since the
+//! mechanism already re-searched the move; its cost is the wasted scout,
+//! priced in nodes. The high rows stay in the stream at the same rate as
+//! the denominator a policy's propensities are read against.
 //!
-//! Late move pruning adds a third outcome. A move it drops is never
-//! scouted at all, so a sampled skip is recorded where the loop passes
-//! it over: the same features, no cost, and the outcome word `skipped`.
-//! The search never makes a skipped move, so one that turns out illegal
-//! when the recorder makes it is not recorded, since the skip denied it
-//! nothing. The replay treats a skipped row as it treats a fail low:
-//! the counterfactual is the full depth search the skip denied.
+//! Late move pruning adds a third outcome. A sampled skip is recorded
+//! where the loop passes the move over: the same features, no cost, and
+//! the outcome word `skipped`. A skipped move that turns out illegal when
+//! the recorder makes it is not recorded, since the skip denied it
+//! nothing. The replay treats a skipped row as a fail low.
 //!
-//! The recorder hangs off an engine the way the census does, and an engine
-//! without one searches exactly the tree it searched before there was a
-//! ledger at all, which is what the pinned bench counts say.
+//! An engine without a ledger searches exactly the tree it searched before
+//! there was one, which is what the pinned bench counts say.
 
 use crate::bench::Position;
 use crate::board::Board;
@@ -50,44 +42,40 @@ use crate::residual;
 use crate::value::Value;
 use std::fmt;
 
-/// What the ledger contributes to a sampling key: an arbitrary constant
-/// under the census's rule. The five salts now in use differ within their
-/// top three bits, so at any rate coarser than one in eight a node kept
-/// here is not one the census or the shortcut kinds keep.
+/// What the ledger contributes to a sampling key. The five salts in use
+/// (this, the census's and the three shortcut kinds') differ in their top
+/// three bits, so at any rate coarser than one in eight a node kept here
+/// is not one the others keep.
 const SALT: u64 = 0x6d84_3b2f_51c9_07ea;
 
 /// The key a scout's answer is sampled by: the position the scout judged,
-/// the node's depth, and nothing about the run, exactly as the census
-/// builds one, so two runs of the same search record the same scouts.
+/// the node's depth, and nothing about the run, as the census builds one.
 pub fn sample_key(position_key: u64, depth: u8) -> u64 {
     position_key ^ SALT ^ u64::from(depth).wrapping_mul(DEPTH_SPREAD)
 }
 
 /// About one record in every this many events, unless the command says
-/// otherwise. The scouts run sparser than the census's events, since only
-/// a late quiet move at depth offers one, and every fail low kept is a
-/// reference search in the replay; this rate keeps a run at the bench's
-/// depth to minutes, and a run that wants a stratum whole lowers it.
+/// otherwise. Every fail low kept is a reference search in the replay;
+/// this rate keeps a run at the bench's depth to minutes, and a run that
+/// wants a stratum whole lowers it.
 pub const DEFAULT_EVERY: u32 = 1_000;
 
 /// Under this many replayed rows a cell prints its counts and no rate: a
 /// percentage over a handful of rows reads as a finding and is noise.
 const THIN: usize = 30;
 
-/// What the zero width scout answered, against the alpha it was asked
-/// about, or that no scout was asked at all.
+/// What the zero width scout answered against the alpha it was asked
+/// about, or that no scout was asked.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum Scout {
     /// At or under alpha: the answer the reduction trusts, and the one the
     /// replay checks.
     Low,
-    /// Above alpha: the move earned the full depth and was re-searched, so
-    /// there is no decision left to check, only the scout's cost.
+    /// Above alpha: the move was re-searched, so there is no decision left
+    /// to check, only the scout's cost.
     High,
-    /// Never asked: late move pruning dropped the move from the node.
-    /// The most censored decision the search makes, and the replay
-    /// checks it exactly as it checks a fail low, since what was denied
-    /// is the same full depth search.
+    /// Never asked: late move pruning dropped the move. Replayed exactly as
+    /// a fail low, since what was denied is the same full depth search.
     Skipped,
 }
 
@@ -103,13 +91,10 @@ impl Scout {
 }
 
 /// The move loop's half of an event: the reduced move and what the node
-/// knew about it at the moment it decided to scout it. Held in the move
-/// loop while the ledger is armed and handed to `windowed`, which finishes
-/// the event when the scout answers.
-///
-/// The features come from `late_move::features`, which is the one place
-/// they are derived: the gate's call and this one are the same function
-/// over the same node, so a row cannot say something the score did not.
+/// knew about it when it decided to scout it. Built while the ledger is
+/// armed and handed to `windowed`, which finishes the event when the scout
+/// answers. The features are `late_move::features`'s, the derivation the
+/// gate scored, so a row cannot say something the score did not.
 #[derive(Clone, Copy, Debug)]
 pub(crate) struct Staged {
     /// The move, kept so the recorder can step it back for the node's own
@@ -120,26 +105,22 @@ pub(crate) struct Staged {
     pub(crate) features: late_move::Features,
 }
 
-/// One reduced scout answering.
-///
-/// Everything is owned, as a census event is: an event outlives the search
-/// that took it.
+/// One reduced scout answering. Everything is owned: an event outlives the
+/// search that took it.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct Event {
-    /// The position the reduced move left, as the board prints one, last
-    /// on the row. The side to move in it is the side the move was played
-    /// against, so a score searched from it is negated before it is read
-    /// beside `alpha`.
+    /// The position the reduced move left, as the board prints one. Its
+    /// side to move is the side the move was played against, so a score
+    /// searched from it is negated before it is read beside `alpha`.
     pub fen: String,
     /// The depth of the node that reduced, the check extension included.
-    /// The move was denied a search at `depth - 1`, which is the depth the
-    /// replay searches the fen to.
+    /// The move was denied a search at `depth - 1`, which the replay
+    /// searches the fen to.
     pub depth: u8,
-    /// The window the node stood in at the scout, read from its bounds the
-    /// way the census reads them.
+    /// The window the node stood in at the scout, read from its bounds.
     pub window: Window,
     /// The move's place among the searched moves. Never under the late
-    /// move threshold, which is what made the move late.
+    /// move threshold.
     pub index: usize,
     /// The moves searched: `index + 1` on a scouted row, whose move is
     /// among them, and `index` on a skipped row, whose move never was.
@@ -157,27 +138,24 @@ pub struct Event {
     pub killer: bool,
     /// What the node's table probe had given it.
     pub tt: census::Table,
-    /// The node's static evaluation less its beta. The eval is the
-    /// reducing node's own, taken at record time for kept events alone by
-    /// stepping the move back and replaying it; computing it for every
-    /// scout to fill a column is what the census's precedent refuses.
+    /// The reducing node's static evaluation less its beta, taken at
+    /// record time for kept events alone by stepping the move back;
+    /// computing it for every scout to fill a column is what the census's
+    /// precedent refuses.
     pub eval_beta: i32,
     /// The node's alpha less the same evaluation: how far the eval stood
-    /// from the bound the scout was actually asked about.
+    /// from the bound the scout was asked about.
     pub alpha_gap: i32,
-    /// The alpha the scout was read against, which is the bar the replay's
-    /// answer is held to.
+    /// The alpha the scout was read against, which the replay's answer is
+    /// held to.
     pub alpha: Score,
-    /// What the scout answered.
     pub scout: Scout,
-    /// The nodes the scout spent: zero on a skipped row, where no scout
-    /// ran.
+    /// The nodes the scout spent: zero on a skipped row.
     pub cost: u64,
-    /// How many plies shallower the scout ran: the flat reduction's one,
-    /// the deep reduction's two, or zero on a skipped row. The label
-    /// logic does not read it; the counterfactual on a fail low or a
-    /// skip is the full depth answer whichever decision was trusted
-    /// instead.
+    /// How many plies shallower the scout ran: one for the flat reduction,
+    /// two for the deep, zero on a skipped row. The label does not read
+    /// it; the counterfactual is the full depth answer whichever was
+    /// trusted.
     pub reduction: u8,
 }
 
@@ -203,8 +181,8 @@ pub struct Row {
 
 impl Row {
     /// Whether trusting the scout threw a move away: the reference's
-    /// answer, seen from the node that reduced, stands above the alpha the
-    /// scout was read against, strictly. An answer equal to alpha is a
+    /// answer, seen from the node that reduced, stands strictly above the
+    /// alpha the scout was read against. An answer equal to alpha is a
     /// fail low the scout was right about. None where nothing was
     /// replayed.
     pub fn harmful(&self) -> Option<bool> {
@@ -230,32 +208,25 @@ pub struct Report {
     pub depth: u8,
     pub every: u32,
     /// The most events the run would keep. Stated in the header only when
-    /// it is not the default, the way the census header states its own.
+    /// it is not the default.
     pub cap: usize,
     /// The file the positions came from, or none for the bench's own.
     pub suite: Option<String>,
     /// Positions of the suite the recording run searched.
     pub positions: usize,
-    /// Every scout offered, kept or not: the denominator the rows are read
-    /// against.
+    /// Every scout offered, kept or not: the denominator.
     pub events: u64,
     /// Events the buffer had no room for.
     pub overflowed: u64,
-    /// Fail lows the replay could not put an answer on, because the fen
-    /// did not parse. Counted rather than labelled, so every label below
-    /// has a search behind it.
+    /// Replayable rows whose fen did not parse, counted rather than
+    /// labelled, so every label has a search behind it.
     pub unplayable: usize,
     pub rows: Vec<Row>,
 }
 
-/// Record, then replay, the residuals discipline: a reference search run
-/// inside the measured one would write into the table the measured search
-/// is reading, so the replay waits for the suite and owns an engine and a
-/// table of its own.
-///
-/// `suite` names the file the positions came from, for the header alone,
-/// on the residual run's terms. None is the bench's own suite and nothing
-/// here reads the positions any differently either way.
+/// Record, then replay, for `residual::run`'s reason. `suite` names the
+/// file the positions came from, for the header alone; None is the
+/// bench's own suite.
 pub fn run(
     positions: &[Position],
     suite: Option<&str>,
@@ -283,14 +254,11 @@ pub fn run(
 }
 
 /// The counterfactual on every fail low and every skip: what the full
-/// search would have said about the move the search wrote off.
-///
-/// The engine is the residuals replay's exactly: the reference, with a
-/// table of its own cleared before every sample and no clock, for the
-/// reasons `residual::replay` gives. The fen carries the fifty move
-/// counter and not the path, with everything that section says that
-/// costs. A fail high is passed through unreplayed: the mechanism
-/// re-searched the move itself, so there is no trusted answer to check.
+/// search would have said about the move the search wrote off. The engine
+/// is the residuals replay's, cleared before every sample, and the fen
+/// carries the counter and not the path, for the reasons and with the
+/// costs `residual::replay` gives. A fail high is passed through
+/// unreplayed.
 pub fn replay(events: &[Event]) -> (Vec<Row>, usize) {
     let mut engine = AlphaBeta::with_config(
         Board::new(),
@@ -319,8 +287,7 @@ pub fn replay(events: &[Event]) -> (Vec<Row>, usize) {
         );
         let reference = match outcome {
             SearchOutcome::Complete(result) => result.score,
-            // no move to make: the rules fix what the position is worth,
-            // as the residuals replay scores the same case
+            // no move to make: scored by rule, as the residuals replay does
             SearchOutcome::GameOver => {
                 if engine.board.in_check() && !engine.board.has_legal_move() {
                     Value::mated(0).score
@@ -348,36 +315,32 @@ pub struct Band {
     pub replayed: usize,
 }
 
-/// The scouts of one depth, counted the way the summary line prints them.
-/// By depth and not pooled, for the census's reason: the depths are
-/// reached in wildly different numbers.
+/// The scouts of one depth, as the summary line prints them. By depth and
+/// not pooled, since the depths are reached in wildly different numbers.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub struct Summary {
     pub depth: u8,
     /// The scouted rows at this depth: a fail low or a fail high each.
     pub scouts: usize,
-    /// The fail lows among them, which is the share the reduction trusts.
+    /// The fail lows among them: the share the reduction trusts.
     pub low: usize,
-    /// The skipped rows beside the scouted ones: no scout ran, and every
-    /// one of them is replayed.
+    /// The skipped rows, beside the scouted ones; every one is replayed.
     pub skipped: usize,
-    /// Rows with a reference answer, the fail lows and the skips, the
+    /// Rows with a reference answer (the fail lows and the skips): the
     /// denominator of every rate below.
     pub replayed: usize,
     pub harmful: usize,
     /// The replayed rows split by the move's index: 4 to 7, 8 to 15, and
     /// 16 and past.
     pub index_bands: [Band; 3],
-    /// The replayed rows split by the history fraction, `history` over
-    /// `history_max`: exactly zero, under a tenth, under half, half and
-    /// up, and below zero. The last is appended rather than put in its
-    /// place at the foot, so a summary line printed before the history
-    /// went signed reads the same in its first four cells as one printed
-    /// after.
+    /// The replayed rows split by `history` over `history_max`: exactly
+    /// zero, under a tenth, under half, half and up, and below zero. The
+    /// last is appended rather than put at the foot, so a summary line
+    /// printed before the history went signed reads the same in its first
+    /// four cells.
     pub history_bands: [Band; 5],
 }
 
-/// Which index band a row falls in.
 fn index_band(index: usize) -> usize {
     match index {
         0..=7 => 0,
@@ -386,8 +349,7 @@ fn index_band(index: usize) -> usize {
     }
 }
 
-/// Which history fraction band a row falls in. A move the table has marked
-/// down is its own band and a move with no history is its own band,
+/// A marked down move and a move with no history are each their own band
 /// whatever the denominator; past that the fraction is read in integers,
 /// so no rounding sits under a boundary.
 fn history_band(history: i32, history_max: i32) -> usize {
@@ -466,8 +428,8 @@ impl Report {
     }
 }
 
-/// A share as the summary prints one, or a `-` when nothing stands under
-/// it: a figure with no denominator is not a zero.
+/// A share as the summary prints one, or a `-` with no denominator: a
+/// figure with nothing under it is not a zero.
 fn share(part: usize, of: usize) -> String {
     if of == 0 {
         "-".to_string()
@@ -476,8 +438,7 @@ fn share(part: usize, of: usize) -> String {
     }
 }
 
-/// A cell's harmful rate, or its bare counts when the cell is thin: a rate
-/// over a handful of rows is not a rate.
+/// A cell's harmful rate, or its bare counts when the cell is thin.
 fn cell(band: Band) -> String {
     if band.replayed >= THIN {
         share(band.harmful, band.replayed)
@@ -499,9 +460,9 @@ fn cell(band: Band) -> String {
 /// column, zero for its cost and its reduction, and carries a reference
 /// and a label the way a fail low does.
 ///
-/// The header states the events beside the records, always, for the
-/// census header's reason: a distribution says nothing until the reader
-/// knows how many chances there were to be in it.
+/// The header always states the events beside the records: a distribution
+/// says nothing until the reader knows how many chances there were to be
+/// in it.
 impl fmt::Display for Report {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         write!(f, "reductions depth {} every {}", self.depth, self.every)?;
@@ -509,8 +470,8 @@ impl fmt::Display for Report {
             write!(f, " cap {}", self.cap)?;
         }
         // the bench's own suite reads as absent, the way the cap does. A
-        // run over another suite says so, because a threshold chosen on
-        // one set of positions and read back on the same set has checked
+        // run over another suite says so, since a threshold chosen on one
+        // set of positions and read back on the same set has checked
         // nothing
         if let Some(suite) = &self.suite {
             write!(f, " epd {}", suite)?;
@@ -560,7 +521,7 @@ impl fmt::Display for Report {
         writeln!(f)?;
         writeln!(f, "summary")?;
         let summaries = self.summaries();
-        // said rather than left out: a run that kept nothing is a fact
+        // a run that kept nothing is a fact about the run
         if summaries.is_empty() {
             writeln!(f, "records 0")?;
         }
@@ -605,8 +566,7 @@ mod tests {
     use crate::recorder::fixtures::{recording_leaves_the_search_where_it_was, suite};
     use crate::recorder::{DEFAULT_CAP, Sampler};
 
-    /// An event made up, for the tests that drive the replay and the
-    /// printer on rows the test chose.
+    /// An event made up.
     fn made_up(fen: &str, depth: u8, alpha: Score, scout: Scout) -> Event {
         Event {
             fen: fen.to_string(),
@@ -642,9 +602,8 @@ mod tests {
         }
     }
 
-    /// The key decides on the node alone and the ledger draws apart from
-    /// the census and the shortcut kinds: the same node keys differently
-    /// under every one of them.
+    /// The same node keys differently under the ledger, the census and
+    /// every shortcut kind.
     #[test]
     fn a_key_is_the_node_and_nothing_about_the_run() {
         let position = 0x0123_4567_89ab_cdef;
@@ -658,13 +617,11 @@ mod tests {
         }
     }
 
-    /// The sign every label rests on. The fen on a row is the position
-    /// the reduced move left, its side to move the side the move was
-    /// played against, so the replay's answer is negated before it meets
-    /// alpha. A side left facing a bare queen is lost, the answer negated
-    /// is well above any alpha, and the scout that wrote the move off
-    /// threw a winning move away: harmful. The two fens differ only in
-    /// which side holds the queen.
+    /// The sign every label rests on: the replay's answer is from the side
+    /// the move was played against, so it is negated before it meets
+    /// alpha. A side left facing a bare queen is lost, so the scout that
+    /// wrote the move off threw a winning move away. This fen and the
+    /// next differ only in which side holds the queen.
     #[test]
     fn a_fail_low_the_full_search_would_raise_alpha_on_is_harmful() {
         let events = vec![made_up("7k/8/8/8/8/8/8/1Q5K b - - 0 1", 3, 0, Scout::Low)];
@@ -677,9 +634,8 @@ mod tests {
         assert_eq!(rows[0].label_word(), "harmful");
     }
 
-    /// The same ask where the side to move holds the queen: the answer
-    /// negated is far under alpha, the full search agrees with the scout,
-    /// and the row is harmless.
+    /// The same ask where the side to move holds the queen: the full search
+    /// agrees with the scout.
     #[test]
     fn a_fail_low_the_full_search_agrees_with_is_harmless() {
         let events = vec![made_up("7k/8/8/8/8/8/1q6/7K b - - 0 1", 3, 0, Scout::Low)];
@@ -690,8 +646,7 @@ mod tests {
         assert_eq!(rows[0].label_word(), "harmless");
     }
 
-    /// An answer exactly at alpha raises nothing, so the boundary is
-    /// harmless: the label is strict, as the crossing is in residuals.
+    /// An answer exactly at alpha raises nothing: the label is strict.
     #[test]
     fn an_answer_landing_on_alpha_is_harmless() {
         let row = Row {
@@ -706,10 +661,8 @@ mod tests {
         assert_eq!(raised.harmful(), Some(true));
     }
 
-    /// A skipped move is replayed on the fail low's terms: the search
-    /// wrote it off without even a scout, so the counterfactual is the
-    /// same full depth answer. The bare queen fens are the two fail low
-    /// tests', and the labels land the same way.
+    /// A skipped move is replayed on the fail low's terms. The bare queen
+    /// fens are the two fail low tests', and the labels land the same way.
     #[test]
     fn a_skipped_move_the_full_search_would_raise_alpha_on_is_harmful() {
         let mut event = made_up("7k/8/8/8/8/8/8/1Q5K b - - 0 1", 4, 0, Scout::Skipped);
@@ -725,8 +678,7 @@ mod tests {
         assert_eq!(rows[0].label_word(), "harmful");
     }
 
-    /// The same ask where the skip was right: the full search agrees the
-    /// move raises nothing, and the row is harmless.
+    /// The same ask where the skip was right.
     #[test]
     fn a_skipped_move_the_full_search_agrees_with_is_harmless() {
         let events = vec![made_up(
@@ -742,10 +694,8 @@ mod tests {
         assert_eq!(rows[0].label_word(), "harmless");
     }
 
-    /// A fail high is kept and never replayed. Its fen is one no engine
-    /// could search, so a replay that touched it would say so in the
-    /// unplayable count; the row comes back with no reference and no
-    /// label.
+    /// A fail high is kept and never replayed: its fen is unreadable, so a
+    /// replay that touched it would show in the unplayable count.
     #[test]
     fn a_fail_high_is_recorded_and_not_replayed() {
         let events = vec![made_up("not a position", 3, 0, Scout::High)];
@@ -758,7 +708,7 @@ mod tests {
     }
 
     /// A fail low whose fen does not parse is counted rather than
-    /// labelled, the residuals rule.
+    /// labelled.
     #[test]
     fn an_unreadable_fail_low_is_counted_not_labelled() {
         let events = vec![made_up("not a position", 3, 0, Scout::Low)];
@@ -767,9 +717,8 @@ mod tests {
         assert_eq!(unplayable, 1);
     }
 
-    /// A position with no move to make is scored by rule, as the residuals
-    /// replay scores the same case: the side to move is stalemated, the
-    /// answer is a draw, and a draw at or under alpha is harmless.
+    /// A stalemated side to move is a draw by rule, and a draw at or under
+    /// alpha is harmless.
     #[test]
     fn a_replayed_stalemate_is_scored_by_rule() {
         let events = vec![made_up("7k/5Q2/6K1/8/8/8/8/8 b - - 0 1", 3, 10, Scout::Low)];
@@ -779,9 +728,8 @@ mod tests {
         assert_eq!(rows[0].harmful(), Some(false));
     }
 
-    /// The row's fields in the order the printer's comment names them,
-    /// with the fen last, and a fail high printing `-` where a replayed
-    /// row has values rather than moving the columns.
+    /// The row's fields in the order the printer's comment names them, and
+    /// a fail high printing `-` rather than moving the columns.
     #[test]
     fn a_row_reads_left_to_right_with_the_fen_last() {
         let low = Row {
@@ -931,8 +879,7 @@ mod tests {
         );
     }
 
-    /// A replayed row for the summary tests, landed in the band the test
-    /// names by its index and its history.
+    /// A replayed row for the summary tests, with alpha 0.
     fn replayed(depth: u8, index: usize, history: i32, harmful: bool) -> Row {
         let mut event = made_up("4k3/8/8/8/8/8/8/4K3 b - - 0 1", depth, 0, Scout::Low);
         event.index = index;
@@ -941,15 +888,14 @@ mod tests {
         event.history_max = 40;
         Row {
             event,
-            // alpha is 0, so a positive answer negated stays under it and
-            // a negative one crosses it
+            // a positive answer negated stays under alpha and a negative
+            // one crosses it
             reference: Some(if harmful { -50 } else { 50 }),
         }
     }
 
     /// The summary's counts, pinned against rows made up to land one in
-    /// each band: the low share, the replayed count, the harmful rate,
-    /// and the two splits.
+    /// each band.
     #[test]
     fn the_summary_counts_the_scouts_and_where_the_harm_fell() {
         let mut high = made_up("4k3/8/8/8/8/8/8/4K3 b - - 0 1", 5, 0, Scout::High);
@@ -1029,7 +975,7 @@ mod tests {
         );
     }
 
-    /// Past thirty replayed rows a cell earns its rate, and the thin cells
+    /// Past `THIN` replayed rows a cell earns its rate, and the thin cells
     /// beside it keep their counts.
     #[test]
     fn a_cell_prints_a_rate_only_past_thirty_rows() {
@@ -1050,9 +996,9 @@ mod tests {
         );
     }
 
-    /// A skipped row is counted beside the scouts rather than among
-    /// them: no scout ran, so the low share's denominator leaves it out,
-    /// and its replay lands in the same bands a fail low's does.
+    /// A skipped row is counted beside the scouts, out of the low share's
+    /// denominator, and its replay lands in the same bands a fail low's
+    /// does.
     #[test]
     fn a_skipped_row_is_counted_beside_the_scouts() {
         let mut skip = made_up("4k3/8/8/8/8/8/8/4K3 b - - 0 1", 5, 0, Scout::Skipped);
@@ -1081,8 +1027,7 @@ mod tests {
         );
     }
 
-    /// The history fraction's boundaries, read in integers: a tenth and a
-    /// half land in the bands their names say.
+    /// A tenth and a half land in the bands their names say.
     #[test]
     fn the_history_bands_split_where_their_names_say() {
         assert_eq!(history_band(0, 40), 0);
@@ -1093,9 +1038,7 @@ mod tests {
         assert_eq!(history_band(40, 40), 3);
         // no history at all is the zero band, with nothing divided
         assert_eq!(history_band(0, 0), 0);
-        // a move the table has marked down is the band appended after the
-        // four, whatever the denominator: the fraction it would make is
-        // not on the same scale as the rest
+        // a marked down move is the appended band whatever the denominator
         assert_eq!(history_band(-1, 40), 4);
         assert_eq!(history_band(-8192, 0), 4);
     }
@@ -1110,8 +1053,7 @@ mod tests {
     }
 
     /// The header states a cap off the default, an overflow and an
-    /// unplayable count, the way the residuals header does, and none of
-    /// them on an ordinary run.
+    /// unplayable count, and none of them on an ordinary run.
     #[test]
     fn the_header_says_when_the_run_was_capped_or_dropped_something() {
         let mut report = report_of(Vec::new());
@@ -1136,18 +1078,14 @@ mod tests {
         );
     }
 
-    /// A run over the suite: every row holds together. The fen parses,
-    /// the index is past the late move threshold and inside the searched
-    /// and generated counts, the history fits its denominator, and a fail
-    /// low carries an answer where a fail high carries none.
+    /// A run over the suite: every row holds together, and all three scout
+    /// outcomes appear.
     #[test]
     fn a_run_records_rows_that_hold_together() {
-        // depth six rather than five, because the run has to hold all three
-        // scout outcomes and a fail high is the rare one. At depth five the
-        // 2026-09-13 mobility refit leaves none at any rate: the sampled
-        // late quiets there all fail low or are skipped. At six there are a
-        // handful, and one in five of the events is enough to catch them
-        // while keeping the run smaller than the old one was.
+        // depth six rather than five, because a fail high is the rare
+        // outcome. At depth five the 2026-09-13 mobility refit leaves none
+        // at any rate; at six there are a handful, and one in five of the
+        // events is enough to catch them
         let report = run(&suite(), None, 6, 5, DEFAULT_CAP);
         assert_eq!(report.positions, 2);
         assert!(!report.rows.is_empty(), "nothing was recorded");
@@ -1161,8 +1099,8 @@ mod tests {
             assert!(e.history <= e.history_max, "{:?}", row);
             assert!(e.depth >= 3, "{:?}", row);
             if e.scout == Scout::Skipped {
-                // no scout ran and the move is not among the searched,
-                // and the skip never fires under the model gate's floor
+                // no scout ran, the move is not among the searched, and the
+                // skip never fires under the model gate's floor
                 assert_eq!(e.searched, e.index, "{:?}", row);
                 assert_eq!(e.cost, 0, "{:?}", row);
                 assert_eq!(e.reduction, 0, "{:?}", row);
@@ -1176,9 +1114,6 @@ mod tests {
             }
             assert_eq!(row.reference.is_some(), e.scout != Scout::High, "{:?}", row);
         }
-        // all three answers are in the stream: the lows and the skips are
-        // what the replay labels and the highs are the propensity
-        // denominator
         assert!(report.rows.iter().any(|row| row.event.scout == Scout::Low));
         assert!(report.rows.iter().any(|row| row.event.scout == Scout::High));
         assert!(
@@ -1189,10 +1124,9 @@ mod tests {
         );
     }
 
-    /// The ledger's contract, asked the way `fixtures` asks all three, at
-    /// depth five so the armed runs reach skip events: the recorder makes
-    /// and unmakes a skipped move on the live board, and this is the test
-    /// that says the search did not notice.
+    /// The ledger's contract, at depth five so the armed runs reach skip
+    /// events: the recorder makes and unmakes a skipped move on the live
+    /// board, and this says the search did not notice.
     #[test]
     fn recording_leaves_the_measured_search_where_it_was() {
         let skipped = std::cell::Cell::new(0usize);
@@ -1214,8 +1148,8 @@ mod tests {
         assert!(skipped.get() > 0, "the armed runs never reached a skip");
     }
 
-    /// The rate of zero and the depth of zero are held to one, so the
-    /// header states the run that happened.
+    /// A rate of zero and a depth of zero run as one, and the header says
+    /// so.
     #[test]
     fn a_rate_of_zero_is_reported_as_the_rate_that_ran() {
         let report = run(&suite(), None, 0, 0, 50);
@@ -1230,8 +1164,7 @@ mod tests {
         );
     }
 
-    /// A run over a suite of its own says so in the header, so rows
-    /// recorded over other positions are never read as the bench's.
+    /// A run over a suite of its own says so in the header.
     #[test]
     fn the_header_names_a_suite_that_is_not_the_benchs() {
         let named = run(&suite(), Some("held_out.epd"), 2, 0, DEFAULT_CAP);
