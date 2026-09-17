@@ -15,6 +15,7 @@ use arche_core::SearchParameters;
 use arche_core::bench;
 use arche_core::{PvLine, SearchResult};
 use std::io::{BufRead, Stdout, Write};
+use std::ops::RangeInclusive;
 
 /// The `Hash` option's range, in megabytes, as the handshake advertises it.
 /// A `bench hash` takes the same range.
@@ -36,15 +37,8 @@ const HASH_MAX_MB: u64 = {
 /// sends a `setoption` is told the table it is going to get.
 const HASH_DEFAULT_MB: u64 = (arche_core::DEFAULT_TABLE_BYTES / (1024 * 1024)) as u64;
 
-// a default outside the advertised range fails the build rather than the game
+// a default outside the advertised range is caught here rather than in a game
 const _: () = assert!(HASH_DEFAULT_MB >= HASH_MIN_MB && HASH_DEFAULT_MB <= HASH_MAX_MB);
-
-/// A `Hash` value held to the advertised range. One outside it is asking for
-/// more table than we offer rather than making a mistake worth refusing, so
-/// the nearest size offered is what it gets.
-fn clamp_hash(megabytes: u64) -> u64 {
-    megabytes.clamp(HASH_MIN_MB, HASH_MAX_MB)
-}
 
 /// The `Move Overhead` option's range, in milliseconds. Zero, because an
 /// interface on the same machine may cost nothing worth holding back. Five
@@ -56,15 +50,24 @@ const OVERHEAD_MAX_MS: u64 = 5_000;
 // only the top: a u64 cannot fall below a minimum of zero
 const _: () = assert!(DEFAULT_MOVE_OVERHEAD_MS <= OVERHEAD_MAX_MS);
 
-/// A `Move Overhead` held to the advertised range, as a `Hash` is.
-fn clamp_overhead(millis: u64) -> u64 {
-    millis.clamp(OVERHEAD_MIN_MS, OVERHEAD_MAX_MS)
+/// Where a spin option's value goes. A row names its own, and `set_option`
+/// matches over this, so a variant with no arm fails the build.
+#[derive(Clone, Copy)]
+enum Setting {
+    Hash,
+    Threads,
+    MoveOverhead,
 }
 
 /// What kind of thing an option is, as the handshake says it.
 enum OptionKind {
-    /// A number in a range.
-    Spin { default: u64, min: u64, max: u64 },
+    /// A number in a range, and what that number is read into.
+    Spin {
+        default: u64,
+        min: u64,
+        max: u64,
+        setting: Setting,
+    },
     /// Pressed rather than set: no value and no state to advertise.
     Button,
 }
@@ -76,8 +79,8 @@ struct UciOption {
 }
 
 /// The options, in the order the handshake says them. The one statement of
-/// what exists: a test holds `set_option`'s arms to these names, so an option
-/// added without its arm fails a test rather than an interface.
+/// what exists: a row carries its name, its kind, and for a spin the range
+/// it advertises and the setting that range is read into.
 const OPTIONS: &[UciOption] = &[
     UciOption {
         name: "Hash",
@@ -85,6 +88,7 @@ const OPTIONS: &[UciOption] = &[
             default: HASH_DEFAULT_MB,
             min: HASH_MIN_MB,
             max: HASH_MAX_MB,
+            setting: Setting::Hash,
         },
     },
     UciOption {
@@ -99,6 +103,7 @@ const OPTIONS: &[UciOption] = &[
             default: 1,
             min: 1,
             max: 1,
+            setting: Setting::Threads,
         },
     },
     UciOption {
@@ -107,6 +112,7 @@ const OPTIONS: &[UciOption] = &[
             default: DEFAULT_MOVE_OVERHEAD_MS,
             min: OVERHEAD_MIN_MS,
             max: OVERHEAD_MAX_MS,
+            setting: Setting::MoveOverhead,
         },
     },
 ];
@@ -115,13 +121,53 @@ impl UciOption {
     /// The handshake line for this option.
     fn advert(&self) -> String {
         match self.kind {
-            OptionKind::Spin { default, min, max } => format!(
+            OptionKind::Spin {
+                default, min, max, ..
+            } => format!(
                 "option name {} type spin default {} min {} max {}",
                 self.name, default, min, max
             ),
             OptionKind::Button => format!("option name {} type button", self.name),
         }
     }
+}
+
+/// A spin value read off a `setoption` line and held to the range its row
+/// advertises: what to apply, and what to say when it had to be held.
+#[derive(Debug, PartialEq, Eq)]
+struct Held {
+    value: u64,
+    said: Option<String>,
+}
+
+/// Reads one spin value for the row named, holding it to that row's range.
+/// Parsed rather than counted: a count reads a negative as a spent clock,
+/// which is right for a clock and wrong here, since a negative is outside
+/// every range the handshake advertises. A value outside the range is asking
+/// for more than we offer rather than making a mistake worth refusing, so it
+/// gets the nearest end and is told which, in the word it was sent as rather
+/// than the number that was read. The range travels as one argument rather
+/// than as two ends of the same type, which would swap unnoticed.
+fn read_spin(name: &str, range: RangeInclusive<u64>, params: &Params) -> Result<Held, String> {
+    let (word, value) = match (params.value("value"), params.parse::<u64>("value")) {
+        (Some(word), Param::Read(value)) => (word, value),
+        (_, Param::Unreadable(word)) => {
+            return Err(format!("unrecognised {} value: {}", name, word));
+        }
+        _ => return Err(format!("{} was sent without a value", name)),
+    };
+    let held = value.clamp(*range.start(), *range.end());
+    let said = (held != value).then(|| {
+        format!(
+            "info string {} {} is outside {} to {}, using {}",
+            name,
+            word,
+            range.start(),
+            range.end(),
+            held
+        )
+    });
+    Ok(Held { value: held, said })
 }
 
 pub struct UCI<T: Engine, W: Write> {
@@ -299,91 +345,56 @@ impl<T: Engine, W: Write> UCI<T, W> {
         let Some(name) = params.phrase("name", "value") else {
             return Err(format!("setoption without an option name: {}", line));
         };
-        match name.as_str() {
-            "Hash" => self.set_hash(&params),
-            "Threads" => self.set_threads(&params),
-            "Move Overhead" => self.set_move_overhead(&params),
-            // a button carries no value. Only the table is emptied: the
-            // killers and the history start empty at every `go` anyway
-            "Clear Hash" => {
+        let Some(option) = OPTIONS.iter().find(|option| option.name == name) else {
+            return Err(format!("unrecognised option: {}", name));
+        };
+        match option.kind {
+            // a button carries no value. Read off the kind rather than the
+            // name, so every button empties the table; there is one today,
+            // and a second would want an enum of its own beside `Setting`.
+            // Only the table is emptied: the killers and the history start
+            // empty at every `go` anyway
+            OptionKind::Button => {
                 self.engine.clear_table();
                 Ok(())
             }
-            other => Err(format!("unrecognised option: {}", other)),
+            OptionKind::Spin {
+                min, max, setting, ..
+            } => self.set_spin(option.name, min..=max, setting, &params),
         }
     }
 
-    /// Give the engine a table of the megabytes asked for. Rebuilding empties
-    /// it, which is what the protocol expects of a size change.
-    fn set_hash(&mut self, params: &Params) -> Result<(), String> {
-        // the word as well as the count, so what is said back is what was
-        // sent: a count reads a negative size as zero
-        let (word, megabytes) = match (params.value("value"), params.count("value")) {
-            (Some(word), Param::Read(megabytes)) => (word, megabytes),
-            (_, Param::Unreadable(word)) => {
-                return Err(format!("unrecognised Hash value: {}", word));
-            }
-            _ => return Err("Hash was sent without a value".to_string()),
-        };
-        let held = clamp_hash(megabytes);
-        if held != megabytes {
-            self.say(format_args!(
-                "info string Hash {} is outside {} to {}, using {}",
-                word, HASH_MIN_MB, HASH_MAX_MB, held
-            ));
+    /// Reads one spin's value, says what the reader had to say about it, and
+    /// puts it where the row asks.
+    fn set_spin(
+        &mut self,
+        name: &str,
+        range: RangeInclusive<u64>,
+        setting: Setting,
+        params: &Params,
+    ) -> Result<(), String> {
+        let Held { value, said } = read_spin(name, range, params)?;
+        if let Some(said) = said {
+            self.say(format_args!("{}", said));
         }
-        if !self.engine.set_table_bytes(held as usize * 1024 * 1024) {
-            return Err(format!(
-                "no memory for a {}MB table, keeping the one we have",
-                held
-            ));
-        }
-        Ok(())
-    }
-
-    /// There is no parallel search. Any count but one is said back and then
-    /// ignored: refusing to play because a match was configured for four
-    /// threads would be worse than playing on one. Said rather than returned
-    /// as an `Err`, because the line was acted on as far as it can be.
-    fn set_threads(&mut self, params: &Params) -> Result<(), String> {
-        // the word rather than the count, for the reason set_hash reads one
-        match (params.value("value"), params.count("value")) {
-            (_, Param::Read(1)) => {}
-            (Some(word), Param::Read(_)) => {
-                self.say(format_args!(
-                    "info string Threads {} was asked for; the engine searches on one",
-                    word
-                ));
+        match setting {
+            // rebuilding the table empties it, which is what the protocol
+            // expects of a size change
+            Setting::Hash => {
+                if !self.engine.set_table_bytes(value as usize * 1024 * 1024) {
+                    return Err(format!(
+                        "no memory for a {}MB table, keeping the one we have",
+                        value
+                    ));
+                }
             }
-            (_, Param::Unreadable(word)) => {
-                return Err(format!("unrecognised Threads value: {}", word));
-            }
-            _ => return Err("Threads was sent without a value".to_string()),
+            // there is no parallel search, so the count is held to one and
+            // nothing is kept. Held and said rather than refused: declining
+            // to play because a match was configured for four threads would
+            // be worse than playing on one
+            Setting::Threads => {}
+            Setting::MoveOverhead => self.move_overhead = value,
         }
-        Ok(())
-    }
-
-    /// How much of each budget to hold back for everything between the search
-    /// answering and the interface having the move.
-    fn set_move_overhead(&mut self, params: &Params) -> Result<(), String> {
-        // parsed rather than counted: a count reads a negative as a spent
-        // clock, and zero is inside this range, so a negative overhead would
-        // be taken as none without a word said
-        let (word, millis) = match (params.value("value"), params.parse::<u64>("value")) {
-            (Some(word), Param::Read(millis)) => (word, millis),
-            (_, Param::Unreadable(word)) => {
-                return Err(format!("unrecognised Move Overhead value: {}", word));
-            }
-            _ => return Err("Move Overhead was sent without a value".to_string()),
-        };
-        let held = clamp_overhead(millis);
-        if held != millis {
-            self.say(format_args!(
-                "info string Move Overhead {} is outside {} to {}, using {}",
-                word, OVERHEAD_MIN_MS, OVERHEAD_MAX_MS, held
-            ));
-        }
-        self.move_overhead = held;
         Ok(())
     }
 
@@ -1008,20 +1019,13 @@ mod tests {
     }
 
     #[test]
-    fn a_hash_size_outside_the_range_offered_is_clamped_to_its_nearest_end() {
-        // asked of the clamp rather than the command: the top of the range
-        // would mean allocating sixteen gigabytes to assert it
-        assert_eq!(clamp_hash(99999), 16384);
-        assert_eq!(clamp_hash(0), 1);
-        assert_eq!(clamp_hash(u64::MAX), 16384);
-        assert_eq!(clamp_hash(256), 256);
-    }
-
-    #[test]
     fn a_hash_value_that_cannot_be_read_leaves_the_table_alone() {
         for line in [
             "setoption name Hash value",
             "setoption name Hash value many",
+            // below zero is outside the range advertised rather than a spent
+            // clock, so it is refused instead of being lifted to the floor
+            "setoption name Hash value -5",
         ] {
             let mut uci = uci();
             // resized first, so what is kept is the size in force rather than
@@ -1036,27 +1040,6 @@ mod tests {
                 said(&uci)
             );
         }
-    }
-
-    #[test]
-    fn a_size_is_said_back_as_the_word_that_was_sent() {
-        // a count reads a negative as zero; what is said back has to be what
-        // the interface typed
-        let mut hash = uci();
-        assert!(hash.handle("setoption name Hash value -5"));
-        assert!(
-            said(&hash).contains("info string Hash -5 is outside 1 to 16384, using 1"),
-            "{}",
-            said(&hash)
-        );
-
-        let mut threads = uci();
-        assert!(threads.handle("setoption name Threads value -1"));
-        assert!(
-            said(&threads).contains("info string Threads -1 was asked for"),
-            "{}",
-            said(&threads)
-        );
     }
 
     #[test]
@@ -1102,7 +1085,7 @@ go depth 3
         ));
         let said = said(&uci);
         assert!(
-            said.contains("info string Threads 4 was asked for"),
+            said.contains("info string Threads 4 is outside 1 to 1, using 1"),
             "{}",
             said
         );
@@ -1141,11 +1124,6 @@ go depth 3
 
     #[test]
     fn a_move_overhead_outside_the_range_offered_is_clamped_and_said_back() {
-        assert_eq!(clamp_overhead(0), 0);
-        assert_eq!(clamp_overhead(50), 50);
-        assert_eq!(clamp_overhead(99999), 5000);
-        assert_eq!(clamp_overhead(u64::MAX), 5000);
-
         let mut uci = uci();
         assert!(uci.handle("setoption name Move Overhead value 99999"));
         assert_eq!(
@@ -1187,24 +1165,92 @@ go depth 3
     }
 
     #[test]
-    fn every_advertised_option_is_answered() {
-        // spins are set to their minimum, so the test does not allocate what
-        // the Hash default advertises
-        let mut uci = uci();
+    fn every_spin_row_is_read_and_held_to_its_own_range() {
+        // asked of the reader rather than of a session, which is what makes
+        // the top of the Hash range assertable: a session would allocate the
+        // sixteen gigabytes it names
+        let spins = OPTIONS
+            .iter()
+            .filter(|option| matches!(option.kind, OptionKind::Spin { .. }))
+            .count();
+        let mut rows = 0;
         for option in OPTIONS {
-            let line = match option.kind {
-                OptionKind::Spin { min, .. } => {
-                    format!("setoption name {} value {}", option.name, min)
-                }
-                OptionKind::Button => format!("setoption name {}", option.name),
+            let OptionKind::Spin { min, max, .. } = option.kind else {
+                continue;
             };
+            rows += 1;
+            let name = option.name;
+            let read = |word: &str| {
+                let line = format!("setoption name {} value {}", name, word);
+                read_spin(name, min..=max, &Params::of(&line))
+            };
+            // what the reader returns for a word it had to hold to `end`
+            let held = |word: &str, end: u64| {
+                Ok(Held {
+                    value: end,
+                    said: Some(format!(
+                        "info string {} {} is outside {} to {}, using {}",
+                        name, word, min, max, end
+                    )),
+                })
+            };
+
+            for end in [min, max] {
+                assert_eq!(
+                    read(&end.to_string()),
+                    Ok(Held {
+                        value: end,
+                        said: None
+                    }),
+                    "{} {}",
+                    name,
+                    end
+                );
+            }
+
+            // one past each end, where there is a past: a u64 cannot fall
+            // below a minimum of zero, and a row whose top is the largest
+            // u64 has nothing above it
+            let mut past = Vec::new();
+            if let Some(below) = min.checked_sub(1) {
+                past.push((below.to_string(), min));
+            }
+            if let Some(above) = max.checked_add(1) {
+                past.push((above.to_string(), max));
+                // the same value spelled with a leading zero, so the
+                // sentence is held to saying the word back rather than the
+                // number it read
+                past.push((format!("0{}", above), max));
+                // too large to hold is as unreadable as a word to the parse,
+                // where a count read it as everything there is
+                past.push((u64::MAX.to_string(), max));
+            }
+            for (word, end) in past {
+                assert_eq!(read(&word), held(&word, end), "{} {}", name, word);
+            }
+
+            // a negative is no more readable than a word: it is outside every
+            // range the handshake advertises
+            for word in ["many", "-1", "18446744073709551616"] {
+                assert_eq!(
+                    read(word),
+                    Err(format!("unrecognised {} value: {}", name, word)),
+                    "{} {}",
+                    name,
+                    word
+                );
+            }
             assert_eq!(
-                uci.set_option(&line),
-                Ok(()),
-                "the handshake advertises {} and set_option refuses it",
-                option.name
+                read_spin(name, min..=max, &Params::of("setoption name x value")),
+                Err(format!("{} was sent without a value", name)),
+                "{}",
+                name
             );
         }
+        // the loop passes over a row it does not recognise in silence, so
+        // what it read is counted against what the table holds
+        assert_eq!(rows, spins, "a spin row went unread");
+        assert!(rows > 0, "no spin row was read at all");
     }
 
     #[test]
