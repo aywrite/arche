@@ -3,24 +3,17 @@
 
 //! What a command line argument is called and what words it takes.
 //!
-//! One declaration per argument, because the same list has three jobs and they
-//! have to agree. It says which words may stand where the depth would, so a
-//! keyword there reads as the depth being left out rather than mistyped. It
-//! says which words are known at all, so one that is not can be refused rather
-//! than ignored. And it spells the argument for the usage, so the help cannot
-//! describe a line the parser does not take.
-//!
-//! The third of those is why the spelling is built here rather than written
-//! out. `--help` used to be a string kept in step by hand, and the test that
-//! guarded it held it against a list written out by hand as well, so the two
-//! could drift together and pass.
+//! One declaration per argument, because the same list says which words may
+//! stand where the depth would, which words are known at all, and how the
+//! usage spells the line. `--help` used to be a string kept in step by hand,
+//! guarded by a test written out by hand as well, so the two could drift
+//! together and pass.
 //!
 //! The refusal is for arguments only. A uci interface is entitled to send an
-//! option meant for another engine and the protocol says to carry on; a person
-//! typing `hsah 16` at a shell wanted `hash 16` and would rather be told. The
-//! bench is both, and takes the strict reading, because it is a measurement
-//! either way and one measured at settings nobody asked for is worse than one
-//! not taken.
+//! option meant for another engine and the protocol says to carry on; a
+//! person typing `hsah 16` at a shell would rather be told. The bench is both
+//! and takes the strict reading: a measurement at settings nobody asked for
+//! is worse than one not taken.
 
 use crate::params::Params;
 
@@ -33,14 +26,8 @@ pub struct Keyword {
 /// One argument the binary takes: `<name> [depth] [<keyword> <value>]... [<flag>]...`.
 pub struct Command {
     pub name: &'static str,
-    /// Whether a bare number after the name is a depth.
-    ///
-    /// An argument that runs no search has none to give, and saying so here
-    /// is what keeps the usage and the parser agreeing: the spelling leaves
-    /// `[depth]` out, and a word standing where the depth would is refused
-    /// rather than read as one. Without it the help would describe a word
-    /// the parser does not take, which is the drift this module exists to
-    /// prevent.
+    /// Whether a bare number after the name is a depth. When not, the
+    /// spelling leaves `[depth]` out and a word standing there is refused.
     pub depth: bool,
     /// The words that take a value after them, in the order the usage spells
     /// them.
@@ -53,7 +40,7 @@ pub struct Command {
 
 impl Command {
     /// Whether the argument knows this word. A word it knows may stand where
-    /// the depth would, which is how a line that names no depth is read.
+    /// the depth would.
     pub fn takes(&self, word: &str) -> bool {
         self.keywords.iter().any(|k| k.word == word) || self.flags.contains(&word)
     }
@@ -63,32 +50,22 @@ impl Command {
     }
 
     /// The first word of the line that this argument does not know, if there
-    /// is one.
+    /// is one. Walked rather than compared as a set, because a keyword claims
+    /// the value after it: `hash 16` claims the `16`.
     ///
-    /// Walked rather than compared as a set, because a keyword's value is not
-    /// itself a word to recognise: `hash 16` claims the `16` after it, and a
-    /// set would have to decide whether `16` was known on its own.
-    ///
-    /// The first word is whatever invoked us and the second may be the depth,
-    /// which is a number this cannot judge: `depth: abc` is the reading a
-    /// caller's own parse gives it, and a better one, which is why this runs
-    /// after that parse rather than before.
+    /// The first word is whatever invoked us. The second may be the depth,
+    /// which the caller's own parse judges and refuses as `depth: abc`, so
+    /// this runs after that parse.
     pub fn unclaimed<'a>(&self, params: &Params<'a>) -> Option<&'a str> {
         let words = params.words();
-        // from one, because the first word is whatever invoked us
         let mut at = 1;
         while at < words.len() {
             let word = words[at];
             if self.is_keyword(word) {
-                // the keyword and the value it takes. A keyword standing last
-                // claims a word that is not there, which leaves the setting
-                // absent and at its default, the reading it already had
+                // a keyword standing last claims a word that is not there,
+                // which leaves the setting at its default
                 at += 2;
             } else if self.flags.contains(&word) || (self.depth && at == 1) {
-                // a flag stands alone, and the second word is the depth,
-                // which the caller's own parse judges. An argument that takes
-                // no depth has nothing standing there, so the word is judged
-                // here like any other
                 at += 1;
             } else {
                 return Some(word);
@@ -97,9 +74,9 @@ impl Command {
         None
     }
 
-    /// `Ok` unless the line names a word this argument does not know. Shaped
-    /// like the other refusals, `<what>: <word>`, because the caller prints
-    /// them all the same way.
+    /// `Ok` unless the line names a word this argument does not know. The
+    /// refusal is shaped `<what>: <word>` like the others, since the caller
+    /// prints them all the same way.
     pub fn claim(&self, params: &Params) -> Result<(), String> {
         match self.unclaimed(params) {
             None => Ok(()),
@@ -185,25 +162,20 @@ mod tests {
         assert_eq!(unclaimed("probe 4 audit extra"), Some("extra".to_string()));
     }
 
-    /// The value a keyword takes is claimed by the keyword, so a number that
-    /// would mean nothing on its own does not read as unknown.
     #[test]
     fn a_keywords_value_is_not_judged_on_its_own() {
         assert_eq!(unclaimed("probe every 50"), None);
         assert_eq!(unclaimed("probe cap 20"), None);
     }
 
-    /// A keyword last on the line claims a word that is not there. The setting
-    /// stays absent and takes its default, which is the reading it had before
-    /// anything was refused.
+    /// A keyword last on the line claims a word that is not there, and the
+    /// setting takes its default.
     #[test]
     fn a_keyword_with_no_value_left_is_not_a_refusal() {
         assert_eq!(unclaimed("probe 4 every"), None);
     }
 
-    /// The second word is the depth, which this cannot judge: the caller's own
-    /// parse says `depth: abc`, which is the better message, and it runs
-    /// first.
+    /// The caller's own parse judges the depth and says `depth: abc`.
     #[test]
     fn the_depths_place_is_left_to_the_caller() {
         assert_eq!(unclaimed("probe abc"), None);
@@ -217,16 +189,13 @@ mod tests {
         );
     }
 
-    /// An argument with no search to run has no depth to take, so the usage
-    /// leaves the word out rather than describing one the parser refuses.
     #[test]
     fn an_argument_that_runs_no_search_spells_no_depth() {
         assert_eq!(DEPTHLESS.spelling(), "read [epd <file>]");
     }
 
-    /// And nothing may stand in the depth's place, because there is no place.
-    /// A number there is a word the argument does not know, which is the same
-    /// refusal any other unknown word gets.
+    /// A number where the depth would be is a word the argument does not
+    /// know, and gets the refusal any other unknown word gets.
     #[test]
     fn a_depthless_argument_refuses_a_word_where_the_depth_would_be() {
         assert_eq!(

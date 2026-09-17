@@ -1,14 +1,9 @@
 // SPDX-License-Identifier: GPL-3.0-or-later
 // Copyright (C) 2022-2026 Andrew Wright
 
-//! Sessions against the real binary, the way an interface runs it.
-//!
-//! Everything else in the suite drives the engine in process, which covers
-//! the parsing and the search and says nothing about the program: argument
-//! handling, the stdin loop, the reader thread, exit codes. These spawn the
-//! executable cargo built, script a session against its pipes, and assert on
-//! the transcript, the docker smoke test's job, on every push and on every
-//! platform the release ships for.
+//! Sessions against the real binary, the way an interface runs it: argument
+//! handling, the stdin loop, the reader thread and exit codes, which the in
+//! process tests cannot see.
 //!
 //! Every wait has a deadline, so a binary that stops answering fails the
 //! suite rather than hanging it, and the child is killed on drop so a failed
@@ -21,7 +16,7 @@ use std::thread;
 use std::time::{Duration, Instant};
 
 /// Generous, because it bounds a real search on whatever machine runs the
-/// suite rather than measuring one.
+/// suite.
 const DEADLINE: Duration = Duration::from_secs(30);
 
 struct Session {
@@ -61,7 +56,7 @@ impl Session {
     }
 
     /// Reads until a line satisfies the test, and returns it. Everything read
-    /// on the way is kept for the failure message and for later asserts.
+    /// on the way is kept in `said`.
     fn wait_for(&mut self, what: impl Fn(&str) -> bool) -> String {
         let deadline = Instant::now() + DEADLINE;
         loop {
@@ -81,8 +76,7 @@ impl Session {
         }
     }
 
-    /// Nothing arrives for this long. The one assertion only waiting can
-    /// make, so the span is short and the claim is "held", not "never".
+    /// Nothing arrives for this long. The claim is "held", not "never".
     fn stays_quiet_for(&mut self, span: Duration) {
         if let Ok(line) = self.lines.recv_timeout(span) {
             panic!("expected silence, got {:?} (after {:#?})", line, self.said);
@@ -161,8 +155,8 @@ fn a_stop_ends_an_infinite_search_with_a_real_move() {
 
 #[test]
 fn an_infinite_search_holds_its_answer_for_the_stop() {
-    // black is mated, so the search is over at once; only the hold can be
-    // what the silence is
+    // black is mated, so the search is over at once and only the hold can
+    // be what the silence is
     let mut s = Session::start(&[]);
     s.say("position fen 7k/6Q1/6K1/8/8/8/8/8 b - - 0 1");
     s.say("go infinite");
@@ -175,8 +169,7 @@ fn an_infinite_search_holds_its_answer_for_the_stop() {
 
 #[test]
 fn the_interface_hanging_up_ends_the_engine() {
-    // no quit: the pipe closing has to be enough, or a dead interface leaves
-    // an engine searching for a stop that cannot come
+    // no quit: the pipe closing has to be enough
     let mut s = Session::start(&[]);
     s.say("position startpos");
     s.say("go infinite");
@@ -202,9 +195,8 @@ fn a_stop_with_nothing_running_is_taken_in_silence() {
     assert!(s.finished().success());
 }
 
-/// The nodes the deepest info line of one search reports. The search is run
-/// from here, so the lines read are that search's own rather than every
-/// line the session has said.
+/// The nodes the deepest info line of one search reports, read from the
+/// lines that search said.
 fn nodes_of_a_search(s: &mut Session, depth: u8) -> u64 {
     let from = s.said.len();
     s.say("position startpos");
@@ -223,10 +215,8 @@ fn nodes_of_a_search(s: &mut Session, depth: u8) -> u64 {
 
 #[test]
 fn the_clear_hash_button_empties_the_table() {
-    // the same search three times over: cold, then on the table the first
-    // one left behind, then after the button. The middle one is cheaper for
-    // what the table holds, and the third costs what the cold one did,
-    // which is what an emptied table looks like from outside the engine
+    // the same search three times: cold, warm on what the first left
+    // behind, then after the button, which costs what the cold one did
     let mut s = Session::start(&[]);
     s.say("setoption name Hash value 1");
     let cold = nodes_of_a_search(&mut s, 6);
@@ -253,24 +243,18 @@ fn the_clear_hash_button_empties_the_table() {
     assert!(s.finished().success());
 }
 
-/// The sharp middlegame the engine's own tests search, which has enough
-/// going on at the root for a cut-short iteration to change its mind.
+/// A middlegame with enough going on at the root for a cut-short iteration
+/// to change its mind.
 const SHARP_MIDDLEGAME: &str = "r1b2rk1/ppp1qppp/4pn2/6N1/Qn1P4/2NBP3/PP3PPP/R3K2R w KQ - 9 12";
 
 #[test]
 fn the_move_a_swap_answers_with_opens_the_last_line_said() {
     // a node budget rather than a clock, so the iteration is cut short on
-    // the same node on every machine and this is a fixture rather than a
-    // race: this budget leaves an iteration with a better move than the
-    // depth before it answered, which is the swap. Without a report of its
-    // own the last line an interface read would open with the move being
-    // given up, and fastchess calls that out on every move it happens on.
-    // The budget moves whenever the tree does, in the commit that moved it.
-    // The swap is at depth ten here, which finishes at 2,114,707 nodes, and
-    // the depth before it at 1,038,433, so the budget has to land between the
-    // move being found and the iteration ending. Depth ten reports the new
-    // move from about 1,995,000 nodes on, so anything from there to the
-    // 2,114,707 does; this sits between the two with room either side
+    // the same node on every machine. The budget has to land after depth
+    // ten finds its better move and before the iteration ends: depth nine
+    // finishes at 1,038,433 nodes, depth ten reports the new move from
+    // about 1,995,000 and finishes at 2,114,707. The budget moves whenever
+    // the tree does, in the commit that moved it
     let mut s = Session::start(&[]);
     s.say(&format!("position fen {}", SHARP_MIDDLEGAME));
     s.say("go nodes 2050000");
@@ -329,12 +313,9 @@ fn the_bench_argument_prints_the_line_the_match_tools_read() {
     assert!(s.finished().success());
 }
 
-/// Runs the binary with the arguments given and waits for it, keeping
-/// stdout and stderr apart: the measuring tools read the one and ignore
-/// the other, so a test of a refusal has to see both. The one wait here
-/// without the harness's deadline: stdin is closed, so a binary that fell
-/// through to the uci loop reads nothing and exits, and the exit code
-/// says it went wrong.
+/// Runs the binary with the arguments given and waits for it, keeping stdout
+/// and stderr apart. No deadline: stdin is closed, so a binary that fell
+/// through to the uci loop reads nothing and exits.
 fn run_to_end(args: &[&str]) -> std::process::Output {
     Command::new(env!("CARGO_BIN_EXE_arche"))
         .args(args)
@@ -345,11 +326,8 @@ fn run_to_end(args: &[&str]) -> std::process::Output {
 
 #[test]
 fn a_setting_that_cannot_be_read_is_refused_on_stderr() {
-    // the refusal every measuring tool leans on, asked of each command
-    // that takes settings: the reason goes to stderr with the failing exit
-    // code, and stdout stays empty so no tool mistakes the refusal for a
-    // report. The reason names the setting, since a command takes several
-    // and a tool that got one wrong has to be told which
+    // the reason goes to stderr with exit code 2 and stdout stays empty, so
+    // no measuring tool mistakes the refusal for a report
     for (arguments, reason) in [
         (["bench", "abc"].as_slice(), "unrecognised bench depth: abc"),
         (
@@ -364,9 +342,7 @@ fn a_setting_that_cannot_be_read_is_refused_on_stderr() {
             &["reductions", "every", "abc"],
             "unrecognised reductions every: abc",
         ),
-        // the terms argument runs no search, so it has no rate to be given
-        // a word for. Its suite is the setting that can fail to be read, and
-        // it is refused the same way
+        // terms has no rate; its suite is the setting that can fail to read
         (
             &["terms", "epd", "no/such/file.epd"],
             "unrecognised terms epd: no/such/file.epd",
