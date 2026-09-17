@@ -168,143 +168,52 @@ jobs:
       run:
         shell: bash
     outputs:
-      baseline_name: ${{ steps.find.outputs.baseline_name }}
-      baseline_sha: ${{ steps.find.outputs.baseline_sha }}
-      candidate_name: ${{ steps.find.outputs.candidate_name }}
-      candidate_sha: ${{ steps.find.outputs.candidate_sha }}
-      shards: ${{ steps.split.outputs.shards }}
-      count: ${{ steps.split.outputs.count }}
-      pairs: ${{ steps.split.outputs.pairs }}
-      book: ${{ steps.book.outputs.book }}
-      play_timeout: ${{ steps.timeout.outputs.minutes }}
+      baseline_name: ${{ steps.baseline.outputs.name }}
+      baseline_sha: ${{ steps.baseline.outputs.sha }}
+      candidate_name: ${{ steps.candidate.outputs.name }}
+      candidate_sha: ${{ steps.candidate.outputs.sha }}
+      shards: ${{ steps.plan.outputs.shards }}
+      count: ${{ steps.plan.outputs.count }}
+      pairs: ${{ steps.plan.outputs.pairs }}
+      book: ${{ steps.plan.outputs.book }}
+      play_timeout: ${{ steps.plan.outputs.play_timeout }}
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
           fetch-depth: 0
 
-      - name: Work out what is playing what
-        id: find
-        env:
-          CANDIDATE: ${{ inputs.candidate }}
-          BASELINE: ${{ inputs.baseline }}
-        run: |
-          if [ -n "$CANDIDATE" ]; then
-            sha=$(scripts/resolve_ref.sh "$CANDIDATE") \
-              || { echo "::error::cannot resolve candidate ${CANDIDATE}"; exit 1; }
-            echo "candidate_name=${CANDIDATE}" >> "$GITHUB_OUTPUT"
-            echo "candidate_sha=${sha}" >> "$GITHUB_OUTPUT"
-          else
-            echo "candidate_name=${GITHUB_REF_NAME}" >> "$GITHUB_OUTPUT"
-            echo "candidate_sha=${GITHUB_SHA}" >> "$GITHUB_OUTPUT"
-          fi
+      - uses: aywrite/mache/actions/resolve-ref@60ae41d2503fac1a77f8578c5734d55508d3dd5f # v0.2.0
+        id: candidate
+        with:
+          ref: ${{ inputs.candidate }}
+          label: candidate
+          # nothing named means the commit this was dispatched on
+          when_empty: head
 
-          if [ -n "$BASELINE" ]; then
-            sha=$(scripts/resolve_ref.sh "$BASELINE") \
-              || { echo "::error::cannot resolve baseline ${BASELINE}"; exit 1; }
-            echo "baseline_name=${BASELINE}" >> "$GITHUB_OUTPUT"
-            echo "baseline_sha=${sha}" >> "$GITHUB_OUTPUT"
-            exit 0
-          fi
+      - uses: aywrite/mache/actions/resolve-ref@60ae41d2503fac1a77f8578c5734d55508d3dd5f # v0.2.0
+        id: baseline
+        with:
+          ref: ${{ inputs.baseline }}
+          label: baseline
+          # nothing named means the last full release: no candidates, and not
+          # the tag being released
+          when_empty: last-release
 
-          # the last full release: no candidates, and not the tag being
-          # released
-          tag=$(git tag --list 'v[0-9]*' --sort=-v:refname \
-                | grep -v -- '-' \
-                | grep -v -x "$GITHUB_REF_NAME" \
-                | head -1)
-          echo "baseline_name=${tag}" >> "$GITHUB_OUTPUT"
-          if [ -z "$tag" ]; then
-            echo "::notice::No previous release to compare against, skipping"
-          else
-            echo "baseline_sha=$(git rev-parse "${tag}^{commit}")" >> "$GITHUB_OUTPUT"
-          fi
+      - name: Say so when there is nothing to compare against
+        if: steps.baseline.outputs.sha == ''
+        run: echo "::notice::No previous release to compare against, skipping"
 
-      - name: Work out the shards
-        id: split
-        env:
-          GAMES: ${{ inputs.games }}
-          SHARDS: ${{ inputs.shards }}
-          SPRT: ${{ inputs.sprt }}
-          ELO0: ${{ inputs.elo0 }}
-          ELO1: ${{ inputs.elo1 }}
-          PRIOR_PAIRS: ${{ inputs.prior_pairs }}
-        run: |
-          if [ "$SHARDS" -lt 1 ]; then
-            echo "::error::shards must be at least one, got ${SHARDS}"
-            exit 1
-          fi
-          # checked here because the summary is otherwise the first thing to
-          # read the sprt inputs, after the batch has been played. The boxes
-          # take free text whatever their type says
-          if [ "$SPRT" = "true" ]; then
-            number='^-?[0-9]+(\.[0-9]+)?$'
-            for value in "$ELO0" "$ELO1"; do
-              if ! [[ "$value" =~ $number ]]; then
-                echo "::error::elo0 and elo1 must be numbers, got ${ELO0} and ${ELO1}"
-                exit 1
-              fi
-            done
-            # a count for each of the five scores a pair can end on, as the
-            # last batch's summary printed them. A ratio is the old shape of
-            # this box and is refused. Pasted spaces are dropped, as the
-            # summary drops them, and the digits are capped at eight, where
-            # the summary caps them
-            PRIOR_PAIRS="${PRIOR_PAIRS//[[:space:]]/}"
-            if [ -n "$PRIOR_PAIRS" ] \
-               && ! [[ "$PRIOR_PAIRS" =~ ^[0-9]{1,8}(,[0-9]{1,8}){4}$ ]]; then
-              echo "::error::prior_pairs is a count for each of the five pair scores, got ${PRIOR_PAIRS}"
-              exit 1
-            fi
-            if ! awk -v null="$ELO0" -v alternative="$ELO1" \
-                 'BEGIN { exit !(null < alternative) }'; then
-              echo "::error::elo0 must be below elo1, got ${ELO0} and ${ELO1}"
-              exit 1
-            fi
-          fi
-          # whole pairs a shard, so the run plays a little under what was
-          # asked for
-          pairs=$((GAMES / SHARDS / 2))
-          if [ "$pairs" -lt 1 ]; then
-            echo "::error::${GAMES} games across ${SHARDS} shards is under a pair each"
-            exit 1
-          fi
-          batch=""
-          if [ "$SPRT" = "true" ]; then
-            batch=", one batch of the sprt"
-          fi
-          if [ "$SHARDS" = "1" ]; then
-            echo "::notice::one shard of $((pairs * 2)) games${batch}"
-          else
-            echo "::notice::$((pairs * 2)) games in each of ${SHARDS} shards, $((pairs * 2 * SHARDS)) in all${batch}"
-          fi
-          echo "pairs=${pairs}" >> "$GITHUB_OUTPUT"
-          echo "shards=[$(seq -s, 0 $((SHARDS - 1)))]" >> "$GITHUB_OUTPUT"
-          echo "count=${SHARDS}" >> "$GITHUB_OUTPUT"
-
-      # A book scripts/book.sh has no block for is refused here rather than by
-      # a shard that has already built two engines.
-      - name: Work out the book
-        id: book
-        env:
-          BOOK: ${{ inputs.book }}
-        run: |
-          # held rather than piped into grep, so grep -q leaving early cannot
-          # fail the step under pipefail. -F and -x, so a box holding a
-          # metacharacter or nothing is an unknown name rather than a pattern
-          known=$(scripts/book.sh list)
-          if ! grep -Fxq -- "$BOOK" <<< "$known"; then
-            echo "::error::book ${BOOK} is not one of $(tr '\n' ' ' <<< "$known")"
-            exit 1
-          fi
-          echo "::notice::playing the ${BOOK} book"
-          echo "book=${BOOK}" >> "$GITHUB_OUTPUT"
-
-      # A job timeout takes an expression but expressions have no arithmetic,
-      # so the cap and the half hour for the builds and the upload are added
-      # here.
-      - name: Work out how long a shard is given
-        id: timeout
-        run: echo "minutes=$((MAX_MATCH_MINUTES + 30))" >> "$GITHUB_OUTPUT"
+      - uses: aywrite/mache/actions/plan-shards@60ae41d2503fac1a77f8578c5734d55508d3dd5f # v0.2.0
+        id: plan
+        with:
+          games: ${{ inputs.games }}
+          shards: ${{ inputs.shards }}
+          sprt: ${{ inputs.sprt }}
+          elo0: ${{ inputs.elo0 }}
+          elo1: ${{ inputs.elo1 }}
+          prior_pairs: ${{ inputs.prior_pairs }}
+          book: ${{ inputs.book }}
+          max_match_minutes: ${{ env.MAX_MATCH_MINUTES }}
 
   play:
     needs: resolve
@@ -318,8 +227,6 @@ jobs:
     timeout-minutes: ${{ fromJSON(needs.resolve.outputs.play_timeout) }}
     defaults:
       run:
-        # naming the shell turns on pipefail, without which a fastchess that
-        # died is hidden by the tee it is piped into
         shell: bash
     env:
       SHARD: ${{ matrix.shard }}
@@ -344,13 +251,16 @@ jobs:
         with:
           fetch-depth: 0
 
-      - uses: aywrite/mache/actions/setup@26b95951ba6103ff840c2cee5659dc3ec79b5dd9 # v0.1.0
+      - uses: aywrite/mache/actions/setup@60ae41d2503fac1a77f8578c5734d55508d3dd5f # v0.2.0
         id: tools
 
       # the cache keeps the dependencies; each side is built from an export of
       # its commit
       - uses: Swatinem/rust-cache@6323deb102c322ba6fcbdcafc7e3dddab59af2b6 # v2.9.2
 
+      # Ours rather than the action's. What builds this engine is this
+      # repository's to say, and the same script builds the bench and the
+      # speed comparison, neither of which has a match tool anywhere near it.
       - name: Build both versions
         run: |
           # a pull request head is not fetched by default, and the resolve
@@ -363,73 +273,39 @@ jobs:
           scripts/build_at.sh "$CANDIDATE_SHA" tools/new
           scripts/build_at.sh "$BASELINE_SHA" tools/old
 
-      # The book is counted rather than written down, so a book that changed
-      # size cannot move every shard but the first onto its neighbour's
-      # openings. scripts/book.sh is asked rather than grep because what an
-      # opening is depends on the format. The file and the format are carried
-      # on because the match runs in tools/, where the script is not.
-      - name: Work out the slice of the book
-        run: |
-          book_file=$(scripts/book.sh file "$BOOK")
-          book_format=$(scripts/book.sh format "$BOOK")
-          openings=$(scripts/book.sh count "$BOOK" "tools/${book_file}") \
-            || { echo "::error::no openings in the book"; exit 1; }
-          start=$(python3 -m mache.book_slice --openings "$openings" \
-            --pairs "$PAIRS" --shards "$SHARDS" --shard "$SHARD" --seed "$SEED" \
-            2> slice.txt) || { echo "::error::$(cat slice.txt)"; exit 1; }
-          while read -r remark; do
-            echo "::warning::${remark}"
-          done < slice.txt
-          echo "BOOK_FILE=${book_file}" >> "$GITHUB_ENV"
-          echo "BOOK_FORMAT=${book_format}" >> "$GITHUB_ENV"
-          echo "OPENINGS=${openings}" >> "$GITHUB_ENV"
-          echo "START=${start}" >> "$GITHUB_ENV"
-
-      - name: Play the shard
-        working-directory: tools
-        run: |
-          # fastchess appends to a pgn it is given, and a rerun on the same
-          # runner can find the last attempt's here
-          rm -f games.pgn result.txt config.json
-          # No -sprt, sharded or not. A shard that stopped itself when its own
-          # games settled the question would be one look per shard at a bound
-          # meant for one look, and its games a slice chosen by what they
-          # said. The summary runs the test over all the shards at once.
-          #
-          # tbhits is left off the pgn: no tablebases here.
-          #
-          # INT asks fastchess to stop, report the games so far and exit, and
-          # 124 is how timeout says it sent it. A shard stopped that way
-          # played fewer games, and the summary says so
-          status=0
-          timeout -k 60 -s INT "${MAX_MATCH_MINUTES}m" ./fastchess \
-            -engine "name=$CANDIDATE" cmd=./new \
-            -engine "name=$PREVIOUS" cmd=./old \
-            -each proto=uci "tc=$TIME_CONTROL" "option.Hash=$HASH" \
-            -startup-ms "$STARTUP_MS" \
-            -openings "file=$BOOK_FILE" "format=$BOOK_FORMAT" order=sequential "start=$START" \
-            -rounds "$PAIRS" -repeat -concurrency "$CONCURRENCY" -recover \
-            -pgnout file=games.pgn nodes=true seldepth=true nps=true \
-              hashfull=true timeleft=true latency=true pv=true \
-            | tee result.txt || status=$?
-          if [ "$status" = "124" ]; then
-            echo "STOPPED_BY=the ${MAX_MATCH_MINUTES} minute wall clock cap" >> "$GITHUB_ENV"
-            echo "::warning::shard ${SHARD} hit the ${MAX_MATCH_MINUTES} minute cap before its game count"
-          elif [ "$status" != "0" ]; then
-            exit "$status"
-          else
-            echo "STOPPED_BY=fastchess, at the game count" >> "$GITHUB_ENV"
-          fi
+      - uses: aywrite/mache/actions/play-shard@60ae41d2503fac1a77f8578c5734d55508d3dd5f # v0.2.0
+        id: play
+        with:
+          candidate: ${{ needs.resolve.outputs.candidate_name }}
+          candidate_binary: ./new
+          opponent: ${{ needs.resolve.outputs.baseline_name }}
+          opponent_binary: ./old
+          book: ${{ needs.resolve.outputs.book }}
+          pairs: ${{ needs.resolve.outputs.pairs }}
+          shards: ${{ needs.resolve.outputs.count }}
+          shard: ${{ matrix.shard }}
+          seed: ${{ inputs.seed || github.run_id }}
+          time_control: ${{ inputs.time_control }}
+          hash_mb: ${{ env.HASH }}
+          concurrency: ${{ env.CONCURRENCY }}
+          startup_ms: ${{ env.STARTUP_MS }}
+          max_match_minutes: ${{ env.MAX_MATCH_MINUTES }}
 
       # What it would take to play this shard again. Written whether or not it
-      # finished, since a shard that ended badly is the one looked into.
+      # finished, since a shard that ended badly is the one looked into. Ours
+      # rather than the action's: this is this repository's record of its own
+      # run, scripts/build_corpus.py reads the run and the shard back out of
+      # it, and what built the engine is only sayable here.
       - name: Write the manifest
         if: always()
         env:
           FASTCHESS: ${{ steps.tools.outputs.fastchess }}
           MACHE: ${{ steps.tools.outputs.version }}
+          OPENINGS: ${{ steps.play.outputs.openings }}
+          START: ${{ steps.play.outputs.start }}
+          STOPPED_BY: ${{ steps.play.outputs.stopped_by }}
         run: |
-          # asked for again, since the slice step may not have run
+          # asked for again, since the play action may not have got that far
           book_file=$(scripts/book.sh file "$BOOK") || book_file=unknown
           book_sha=$(sha256sum "tools/${book_file}" | cut -d' ' -f1) || book_sha=unknown
           toolchain=$(rustc -V) || toolchain=unknown
@@ -461,7 +337,7 @@ jobs:
               echo "sprt: off"
             fi
             echo "wall_clock_cap_minutes: ${MAX_MATCH_MINUTES}"
-            # unset when the play step never reached its end
+            # unset when the play action never reached its end
             echo "stopped_by: ${STOPPED_BY:-not recorded, the shard did not finish}"
             echo "runner: $(uname -a)"
             echo "cores: $(nproc)"
@@ -502,93 +378,45 @@ jobs:
         shell: bash
     outputs:
       line: ${{ steps.summary.outputs.line }}
-    env:
-      SHARDS: ${{ needs.resolve.outputs.count }}
-      TIME_CONTROL: ${{ inputs.time_control }}
-      SPRT: ${{ inputs.sprt }}
-      ELO0: ${{ inputs.elo0 }}
-      ELO1: ${{ inputs.elo1 }}
-      PRIOR_PAIRS: ${{ inputs.prior_pairs }}
-      SEED: ${{ inputs.seed || github.run_id }}
-      CANDIDATE: ${{ needs.resolve.outputs.candidate_name }}
-      CANDIDATE_SHA: ${{ needs.resolve.outputs.candidate_sha }}
-      PREVIOUS: ${{ needs.resolve.outputs.baseline_name }}
-      BASELINE_SHA: ${{ needs.resolve.outputs.baseline_sha }}
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
 
       # no harness to build and no book to fetch: this job only reads games
-      - uses: aywrite/mache/actions/setup@26b95951ba6103ff840c2cee5659dc3ec79b5dd9 # v0.1.0
+      - uses: aywrite/mache/actions/setup@60ae41d2503fac1a77f8578c5734d55508d3dd5f # v0.2.0
         with:
           estimator_only: true
 
       # one directory per artifact under shards/, except that a single
-      # artifact is extracted straight into shards/; the find below takes
-      # either. The attempt is in the pattern so a rerun does not count an
-      # earlier attempt's games as well
+      # artifact is extracted straight into shards/; the action takes either.
+      # The attempt is in the pattern so a rerun does not count an earlier
+      # attempt's games as well
       - uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v8.0.1
         with:
           pattern: strength-${{ github.run_id }}-${{ github.run_attempt }}-shard-*
           path: shards
 
-      - name: Summarise the result
+      - uses: aywrite/mache/actions/summarise-match@60ae41d2503fac1a77f8578c5734d55508d3dd5f # v0.2.0
         id: summary
-        run: |
-          mapfile -t games < <(find shards -name games.pgn 2>/dev/null | sort)
-          if [ "${#games[@]}" -eq 0 ]; then
-            echo "::error::no shard of attempt ${GITHUB_RUN_ATTEMPT} uploaded any games. Rerunning the failed jobs alone leaves the shards on the attempt that played them, so rerun all of them."
-            exit 1
-          fi
-          # The estimate is counted from every shard's games, not from a result
-          # block that saw one shard. Games lost to a crash or the clock stay
-          # in it, because choosing what to count after seeing it is not a
-          # measurement; the termination counts sit beside it. Remarks worth
-          # an alert come back on stderr.
-          #
-          # The trailer's base has to name the same build when it is read back
-          # months later. A release tag does; anything else is a ref that
-          # moves, so the sha it resolved to today goes in instead.
-          case "$PREVIOUS" in
-            v[0-9]*.[0-9]*.[0-9]*) base="$PREVIOUS" ;;
-            *) base="${BASELINE_SHA:0:8}" ;;
-          esac
-          estimate=(python3 -m mache.match_estimate "${games[@]}"
-                    --candidate "$CANDIDATE" --baseline "$base"
-                    --tc "$TIME_CONTROL")
-          if [ "$SPRT" = "true" ]; then
-            estimate+=(--elo0 "$ELO0" --elo1 "$ELO1" --prior-pairs "$PRIOR_PAIRS")
-          fi
-          "${estimate[@]}" > report.md 2> remarks.txt \
-            || { echo "::error::the games could not be read"; cat remarks.txt; exit 1; }
-          while read -r remark; do
-            echo "::warning::${remark}"
-          done < remarks.txt
-
-          # to the log as well as the summary: the summary is read from the
-          # run's web page and nowhere else, the pair counts the next batch
-          # needs are in here, and the artifacts expire
-          cat report.md
-
-          trailer=$("${estimate[@]}" --trailer)
-          line="Performance compared to ${PREVIOUS} | $("${estimate[@]}" --line)"
-          echo "::notice::$line"
-          echo "line=${line}" >> "$GITHUB_OUTPUT"
-          {
-            echo "${CANDIDATE} (\`${CANDIDATE_SHA:0:8}\`) against ${PREVIOUS} (\`${BASELINE_SHA:0:8}\`),"
-            echo "over ${#games[@]} of ${SHARDS} shards at ${TIME_CONTROL}."
-            echo
-            cat report.md
-            echo
-            echo "As the trailer for the commit that made the difference:"
-            echo
-            echo '```'
-            echo "$trailer"
-            echo '```'
-            echo
-            echo "The games, the results and a manifest of what each shard played are kept"
-            echo "as the \`strength-${GITHUB_RUN_ID}-${GITHUB_RUN_ATTEMPT}-shard-<i>\` artifacts. The"
-            echo "openings came from seed ${SEED}, which replays this schedule."
-          } >> "$GITHUB_STEP_SUMMARY"
+        with:
+          games: shards
+          candidate: ${{ needs.resolve.outputs.candidate_name }}
+          candidate_sha: ${{ needs.resolve.outputs.candidate_sha }}
+          baseline: ${{ needs.resolve.outputs.baseline_name }}
+          baseline_sha: ${{ needs.resolve.outputs.baseline_sha }}
+          shards: ${{ needs.resolve.outputs.count }}
+          time_control: ${{ inputs.time_control }}
+          sprt: ${{ inputs.sprt }}
+          elo0: ${{ inputs.elo0 }}
+          elo1: ${{ inputs.elo1 }}
+          prior_pairs: ${{ inputs.prior_pairs }}
+          # artifact names belong to this workflow, so the sentence naming
+          # them is written here rather than by the action
+          provenance: >-
+            The games, the results and a manifest of what each shard played
+            are kept as the
+            `strength-${{ github.run_id }}-${{ github.run_attempt }}-shard-<i>`
+            artifacts. The openings came from seed
+            ${{ inputs.seed || github.run_id }}, which replays this schedule.
 
   release-notes:
     needs: summarise
