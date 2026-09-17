@@ -144,130 +144,33 @@ jobs:
       run:
         shell: bash
     outputs:
-      candidate_sha: ${{ steps.find.outputs.candidate_sha }}
-      rungs: ${{ steps.split.outputs.rungs }}
-      count: ${{ steps.split.outputs.count }}
-      pairs: ${{ steps.split.outputs.pairs }}
-      spec: ${{ steps.split.outputs.spec }}
-      book: ${{ steps.book.outputs.book }}
-      play_timeout: ${{ steps.timeout.outputs.minutes }}
+      candidate_sha: ${{ steps.candidate.outputs.sha }}
+      rungs: ${{ steps.plan.outputs.rungs }}
+      count: ${{ steps.plan.outputs.count }}
+      pairs: ${{ steps.plan.outputs.pairs }}
+      spec: ${{ steps.plan.outputs.spec }}
+      book: ${{ steps.plan.outputs.book }}
+      play_timeout: ${{ steps.plan.outputs.play_timeout }}
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
           fetch-depth: 0
 
-      - name: Work out what is being measured
-        id: find
-        env:
-          CANDIDATE: ${{ inputs.candidate }}
-        run: |
-          if [ -n "$CANDIDATE" ]; then
-            sha=$(scripts/resolve_ref.sh "$CANDIDATE") \
-              || { echo "::error::cannot resolve candidate ${CANDIDATE}"; exit 1; }
-          else
-            sha=$GITHUB_SHA
-          fi
-          echo "candidate_sha=${sha}" >> "$GITHUB_OUTPUT"
+      - uses: aywrite/mache/actions/resolve-ref@60ae41d2503fac1a77f8578c5734d55508d3dd5f # v0.2.0
+        id: candidate
+        with:
+          ref: ${{ inputs.candidate }}
+          label: candidate
+          # nothing named means the commit this was dispatched on
+          when_empty: head
 
-      - name: Work out the rungs
-        id: split
-        env:
-          GAMES: ${{ inputs.games }}
-          LADDER: ${{ inputs.ladder }}
-        run: |
-          # whole pairs, an opening from each side, so rounded down to even
-          pairs=$((GAMES / 2))
-          if [ "$pairs" -lt 1 ]; then
-            echo "::error::${GAMES} games against an opponent is under a pair"
-            exit 1
-          fi
-          # an engine with no block is refused here, before a runner builds
-          known=$(scripts/opponent.sh list | tr '\n' ' ')
-          rungs=""
-          spec=""
-          named=" "
-          index=0
-          # split on the commas alone: splitting on whitespace would let a *
-          # in the ladder glob the checkout. Newlines are joined first, since
-          # read stops at one and would silently drop the rungs after it
-          IFS=, read -r -a entries <<< "${LADDER//$'\n'/,}"
-          for rung in "${entries[@]}"; do
-            # spaces after the commas and a trailing comma are not faults
-            rung=${rung// /}
-            [ -n "$rung" ] || continue
-            IFS=: read -r engine tag rating extra <<< "$rung"
-            if [ -z "$engine" ] || [ -z "$tag" ] || [ -z "$rating" ] \
-              || [ -n "$extra" ]; then
-              echo "::error::ladder entry ${rung} is not engine:tag:rating"
-              exit 1
-            fi
-            case " ${known} " in
-              *" ${engine} "*) ;;
-              *) echo "::error::ladder entry ${rung} names ${engine}, which is"\
-                   "not one of ${known}"; exit 1 ;;
-            esac
-            # the tag is part of a file name, an artifact name and the name
-            # the engine plays under
-            case "$tag" in
-              *[!A-Za-z0-9._-]*)
-                echo "::error::ladder entry ${rung} has a tag that is not a name"
-                exit 1 ;;
-            esac
-            case "$rating" in
-              *[!0-9.]*|*.*.*|.)
-                echo "::error::${rung} has no rating on it"; exit 1 ;;
-            esac
-            # a repeated engine and pin would upload twice under one artifact
-            # name and be counted once
-            case "$named" in
-              *" ${engine}-${tag} "*)
-                echo "::error::${engine}-${tag} is in the ladder twice"; exit 1 ;;
-            esac
-            named="${named}${engine}-${tag} "
-            rungs="${rungs}${rungs:+,}"
-            rungs="${rungs}{\"engine\":\"${engine}\",\"tag\":\"${tag}\""
-            rungs="${rungs},\"rating\":\"${rating}\",\"index\":${index}}"
-            # the estimate's ladder has to carry the names the games do
-            spec="${spec}${spec:+,}${engine}-${tag}:${rating}"
-            index=$((index + 1))
-          done
-          if [ "$index" -eq 0 ]; then
-            echo "::error::the ladder is empty"
-            exit 1
-          fi
-          echo "rungs=[${rungs}]" >> "$GITHUB_OUTPUT"
-          echo "count=${index}" >> "$GITHUB_OUTPUT"
-          echo "pairs=${pairs}" >> "$GITHUB_OUTPUT"
-          echo "spec=${spec}" >> "$GITHUB_OUTPUT"
-          if [ "$index" = "1" ]; then
-            echo "::notice::one rung of $((pairs * 2)) games: ${LADDER}"
-          else
-            echo "::notice::${index} rungs of $((pairs * 2)) games each: ${LADDER}"
-          fi
-
-      # A book scripts/book.sh has no block for is refused here rather than by
-      # a rung that has already built an opponent.
-      - name: Work out the book
-        id: book
-        env:
-          BOOK: ${{ inputs.book }}
-        run: |
-          # held rather than piped into grep, so grep -q leaving early cannot
-          # fail the step under pipefail. -F and -x, so a box holding a
-          # metacharacter or nothing is an unknown name rather than a pattern
-          known=$(scripts/book.sh list)
-          if ! grep -Fxq -- "$BOOK" <<< "$known"; then
-            echo "::error::book ${BOOK} is not one of $(tr '\n' ' ' <<< "$known")"
-            exit 1
-          fi
-          echo "::notice::playing the ${BOOK} book"
-          echo "book=${BOOK}" >> "$GITHUB_OUTPUT"
-
-      # A job timeout takes an expression but expressions have no arithmetic,
-      # so the cap and the half hour over it are added here.
-      - name: Work out how long a rung is given
-        id: timeout
-        run: echo "minutes=$((MAX_MATCH_MINUTES + 30))" >> "$GITHUB_OUTPUT"
+      - uses: aywrite/mache/actions/plan-ladder@60ae41d2503fac1a77f8578c5734d55508d3dd5f # v0.2.0
+        id: plan
+        with:
+          games: ${{ inputs.games }}
+          ladder: ${{ inputs.ladder }}
+          book: ${{ inputs.book }}
+          max_match_minutes: ${{ env.MAX_MATCH_MINUTES }}
 
   play:
     needs: resolve
@@ -282,8 +185,6 @@ jobs:
     timeout-minutes: ${{ fromJSON(needs.resolve.outputs.play_timeout) }}
     defaults:
       run:
-        # naming the shell turns on pipefail, without which a fastchess that
-        # died is hidden by the tee it is piped into
         shell: bash
     env:
       ENGINE: ${{ matrix.rung.engine }}
@@ -309,13 +210,16 @@ jobs:
         with:
           fetch-depth: 0
 
-      - uses: aywrite/mache/actions/setup@26b95951ba6103ff840c2cee5659dc3ec79b5dd9 # v0.1.0
+      - uses: aywrite/mache/actions/setup@60ae41d2503fac1a77f8578c5734d55508d3dd5f # v0.2.0
         id: tools
 
       # the cache keeps the dependencies; the engine is built from an export
       # of its commit
       - uses: Swatinem/rust-cache@6323deb102c322ba6fcbdcafc7e3dddab59af2b6 # v2.9.2
 
+      # Ours rather than the action's. What builds this engine is this
+      # repository's to say, and the same script builds the bench and the
+      # speed comparison.
       - name: Build the engine
         run: |
           # a pull request head is not fetched by default, and the resolve
@@ -333,70 +237,40 @@ jobs:
             || { echo "::error::cannot build ${OPPONENT}"; exit 1; }
           ls -l "tools/${OPPONENT}"
 
-      # The book is counted rather than written down, so a book that changed
-      # size cannot move every rung but the first onto its neighbour's
-      # openings. scripts/book.sh is asked rather than grep because what an
-      # opening is depends on the format. The file and the format are carried
-      # on because the match runs in tools/, where the script is not.
-      - name: Work out the slice of the book
-        run: |
-          book_file=$(scripts/book.sh file "$BOOK")
-          book_format=$(scripts/book.sh format "$BOOK")
-          openings=$(scripts/book.sh count "$BOOK" "tools/${book_file}") \
-            || { echo "::error::no openings in the book"; exit 1; }
-          start=$(python3 -m mache.book_slice --openings "$openings" \
-            --pairs "$PAIRS" --shards "$RUNGS" --shard "$INDEX" --seed "$SEED" \
-            2> slice.txt) || { echo "::error::$(cat slice.txt)"; exit 1; }
-          while read -r remark; do
-            echo "::warning::${remark}"
-          done < slice.txt
-          echo "BOOK_FILE=${book_file}" >> "$GITHUB_ENV"
-          echo "BOOK_FORMAT=${book_format}" >> "$GITHUB_ENV"
-          echo "OPENINGS=${openings}" >> "$GITHUB_ENV"
-          echo "START=${start}" >> "$GITHUB_ENV"
-
-      - name: Play the rung
-        working-directory: tools
-        run: |
-          # fastchess appends to a pgn it is given, and a rerun on the same
-          # runner can find the last attempt's here
-          rm -f games.pgn result.txt config.json
-          # fastchess will not send a Hash an engine declares itself unable to
-          # take; such an opponent plays on its own default and the result
-          # block says so. tbhits is left off the pgn: no tablebases here.
-          #
-          # INT asks fastchess to stop, report the games so far and exit, and
-          # 124 is how timeout says it sent it. A rung stopped that way has
-          # fewer games in the fit, and the estimate says so
-          status=0
-          timeout -k 60 -s INT "${MAX_MATCH_MINUTES}m" ./fastchess \
-            -engine "name=${ENGINE_NAME}" "cmd=./${ENGINE_NAME}" \
-            -engine "name=${OPPONENT}" "cmd=./${OPPONENT}" \
-            -each proto=uci "tc=$TIME_CONTROL" "option.Hash=$HASH" \
-            -startup-ms "$STARTUP_MS" \
-            -openings "file=$BOOK_FILE" "format=$BOOK_FORMAT" order=sequential "start=$START" \
-            -rounds "$PAIRS" -repeat -concurrency "$CONCURRENCY" -recover \
-            -pgnout file=games.pgn nodes=true seldepth=true nps=true \
-              hashfull=true timeleft=true latency=true pv=true \
-            | tee result.txt || status=$?
-          if [ "$status" = "124" ]; then
-            echo "STOPPED_BY=the ${MAX_MATCH_MINUTES} minute wall clock cap" >> "$GITHUB_ENV"
-            echo "::warning::${OPPONENT} hit the ${MAX_MATCH_MINUTES} minute cap before its game count"
-          elif [ "$status" != "0" ]; then
-            exit "$status"
-          else
-            echo "STOPPED_BY=fastchess, at the game count" >> "$GITHUB_ENV"
-          fi
+      - uses: aywrite/mache/actions/play-shard@60ae41d2503fac1a77f8578c5734d55508d3dd5f # v0.2.0
+        id: play
+        with:
+          candidate: ${{ env.ENGINE_NAME }}
+          candidate_binary: ./${{ env.ENGINE_NAME }}
+          opponent: ${{ matrix.rung.engine }}-${{ matrix.rung.tag }}
+          opponent_binary: ./${{ matrix.rung.engine }}-${{ matrix.rung.tag }}
+          book: ${{ needs.resolve.outputs.book }}
+          pairs: ${{ needs.resolve.outputs.pairs }}
+          # a rung takes its slice of the book the way a shard does: the
+          # rungs are the shards of one pass over it
+          shards: ${{ needs.resolve.outputs.count }}
+          shard: ${{ matrix.rung.index }}
+          seed: ${{ inputs.seed || github.run_id }}
+          time_control: ${{ inputs.time_control }}
+          hash_mb: ${{ env.HASH }}
+          concurrency: ${{ env.CONCURRENCY }}
+          startup_ms: ${{ env.STARTUP_MS }}
+          max_match_minutes: ${{ env.MAX_MATCH_MINUTES }}
 
       # What it would take to play this rung again. Written whether or not it
-      # finished, since a rung that ended badly is the one looked into.
+      # finished, since a rung that ended badly is the one looked into. Ours
+      # rather than the action's: this is this repository's record of its own
+      # run, and where the opponent came from is only sayable here.
       - name: Write the manifest
         if: always()
         env:
           FASTCHESS: ${{ steps.tools.outputs.fastchess }}
           MACHE: ${{ steps.tools.outputs.version }}
+          OPENINGS: ${{ steps.play.outputs.openings }}
+          START: ${{ steps.play.outputs.start }}
+          STOPPED_BY: ${{ steps.play.outputs.stopped_by }}
         run: |
-          # asked for again, since the slice step may not have run
+          # asked for again, since the play action may not have got that far
           book_file=$(scripts/book.sh file "$BOOK") || book_file=unknown
           book_sha=$(sha256sum "tools/${book_file}" | cut -d' ' -f1) || book_sha=unknown
           toolchain=$(rustc -V) || toolchain=unknown
@@ -428,7 +302,7 @@ jobs:
             echo "concurrency: ${CONCURRENCY}"
             echo "startup_ms: ${STARTUP_MS}"
             echo "wall_clock_cap_minutes: ${MAX_MATCH_MINUTES}"
-            # unset when the play step never reached its end
+            # unset when the play action never reached its end
             echo "stopped_by: ${STOPPED_BY:-not recorded, the rung did not finish}"
             echo "runner: $(uname -a)"
             echo "cores: $(nproc)"
@@ -468,22 +342,16 @@ jobs:
         shell: bash
     outputs:
       line: ${{ steps.estimate.outputs.line }}
-    env:
-      TIME_CONTROL: ${{ inputs.time_control }}
-      LADDER_SPEC: ${{ needs.resolve.outputs.spec }}
-      RUNGS: ${{ needs.resolve.outputs.count }}
-      SEED: ${{ inputs.seed || github.run_id }}
-      CANDIDATE_SHA: ${{ needs.resolve.outputs.candidate_sha }}
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
 
       # no harness to build and no book to fetch: this job only reads games
-      - uses: aywrite/mache/actions/setup@26b95951ba6103ff840c2cee5659dc3ec79b5dd9 # v0.1.0
+      - uses: aywrite/mache/actions/setup@60ae41d2503fac1a77f8578c5734d55508d3dd5f # v0.2.0
         with:
           estimator_only: true
 
       # one directory per artifact under rungs/, except that a single artifact
-      # is extracted straight into rungs/; the find below takes either. The
+      # is extracted straight into rungs/; the action takes either. The
       # attempt is in the pattern so a rerun does not count an earlier
       # attempt's games as well
       - uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v8.0.1
@@ -491,76 +359,26 @@ jobs:
           pattern: calibrate-${{ github.run_id }}-${{ github.run_attempt }}-*
           path: rungs
 
-      - name: Work out the rating
+      - uses: aywrite/mache/actions/summarise-gauntlet@60ae41d2503fac1a77f8578c5734d55508d3dd5f # v0.2.0
         id: estimate
-        run: |
-          mapfile -t games < <(find rungs -name games.pgn 2>/dev/null | sort)
-          if [ "${#games[@]}" -eq 0 ]; then
-            echo "::error::no rung of attempt ${GITHUB_RUN_ATTEMPT} uploaded any games. Rerunning the failed jobs alone leaves the games on the attempt that played them, so rerun all of them."
-            exit 1
-          fi
-          cat "${games[@]}" > gauntlet.pgn
-          # how the games ended, counted from the games. Games lost to a crash
-          # or the clock stay in the fit, because choosing what to count after
-          # seeing it is not a measurement; the counts sit beside the estimate
-          if python3 -m mache.match_terminations gauntlet.pgn \
-              > terminations.txt 2> faults.txt; then
-            while read -r remark; do
-              echo "::warning::${remark}"
-            done < faults.txt
-          else
-            echo "::warning::The games could not be counted, the block below is incomplete"
-            cat faults.txt
-          fi
-          # the estimate's remarks (a rung that played no games, a fit the
-          # pairings disagree with) come back on stderr
-          python3 -m mache.rating_estimate \
-            gauntlet.pgn "$ENGINE_NAME" "$LADDER_SPEC" > table.md 2> notes.txt \
-            || { cat notes.txt >&2; exit 1; }
-          # to the log as well as the summary: the summary is read from the
-          # run's web page and nowhere else, and the artifacts expire
-          cat table.md
-          # asked for again rather than cut out of the table, so a change to
-          # the table's layout cannot quietly change what is published
-          line=$(python3 -m mache.rating_estimate \
-            gauntlet.pgn "$ENGINE_NAME" "$LADDER_SPEC" --line 2> /dev/null)
-          echo "line=Estimated rating | ${line}" >> "$GITHUB_OUTPUT"
-          echo "::notice::${line}"
-          while read -r remark; do
-            echo "::warning::${remark}"
-          done < notes.txt
-          {
-            echo "### Rating estimate"
-            echo
-            echo "\`${CANDIDATE_SHA:0:8}\` at ${TIME_CONTROL} against engines with a"
-            echo "rating on the [ccrl](https://computerchess.org.uk/) blitz list,"
-            echo "${#games[@]} of ${RUNGS} rungs played."
-            echo
-            cat table.md
-            # one alert holding every remark: one alert each renders as the
-            # first alert with the rest of the markup showing through as text
-            if [ -s notes.txt ]; then
-              echo
-              echo "> [!WARNING]"
-              sed 's/^/> /' notes.txt
-            fi
-            echo
-            echo "How the games ended:"
-            echo
-            echo '```'
-            cat terminations.txt
-            echo '```'
-            echo
-            echo "The games of each rung are kept as the"
-            echo "\`calibrate-${GITHUB_RUN_ID}-${GITHUB_RUN_ATTEMPT}-<engine>-<pin>\` artifacts, with a manifest"
-            echo "saying what was played on what. The openings came from seed ${SEED},"
-            echo "which replays this schedule."
-            echo
-            echo "The opponents were rated at 2m+1s on other hardware, so the"
-            echo "placement carries a systematic error the game count does not"
-            echo "describe. It is worth about a hundred points, and no number of"
-            echo "games reduces it."
-          } >> "$GITHUB_STEP_SUMMARY"
+        with:
+          games: rungs
+          engine_name: ${{ env.ENGINE_NAME }}
+          candidate_sha: ${{ needs.resolve.outputs.candidate_sha }}
+          ladder_spec: ${{ needs.resolve.outputs.spec }}
+          rungs: ${{ needs.resolve.outputs.count }}
+          time_control: ${{ inputs.time_control }}
+          # what the ccrl blitz ratings were measured at, which is not what
+          # these games are played at. The caveat the action writes names it
+          rating_time_control: 2m+1s
+          # artifact names belong to this workflow, so the sentence naming
+          # them is written here rather than by the action
+          provenance: >-
+            The games of each rung are kept as the
+            `calibrate-${{ github.run_id }}-${{ github.run_attempt }}-<engine>-<pin>`
+            artifacts, with a manifest saying what was played on what. The
+            openings came from seed ${{ inputs.seed || github.run_id }}, which
+            replays this schedule.
 
   release-notes:
     needs: estimate
