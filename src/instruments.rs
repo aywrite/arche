@@ -10,21 +10,9 @@
 //! evaluation is made of. What each one measures is on its module in
 //! `arche-core`; what is here is only how a command line spells it.
 //!
-//! Their own module rather than `uci`, because none of them is the protocol.
-//! An interface will never send `cutoffs`, and would not wait for the answer
-//! if it did: these take minutes and answer a research question, which is why
-//! they are arguments rather than commands. They were spelled with the same
-//! `Params` reader as the uci commands and had come to live beside them, which
-//! left the module named for the protocol about half full of things no
-//! interface can ask for.
-//!
-//! `bench` stays in `uci`, because the engine really does answer it as a
-//! command as well as as an argument.
-//!
-//! The three that search take the same three settings and used to read them
-//! three times over, in three functions that differed by a keyword and two
-//! defaults. `sampling` is that reading, once. `terms` shares none of it:
-//! there is no depth to search to and nothing to sample.
+//! Not in `uci`, because none of them is the protocol: they take minutes and
+//! answer a research question, which is why they are arguments rather than
+//! commands. `bench` stays in `uci` because the engine answers it as both.
 
 use crate::command::{Command, Keyword};
 use crate::params::{Param, Params};
@@ -37,17 +25,14 @@ use arche_core::reduction;
 use arche_core::residual;
 use arche_core::tune;
 
-/// A depth, a rate and a cap: what all three arguments take, and the whole of
-/// what the cutoffs and reductions arguments take.
+/// The settings the three searching instruments share.
 struct Sampling {
     depth: u8,
     every: u32,
     cap: usize,
 }
 
-/// What each instrument takes. One declaration apiece, because the same list
-/// says which words may stand where the depth would, which words are known at
-/// all, and how the usage spells the line.
+/// What each instrument takes: the usage's spelling and the words it refuses.
 pub const RESIDUALS: Command = Command {
     name: "residuals",
     depth: true,
@@ -124,8 +109,8 @@ pub const REDUCTIONS: Command = Command {
 
 pub const TERMS: Command = Command {
     name: "terms",
-    // there is no search to run to one: the walk reads the board and the
-    // quiet test runs a capture search, which has no depth to be given
+    // the walk reads the board and the quiet test runs a capture search,
+    // neither of which takes a depth
     depth: false,
     keywords: &[Keyword {
         word: "epd",
@@ -138,20 +123,16 @@ pub const TERMS: Command = Command {
     ],
 };
 
-/// How many rows a run keeps when it was not told. One number for all three,
-/// and the recorder's, because the thing it bounds is one thing: all three
-/// record through the reservoir that module defines, so the cap is the
-/// reservoir's rather than any one instrument's.
+/// How many rows a run keeps when it was not told. The recorder's, because
+/// all three record through the reservoir that module defines.
 const DEFAULT_CAP: usize = recorder::DEFAULT_CAP;
 
-/// Reads the three settings the instruments share, or says which word could
-/// not be read: the setting's name and the word, for the caller to report.
-/// Running the default in place of a word nobody typed would take minutes and
-/// explain nothing.
+/// Reads the settings the instruments share, or names the setting and the
+/// word that could not be read. Running the default in place of a word
+/// nobody typed would take minutes and explain nothing.
 ///
-/// `command` says both what word the depth follows and which words may stand
-/// in its place. `default_every` is the rate that instrument samples at when
-/// the line names none, which is the one thing they do not share.
+/// `default_every` is the rate the instrument samples at when the line names
+/// none, the one setting they do not share.
 fn sampling(params: &Params, command: &Command, default_every: u32) -> Result<Sampling, String> {
     let depth = match params.parse::<u8>(command.name) {
         Param::Absent => bench::DEPTH,
@@ -161,8 +142,7 @@ fn sampling(params: &Params, command: &Command, default_every: u32) -> Result<Sa
     };
     let every = match params.parse::<u32>("every") {
         Param::Absent => default_every,
-        // zero records every event the instrument offers, up to the cap, which
-        // is a thing to ask for rather than a mistake
+        // zero records every event up to the cap, which is a thing to ask for
         Param::Read(every) => every,
         Param::Unreadable(word) => return Err(format!("every: {word}")),
     };
@@ -179,17 +159,12 @@ fn sampling(params: &Params, command: &Command, default_every: u32) -> Result<Sa
 
 /// What a residuals argument asked for: `residuals [depth] [every <n>]
 /// [cap <n>] [epd <file>] [taint refuse|trust|skip|rule50]`. The depth, the
-/// suite and the policy are the bench's own when absent, so a residual
-/// distribution is measured over the tree the bench describes; the rate is
-/// how much of that tree is sampled, and the cap is the most of it the run
-/// keeps.
+/// suite and the policy are the bench's own when absent; the rate is how
+/// much of the tree is sampled, and the cap the most of it the run keeps.
 ///
-/// The suite is a setting here and on the reduction ledger, which is the
-/// other instrument a number gets chosen off; the taint policy is this
-/// one's alone. What wants the suite is a margin chosen off these rows: a
-/// rule fitted on the bench's positions and then read back on the same
-/// positions has checked nothing, so the fit and the check are given
-/// separate files.
+/// The suite is a setting so that a margin fitted on one file can be checked
+/// on another: a rule fitted on the bench's positions and read back on the
+/// same positions has checked nothing.
 pub struct ResidualSettings {
     pub depth: u8,
     pub every: u32,
@@ -197,8 +172,8 @@ pub struct ResidualSettings {
     pub config: SearchConfig,
     /// The file the suite was read from, or none for the bench's own.
     pub epd: Option<String>,
-    /// The positions themselves, read while the settings are, so a file
-    /// that is no suite is refused before the minutes are spent.
+    /// Read while the settings are, so a file that is no suite is refused
+    /// before the minutes are spent.
     pub positions: Vec<bench::Position>,
 }
 
@@ -220,13 +195,8 @@ pub fn residual_settings(params: &Params) -> Result<ResidualSettings, String> {
 }
 
 /// The suite an instrument was asked for: the file the line named, and the
-/// positions read from it or the bench's own.
-///
-/// Three of the four arguments take a suite and the reading is two decisions
-/// rather than one. The path is kept because the report's header states it,
-/// and the positions are read here rather than at the run so that a file
-/// which is no suite is refused before the minutes are spent. Written once
-/// so the two cannot come apart on one of the three.
+/// positions read from it or the bench's own. The path is kept because the
+/// report's header states it.
 fn suite(params: &Params) -> Result<(Option<String>, Vec<bench::Position>), String> {
     let epd = params.value("epd").map(str::to_string);
     let positions = match &epd {
@@ -237,13 +207,9 @@ fn suite(params: &Params) -> Result<(Option<String>, Vec<bench::Position>), Stri
 }
 
 /// The positions of an epd file, or the path that could not be read as a
-/// suite.
-///
-/// Three failures read alike, because none of them leaves a suite to search:
-/// a file that will not open, one that holds no position, and one that holds
-/// a position the board will not take. The third is answered here rather
-/// than left to the run, which panics on it partway through a search that
-/// has already cost minutes.
+/// suite: a file that will not open, one that holds no position, and one
+/// that holds a position the board will not take. The third is refused here
+/// rather than left to the run, which would panic on it minutes in.
 fn read_epd(path: &str) -> Result<Vec<bench::Position>, String> {
     let refused = || format!("epd: {path}");
     let text = std::fs::read_to_string(path).map_err(|_| refused())?;
@@ -261,9 +227,6 @@ fn read_epd(path: &str) -> Result<Vec<bench::Position>, String> {
 }
 
 impl ResidualSettings {
-    /// Runs the residual measurement these settings describe, over the
-    /// bench's own positions unless the line named a file, so the
-    /// distribution is measured over the tree the header names.
     pub fn run(&self) -> residual::Report {
         residual::run(
             &self.positions,
@@ -277,8 +240,8 @@ impl ResidualSettings {
 }
 
 /// What a cutoffs argument asked for: `cutoffs [depth] [every <n>]
-/// [cap <n>]`. The census records the search the engine plays with and
-/// nothing else, so there is no policy to choose.
+/// [cap <n>]`. The census records the search the engine plays with, so
+/// there is no policy to choose.
 pub struct CutoffSettings {
     pub depth: u8,
     pub every: u32,
@@ -291,8 +254,6 @@ pub fn cutoff_settings(params: &Params) -> Result<CutoffSettings, String> {
 }
 
 impl CutoffSettings {
-    /// Runs the census these settings describe, over the bench's own
-    /// positions, so the rows describe the tree the bench describes.
     pub fn run(&self) -> census::Report {
         census::run(&bench::positions(), self.depth, self.every, self.cap)
     }
@@ -301,19 +262,15 @@ impl CutoffSettings {
 /// What a reductions argument asked for: `reductions [depth] [every <n>]
 /// [cap <n>] [epd <file>]`. The ledger records the search the engine plays
 /// with and replays it with the reference, so there is no policy to choose.
-///
-/// The suite is a setting here for the residual sampler's reason. A
-/// reduction threshold chosen off these rows and then read back on the
-/// same positions has checked nothing, so the fit and the check are given
-/// separate files.
+/// The suite is a setting for the residual sampler's reason.
 pub struct ReductionSettings {
     pub depth: u8,
     pub every: u32,
     pub cap: usize,
     /// The file the suite was read from, or none for the bench's own.
     pub epd: Option<String>,
-    /// The positions themselves, read while the settings are, so a file
-    /// that is no suite is refused before the minutes are spent.
+    /// Read while the settings are, so a file that is no suite is refused
+    /// before the minutes are spent.
     pub positions: Vec<bench::Position>,
 }
 
@@ -330,9 +287,6 @@ pub fn reduction_settings(params: &Params) -> Result<ReductionSettings, String> 
 }
 
 impl ReductionSettings {
-    /// Runs the ledger these settings describe, over the bench's own
-    /// positions unless the line named a file, so the rows describe the
-    /// tree the header names.
     pub fn run(&self) -> reduction::Report {
         reduction::run(
             &self.positions,
@@ -345,16 +299,14 @@ impl ReductionSettings {
 }
 
 /// What a terms argument asked for: `terms [epd <file>]`. The suite is the
-/// bench's own when absent, on the residual sampler's terms exactly.
-///
-/// No depth, no rate and no cap. Nothing here is sampled: a run states every
-/// quiet position of the suite it was given, because a corpus is the thing
-/// being built and a share of one would only be a smaller corpus.
+/// bench's own when absent. No depth, rate or cap: a run states every quiet
+/// position of the suite, because a corpus is the thing being built and a
+/// share of one would only be a smaller corpus.
 pub struct TermSettings {
     /// The file the suite was read from, or none for the bench's own.
     pub epd: Option<String>,
-    /// The positions themselves, read while the settings are, so a file that
-    /// is no suite is refused before the minutes are spent.
+    /// Read while the settings are, so a file that is no suite is refused
+    /// before the run.
     pub positions: Vec<bench::Position>,
 }
 
@@ -365,8 +317,6 @@ pub fn term_settings(params: &Params) -> Result<TermSettings, String> {
 }
 
 impl TermSettings {
-    /// Extracts the terms these settings describe, over the bench's own
-    /// positions unless the line named a file.
     pub fn run(&self) -> tune::Report {
         tune::run(&self.positions, self.epd.as_deref())
     }
@@ -376,17 +326,15 @@ impl TermSettings {
 mod tests {
     use super::*;
 
-    /// The positions of a checked-in suite, read the way the argument reads
-    /// one, for a test to hold what the argument read against.
+    /// The positions of a checked-in suite, for a test to hold what the
+    /// argument read against.
     fn from_file(path: &str) -> Vec<bench::Position> {
         bench::parse_epd(&std::fs::read_to_string(path).expect(path))
     }
 
-    /// A file that opens and holds no position, which is the third way a
-    /// file can fail to be a suite. Nothing checked in is one, so it is
-    /// written for the test that asks and removed when that test is done.
-    /// The name carries the test's so two tests running at once do not share
-    /// a file.
+    /// A file that opens and holds no position. Nothing checked in is one,
+    /// so it is written for the test that asks and removed after. The name
+    /// carries the test's so two tests running at once do not share a file.
     struct Unpositioned {
         path: String,
     }
@@ -417,8 +365,7 @@ mod tests {
         }
     }
 
-    /// The settings alone, not a run: the argument searches the suite twice
-    /// over and reading what it was asked for is the part worth pinning.
+    /// The settings alone, not a run: the run costs minutes.
     #[test]
     fn a_residuals_argument_reads_its_depth_rate_cap_and_policy() {
         const CAP: usize = recorder::DEFAULT_CAP;
@@ -440,8 +387,7 @@ mod tests {
             read("residuals 4 every 50"),
             (4, 50, CAP, "rule50".to_string())
         );
-        // a word standing where the depth would be means the depth was left
-        // out rather than mistyped, the same rule the bench reads by
+        // a keyword where the depth would be means the depth was left out
         assert_eq!(
             read("residuals every 50 taint trust"),
             (bench::DEPTH, 50, CAP, "trust".to_string())
@@ -450,8 +396,7 @@ mod tests {
             read("residuals cap 500"),
             (bench::DEPTH, 1000, 500, "rule50".to_string())
         );
-        // and zero is a rate to ask for: it records every node a shortcut
-        // answers, up to the cap
+        // zero records every event, up to the cap
         assert_eq!(
             read("residuals 2 every 0"),
             (2, 0, CAP, "rule50".to_string())
@@ -463,8 +408,6 @@ mod tests {
         );
     }
 
-    /// The suite is the bench's own unless the line names a file, and a
-    /// named one is read while the settings are rather than at the run.
     #[test]
     fn a_residuals_argument_reads_the_suite_it_was_given() {
         let bench = residual_settings(&Params::of("residuals")).expect("residuals");
@@ -477,14 +420,13 @@ mod tests {
         assert_eq!(named.depth, 4);
         assert_eq!(named.epd.as_deref(), Some(path));
         // a file other than the bench's, so a reader that checked the file
-        // and then handed back the bench's own positions is caught here
+        // and then handed back the bench's own positions is caught
         assert_eq!(named.positions, from_file(path));
         assert_ne!(named.positions, bench::positions());
     }
 
-    /// A file that is no suite is named rather than searched, and the file
-    /// that is not epd at all is the case worth pinning: it opens and
-    /// parses into positions whose fens no board will take.
+    /// The file that is not epd at all is the case worth pinning: it opens
+    /// and parses into positions whose fens no board will take.
     #[test]
     fn a_residuals_suite_that_is_no_suite_is_named_rather_than_run() {
         let manifest = concat!(env!("CARGO_MANIFEST_DIR"), "/Cargo.toml");
@@ -528,7 +470,6 @@ mod tests {
         }
     }
 
-    /// The settings alone, not a run, for the residuals test's reason.
     #[test]
     fn a_cutoffs_argument_reads_its_depth_rate_and_cap() {
         let read = |line: &str| {
@@ -539,11 +480,7 @@ mod tests {
         assert_eq!(read("cutoffs"), (bench::DEPTH, 1000, CAP));
         assert_eq!(read("cutoffs 4"), (4, 1000, CAP));
         assert_eq!(read("cutoffs 4 every 50"), (4, 50, CAP));
-        // a word standing where the depth would be means the depth was
-        // left out rather than mistyped, the rule the bench reads by
         assert_eq!(read("cutoffs every 50 cap 500"), (bench::DEPTH, 50, 500));
-        // and zero is a rate to ask for: it records every node the move
-        // loop answers, up to the cap
         assert_eq!(read("cutoffs 2 every 0"), (2, 0, CAP));
     }
 
@@ -563,7 +500,6 @@ mod tests {
         }
     }
 
-    /// The settings alone, not a run, for the residuals test's reason.
     #[test]
     fn a_reductions_argument_reads_its_depth_rate_and_cap() {
         let read = |line: &str| {
@@ -574,17 +510,10 @@ mod tests {
         assert_eq!(read("reductions"), (bench::DEPTH, 1000, CAP));
         assert_eq!(read("reductions 4"), (4, 1000, CAP));
         assert_eq!(read("reductions 4 every 50"), (4, 50, CAP));
-        // a word standing where the depth would be means the depth was
-        // left out rather than mistyped, the rule the bench reads by
         assert_eq!(read("reductions every 50 cap 500"), (bench::DEPTH, 50, 500));
-        // and zero is a rate to ask for: it records every reduced scout,
-        // up to the cap
         assert_eq!(read("reductions 2 every 0"), (2, 0, CAP));
     }
 
-    /// The ledger's own suite word, on the residuals test's terms: the
-    /// bench's positions when none is named, and the named file's when one
-    /// is.
     #[test]
     fn a_reductions_argument_reads_the_suite_it_was_given() {
         let bench = reduction_settings(&Params::of("reductions")).expect("reductions");
@@ -596,14 +525,10 @@ mod tests {
         let named = reduction_settings(&Params::of(&line)).expect(&line);
         assert_eq!(named.depth, 4);
         assert_eq!(named.epd.as_deref(), Some(path));
-        // a file other than the bench's, so a reader that checked the file
-        // and then handed back the bench's own positions is caught here
         assert_eq!(named.positions, from_file(path));
         assert_ne!(named.positions, bench::positions());
     }
 
-    /// A file that is no suite is refused before the run, the way the
-    /// residual sampler refuses one.
     #[test]
     fn a_reductions_suite_that_is_no_suite_is_named_rather_than_run() {
         let manifest = concat!(env!("CARGO_MANIFEST_DIR"), "/Cargo.toml");
@@ -646,10 +571,6 @@ mod tests {
         }
     }
 
-    /// The suite is the bench's own unless the line names a file, on the
-    /// residual sampler's terms exactly. It is the only setting there is:
-    /// the argument runs no search, so there is no depth, no rate and no cap
-    /// to read beside it.
     #[test]
     fn a_terms_argument_reads_the_suite_it_was_given() {
         let bench = term_settings(&Params::of("terms")).expect("terms");
@@ -660,15 +581,10 @@ mod tests {
         let line = format!("terms epd {path}");
         let named = term_settings(&Params::of(&line)).expect(&line);
         assert_eq!(named.epd.as_deref(), Some(path));
-        // a file other than the bench's, so a reader that checked the file
-        // and then handed back the bench's own positions is caught here
         assert_eq!(named.positions, from_file(path));
         assert_ne!(named.positions, bench::positions());
     }
 
-    /// A file that is no suite is named rather than walked, on the two
-    /// readings the residual sampler's test pins: the file that will not
-    /// open, and the one that opens and holds no position a board will take.
     #[test]
     fn a_terms_suite_that_is_no_suite_is_named_rather_than_run() {
         let manifest = concat!(env!("CARGO_MANIFEST_DIR"), "/Cargo.toml");
@@ -692,9 +608,8 @@ mod tests {
         }
     }
 
-    /// The refusal this argument makes that the other three cannot. They
-    /// read a number where the depth would be; this one has no depth, so a
-    /// number there is a word it does not know and is named as one.
+    /// This argument has no depth, so a number where one would stand is a
+    /// word it does not know.
     #[test]
     fn an_unreadable_terms_setting_is_named_rather_than_run() {
         for (line, what) in [
@@ -710,16 +625,9 @@ mod tests {
         }
     }
 
-    /// The three read their depth by the same rule and their rate from their
-    /// own default, which is the whole of what `sampling` had to keep true
-    /// when it replaced three copies of it.
-    ///
-    /// The three defaults are the same number today, so the three lines that
-    /// name them cannot say which one a caller passed: swapping two of them
-    /// leaves this test, and the whole workspace with it, passing. That half
-    /// of the name is not checkable by value while the constants agree, and
-    /// the loop below checks the half that is, by handing the three commands
-    /// three rates that differ.
+    /// The three rate defaults are the same number today, so the assertions
+    /// on them cannot tell which one a caller passed. The loop below can, by
+    /// handing the three commands three rates that differ.
     #[test]
     fn every_instrument_defaults_to_the_benchs_depth_and_its_own_rate() {
         let residuals = residual_settings(&Params::of("residuals")).unwrap();

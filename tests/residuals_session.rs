@@ -1,19 +1,15 @@
 // SPDX-License-Identifier: GPL-3.0-or-later
 // Copyright (C) 2022-2026 Andrew Wright
 
-//! What the residuals argument prints, run against the real binary.
-//!
-//! The spawning and the splitting are in `report_command`; here is what the
-//! shortcuts' own header, rows and summary say. This is the slowest of the
-//! three, because the command searches the suite and then searches every
-//! sample it took under the reference: minutes at the depths the command is
-//! really used at and seconds at the depth here.
+//! What the residuals argument prints, run against the real binary. The
+//! spawning and the splitting are in `report_command`. The slowest of the
+//! three, since every sample is searched again under the reference.
 
 mod report_command;
 
-/// A shallow run at a rate that still records plenty: enough to have rows
-/// without spending the reference search on thousands of them. About one
-/// node in fifty, since the rate is a key rather than a count.
+/// A shallow run at a rate that still records plenty without spending the
+/// reference search on thousands of rows. About one node in fifty, since
+/// the rate is a key rather than a count.
 const ARGUMENTS: [&str; 4] = ["residuals", "4", "every", "50"];
 
 #[test]
@@ -39,16 +35,12 @@ fn the_residuals_argument_prints_a_header_rows_and_a_summary() {
             row
         );
         assert!(words[2] == "zw" || words[2] == "open", "row: {}", row);
-        // the depth, the halfmove clock and the five scores are each a
-        // number, and the fen comes after them: a row parses left to right
+        // the numeric columns: depth, the halfmove clock and the five scores
         for at in [1, 3, 4, 5, 6, 7, 8] {
             assert!(words[at].parse::<i32>().is_ok(), "field {} of {}", at, row);
         }
         // the three derived columns against the columns they are derived
-        // from, which is the printer and not the measurement: the delta is
-        // the reference less the claim, the crossing is the reference
-        // against beta, the overstatement is the claim against the
-        // reference
+        // from, which checks the printer and not the measurement
         let beta: i32 = words[4].parse().unwrap();
         let claimed: i32 = words[6].parse().unwrap();
         let reference: i32 = words[7].parse().unwrap();
@@ -67,8 +59,7 @@ fn the_residuals_argument_prints_a_header_rows_and_a_summary() {
         assert_eq!(words[10], overstated, "{row}");
     }
 
-    // a line a kind at a depth, the kinds in order and each of them
-    // together, with the depths a run happened to reach
+    // a line a kind at a depth, the kinds in order and each of them together
     let summary = &printed.summary;
     assert!(summary.len() >= 3, "summary: {:?}", summary);
     let kind_at = |line: &str| {
@@ -90,8 +81,7 @@ fn the_residuals_argument_prints_a_header_rows_and_a_summary() {
         "no percentiles in: {:?}",
         summary
     );
-    // the crossing rate against a named depth is the headline the command
-    // exists to print
+    // the per-depth crossing rate is the headline the command exists to print
     assert!(
         summary.iter().any(|line| line.contains(" depth ")
             && line.contains(" crossed ")

@@ -1,12 +1,8 @@
 // SPDX-License-Identifier: GPL-3.0-or-later
 // Copyright (C) 2022-2026 Andrew Wright
 
-//! What the reductions argument prints, run against the real binary.
-//!
-//! The spawning and the splitting are in `report_command`; here is what the
-//! ledger's own header, rows and summary say. The replay behind the fail
-//! lows runs a ply under the sampled nodes, so at this depth it costs a
-//! stream of shallow reference searches and stays quick.
+//! What the reductions argument prints, run against the real binary. The
+//! spawning and the splitting are in `report_command`.
 
 mod report_command;
 
@@ -32,9 +28,8 @@ fn the_reductions_argument_prints_a_header_rows_and_a_summary() {
     for row in &printed.rows {
         let words: Vec<&str> = row.split(' ').collect();
         assert!(words.len() > 16, "row: {}", row);
-        // the depth, the counts, the history pair, the three distances,
-        // and the cost are each a number, and the fen comes after them: a
-        // row parses left to right
+        // the numeric columns: depth, the counts, the history pair, the
+        // three distances and the cost
         for at in [0, 2, 3, 4, 5, 6, 9, 10, 11, 13] {
             assert!(words[at].parse::<i64>().is_ok(), "field {} of {}", at, row);
         }
@@ -45,14 +40,11 @@ fn the_reductions_argument_prints_a_header_rows_and_a_summary() {
             "row: {}",
             row
         );
-        // a late move is what the ledger records, so no index is under
-        // the threshold
+        // the ledger records late moves only
         assert!(words[2].parse::<usize>().unwrap() >= 4, "row: {}", row);
-        // a fail low carries the replay's answer and its label, and so does
-        // a skip, which late move pruning records where the loop passes a
-        // move over and whose counterfactual the replay builds the same
-        // way. A fail high carries neither, said with dashes so the
-        // columns stand still
+        // a fail low and a skip (a move late move pruning passed over) each
+        // carry the replay's answer and its label; a fail high has dashes
+        // there so the columns stand still
         match words[12] {
             "low" | "skipped" => {
                 replayed += 1;
@@ -71,13 +63,12 @@ fn the_reductions_argument_prints_a_header_rows_and_a_summary() {
             other => panic!("scout {} in: {}", other, row),
         }
     }
-    // the replayed rows are the ones the ledger labels, so a run that kept
-    // none has measured nothing. Both are counted, because a run of nothing
-    // but skips would leave the scout's own labelling untested
+    // both kinds are counted, because a run of nothing but skips would leave
+    // the scout's own labelling untested
     assert!(low > 0, "no fail low rows in:\n{}", printed.all);
     assert!(replayed > low, "no skipped rows in:\n{}", printed.all);
 
-    // a line a depth, each carrying the whole shape
+    // a line a depth
     for line in &printed.summary {
         assert!(line.starts_with("depth "), "summary line: {}", line);
         for word in [

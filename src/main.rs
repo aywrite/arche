@@ -10,9 +10,8 @@ use arche_core::AlphaBeta;
 use arche_core::Board;
 use std::process::ExitCode;
 
-/// The arguments the binary takes, in the order the usage lists them. Five of
-/// the seven are measurements, one of which is a uci command too; the other
-/// two are the flags below, which take no words and so are not commands.
+/// The arguments that take words, in the order the usage lists them. The
+/// two flags take none and are spelled in `usage` itself.
 const COMMANDS: [&Command; 5] = [
     &uci::BENCH,
     &instruments::RESIDUALS,
@@ -21,20 +20,11 @@ const COMMANDS: [&Command; 5] = [
     &instruments::TERMS,
 ];
 
-/// Where a summary starts, so they line up under each other whatever the
-/// spelling above them is as long as.
+/// Where a summary starts, so they line up under each other.
 const SUMMARY_COLUMN: usize = 24;
 
-/// What the binary takes, for whoever ran it to find out.
-///
-/// Built from the commands rather than written out beside them. It was a
-/// string kept in step by hand, and the test that guarded it held it against
-/// a list written out by hand as well, so the two could drift together and
-/// pass. A word added to a command now reaches this because it is the same
-/// list that parses it.
-///
-/// The three lines that are not commands take no words, so they are spelled
-/// here: the bare form that starts the loop, and the two flags.
+/// The usage, built from the commands so a word added to one reaches the
+/// help through the same list that parses it.
 fn usage() -> String {
     let mut out = String::new();
     out.push_str("arche, a chess engine speaking uci on stdin.\n\nUsage:\n");
@@ -60,11 +50,8 @@ fn usage() -> String {
 }
 
 /// One of the four research commands: its report on stdout, or the setting
-/// that could not be read on stderr and the code the measuring scripts check.
-///
-/// Each is an argument and not a uci command because it takes minutes and
-/// answers a research question, and nothing about a live session wants
-/// either. What each one measures is on its module.
+/// that could not be read on stderr with exit code 2, which the measuring
+/// scripts check.
 fn answer<S, R: std::fmt::Display>(
     command: &str,
     settings: Result<S, String>,
@@ -87,23 +74,19 @@ fn main() -> ExitCode {
     let line = args.join(" ");
     let params = Params::of(&line);
     match args.first().map(String::as_str) {
-        // no argument starts the uci loop, which is what an interface runs
+        // no argument starts the uci loop
         None => {
             let game = Board::new();
             let e = AlphaBeta::new(game);
             let mut uci = UCI::new_with_engine(e);
-            // a panic must reach the interface's log before the process goes:
-            // stderr is where the backtrace lands and where no gui looks
+            // a panic must reach the interface's log before the process goes
             uci.report_panics();
             uci.read_loop();
             ExitCode::SUCCESS
         }
-        // the bench prints and exits, which is how the match tools measure
-        // an engine's speed and how a commit states what its search change
-        // did to the tree. It answers its own way rather than through
-        // `answer` because it is the one command that can be given
-        // settings it understands and still have no report to make: the
-        // audit needs memory it may not get
+        // not through `answer`, because the bench is the one command that
+        // can be given settings it understands and still have no report to
+        // make: the audit needs memory it may not get
         Some("bench") => match uci::bench_settings(&params) {
             Ok(settings) => match settings.run() {
                 Some(report) => {
@@ -132,10 +115,8 @@ fn main() -> ExitCode {
             |s| s.run(),
         ),
         Some("terms") => answer("terms", instruments::term_settings(&params), |s| s.run()),
-        // `--version` and `--help` were asked for, so both are answered on
-        // stdout and succeed. An argument that really is unrecognised keeps
-        // stderr and the failing code below: the difference is whether
-        // anybody wanted the output
+        // asked for, so answered on stdout and succeeding; an unrecognised
+        // argument keeps stderr and the failing code below
         Some("--version" | "-V") => {
             println!("{} {}", env!("CARGO_PKG_NAME"), env!("CARGO_PKG_VERSION"));
             ExitCode::SUCCESS
@@ -144,8 +125,8 @@ fn main() -> ExitCode {
             print!("{}", usage());
             ExitCode::SUCCESS
         }
-        // said and refused rather than fallen through to the uci loop,
-        // which would sit waiting for input in silence
+        // refused rather than fallen through to the uci loop, which would
+        // sit waiting for input in silence
         Some(other) => {
             eprintln!("unrecognised argument: {}", other);
             ExitCode::from(2)
@@ -157,9 +138,6 @@ fn main() -> ExitCode {
 mod tests {
     use super::*;
 
-    /// What generating the usage buys: the help cannot describe a line the
-    /// parser does not take, or leave out a word it does, because one list
-    /// is the source of both.
     #[test]
     fn the_usage_spells_every_word_every_command_takes() {
         let usage = usage();
@@ -187,10 +165,8 @@ mod tests {
         }
     }
 
-    /// The table drives the usage, so this is what stops it naming something
-    /// no parser answers to. The other way round, a dispatch arm with no
-    /// entry here, is not caught: the match is code rather than data, and
-    /// making it data would cost more than the hole is worth.
+    /// The other way round, a dispatch arm with no entry in the table, is not
+    /// caught: the match is code rather than data.
     #[test]
     fn every_command_the_usage_names_is_one_a_parser_answers_to() {
         assert!(uci::bench_settings(&Params::of(uci::BENCH.name)).is_ok());
@@ -202,8 +178,7 @@ mod tests {
 
     #[test]
     fn the_usage_ends_in_a_newline() {
-        // printed with print! rather than println!, so the trailing newline
-        // has to be in the string or a shell prompt lands on the last line
+        // printed with print!, so the newline has to be in the string
         assert!(usage().ends_with('\n'));
     }
 }
