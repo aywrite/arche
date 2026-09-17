@@ -285,15 +285,39 @@ pub(crate) fn decide(search: &Search, node: &mut Node, m: &Play, searched: usize
 /// checks was measured and lost (docs/ROADMAP.md).
 #[inline]
 fn reduces(search: &Search, node: &Node, m: &Play, searched: usize) -> bool {
-    search.config.late_move_reductions
-        && node.depth >= LATE_MOVE_MIN_DEPTH
-        && searched >= LATE_MOVE_THRESHOLD
-        && !node.in_check
-        && m.capture.is_none()
+    admits(
+        search.config,
+        node.depth,
+        searched,
+        node.in_check,
+        node.alpha,
+        node.beta,
+        node.edges,
+    ) && m.capture.is_none()
         && m.promote.is_none()
-        && !is_mate(node.alpha)
-        && !is_mate(node.beta)
-        && !node.edges.beta
+}
+
+/// The half of `reduces` that reads the node and the count rather than
+/// the move, on the node's own facts so that a move loop can ask it
+/// before it builds a `Node`: where this is false every move is
+/// searched whole, and there is nothing for `decide` to read.
+#[inline]
+pub(crate) fn admits(
+    config: &SearchConfig,
+    depth: u8,
+    searched: usize,
+    in_check: bool,
+    alpha: Score,
+    beta: Score,
+    edges: Edges,
+) -> bool {
+    config.late_move_reductions
+        && depth >= LATE_MOVE_MIN_DEPTH
+        && searched >= LATE_MOVE_THRESHOLD
+        && !in_check
+        && !is_mate(alpha)
+        && !is_mate(beta)
+        && !edges.beta
 }
 
 /// Whether a move `reduces` already accepted is scouted two plies
