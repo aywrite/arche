@@ -3,18 +3,12 @@
 
 """Tests for the tuner and its loss harness.
 
-The seam is what most of these are about. The engine states a position's
-coefficients and states the weights, and this file's job is to fold the two
-back together and get the integer the engine got. Three details of that
-arithmetic are the ones a python reader gets wrong, and each has a test that
-says so by naming a case where getting it wrong gives a different answer.
-
-The rest pin the formats the run parses, which is the stated reason the other
-script tests exist, and the claims the harness makes about its own numbers:
-that a difference is never printed without its interval, that a weight vector
-the engine's arithmetic cannot carry is refused, that the objective weights a
-position by how often the corpus reached it, and that the calibration group is
-not read by anything here.
+Most are about the seam: the engine states a position's coefficients and the
+weights, and this file has to fold the two together and get the integer the
+engine got. The three details of that arithmetic a python reader gets wrong
+each have a test naming a case where getting it wrong gives a different
+answer. The rest pin the formats the run parses and the claims the harness
+makes about its own numbers.
 """
 
 import hashlib
@@ -26,11 +20,8 @@ import numpy as np
 import pytest
 import tune
 
-# The layout line an `arche terms` run prints today, which is what the rows
-# and the vectors below are built in. Written out here rather than asked of
-# tune.py, because what these tests are about is a file that reads its layout
-# off the run instead of holding one: a fixture that took the layout from
-# tune.py would agree with it whatever either of them said.
+# The layout line an `arche terms` run prints today. Written out rather than
+# asked of tune.py, which would agree with itself whatever it said.
 LAYOUT_LINE = (
     "layout midgame 384 endgame 384 material 6 mobility 4 shelter 7 "
     "pawn_structure 8 king_attack 4"
@@ -47,9 +38,7 @@ TRAIN, SELECTION, CALIBRATION = 0, 3, 4
 
 def key(index, slice_):
     """A game key in the shape `build_corpus.py` writes: sixty-four hex
-    characters, the first byte of which says which group the game is in and the
-    second which fold it falls in. Both are read off a real sha256 the same
-    way."""
+    characters, the first byte saying the group and the second the fold."""
     return f"{slice_:02x}{index % 256:02x}{index:060x}"
 
 
@@ -76,8 +65,7 @@ def row(
     identifier, coefficients, vector, phase=24, fen="4k3/8/8/8/8/8/8/4K3 w - - 0 1"
 ):
     """One row in the shape `arche terms` prints it, with the evaluation it
-    states worked out from the weights the same way the engine does. The fen
-    is six fields, which is what the row's reader counts back from."""
+    states worked out from the weights the way the engine does."""
     evaluation = tune.reconstruct(coefficients, vector, LAYOUT)
     terms = " ".join(f"{slot}:{coefficient}" for slot, coefficient in coefficients)
     return f"{identifier} {evaluation} {phase} {len(coefficients)} {terms} {fen}"
@@ -95,13 +83,12 @@ def extraction(rows, vector):
 
 def test_the_divide_truncates_toward_zero():
     """Rust's `/` truncates and python's `//` floors, so on a negative
-    numerator that does not divide evenly the two are a centipawn apart. This
-    is the one a python reader is most likely to get wrong."""
+    numerator that does not divide evenly the two are a centipawn apart."""
     assert tune.trunc_div(-980, 24) == -40
     assert -980 // 24 == -41
     assert tune.trunc_div(980, 24) == 40
-    # and they agree wherever the divide is exact, which is why a test that
-    # picked its numerator carelessly would say nothing
+    # they agree wherever the divide is exact, so a careless numerator would
+    # say nothing
     assert tune.trunc_div(-720, 24) == -720 // 24
 
 
@@ -120,9 +107,8 @@ def test_material_is_added_outside_the_divide():
 
 
 def test_a_row_that_does_not_rebuild_stops_the_run():
-    """The seam's whole claim is that this file and the engine agree on every
-    row. A row that does not rebuild means they have parted company, so it
-    raises rather than being dropped and fitted around."""
+    """A row that does not rebuild means this file and the engine have parted
+    company, so it raises rather than being dropped."""
     vector = weights({0: 30})
     good = row("a", [(0, 24), (LAYOUT.start["material"], 1)], vector)
     _, _, rows = tune.parse_terms(extraction([good], vector))
@@ -134,15 +120,10 @@ def test_a_row_that_does_not_rebuild_stops_the_run():
 
 
 def test_a_row_reads_from_the_right_and_an_id_can_hold_spaces():
-    """An id can hold a space, so the fields are found from the right rather
-    than the left. Nine of the bench's eighteen positions are named that way
-    and the bench is the suite `arche terms` reads by default, so reading the
-    id as the first word left the rest of a name to be read as the evaluation.
-
-    The three rows are the shapes the reading has to survive: a name with a
-    space in it, a line that named no id and is called by its own fen, and a
-    row with no coefficients, where the walk back from the fen has nothing to
-    walk over."""
+    """An id can hold a space (nine of the bench's eighteen positions do), so
+    the fields are found from the right. The three rows are the shapes the
+    reading has to survive: a name with a space, a line called by its own fen,
+    and a row with no coefficients."""
     vector = weights({5: 12, 400: -7})
     fen = "rnbqkbnr/pppppppp/8/8/8/8/PPPPPPPP/RNBQKBNR w KQkq - 0 1"
     coefficients = [(5, 24), (400, -3), (LAYOUT.start["material"] + 4, -1)]
@@ -160,8 +141,7 @@ def test_a_row_reads_from_the_right_and_an_id_can_hold_spaces():
 
 
 def test_a_weights_line_of_the_wrong_length_is_refused():
-    """The run states its layout and then its vector, and a vector of another
-    length means the two do not describe the same engine."""
+    """A vector of another length than the layout's is from another engine."""
     with pytest.raises(ValueError, match="weights line"):
         tune.parse_terms([LAYOUT_LINE, "weights 3 1 2 3"])
     with pytest.raises(ValueError, match="no weights line"):
@@ -174,15 +154,11 @@ def test_a_weights_line_of_the_wrong_length_is_refused():
 
 
 def test_a_header_without_the_drawn_count_is_refused():
-    """The header is a version check. An extraction printed by an engine with
-    no drawn material rule would parse, rebuild row for row and fit an
-    evaluation that engine no longer runs, because the rows it should have
-    turned away are in it and score zero from no weight vector at all.
-
-    This file cannot find those rows itself. Doing so would be a second copy
-    of the rule living where the seam forbids one, and it would go on being
-    right only for as long as nobody edited either copy. So the count is what
-    is read, and a header without it refuses the whole run."""
+    """The header is a version check. An extraction from an engine with no
+    drawn material rule would parse and rebuild row for row, and a fit over
+    it would fit an evaluation the engine no longer runs. This file cannot
+    find those rows without a second copy of the rule, so the count is what
+    is read."""
     vector = weights()
     lines = extraction([row("a", [(LAYOUT.start["material"], 1)], vector)], vector)
     _, _, rows = tune.parse_terms(lines)
@@ -197,13 +173,12 @@ def test_a_header_without_the_drawn_count_is_refused():
 
 @pytest.mark.parametrize("count", [518, 774, 782, 790, 796, 812])
 def test_a_vector_of_an_earlier_layout_is_refused(tmp_path, count):
-    """518, 774, 782, 790, 796 and 812 are the lengths the vector had before a
-    knight, a bishop, a rook and a queen were given an endgame table, before
-    mobility, before the king's shelter, before the pawn storm joined it,
-    before the pawn structure and before the king attack zone. Every slot any
-    of them names exists in the layout that replaced it, so their numbers
-    would land on the wrong weights rather than failing to parse. Both doors a
-    vector comes through refuse them."""
+    """The lengths the vector had before the endgame tables, before mobility,
+    before the shelter, before the pawn storm, before the pawn structure and
+    before the king attack zone. Every slot any of them names exists in the
+    layout that replaced it, so their numbers would land on the wrong weights
+    rather than failing to parse. Both doors a vector comes through refuse
+    them."""
     assert LAYOUT.slots == 820
     old = [0] * count
     with pytest.raises(ValueError, match=f"of {count}, expected 820"):
@@ -220,15 +195,10 @@ def test_a_vector_of_an_earlier_layout_is_refused(tmp_path, count):
 
 
 def test_a_header_without_a_layout_line_is_refused():
-    """The layout line is where this file learns its slots, so a run that
-    prints none leaves it nothing to read the numbers with.
-
-    Before the line the layout was written out here as well as in the engine,
-    and the two were edited together by hand. An extraction from an engine
-    older than the line is exactly the case that copy was wrong for: it parses
-    and every slot it names exists, so a layout assumed for it would be wrong
-    with nothing saying so. The run is refused instead, whether the line is
-    missing or comes after the vector it describes."""
+    """An extraction from an engine older than the layout line parses and
+    every slot it names exists, so a layout assumed for it would be wrong with
+    nothing saying so. The run is refused whether the line is missing or comes
+    after the vector it describes."""
     vector = weights()
     lines = extraction([row("a", [(LAYOUT.start["material"], 1)], vector)], vector)
     assert lines[1] == LAYOUT_LINE
@@ -240,14 +210,9 @@ def test_a_header_without_a_layout_line_is_refused():
 
 def test_a_term_the_layout_names_and_nothing_prices_is_refused():
     """A term this file has no bound for cannot be screened against the
-    packed halves, so a run that names one is refused rather than fitted.
-
-    A new term is priced here before it is fitted, which is one line and a
-    reason for it. The alternative is a fit that runs, prints a boardful that
-    leaves the new weights out of the figure, and says nothing about the one
-    thing nobody has checked yet. The same goes for a term whose width has
-    moved: the bound is per count, so a count added arrives with a width this
-    file does not cover."""
+    packed halves, so a run that names one is refused rather than fitted with
+    a boardful that leaves the new weights out. The same for a term whose
+    width has moved, since the bound is per count."""
     with pytest.raises(ValueError, match="no bounds for"):
         tune.Layout.of(LAYOUT_LINE + " king_tropism 4")
     with pytest.raises(ValueError, match="different number of counts"):
@@ -258,11 +223,8 @@ def test_a_term_the_layout_names_and_nothing_prices_is_refused():
 
 
 def test_a_row_whose_id_opens_with_the_header_word_is_kept():
-    """The header is skipped on the two shapes the engine writes it in, and
-    not on its first word. An id is whatever the epd put in the quotes, so a
-    name can open with the same word, and a row dropped for looking like a
-    header would leave the corpus a position short with nothing said about
-    it."""
+    """The header is skipped on the two shapes the engine writes it in, not on
+    its first word, which an id can open with too."""
     vector = weights()
     lines = extraction(
         [row("terms of the endgame", [(LAYOUT.start["material"], 1)], vector)], vector
@@ -276,9 +238,8 @@ def test_a_row_whose_id_opens_with_the_header_word_is_kept():
 
 
 def test_a_row_whose_id_opens_with_the_layout_word_is_kept():
-    """The layout line is the second word the reader claims, and it is claimed
-    with the space after it rather than on the six letters. An id that opens
-    with those letters and runs on is a row, so it is read as one."""
+    """The layout line is claimed with the space after the word, so an id that
+    opens with the same letters and runs on is a row."""
     vector = weights()
     lines = extraction(
         [row("layouts of the endgame", [(LAYOUT.start["material"], 1)], vector)], vector
@@ -307,10 +268,8 @@ def test_a_corpus_line_is_read_the_way_the_engine_reads_epd():
 
 
 def test_a_corpus_that_names_no_game_is_refused():
-    """The three groups are assigned from the game operand. A corpus built
-    before it existed would be split into one game per position, which is the
-    leak the game split closed arriving through the back door, so it is refused
-    rather than read."""
+    """A corpus from before the game operand would be split into one game per
+    position, which is the leak the game split closed."""
     line = '4k3/8/8/8/8/8/8/4K3 w - - id "g00001p020"; result "1.0000"; count "1";'
     with pytest.raises(ValueError, match="names no game"):
         tune.parse_corpus([line])
@@ -347,10 +306,9 @@ def test_the_groups_are_assigned_from_the_pair_and_not_the_game():
 
 
 def test_a_corpus_that_repeats_a_position_across_games_is_refused():
-    """A position is one row, because the corpus is deduplicated by fen before
-    it is labelled and takes the lowest key of the games that reached it, so no
-    position is in two groups. A corpus that was not deduplicated could be, and
-    would be the leak the fen split had in a new place."""
+    """The corpus is deduplicated by fen before it is labelled, so no position
+    is in two groups; one that was not would be the fen split's leak in a new
+    place."""
     vector = weights({0: 7})
     fen = "4k3/8/8/8/8/8/8/4K3 w - - 0 1"
     rows = [
@@ -419,9 +377,8 @@ def corpus_of(rows, vector, labels):
 
 
 def test_the_integer_score_is_the_evaluation_the_engine_gave():
-    """The harness scores a vector two ways: real valued for the fit, and
-    integer with the truncation put back for the measurement that has to match
-    the engine. At the shipped weights the second is the row's own column."""
+    """The integer scores, with the truncation put back, are the row's own
+    column at the shipped weights."""
     vector = weights({0: -30, 64: 17, 400: 5})
     rows = [
         row(
@@ -453,9 +410,8 @@ def test_the_integer_score_is_the_evaluation_the_engine_gave():
 
 def test_the_occurrence_count_weights_the_loss():
     """A unique position carries the weight of how many times the corpus
-    reached it. The objective is the distribution the engine runs on rather
-    than the one deduplication leaves behind, so a position two games reached
-    pulls the loss towards its own result."""
+    reached it, so a position two games reached pulls the loss towards its
+    own result."""
     vector = weights({0: 20})
     rows = [
         row("a", [(0, 24), (LAYOUT.start["material"], 1)], vector, 24, "a w - - 0 1"),
@@ -476,8 +432,7 @@ def test_the_occurrence_count_weights_the_loss():
     weighted = tune.scored(twice, vector, twice.train, 1.0)["mse"]
     assert flat == pytest.approx(((1 - predicted) ** 2 + predicted**2) / 2)
     assert weighted == pytest.approx((3 * (1 - predicted) ** 2 + predicted**2) / 4)
-    # the row the evaluation is right about is the one weighted up, so three
-    # appearances of it is a lower loss and not merely a different one
+    # the row the evaluation is right about is the one weighted up
     assert weighted < flat
 
 
@@ -511,9 +466,8 @@ def test_the_scaling_constant_is_found_where_it_was_put():
 
 
 def test_a_difference_is_never_printed_without_its_interval():
-    """Two vectors are scored on the same positions, so the difference is a
-    paired sample and its mean has a standard error. A difference whose
-    interval covers zero is not a difference."""
+    """Two vectors scored on the same positions are a paired sample, and the
+    mean difference comes with its standard error."""
     first = np.array([0.10, 0.20, 0.30, 0.40])
     counts = np.ones(4)
     games = np.array(["a", "b", "c", "d"])
@@ -531,10 +485,8 @@ def test_a_difference_is_never_printed_without_its_interval():
 
 
 def test_the_interval_is_taken_over_the_games():
-    """Positions inside one game share a label and are a move apart, so they
-    move together, and counting them as independent draws counts one game's
-    evidence as many. Two games of a hundred positions each, differing by game
-    and not within one, are two draws and not two hundred."""
+    """Two games of a hundred positions each, differing by game and not within
+    one, are two draws and not two hundred."""
     counts = np.ones(200)
     games = np.array(["a"] * 100 + ["b"] * 100)
     first = np.zeros(200)
@@ -544,25 +496,20 @@ def test_the_interval_is_taken_over_the_games():
     )
     assert mean == pytest.approx(0.0)
     # the whole spread is between the games, so the two-game interval is the
-    # full half-swing and the per-position one is a fourteenth of it. both are
-    # returned, because the spec asks for the naive figure printed beside the
-    # honest one rather than only their ratio
+    # full half-swing and the per-position one a fourteenth of it
     assert clustered == pytest.approx(0.02, rel=1e-6)
     assert naive == pytest.approx(0.02 / math.sqrt(200), rel=1e-6)
     assert design == pytest.approx(clustered / naive, rel=1e-6)
-    # and where every row is a game of its own, which is the independence a
-    # per-position interval assumes, the two agree but for the correction a
-    # sample of two hundred carries
+    # where every row is a game of its own the two agree but for the
+    # correction a sample of two hundred carries
     alone = np.array([str(index) for index in range(200)])
     _, clustered, naive, design = tune.paired_difference(first, second, counts, alone)
     assert design == pytest.approx(math.sqrt(200 / 199), rel=1e-9)
 
 
 def test_the_optimiser_finds_the_bottom_of_a_bowl():
-    """L-BFGS on the closed-form gradient, checked against a problem whose
-    answer is known. The step it has to take on the real loss is many times
-    longer than one, so a search that only backtracked would stall, and the
-    bowl below is scaled to say that."""
+    """The bowl is scaled so the useful step is many times longer than one,
+    as on the real loss, where a search that only backtracked would stall."""
 
     centre = np.arange(LAYOUT.slots, dtype=float)
 
@@ -576,9 +523,8 @@ def test_the_optimiser_finds_the_bottom_of_a_bowl():
 
 
 def test_a_vector_the_engine_could_not_carry_is_refused():
-    """Each half of a packed pair is an `i16` and a boardful of them is summed
-    into one, so a fit that grew the tables past that is no candidate whatever
-    it scores."""
+    """A fit that grew the tables past a boardful of `i16` is no candidate
+    whatever it scores."""
     inside, worst = tune.bounds_hold(np.array(weights()), LAYOUT)
     assert inside and worst == 0
     huge = np.array(weights({slot: 400 for slot in range(LAYOUT.start["material"])}))
@@ -588,9 +534,8 @@ def test_a_vector_the_engine_could_not_carry_is_refused():
 
 
 def test_the_mobility_weights_are_priced_too():
-    """The figure reads as the whole vector, so a mobility weight left out of
-    it would be a vector priced at 774 of its 790 slots. The range stops at the
-    shelter block, which the test below prices on its own."""
+    """The boardful reads as the whole vector, so the mobility weights have to
+    be in it. The range stops at the shelter block, priced below."""
     one_each = weights(
         {slot: 1 for slot in range(LAYOUT.start["mobility"], LAYOUT.start["shelter"])}
     )
@@ -686,18 +631,15 @@ def test_the_king_attack_weights_are_priced_too():
 
 
 def test_the_material_block_is_the_only_thing_outside_the_divide():
-    """`is_material` is what puts a weight outside the taper's divide, and
-    mobility and the shelter go inside it the way the tables do. Outside it
-    either would answer a centipawn away from the engine wherever a numerator
-    is negative and does not divide evenly, and `reconstruct` would stop
-    matching `eval` the moment a weight was fitted.
+    """Mobility and the shelter go inside the taper's divide the way the
+    tables do; outside it either would answer a centipawn away from the
+    engine wherever a numerator is negative and does not divide evenly.
 
-    The last two lines are what the slot arithmetic above cannot say. A
-    shelter weight is the fit's now and a coefficient sorted into the material
-    half rebuilds to a different number, but six of the eight mobility weights
-    still ship at zero and theirs would not. The weights here are the
-    fixture's for that reason, so the two answers differ whatever a fit
-    holds."""
+    The last two lines use the fixture's weights rather than the shipped
+    ones, so a coefficient sorted into the wrong half rebuilds to a different
+    number whatever the shipped weights happen to be (a zero weight would
+    rebuild to the same number either side).
+    """
     material = [slot for slot in range(LAYOUT.slots) if LAYOUT.is_material(slot)]
     assert material == list(range(LAYOUT.start["material"], LAYOUT.start["mobility"]))
     assert not any(
@@ -712,10 +654,9 @@ def test_the_material_block_is_the_only_thing_outside_the_divide():
 
 
 def test_a_fit_is_free_to_move_the_leaf_terms_weights():
-    """Material is held for a first fit and nothing after it is. Frozen at the
-    material block's end instead, which is what it was before mobility, the
-    twenty two weights of the two leaf terms would sit at zero through the fit
-    and the arm would report a null result with nothing saying why."""
+    """Material is held for a first fit and nothing after it is. A freeze that
+    ran to the end of the vector, as it did before mobility, would hold every
+    leaf term at zero and report a null result."""
     frozen = tune.frozen_slots(LAYOUT, False)
     assert frozen[LAYOUT.start["material"] : LAYOUT.start["mobility"]].all()
     assert not frozen[LAYOUT.start["mobility"] :].any()
@@ -724,12 +665,8 @@ def test_a_fit_is_free_to_move_the_leaf_terms_weights():
 
 
 def test_a_term_is_fitted_with_every_earlier_term_held():
-    """The holds leave one term free, which is what lets a match read the
-    change as that term. Holding the tables alone leaves mobility free, so a
-    shelter fit that passed only that would have refitted mobility beside the
-    shelter and called the pair king safety. The same again one term on: two
-    holds leave the shelter free, a pawn structure fit wants three and a king
-    attack fit wants four."""
+    """Each hold freezes its own block, so a fit of the newest term passes
+    every hold below it and leaves that term alone free."""
     tables = tune.frozen_slots(LAYOUT, False, True)
     assert not tables[LAYOUT.start["mobility"] : LAYOUT.start["shelter"]].any()
     both = tune.frozen_slots(LAYOUT, False, True, True)
@@ -744,12 +681,10 @@ def test_a_term_is_fitted_with_every_earlier_term_held():
 
 
 def test_a_refit_holds_the_terms_above_it_as_well_as_the_ones_below():
-    """A term fitted once can be fitted again on a larger corpus, and then
-    every other term is older than the fit rather than newer. A mobility refit
-    holds the tables below it and the shelter and the pawn structure above, so
-    the eight weights are the only thing that moves and a match reads them
-    alone. Without the last hold the sixteen pawn weights move too, which is
-    the confound `1b0862a` found the first time a hold was missing."""
+    """A mobility refit holds the tables below it and the shelter and the pawn
+    structure above, so the eight weights are the only thing that moves.
+    Without the last hold the pawn weights move too, which is the confound
+    `1b0862a` found the first time a hold was missing."""
     refit = tune.frozen_slots(LAYOUT, False, True, False, True, True, True)
     assert refit[: LAYOUT.start["mobility"]].all()
     assert not refit[LAYOUT.start["mobility"] : LAYOUT.start["shelter"]].any()
@@ -757,11 +692,8 @@ def test_a_refit_holds_the_terms_above_it_as_well_as_the_ones_below():
 
 
 def test_the_king_attack_hold_freezes_its_eight_slots_and_no_more():
-    """The newest term's hold is the one a refit of an older term needs, and a
-    hold that reached past its own block would freeze nothing else for the
-    fit to notice. So this says which slots it takes: the eight the term
-    occupies, its four midgame weights and its four endgame ones, and not one
-    slot either side of them."""
+    """The hold takes the eight slots the term occupies and not one either
+    side."""
     held = tune.frozen_slots(LAYOUT, True, held_king_attack=True)
     assert held.sum() == 8
     assert held[LAYOUT.block("king_attack")].all()
@@ -773,13 +705,11 @@ def test_quantizing_rounds_to_nearest():
 
 
 def sample(vector, count=30, plies=4):
-    """A corpus of whole games spread across the five slices of the key.
-
-    Six games to a slice, so eighteen train, six choose the ridge and six are
-    sealed. The group is the key's first byte and the fold is its second, and
-    the two are moved independently here for the reason the run reads them
-    apart: a fixture whose folds followed its groups would leave two folds
-    empty.
+    """A corpus of whole games spread across the five slices of the key: six
+    games a slice, so eighteen train, six choose the ridge and six are sealed.
+    The group is the key's first byte and the fold its second, moved
+    independently here because a fixture whose folds followed its groups
+    would leave two folds empty.
     """
     rows, labels = [], {}
     for index in range(count):
@@ -802,8 +732,7 @@ def sample(vector, count=30, plies=4):
 
 def fixture_run(tmp_path, vector, rows, labels, name="corpus.epd", drop=()):
     """The two files a run reads. `drop` names groups to leave out of the
-    corpus file, which is how a test asks what the run would have printed had
-    those rows never been extracted."""
+    corpus file."""
     terms = tmp_path / "rows.txt"
     terms.write_text("\n".join(extraction(rows, vector)) + "\n", encoding="utf-8")
     corpus = tmp_path / name
@@ -822,9 +751,7 @@ def fixture_run(tmp_path, vector, rows, labels, name="corpus.epd", drop=()):
 
 def test_a_loss_run_reports_the_groups_and_names_the_sealed_one(tmp_path, capsys):
     """The header names the corpus, the three groups and the result
-    distribution before any loss, so a number is never read without knowing
-    what it is a number over. The sealed group is named and not scored, which
-    is the whole of what a run may say about it."""
+    distribution before any loss. The sealed group is named and not scored."""
     vector = weights({0: 20, 64: -30})
     rows, labels = sample(vector)
     terms, corpus = fixture_run(tmp_path, vector, rows, labels)
@@ -832,8 +759,6 @@ def test_a_loss_run_reports_the_groups_and_names_the_sealed_one(tmp_path, capsys
     printed = capsys.readouterr().out
     # eighteen games train and six choose the ridge, at four positions a game
     assert "corpus positions 96 train 72 selection 24" in printed
-    # and the games beside the positions, because the games are what the split
-    # and every interval are taken over
     assert "games 30 train 18 selection 6 calibration 6" in printed
     assert "calibration positions 24 appearances 24 sealed, not read here" in printed
     assert "shipped selection mse" in printed
@@ -842,8 +767,7 @@ def test_a_loss_run_reports_the_groups_and_names_the_sealed_one(tmp_path, capsys
 
 def test_a_candidate_is_scored_against_the_shipped_weights(tmp_path, capsys):
     """A candidate vector is read from json and reported beside the shipped
-    one, with the paired difference and its interval and never a bare
-    delta."""
+    one, with the paired difference and its interval."""
     vector = weights({0: 20})
     rows, labels = sample(vector)
     terms, corpus = fixture_run(tmp_path, vector, rows, labels)
@@ -866,17 +790,14 @@ def test_a_candidate_is_scored_against_the_shipped_weights(tmp_path, capsys):
     printed = capsys.readouterr().out
     assert "candidate against shipped selection mse" in printed
     assert " se " in printed
-    # the naive per-position interval beside the honest one, and the ratio of
-    # the two, so a reader can see what treating the positions as independent
-    # would have claimed
+    # the naive per-position interval beside the honest one, and their ratio
     assert " per position " in printed
     assert " design " in printed
 
 
 def test_a_fit_holds_the_material_values_unless_it_is_told_not_to(tmp_path, capsys):
-    """`eval::material` is read by the delta margin in quiescence, so moving
-    it changes which captures quiescence skips, which changes the tree for a
-    reason that has nothing to do with the evaluation's accuracy."""
+    """The delta margin in quiescence reads `eval::material`, so moving it
+    changes the tree for a reason unrelated to the evaluation's accuracy."""
     vector = weights({0: 20})
     rows, labels = sample(vector)
     terms, corpus = fixture_run(tmp_path, vector, rows, labels)
@@ -904,9 +825,8 @@ def test_a_fit_holds_the_material_values_unless_it_is_told_not_to(tmp_path, caps
 
 def test_a_ridge_is_chosen_on_the_selection_games(tmp_path, capsys):
     """The grid is fitted on the training games and ranked on the selection
-    games, which is what the third group frees the calibration games from
-    having to do. Every penalty is printed with what it bought and what its
-    interval was, and the chosen one is named."""
+    games. Every penalty is printed with what it bought and its interval, and
+    the chosen one is named."""
     vector = weights({0: 20})
     rows, labels = sample(vector)
     terms, corpus = fixture_run(tmp_path, vector, rows, labels)
@@ -933,10 +853,8 @@ def test_a_ridge_is_chosen_on_the_selection_games(tmp_path, capsys):
 
 
 def test_a_cross_validation_folds_only_the_games_it_may_read(tmp_path, capsys):
-    """Five folds, each fitted on four fifths of the games and scored on the
-    fifth, so every row is scored by a fit that never read its game. The games
-    it folds are the ones the run may read, and the sealed group is not among
-    them: the corpus it is handed does not hold those rows."""
+    """Five folds over the games the run may read, which the sealed group is
+    not among."""
     vector = weights({0: 20})
     rows, labels = sample(vector, count=40)
     terms, corpus = fixture_run(tmp_path, vector, rows, labels)
@@ -961,12 +879,10 @@ def test_a_cross_validation_folds_only_the_games_it_may_read(tmp_path, capsys):
     assert "shipped cv mse" in printed
     assert "penalty 1e-06 cv mse" in printed
     assert "design " in printed
-    # the line says which group it is best over, so it cannot be pasted into
-    # `fit --penalties` as the ridge the fit would have chosen
+    # said in full, so it is not pasted into `fit --penalties`
     assert "best penalty over the folds" in printed
     assert "fit chooses on the selection group instead" in printed
-    # thirty-two of the forty games are in the two groups the run may read, and
-    # the folds hold those and no more
+    # thirty-two of the forty games are in the two groups the run may read
     folded = sum(
         int(line.split(" games ")[1].split(" ")[0])
         for line in printed.splitlines()
@@ -976,11 +892,9 @@ def test_a_cross_validation_folds_only_the_games_it_may_read(tmp_path, capsys):
 
 
 def test_final_opens_the_sealed_group_once_and_logs_it_first(tmp_path, capsys):
-    """A frozen integer vector is scored on the sealed group against the
-    shipped one, the log names the corpus and the sealed games by checksum
-    before any row is read, and the same sealed games are refused a second
-    time whatever file they arrive in. A corpus whose sealed games differ
-    opens."""
+    """The log names the corpus and the sealed games by checksum, the same
+    sealed games are refused a second time whatever file they arrive in, and
+    a corpus whose sealed games differ opens."""
     vector = weights({0: 20, 64: -30})
     rows, labels = sample(vector)
     terms, corpus = fixture_run(tmp_path, vector, rows, labels)
@@ -1022,8 +936,7 @@ def test_final_opens_the_sealed_group_once_and_logs_it_first(tmp_path, capsys):
         )
     assert len(log.read_text(encoding="utf-8").splitlines()) == 1
     # and so are the same sealed games in a corpus that grew elsewhere: a
-    # training row's count moved, the file's checksum with it, and the
-    # sealed games are the ones the log names
+    # training row's count moved, and the file's checksum with it
     grown = tmp_path / "grown.epd"
     grown.write_text(
         corpus.read_text(encoding="utf-8").replace('count "1"', 'count "2"', 1),
@@ -1080,9 +993,8 @@ def test_final_opens_the_sealed_group_once_and_logs_it_first(tmp_path, capsys):
 
 
 def test_final_scores_the_sealed_rows_and_only_those(tmp_path, capsys):
-    """The number printed is the loss over the sealed rows, worked out here
-    from the same rows by hand, so the command is reading the group and not
-    the corpus it was handed."""
+    """The loss printed is the loss over the sealed rows, worked out here by
+    hand."""
     vector = weights({0: 20})
     rows, labels = sample(vector)
     terms, corpus = fixture_run(tmp_path, vector, rows, labels)
@@ -1108,8 +1020,7 @@ def test_final_scores_the_sealed_rows_and_only_those(tmp_path, capsys):
         == 0
     )
     printed = capsys.readouterr().out
-    # the sealed rows, scored the way the fixture's rows state their own
-    # evaluation: the table entry at full phase and a pawn either way
+    # scored the way the fixture's rows state their own evaluation
     sealed = [
         (index, result)
         for index, (result, _, game) in enumerate(labels.values())
@@ -1134,8 +1045,8 @@ def test_final_scores_the_sealed_rows_and_only_those(tmp_path, capsys):
 
 
 def test_final_refuses_a_vector_that_is_not_integers(tmp_path):
-    """The vector that ships is integers, and a reading of the sealed group
-    against anything else is a reading of a vector that will not ship."""
+    """A reading against anything but integers is a reading of a vector that
+    will not ship."""
     vector = weights({0: 20})
     rows, labels = sample(vector)
     terms, corpus = fixture_run(tmp_path, vector, rows, labels)
@@ -1190,9 +1101,9 @@ def fixture_run_paired(tmp_path, vector, rows, labels, name="corpus.epd"):
 
 
 def test_the_learning_curve_draws_pairs_and_holds_the_selection_group(tmp_path, capsys):
-    """A draw takes whole pairs, the draws below the whole differ from each
-    other, every fit is read on the selection group `fit` reads, the whole is
-    fitted once, and the same seed draws the same curve."""
+    """A draw takes whole pairs, the draws differ, every fit is read on the
+    selection group `fit` reads, the whole is fitted once, and the same seed
+    draws the same curve."""
     vector = weights({0: 20, 64: -30})
     rows, labels = sample(vector, count=40)
     labels = paired(labels)
@@ -1293,14 +1204,11 @@ def test_the_learning_curve_refuses_a_share_it_cannot_draw(tmp_path):
 
 
 def test_the_calibration_group_is_not_read_by_a_fit(tmp_path, capsys):
-    """What "not read until the weights are final" means, rather than what it
-    promises.
-
-    The same fit is run twice, once over a corpus holding the calibration games
-    and once over one those rows were cut out of, and it writes the same vector
-    and prints the same numbers. The calibration games here are labelled the
-    opposite way round to every other game, so a run that read one row of them
-    could not come out the same.
+    """The same fit over a corpus holding the calibration games and over one
+    with those rows cut out writes the same vector and prints the same
+    numbers. The calibration games are labelled the opposite way round to
+    every other game, so a run that read one row of them could not come out
+    the same.
     """
     vector = weights({0: 20})
     rows, labels = sample(vector)
@@ -1340,8 +1248,7 @@ def test_the_calibration_group_is_not_read_by_a_fit(tmp_path, capsys):
             [
                 line
                 for line in capsys.readouterr().out.splitlines()
-                # but for the two lines saying how big the sealed group is,
-                # which is the one thing a run may say about it
+                # but for the lines saying how big the sealed group is
                 if "calibration" not in line
             ]
         )
@@ -1356,11 +1263,9 @@ def sealed_checksum(pairs):
 
 
 def test_a_named_seal_holds_out_the_games_it_names_and_no_others():
-    """The corpus splits on the file rather than on the key when it is given
-    one. Read through the checksum `final` logs, so what this asserts is the
-    identity of the group and not its size: the pairs named are sealed, no
-    other pair is, and the same corpus read without the file seals a different
-    set."""
+    """Read through the checksum `final` logs, so this asserts the identity of
+    the group and not its size: the pairs named are sealed, no other pair is,
+    and the same corpus read without the file seals a different set."""
     vector = weights()
     rows, raw = sample(vector)
     _, _, parsed = tune.parse_terms(extraction(rows, vector))
@@ -1376,8 +1281,7 @@ def test_a_named_seal_holds_out_the_games_it_names_and_no_others():
 
 def test_a_sealed_pair_no_game_of_the_corpus_holds_is_refused():
     """A pair the corpus has no game for is a seal drawn against another
-    archive, and a reading under it would be over games a reader cannot name.
-    That is worse than no reading at all, so it is refused."""
+    archive."""
     vector = weights()
     rows, raw = sample(vector)
     _, _, parsed = tune.parse_terms(extraction(rows, vector))
@@ -1386,17 +1290,15 @@ def test_a_sealed_pair_no_game_of_the_corpus_holds_is_refused():
 
 
 def test_a_sealed_pair_with_no_row_is_counted_rather_than_refused():
-    """A named pair the corpus holds whose positions all went elsewhere is
-    ordinary once the archive is large: they were claimed by a game with a
-    lower key, or filtered out of the extraction. The pair is sealed and
-    contributes nothing, which is a number to report and not a fault. The
-    2026-09-13 mobility corpus had four of them in 4,750."""
+    """A named pair whose positions were all claimed by a lower key or
+    filtered out of the extraction is sealed and contributes nothing, which is
+    a number to report and not a fault. The 2026-09-13 mobility corpus had
+    four of them in 4,750."""
     vector = weights()
     rows, raw = sample(vector)
     labels = labels_of(raw)
-    # drop one pair's rows from the extraction while leaving its games in the
-    # corpus, which is what a position claimed elsewhere looks like here. A
-    # fixture row opens with its id, so the id is its first field
+    # one pair's rows dropped from the extraction with its games left in the
+    # corpus. A fixture row opens with its id
     lonely = min(label.pair for label in labels.values())
     dropped = {name for name, label in labels.items() if label.pair == lonely}
     kept = [row for row in rows if row.split(" ", 1)[0] not in dropped]

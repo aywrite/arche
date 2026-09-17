@@ -4,11 +4,10 @@
 //! How many squares around the enemy king each side's pieces attack, and what
 //! that is worth.
 //!
-//! The term owns its counts, its weights and its fold. Nothing here is
-//! remembered between positions. The counts read the whole occupancy and every
-//! piece of one side, which is the position itself, so the only key a score
-//! could sit behind is the one the mobility cache was measured on and turned
-//! down.
+//! Nothing here is remembered between positions. The counts read the whole
+//! occupancy and every piece of one side, which is the position itself, so
+//! the only key a score could sit behind is the position key, which the
+//! mobility cache was measured on and turned down.
 
 use super::mobility;
 use crate::board::{Board, king_attacks, knight_attacks, pop_lsb};
@@ -26,66 +25,29 @@ pub(crate) const COUNTS: usize = mobility::PIECES.len();
 /// [`mobility::PIECES`], as the packed pairs the taper is read from.
 ///
 /// Fitted 2026-09-16 by `scripts/tune.py` over the whole archived strength
-/// run: 310 artifacts and 50,677 games, whose 6,623,970 post-book plies gave
-/// 6,227,777 positions and 2,890,773 quiet rows, extracted by `arche terms` at
-/// the 820 slot layout. The corpus is sha256 `a0798d51`, built with the sealed
-/// pairs named, and those are sha256 `a723887f`. The rows are sha256
-/// `6001063b` and the fitted vector is sha256 `f65aa57e`. K was held at 1.0821
-/// and the games split by pair: 16,300 pairs and 32,516 games trained, 5,528
-/// pairs and 11,030 games chose the ridge, and 3,498 pairs and 6,985 games
-/// were sealed. The sealed file names 3,501 pairs over 6,995 games. Three of
-/// those pairs reach no row, which accounts for at most six of the ten missing
-/// games, and where the other four went is not established. The 768 table
-/// entries, the six material values, the eight mobility weights, the fourteen
-/// shelter weights and the sixteen pawn structure ones were all held, so these
-/// eight are the only thing that moved.
+/// run, 50,677 games and 2,890,773 quiet rows extracted by `arche terms` at
+/// the 820 slot layout (corpus sha256 `a0798d51`, sealed pairs `a723887f`,
+/// rows `6001063b`, fitted vector `f65aa57e`), K held at 1.0821, every other
+/// weight held, at a ridge of zero. The fit's figure is the sealed group's:
+/// opened once at 2026-09-16T10:28:31Z after the vector was frozen, it scores
+/// 0.079520 at zero and 0.079377 at these, a paired difference of -0.000143
+/// against a standard error of 0.000059 over its 6,985 games at a design
+/// factor of 3.2. The selection group read -0.000395 against 0.000052, about
+/// 3.2 standard errors away, and by the rule the fit was registered with (a
+/// disagreement wider than the mobility refit's 1.85) the sealed figure is
+/// the one quoted. Commit d3dcc53 holds the phase split, the column support
+/// and the learning curve, and docs/ROADMAP.md what the term leaves out.
 ///
-/// The fit's figure is the sealed group's: a paired difference of -0.000143
-/// against a standard error of 0.000059 at a design factor of 3.2. The sealed
-/// group was opened once, at 2026-09-16T10:28:31Z, after the vector was frozen
-/// and over 417,778 positions that no fit and no ridge choice had read. It
-/// scores 0.079520 at zero and 0.079377 at these rounded weights. That is 2.42
-/// standard errors from zero, outside its interval.
+/// The sealed file names 3,501 pairs over 6,995 games against the 3,498 and
+/// 6,985 that reached a row. Three of those pairs reach no row, which
+/// accounts for at most six of the ten missing games, and where the other
+/// four went is not established.
 ///
-/// The selection group read -0.000395 against a standard error of 0.000052 at
-/// the same design factor, scoring 0.085901 at zero and 0.085506 at the fit
-/// before it was rounded (0.085496 after). By the rule the fit was registered
-/// with, that a disagreement wider than the mobility refit's 1.85 standard
-/// errors means the sealed figure is the one quoted, the selection group's
-/// -0.000395 overstated the fit.
-///
-/// Two things in the sealed reading were recorded before any game was played.
-/// The first is its size. It is about a third of the selection group's, and
-/// about 3.2 standard errors from it, where the mobility refit's two readings
-/// were 1.85 apart and the king safety fit's 0.68. The sealed games are the
-/// strength runs played since the mobility refit's corpus was built, and most
-/// of them are the lazy mobility arms, whose candidates skipped the mobility
-/// term at most quiescence stand pats and so reached positions a different
-/// evaluation chose. The second is where it pays. By phase the sealed reading
-/// is -0.000088 at six pieces or fewer, -0.000414 from seven to twelve and
-/// +0.000366 at thirteen or more, so on those games the fullest boards read
-/// slightly worse at these weights. The selection group read -0.000261,
-/// -0.000811 and +0.000008 over the same buckets, the fullest boards level.
-/// Neither group prints a standard error per bucket.
-///
-/// The ridge is zero, which the grid ranked first. The check that would have
-/// overruled it is a largest weight on the column with the least support, and
-/// that is not what happened: the largest weight is the rook's 27, and the
-/// rook column is the best supported of the four. A midgame coefficient is
-/// written in 16.2% of the training rows for the knight, 27.0% for the bishop,
-/// 30.5% for the rook and 17.4% for the queen. Little of that is on a full
-/// board. A sample of every twentieth of all 2,890,773 rows, across all three
-/// groups and reading positions only, finds a rook bearing on the enemy ring
-/// from 0.6% of the sides with thirteen or more pieces left, against 21.7% of
-/// the sides over the sampled rows. The sample spans every group, so it is a
-/// different population from the training row shares above.
-///
-/// The learning curve is flat from an eighth of the training pairs. Five
-/// draws of 2,038 pairs read -0.000346 to -0.000397 against the whole set's
-/// -0.000395, so the corpus is not what limits eight weights.
+/// The ridge of zero was not overruled: the largest weight is the rook's 27,
+/// and the rook column is the best supported of the four.
 ///
 /// [`SCORED`] is true at these weights, so the leaf counts the ring at every
-/// evaluation. What that costs is in the commit that landed this.
+/// evaluation; what that costs is in docs/ROADMAP.md and 7991f40.
 ///
 /// `bounds_hold` charges one piece of each kind two squares of the ring for a
 /// knight, three for a bishop, four for a rook and six for a queen, both sides
@@ -93,30 +55,22 @@ pub(crate) const COUNTS: usize = mobility::PIECES.len();
 /// boardful at 9,762, against the 32,767 a half has to stay inside.
 static KING_ATTACK: [i32; COUNTS] = [pack(11, 3), pack(20, -2), pack(27, -3), pack(17, 9)];
 
-/// The weight of one of the four pieces that carries one, as the packed pair.
-/// The tuner's seam asks through [`super::TERMS`], so that a slot names the
-/// live weight rather than a copy of it, the way it reads the tables.
+/// The weight of one piece's count, as the packed pair, read through
+/// [`super::TERMS`] so that a slot names the live weight rather than a copy.
 pub(crate) const fn weight(index: usize) -> i32 {
     KING_ATTACK[index]
 }
 
 /// Whether [`super::sum`] takes this term at the leaf: true when one of the
-/// four [`KING_ATTACK`] weights is not zero at one end of the taper or the
-/// other. The 2026-09-16 fit priced all eight halves, so it is true and every
-/// leaf counts the ring for both sides.
+/// four [`KING_ATTACK`] weights is not zero at either end of the taper.
+/// Derived from the weights the way [`mobility::SCORED_KINDS`] is, so weights
+/// put back to zero turn the term off with nothing else edited.
 ///
-/// Derived from the weights rather than written out, which is how
-/// [`mobility::SCORED_KINDS`] is derived. The fit turned the term on by
-/// replacing the weights and editing nothing else, and weights put back to
-/// zero would turn it off the same way.
-///
-/// A count at a zero weight is not folded away by the compiler. Multiplying
-/// the counts by nothing leaves the walk over the pieces standing, and llvm
-/// keeps it: the commit that added this term measured what that cost over the
-/// bench, and skipping it is the reason this constant exists rather than a
-/// note saying the multiply is free.
-/// `the_term_is_counted_exactly_when_a_weight_is_not_zero` is what holds the
-/// constant and the weights together.
+/// A count at a zero weight is not folded away: llvm leaves the walk over
+/// the pieces standing, and the commit that added this term at zero weight
+/// (188297f) measured what that cost over the bench.
+/// `the_term_is_counted_exactly_when_a_weight_is_not_zero` holds the constant
+/// and the weights together.
 pub(crate) const SCORED: bool = scored(&KING_ATTACK);
 
 /// Whether `weights` prices anything, read at compile time. Both halves are
@@ -137,45 +91,36 @@ const fn scored(weights: &[i32; COUNTS]) -> bool {
 /// rooks and queens attack, a count per piece kind in the order
 /// [`mobility::PIECES`] names them.
 ///
-/// The ring is the eight squares a king attacks from where it stands, which is
-/// five on the edge and three in a corner. The king's own square is not in it.
-/// No quiet position carries an attack on it: the side to move out of check is
-/// one of the three conditions a tuned row meets, and the other side cannot be
-/// in check at all, so a column counting the king's square is one no fit could
-/// ever price. The rank beyond the ring is not in it either. The shelter
-/// already counts the pawns standing there, and how far a zone should reach is
-/// a guess of its own.
+/// The ring is the eight squares a king attacks from where it stands, five on
+/// the edge and three in a corner. The king's own square is not in it: no
+/// quiet position carries an attack on it, since the side to move out of
+/// check is one of the three conditions a tuned row meets and the other side
+/// cannot be in check at all, so a column counting it is one no fit could
+/// price. The rank beyond the ring is not in it either; the shelter already
+/// counts the pawns standing there.
 ///
-/// A piece's count is its attack set over the real occupancy, and nothing is
-/// taken out of it. That is where this parts company with [`mobility::counts_of`],
-/// which drops this side's own squares and the squares an enemy pawn covers,
-/// because a square a piece cannot go to is not scope. An attack is the other
-/// question: a rook bears on the pawn in front of the king whether or not a
-/// bishop guards it, and a knight standing in the ring is a square the rook
-/// behind it bears on. So a slider stops at the first piece of either colour
-/// and counts that square if the ring holds it, and sees nothing past it. Pins
-/// are ignored, as mobility ignores them.
+/// A piece's count is its attack set over the real occupancy with nothing
+/// taken out, which is where this parts company with
+/// [`mobility::counts_of`]: a rook bears on the pawn in front of the king
+/// whether or not a bishop guards it, and a knight standing in the ring is a
+/// square the rook behind it bears on. So a slider stops at the first piece
+/// of either colour, counts that square if the ring holds it, and sees
+/// nothing past it. Pins are ignored, as mobility ignores them.
 ///
 /// A ring square two pieces attack is counted twice, once in each piece's
-/// popcount. How many attackers bear on the king is the signal the term is
-/// after, and a union per kind would cost an or and lose it.
+/// popcount. How many attackers bear on the king is the signal, and a union
+/// per kind would lose it.
 ///
 /// Pawns and kings are left out. The storm already reads the enemy pawns on
-/// the three ranks in front of the king, and a pawn attack on the ring is
-/// mostly the same pawn one rank on; a king bearing on the other king's ring is
-/// the opposition, which the endgame table prices.
+/// the three ranks in front of the king, and a king bearing on the other
+/// king's ring is the opposition, which the endgame table prices.
 ///
-/// The tuner's walk reads this, and the evaluation reads the same counts off
-/// the walk in `eval/mod.rs` it shares with mobility, which
-/// `the_shared_walk_counts_what_each_term_counts_alone` holds to this
-/// function. So neither the identity nor that test can see a wrong count
-/// here. What pins it is the hand counts in the tests below, the way the
-/// mobility counts are pinned.
+/// The tuner's walk reads this and the evaluation reads the shared walk in
+/// `eval/mod.rs`, which `the_shared_walk_counts_what_each_term_counts_alone`
+/// holds to this function, so neither the identity nor that test can see a
+/// wrong count here; the hand counts in the tests below are what pin it.
 ///
-/// Inlined by force, for the reason `mobility::counts_of` gives: when the
-/// evaluation read this it asked for it twice at every leaf and every
-/// quiescence node, and llvm leaves a walk this shape out of line when it is
-/// left to itself.
+/// Inlined by force, for the reason `mobility::counts_of` gives.
 #[inline(always)]
 pub(crate) fn counts_of(board: &Board, color: Color) -> [i32; COUNTS] {
     let occupied = board.occupied();
@@ -215,12 +160,9 @@ pub(crate) fn counts(board: &Board, color: Color, into: &mut [i32]) {
 }
 
 /// What white's bearing on the black king stands ahead by, as a packed pair on
-/// the scale the piece square pair is on, given each side's counts.
-///
-/// The sum calls it only while [`SCORED`] is true, and does not call
-/// [`counts_of`] for the counts. It takes them from the walk in `eval/mod.rs`
-/// that reads mobility's counts off the same attack sets, so a piece's attack
-/// set is probed once for the two terms rather than once for each.
+/// the scale the piece square pair is on, given each side's counts. The sum
+/// calls it only while [`SCORED`] is true, with counts from the walk in
+/// `eval/mod.rs` that probes each attack set once for both terms.
 #[inline]
 pub(crate) fn fold_counts(white: [i32; COUNTS], black: [i32; COUNTS]) -> i32 {
     weigh(&KING_ATTACK, white, black)
@@ -260,11 +202,9 @@ mod tests {
     use crate::psqt::{eg_value, mg_value, pack};
     use pretty_assertions::assert_eq;
 
-    /// The counts by hand, square by square, because nothing else pins them.
-    /// The tuner's identity folds a row against the live weights, and the
-    /// tuner reads this function and `eval` reads a walk held to it, so the
-    /// two sides of the identity move together whatever it answers. These
-    /// cases are what pins the counts themselves.
+    /// The counts by hand, because nothing else pins them: the tuner reads
+    /// this function and `eval` reads a walk held to it, so the identity
+    /// between them moves with whatever it answers.
     ///
     /// The black king stands on e8 unless the case says otherwise, so its ring
     /// is d7, e7, f7, d8 and f8. The white king stands off every line the case
@@ -347,8 +287,7 @@ mod tests {
             ),
             // a corner ring is g7, g8 and h7, and the king's own square is
             // not in it however the queen bears on it. Black is to move
-            // because the queen gives check along the file, which a position
-            // with white to move could not be in
+            // because the queen gives check along the file
             (
                 "7k/8/8/8/8/8/8/K6Q b - - 0 1",
                 Color::White,
@@ -412,12 +351,9 @@ mod tests {
 
     /// Black's count of a position is white's count of its reflection, so the
     /// two colours are read the same way round and each reads the other king's
-    /// ring rather than its own.
-    ///
-    /// Each row is held to a count of its own before the two sides are
-    /// compared. Two reflections named the wrong way round are still
-    /// reflections, and both of them answer nothing, which an equality on its
-    /// own would take for agreement.
+    /// ring rather than its own. Each row is held to a count of its own first:
+    /// two reflections named the wrong way round both answer nothing, which an
+    /// equality alone would take for agreement.
     #[test]
     fn the_two_colours_count_the_same_squares() {
         for (white, black, why) in [
@@ -471,14 +407,9 @@ mod tests {
     /// which differ from each other too.
     const TRIAL: [i32; COUNTS] = [pack(11, 2), pack(-7, 13), pack(3, -5), pack(29, 41)];
 
-    /// What the fold does with weights that are not the shipped ones.
-    ///
-    /// Nothing holds the shipped weights apart from each other, so a pair
-    /// read into the wrong piece's slot or a half read off the wrong end could
-    /// land on the right number by accident. So this hands the fold four pairs
-    /// that differ at both ends and asserts the packed pair against the
-    /// arithmetic: white's count less black's, piece by piece, each half of the
-    /// pair summed on its own.
+    /// What the fold does with weights that are not the shipped ones, which
+    /// nothing holds apart from each other: white's count less black's, piece
+    /// by piece, each half of the pair summed on its own.
     #[test]
     fn the_king_attack_fold_reads_white_less_black_piece_by_piece() {
         let board = Board::from_fen(BEARING).unwrap();
@@ -500,18 +431,9 @@ mod tests {
     }
 
     /// What the leaf is allowed to leave out, which is the whole of the
-    /// contract between it and the tuner's walk.
-    ///
-    /// The walk takes the counts whatever the weights hold, because it is
-    /// offline and its coefficients are what prices a column. [`super::sum`]
-    /// takes them only when [`SCORED`] says a weight is not zero, because a
-    /// count multiplied by zero adds nothing and the walk over the pieces is
-    /// not free. So the rule is that the constant is the weights and nothing
-    /// else, read here off the array a second way, and then a weight put back
-    /// into each half of each column in turn.
-    ///
-    /// The fit priced the term, so the constant is true. Weights put back to
-    /// zero would turn it off with no line here or in the sum to edit.
+    /// contract between it and the tuner's walk: [`SCORED`] is the weights
+    /// and nothing else, read here off the array a second way, and then a
+    /// weight put back into each half of each column in turn.
     #[test]
     fn the_term_is_counted_exactly_when_a_weight_is_not_zero() {
         let priced = (0..COUNTS).any(|index| {

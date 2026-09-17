@@ -3,24 +3,19 @@
 
 //! What each side's pawns stand as, and what that is worth.
 //!
-//! The term owns its counts, the masks they are read off, its weights, its
-//! fold and the memo the search hands it. A pawn that moves changes which of
-//! the pawns behind and beside it are passed, isolated or doubled, so there is
-//! nothing here for `Accumulator::count` to add and take away a pawn at a
-//! time. What makes that cheap anyway is that only a pawn move changes it at
-//! all, which is what [`Cache`] is built on.
+//! A pawn that moves changes which of the pawns behind and beside it are
+//! passed, isolated or doubled, so there is nothing here for
+//! `Accumulator::count` to add and take away a pawn at a time. Only a pawn
+//! move changes it at all, which is what [`Cache`] is built on.
 
 use crate::board::Board;
 use crate::misc::Color;
 use crate::psqt::pack;
 
 /// How many ranks the passed pawn count is split over: a pawn's relative
-/// second through its relative seventh, which is every rank one can stand on.
-///
-/// A table by rank rather than one weight times the rank. What a passer is
-/// worth is convex in how far it has come, and a ramp cannot say so; six
-/// numbers can, and the tables already spend sixty four on where a pawn
-/// stands.
+/// second through its relative seventh. A table by rank rather than one
+/// weight times the rank, because what a passer is worth is convex in how far
+/// it has come and a ramp cannot say so.
 const PASSED_RANKS: usize = 6;
 
 /// How many counts the pawn structure is measured in, in the order
@@ -28,18 +23,14 @@ const PASSED_RANKS: usize = 6;
 /// relative rank, then the isolated pawns, then the doubled ones.
 pub(crate) const COUNTS: usize = PASSED_RANKS + 2;
 
-/// A pawn's own file and the files beside it, as a bit per file.
-///
-/// The shelter's `king_files` steps the middle file in at the two edges so
-/// that a king always names three; this does not, because the two are asking
-/// different questions. A white pawn on a4 is passed while black has no pawn
-/// on the a file or the b file, and a black pawn on the c file has nothing to
-/// say about it. Stepping in would let that pawn stop it.
+/// A pawn's own file and the files beside it, as a bit per file: two at the
+/// edges, not three. The shelter's `king_files` steps the middle file in at
+/// the edges so that a king always names three; a pawn must not, because a
+/// white pawn on a4 is passed while black has no pawn on the a or b file, and
+/// a black pawn on the c file has nothing to say about it.
 const fn pawn_files(square: u8) -> u8 {
     let own = 1u8 << (square % 8);
-    // a shift off either end of the byte drops the bit, which is the edge
-    // case: the a file has no file to its left and the h file none to its
-    // right
+    // a shift off either end of the byte drops the bit, which is the edge case
     own | (own << 1) | (own >> 1)
 }
 
@@ -55,19 +46,15 @@ const fn span_ahead(square: u8, forward: i8, files: u8) -> u64 {
     mask
 }
 
-/// What stands in a pawn's way, as two masks a square names.
+/// What stands in a pawn's way. `front_span` is the pawn's file and the two
+/// beside it on every rank ahead of it: a pawn of ours is passed when no pawn
+/// of theirs stands anywhere in it. `file_ahead` is the same span on the
+/// pawn's own file alone, and answers whether a pawn of ours is already in
+/// front of this one. Its own table rather than masked out of the first at
+/// the leaf, because a leaf term pays for every instruction and a table costs
+/// half a kilobyte.
 ///
-/// `front_span` is the pawn's file and the two beside it, on every rank ahead
-/// of it. A pawn of ours is passed when no pawn of theirs stands anywhere in
-/// it, which is the whole of the standard definition bar one clause.
-/// `file_ahead` is the same span without the neighbouring files, and it
-/// answers that clause: whether a pawn of ours is already in front of this
-/// one. It is kept as its own table rather than masked out of the first at
-/// the leaf, because a leaf term pays for every instruction it adds and a
-/// table costs half a kilobyte.
-///
-/// Indexed by `Color`'s discriminant and then the square, the way the
-/// shelter's masks are indexed and for the same reason. A white pawn is read
+/// Indexed by `Color`'s discriminant and then the square: a white pawn is read
 /// up the board and a black one down it.
 struct Masks {
     front_span: [[u64; 64]; 2],
@@ -75,7 +62,7 @@ struct Masks {
 }
 
 impl Masks {
-    /// Built at compile time, the way the shelter's are.
+    /// Built at compile time.
     const fn new() -> Self {
         let mut masks = Masks {
             front_span: [[0; 64]; 2],
@@ -98,20 +85,16 @@ impl Masks {
 
 static MASKS: Masks = Masks::new();
 
-/// A set of files put back on the board: every square on every file the byte
-/// names. What [`files_of`] undoes, and one multiply rather than eight
-/// shifts, since a byte times the a file's eight squares lands a copy of the
-/// byte on each rank.
+/// A set of files put back on the board, every square on every file the byte
+/// names: what [`files_of`] undoes. One multiply by the a file lands a copy of
+/// the byte on each rank.
 const fn spread(files: u8) -> u64 {
     (files as u64) * 0x0101_0101_0101_0101
 }
 
 /// Every square strictly in front of one of `pawns`, on that pawn's own file.
-///
-/// The pawns shifted one rank on and then doubled three times, which carries
-/// them the seven ranks a board has. Seeded with the shift rather than with
-/// the pawns, so a pawn is never in its own fill, which is what leaves a lone
-/// pawn undoubled.
+/// Seeded with the pawns shifted one rank rather than the pawns themselves,
+/// so a pawn is never in its own fill and a lone pawn is undoubled.
 const fn ahead_of(pawns: u64, color: Color) -> u64 {
     match color {
         Color::White => {
@@ -131,15 +114,9 @@ const fn ahead_of(pawns: u64, color: Color) -> u64 {
     }
 }
 
-/// Which files a set of pawns stands on, as a bit per file.
-///
-/// The board folded in half three times, so the answer is three shifts, three
-/// ors and a narrowing rather than eight masked tests. Nothing here says how
-/// many pawns a file holds, which is all the counts that ask want to know.
-///
-/// The shelter reads it too, for the king's files that hold no pawn of ours.
-/// It lives here because [`spread`] is its inverse and the pair is easier to
-/// check side by side than apart.
+/// Which files a set of pawns stands on, as a bit per file: the board folded
+/// in half three times. Nothing here says how many pawns a file holds. The
+/// shelter reads it too; it lives here because [`spread`] is its inverse.
 pub(super) const fn files_of(pawns: u64) -> u8 {
     let folded = pawns | (pawns >> 32);
     let folded = folded | (folded >> 16);
@@ -151,82 +128,39 @@ pub(super) const fn files_of(pawns: u64) -> u8 {
 /// read from.
 ///
 /// Fitted 2026-09-12 by `scripts/tune.py` over the whole archived strength
-/// run: 164 artifacts across 37 runs, 34,175 games, whose 4,428,569 post-book
-/// plies gave 4,196,989 positions and 1,922,548 quiet rows, extracted by
-/// `arche terms` at 39da0fe. The corpus is sha256 `f9ff326c` and the rows are
-/// sha256 `35fd184d`. K was held at 1.1959 and the games split by pair: 10,696
-/// pairs trained, 3,638 chose the ridge and 2,750 were sealed. The 768 table
-/// entries, the six material values, the eight mobility weights and the
-/// fourteen shelter ones were all held where they stand, so these sixteen are
-/// the only thing that moved. Every number here is of the rounded vector that
-/// ships.
+/// run, 34,175 games and 1,922,548 quiet rows extracted by `arche terms` at
+/// 39da0fe (corpus sha256 `f9ff326c`, rows `35fd184d`), K held at 1.1959,
+/// every other weight held, at a ridge of 1e-8. The sealed group, opened once
+/// after the weights were frozen, scores 0.084236 at zero and 0.083240 at
+/// these, a paired difference of -0.000995 against a standard error of
+/// 0.000146 over its 5,480 games at a design factor of 5.0, which is 0.15
+/// standard errors from the selection group's reading. Commit 5c3175b holds
+/// the selection figures, the phase split and the learning curve.
 ///
-/// The selection group scores 0.090580 at zero and 0.089555 at these, a
-/// paired difference of -0.001025 against a standard error of 0.000128 over
-/// its 7,263 games, at a design factor of 4.8. That is eight standard errors
-/// outside its interval, and larger than the king safety fit read on a corpus
-/// four fifths this size. By phase it is -0.001274 where six or fewer pieces
-/// are left, -0.000671 from seven to twelve, and +0.000135 at thirteen or
-/// more: the term pays in the ending, pays a little in the middlegame and
-/// costs a little in the opening, which is the shape a pawn structure term
-/// should have.
+/// The ridge overrules the grid, which ranked no regularisation first. That
+/// vector put 239 on a passed pawn's seventh rank in the midgame and -29 in
+/// the ending, on the count with the fewest rows (5.31%) and the smallest
+/// summed midgame coefficient of the sixteen: the direction the corpus
+/// constrains least is where an unregularised fit put its error. The
+/// selection group did not catch it, since a held-out group detects a vector
+/// that has memorised its games and not one that has learned a real but
+/// unrepresentative regularity. Overruling cost 0.000132 of selection loss
+/// against a standard error of 0.00015 and bought a largest weight of 53.
 ///
-/// The sealed group was opened once, after the weights were frozen, over
-/// 2,750 pairs and 5,480 games and 312,012 positions that no fit and no
-/// ridge choice had read. It scores 0.084236 at zero and 0.083240 at these,
-/// a paired difference of -0.000995 against a standard error of 0.000146 at
-/// a design factor of 5.0. That is outside its interval, and 0.15 standard
-/// errors from the selection group's reading, so the two agree more closely
-/// than the king safety fit's two did.
-///
-/// It also answers the one thing the selection group said against the term.
-/// There the opening bucket got worse by 0.000135; on the sealed games it
-/// improves by 0.000249, so that was noise rather than a cost. By phase the
-/// sealed reading is -0.001107 at six pieces or fewer, -0.000867 from seven
-/// to twelve and -0.000249 at thirteen or more, which is the same shape
-/// without the sting in its tail.
-///
-/// The ridge is 1e-8, chosen on the selection group from a grid the zero was
-/// taken out of. The grid as it stands includes no regularisation at all and
-/// ranked it first, and the vector it produced put 239 on a passed pawn's
-/// seventh rank in the midgame and -29 in the ending. `PAWNS_END` already
-/// pays a pawn on the seventh 78 to 83, so that says a passed pawn one square
-/// from queening is worth less than a blockaded one in the phase that decides
-/// it. The seventh rank count carries the fewest rows of the eight (5.31%)
-/// and the smallest summed midgame coefficient of all sixteen slots, a
-/// twenty seventh of the isolated count's, so it is the direction the corpus
-/// constrains least and the one an unregularised fit put its error in.
-/// Overruling the grid cost 0.000132 of selection loss against a standard
-/// error of 0.00015, and bought a largest weight of 53 rather than 239.
-///
-/// The selection group did not catch that, which is the part worth knowing:
-/// zero scored better there, on games no fit had read. A held-out group
-/// detects a vector that has memorised its training games and does not detect
-/// one that has learned a real but unrepresentative regularity, and the quiet
-/// filter manufactures exactly that wherever a feature's interesting cases
-/// are tactical.
-///
-/// Three of the sixteen are not what the term was built to say, and they are
-/// left as the fit gave them rather than tidied. A passed pawn on the seventh
-/// is worth less than one on the sixth at both ends, and that survives every
-/// ridge on the grid, so it is the corpus and not the regularisation: a
+/// Three of the sixteen are not what the term was built to say and are left
+/// as the fit gave them. A passed pawn on the seventh is worth less than one
+/// on the sixth at both ends, which survives every ridge on the grid: a
 /// position with a passer on the seventh is rarely quiet unless the pawn is
-/// blockaded or about to be lost, so the rows that reach the fit are the ones
-/// where it is not winning. Passed pawns on the second through the fourth are
-/// a midgame penalty. A doubled pawn is worth 8 in the midgame. The isolated
-/// count, which carries a coefficient in 56.98% of the rows and has by far
-/// the most evidence behind it, reads -11 and -6, which is what a player
-/// would have guessed.
+/// blockaded or about to be lost, so those are the rows that reach the fit.
+/// Passed pawns on the second through the fourth are a midgame penalty, and
+/// a doubled pawn is worth 8 in the midgame.
 ///
-/// A side's eight pawns can fill the eight counts twenty four times over
-/// between them, since one pawn can be passed and isolated and doubled at
-/// once, but no count can exceed eight and the six passed counts share the
-/// eight between them. So the most this term adds to one half of the packed
-/// pair is 776 in the midgame and 440 in the ending, both sides counted,
-/// against the 32,767 a half has to stay inside. `bounds_hold` charges eight
-/// of every count rather than eight across them, which is looser again and
-/// is the screen rather than the arithmetic: it puts the whole vector's
-/// boardful at 8,622, of which this term is at most 3,024.
+/// One pawn can be passed, isolated and doubled at once, but no count exceeds
+/// eight and the six passed counts share the eight pawns, so this term adds
+/// at most 776 to the midgame half and 440 to the ending half, both sides
+/// counted, against the 32,767 a half has to stay inside. `bounds_hold`
+/// charges eight of every count, which is the looser screen: 3,024 of a
+/// boardful of 8,622.
 static PAWN_STRUCTURE: [i32; COUNTS] = [
     pack(-18, 18),
     pack(-25, 15),
@@ -238,49 +172,36 @@ static PAWN_STRUCTURE: [i32; COUNTS] = [
     pack(8, -10),
 ];
 
-/// The weight of one of the eight counts, as the packed pair. The tuner's
-/// seam asks through [`super::TERMS`], so that a slot names the live weight
-/// rather than a copy of it, the way it reads the tables.
+/// The weight of one count, as the packed pair, read through
+/// [`super::TERMS`] so that a slot names the live weight rather than a copy.
 pub(crate) fn weight(index: usize) -> i32 {
     PAWN_STRUCTURE[index]
 }
 
-/// What this side's pawns stand as, in the eight counts [`COUNTS`] names: its
-/// passed pawns by relative rank, the second through the seventh, then its
-/// isolated pawns and its doubled ones.
+/// What this side's pawns stand as, in the eight counts [`COUNTS`] names.
 ///
 /// A pawn of ours is passed when no pawn of theirs stands on its file or
-/// either file beside it on any rank ahead of it, and no pawn of ours
-/// stands ahead of it on its own file. The second clause is what leaves
-/// the rear of a doubled pair out: the front pawn is the runner, and the
-/// one behind it is going nowhere the front one has not gone first. What
-/// stands on the square in front of the pawn is not read, so a passer a
-/// knight has blockaded is counted as a passer. That is on purpose and it
-/// is the first thing this term leaves out: the stop square reads the
-/// pieces, and a term that reads the pieces cannot sit behind a key over
-/// the pawns.
+/// either file beside it on any rank ahead of it, and no pawn of ours stands
+/// ahead of it on its own file. The second clause leaves the rear of a
+/// doubled pair out. The square in front of the pawn is not read, so a passer
+/// a knight has blockaded is counted as a passer: the stop square reads the
+/// pieces, and a term that reads the pieces cannot sit behind a key over the
+/// pawns.
 ///
-/// A pawn is isolated when no pawn of ours stands on either file beside
-/// it, and doubled when a pawn of ours stands behind it on its own file.
-/// Both are counted per pawn rather than per file, so an isolated pair on
-/// one file pays the isolated weight twice and a tripled file is doubled
-/// two. Per pawn is what one coefficient can state; per file would want a
-/// second table to say how many.
+/// A pawn is isolated when no pawn of ours stands on either file beside it,
+/// and doubled when a pawn of ours stands behind it on its own file. Both are
+/// counted per pawn rather than per file, so an isolated pair on one file
+/// pays the isolated weight twice and a tripled file is doubled two.
 ///
-/// Relative rank is the rank a pawn has come, so a white pawn's is its
-/// rank and a black pawn's is nine less. The relative second is a real
-/// bucket and not a rounding of the others: a pawn still at home is
-/// passed the moment the enemy pawns on its three files are gone.
+/// Relative rank is the rank a pawn has come: a white pawn's rank, and nine
+/// less for a black pawn. The relative second is a real bucket: a pawn still
+/// at home is passed the moment the enemy pawns on its three files are gone.
 ///
-/// Pawns and nothing else is read here, which is the property the pawn
-/// hash rests on. Neither king, no piece and not the side to move: two
-/// positions whose pawns agree agree on all eight counts, and
-/// `Board::pawn_key` already stands for that agreement.
-///
-/// Both the evaluation and the tuner's walk read this, so the identity
-/// between them cannot see a wrong count here, at the fitted weights or at
-/// zero. What pins it is the hand counts in the tests below, the way the
-/// shelter counts and the mobility counts are pinned.
+/// Pawns and nothing else is read, neither king, no piece and not the side to
+/// move, so two positions whose pawns agree agree on all eight counts and
+/// `Board::pawn_key` stands for that agreement. The evaluation and the
+/// tuner's walk both read this, so the identity between them cannot see a
+/// wrong count here; the hand counts in the tests below are what pin it.
 #[inline]
 pub(crate) fn counts_of(board: &Board, color: Color) -> [i32; COUNTS] {
     let masks = &MASKS;
@@ -297,12 +218,10 @@ pub(crate) fn counts_of(board: &Board, color: Color) -> [i32; COUNTS] {
             Color::White => square / 8,
             Color::Black => 7 - square / 8,
         };
-        // from_fen accepts a pawn on either back rank, knowingly, and the
-        // search has to survive one. Such a pawn has come no ranks or all
-        // eight and so names none of the six counted; it is left out of
-        // the passed count rather than folded into the nearest bucket,
-        // and it still counts toward the two below, which read its file
-        // and not its rank
+        // from_fen accepts a pawn on either back rank and the search has to
+        // survive one. It has come no ranks or all eight, so it names none of
+        // the six buckets and is left out of the passed count; the two file
+        // counts below still read it
         if !(1..PASSED_RANKS + 1).contains(&relative) {
             continue;
         }
@@ -332,14 +251,10 @@ pub(crate) fn fold(board: &Board) -> i32 {
     fold_with(board, &PAWN_STRUCTURE)
 }
 
-/// The same fold against weights named by the caller.
-///
-/// The live weights are the fit's now, and no two of the eight pairs agree,
-/// so the sign of this term, the order of the eight counts and the packing
-/// all show in an evaluation the engine prints. The tests still supply weights
-/// of their own, because what they pin is the fold rather than the fit: a
-/// permuted [`PAWN_STRUCTURE`] would be a different evaluation and not a wrong
-/// one.
+/// The same fold against weights named by the caller. The tests supply
+/// weights of their own because what they pin is the fold rather than the
+/// fit: a permuted [`PAWN_STRUCTURE`] would be a different evaluation and not
+/// a wrong one.
 #[inline]
 fn fold_with(board: &Board, weights: &[i32; COUNTS]) -> i32 {
     let white = counts_of(board, Color::White);
@@ -354,29 +269,17 @@ fn fold_with(board: &Board, weights: &[i32; COUNTS]) -> i32 {
 /// How many pawn structure scores the cache holds. A power of two, so the
 /// index is a mask rather than a remainder.
 ///
-/// Four thousand entries at sixteen bytes is sixty four kilobytes, half what
-/// the shelter's table takes. The size was measured rather than reasoned
-/// about, the way the shelter's bits were, and the measurement was retaken
-/// on the fitted tree when the weights arrived, since a different tree is a
-/// different working set. Callgrind over the bench with the cache simulated,
-/// at eleven, twelve, thirteen and fourteen bits, reads 4,098,418,313,
-/// 4,092,752,759, 4,089,023,904 and 4,086,576,985 instructions against last
-/// level misses of 287,010, 287,113, 290,125 and 294,220. Each bit buys
-/// fewer instructions than the one before it, and the misses are flat from
-/// eleven to twelve and then turn up by three thousand at thirteen and four
-/// thousand more at fourteen. So twelve is the last size the memory does not
-/// notice, and the whole range is inside three tenths of a percent of
-/// instructions: the constant is not load bearing and a later working set
-/// can move it. The sweep at zero weights, before the fit, put the turn in
-/// the same place.
-///
-/// Half the shelter's table is what this term's key predicted before either
-/// sweep was run. The same pawns under two different pairs of king squares
-/// are two entries there and one entry here, so the working set behind this
-/// key is the smaller of the two.
-///
-/// The bench counts the same 4,066,438 nodes at all four sizes, which is
-/// what says the cache changes how a score is arrived at and not what it is.
+/// Four thousand entries at sixteen bytes is sixty four kilobytes, half the
+/// shelter's table, which is what this key predicted: the same pawns under
+/// two pairs of king squares are two entries there and one here. Measured
+/// with callgrind over the bench on the fitted tree, cache simulated, at
+/// eleven, twelve, thirteen and fourteen bits: 4,098,418,313, 4,092,752,759,
+/// 4,089,023,904 and 4,086,576,985 instructions against last level misses of
+/// 287,010, 287,113, 290,125 and 294,220. Twelve is the last size the memory
+/// does not notice, and the whole range is inside three tenths of a percent
+/// of instructions, so the constant is not load bearing and a later working
+/// set can move it. The bench counts the same 4,066,438 nodes at all four
+/// sizes: the cache changes how a score is arrived at and not what it is.
 const CACHE_BITS: usize = 12;
 pub(super) const CACHE_SLOTS: usize = 1 << CACHE_BITS;
 
@@ -388,22 +291,16 @@ struct Entry {
     packed: i32,
 }
 
-/// The pawn structure, remembered by what it depends on.
-///
-/// The term reads the two pawn boards and nothing else, so its key is
-/// `Board::pawn_key` with nothing folded in. That is the difference between
-/// this cache and the shelter's, and it is the whole reason this term could
-/// be cached in the commit that introduced it: the shelter's key carries both
-/// kings and so misses on every king move, and this one does not. What misses
-/// here is a pawn move and the capture of a pawn, which is every way the two
-/// pawn boards change and nothing else.
+/// The pawn structure, remembered by what it depends on: the two pawn boards,
+/// so the key is `Board::pawn_key` with nothing folded in. Unlike the
+/// shelter's key it carries no king, so a king move does not miss; what
+/// misses is a pawn move or the capture of a pawn.
 ///
 /// Direct mapped and never cleared, on the terms the shelter's cache sets
-/// out. An empty entry is key zero holding zero, and here that is exact
-/// rather than a coincidence to be argued about: a board with no pawns has a
-/// pawn key of zero, which `a_board_with_no_pawns_has_no_key` pins, and the
-/// structure of no pawns is eight zero counts. The one position that reads an
-/// empty entry as its own reads the right answer from it.
+/// out. An empty entry is key zero holding zero, and here that is exact: a
+/// board with no pawns has a pawn key of zero, which
+/// `a_board_with_no_pawns_has_no_key` pins, and the structure of no pawns is
+/// eight zero counts.
 pub(super) struct Cache {
     entries: Box<[Entry]>,
 }
@@ -443,12 +340,7 @@ mod tests {
     use pretty_assertions::assert_eq;
 
     /// A remembered score is read back rather than recomputed, under the pawn
-    /// key rather than that key with the two kings folded in.
-    ///
-    /// What this reads is the key as much as the score: an entry written
-    /// under the position's pawn key is the entry the next position with
-    /// those pawns is handed. The score is now the fit's rather than zero, so
-    /// the entry holding it says something too.
+    /// key with no kings folded in.
     #[test]
     fn a_pawn_structure_is_remembered_under_the_pawn_key() {
         let board = Board::from_fen(fens::MIDDLEGAME).unwrap();
@@ -463,16 +355,10 @@ mod tests {
         assert_eq!(cache.get(&board), first);
     }
 
-    /// The counts by hand, position by position, because nothing else pins
-    /// them. The tuner's identity folds a row against the live weights, and
-    /// `eval` and the tuner's walk read this same helper, so the two sides of
-    /// the identity move together whatever it answers. These cases are the
-    /// only check this term has.
-    ///
-    /// Each case names the eight counts in the order the helper returns them:
-    /// the passed pawns on the relative second through the relative seventh,
-    /// then the isolated pawns, then the doubled ones. The other king stands
-    /// out of the way.
+    /// The counts by hand, because nothing else pins them: `eval` and the
+    /// tuner's walk read this same helper, so the identity between them moves
+    /// with whatever it answers. Each case names the eight counts in the
+    /// helper's order; the other king stands out of the way.
     #[test]
     fn pawns_count_as_a_hand_count_says_they_do() {
         for (fen, counts, why) in [
@@ -527,9 +413,7 @@ mod tests {
                 [0, 0, 0, 0, 0, 1, 1, 0],
                 "a white pawn on e7",
             ),
-            // the stop square is not read, so a blockaded passer is a passer.
-            // On purpose: the stop square is the first thing this term leaves
-            // out, and a later arm has to be able to find the place it goes
+            // the stop square is not read, so a blockaded passer is a passer
             (
                 "4k3/4n3/4P3/8/8/8/8/4K3 w - - 0 1",
                 [0, 0, 0, 0, 1, 0, 1, 0],
@@ -547,18 +431,15 @@ mod tests {
                 "white pawns on a2 and b2",
             ),
             // the two edge files at once. The file mask is a shift and not a
-            // rotate, so the a file has no neighbour off the left of the byte
-            // and the h file none off the right; a rotate would make each of
-            // these the other's neighbour and leave both counted as company
+            // rotate, which would make each of these the other's neighbour
             (
                 "4k3/8/8/8/8/8/P6P/4K3 w - - 0 1",
                 [2, 0, 0, 0, 0, 0, 2, 0],
                 "white pawns on a2 and h2",
             ),
-            // the edge cases the file mask decides. A pawn on the a file is
-            // read against the a and b files and not against the c file, so
-            // stepping the mask in the way the shelter's `king_files` steps
-            // it would let the pawn on c5 stop this one
+            // a pawn on the a file is read against the a and b files and not
+            // the c file, so stepping the mask in the way the shelter's
+            // `king_files` does would let the pawn on c5 stop this one
             (
                 "4k3/8/8/1p6/P7/8/8/4K3 w - - 0 1",
                 [0, 0, 0, 0, 0, 0, 1, 0],
@@ -574,10 +455,9 @@ mod tests {
                 [0, 0, 0, 0, 0, 0, 1, 0],
                 "a white pawn on h4 against a black pawn on g5",
             ),
-            // from_fen accepts a pawn on either back rank and the search has
-            // to survive one. It has come no ranks or all eight, so it names
-            // none of the six passed buckets, and it still counts toward the
-            // two that read its file
+            // a pawn on either back rank, which from_fen accepts, names none
+            // of the six passed buckets and still counts toward the two that
+            // read its file
             (
                 "4k3/8/8/8/8/8/8/3K1P2 w - - 0 1",
                 [0, 0, 0, 0, 0, 0, 1, 0],
@@ -733,9 +613,8 @@ mod tests {
     }
 
     /// The file ahead is the front span with the neighbouring files taken
-    /// off, which is the relationship the two tables are built to have. Kept
-    /// as its own table and not worked out at the leaf, so this is what says
-    /// the two agree.
+    /// off. It is its own table rather than worked out at the leaf, so this
+    /// is what says the two agree.
     #[test]
     fn the_file_ahead_is_the_front_span_on_the_pawns_own_file() {
         for square in 0..64u8 {
@@ -777,8 +656,8 @@ mod tests {
         }
     }
 
-    /// The fold down to a file a bit answers a walk of the squares. What the
-    /// shelter borrows from here is pinned at the same time.
+    /// The fold down to a file a bit answers a walk of the squares, which pins
+    /// what the shelter borrows from here as well.
     #[test]
     fn the_file_fold_answers_a_walk_of_the_squares() {
         for square in 0..64u8 {
@@ -815,9 +694,7 @@ mod tests {
     /// The eight differences are -1, 1, -1, 1, -2, 1, 2 and 3. None is zero,
     /// so every slot does work in the assertion below. They are not all
     /// distinct, so this alone would not tell the first count from the third;
-    /// what tells those apart is
-    /// `every_pawn_count_writes_both_ends_of_the_taper` in tune.rs, which
-    /// reads the coefficients bucket by bucket.
+    /// `every_pawn_count_writes_both_ends_of_the_taper` in tune.rs does.
     const STRUCTURED: &str = "3k4/P4p2/8/3P2p1/3P4/PP2p2p/1P6/6K1 w - - 0 1";
     const WHITE_STRUCTURE: [i32; COUNTS] = [0, 1, 0, 1, 0, 1, 2, 3];
     const BLACK_STRUCTURE: [i32; COUNTS] = [1, 0, 1, 0, 2, 0, 0, 0];
@@ -838,15 +715,9 @@ mod tests {
         pack(37, 9),
     ];
 
-    /// What the fold does with weights that are not the shipped ones.
-    ///
-    /// The shipped weights would do here now that they are not zero. Weights
-    /// of this test's own are kept anyway, because the shipped ones are the
-    /// fit's and will move again: a pin written against them would have to be
-    /// rewritten by every refit, and what it is pinning is the fold. So this
-    /// hands the fold eight pairs that differ from each other at both ends
-    /// and asserts the packed pair against the arithmetic: white's count less
-    /// black's, count by count, each half of the pair summed on its own.
+    /// What the fold does with weights that are not the shipped ones, which
+    /// are the fit's and will move again: white's count less black's, count
+    /// by count, each half of the pair summed on its own.
     #[test]
     fn the_pawn_structure_fold_reads_white_less_black_count_by_count() {
         let board = Board::from_fen(STRUCTURED).unwrap();
