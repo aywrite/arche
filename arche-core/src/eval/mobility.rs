@@ -8,6 +8,7 @@
 //! looking through its square sees, so there is no key a score could sit
 //! behind and nothing for `Accumulator::count` to add and take away.
 
+use super::weigh;
 use crate::board::{Board, knight_attacks, pawn_attacks, pop_lsb};
 use crate::magic::MAGIC;
 use crate::misc::{Color, Piece};
@@ -201,16 +202,6 @@ fn fold_with<const KINDS: u8>(board: &Board, weights: &[i32; COUNTS]) -> i32 {
         counts_of::<KINDS>(board, Color::White),
         counts_of::<KINDS>(board, Color::Black),
     )
-}
-
-/// White's counts less black's, piece by piece, against `weights`.
-#[inline]
-fn weigh(weights: &[i32; COUNTS], white: [i32; COUNTS], black: [i32; COUNTS]) -> i32 {
-    let mut packed = 0;
-    for ((weight, white), black) in weights.iter().zip(white).zip(black) {
-        packed += weight * (white - black);
-    }
-    packed
 }
 
 #[cfg(test)]

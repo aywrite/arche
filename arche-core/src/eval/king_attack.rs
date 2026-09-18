@@ -10,6 +10,7 @@
 //! mobility cache was measured on and turned down.
 
 use super::mobility;
+use super::weigh;
 use crate::board::{Board, king_attacks, knight_attacks, pop_lsb};
 use crate::magic::MAGIC;
 use crate::misc::Color;
@@ -184,16 +185,6 @@ fn fold_with(board: &Board, weights: &[i32; COUNTS]) -> i32 {
         counts_of(board, Color::White),
         counts_of(board, Color::Black),
     )
-}
-
-/// White's counts less black's, piece by piece, against `weights`.
-#[inline]
-fn weigh(weights: &[i32; COUNTS], white: [i32; COUNTS], black: [i32; COUNTS]) -> i32 {
-    let mut packed = 0;
-    for ((weight, white), black) in weights.iter().zip(white).zip(black) {
-        packed += weight * (white - black);
-    }
-    packed
 }
 
 #[cfg(test)]

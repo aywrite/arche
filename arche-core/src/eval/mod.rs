@@ -107,6 +107,18 @@ pub(crate) const TERMS: &[Term] = &[
 /// any of them for its counts.
 pub(crate) const WIDEST: usize = widest();
 
+/// White's counts less black's, count by count, against `weights`: the one
+/// fold every leaf term is read through, as a packed pair on the scale the
+/// piece square pair is on.
+#[inline]
+fn weigh<const N: usize>(weights: &[i32; N], white: [i32; N], black: [i32; N]) -> i32 {
+    let mut packed = 0;
+    for ((weight, white), black) in weights.iter().zip(white).zip(black) {
+        packed += weight * (white - black);
+    }
+    packed
+}
+
 const fn widest() -> usize {
     let mut widest = 0;
     let mut index = 0;

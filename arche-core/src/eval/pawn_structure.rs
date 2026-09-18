@@ -8,6 +8,7 @@
 //! `Accumulator::count` to add and take away a pawn at a time. Only a pawn
 //! move changes it at all, which is what [`Cache`] is built on.
 
+use super::weigh;
 use crate::board::Board;
 use crate::misc::Color;
 use crate::psqt::pack;
@@ -257,13 +258,11 @@ pub(crate) fn fold(board: &Board) -> i32 {
 /// a wrong one.
 #[inline]
 fn fold_with(board: &Board, weights: &[i32; COUNTS]) -> i32 {
-    let white = counts_of(board, Color::White);
-    let black = counts_of(board, Color::Black);
-    let mut packed = 0;
-    for ((weight, white), black) in weights.iter().zip(white).zip(black) {
-        packed += weight * (white - black);
-    }
-    packed
+    weigh(
+        weights,
+        counts_of(board, Color::White),
+        counts_of(board, Color::Black),
+    )
 }
 
 /// How many pawn structure scores the cache holds. A power of two, so the
