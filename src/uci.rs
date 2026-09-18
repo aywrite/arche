@@ -457,7 +457,7 @@ impl<T: Engine, W: Write> UCI<T, W> {
             control.wait_for_stop();
         }
         match outcome {
-            SearchOutcome::Complete(result) | SearchOutcome::Aborted(Some(result)) => {
+            SearchOutcome::Complete(result, _) | SearchOutcome::Aborted(Some(result)) => {
                 self.say(format_args!("bestmove {}", result.best_move));
             }
             SearchOutcome::GameOver => {
@@ -630,8 +630,8 @@ fn perft_depth(params: &Params) -> u8 {
 /// the result rather than a clock read here, so the rate divides a node count
 /// by the time that same search took.
 ///
-/// A score proved over some of the root moves rather than all of them is
-/// qualified `lowerbound`, the protocol's word for it.
+/// A score that is a bound rather than the position's worth is qualified
+/// `lowerbound` or `upperbound`, the protocol's words for the two.
 fn format_info(depth: u8, result: &SearchResult, pv: &PvLine, bound: ScoreBound) -> String {
     let millis = result.elapsed.as_millis();
     // a search faster than a millisecond is measured as one, so the rate
@@ -640,6 +640,7 @@ fn format_info(depth: u8, result: &SearchResult, pv: &PvLine, bound: ScoreBound)
     let qualifier = match bound {
         ScoreBound::Exact => "",
         ScoreBound::Lower => " lowerbound",
+        ScoreBound::Upper => " upperbound",
     };
     match result.checkmate_in() {
         Some(mate_in) => format!(
@@ -1597,6 +1598,15 @@ go depth 3
                 vec!["d2d4"],
                 ScoreBound::Lower,
                 "info depth 6 seldepth 7 nodes 2000 time 500 nps 4000 score cp 25 lowerbound pv d2d4",
+            ),
+            // the other half of the same: an iteration no root move
+            // reached alpha in reports a ceiling
+            (
+                6,
+                result(2000, 500, 7, 25),
+                vec!["d2d4"],
+                ScoreBound::Upper,
+                "info depth 6 seldepth 7 nodes 2000 time 500 nps 4000 score cp 25 upperbound pv d2d4",
             ),
         ] {
             let pv = PvLine::new(line.into_iter().map(play_named).collect());

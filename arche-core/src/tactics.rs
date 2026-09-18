@@ -34,7 +34,7 @@ pub const TABLE_BYTES: usize = 16 * 1024 * 1024;
 /// is the gate. A change that moves it in either direction updates this
 /// number in the same commit, which puts the movement in the diff, and a
 /// change that lowers it says what the positions were spent on.
-pub const EXPECTED_PASSES: usize = 237;
+pub const EXPECTED_PASSES: usize = 240;
 
 /// The count the suite may not go under, whatever a commit says it meant to
 /// spend.
@@ -47,10 +47,10 @@ pub const EXPECTED_PASSES: usize = 237;
 /// Two hundred and ten was fourteen under the count when the floor was set
 /// (224) and is eleven under the lowest the suite has been gated at (221).
 /// Since the suite was first gated the count has been 243, 241, 240, 237,
-/// 236, 229, 221, 226, 227, 228, 231, 224 and 237, and the largest single
-/// step down in that list is eight, so one change spending fourteen fails
-/// here rather than being written down and rearmed. Lowering the floor is a
-/// commit whose whole subject is lowering the floor.
+/// 236, 229, 221, 226, 227, 228, 231, 224, 237 and 240, and the largest
+/// single step down in that list is eight, so one change spending fourteen
+/// fails here rather than being written down and rearmed. Lowering the
+/// floor is a commit whose whole subject is lowering the floor.
 pub const FLOOR: usize = 210;
 
 // Checked by the build rather than the suite run, which is an ignored job of
@@ -218,7 +218,7 @@ pub fn run_suite(
             let found = match engine
                 .iterative_deepening_search(SearchParameters::to_depth(depth), |_, _, _, _| {})
             {
-                SearchOutcome::Complete(result) => result.best_move.to_string(),
+                SearchOutcome::Complete(result, _) => result.best_move.to_string(),
                 other => panic!(
                     "suite position {} did not complete: {:?}",
                     position.id, other

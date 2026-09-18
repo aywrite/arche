@@ -696,6 +696,16 @@ impl TranspositionTable {
         self.count_store(score.tainted);
     }
 
+    /// The move a root iteration failed high on, stored past the depth
+    /// contest for the same reason and as the floor it is. The iteration
+    /// has no answer to give, but this move's own search was complete and
+    /// its score is above what the last answer was worth, so the wider
+    /// re-search orders it first.
+    pub fn record_floor_answer(&mut self, board: &Board, play: Play, floor: Value, depth: u8) {
+        self.set_always(board.key, entry(board, play, floor, depth, Bound::Lower));
+        self.count_store(floor.tainted);
+    }
+
     /// The search declined a store under its taint policy; see
     /// `GhiCounters::skipped_stores`.
     #[inline]

@@ -215,7 +215,7 @@ fn run(
             let outcome = engine
                 .iterative_deepening_search(SearchParameters::to_depth(depth), |_, _, _, _| {});
             let result = match outcome {
-                SearchOutcome::Complete(result) => result,
+                SearchOutcome::Complete(result, _) => result,
                 other => panic!(
                     "bench position {} did not complete: {:?}",
                     position.id, other
@@ -714,24 +714,24 @@ mod tests {
         assert_eq!(
             counted,
             vec![
-                ("start", 585_829),
-                ("italian", 624_084),
-                ("ruy lopez", 708_910),
-                ("kiwipete", 1_421_623),
-                ("perft 4", 433_522),
-                ("promotions", 255_242),
-                ("middlegame", 598_715),
-                ("sharp middlegame", 1_038_433),
+                ("start", 527_393),
+                ("italian", 653_232),
+                ("ruy lopez", 694_578),
+                ("kiwipete", 1_399_820),
+                ("perft 4", 447_079),
+                ("promotions", 226_765),
+                ("middlegame", 593_603),
+                ("sharp middlegame", 865_112),
                 ("bratko kopec 1", 7_334_664),
                 ("wac 4", 38_242_037),
-                ("rook and pawns", 103_145),
-                ("tarrasch", 214_522),
-                ("lucena", 45_887),
-                ("philidor", 209_851),
-                ("minor endgame", 133_123),
-                ("queen endgame", 435_376),
+                ("rook and pawns", 94_261),
+                ("tarrasch", 237_481),
+                ("lucena", 73_880),
+                ("philidor", 434_621),
+                ("minor endgame", 121_953),
+                ("queen endgame", 331_982),
                 ("king and pawn", 11_658),
-                ("trebuchet", 7_932),
+                ("trebuchet", 7_946),
             ]
         );
     }

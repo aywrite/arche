@@ -69,6 +69,28 @@ const NULL_MOVE_MIN_DEPTH: u8 = NULL_MOVE_REDUCTION + 1;
 // piece. Two hundred is the conventional figure for conventional piece
 // values.
 const DELTA_MARGIN: Score = 200;
+// How far either side of the previous iteration's score the root opens.
+// A pawn is a hundred, so this is three tenths of one: wide enough that
+// most iterations land inside it, and narrow enough that the first root
+// move's own subtree is searched under bounds a search can reach rather
+// than under the mate edges. Read off the bench at depth nine over ten,
+// fifteen, twenty, thirty and forty, which prices the re-searches a narrow
+// window pays for: only fifteen, twenty and thirty cost less there than
+// opening full, and of those this is the widest inside a percent of the
+// cheapest, a window being the thing that fails on the positions the suite
+// does not hold. It is also the cheapest of all five at depth seven. What
+// moves it is another sweep, not a guess.
+const ASPIRATION_WIDTH: Score = 30;
+// The first depth the root opens narrow at. Below it the whole iteration
+// costs less than one re-search deeper down, and the score at depth two
+// predicts depth three badly. A judgment rather than a swept figure.
+const ASPIRATION_MIN_DEPTH: u8 = 5;
+// How many times one side of the window may fail before that side opens to
+// the edge. The width doubles each time, so the sides tried are the width,
+// twice it, four times it, and then the edge; a fifth try buys little over
+// the edge and costs a whole re-search on the positions that swing that
+// far.
+const ASPIRATION_FAILURES: u8 = 3;
 
 /// Which places in a node's move list the node made and searched, a bit
 /// each: under a cutoff the quiet moves with a bit below the cutting
@@ -266,6 +288,18 @@ pub struct SearchConfig {
     /// produced, so the default's move and score may move where the
     /// reference's may not.
     pub move_memory: bool,
+    /// Whether the deepening loop opens each iteration from
+    /// `ASPIRATION_MIN_DEPTH` on at a window around the last one's score
+    /// rather than at the full one, widening the side that fails until the
+    /// score lands inside.
+    ///
+    /// Off in the reference. A window is a cost policy: it changes how
+    /// dearly a depth is reached rather than what the depth answers, so it
+    /// belongs on the measured side and the reference's pinned tree stays
+    /// the control the default's is read against. Nothing outside the
+    /// deepening loop reads it, so a search asked for a fixed depth opens
+    /// full whatever this says.
+    pub aspiration: bool,
 }
 
 /// What to do with a draw tainted score: one stored by a search that read
@@ -324,6 +358,7 @@ impl SearchConfig {
             deep_reductions: false,
             late_move_pruning: false,
             move_memory: false,
+            aspiration: false,
         }
     }
 
@@ -384,6 +419,7 @@ impl Default for SearchConfig {
             deep_reductions: true,
             late_move_pruning: true,
             move_memory: true,
+            aspiration: true,
         }
     }
 }
@@ -509,6 +545,198 @@ mod root_bounds {
     }
 }
 
+/// The window the deepening loop opens an iteration at, and what a failed
+/// iteration widens it to.
+///
+/// A deepening search knows roughly what the next iteration is worth: the
+/// last one's score. Two things come of opening around it. The first root
+/// move's own subtree is searched under bounds a search can reach instead
+/// of the mate edges, which is where most of the saving is; the later
+/// moves were already scouted at a zero window against the first move's
+/// score, since the first move always raised alpha at the full window. And
+/// where the first move comes back under the window, alpha stays at the
+/// window's floor rather than dropping to that score, so the moves after
+/// it are scouted against the tighter of the two. The price is an
+/// iteration whose score lands outside the window, which proves only a
+/// bound and has to be searched again wider.
+///
+/// A value of its own rather than a pair of scores in the loop, so the
+/// rule is a thing that can be tested without running a search.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+struct Aspiration {
+    alpha: Score,
+    beta: Score,
+    /// The score the window is centred on, which each widening is measured
+    /// from. Meaningless where both sides are already at the edge.
+    centre: Score,
+    /// How often each side has failed. A side at `ASPIRATION_FAILURES` is
+    /// at the edge and stays there.
+    low_failures: u8,
+    high_failures: u8,
+}
+
+impl Aspiration {
+    /// The widest the root is ever opened: one inside the score type on
+    /// each side, so both bounds can be negated.
+    const FULL_ALPHA: Score = Score::MIN + 1;
+    const FULL_BETA: Score = Score::MAX - 1;
+
+    /// The window a depth opens at. `previous` is the last completed
+    /// iteration's score, or none where there is none to aim at or the
+    /// configuration does not aspire.
+    ///
+    /// Fully open below the starting depth, and fully open around a mate
+    /// score, which is not a centipawn estimate: a window around one would
+    /// refuse the alternatives to the mate for nothing.
+    fn open(previous: Option<Score>, depth: u8) -> Self {
+        let full = Self {
+            alpha: Self::FULL_ALPHA,
+            beta: Self::FULL_BETA,
+            centre: 0,
+            low_failures: ASPIRATION_FAILURES,
+            high_failures: ASPIRATION_FAILURES,
+        };
+        let Some(centre) = previous else {
+            return full;
+        };
+        if depth < ASPIRATION_MIN_DEPTH || is_mate(centre) {
+            return full;
+        }
+        Self {
+            alpha: Self::below(centre, 0),
+            beta: Self::above(centre, 0),
+            centre,
+            low_failures: 0,
+            high_failures: 0,
+        }
+    }
+
+    /// The window after an iteration answered `bound` rather than a score
+    /// inside this one. Only the side that failed moves: the other proved
+    /// nothing, and widening both on every failure would reach the full
+    /// window in three failures where this takes six.
+    fn widen(self, bound: ScoreBound) -> Self {
+        match bound {
+            ScoreBound::Upper => {
+                let low_failures = self.low_failures.saturating_add(1);
+                Self {
+                    alpha: Self::below(self.centre, low_failures),
+                    low_failures,
+                    ..self
+                }
+            }
+            ScoreBound::Lower => {
+                let high_failures = self.high_failures.saturating_add(1);
+                Self {
+                    beta: Self::above(self.centre, high_failures),
+                    high_failures,
+                    ..self
+                }
+            }
+            // an iteration whose score landed inside its window is the one
+            // the loop answers with, so nothing widens after it
+            ScoreBound::Exact => self,
+        }
+    }
+
+    /// How far under the centre the alpha side stands after `failures`
+    /// failures: the width doubled once per failure, and the edge once the
+    /// doublings are spent.
+    ///
+    /// No clamp against the edge, because no width the sweep chooses from
+    /// can reach it. A centre the mate gate let through is inside the mate
+    /// window, so under thirty thousand, and the widest the doublings
+    /// reach is four times the width; a width of a few hundred still
+    /// leaves thousands of room. The arithmetic saturates rather than
+    /// wrapping, which is not a licence to set the width by the thousand:
+    /// a width that large wants the clamp back.
+    fn below(centre: Score, failures: u8) -> Score {
+        if failures >= ASPIRATION_FAILURES {
+            return Self::FULL_ALPHA;
+        }
+        centre.saturating_sub(Self::reach(failures))
+    }
+
+    /// The beta side of the same.
+    fn above(centre: Score, failures: u8) -> Score {
+        if failures >= ASPIRATION_FAILURES {
+            return Self::FULL_BETA;
+        }
+        centre.saturating_add(Self::reach(failures))
+    }
+
+    /// The width after `failures` doublings.
+    fn reach(failures: u8) -> Score {
+        ASPIRATION_WIDTH.saturating_mul(1 << failures)
+    }
+}
+
+#[cfg(test)]
+mod aspiration {
+    use super::{ASPIRATION_MIN_DEPTH, ASPIRATION_WIDTH, Aspiration, Score, ScoreBound};
+    use pretty_assertions::assert_eq;
+
+    /// The width the whole schedule is written in, so a sweep that moves
+    /// the constant moves these cases with it.
+    const W: Score = ASPIRATION_WIDTH;
+    const AT: u8 = ASPIRATION_MIN_DEPTH;
+
+    fn full() -> Aspiration {
+        Aspiration::open(None, AT)
+    }
+
+    #[test]
+    fn the_window_a_depth_opens_at() {
+        // below the starting depth the score predicts the next one badly
+        // and the whole iteration costs less than one re-search deeper
+        assert_eq!(Aspiration::open(Some(30), AT - 1), full());
+        // and with nothing to aim at there is no centre
+        assert_eq!(Aspiration::open(None, AT + 4), full());
+
+        let opened = Aspiration::open(Some(30), AT);
+        assert_eq!((opened.alpha, opened.beta), (30 - W, 30 + W));
+
+        // a mate score is not a centipawn estimate, so a window round it
+        // would refuse the alternatives to the mate for nothing
+        assert_eq!(Aspiration::open(Some(29_995), AT + 4), full());
+        assert_eq!(Aspiration::open(Some(-29_995), AT + 4), full());
+    }
+
+    #[test]
+    fn a_failure_moves_the_side_that_failed_and_no_other() {
+        let opened = Aspiration::open(Some(30), AT);
+
+        let low = opened.widen(ScoreBound::Upper);
+        assert_eq!((low.alpha, low.beta), (30 - 2 * W, 30 + W));
+        let high = opened.widen(ScoreBound::Lower);
+        assert_eq!((high.alpha, high.beta), (30 - W, 30 + 2 * W));
+
+        // and each doubling is measured from the centre, not from where
+        // the last one left the bound
+        let twice = low.widen(ScoreBound::Upper);
+        assert_eq!((twice.alpha, twice.beta), (30 - 4 * W, 30 + W));
+    }
+
+    #[test]
+    fn three_failures_open_that_side_to_the_edge() {
+        let mut window = Aspiration::open(Some(30), AT);
+        for _ in 0..3 {
+            window = window.widen(ScoreBound::Upper);
+        }
+        assert_eq!(window.alpha, Aspiration::FULL_ALPHA);
+        // the other side is where it was opened: a fail low says nothing
+        // about beta
+        assert_eq!(window.beta, 30 + W);
+
+        for _ in 0..3 {
+            window = window.widen(ScoreBound::Lower);
+        }
+        // both sides spent, which is the full window and where the
+        // widening stops
+        assert_eq!((window.alpha, window.beta), (full().alpha, full().beta));
+    }
+}
+
 pub struct AlphaBeta {
     pub(crate) board: Board,
     config: SearchConfig,
@@ -547,14 +775,6 @@ pub struct AlphaBeta {
     census: Option<Sampler<census::Event>>,
     /// The reduction ledger's reservoir, or none, on the same terms.
     ledger: Option<Sampler<reduction::Event>>,
-    /// Whether the root this engine searches from opens at the full
-    /// window, which is what the debug assertion in `alpha_beta` stands
-    /// on: there a bound that is still the root's own is a mate score, so
-    /// a marked bound worth an ordinary score is a bit set where none
-    /// belongs. True of every search the engine runs; the one test that
-    /// has to open narrower clears it. The arm that narrows the root
-    /// takes the field and the assertion out together.
-    full_window_root: bool,
 }
 
 /// What a search can be armed to record: the residual's sample, the cutoff
@@ -617,7 +837,6 @@ impl AlphaBeta {
             sampler: None,
             census: None,
             ledger: None,
-            full_window_root: true,
         }
     }
 
@@ -1416,7 +1635,9 @@ impl AlphaBeta {
             root_bounds.child(ChildSearch::Probe),
         )?;
         // `alpha + 1 >= beta` is the zero window, spelt without the
-        // subtraction: `beta - alpha` overflows a Score at the root's window
+        // subtraction: `beta - alpha` overflows a Score at the full window,
+        // which is what the root opens at below the aspiration depth and
+        // wherever its window has widened to the edge
         if probe.score <= alpha || alpha + 1 >= beta {
             return Ok(Value::with_taint(probe.score, probe.tainted || tainted));
         }
@@ -1478,17 +1699,6 @@ impl AlphaBeta {
         can_null: bool,
         mut root_bounds: RootBounds,
     ) -> Result<Value, Aborted> {
-        // scaffolding, and it stands on the root opening at the full
-        // window: every bound the root owns is inside the mate window
-        // there, so a marked bound worth an ordinary score is a bit set
-        // where none belongs. The arm that narrows the root takes the line
-        // out, since under a narrowed root a marked bound is a real score
-        // by design
-        debug_assert!(
-            !self.full_window_root
-                || ((!root_bounds.alpha || is_mate(alpha)) && (!root_bounds.beta || is_mate(beta))),
-            "a bound marked the root's is not one of the root's"
-        );
         self.poll_deadline()?;
         self.selective_depth = self.selective_depth.max(self.board.line_ply as u8);
         self.nodes += 1;
@@ -1855,17 +2065,27 @@ impl AlphaBeta {
     /// ones given up. A search through here keeps whatever the memories
     /// learned before it.
     pub fn search_within(&mut self, depth: u8, limits: Limits) -> SearchOutcome {
-        self.search_root(depth, limits, None)
+        self.search_root(depth, limits, None, Aspiration::open(None, depth))
     }
 
-    /// The body of one fixed depth search. Everything that may interrupt it
-    /// arrives in the signature, and the prologue, not the caller, writes
-    /// the fields the poll reads.
+    /// The body of one fixed depth search, under the window `window`
+    /// opens. Everything that may interrupt it arrives in the signature,
+    /// and the prologue, not the caller, writes the fields the poll reads.
+    ///
+    /// Fail soft, and the answer says which of three things its score is.
+    /// A score inside the window is the position's worth and the move
+    /// beside it is the best of them. A move that reached beta makes the
+    /// score a floor: the rest of the moves were never tried. A window no
+    /// move reached alpha in makes it a ceiling, and the move beside it is
+    /// only the one that came closest, which proves nothing and is never
+    /// answered with. At the full window the last of the three cannot
+    /// happen: every score beats an alpha at the end of the score type.
     fn search_root(
         &mut self,
         mut depth: u8,
         limits: Limits,
         stop: Option<Arc<AtomicBool>>,
+        window: Aspiration,
     ) -> SearchOutcome {
         // held to the rail here and not only at the interface, so a library
         // caller cannot ask the check extension below to overflow
@@ -1886,12 +2106,17 @@ impl AlphaBeta {
             depth += 1;
         }
 
-        let mut alpha = Score::MIN + 1;
-        let beta = Score::MAX - 1;
+        let opening_alpha = window.alpha;
+        let beta = window.beta;
+        let mut alpha = opening_alpha;
         // where the exemption starts: the root opened with both of these
-        // and proved neither, and they stay marked down the leftmost line
+        // and proved neither, and they stay marked down the leftmost line.
+        // Nothing here reads how wide they are, which is what lets the
+        // window narrow without the exemption moving
         let mut root_bounds = RootBounds::BOTH;
-        let mut best: Option<Play> = None;
+        // the best any move scored and the move that scored it, which is
+        // the fail soft answer whether or not anything reached alpha
+        let mut top: Option<(Play, Score)> = None;
         let mut found_legal_move = false;
         let mut taint = Taint::default();
 
@@ -1917,8 +2142,8 @@ impl AlphaBeta {
             );
         }
 
-        // the root reduces nothing: its window is the full one, and its
-        // moves are few enough to search whole
+        // the root reduces nothing: it has one window to answer under and
+        // its moves are few enough to search whole
         for m in &moves {
             match self.search_child(
                 m,
@@ -1931,18 +2156,33 @@ impl AlphaBeta {
                 None,
             ) {
                 Err(Aborted) => {
-                    return SearchOutcome::Aborted(best.map(|play| self.result_for(play, alpha)));
+                    // a move that beat the opening alpha is a floor under
+                    // the position and may be answered with. The closest
+                    // move of a window nothing reached is not: it was
+                    // never shown better than anything
+                    let answerable = (alpha != opening_alpha).then_some(top).flatten();
+                    return SearchOutcome::Aborted(
+                        answerable.map(|(play, score)| self.result_for(play, score)),
+                    );
                 }
                 Ok(None) => {}
                 Ok(Some(value)) => {
                     found_legal_move = true;
                     taint.absorb(value);
                     let score = value.score;
+                    if top.is_none_or(|(_, best)| score > best) {
+                        top = Some((*m, score));
+                    }
                     if score > alpha {
                         alpha = score;
                         // the root's lower bound is a score from here on
                         root_bounds = root_bounds.alpha_raised();
-                        best = Some(*m);
+                    }
+                    if score >= beta {
+                        // the window asked whether anything here is worth
+                        // beta and this move answers it. What the rest are
+                        // worth is a question the wider re-search asks
+                        break;
                     }
                 }
             }
@@ -1957,12 +2197,26 @@ impl AlphaBeta {
             return SearchOutcome::GameOver;
         }
 
-        let play = best.expect("any legal move's score beats the opening alpha of Score::MIN + 1");
-        // stored past the depth contest: the reported line is read back
-        // from this slot
-        self.transpositions
-            .record_answer(&self.board, play, taint.stamp(alpha), depth);
-        SearchOutcome::Complete(self.result_for(play, alpha))
+        let (play, score) = top.expect("a legal move was found, so one of them scored best");
+        let value = taint.stamp(score);
+        // what the root leaves for the re-search and for the next
+        // iteration to order by. The answer and the floor are stored past
+        // the depth contest, because the reported line is read back from
+        // this slot; a ceiling is not stored at all, so the table keeps
+        // the last answer and the closest move is never promoted over a
+        // move it was not shown to beat
+        let bound = if score >= beta {
+            self.transpositions
+                .record_floor_answer(&self.board, play, value, depth);
+            ScoreBound::Lower
+        } else if score <= opening_alpha {
+            ScoreBound::Upper
+        } else {
+            self.transpositions
+                .record_answer(&self.board, play, value, depth);
+            ScoreBound::Exact
+        };
+        SearchOutcome::Complete(self.result_for(play, score), bound)
     }
 
     /// Replay the line the table holds on a copy of the board, one stored
@@ -2044,7 +2298,14 @@ impl Engine for AlphaBeta {
         search_options: SearchParameters,
         mut on_depth: impl FnMut(u8, &SearchResult, PvLine, ScoreBound),
     ) -> SearchOutcome {
+        // what answers if the search stops here: the deepest score that
+        // landed inside its window, or a move a later depth proved worth
+        // more than it
         let mut best: Option<SearchResult> = None;
+        // the deepest score that landed inside its window, which is what
+        // the next window is opened around. A floor is not one: it says a
+        // move is worth at least beta and not what it is worth
+        let mut exact: Option<Score> = None;
         // each iteration counts its own nodes, so the deepening totals them
         let mut total_nodes: u64 = 0;
         // no depth means as deep as the engine goes, which the rail ends
@@ -2063,71 +2324,121 @@ impl Engine for AlphaBeta {
         for depth in 1..=max_depth {
             // the soft bound: an iteration there is not enough clock left
             // for is not begun, and what is in hand answers. The deadline
-            // stays as the backstop for an iteration that is begun
+            // stays as the backstop for an iteration that is begun. Asked
+            // once a depth and not once a search: giving up inside a fail
+            // low would answer with the move the search has just found
+            // worse than it believed
             if !search_options
                 .limits
                 .worth_another_iteration(best.is_some())
             {
                 return SearchOutcome::Aborted(best);
             }
-            let (limits, stop) = search_options.for_iteration(best.is_some(), total_nodes);
-            match self.search_root(depth, limits, stop) {
-                SearchOutcome::Aborted(deeper) => {
-                    // the interrupted iteration's best outranks the
-                    // completed depth's whenever it has one. The root
-                    // searches full window, so that score is exact over the
-                    // moves it did search and a lower bound on the
-                    // position: the moves never reached could only raise
-                    // it. The swap is sound because the move it replaces is
-                    // among the moves searched: the root orders by the
-                    // table's entry, which is the last iteration's answer,
-                    // so the previous best was the first move tried.
-                    // Without that the new move would be better only over a
-                    // subset the old one need not belong to.
-                    return SearchOutcome::Aborted(match deeper {
-                        Some(mut result) => {
-                            result.nodes += total_nodes;
-                            // no completed depth named this move, so it is
-                            // reported here, as the bound it is, before it
-                            // is answered with
-                            if best.as_ref().map(|had| had.best_move) != Some(result.best_move) {
-                                let pv = self.pv_line_from(Some(result.best_move));
-                                debug_assert_eq!(
-                                    pv.line.first(),
-                                    Some(&result.best_move),
-                                    "the reported line disagrees with the swapped move"
-                                );
-                                on_depth(depth, &result, pv, ScoreBound::Lower);
+            // the window this depth opens at, from the last exact score,
+            // and the widening it is searched again under when the score
+            // lands outside
+            let mut window =
+                Aspiration::open(self.config.aspiration.then_some(exact).flatten(), depth);
+            loop {
+                let (limits, stop) = search_options.for_iteration(best.is_some(), total_nodes);
+                match self.search_root(depth, limits, stop, window) {
+                    SearchOutcome::Aborted(deeper) => {
+                        // the interrupted search's best outranks what
+                        // answers now, whenever it has one. The move it
+                        // hands back beat the window's alpha, which is
+                        // what `search_root` checks before it hands one
+                        // back at all; the moves it never reached could
+                        // only raise the score further, so the score is a
+                        // floor under the position. Some of the moves it
+                        // did reach fell under that alpha, and nothing
+                        // here claims otherwise. The swap is sound because
+                        // the move it replaces is among the moves
+                        // searched: the root orders by the table's entry,
+                        // which is the last answer or a move shown better
+                        // than it, so what answers now was the first move
+                        // tried. Without that the new move would be better
+                        // only over a subset the old one need not belong
+                        // to. A search that reached nothing above its
+                        // alpha has no move to swap in and says so, and
+                        // then whatever answered going in answers still:
+                        // see the arm below.
+                        return SearchOutcome::Aborted(match deeper {
+                            Some(mut result) => {
+                                result.nodes += total_nodes;
+                                // no completed depth named this move, so it
+                                // is reported here, as the bound it is,
+                                // before it is answered with
+                                if best.as_ref().map(|had| had.best_move) != Some(result.best_move)
+                                {
+                                    let pv = self.pv_line_from(Some(result.best_move));
+                                    debug_assert_eq!(
+                                        pv.line.first(),
+                                        Some(&result.best_move),
+                                        "the reported line disagrees with the swapped move"
+                                    );
+                                    on_depth(depth, &result, pv, ScoreBound::Lower);
+                                }
+                                Some(result)
                             }
-                            Some(result)
+                            // nothing beat this search's alpha, so what
+                            // answers is what answered before it: the last
+                            // depth to land inside its window, or a floor
+                            // this depth reported above it. Depth one runs
+                            // without limits, so there always is one
+                            None => best,
+                        });
+                    }
+                    SearchOutcome::GameOver => {
+                        return SearchOutcome::GameOver;
+                    }
+                    SearchOutcome::Complete(mut result, bound) => {
+                        // a failed search is a search: it spent its nodes
+                        // and the limits are handed what is left
+                        total_nodes += result.nodes;
+                        result.nodes = total_nodes;
+                        // the answer and the floor were both stored past
+                        // any leftover, so the table's line opens with the
+                        // move reported. A ceiling stored nothing, and its
+                        // closest move is not the table's, so its line is
+                        // read from the move itself
+                        let pv = match bound {
+                            ScoreBound::Upper => self.pv_line_from(Some(result.best_move)),
+                            _ => self.pv_line(),
+                        };
+                        debug_assert_eq!(
+                            pv.line.first(),
+                            Some(&result.best_move),
+                            "the reported line disagrees with the move reported"
+                        );
+                        on_depth(depth, &result, pv, bound);
+                        if bound == ScoreBound::Exact {
+                            exact = Some(result.score);
+                            best = Some(result);
+                            break;
                         }
-                        // nothing finished at this depth, so the last
-                        // completed one still answers; depth one runs
-                        // without limits, so there always is one
-                        None => best,
-                    });
-                }
-                SearchOutcome::GameOver => {
-                    return SearchOutcome::GameOver;
-                }
-                SearchOutcome::Complete(mut result) => {
-                    total_nodes += result.nodes;
-                    result.nodes = total_nodes;
-                    let pv = self.pv_line();
-                    // the root's entry was just stored past any leftover, so
-                    // the line opens with the move answered
-                    debug_assert_eq!(
-                        pv.line.first(),
-                        Some(&result.best_move),
-                        "the reported line disagrees with the best move"
-                    );
-                    on_depth(depth, &result, pv, ScoreBound::Exact);
-                    best = Some(result);
+                        if bound == ScoreBound::Lower {
+                            // a move worth at least beta, searched whole at
+                            // this depth, so it outranks what answers now:
+                            // that move was tried first here and came back
+                            // under beta. Held as the answer in case the
+                            // wider search is interrupted before it reaches
+                            // the move again, which would otherwise give up
+                            // a move the search has just proved better. It
+                            // is not what the next window aims at, which is
+                            // a score and not a floor
+                            best = Some(result);
+                        }
+                        // the score landed outside the window, so the depth
+                        // is searched again with the side that failed
+                        // widened. A side that has failed its last opens to
+                        // the edge, which is where this ends
+                        window = window.widen(bound);
+                    }
                 }
             }
         }
         match best {
-            Some(result) => SearchOutcome::Complete(result),
+            Some(result) => SearchOutcome::Complete(result, ScoreBound::Exact),
             // a depth of zero runs no iterations
             None => SearchOutcome::Aborted(None),
         }
@@ -2171,8 +2482,11 @@ impl fmt::Display for PvLine {
 /// The verdict of one fixed-depth search of the root.
 #[derive(Debug)]
 pub enum SearchOutcome {
-    /// The search finished the requested depth.
-    Complete(SearchResult),
+    /// The search finished the requested depth, with what its score says
+    /// about the position beside it: exact where the score landed inside
+    /// the window it opened at, and a bound where it did not. A search at
+    /// the full window is always exact.
+    Complete(SearchResult, ScoreBound),
     /// The root has no play to make: checkmate or stalemate. Searching
     /// deeper cannot change it.
     GameOver,
@@ -2183,14 +2497,20 @@ pub enum SearchOutcome {
     Aborted(Option<SearchResult>),
 }
 
-/// What a reported score says about the position. A completed depth
-/// searched every root move; an aborted iteration searched some of them,
-/// so its score is what those are worth and the position may be worth
-/// more. Uci prints the second as `lowerbound`.
+/// What a reported score says about the position.
+///
+/// `Exact` is the whole worth of it: every root move was searched and the
+/// score landed inside the window. `Lower` is a floor, from an aborted
+/// iteration whose remaining moves could only raise it or from a root move
+/// that reached beta. `Upper` is a ceiling, from an iteration no root move
+/// reached alpha in: the position is worth this or less, and the move
+/// beside it is only the one that came closest. Uci prints the last two as
+/// `lowerbound` and `upperbound`.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum ScoreBound {
     Exact,
     Lower,
+    Upper,
 }
 
 /// The search hit a limit and unwound without finishing. The score of an
@@ -2262,7 +2582,7 @@ mod search {
             AlphaBeta::with_table_bytes(Board::new(), 1024 * 1024).table_bytes()
         );
         assert!(e.table_bytes() <= 1024 * 1024);
-        assert!(matches!(e.search(4), SearchOutcome::Complete(_)));
+        assert!(matches!(e.search(4), SearchOutcome::Complete(_, _)));
     }
 
     #[test]
@@ -2279,7 +2599,7 @@ mod search {
             let mut e = engine(Board::new());
             assert!(!e.set_table_bytes(bytes), "{}", bytes);
             assert_eq!(e.table_bytes(), engine(Board::new()).table_bytes());
-            assert!(matches!(e.search(3), SearchOutcome::Complete(_)));
+            assert!(matches!(e.search(3), SearchOutcome::Complete(_, _)));
         }
     }
 
@@ -2290,7 +2610,7 @@ mod search {
         let mut e = engine(Board::new());
         assert!(e.set_table_bytes(0));
         assert!(e.table_bytes() > 0);
-        assert!(matches!(e.search(3), SearchOutcome::Complete(_)));
+        assert!(matches!(e.search(3), SearchOutcome::Complete(_, _)));
     }
 
     /// The reference search, for the tests that hold it to answering the
@@ -2397,7 +2717,7 @@ mod search {
     /// asked of it.
     fn completed(outcome: SearchOutcome) -> SearchResult {
         match outcome {
-            SearchOutcome::Complete(result) => result,
+            SearchOutcome::Complete(result, _) => result,
             other => panic!("expected a completed search, got {:?}", other),
         }
     }
@@ -2914,6 +3234,58 @@ mod search {
     }
 
     #[test]
+    fn a_narrowed_root_answers_what_the_full_one_does() {
+        // the reference plays with the window switched on, which nothing
+        // else does. Its contract is that a depth reached by deepening
+        // answers as one searched directly, and a window is meant to cost
+        // less rather than to answer differently: a score inside it is the
+        // position's worth, and one outside is a bound the widening
+        // searches again. So this is the exactness contract asked of the
+        // mechanism rather than of the table, and a failure here is a
+        // failure of the schedule.
+        let aspiring = SearchConfig {
+            aspiration: true,
+            ..SearchConfig::reference()
+        };
+        const DEPTH: u8 = 6;
+        let mut narrowed_somewhere = false;
+        for fen in [
+            fens::KIWIPETE,
+            "8/2p5/3p4/KP5r/1R3p1k/8/4P1P1/8 w - - 10 10",
+            fens::PROMOTIONS,
+        ] {
+            let mut direct = reference(Board::from_fen(fen).unwrap());
+            let expected = completed(direct.search(DEPTH));
+
+            let mut open = reference(Board::from_fen(fen).unwrap());
+            let full = completed(
+                open.iterative_deepening_search(SearchParameters::to_depth(DEPTH), |_, _, _, _| {}),
+            );
+            let mut narrow =
+                AlphaBeta::with_config(Board::from_fen(fen).unwrap(), TABLE_BYTES, aspiring);
+            let result = completed(
+                narrow
+                    .iterative_deepening_search(SearchParameters::to_depth(DEPTH), |_, _, _, _| {}),
+            );
+
+            assert_eq!(result.score, expected.score, "score differs for {}", fen);
+            assert_eq!(
+                format!("{}", result.best_move),
+                format!("{}", expected.best_move),
+                "best move differs for {}",
+                fen
+            );
+            narrowed_somewhere |= result.nodes != full.nodes;
+        }
+        // and the answers above are the same because the window is exact
+        // rather than because nothing was narrowed
+        assert!(
+            narrowed_somewhere,
+            "the window cost nothing anywhere, so the answers prove nothing"
+        );
+    }
+
+    #[test]
     fn a_losing_side_plays_for_the_fifty_move_draw() {
         // white is a bishop down here, and every move but a pawn push or a
         // capture takes the clock to a hundred, so the draw is the best of it
@@ -3135,17 +3507,18 @@ mod search {
         for limit in (50..6_000).step_by(97) {
             let mut e = engine(Board::new());
             let options = SearchParameters::new(None, nodes_only(limit));
-            let mut last_report = 0;
-            let outcome =
-                e.iterative_deepening_search(options, |_, result, _, _| last_report = result.nodes);
+            let outcome = e.iterative_deepening_search(options, |_, _, _, _| {});
             let SearchOutcome::Aborted(Some(result)) = outcome else {
                 panic!(
                     "expected a move under a budget of {}, got {:?}",
                     limit, outcome
                 )
             };
-            if result.nodes == last_report {
-                // the iteration aborted before any root move finished
+            if result.nodes + e.nodes == limit {
+                // the answer is what a search that finished on its own
+                // counted, and the aborted search's own nodes are the rest
+                // of the budget: it reached no move to swap in. The test
+                // above is what says those two add up
                 continue;
             }
             assert_eq!(result.nodes, limit, "budget {}", limit);
@@ -3281,7 +3654,7 @@ mod search {
             SearchParameters::new(Some(4), Limits::unlimited()),
             |_, _, _, bound| bounds.push(bound),
         );
-        assert!(matches!(outcome, SearchOutcome::Complete(_)));
+        assert!(matches!(outcome, SearchOutcome::Complete(_, _)));
         assert_eq!(bounds, vec![ScoreBound::Exact; 4]);
     }
 
@@ -3353,7 +3726,7 @@ mod search {
                 stop.store(true, Ordering::Relaxed);
             }
         });
-        let (SearchOutcome::Aborted(Some(result)) | SearchOutcome::Complete(result)) = outcome
+        let (SearchOutcome::Aborted(Some(result)) | SearchOutcome::Complete(result, _)) = outcome
         else {
             panic!("a stopped search must still answer, got {:?}", outcome)
         };
@@ -3383,7 +3756,7 @@ mod search {
         // flag: nothing but the deepening loop ever arms one
         let mut e = engine(Board::new());
         e.stop = Some(Arc::new(AtomicBool::new(true)));
-        assert!(matches!(e.search(2), SearchOutcome::Complete(_)));
+        assert!(matches!(e.search(2), SearchOutcome::Complete(_, _)));
         assert!(e.stop.is_none(), "a leftover flag outlived the search");
         assert!(
             SearchParameters::new(Some(2), Limits::unlimited())
@@ -3408,7 +3781,7 @@ mod search {
         let options = SearchParameters::new(Some(2), nodes_only(1_000_000));
         assert!(matches!(
             e.iterative_deepening_search(options, |_, _, _, _| {}),
-            SearchOutcome::Complete(_)
+            SearchOutcome::Complete(_, _)
         ));
 
         let mut e = engine(Board::new());
@@ -3439,7 +3812,7 @@ mod search {
             "node counts must grow with each depth: {:?}",
             node_counts
         );
-        let SearchOutcome::Complete(result) = outcome else {
+        let SearchOutcome::Complete(result, _) = outcome else {
             panic!("expected a completed search, got {:?}", outcome);
         };
         assert_eq!(
@@ -4505,7 +4878,7 @@ mod search {
             assert!(e.make_move_str(m), "failed to play {}", m);
         }
         assert!(e.board.is_repetition());
-        assert!(matches!(e.search(3), SearchOutcome::Complete(_)));
+        assert!(matches!(e.search(3), SearchOutcome::Complete(_, _)));
     }
 
     #[test]
@@ -5634,8 +6007,8 @@ mod reductions {
     /// reducing against a beta of twenty thousand, which the ledger
     /// records. The other error, a bit left set on a bound a search
     /// produced (a clear forgotten where alpha is raised), can only add
-    /// refusals and is invisible here; the debug assertion in `alpha_beta`
-    /// is what catches that one, on every search that opens wide.
+    /// refusals and is invisible here; what pins that one is
+    /// `what_a_child_carries_and_what_a_raise_leaves`, on the rule itself.
     ///
     /// Twenty thousand is above anything the evaluation produces and under
     /// the mate threshold, so an open window carrying it can only have the
@@ -5659,9 +6032,6 @@ mod reductions {
                 TABLE_BYTES,
             );
             e.arm(Sampler::<reduction::Event>::with_cap(1, usize::MAX));
-            // narrower than the window the debug assertion stands on,
-            // which is the whole point of it here
-            e.full_window_root = false;
             let Ok(_) = e.alpha_beta(ALPHA, BETA, 6, true, root_bounds) else {
                 panic!("an unlimited search aborted");
             };
