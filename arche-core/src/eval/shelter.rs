@@ -109,7 +109,8 @@ static MASKS: Masks = Masks::new();
 ///
 /// Not one of the fourteen rounded to nothing, so every count is priced and
 /// none can be left uncounted at the leaf the way `mobility::SCORED_KINDS`
-/// leaves a mobility kind. [`Cache`] is what pays for the seven instead.
+/// leaves a mobility kind. The memo in [`super::Caches`] is what pays for the
+/// seven instead.
 ///
 /// Two of the storm's three signs are not what the term was named for: an
 /// enemy pawn one rank in front of the king reads 11 and 35 and three ranks
@@ -235,8 +236,10 @@ fn fold_with(board: &Board, weights: &[i32; COUNTS]) -> i32 {
     )
 }
 
-/// How many shelter scores the cache holds. A power of two, so the index is
-/// a mask rather than a remainder.
+/// How wide a table the shelter is remembered in, which is what
+/// [`super::Caches`] builds its own with. Most moves in a search are piece
+/// moves, which leave the pawns and the two kings alone, so the score
+/// computed at one leaf answers a great many of the leaves after it.
 ///
 /// Eight thousand entries at sixteen bytes is a hundred and twenty eight
 /// kilobytes, past the first level cache and inside the second. Measured with
@@ -247,88 +250,13 @@ fn fold_with(board: &Board, weights: &[i32; COUNTS]) -> i32 {
 /// notice, and the whole range is within two thirds of a percent of
 /// instructions, so the constant is not load bearing and a later working set
 /// can move it.
-const CACHE_BITS: usize = 13;
-pub(super) const CACHE_SLOTS: usize = 1 << CACHE_BITS;
-
-/// One remembered shelter score, under the whole key rather than the bits
-/// the index does not use, so a hit is a hit on the position's pawns and
-/// kings and not on a tag that happens to agree. A wrong hit would be a
-/// silently wrong evaluation, and the whole key costs four bytes.
-#[derive(Copy, Clone)]
-struct Entry {
-    key: u64,
-    packed: i32,
-}
-
-/// The king shelter, remembered by what it depends on. Most moves in a search
-/// are piece moves, which leave the pawns and the kings alone, so the score
-/// computed at one leaf answers a great many of the leaves after it.
-///
-/// Direct mapped and never cleared. An entry is only ever read against the
-/// key that wrote it, so a stale one is a miss rather than a wrong answer,
-/// and a search begins with the last search's entries warm. The cache changes
-/// how a score is arrived at and not what it is, so the node counts are the
-/// ones the weights alone produce.
-///
-/// Owned by the searcher rather than by the board, because it is scratch and
-/// not position: a board compares equal to another holding the same position,
-/// and one thread's cache is its own.
-pub(super) struct Cache {
-    entries: Box<[Entry]>,
-}
-
-impl Default for Cache {
-    fn default() -> Self {
-        // an empty entry is key zero holding zero, so a position whose pawns
-        // and kings xor to nothing would read it as its own: the same sixty
-        // four bit coincidence a wrong hit needs anywhere else in the table
-        Cache {
-            entries: vec![Entry { key: 0, packed: 0 }; CACHE_SLOTS].into_boxed_slice(),
-        }
-    }
-}
-
-impl Cache {
-    /// What white's shelter stands ahead by, remembered or computed.
-    #[inline]
-    pub(super) fn get(&mut self, board: &Board) -> i32 {
-        let key = key(board);
-        let slot = (key as usize) & (CACHE_SLOTS - 1);
-        let entry = &mut self.entries[slot];
-        if entry.key == key {
-            return entry.packed;
-        }
-        let packed = fold(board);
-        *entry = Entry { key, packed };
-        packed
-    }
-}
+pub(super) const CACHE_BITS: usize = 13;
 
 #[cfg(test)]
 mod tests {
-    use super::{
-        Board, CACHE_SLOTS, COUNTS, Cache, Color, MASKS, RANKS_AHEAD, counts_of, files_of, fold,
-        key, king_files,
-    };
-    use crate::board::fens;
+    use super::{Board, COUNTS, Color, MASKS, RANKS_AHEAD, counts_of, files_of, key, king_files};
     use crate::psqt::{eg_value, mg_value, pack};
     use pretty_assertions::assert_eq;
-
-    /// A remembered score is read back rather than recomputed, which is not
-    /// visible in what the cache answers: the entry the key lands on holds the
-    /// score after the first call, under that key and no other.
-    #[test]
-    fn a_score_is_remembered_under_the_key_that_wrote_it() {
-        let board = Board::from_fen(fens::MIDDLEGAME).unwrap();
-        let mut cache = Cache::default();
-        let key = key(&board);
-        let slot = (key as usize) & (CACHE_SLOTS - 1);
-        assert_eq!(cache.entries[slot].key, 0, "the slot starts empty");
-        let first = cache.get(&board);
-        assert_eq!(cache.entries[slot].key, key);
-        assert_eq!(cache.entries[slot].packed, fold(&board));
-        assert_eq!(cache.get(&board), first);
-    }
 
     /// A piece that is neither a pawn nor a king leaves the key alone, and
     /// either king moving moves it. A key that missed a king would hand one
