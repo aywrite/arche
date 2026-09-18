@@ -6,7 +6,8 @@
 //! A pawn that moves changes which of the pawns behind and beside it are
 //! passed, isolated or doubled, so there is nothing here for
 //! `Accumulator::count` to add and take away a pawn at a time. Only a pawn
-//! move changes it at all, which is what [`Cache`] is built on.
+//! move changes it at all, which is what the memo in [`super::Caches`] is
+//! built on.
 
 use super::weigh;
 use crate::board::Board;
@@ -265,8 +266,13 @@ fn fold_with(board: &Board, weights: &[i32; COUNTS]) -> i32 {
     )
 }
 
-/// How many pawn structure scores the cache holds. A power of two, so the
-/// index is a mask rather than a remainder.
+/// How wide a table the pawn structure is remembered in, which is what
+/// [`super::Caches`] builds its own with. The key is `Board::pawn_key` with
+/// nothing folded in: this term reads neither king, so a king move does not
+/// miss, and what misses is a pawn move or the capture of a pawn. An empty
+/// entry is key zero holding zero, and here that is exact: a board with no
+/// pawns has a pawn key of zero, which `a_board_with_no_pawns_has_no_key`
+/// pins, and the structure of no pawns is eight zero counts.
 ///
 /// Four thousand entries at sixteen bytes is sixty four kilobytes, half the
 /// shelter's table, which is what this key predicted: the same pawns under
@@ -279,80 +285,13 @@ fn fold_with(board: &Board, weights: &[i32; COUNTS]) -> i32 {
 /// of instructions, so the constant is not load bearing and a later working
 /// set can move it. The bench counts the same 4,066,438 nodes at all four
 /// sizes: the cache changes how a score is arrived at and not what it is.
-const CACHE_BITS: usize = 12;
-pub(super) const CACHE_SLOTS: usize = 1 << CACHE_BITS;
-
-/// One remembered pawn structure score, under the key that decides it. The
-/// whole key, for the reason the shelter's entry keeps the whole of its own.
-#[derive(Copy, Clone)]
-struct Entry {
-    key: u64,
-    packed: i32,
-}
-
-/// The pawn structure, remembered by what it depends on: the two pawn boards,
-/// so the key is `Board::pawn_key` with nothing folded in. Unlike the
-/// shelter's key it carries no king, so a king move does not miss; what
-/// misses is a pawn move or the capture of a pawn.
-///
-/// Direct mapped and never cleared, on the terms the shelter's cache sets
-/// out. An empty entry is key zero holding zero, and here that is exact: a
-/// board with no pawns has a pawn key of zero, which
-/// `a_board_with_no_pawns_has_no_key` pins, and the structure of no pawns is
-/// eight zero counts.
-pub(super) struct Cache {
-    entries: Box<[Entry]>,
-}
-
-impl Default for Cache {
-    fn default() -> Self {
-        Cache {
-            entries: vec![Entry { key: 0, packed: 0 }; CACHE_SLOTS].into_boxed_slice(),
-        }
-    }
-}
-
-impl Cache {
-    /// What white's pawn structure stands ahead by, remembered or computed.
-    #[inline]
-    pub(super) fn get(&mut self, board: &Board) -> i32 {
-        let key = board.pawn_key;
-        let slot = (key as usize) & (CACHE_SLOTS - 1);
-        let entry = &mut self.entries[slot];
-        if entry.key == key {
-            return entry.packed;
-        }
-        let packed = fold(board);
-        *entry = Entry { key, packed };
-        packed
-    }
-}
+pub(super) const CACHE_BITS: usize = 12;
 
 #[cfg(test)]
 mod tests {
-    use super::{
-        Board, CACHE_SLOTS, COUNTS, Cache, Color, MASKS, ahead_of, counts_of, files_of, fold,
-        pawn_files, spread,
-    };
-    use crate::board::fens;
+    use super::{Board, COUNTS, Color, MASKS, ahead_of, counts_of, files_of, pawn_files, spread};
     use crate::psqt::{eg_value, mg_value, pack};
     use pretty_assertions::assert_eq;
-
-    /// A remembered score is read back rather than recomputed, under the pawn
-    /// key with no kings folded in.
-    #[test]
-    fn a_pawn_structure_is_remembered_under_the_pawn_key() {
-        let board = Board::from_fen(fens::MIDDLEGAME).unwrap();
-        let mut cache = Cache::default();
-        let key = board.pawn_key;
-        assert_ne!(key, 0, "an empty entry would answer this one correctly");
-        let slot = (key as usize) & (CACHE_SLOTS - 1);
-        assert_eq!(cache.entries[slot].key, 0, "the slot starts empty");
-        let first = cache.get(&board);
-        assert_eq!(cache.entries[slot].key, key);
-        assert_eq!(cache.entries[slot].packed, fold(&board));
-        assert_eq!(cache.get(&board), first);
-    }
 
     /// The counts by hand, because nothing else pins them: `eval` and the
     /// tuner's walk read this same helper, so the identity between them moves
@@ -527,7 +466,7 @@ mod tests {
         );
     }
 
-    /// Nothing but the pawns decides the counts, which is what [`Cache`] is
+    /// Nothing but the pawns decides the counts, which is what the memo is
     /// keyed on. The same pawns behind different pieces, and with the two
     /// kings somewhere else, count the same.
     #[test]

@@ -114,7 +114,7 @@ four are fitted to the engine's own archived games.
   by about 45 elo, so the error is carried knowingly and the bench prints
   the taint counters on every run. A `reference` configuration keeps the
   cautious search as a baseline for classifying future changes.
-- **eval/**: What a position scores, a file per leaf term and one for what
+- **eval/**: What a position scores, a file per leaf term and two for what
   they share.
   - **mod.rs**: The material values, the phase weights the taper is read at,
     the accumulator, and the sum the search asks for. The board hosts the
@@ -129,6 +129,11 @@ four are fitted to the engine's own archived games.
     knights, bishops, rooks and queens that mobility and the king attack zone
     both read at the leaf: each piece's attack set is probed once and read
     against both terms' masks.
+  - **cache.rs**: The one cache type a remembered term is kept in: direct
+    mapped, as wide as the term measured it wants, holding a score under the
+    whole of its key. A term that remembers itself names its key and its fold,
+    and the searcher holds an instance of this per term, so there is one probe
+    in the crate to read and a table for each term.
   - **mobility.rs**: How many squares each side's pieces cover. Read off the
     board at every leaf, through the walk it shares with the king attack
     zone, and not remembered: a piece that moves changes what every slider

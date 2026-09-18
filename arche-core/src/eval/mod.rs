@@ -9,13 +9,18 @@
 //!
 //! This file holds what the terms share: the material values, the phase
 //! weights, the accumulator, the sum and [`TERMS`], the list the tuner reads
-//! the leaf terms through. Each leaf term owns its counts, its masks, its
-//! weights, its fold and its memo where it has one.
+//! the leaf terms through. The cache type a remembered term is kept in is
+//! beside it in `cache.rs`. Each leaf term owns its counts, its masks, its
+//! weights, its fold, and the key and the table width its memo is read under
+//! where it has one.
 
+mod cache;
 mod king_attack;
 mod mobility;
 mod pawn_structure;
 mod shelter;
+
+use cache::Cache;
 
 use crate::board::{Board, king_attacks, knight_attacks, pawn_attacks, pop_lsb};
 use crate::magic::MAGIC;
@@ -164,19 +169,26 @@ impl Memo for NoMemo {
 /// of the shelter's key that term does not need. Measured on the fitted build.
 #[derive(Default)]
 pub(crate) struct Caches {
-    shelter: shelter::Cache,
-    pawns: pawn_structure::Cache,
+    shelter: ShelterCache,
+    pawns: PawnCache,
 }
+
+/// The shelter's table, as wide as that term measured it wants.
+type ShelterCache = Cache<{ shelter::CACHE_BITS }>;
+/// The pawn structure's, on its own key and its own measurement.
+type PawnCache = Cache<{ pawn_structure::CACHE_BITS }>;
 
 impl Memo for Caches {
     #[inline]
     fn shelter(&mut self, board: &Board) -> i32 {
-        self.shelter.get(board)
+        self.shelter
+            .get(shelter::key(board), || shelter::fold(board))
     }
 
     #[inline]
     fn pawn_structure(&mut self, board: &Board) -> i32 {
-        self.pawns.get(board)
+        self.pawns
+            .get(board.pawn_key, || pawn_structure::fold(board))
     }
 }
 
@@ -450,8 +462,8 @@ impl Accumulator {
 #[cfg(test)]
 mod evaluate {
     use super::{
-        Board, Caches, TERMS, TOTAL_PHASE, eval, eval_cached, king_attack, mobility,
-        pawn_structure, shelter,
+        Board, Caches, Memo, PawnCache, ShelterCache, TERMS, TOTAL_PHASE, eval, eval_cached,
+        king_attack, mobility, pawn_structure, shelter,
     };
     use crate::board::fens;
     use crate::misc::{Color, File, coordinate_to_index};
@@ -767,7 +779,7 @@ mod evaluate {
     #[test]
     fn the_cache_answers_what_the_full_evaluation_does() {
         let mut walked = Walk::default();
-        let mut budget = 4 * shelter::CACHE_SLOTS.max(pawn_structure::CACHE_SLOTS);
+        let mut budget = 4 * ShelterCache::SLOTS.max(PawnCache::SLOTS);
         for fen in fens::CORE {
             let board = Board::from_fen(fen).unwrap();
             assert_eq!(
@@ -786,8 +798,8 @@ mod evaluate {
             "every pawn key here was seen once, so no two positions were held against each other"
         );
         for (name, keys, slots) in [
-            ("shelter", &walked.shelter_keys, shelter::CACHE_SLOTS),
-            ("pawn", &walked.pawn_keys, pawn_structure::CACHE_SLOTS),
+            ("shelter", &walked.shelter_keys, ShelterCache::SLOTS),
+            ("pawn", &walked.pawn_keys, PawnCache::SLOTS),
         ] {
             let (keys, landed) = filled(keys, slots);
             assert!(
@@ -803,6 +815,10 @@ mod evaluate {
     /// A king move leaves the pawn key alone and moves the shelter key, which
     /// is the difference between the two caches and why the pawn structure
     /// could be cached in the commit that introduced it.
+    ///
+    /// Each table is then read under its own term's key. Both hold the
+    /// position before the move. After it the pawn table still answers, and
+    /// the shelter table has to fold again.
     #[test]
     fn a_king_move_keeps_the_pawn_entry_and_loses_the_shelter_one() {
         let board = Board::from_fen("4k3/pppppppp/8/8/8/8/PPPPPPPP/4K3 w - - 0 1").unwrap();
@@ -816,6 +832,44 @@ mod evaluate {
         assert!(moved.make_move(&king));
         assert_eq!(moved.pawn_key, board.pawn_key);
         assert_ne!(shelter::key(&moved), shelter::key(&board));
+
+        // an empty entry is key zero holding zero, so a pawn key of zero
+        // would read as a hit wherever it landed
+        assert_ne!(board.pawn_key, 0);
+        let mut caches = Caches::default();
+        assert_eq!(
+            Memo::shelter(&mut caches, &board),
+            shelter::fold(&board),
+            "the first probe folds"
+        );
+        assert_eq!(
+            Memo::pawn_structure(&mut caches, &board),
+            pawn_structure::fold(&board)
+        );
+        assert_eq!(
+            caches.shelter.stored(shelter::key(&board)),
+            Some(shelter::fold(&board))
+        );
+        assert_eq!(
+            caches.pawns.stored(board.pawn_key),
+            Some(pawn_structure::fold(&board))
+        );
+
+        assert_eq!(
+            caches.pawns.stored(moved.pawn_key),
+            Some(pawn_structure::fold(&moved)),
+            "the pawn table answers the position after the king move"
+        );
+        assert_eq!(
+            caches.shelter.stored(shelter::key(&moved)),
+            None,
+            "and the shelter table does not"
+        );
+        assert_eq!(Memo::shelter(&mut caches, &moved), shelter::fold(&moved));
+        assert_eq!(
+            caches.shelter.stored(shelter::key(&moved)),
+            Some(shelter::fold(&moved))
+        );
     }
 
     /// Every term the table names carries a width, a weight and a count
