@@ -151,8 +151,8 @@ const LIGHT_SQUARES: u64 = 0x55AA_55AA_55AA_55AA;
 
 pub(crate) static ZOBRIST: Zobrist = Zobrist::TABLE;
 
-/// What each square leaves of the castling rights, as the four bytes
-/// `CastlePermissions` is laid out in. A right is lost when a king or rook
+/// What each square leaves of the castling rights, as the word
+/// `CastlePermissions` holds them in. A right is lost when a king or rook
 /// leaves its square or a rook is taken on one, and which right depends on
 /// the square alone, so the from and to entries are masked into the rights
 /// together.
@@ -162,50 +162,19 @@ pub(crate) static ZOBRIST: Zobrist = Zobrist::TABLE;
 /// holds the rights the king stands there and a move taking it would have
 /// ended the game. `from_fen` drops a right whose king or rook is elsewhere,
 /// so that holds of a parsed position too.
-static CASTLE_LEAVING: [u32; 64] = castle_masks(true);
-static CASTLE_LANDING: [u32; 64] = castle_masks(false);
+static CASTLE_LEAVING: [u8; 64] = castle_masks(true);
+static CASTLE_LANDING: [u8; 64] = castle_masks(false);
 
-/// The rights as the one word they occupy: four `bool` fields at alignment
-/// one, asserted in `misc` to come to four bytes, so each byte is one
-/// right's zero or one. `CastlePermissions` compares itself the same way.
-const fn castle_bits(rights: CastlePermissions) -> u32 {
-    // SAFETY: the layout above, which `misc` holds to four bytes.
-    unsafe { std::mem::transmute(rights) }
-}
-
-/// The other way round. A byte that is a zero or a one stays one under an
-/// and, and any other byte is not a `bool` at all.
-///
-/// # Safety
-///
-/// Every byte of `bits` must be a zero or a one.
-const unsafe fn castle_rights(bits: u32) -> CastlePermissions {
-    // SAFETY: the layout above, and the caller's obligation for the bytes.
-    unsafe { std::mem::transmute(bits) }
-}
-
-const fn castle_masks(leaving: bool) -> [u32; 64] {
-    const fn rights(
-        black_king_side: bool,
-        black_queen_side: bool,
-        white_king_side: bool,
-        white_queen_side: bool,
-    ) -> u32 {
-        castle_bits(CastlePermissions {
-            black_king_side,
-            black_queen_side,
-            white_king_side,
-            white_queen_side,
-        })
-    }
-    let mut masks = [rights(true, true, true, true); 64];
-    masks[A1 as usize] = rights(true, true, true, false);
-    masks[H1 as usize] = rights(true, true, false, true);
-    masks[A8 as usize] = rights(true, false, true, true);
-    masks[H8 as usize] = rights(false, true, true, true);
+const fn castle_masks(leaving: bool) -> [u8; 64] {
+    use CastlePermissions as C;
+    let mut masks = [C::ALL; 64];
+    masks[A1 as usize] = C::ALL & !C::WHITE_QUEEN_SIDE;
+    masks[H1 as usize] = C::ALL & !C::WHITE_KING_SIDE;
+    masks[A8 as usize] = C::ALL & !C::BLACK_QUEEN_SIDE;
+    masks[H8 as usize] = C::ALL & !C::BLACK_KING_SIDE;
     if leaving {
-        masks[E1 as usize] = rights(true, true, false, false);
-        masks[E8 as usize] = rights(false, false, true, true);
+        masks[E1 as usize] = C::ALL & !(C::WHITE_KING_SIDE | C::WHITE_QUEEN_SIDE);
+        masks[E8 as usize] = C::ALL & !(C::BLACK_KING_SIDE | C::BLACK_QUEEN_SIDE);
     }
     masks
 }
@@ -731,13 +700,19 @@ impl Board {
                 Color::White => (
                     E1,
                     Color::Black,
-                    [self.castle.white_queen_side, self.castle.white_king_side],
+                    [
+                        self.castle.holds(CastlePermissions::WHITE_QUEEN_SIDE),
+                        self.castle.holds(CastlePermissions::WHITE_KING_SIDE),
+                    ],
                     &WHITE_CASTLES,
                 ),
                 Color::Black => (
                     E8,
                     Color::White,
-                    [self.castle.black_queen_side, self.castle.black_king_side],
+                    [
+                        self.castle.holds(CastlePermissions::BLACK_QUEEN_SIDE),
+                        self.castle.holds(CastlePermissions::BLACK_KING_SIDE),
+                    ],
                     &BLACK_CASTLES,
                 ),
             };
@@ -1239,16 +1214,14 @@ impl Board {
 
         let opposing_color = !self.active_color;
         let old_castle = self.castle;
-        let old_bits = castle_bits(old_castle);
-        let bits = old_bits & CASTLE_LEAVING[play.from as usize] & CASTLE_LANDING[play.to as usize];
+        let bits = old_castle.bits()
+            & CASTLE_LEAVING[play.from as usize]
+            & CASTLE_LANDING[play.to as usize];
         // the rights change on a handful of moves in a game; on every other
         // one the old and new castle keys would cancel, so one comparison
         // spares folding both
-        if bits != old_bits {
-            // SAFETY: every byte of `bits` is a byte of the old rights
-            // anded with a byte of each mask, and all three are a `bool`'s
-            // own zero or one.
-            self.castle = unsafe { castle_rights(bits) };
+        if bits != old_castle.bits() {
+            self.castle = CastlePermissions::from_bits(bits);
             self.key ^= ZOBRIST.castle_key(old_castle) ^ ZOBRIST.castle_key(self.castle);
         }
         if let Some(en_passant) = self.en_passant {
@@ -1524,20 +1497,30 @@ impl Board {
         };
         let white_king = holds(E1, Piece::King, Color::White);
         let black_king = holds(E8, Piece::King, Color::Black);
-        CastlePermissions {
-            white_king_side: self.castle.white_king_side
-                && white_king
-                && holds(H1, Piece::Rook, Color::White),
-            white_queen_side: self.castle.white_queen_side
-                && white_king
-                && holds(A1, Piece::Rook, Color::White),
-            black_king_side: self.castle.black_king_side
-                && black_king
-                && holds(H8, Piece::Rook, Color::Black),
-            black_queen_side: self.castle.black_queen_side
-                && black_king
-                && holds(A8, Piece::Rook, Color::Black),
+        let mut borne_out = CastlePermissions::ALL;
+        for (right, standing) in [
+            (
+                CastlePermissions::WHITE_KING_SIDE,
+                white_king && holds(H1, Piece::Rook, Color::White),
+            ),
+            (
+                CastlePermissions::WHITE_QUEEN_SIDE,
+                white_king && holds(A1, Piece::Rook, Color::White),
+            ),
+            (
+                CastlePermissions::BLACK_KING_SIDE,
+                black_king && holds(H8, Piece::Rook, Color::Black),
+            ),
+            (
+                CastlePermissions::BLACK_QUEEN_SIDE,
+                black_king && holds(A8, Piece::Rook, Color::Black),
+            ),
+        ] {
+            if !standing {
+                borne_out &= !right;
+            }
         }
+        CastlePermissions::from_bits(self.castle.bits() & borne_out)
     }
 
     /// Whether an en passant capture on this square is one this position can
@@ -2588,58 +2571,41 @@ mod null_move {
 
 #[cfg(test)]
 mod castling_rights {
+    use super::CastlePermissions;
     use super::{A1, A8, CASTLE_LANDING, CASTLE_LEAVING, E1, E8, H1, H8};
-    use super::{CastlePermissions, castle_bits, castle_rights};
     use pretty_assertions::assert_eq;
 
     /// The rule the two tables stand for, written the way make_move wrote it
     /// before them, so the tables are held to a second statement of it.
-    fn by_hand(mut rights: CastlePermissions, from: u8, to: u8) -> CastlePermissions {
-        match from {
-            A1 => rights.white_queen_side = false,
-            E1 => {
-                rights.white_queen_side = false;
-                rights.white_king_side = false;
-            }
-            H1 => rights.white_king_side = false,
-            A8 => rights.black_queen_side = false,
-            E8 => {
-                rights.black_queen_side = false;
-                rights.black_king_side = false;
-            }
-            H8 => rights.black_king_side = false,
-            _ => (),
-        }
-        match to {
-            A1 => rights.white_queen_side = false,
-            H1 => rights.white_king_side = false,
-            A8 => rights.black_queen_side = false,
-            H8 => rights.black_king_side = false,
-            _ => (),
-        }
-        rights
+    fn by_hand(rights: CastlePermissions, from: u8, to: u8) -> CastlePermissions {
+        use CastlePermissions as C;
+        let taken = match from {
+            A1 => C::WHITE_QUEEN_SIDE,
+            E1 => C::WHITE_QUEEN_SIDE | C::WHITE_KING_SIDE,
+            H1 => C::WHITE_KING_SIDE,
+            A8 => C::BLACK_QUEEN_SIDE,
+            E8 => C::BLACK_QUEEN_SIDE | C::BLACK_KING_SIDE,
+            H8 => C::BLACK_KING_SIDE,
+            _ => 0,
+        } | match to {
+            A1 => C::WHITE_QUEEN_SIDE,
+            H1 => C::WHITE_KING_SIDE,
+            A8 => C::BLACK_QUEEN_SIDE,
+            H8 => C::BLACK_KING_SIDE,
+            _ => 0,
+        };
+        C::from_bits(rights.bits() & !taken)
     }
 
     #[test]
     fn the_tables_take_what_the_matches_took() {
         for held in 0..16u8 {
-            let rights = CastlePermissions {
-                black_king_side: held & 1 != 0,
-                black_queen_side: held & 2 != 0,
-                white_king_side: held & 4 != 0,
-                white_queen_side: held & 8 != 0,
-            };
+            let rights = CastlePermissions::from_bits(held);
             for from in 0..64u8 {
                 for to in 0..64u8 {
-                    // SAFETY: the bytes are those of three sets of
-                    // rights anded together, so each is still a `bool`'s.
-                    let masked = unsafe {
-                        castle_rights(
-                            castle_bits(rights)
-                                & CASTLE_LEAVING[from as usize]
-                                & CASTLE_LANDING[to as usize],
-                        )
-                    };
+                    let masked = CastlePermissions::from_bits(
+                        rights.bits() & CASTLE_LEAVING[from as usize] & CASTLE_LANDING[to as usize],
+                    );
                     assert_eq!(
                         masked.as_fen(),
                         by_hand(rights, from, to).as_fen(),
@@ -2681,7 +2647,7 @@ mod position_key {
         let mut board = Board::from_fen("4k3/8/8/8/8/8/8/4K3 w - - 0 1").unwrap();
         // folded into the key as well, for the reason above
         let without = board.castle;
-        board.castle.white_king_side = true;
+        board.castle = without.with(super::CastlePermissions::WHITE_KING_SIDE);
         board.key ^= ZOBRIST.castle_key(without) ^ ZOBRIST.castle_key(board.castle);
         board.debug_assert_state_in_step();
     }

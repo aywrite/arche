@@ -164,11 +164,11 @@ the engine plays. Roughly in the order they look worth doing.
   whose king or rook is not standing on its square is dropped, and so is a square that is not
   on the rank a double push crosses, is occupied, has no pawn placed to take there, or has no
   enemy pawn behind it
-- nothing validates the ten `unsafe` occurrences, nine in `board.rs` and one in `misc.rs`.
+- nothing validates the four `unsafe` occurrences, all in `board.rs`.
   `unsafe_op_in_unsafe_fn` is denied in `arche-core/Cargo.toml`, so every one of them sits
   in a block carrying a `SAFETY` note, and the `arche` crate forbids unsafe outright. That
-  is the half a compiler can check. The other half is Miri, which needs nightly, and the
-  two sites where a slip is undefined behaviour rather than a wrong answer are the static
+  is the half a compiler can check. The other half is Miri, which needs nightly, and both
+  sites are ones where a slip is undefined behaviour rather than a wrong answer: the static
   exchange gain array's `assume_init` and the move list's cast of its initialised prefix.
   The exposure is carried knowingly until a scheduled Miri run reports on it
 

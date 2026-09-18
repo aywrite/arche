@@ -103,63 +103,64 @@ mod coordinate {
     }
 }
 
-/// Who may still castle where. A right is given up for good, by the king or
-/// the rook moving or the rook being taken, so these only ever go from true
-/// to false.
-#[derive(Debug, Copy, Clone, Eq)]
-pub struct CastlePermissions {
-    pub black_king_side: bool,
-    pub black_queen_side: bool,
-    pub white_king_side: bool,
-    pub white_queen_side: bool,
-}
-
-/// Four one byte fields, so the rights are four bytes with nothing between
-/// them left undefined.
-const _: () = assert!(std::mem::size_of::<CastlePermissions>() == 4);
-
-/// Compared as one word rather than a right at a time. The derive reads a
-/// field and branches before the next, which pays off when the first field
-/// usually settles it. Here the answer is usually yes (the rights survive
-/// almost every move unchanged, which is what make asks this to find out), so
-/// all four are read either way, and one comparison beats four.
-impl PartialEq for CastlePermissions {
-    #[inline]
-    fn eq(&self, other: &Self) -> bool {
-        // SAFETY: four `bool` fields at alignment one, asserted above to come
-        // to four bytes, so there is no padding and every byte is a `bool`'s
-        // own zero or one. Equal bytes and equal rights are the same thing.
-        unsafe {
-            std::mem::transmute::<CastlePermissions, u32>(*self)
-                == std::mem::transmute::<CastlePermissions, u32>(*other)
-        }
-    }
-}
+/// Who may still castle where, one bit a right. A right is given up for
+/// good, by the king or the rook moving or the rook being taken, so a bit
+/// only ever goes from set to clear, and `make_move` takes rights away by
+/// masking the word.
+#[derive(Debug, Copy, Clone, PartialEq, Eq)]
+pub struct CastlePermissions(u8);
 
 impl CastlePermissions {
+    pub const WHITE_KING_SIDE: u8 = 1;
+    pub const WHITE_QUEEN_SIDE: u8 = 1 << 1;
+    pub const BLACK_KING_SIDE: u8 = 1 << 2;
+    pub const BLACK_QUEEN_SIDE: u8 = 1 << 3;
+    /// Every right, which is also the mask a word of rights fits in.
+    pub const ALL: u8 = (1 << 4) - 1;
+    pub const NONE: Self = Self(0);
+
+    /// The rights as a word, for a mask to take some away.
+    #[inline]
+    pub const fn bits(self) -> u8 {
+        self.0
+    }
+
+    /// Rights from a word, which has to fit the four.
+    #[inline]
+    pub const fn from_bits(bits: u8) -> Self {
+        debug_assert!(bits & !Self::ALL == 0, "a right that is none of the four");
+        Self(bits)
+    }
+
+    /// Whether any of `rights` is held.
+    #[inline]
+    pub const fn holds(self, rights: u8) -> bool {
+        self.0 & rights != 0
+    }
+
+    /// These rights and `rights` too.
+    pub const fn with(self, rights: u8) -> Self {
+        Self(self.0 | rights)
+    }
+
     pub fn from_fen(s: &str) -> Result<CastlePermissions, String> {
-        let mut perms = CastlePermissions {
-            black_king_side: false,
-            black_queen_side: false,
-            white_king_side: false,
-            white_queen_side: false,
-        };
+        let mut perms = Self::NONE;
         if s == "-" {
             return Ok(perms);
         }
         for c in s.chars() {
-            match c {
-                'k' => perms.black_king_side = true,
-                'q' => perms.black_queen_side = true,
-                'K' => perms.white_king_side = true,
-                'Q' => perms.white_queen_side = true,
+            perms = perms.with(match c {
+                'K' => Self::WHITE_KING_SIDE,
+                'Q' => Self::WHITE_QUEEN_SIDE,
+                'k' => Self::BLACK_KING_SIDE,
+                'q' => Self::BLACK_QUEEN_SIDE,
                 _ => {
                     return Err(format!(
                         "Unexpected character {} in castle permissions token",
                         c
                     ));
                 }
-            }
+            });
         }
         Ok(perms)
     }
@@ -167,13 +168,13 @@ impl CastlePermissions {
     /// The rights in the order a fen writes them, or a dash for none.
     pub fn as_fen(&self) -> String {
         let mut s = String::new();
-        for (held, letter) in [
-            (self.white_king_side, 'K'),
-            (self.white_queen_side, 'Q'),
-            (self.black_king_side, 'k'),
-            (self.black_queen_side, 'q'),
+        for (right, letter) in [
+            (Self::WHITE_KING_SIDE, 'K'),
+            (Self::WHITE_QUEEN_SIDE, 'Q'),
+            (Self::BLACK_KING_SIDE, 'k'),
+            (Self::BLACK_QUEEN_SIDE, 'q'),
         ] {
-            if held {
+            if self.holds(right) {
                 s.push(letter);
             }
         }
