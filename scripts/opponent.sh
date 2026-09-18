@@ -124,6 +124,34 @@ foxsee_build() {
     echo target/release/foxsee
 }
 
+# Blunder, a Go module whose main package is the blunder/ directory. Built
+# with -o because the package's name is that directory, which go will not
+# overwrite with the binary.
+REPOSITORY[blunder]=https://github.com/deanmchris/blunder.git
+blunder_build() {
+    mkdir -p bin
+    go build -o bin/blunder ./blunder
+    echo bin/blunder
+}
+
+# Zahak, a Go module whose main package is the zahak/ directory. Its version
+# string is set at link time, and is given the pin so the banner names it;
+# left unset the engine calls itself dev. Its tags carry no v, so a pin is
+# 6.2 rather than v6.2.
+REPOSITORY[zahak]=https://github.com/amanjpro/zahak.git
+zahak_build() {
+    mkdir -p bin
+    go build -ldflags "-X 'main.version=${1}'" -o bin/zahak ./zahak
+    echo bin/zahak
+}
+
+# Inanis, a single rust crate. The binary needs no file beside it.
+REPOSITORY[inanis]=https://github.com/Tearth/Inanis.git
+inanis_build() {
+    cargo build --release --quiet
+    echo target/release/inanis
+}
+
 # An engine with a repository and no build, or the reverse, is not listed, so
 # the workflow refuses it where the ladder is read rather than after the clone.
 list() {
