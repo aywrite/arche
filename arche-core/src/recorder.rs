@@ -57,7 +57,27 @@ impl Window {
 /// The multiplier the depth is spread by before it joins the key: odd, so
 /// multiplying by it loses no bits, and the fractional part of the golden
 /// ratio, which shares no structure with the position key.
-pub(crate) const DEPTH_SPREAD: u64 = 0x9e37_79b9_7f4a_7c15;
+const DEPTH_SPREAD: u64 = 0x9e37_79b9_7f4a_7c15;
+
+/// The key an event is sampled by: the position, the depth and the
+/// recorder's own word, and nothing about the run, so two runs of the same
+/// search record the same nodes and the three recorders' kept sets stay
+/// apart. Each recorder wraps this with its word. Nothing here is a secret:
+/// the word only keeps the recorders' choices of node apart, so the
+/// parameter is not called a salt, which a scanner reads as a key.
+pub(crate) fn sample_key(position_key: u64, lane: u64, depth: u8) -> u64 {
+    position_key ^ lane ^ u64::from(depth).wrapping_mul(DEPTH_SPREAD)
+}
+
+/// A share as a summary prints one, or a `-` when nothing stands under it:
+/// a figure with no denominator is not a zero.
+pub(crate) fn share(part: usize, of: usize) -> String {
+    if of == 0 {
+        "-".to_string()
+    } else {
+        format!("{:.2}%", 100.0 * part as f64 / of as f64)
+    }
+}
 
 /// A held record and the key it was drawn by, ordered by the key alone.
 #[derive(Clone, Debug)]

@@ -31,15 +31,13 @@
 //! there was one, which is what the pinned bench counts say.
 
 use crate::bench::Position;
-use crate::board::Board;
 use crate::census;
-use crate::engine::{AlphaBeta, Engine, SearchConfig, SearchOutcome, SearchParameters};
+use crate::engine::SearchConfig;
 use crate::late_move;
 use crate::misc::Score;
 use crate::play::Play;
-use crate::recorder::{self, DEPTH_SPREAD, Window};
+use crate::recorder::{self, Window, share};
 use crate::residual;
-use crate::value::Value;
 use std::fmt;
 
 /// What the ledger contributes to a sampling key. The five salts in use
@@ -51,7 +49,7 @@ const SALT: u64 = 0x6d84_3b2f_51c9_07ea;
 /// The key a scout's answer is sampled by: the position the scout judged,
 /// the node's depth, and nothing about the run, as the census builds one.
 pub fn sample_key(position_key: u64, depth: u8) -> u64 {
-    position_key ^ SALT ^ u64::from(depth).wrapping_mul(DEPTH_SPREAD)
+    recorder::sample_key(position_key, SALT, depth)
 }
 
 /// About one record in every this many events, unless the command says
@@ -260,11 +258,7 @@ pub fn run(
 /// costs `residual::replay` gives. A fail high is passed through
 /// unreplayed.
 pub fn replay(events: &[Event]) -> (Vec<Row>, usize) {
-    let mut engine = AlphaBeta::with_config(
-        Board::new(),
-        residual::REPLAY_TABLE_BYTES,
-        SearchConfig::reference(),
-    );
+    let mut engine = residual::replay_engine();
     let mut rows = Vec::with_capacity(events.len());
     let mut unplayable = 0;
     for event in events {
@@ -275,29 +269,11 @@ pub fn replay(events: &[Event]) -> (Vec<Row>, usize) {
             });
             continue;
         }
-        if engine.parse_fen(&event.fen).is_err() {
+        let Some(reference) =
+            residual::reference_answer(&mut engine, &event.fen, event.replay_depth())
+        else {
             unplayable += 1;
             continue;
-        }
-        // cold for every sample, so no sample's answer is another's
-        engine.clear_transpositions();
-        let outcome = engine.iterative_deepening_search(
-            SearchParameters::to_depth(event.replay_depth()),
-            |_, _, _, _| {},
-        );
-        let reference = match outcome {
-            SearchOutcome::Complete(result) => result.score,
-            // no move to make: scored by rule, as the residuals replay does
-            SearchOutcome::GameOver => {
-                if engine.board.in_check() && !engine.board.has_legal_move() {
-                    Value::mated(0).score
-                } else {
-                    0
-                }
-            }
-            SearchOutcome::Aborted(_) => {
-                unreachable!("a replay is searched to a depth of at least one")
-            }
         };
         rows.push(Row {
             event: event.clone(),
@@ -428,16 +404,6 @@ impl Report {
     }
 }
 
-/// A share as the summary prints one, or a `-` with no denominator: a
-/// figure with nothing under it is not a zero.
-fn share(part: usize, of: usize) -> String {
-    if of == 0 {
-        "-".to_string()
-    } else {
-        format!("{:.2}%", 100.0 * part as f64 / of as f64)
-    }
-}
-
 /// A cell's harmful rate, or its bare counts when the cell is thin.
 fn cell(band: Band) -> String {
     if band.replayed >= THIN {
@@ -563,6 +529,7 @@ impl fmt::Display for Report {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::board::Board;
     use crate::recorder::fixtures::{recording_leaves_the_search_where_it_was, suite};
     use crate::recorder::{DEFAULT_CAP, Sampler};
 

@@ -24,7 +24,7 @@
 use crate::bench::Position;
 use crate::engine::SearchConfig;
 use crate::play::Play;
-use crate::recorder::{self, DEPTH_SPREAD, Window};
+use crate::recorder::{self, Window, share};
 use std::fmt;
 
 /// What the census contributes to a sampling key: an arbitrary constant far
@@ -38,7 +38,7 @@ const SALT: u64 = 0xc5b9_128e_66d0_3a47;
 /// nothing about the run, as `residual::sample_key` builds one, so two runs
 /// of the same search record the same nodes.
 pub fn sample_key(position_key: u64, depth: u8) -> u64 {
-    position_key ^ SALT ^ u64::from(depth).wrapping_mul(DEPTH_SPREAD)
+    recorder::sample_key(position_key, SALT, depth)
 }
 
 /// About one record in every this many events, unless the command says
@@ -316,16 +316,6 @@ impl Report {
             .into_iter()
             .filter_map(|depth| self.summary(depth))
             .collect()
-    }
-}
-
-/// A share as the summary prints one, or a `-` when nothing stands under
-/// it: a figure with no denominator is not a zero.
-fn share(part: usize, of: usize) -> String {
-    if of == 0 {
-        "-".to_string()
-    } else {
-        format!("{:.2}%", 100.0 * part as f64 / of as f64)
     }
 }
 
