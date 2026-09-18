@@ -747,40 +747,39 @@ a pairing that ends 25-0 puts no upper bound on the winner, so it contributes
 almost nothing however many games it is given. The list is an input so it can be
 moved up as the engine improves.
 
-The default plays eight of them, and they sit either side of the engine rather
-than under it. A gauntlet at 20+0.2 put it at 2332 over 440 games, and the
-panel runs from 2252 to 2713, two rungs below that figure and six above:
+The default plays eight of them, and they sit either side of where the engine
+is expected to be rather than under it. v0.4.4 placed at 2601 ±31 (95%) over
+400 games on the panel before this one, and the release after it is planned at
+about a hundred more, so the panel brackets 2700, four rungs below it and four
+above, from 2511 to 2846:
 
 | rung | ccrl blitz | |
 | --- | --- | --- |
-| goldfish:v2.1.1 | 2252 ±16 | Goldfish 2.1.1 64-bit |
-| stash:v17.0 | 2297 ±19 | Stash 17.0 |
-| sofcheck:v0.9-beta | 2384 ±17 | SoFCheck 0.9 beta 64-bit |
-| stash:v19.0 | 2473 ±18 | Stash 19.0 |
-| stash:v20.0.1 | 2511 ±23 | Stash 20.0.1 |
+| stash:v20.0.1 | 2511 ±23 | Stash 20.0.1 64-bit |
 | tantabus:v2.0.0 | 2555 ±13 | Tantabus 2.0.0 64-bit |
 | weiss:v0.9 | 2650 ±19 | Weiss 0.9 64-bit |
+| blunder:v8.5.5 | 2663 ±11 | Blunder 8.5.5 64-bit |
 | stash:v21.0 | 2713 ±14 | Stash 21.0 64-bit |
+| inanis:v1.1.0 | 2763 ±17 | Inanis 1.1.0 64-bit |
+| zahak:6.2 | 2825 ±17 | Zahak 6.2 64-bit |
+| weiss:v0.10 | 2846 ±17 | Weiss 0.10 64-bit |
 
-That 2332 was measured by hand on 8 September 2026, in a container rather than
-by the Calibrate workflow, so there is no run id to look it up by. Ten
-opponents played it, each held at its published rating: nine rungs at twenty
-games apiece, four of those taken on to eighty, and Zagreus 5.0 added
-afterwards at twenty. That is the 440. Eighteen triage games at another
-control are in neither count. A commit message from the same work
-(`e827024`) says 420, which is the same run before the tenth opponent
-played; the count here is the record. The per rung results are kept outside
-the tree.
+The 2601 is the Calibrate job of release run 34843479746 on 14 September 2026,
+fifty games a rung at 20+0.2 on the previous panel of 2252 to 2713. Its per
+rung scores are what moved the panel: 89% against Goldfish 2.1.1, 81% against
+Stash 17.0, 75% against SoFCheck 0.9 beta and 73% against Stash 19.0, then
+64%, 53%, 43% and 37% against the four rungs that stay. At 2700 the expected
+score against the eight above runs from 75% at the bottom to 30% at the top.
 
-Five lineages, of which four rungs are Stash, which is what this started as. A
-ladder of one lineage measures partly how this engine does against that
-lineage: a blind spot the two share, or an opening a family handles the same
-way, moves the number without anything about the strength behind it having
-changed, and rungs that are related to each other agree with each other for
-reasons the fit cannot see. The rungs here still disagree by about ninety elo
-more than their game counts explain, and that scatter does not shrink as games
-are added, so it is an offset per opponent rather than noise. More lineages
-dilute it.
+Six lineages, none holding more than two rungs. This started as a ladder of
+Stash alone, and a ladder of one lineage measures partly how this engine does
+against that lineage: a blind spot the two share, or an opening a family
+handles the same way, moves the number without anything about the strength
+behind it having changed, and rungs that are related to each other agree with
+each other for reasons the fit cannot see. The rungs of the first panel
+disagreed by about ninety elo more than their game counts explained, and that
+scatter did not shrink as games were added, so it is an offset per opponent
+rather than noise. More lineages dilute it.
 
 The figures are from the complete ccrl blitz list of 5 September 2026, computed
 with Bayeselo over 2,106,571 games at a control equivalent to 2'+1". The name
@@ -789,27 +788,23 @@ at; Stash does not spell its tags the way the list names its releases, which is
 why both are given. A list is redone as games arrive, so a figure here can
 drift from the published one; the date is what says how old these are.
 
-Six of the eight were cloned at their pin, built and played against this
-engine before they were named in the ladder, twenty games apiece at 20+0.2 and
-eighty for four of them. The two at the top were added later and proved the
-same way, each by a Calibrate run of its own rung alone, cloned at its pin,
-built and played over ten games: Stash 21.0 by 34676811269 and Weiss 0.9 by
-34678481112.
-
-This engine scored none of the twenty. Stash 21.0 is 380 elo above the 2332
-and Weiss 0.9 is 318 above it, where the expected scores are about a tenth and
-about a seventh, so a blank in ten games is the likelier single outcome against
-either and fifty games should return roughly five points and seven. Two blanks
-together are less ordinary than one, at something like one run in twelve if the
-gaps are what the list says, and they are the first thing to look at if the
-gauntlet comes back lower than the panel it replaced. What they establish for
-now is a ceiling: neither rung is out of range on the arithmetic, and both will
-trade games properly as the engine climbs toward them. All of them ended normally, with no illegal move, no
-loss on time and nothing dropping the connection. Goldfish, SoFCheck and
-Tantabus do print principal variations fastchess will not follow, lines that
-walk on past a repetition or the fifty move rule, so those rungs fill their
-logs with warnings about moves nobody played. All eight take the 256MB both
-sides are asked for.
+Every rung was cloned at its pin, built and played against this engine before
+it was named. The four that stay have played fifty games apiece in each of the
+last two release gauntlets. The four new ones were proved by Calibrate run
+35347904642 on 18 September 2026, twenty games each at 20+0.2 against master at
+`b0c353d` carrying only this change, and Weiss 1.0 at 2896 was proved beside
+them for the move after this one. The engine scored 35% against Blunder 8.5.5,
+17.5% against Inanis 1.1.0, 17.5% against Zahak 6.2, 25% against Weiss 0.10 and
+10% against Weiss 1.0, which the fit reads as 2558 ±67 (95%) over the hundred
+games. That interval covers the 2601, and the point sits under it: either a
+hundred games is a hundred games, or these lineages find something a panel that
+was half Stash did not, and that is the first thing to look at if the release
+gauntlet comes back lower than the panel it replaced. All hundred ended
+normally, with no illegal move, no loss on time and nothing dropping the
+connection. Inanis prints principal variations that walk on past a threefold
+repetition, as Tantabus does, so those two rungs fill their logs with warnings
+about moves nobody played; the other six print none. All eight take the 256MB
+both sides are asked for.
 
 fastchess will not send a size an engine declares itself unable to take, and
 such an engine plays on its own default instead. None of the eight is one, but
@@ -822,18 +817,24 @@ cover. BadChessEngine 0.4.4 at 1926 took 11.7% of sixty games, and more games
 of that would have narrowed nothing; Stash 13 at 1966 and BBC 1.1 at 2018 sit
 below it. Zagreus 5.0 at 2168 and Stash 15.3 at 2173 came off for the same
 reason and for one more: they are five elo apart, so the bottom of the panel
-was two rungs answering the same question. Their blocks are still in
-`scripts/opponent.sh`, so a ladder can name them again.
+was two rungs answering the same question. Goldfish 2.1.1 at 2252, Stash 17.0
+at 2297, SoFCheck 0.9 beta at 2384 and Stash 19.0 at 2473 came off when the
+panel moved up to bracket 2700, having given v0.4.4 between 73% and 89% of
+fifty games each. Their blocks are still in `scripts/opponent.sh`, so a
+ladder can name them again.
 
-Cinnamon 2.4 at 2326 and FoxSEE 8.2 at 2471 have blocks and are not in the
-default. Both were built at their pin and played twenty games, so either can be
-named in a ladder without proving its block first. Cinnamon prints an illegal
-move at the end of a principal variation.
+Cinnamon 2.4 at 2326, FoxSEE 8.2 at 2471 and Weiss 1.0 at 2896 have blocks
+and are not in the default. Each was built at its pin and played twenty games,
+so any of them can be named in a ladder without proving its block first.
+Cinnamon prints an illegal move at the end of a principal variation. Halogen 8
+at 2826 and Zahak 5.0 at 2726 were tried for the panel above and have no
+block: the first does not compile under a current g++ and the second builds
+but crashes in its hash under a current Go.
 
 The stash releases a ladder can pick from, with whether ccrl ranked the version
 itself or the figure is a community estimate from the games around it.
-Everything from v13 up was read off the 5 September list, and v21.0 at 2713 is
-where the ladder goes next:
+Everything from v13 up was read off the 5 September list. v22 to v24 are not
+on it, so v25.0 at 2932 is the next Stash rung above the panel:
 
 | tag | ccrl blitz | |
 | --- | --- | --- |
@@ -848,6 +849,7 @@ where the ladder goes next:
 | v19.0 | 2473 | ranked |
 | v20.0.1 | 2511 | ranked |
 | v21.0 | 2713 | ranked |
+| v25.0 | 2932 | ranked |
 
 ### Reading the result
 
@@ -859,9 +861,9 @@ in the next is a trap rather than a figure.
 
 Every margin this tool printed before 12 September 2026 was one standard error
 instead, so those are about half as wide as a margin printed now. That covers
-the gauntlet figure quoted above and the release notes up to 0.4.2. They are
-left as they were published rather than rewritten, and this is the note that
-says how to read them.
+the by-hand 2332 the first panel was built around and the release notes up to
+0.4.2. They are left as they were published rather than rewritten, and this is
+the note that says how to read them.
 
 Whether one rating describes the results at all is a different question, and it
 is asked separately rather than folded into the margin. A single number cannot
