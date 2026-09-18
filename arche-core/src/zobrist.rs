@@ -7,7 +7,9 @@ use crate::misc::{CastlePermissions, Piece, split_mix};
 pub struct Zobrist {
     pieces: [[u64; 64]; 12],
     pub side: u64,
-    castling: [u64; 4],
+    /// One key per set of rights, indexed by `CastlePermissions::bits`: the
+    /// four rights' own keys xored together for each set that holds them.
+    castling: [u64; 16],
     en_passant: [u64; 8],
 }
 
@@ -36,13 +38,25 @@ impl Zobrist {
         let (side, next) = split_mix(state);
         state = next;
 
-        let mut castling = [0u64; 4];
+        let mut rights = [0u64; 4];
         let mut i = 0;
         while i < 4 {
             let (value, next) = split_mix(state);
             state = next;
-            castling[i] = value;
+            rights[i] = value;
             i += 1;
+        }
+        let mut castling = [0u64; 16];
+        let mut set = 0;
+        while set < 16 {
+            let mut right = 0;
+            while right < 4 {
+                if set & (1 << right) != 0 {
+                    castling[set] ^= rights[right];
+                }
+                right += 1;
+            }
+            set += 1;
         }
 
         let mut en_passant = [0u64; 8];
@@ -76,24 +90,11 @@ impl Zobrist {
         self.en_passant[(index % 8) as usize]
     }
 
-    /// The combined key for a set of castle permissions. XORing the keys for
-    /// the old and new permissions into the position key updates it in place.
+    /// The key for a set of castle permissions. XORing the keys for the old
+    /// and new permissions into the position key updates it in place.
     #[inline]
     pub fn castle_key(&self, castle: CastlePermissions) -> u64 {
-        let mut key = 0;
-        if castle.white_king_side {
-            key ^= self.castling[0];
-        }
-        if castle.white_queen_side {
-            key ^= self.castling[1];
-        }
-        if castle.black_king_side {
-            key ^= self.castling[2];
-        }
-        if castle.black_queen_side {
-            key ^= self.castling[3];
-        }
-        key
+        self.castling[castle.bits() as usize]
     }
 }
 
