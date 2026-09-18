@@ -19,8 +19,10 @@ use std::collections::HashMap;
 use std::fmt;
 use std::time::Duration;
 
-/// The depth every position is searched to.
-pub const DEPTH: u8 = 7;
+/// The depth every position is searched to. Seven until September 2026 and
+/// nine since, so a `Bench:` trailer or a note from before then that says
+/// the bench's depth means seven.
+pub const DEPTH: u8 = 9;
 
 /// The table every position is searched with. The tree moves with the
 /// table, so this is part of what the numbers mean.
@@ -712,24 +714,24 @@ mod tests {
         assert_eq!(
             counted,
             vec![
-                ("start", 73_075),
-                ("italian", 132_136),
-                ("ruy lopez", 127_220),
-                ("kiwipete", 275_925),
-                ("perft 4", 122_259),
-                ("promotions", 46_622),
-                ("middlegame", 167_457),
-                ("sharp middlegame", 184_701),
-                ("bratko kopec 1", 671_225),
-                ("wac 4", 1_946_406),
-                ("rook and pawns", 29_112),
-                ("tarrasch", 53_975),
-                ("lucena", 16_701),
-                ("philidor", 60_589),
-                ("minor endgame", 30_918),
-                ("queen endgame", 157_932),
-                ("king and pawn", 3_522),
-                ("trebuchet", 2_834),
+                ("start", 585_829),
+                ("italian", 624_084),
+                ("ruy lopez", 708_910),
+                ("kiwipete", 1_421_623),
+                ("perft 4", 433_522),
+                ("promotions", 255_242),
+                ("middlegame", 598_715),
+                ("sharp middlegame", 1_038_433),
+                ("bratko kopec 1", 7_334_664),
+                ("wac 4", 38_242_037),
+                ("rook and pawns", 103_145),
+                ("tarrasch", 214_522),
+                ("lucena", 45_887),
+                ("philidor", 209_851),
+                ("minor endgame", 133_123),
+                ("queen endgame", 435_376),
+                ("king and pawn", 11_658),
+                ("trebuchet", 7_932),
             ]
         );
     }
@@ -739,7 +741,8 @@ mod tests {
     /// moves the default's alone is a shortcut. Pinned shallower than the
     /// bench, which is cheaper and coarser (a twentieth of the time, with a
     /// table under half full, so a change to what the table keeps shows here
-    /// less). The pin stays at this depth when the bench's is raised.
+    /// less). The pin stayed at this depth when the bench's was raised from
+    /// seven to nine.
     #[test]
     fn reference_node_counts_have_not_moved() {
         const REFERENCE_DEPTH: u8 = 5;
