@@ -125,10 +125,6 @@ impl UciOption {
 }
 
 pub struct UCI<T: Engine, W: Write> {
-    author: String,
-    name: String,
-    version: String,
-
     /// What the `Move Overhead` option is set to, held back from every budget
     /// a `go` works out. It outlives a game: it describes the connection, not
     /// the position.
@@ -173,9 +169,6 @@ impl<T: Engine, W: Write> UCI<T, W> {
     /// Separate from new_with_engine so that what is said can be captured.
     fn with_output(engine: T, out: W) -> Self {
         Self {
-            author: env!("CARGO_PKG_AUTHORS").to_string(),
-            name: env!("CARGO_PKG_NAME").to_string(),
-            version: env!("CARGO_PKG_VERSION").to_string(),
             move_overhead: DEFAULT_MOVE_OVERHEAD_MS,
             engine,
             out,
@@ -207,10 +200,12 @@ impl<T: Engine, W: Write> UCI<T, W> {
                 self.report(result);
             }
             "uci" => {
-                // written to the field directly: say borrows all of self,
-                // and these lines also read from it
-                let _ = writeln!(self.out, "id name {} {}", self.name, self.version);
-                let _ = writeln!(self.out, "id author {}", self.author);
+                self.say(format_args!(
+                    "id name {} {}",
+                    env!("CARGO_PKG_NAME"),
+                    env!("CARGO_PKG_VERSION")
+                ));
+                self.say(format_args!("id author {}", env!("CARGO_PKG_AUTHORS")));
                 for option in OPTIONS {
                     self.say(format_args!("{}", option.advert()));
                 }
@@ -562,16 +557,21 @@ pub const BENCH: Command = Command {
     ],
 };
 
+/// The search configuration a `taint <word>` names, or the default when the
+/// line names none. A word that is no policy is refused under the setting's
+/// name, for the bench and the instruments alike.
+pub(crate) fn taint(params: &Params) -> Result<SearchConfig, String> {
+    match params.value("taint") {
+        None => Ok(SearchConfig::default()),
+        Some(word) => SearchConfig::with_taint(word).ok_or_else(|| format!("taint: {word}")),
+    }
+}
+
 /// Reads the bench settings, or names the setting and the word that could not
 /// be read. Running the default in its place would take seconds and explain
 /// nothing.
 pub fn bench_settings(params: &Params) -> Result<BenchSettings, String> {
-    let depth = match params.parse::<u8>("bench") {
-        Param::Absent => bench::DEPTH,
-        Param::Read(depth) => depth,
-        Param::Unreadable(word) if BENCH.takes(word) => bench::DEPTH,
-        Param::Unreadable(word) => return Err(format!("depth: {word}")),
-    };
+    let depth = BENCH.depth(params, bench::DEPTH)?;
     let table_bytes = match params.parse::<u64>("hash") {
         Param::Absent => bench::TABLE_BYTES,
         // the range the uci Hash option advertises
@@ -579,10 +579,7 @@ pub fn bench_settings(params: &Params) -> Result<BenchSettings, String> {
         Param::Read(mb) => return Err(format!("hash: {mb}")),
         Param::Unreadable(word) => return Err(format!("hash: {word}")),
     };
-    let config = match params.value("taint") {
-        None => SearchConfig::default(),
-        Some(word) => SearchConfig::with_taint(word).ok_or_else(|| format!("taint: {word}"))?,
-    };
+    let config = taint(params)?;
     // last, so a word that was going to be read as the depth has already
     // been refused under the better name
     BENCH.claim(params)?;

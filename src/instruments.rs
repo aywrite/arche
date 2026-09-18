@@ -134,12 +134,7 @@ const DEFAULT_CAP: usize = recorder::DEFAULT_CAP;
 /// `default_every` is the rate the instrument samples at when the line names
 /// none, the one setting they do not share.
 fn sampling(params: &Params, command: &Command, default_every: u32) -> Result<Sampling, String> {
-    let depth = match params.parse::<u8>(command.name) {
-        Param::Absent => bench::DEPTH,
-        Param::Read(depth) => depth,
-        Param::Unreadable(word) if command.takes(word) => bench::DEPTH,
-        Param::Unreadable(word) => return Err(format!("depth: {word}")),
-    };
+    let depth = command.depth(params, bench::DEPTH)?;
     let every = match params.parse::<u32>("every") {
         Param::Absent => default_every,
         // zero records every event up to the cap, which is a thing to ask for
@@ -179,10 +174,7 @@ pub struct ResidualSettings {
 
 pub fn residual_settings(params: &Params) -> Result<ResidualSettings, String> {
     let Sampling { depth, every, cap } = sampling(params, &RESIDUALS, residual::DEFAULT_EVERY)?;
-    let config = match params.value("taint") {
-        None => SearchConfig::default(),
-        Some(word) => SearchConfig::with_taint(word).ok_or_else(|| format!("taint: {word}"))?,
-    };
+    let config = crate::uci::taint(params)?;
     let (epd, positions) = suite(params)?;
     Ok(ResidualSettings {
         depth,

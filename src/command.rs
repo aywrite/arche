@@ -15,7 +15,7 @@
 //! and takes the strict reading: a measurement at settings nobody asked for
 //! is worse than one not taken.
 
-use crate::params::Params;
+use crate::params::{Param, Params};
 
 /// A word that takes a value after it, and how the usage spells that value.
 pub struct Keyword {
@@ -39,6 +39,19 @@ pub struct Command {
 }
 
 impl Command {
+    /// The depth the line names, or `default` when it names none. The word
+    /// after the command's own is the depth unless it is one of the
+    /// command's keywords or flags, and a word that is neither is refused
+    /// under the depth's name rather than run at the default.
+    pub fn depth(&self, params: &Params, default: u8) -> Result<u8, String> {
+        match params.parse::<u8>(self.name) {
+            Param::Absent => Ok(default),
+            Param::Read(depth) => Ok(depth),
+            Param::Unreadable(word) if self.takes(word) => Ok(default),
+            Param::Unreadable(word) => Err(format!("depth: {word}")),
+        }
+    }
+
     /// Whether the argument knows this word. A word it knows may stand where
     /// the depth would.
     pub fn takes(&self, word: &str) -> bool {
