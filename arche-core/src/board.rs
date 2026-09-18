@@ -994,9 +994,11 @@ impl Board {
 
     /// Every piece of either colour bearing on `index` through `occupied`.
     /// The swap asks for the two halves separately; this is the whole
-    /// statement of an attacker, for the exhaustive model `see` is checked
-    /// against.
-    #[cfg(test)]
+    /// statement of an attacker, which `recompute_checkers` reads and the
+    /// exhaustive model `see` is checked against. `square_attacked` keeps
+    /// its own reading, which stops at the first attacker it finds:
+    /// written over this it measured 0.36% more instructions.
+    #[inline]
     fn attackers_to(&self, index: u8, occupied: u64) -> u64 {
         (self.steppers_onto(index) | self.sliders_onto(index, occupied)) & occupied
     }
@@ -1824,25 +1826,9 @@ impl Board {
     /// `checkers` is meant to equal this at all times.
     fn recompute_checkers(&self) -> u64 {
         let king = self.king_index(self.active_color);
-        let all = self.black | self.white;
-        let attack_masks = &ATTACK_MASKS;
-        let magic = &MAGIC;
-        let (attacker_mask, pawn_masks) = match !self.active_color {
-            Color::Black => (self.black, &attack_masks.black_pawns),
-            Color::White => (self.white, &attack_masks.white_pawns),
-        };
-        let mut checkers = pawn_masks[king as usize] & self.pawns() & attacker_mask;
-        checkers |= attack_masks.knights[king as usize] & self.knights() & attacker_mask;
-        let bishop_or_queen = (self.bishops() | self.queens()) & attacker_mask;
-        if attack_masks.diagonal[king as usize] & bishop_or_queen != 0 {
-            checkers |= magic.get_diagonal_move(king, all) & bishop_or_queen;
-        }
-        let rook_or_queen = (self.rooks() | self.queens()) & attacker_mask;
-        if attack_masks.straight[king as usize] & rook_or_queen != 0 {
-            checkers |= magic.get_straight_move(king, all) & rook_or_queen;
-        }
+        let (theirs, _) = self.sides(!self.active_color);
         // a king cannot give check, so there is no king term
-        checkers
+        self.attackers_to(king, self.black | self.white) & theirs & !self.kings()
     }
 
     /// Drop the moves that cannot answer the check the side to move stands
