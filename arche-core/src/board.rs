@@ -460,7 +460,6 @@ pub struct Board {
     // plies since the root of the search, zeroed by `start_line`: what a
     // mate score's distance is measured in
     pub(crate) line_ply: usize,
-    move_number: usize,
     fifty_move_rule: usize,
 
     // the evaluation's incremental state. The eval module owns what it
@@ -1156,6 +1155,13 @@ impl Board {
         self.fifty_move_rule
     }
 
+    /// The move number, as the fen prints it: `from_fen` starts the ply at
+    /// twice the number it read, one more with black to move, so the number
+    /// is the ply halved and needs no keeping.
+    fn move_number(&self) -> usize {
+        self.ply / 2
+    }
+
     /// Whether the fifty move counter has run out. Not the same as drawn: a
     /// mate delivered on the hundredth half move ends the game before the
     /// side mated has a move to claim the draw with, so a caller that can
@@ -1303,9 +1309,6 @@ impl Board {
 
         self.ply += 1;
         self.line_ply += 1;
-        if self.active_color == Color::Black {
-            self.move_number += 1;
-        }
 
         let king_index = self.king_index(self.active_color);
         // A move can only expose its own king when there was a check to walk
@@ -1383,9 +1386,6 @@ impl Board {
         self.fifty_move_rule = history.fifty_move_rule;
         self.ply -= 1;
         self.line_ply -= 1;
-        if opposing_color == Color::Black {
-            self.move_number -= 1;
-        }
 
         if play.en_passant {
             let en_passant_index = match opposing_color {
@@ -2154,7 +2154,6 @@ impl Board {
 
             ply: move_number * 2,
             line_ply: 0,
-            move_number,
             en_passant: Coordinate::from_string(en_passant)?,
             checkers: 0,
             fifty_move_rule: half_move_clock
@@ -2294,7 +2293,7 @@ impl Board {
             self.castle.as_fen(),
             en_passant,
             self.fifty_move_rule,
-            self.move_number,
+            self.move_number(),
         )
     }
 }
@@ -2324,7 +2323,7 @@ impl fmt::Display for Board {
             self.castle.as_fen(),
             self.en_passant,
             self.ply,
-            self.move_number,
+            self.move_number(),
             self.fifty_move_rule,
             self.eval.material_difference(),
         )?;
