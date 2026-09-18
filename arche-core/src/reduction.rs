@@ -150,10 +150,10 @@ pub struct Event {
     pub scout: Scout,
     /// The nodes the scout spent: zero on a skipped row.
     pub cost: u64,
-    /// How many plies shallower the scout ran: one for the flat reduction,
-    /// two for the deep, zero on a skipped row. The label does not read
-    /// it; the counterfactual is the full depth answer whichever was
-    /// trusted.
+    /// How many plies shallower the scout ran: what the reduction table,
+    /// the model gate and the clamp under them settled on, and zero on a
+    /// skipped row. The label does not read it; the counterfactual is the
+    /// full depth answer whichever was trusted.
     pub reduction: u8,
 }
 
@@ -1083,9 +1083,10 @@ mod tests {
             } else {
                 assert_eq!(e.searched, e.index + 1, "{:?}", row);
                 assert!(e.cost >= 1, "{:?}", row);
-                assert!(e.reduction == 1 || e.reduction == 2, "{:?}", row);
-                // the deep reduction never fires under its depth floor
-                assert!(e.reduction == 1 || e.depth >= 4, "{:?}", row);
+                // never nothing, and never so much that the scout gives up
+                // its full width ply: the clamp the amount is read under
+                assert!(e.reduction >= 1, "{:?}", row);
+                assert!(e.reduction <= e.depth - 2, "{:?}", row);
             }
             assert_eq!(row.reference.is_some(), e.scout != Scout::High, "{:?}", row);
         }

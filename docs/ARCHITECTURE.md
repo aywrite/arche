@@ -76,14 +76,16 @@ four are fitted to the engine's own archived games.
   pruning (answer it from a reduced search of the position left by passing
   the move) and the check extension.
 - **late_move.rs**: What a node does with a quiet move its ordering put
-  late. The late move reduction scouts such a move a ply shallower and
-  trusts the answer when it comes back low, at nodes deep enough to keep a
-  full width ply under the scout. Behind it stands the attention model, a
+  late. The late move reduction scouts such a move shallower and trusts
+  the answer when it comes back low, at nodes deep enough to keep a full
+  width ply under the scout. Behind it stands the attention model, a
   logistic regression over what the node knows about the move, fitted
   offline and carried as integers: under one threshold it deepens the scout
-  to two plies, and under the second, the deadest band, the node does not
-  search the move at all. One call answers for one move, and the features
-  it scores are the ones the reduction ledger records.
+  by a ply, and under the second, the deadest band, the node does not
+  search the move at all. How many plies a scout gives up is read off a
+  table by the node's depth and the move's index. One call answers for one
+  move, and the features it scores are the ones the reduction ledger
+  records.
 - **ordering.rs**: The order moves are tried in. The transposition table's
   move first, then the captures the swap prices as winning or even, by
   what each wins with most valuable victim / least valuable attacker
