@@ -34,7 +34,7 @@ pub const TABLE_BYTES: usize = 16 * 1024 * 1024;
 /// is the gate. A change that moves it in either direction updates this
 /// number in the same commit, which puts the movement in the diff, and a
 /// change that lowers it says what the positions were spent on.
-pub const EXPECTED_PASSES: usize = 240;
+pub const EXPECTED_PASSES: usize = 238;
 
 /// The count the suite may not go under, whatever a commit says it meant to
 /// spend.
@@ -47,10 +47,11 @@ pub const EXPECTED_PASSES: usize = 240;
 /// Two hundred and ten was fourteen under the count when the floor was set
 /// (224) and is eleven under the lowest the suite has been gated at (221).
 /// Since the suite was first gated the count has been 243, 241, 240, 237,
-/// 236, 229, 221, 226, 227, 228, 231, 224, 237 and 240, and the largest
-/// single step down in that list is eight, so one change spending fourteen
-/// fails here rather than being written down and rearmed. Lowering the
-/// floor is a commit whose whole subject is lowering the floor.
+/// 236, 229, 221, 226, 227, 228, 231, 224, 237, 240 and 238, and the
+/// largest single step down in that list is eight, so one change spending
+/// fourteen fails here rather than being written down and rearmed.
+/// Lowering the floor is a commit whose whole subject is lowering the
+/// floor.
 pub const FLOOR: usize = 210;
 
 // Checked by the build rather than the suite run, which is an ignored job of
@@ -80,10 +81,25 @@ pub struct AcceptedLoss {
 
 /// The losses accepted so far.
 ///
-/// Empty: none of the positions the suite misses has been read one at a
-/// time, so nothing here would be a record rather than a guess. The next
-/// change that lowers `EXPECTED_PASSES` is the first that writes here.
-pub const ACCEPTED_LOSSES: &[AcceptedLoss] = &[];
+/// The reduction table took the first two, and both are the same thing: a
+/// capture the reduction never touches, whose continuation is quiet and is
+/// now stood further back than the depth can afford.
+pub const ACCEPTED_LOSSES: &[AcceptedLoss] = &[
+    AcceptedLoss {
+        id: "WAC.082",
+        why: "the quiet queen lift and rook swing behind the h7 sacrifice are \
+              scouted further back, so the sacrifice never comes back above \
+              alpha at depth six",
+        until: "0.6.0",
+    },
+    AcceptedLoss {
+        id: "WAC.260",
+        why: "the three quiet moves of the mate in five behind the queen check \
+              are scouted further back, so depth six answers with a centipawn \
+              score instead",
+        until: "0.6.0",
+    },
+];
 
 const SUITE: &str = include_str!("../tactics.epd");
 

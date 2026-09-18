@@ -397,15 +397,15 @@ does cold, and the tests in `arche-core/src/engine.rs` that say so build
 the reference and hold it to that for good. They are the soundness check: a
 change that claims to be sound keeps them green whatever else it moves. The
 default is what the engine plays with and what the bench prints. It parts
-company with the reference in ten places today: the fifty move guard,
+company with the reference in eleven places today: the fifty move guard,
 reverse futility, the null move pass, the delta margin and the losing
 capture skip in quiescence, the late move reduction that scouts a late
-quiet move a ply shallower, the deep reduction that scouts a late quiet
-its model calls dead two plies shallower instead, the late move pruning
-that drops a late quiet the model puts in its deadest band without
-searching it at all, the killers and history table the quiet moves are
-ordered by, and the aspiration window the deepening loop opens each
-iteration at.
+quiet move shallower, the deep reduction that scouts a late quiet its
+model calls dead a ply shallower still, the late move pruning that drops
+a late quiet the model puts in its deadest band without searching it at
+all, the reduction table those two amounts are read off, the killers and
+history table the quiet moves are ordered by, and the aspiration window
+the deepening loop opens each iteration at.
 `reference_node_counts_have_not_moved` pins the reference's tree beside the
 default's, so a commit's diff says which kind of change it carries. One that
 moves both counts touched the search the two share, the table, say; one that

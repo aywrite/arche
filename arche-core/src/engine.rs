@@ -263,20 +263,29 @@ pub struct SearchConfig {
     /// swap sees no pins and nothing beyond its square.
     pub see_pruning: bool,
     /// Whether a quiet move searched late at a full width node is scouted
-    /// a ply shallower first, and searched at full depth only when the
-    /// scout comes back above alpha. A scout that fails low is trusted.
+    /// shallower first, by what the reduction table reads or by a flat ply
+    /// with that off, and searched at full depth only when the scout comes
+    /// back above alpha. A scout that fails low is trusted.
     pub late_move_reductions: bool,
     /// Whether the scout of a late quiet the attention model prices as
-    /// dead runs two plies shallower rather than one, at nodes deep enough
-    /// for the scout to keep its full width ply, and never for a move that
-    /// gives check. Rides on `late_move_reductions`: a move the reduction
-    /// never touches is never asked.
+    /// dead runs a ply shallower still, at nodes deep enough for the scout
+    /// to keep its full width ply, and never for a move that gives check.
+    /// Rides on `late_move_reductions`: a move the reduction never touches
+    /// is never asked.
     pub deep_reductions: bool,
     /// Whether a late quiet the attention model prices in its deadest band
     /// is searched at all. Rides on the reduction's eligibility and the
     /// deep reduction's model and checking exemption; its threshold is a
     /// deeper cut of the same score.
     pub late_move_pruning: bool,
+    /// Whether the amount a late quiet is scouted shallower by grows with
+    /// the node's depth and the move's place in the order, rather than
+    /// being the flat ply and the gate's second one. It changes no move's
+    /// eligibility and nothing the gate decides, only how far the scout of
+    /// a move already reduced is stood back. On in the default, off in the
+    /// reference, and off it the two constants are read as they were,
+    /// which is what the bench identity holds it to.
+    pub reduction_table: bool,
     /// Whether a node orders its quiet moves by what other nodes have
     /// learned: the killers for its distance from the root, and the history
     /// table under them. Off in the reference, which keeps the pinned
@@ -357,6 +366,7 @@ impl SearchConfig {
             late_move_reductions: false,
             deep_reductions: false,
             late_move_pruning: false,
+            reduction_table: false,
             move_memory: false,
             aspiration: false,
         }
@@ -418,6 +428,7 @@ impl Default for SearchConfig {
             late_move_reductions: true,
             deep_reductions: true,
             late_move_pruning: true,
+            reduction_table: true,
             move_memory: true,
             aspiration: true,
         }
@@ -5941,8 +5952,8 @@ mod reductions {
     }
 
     /// The reduction column reads what `windowed` was handed: a scout run
-    /// two plies shallower writes a two, so the rows of a run with the
-    /// deep reduction firing say which scouts it answered for.
+    /// two plies shallower writes a two, so a run's rows say how far each
+    /// scout was stood back.
     #[test]
     fn the_row_carries_the_reduction_the_scout_ran_at() {
         let mut e = engine(SHARP_MIDDLEGAME);
