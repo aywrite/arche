@@ -318,7 +318,7 @@ pub(crate) mod fixtures {
         let searched_nodes = |engine: &mut AlphaBeta, id: &str| {
             let outcome = engine
                 .iterative_deepening_search(SearchParameters::to_depth(depth), |_, _, _, _| {});
-            let SearchOutcome::Complete(result) = outcome else {
+            let SearchOutcome::Complete(result, _) = outcome else {
                 panic!("{id}: an unlimited search did not complete");
             };
             result.nodes

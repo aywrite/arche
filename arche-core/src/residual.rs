@@ -341,7 +341,7 @@ pub(crate) fn reference_answer(engine: &mut AlphaBeta, fen: &str, depth: u8) -> 
     let outcome =
         engine.iterative_deepening_search(SearchParameters::to_depth(depth), |_, _, _, _| {});
     Some(match outcome {
-        SearchOutcome::Complete(result) => result.score,
+        SearchOutcome::Complete(result, _) => result.score,
         // no move to make: scored the way the search scores the same
         // position a ply down. A mate on the hundredth half move is still a
         // mate, and everything else is a draw. From a real run only the
@@ -847,7 +847,7 @@ mod tests {
         engine.parse_fen(fen).expect("the fen parses");
         let outcome =
             engine.iterative_deepening_search(SearchParameters::to_depth(depth), |_, _, _, _| {});
-        let SearchOutcome::Complete(result) = outcome else {
+        let SearchOutcome::Complete(result, _) = outcome else {
             panic!("{} at depth {} has no move to make", fen, depth);
         };
         result.score

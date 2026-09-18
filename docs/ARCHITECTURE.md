@@ -64,7 +64,9 @@ four are fitted to the engine's own archived games.
   enlarge it.
 - **engine.rs**: The search. Alpha beta (skip any line already proven
   worse than one we can force), deepening one ply at a time with each pass
-  seeding the next through the transposition table. At the horizon,
+  seeding the next through the transposition table and opening at an
+  aspiration window around the last pass's score, widened on the side a
+  pass falls outside it. At the horizon,
   quiescence search keeps following captures until the position goes
   quiet, since evaluating in the middle of an exchange scores a hanging
   queen as material. Also here: principal variation search (ask a move

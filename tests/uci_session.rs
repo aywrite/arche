@@ -252,12 +252,12 @@ fn the_move_a_swap_answers_with_opens_the_last_line_said() {
     // a node budget rather than a clock, so the iteration is cut short on
     // the same node on every machine. The budget has to land after depth
     // ten finds its better move and before the iteration ends: depth nine
-    // finishes at 1,038,433 nodes, depth ten reports the new move from
-    // about 1,995,000 and finishes at 2,114,707. The budget moves whenever
-    // the tree does, in the commit that moved it
+    // answers d3b5 and finishes at 865,112 nodes, depth ten reports a4d1
+    // from about 1,980,000 and finishes at 2,088,741. The budget moves
+    // whenever the tree does, in the commit that moved it
     let mut s = Session::start(&[]);
     s.say(&format!("position fen {}", SHARP_MIDDLEGAME));
-    s.say("go nodes 2050000");
+    s.say("go nodes 2030000");
     let answer = s.wait_for(|l| l.starts_with("bestmove"));
     let best = answer
         .strip_prefix("bestmove ")
@@ -278,6 +278,171 @@ fn the_move_a_swap_answers_with_opens_the_last_line_said() {
         info.contains(" lowerbound "),
         "a partial depth was reported as an exact score: {}",
         info
+    );
+    s.say("quit");
+    assert!(s.finished().success());
+}
+
+/// The centipawn score an info line reported.
+fn score_of(info: &str) -> i32 {
+    info.split_whitespace()
+        .skip_while(|word| *word != "cp")
+        .nth(1)
+        .and_then(|score| score.parse().ok())
+        .unwrap_or_else(|| panic!("no centipawn score in {}", info))
+}
+
+/// The first move of the line an info line reported.
+fn line_opens_with(info: &str) -> &str {
+    info.split(" pv ")
+        .nth(1)
+        .and_then(|line| line.split_whitespace().next())
+        .unwrap_or_else(|| panic!("no line in {}", info))
+}
+
+#[test]
+fn an_iteration_no_root_move_reached_answers_with_the_depth_before_it() {
+    // the opening is worth 50 to white at depth five and 0 at depth six, so
+    // depth six opens above what the position turns out to be and nothing
+    // inside the window answers it: the depth is reported as the ceiling it
+    // is and searched again wider. The budget lands inside that second
+    // search, which reaches nothing above its own alpha either, so what
+    // answers is still depth five's and not the ceiling just reported. The
+    // first search reports at 18,218 nodes and the second finishes at
+    // 36,383
+    let mut s = Session::start(&[]);
+    s.say("position startpos");
+    s.say("go nodes 26000");
+    let answer = s.wait_for(|l| l.starts_with("bestmove"));
+    let best = answer
+        .strip_prefix("bestmove ")
+        .unwrap_or_else(|| panic!("not a bestmove: {}", answer));
+
+    let lines: Vec<&String> = s
+        .said
+        .iter()
+        .filter(|l| l.starts_with("info depth "))
+        .collect();
+    let last = lines
+        .last()
+        .unwrap_or_else(|| panic!("the search reported no depth: {:#?}", s.said));
+    assert!(
+        last.contains(" upperbound "),
+        "the ceiling was not reported as one: {}",
+        last
+    );
+    // the ceiling's line opens with the move that came closest, which is
+    // not the move answered with: a move nothing was shown to beat is not
+    // an answer
+    assert_ne!(line_opens_with(last), best, "the closest move answered");
+    let completed = lines
+        .iter()
+        .rfind(|l| !l.contains("bound "))
+        .unwrap_or_else(|| panic!("no depth completed: {:#?}", s.said));
+    assert_eq!(
+        line_opens_with(completed),
+        best,
+        "the answer is not the last completed depth's: {}",
+        completed
+    );
+    // and the ceiling really was one: the position is worth less than the
+    // depth answering said, which is what a search finds when it fails low
+    assert!(
+        score_of(last) < score_of(completed),
+        "the ceiling did not fall short of the answer: {} against {}",
+        last,
+        completed
+    );
+    s.say("quit");
+    assert!(s.finished().success());
+}
+
+#[test]
+fn a_root_move_that_reaches_beta_is_reported_as_a_floor_and_then_answered_with() {
+    // the opening is worth 0 to white at depth six and 49 at depth seven, so
+    // depth seven's window is left behind on the other side: a move reaches
+    // beta, the depth reports the floor that move is, and the search runs
+    // again with beta raised. Both of depth seven's lines name the same
+    // move, which is the point of storing it: the wider search tries it
+    // first. A fixed depth rather than a budget, so nothing here is aborted
+    // and the only bound a line can carry is the root's own
+    let mut s = Session::start(&[]);
+    s.say("position startpos");
+    s.say("go depth 7");
+    let answer = s.wait_for(|l| l.starts_with("bestmove"));
+    let best = answer
+        .strip_prefix("bestmove ")
+        .unwrap_or_else(|| panic!("not a bestmove: {}", answer));
+
+    let deepest: Vec<&String> = s
+        .said
+        .iter()
+        .filter(|l| l.starts_with("info depth 7 "))
+        .collect();
+    let floor = deepest
+        .iter()
+        .find(|l| l.contains(" lowerbound "))
+        .unwrap_or_else(|| panic!("the depth did not fail high: {:#?}", s.said));
+    assert_eq!(line_opens_with(floor), best, "the floor named another move");
+    let exact = deepest
+        .iter()
+        .find(|l| !l.contains("bound "))
+        .unwrap_or_else(|| panic!("the depth never completed: {:#?}", s.said));
+    assert_eq!(
+        line_opens_with(exact),
+        best,
+        "the wider search answered with another move: {}",
+        exact
+    );
+    s.say("quit");
+    assert!(s.finished().success());
+}
+
+#[test]
+fn a_floor_answers_until_the_wider_search_replaces_it() {
+    // the other half of the floor: what the engine plays when the wider
+    // search never finishes. This endgame is worth 223 to white at depth
+    // six, answered with d2c1; depth seven opens above that, d2e3 reaches
+    // beta at 254 and the floor is reported at 5,696 nodes, and the wider
+    // search finishes at 7,166. A budget inside it is interrupted before
+    // anything beats its alpha, so the root hands back no move at all and
+    // the floor is what is left to answer with. Any budget from 5,697 to
+    // 7,165 does it; with the floor not held the same budget answers
+    // d2c1, which is the move the search has just shown worse
+    let endgame = "8/k1b5/P4p2/1Pp2p1p/K1P2P1P/8/3B4/8 w - - 0 1";
+    let mut s = Session::start(&[]);
+    s.say(&format!("position fen {}", endgame));
+    s.say("go nodes 6400");
+    let answer = s.wait_for(|l| l.starts_with("bestmove"));
+    let best = answer
+        .strip_prefix("bestmove ")
+        .unwrap_or_else(|| panic!("not a bestmove: {}", answer));
+
+    let lines: Vec<&String> = s
+        .said
+        .iter()
+        .filter(|l| l.starts_with("info depth "))
+        .collect();
+    let floor = lines
+        .last()
+        .unwrap_or_else(|| panic!("the search reported no depth: {:#?}", s.said));
+    assert!(
+        floor.contains(" lowerbound "),
+        "the last line said is not the floor: {}",
+        floor
+    );
+    assert_eq!(line_opens_with(floor), best, "the floor did not answer");
+    // and the floor is a move no completed depth named, so answering with
+    // it is a claim about the floor and not about the depth before it
+    let completed = lines
+        .iter()
+        .rfind(|l| !l.contains("bound "))
+        .unwrap_or_else(|| panic!("no depth completed: {:#?}", s.said));
+    assert_ne!(
+        line_opens_with(completed),
+        best,
+        "the floor names what the last completed depth answered, so this \
+         says nothing about which of the two was held"
     );
     s.say("quit");
     assert!(s.finished().success());

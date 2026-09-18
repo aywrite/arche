@@ -1045,14 +1045,22 @@ mod tests {
         );
     }
 
-    /// A run over the suite: every row holds together, and all three scout
-    /// outcomes appear.
+    /// A run over the suite: every row holds together, and the two scout
+    /// outcomes a run of this size holds appear.
     #[test]
     fn a_run_records_rows_that_hold_together() {
         // depth six rather than five, because a fail high is the rare
-        // outcome. At depth five the 2026-09-13 mobility refit leaves none
-        // at any rate; at six there are a handful, and one in five of the
-        // events is enough to catch them
+        // outcome and depth five leaves none at any rate. Since the
+        // aspiration window it is rarer than this run can hold. Measured
+        // with the window on: 0 of the 2,049 rows one event in five gives
+        // at depth six, and 0 to 3 of the 10,000 a reservoir takes when
+        // every event is offered, over depths six to ten. That is about
+        // one gate event in ten thousand, and a sample large enough to
+        // hold one costs more than this test is worth. So the outcome is
+        // not asserted here. What pins it is
+        // `a_scout_that_fails_high_is_recorded_as_high` in `engine.rs`,
+        // which builds the scout by hand, and the shape assertion in the
+        // loop below, which holds wherever one does turn up
         let report = run(&suite(), None, 6, 5, DEFAULT_CAP);
         assert_eq!(report.positions, 2);
         assert!(!report.rows.is_empty(), "nothing was recorded");
@@ -1082,7 +1090,6 @@ mod tests {
             assert_eq!(row.reference.is_some(), e.scout != Scout::High, "{:?}", row);
         }
         assert!(report.rows.iter().any(|row| row.event.scout == Scout::Low));
-        assert!(report.rows.iter().any(|row| row.event.scout == Scout::High));
         assert!(
             report
                 .rows
