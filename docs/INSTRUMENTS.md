@@ -467,8 +467,9 @@ the side to move's frame, so the row's own arithmetic is the evaluation with
 nothing further to do:
 
 ```
-eval = mat . w_mat + trunc((psqt . w_psqt + shelter . w_shelter
-                            + pawns . w_pawns) / 24)
+eval = mat . w_mat + trunc((psqt . w_psqt + mobility . w_mobility
+                            + shelter . w_shelter + pawns . w_pawns
+                            + king_attack . w_king_attack) / 24)
 ```
 
 Four things in that line are load bearing, and each is a way to be wrong by a
@@ -521,7 +522,7 @@ A row like that is not a thing a fit can read, since every weight vector
 scores it the same, so it is turned away rather than emitted. `tune.py`
 refuses a header that does not carry the count, because an extraction printed
 by an older engine holds those rows and would parse. If the yield ever leaves
-too few positions to fit 768 weights, dropping the pass is the fallback, and
+too few positions to fit 820 weights, dropping the pass is the fallback, and
 the header is what makes that a decision rather than a discovery.
 
 `epd <file>` reads a suite of its own instead of the bench's, on the residuals
