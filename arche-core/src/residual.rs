@@ -24,7 +24,7 @@ use crate::bench::Position;
 use crate::board::Board;
 use crate::engine::{AlphaBeta, Engine, SearchConfig, SearchOutcome, SearchParameters};
 use crate::misc::Score;
-use crate::recorder::{self, DEFAULT_CAP, DEPTH_SPREAD, Window};
+use crate::recorder::{self, DEFAULT_CAP, Window};
 use crate::value::Value;
 use std::fmt;
 
@@ -91,7 +91,7 @@ impl Shortcut {
 /// membership with any change to the tree, which reads as a shift in the
 /// distribution.
 pub fn sample_key(position_key: u64, kind: Shortcut, depth: u8) -> u64 {
-    position_key ^ kind.salt() ^ u64::from(depth).wrapping_mul(DEPTH_SPREAD)
+    recorder::sample_key(position_key, kind.salt(), depth)
 }
 
 /// One node a shortcut answered, with enough of the node to search it
@@ -319,21 +319,51 @@ pub fn run(
     }
 }
 
-/// The engine the replay asks: the reference and not the default, since a
-/// shortcut cannot judge what it cost. A function so a test can hold the
-/// replay to it.
-fn replay_engine() -> AlphaBeta {
+/// The engine a replay asks, this module's and the reduction ledger's: the
+/// reference and not the default, since a shortcut cannot judge what it
+/// cost. A function so a test can hold the replay to it.
+pub(crate) fn replay_engine() -> AlphaBeta {
     AlphaBeta::with_config(Board::new(), REPLAY_TABLE_BYTES, SearchConfig::reference())
+}
+
+/// What the reference says a position is worth searched to `depth`, or
+/// nothing when the fen does not parse. The table is cleared first, so no
+/// position's answer is another's: the same position sampled at two depths
+/// would otherwise have its shallower record answered from the deeper
+/// record's entry, and a reference value that depends on what the replay
+/// searched before it is not a reference value. A four megabyte wipe a
+/// position is orders cheaper than the search.
+pub(crate) fn reference_answer(engine: &mut AlphaBeta, fen: &str, depth: u8) -> Option<Score> {
+    if engine.parse_fen(fen).is_err() {
+        return None;
+    }
+    engine.clear_transpositions();
+    let outcome =
+        engine.iterative_deepening_search(SearchParameters::to_depth(depth), |_, _, _, _| {});
+    Some(match outcome {
+        SearchOutcome::Complete(result) => result.score,
+        // no move to make: scored the way the search scores the same
+        // position a ply down. A mate on the hundredth half move is still a
+        // mate, and everything else is a draw. From a real run only the
+        // stalemate arrives here, since a sampled node is never in check
+        // and never past the counter
+        SearchOutcome::GameOver => {
+            if engine.board.in_check() && !engine.board.has_legal_move() {
+                Value::mated(0).score
+            } else {
+                0
+            }
+        }
+        // a replay runs to a depth and never on a clock, and no recorder
+        // records a depth of zero
+        SearchOutcome::Aborted(_) => {
+            unreachable!("a replay is searched to a depth of at least one")
+        }
+    })
 }
 
 /// What the reference search says about each sampled position, and how
 /// many of them it could not read.
-///
-/// The table is cleared before every sample. The same position sampled at
-/// two depths would otherwise have its shallower record answered from the
-/// deeper record's entry, and a reference value that depends on what the
-/// replay searched before it is not a reference value. A four megabyte
-/// wipe a sample is orders cheaper than the search.
 ///
 /// The known limitation: a fen carries the fifty move counter and not the
 /// path, so the replay cannot see a repetition that needs moves made
@@ -345,33 +375,9 @@ pub fn replay(samples: &[Sample]) -> (Vec<Row>, usize) {
     let mut rows = Vec::with_capacity(samples.len());
     let mut unplayable = 0;
     for sample in samples {
-        if engine.parse_fen(&sample.fen).is_err() {
+        let Some(reference) = reference_answer(&mut engine, &sample.fen, sample.depth) else {
             unplayable += 1;
             continue;
-        }
-        // cold for every sample, so no sample's answer is another's
-        engine.clear_transpositions();
-        let outcome = engine
-            .iterative_deepening_search(SearchParameters::to_depth(sample.depth), |_, _, _, _| {});
-        let reference = match outcome {
-            SearchOutcome::Complete(result) => result.score,
-            // no move to make: scored the way the search scores the same
-            // position a ply down. A mate on the hundredth half move is
-            // still a mate, and everything else is a draw. From a real run
-            // only the stalemate arrives here, since a sampled node is
-            // never in check and never past the counter
-            SearchOutcome::GameOver => {
-                if engine.board.in_check() && !engine.board.has_legal_move() {
-                    Value::mated(0).score
-                } else {
-                    0
-                }
-            }
-            // the replay runs to a depth and never on a clock, and the
-            // sampler never records a depth of zero
-            SearchOutcome::Aborted(_) => {
-                unreachable!("a sample is searched to a depth of at least one")
-            }
         };
         rows.push(Row {
             kind: sample.kind,
