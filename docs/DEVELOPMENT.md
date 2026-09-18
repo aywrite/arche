@@ -64,10 +64,12 @@ root manifest. Cargo leaves `debug-assertions` and `overflow-checks` on
 whatever the optimisation level is, so nothing the run checks is given up
 for the speed. Unoptimised it took a minute, most of that the two perft
 suites walking a hundred and twenty million checked moves; optimised it takes
-eleven seconds and costs six seconds more to compile. They are the largest
-part of the release run too, about a quarter of it. The two pinned bench
-searches come to six million nodes between them, under a twentieth of either
-run.
+about twenty five seconds and costs six seconds more to compile. The pinned
+bench search is the longest single test in either run since the depth went
+to nine: fifty four million nodes between the two pins, and the bench pin
+alone is sixteen seconds of the debug run and six and a half of the release
+one, with the rest of the run beside it on the other cores. At depth seven the two pins were six
+million nodes, under a twentieth of either run.
 
 Neither of the two suites is in either run. The tactical one searches three
 hundred positions and takes ten seconds or so, and the strategic one searches
@@ -320,15 +322,17 @@ at. The last line, `<nodes> nodes <nps> nps`, is the one the match tools read,
 and `bench` is also a uci command. Both take a depth after the word, as in
 `arche bench 3`, for trying the command cheaply; the number that means
 anything is the one at the default. Both also take `hash <MB>` and
-`taint refuse|trust|skip|rule50`, as in `arche bench 9 hash 256 taint trust`, which are
+`taint refuse|trust|skip|rule50`, as in `arche bench 7 hash 256 taint trust`, which are
 for measuring what the table and the draw taint policy do to a search rather
 than for pinning anything: the header states what a report ran with, so one
 can be rerun from it. A fourth word, `audit`, adds what the table's key
 signature costs and is described in [INSTRUMENTS.md](INSTRUMENTS.md). The
-suite, depth and table are chosen once: changing any of them changes every
-number the bench has ever printed, which is why the depth is expected to be
-raised exactly once, after the search has learned to prune, rather than
-adjusted as it goes.
+suite, depth and table are chosen once, because changing any of them changes
+every number the bench has ever printed. The depth was raised once, from
+seven to nine in September 2026, once the search had learned to prune: the
+last bench at seven was 4,102,609 nodes and the first at nine 52,404,553, so
+a `Bench:` trailer or a note from before then that says the bench's depth
+means seven. It is not adjusted as it goes.
 
 Speed is measured against another build, never on its own: a rate says
 nothing across machines, and a single pair of runs says little on one.

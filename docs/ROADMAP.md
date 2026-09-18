@@ -319,8 +319,8 @@ of these again without saying what is different this time.
   scout at depth three is quiescence, and it grows the bench tree by 0.17%
   while the strategic suite falls 813 points (92502 to 91689) and the
   tactical count rises two (221 to 223). The skip at depth three leaves the
-  suites where they were (221, and 8 points down) and saves 0.70% at the
-  bench's depth, 0.43% at eight, 0.13% at nine and -0.04% at ten: what it
+  suites where they were (221, and 8 points down) and saves 0.70% at depth
+  seven, 0.43% at eight, 0.13% at nine and -0.04% at ten: what it
   takes off the shallowest nodes is given back as the tree around them
   widens, so nothing of it is left at the depths a game reaches. Both
   together are 1.18% of the bench tree, 223 tactical and 91625 strategic.
@@ -337,8 +337,8 @@ of these again without saying what is different this time.
   0.114% of 18,442 rows for a full search (95% upper bound 0.163%), against
   the 0.16% at depth four, 0.21% at five and 0.46% at six that the reduction
   already gets wrong, so -6000 is the last point on the grid under all
-  three. The tree came out 1.68% smaller at the bench's depth, and 14.6%
-  smaller at depth nine over the sixteen bench positions the skip can reach.
+  three. The tree came out 1.68% smaller at depth seven, and 14.6% smaller
+  at depth nine over the sixteen bench positions the skip can reach.
   Two sprt batches at 10+0.1 against master at `ce8b662` (sprt [0, 10]) then
   put it at nothing: -13 ±24 over 500 games with the likelihood ratio at
   -1.18, and +1 ±17 over a further 1,000 at -0.47. The first batch's -13

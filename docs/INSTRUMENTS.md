@@ -895,11 +895,12 @@ Twenty four and twenty eight are the widths the signature would be left with
 if four or eight of its bits went to some other piece of metadata, which is
 the question they answer: what reclaiming those bits would cost the table.
 Neither is measurable at the sizes the command runs at. At the bench's depth
-twenty four expects an eighth of an accept and twenty eight a hundred and
-fiftieth, and at depth eight twenty four expects about three quarters. A zero on either is
-the run being too short to have an opinion rather than a bit budget with room
-in it, so what the reader takes from those two is the expectation and not the
-count. The count bounds it, and nothing at these sizes can do more.
+and table twenty four expects under two accepts and twenty eight a tenth of
+one, and the depth seven example above, on a megabyte, expected an eighth and
+a hundred and fiftieth. A zero or a two on either is the run being too short
+to have an opinion rather than a bit budget with room in it, so what the
+reader takes from those two is the expectation and not the count. The count
+bounds it, and nothing at these sizes can do more.
 
 The widths are cumulative by construction. An entry whose low twenty four
 bits agree agrees on sixteen as well, and is counted under both, so each
@@ -912,12 +913,15 @@ The narrow figures are counted and never acted on: a search really running
 one of these widths would have stopped its scan at the first entry it
 accepted, which is a different tree.
 
-Read the narrow line off a small table. A table of one or two megabytes at
-the bench's depth is full by the end of the suite, so its buckets hold four
-live entries and its comparisons run to millions; at the default sixteen the
-suite fills under a tenth of the table, the comparisons are an order down and
-the narrow count is small enough to be noise. The command does not sweep
-sizes itself.
+Read the narrow line off a small table, or at the bench's depth off the
+default one. An entry is sixteen bytes, so a megabyte holds sixty five
+thousand and the default sixteen a million. The bigger positions store more
+entries than a small table has slots, so it is full by the end of them, its
+buckets hold four live entries and its comparisons run to tens of millions.
+At depth nine only the two tactical positions store more than the default
+table holds, and that is still enough for the sixteen bit count to reach a
+few hundred; at depth seven no position stored more than a third of its
+slots and the count was zero. The command does not sweep sizes itself.
 
 The audit costs eight bytes an entry, half the table's own size again, and
 refuses to run rather than run unaudited if there is not the memory for them.
