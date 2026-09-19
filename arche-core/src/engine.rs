@@ -406,8 +406,8 @@ impl SearchConfig {
 impl Default for SearchConfig {
     /// What the engine plays with: every shortcut on, the memories on, and
     /// the table trusted behind the fifty move guard. The four taint
-    /// policies played each other and refusing lost about forty five elo to
-    /// either trusting arm, paid in shallower endgame search; the guard
+    /// policies played each other and trusting won, at +48 ±23 over 308
+    /// games at 5+0.05, paid in shallower endgame search; the guard
     /// cost nothing a match could see and covers the one regime where a
     /// wrong cutoff provably loses. The shortcuts are guesses about the
     /// tree rather than rules about a score, which is why the reference
