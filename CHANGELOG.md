@@ -2,6 +2,67 @@
 
 All notable changes to this project will be documented in this file.
 
+## [0.4.5-rc.1] - 2026-09-19
+
+### Features
+
+- *(eval)* Count the enemy pieces bearing on the king's ring, at zero weight [bench 3868987] [elo not measured]
+- *(eval)* Fit the king attack zone weights on the archive [bench 4102609] [elo +35 ±16 (sprt [0, 10] passed, 1000 games, 10+0.1, vs 4b1b80f)]
+- *(search)* Add aspiration windows at the root [bench 52298065] [elo +19 ±11 (sprt [0, 10] passed, 2000 games, 10+0.1, vs dcc9688)]
+- *(search)* Add a reduction table by depth and move count [bench 51236454] [elo +19 ±11 (sprt [0, 10] passed, 2000 games, 10+0.1, vs 5902681)]
+
+### Performance
+
+- *(eval)* Take the king attack counts in the mobility walk [bench 4102609] [speed +5.7% (bench nps, 21 interleaved rounds vs 02432c9, spread 12.2%)]
+- *(search)* Skip the stack sort for a list with no key and rotate one with a single key [bench 4102609] [speed +0.4% (bench nps, 7 interleaved rounds vs 6f32cbc, spread 4.1%)]
+- *(board)* Probe one slider line for legality where the move vacated a line through the king [bench 4102609] [speed +0.3% (bench nps, 7 interleaved rounds vs 0df6a31, spread 5.9%)]
+- *(search)* Build the late move node only where the node admits a reduction [bench 4102609] [speed +1.2% (bench nps, 7 interleaved rounds vs b10e2c0, spread 6.3%)]
+- *(search)* Put the transposition table on huge pages [bench 52298065] [speed -1.1% (bench nps, 5 interleaved rounds vs 273c5eb, spread 3.6%)]
+
+### Refactor
+
+- *(uci)* Read an instrument's suite in one place
+- *(search)* Move the late move reductions and pruning into one module [bench 4102609] [elo not measured]
+- *(search)* Make the principal variation exemption explicit [bench 4102609]
+- *(search)* Rename Edges to RootBounds and pin how the bits travel [bench 4102609]
+- *(board)* Derive the move number from the ply rather than keeping it [bench 52404553]
+- *(eval)* Fold every leaf term through one weigh [bench 52404553]
+- *(board)* Read recompute_checkers off the attacker helpers [bench 52404553]
+- *(board)* Hold the castle rights as four bits [bench 52404553]
+- *(search)* Share the sampling key, the share and the reference replay across the recorders [bench 52404553]
+- *(uci)* Read the depth and the taint word in one place each
+- *(uci)* Read every spin option through one reader from its row
+- *(eval)* Give the shelter and the pawn structure one direct mapped cache type [bench 52298065] [elo not measured]
+
+### Documentation
+
+- *(search)* Correct the claim that fail low nodes are not stored
+- *(search)* Shorten the comments in the search, the generator and the suites [bench 4102609]
+- *(eval)* Shorten the comments in the evaluation and the tuner [bench 4102609]
+- *(board)* Shorten the comments in the board and make/unmake [bench 4102609]
+- *(uci)* Shorten the comments in the protocol crate and its tests
+- *(search)* Record a third sort shape and the stored static evaluation as measured and priced
+- *(uci)* Give the terms row's formula every leaf term and the vector its width
+
+### Development
+
+- *(search)* Store and probe a mate score at a nonzero ply
+- *(tactics)* Add a floor under the suite and a list of accepted losses
+- *(uci)* Check an instrument takes the sampling rate it was given
+- *(docs)* Answer the mobility budget bullet and record two rejected arms
+- *(ci)* Pin the three tools that prepare a release
+- *(uci)* Pin what a terms argument takes and how it refuses
+- *(uci)* Name a suite the bench does not use when checking one is read
+- *(bench)* Split the attention fit by group and let a feature be dropped [bench 3868987]
+- *(ci)* Refuse to resolve a ref under a trigger that carries secrets
+- *(ci)* Shorten the comments in the workflows, the scripts and the manifests
+- *(board)* Add the three evasion shapes to the perft edge cases
+- *(ci)* Call the match orchestration out of mache rather than inlining it
+- *(deps)* Bump smallvec from 1.16.0 to 1.16.1 in the cargo group
+- *(bench)* Raise the bench depth from 7 to 9 [bench 52404553]
+- *(release)* Move the gauntlet up to bracket 2700 and add Blunder, Inanis and Zahak
+- *(deps)* Bump the mache actions from v0.2.0 to v0.3.0
+
 ## [0.4.4] - 2026-09-14
 
 ### Features
