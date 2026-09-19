@@ -38,7 +38,7 @@ pub const TABLE_BYTES: usize = 16 * 1024 * 1024;
 /// How many of the suite's points the search takes at that depth with that
 /// table. Exact, not a floor: a change that moves it updates this number in
 /// the same commit, which puts the movement in the diff.
-pub const EXPECTED_POINTS: u32 = 100264;
+pub const EXPECTED_POINTS: u32 = 100612;
 
 const SUITE: &str = include_str!("../strategy.epd");
 
