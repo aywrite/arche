@@ -11,7 +11,8 @@
 /// One remembered score, under the whole key rather than the bits the index
 /// does not use, so a hit is a hit on what the term reads and not on a tag
 /// that happens to agree. A wrong hit would be a silently wrong evaluation,
-/// and the whole key costs four bytes.
+/// and the whole key costs eight bytes an entry over a thirty two bit tag,
+/// sixteen against eight once the alignment is paid.
 #[derive(Copy, Clone)]
 struct Entry {
     key: u64,
