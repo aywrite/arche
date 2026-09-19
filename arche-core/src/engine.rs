@@ -337,6 +337,17 @@ pub struct SearchConfig {
     /// deep reduction's depth floor and checking exemption; its threshold is
     /// a deeper cut of the attention model's score.
     pub late_move_pruning: bool,
+    /// Whether a quiet move after the node's first is dropped at depths one
+    /// to three because the node's static evaluation plus
+    /// `QUIET_FUTILITY_MARGIN` a ply cannot reach alpha. Its ceiling is a
+    /// ply under `DEEP_REDUCTION_MIN_DEPTH`, so the rule and the attention
+    /// model never decide at one depth, and it carries the shortcuts'
+    /// exemptions: not in check, no mate window, beta not the root's, and a
+    /// side with a piece besides pawns. A capture, a promotion and a quiet
+    /// that gives check are exempt as the reduction's are. Off, the search
+    /// is the one that was there before, which the bench identity holds it
+    /// to.
+    pub quiet_futility: bool,
     /// Whether the amount a late quiet is scouted shallower by grows with
     /// the node's depth and the move's place in the order, rather than
     /// being the flat ply and the gate's second one. It changes no move's
@@ -433,6 +444,7 @@ impl SearchConfig {
             late_move_reductions: false,
             deep_reductions: false,
             late_move_pruning: false,
+            quiet_futility: false,
             reduction_table: false,
             deep_index_rule: false,
             move_memory: false,
@@ -497,6 +509,7 @@ impl Default for SearchConfig {
             late_move_reductions: true,
             deep_reductions: true,
             late_move_pruning: true,
+            quiet_futility: true,
             reduction_table: true,
             deep_index_rule: true,
             move_memory: true,
@@ -1518,10 +1531,17 @@ impl AlphaBeta {
     /// A `Some` answers the node. A pass that failed answers nothing but
     /// leaves whatever it read in the node's taint.
     ///
+    /// `eval` is filled wherever the gates passed and an evaluation was
+    /// read, fired or not, so the move loop can seed the memo the late move
+    /// decision reads and a node this answered nothing at evaluates once
+    /// rather than twice. It is the same score `eval::eval` gives, through
+    /// the memoised door.
+    ///
     /// Alpha is read by neither shortcut, and nor is its bit. Alpha is
     /// here for the sampler, which records the window the node was asked
     /// under.
-    // one argument past clippy's limit, which is the root bounds.
+    // two arguments past clippy's limit: the root bounds and the evaluation
+    // handed back to the loop.
     #[allow(clippy::too_many_arguments)]
     fn shortcuts(
         &mut self,
@@ -1532,6 +1552,7 @@ impl AlphaBeta {
         can_null: bool,
         root_bounds: RootBounds,
         taint: &mut Taint,
+        eval_memo: &mut Option<i64>,
     ) -> Result<Option<Value>, Aborted> {
         let margin = self.config.reverse_futility && depth <= REVERSE_FUTILITY_MAX_DEPTH;
         // no pass directly under a pass, or the search would answer a
@@ -1549,6 +1570,7 @@ impl AlphaBeta {
             return Ok(None);
         }
         let eval = self.eval();
+        *eval_memo = Some(i64::from(eval));
 
         // what the margin proves is a lower bound, `eval - margin`, and fail
         // soft returns that rather than beta or the whole eval, which
@@ -1844,6 +1866,10 @@ impl AlphaBeta {
             Probe::Miss => None,
         };
 
+        // the node's static evaluation, read by the shortcuts and seeded
+        // into the late move decision's memo below rather than read a
+        // second time there. Declared here so the shortcuts can fill it
+        let mut eval: Option<i64> = None;
         if let Some(value) = self.shortcuts(
             alpha,
             beta,
@@ -1852,6 +1878,7 @@ impl AlphaBeta {
             can_null,
             root_bounds,
             &mut taint,
+            &mut eval,
         )? {
             return Ok(value);
         }
@@ -1927,19 +1954,32 @@ impl AlphaBeta {
         // move late; the table's move, when searched, is the first
         let mut searched = usize::from(found_legal_move);
         // which places the node made and searched, the history's malus
-        // under a cutoff. A move the model skipped or one that turned out
-        // illegal has no bit
+        // under a cutoff. A move either skipping rule passed over, the
+        // model's at depth four and up or quiet futility's below it, has
+        // no bit, and nor has one that turned out illegal
         let mut made = Searched::default();
         // whether the second stage ran here, read by the census
         let mut quiets_scored = false;
         // the two dear features, computed by the first move that needs
         // them and read back for the rest; locals rather than fields of
-        // the node facts below, which are built afresh for each move
-        let mut eval: Option<i64> = None;
+        // the node facts below, which are built afresh for each move. The
+        // evaluation is seeded above by whatever the shortcuts read
         let mut history_max: Option<i32> = None;
         // what the node's table probe gave it, settled here: the probe and
         // the table's move are behind it
         let tt = census::Table::of(pv_play.is_some(), tt_tried.is_some());
+        // the quiet futility rule's node half, settled once here. Every
+        // part of it but the margin's own test is the node's rather than
+        // the move's, and that test is a latch: alpha only rises, so it is
+        // false until it becomes true and then stays true
+        let mut futility = late_move::futility(
+            &self.config,
+            &self.board,
+            depth,
+            in_check,
+            beta,
+            root_bounds,
+        );
         for i in 0..moves.len() {
             // the front did not cut this node off, so the rest of the list
             // is scored and sorted before the first move past it is tried
@@ -1956,6 +1996,33 @@ impl AlphaBeta {
                 // in the list is known
                 if tt_searched {
                     made.mark(i);
+                }
+                continue;
+            }
+            // quiet futility, asked before the node facts below because it
+            // reads none of them: the rule reaches depths the reduction
+            // does not, so facts built for it would be facts built at most
+            // of the interior of the tree
+            if futility.skips(&self.deciding(), &mut eval, m, searched, alpha) {
+                // never made, so whether it was even legal is never
+                // learned; skipping an illegal move is a no-op, since the
+                // loop would have passed over it anyway. `searched` stands
+                // where it was and nothing is taught about the move
+                if self.ledger.is_some() {
+                    let mut node = late_move::Node {
+                        depth,
+                        alpha,
+                        beta,
+                        root_bounds,
+                        in_check,
+                        ply,
+                        tt,
+                        moves: &moves,
+                        eval: &mut eval,
+                        history_max: &mut history_max,
+                    };
+                    let staged = self.staged_reduction(m, searched, &mut node);
+                    self.ledger_skip(staged, depth, alpha, beta);
                 }
                 continue;
             }
@@ -1990,11 +2057,7 @@ impl AlphaBeta {
                 };
                 match late_move::decide(&self.deciding(), &mut node, m, searched) {
                     late_move::Verdict::Skip => {
-                        // never made, so whether it was even legal is never
-                        // learned; skipping an illegal move is a no-op,
-                        // since the loop would have passed over it anyway.
-                        // `searched` stands where it was and nothing is
-                        // taught about the move
+                        // never made, as above
                         if self.ledger.is_some() {
                             let staged = self.staged_reduction(m, searched, &mut node);
                             self.ledger_skip(staged, depth, alpha, beta);
@@ -2964,11 +3027,12 @@ mod search {
         //
         // A chosen depth would be testing the evaluation instead. Whether a
         // given depth finds this mate at all is not monotone in the depth:
-        // the shipped weights miss it at three and find it from four, and
-        // the 2026-09-13 mobility refit finds it at three and misses it at
-        // four. Every other depth from three to seven finds it under both.
-        // So the test asks that no depth disagree with another, and that
-        // some depth find it.
+        // the 2026-09-13 mobility refit finds it at three, misses it at
+        // four and finds it again from five. The shipped weights find it at
+        // every depth from three to seven, so the floor below has four of
+        // its four today, and that is a reading of these weights rather
+        // than a property of the position. So the test asks that no depth
+        // disagree with another, and that some depth find it.
         let game =
             Board::from_fen("2rr3k/pp3pp1/1nnqbN1p/3pN3/2pP4/2P3Q1/PPB4P/R4RK1 w - - 0 0").unwrap();
         let mut e = engine(game);
@@ -3936,6 +4000,40 @@ mod search {
                     panic!("a finished game has no depths to report")
                 });
             assert!(matches!(outcome, SearchOutcome::GameOver), "{fen}");
+        }
+    }
+
+    /// Every quiet past the node's first may be pruned at depths one to
+    /// three, and the move loop reads no legal move found as mate or
+    /// stalemate. So the first move searched is exempt, and this is the
+    /// test of that: a node whose every quiet the rule would prune still
+    /// answers with what a move of it is worth rather than with the
+    /// stalemate's zero. The exactness tests cannot see this, because the
+    /// reference has the rule off, so it is asked of the default here.
+    #[test]
+    fn a_node_that_prunes_every_late_quiet_is_not_stalemated() {
+        // white a knight and a bishop against a bare king, with no capture
+        // and no move that gives check, so every move the node has is one
+        // the rule can reach. The knight's own moves and the light squared
+        // bishop's both stay off the dark corner the black king stands on,
+        // which is what keeps the check exemption out of the test.
+        let mut e = engine(Board::from_fen("7k/8/8/8/8/8/8/KN1B4 w - - 0 1").unwrap());
+        assert!(e.config.quiet_futility, "the default carries the rule");
+        let eval = e.eval();
+        assert!(eval > 100, "the side to move is a piece up twice: {eval}");
+        // alpha far past anything the margin can reach, so every quiet
+        // past the first is futile at every depth the rule decides
+        let alpha = eval + 10_000;
+        assert!(!crate::value::is_mate(alpha));
+        for depth in 1..=crate::late_move::QUIET_FUTILITY_MAX_DEPTH {
+            let Ok(value) = e.alpha_beta(alpha, alpha + 1, depth, true, RootBounds::NEITHER) else {
+                panic!("nothing was armed to abort this search");
+            };
+            assert!(
+                value.score > 100,
+                "depth {depth} answered {}, which is the stalemate a pruned first move leaves",
+                value.score
+            );
         }
     }
 
@@ -5358,6 +5456,7 @@ mod sampling {
             true,
             RootBounds::NEITHER,
             &mut taint,
+            &mut None,
         ) else {
             panic!("nothing here searches under a limit, so nothing can abort");
         };
@@ -5568,6 +5667,7 @@ mod sampling {
                 beta: true,
             },
             &mut taint,
+            &mut None,
         ) else {
             panic!("nothing here searches under a limit, so nothing can abort");
         };
@@ -5597,6 +5697,7 @@ mod sampling {
             true,
             RootBounds::NEITHER,
             &mut taint,
+            &mut None,
         ) else {
             panic!("nothing here searches under a limit, so nothing can abort");
         };
@@ -5630,11 +5731,45 @@ mod sampling {
             true,
             RootBounds::NEITHER,
             &mut taint,
+            &mut None,
         ) else {
             panic!("nothing here searches under a limit, so nothing can abort");
         };
         assert!(answered.is_none());
         assert!(collected(&mut e).taken.is_empty());
+    }
+
+    /// The evaluation the shortcut frame hands back to the move loop,
+    /// which seeds the memo the late move decision reads. It comes off the
+    /// memoised door and the module's own reads `eval::eval` directly, so
+    /// a node the quiet futility rule decides would be deciding on a
+    /// different number if the two ever parted.
+    #[test]
+    fn the_evaluation_handed_to_the_loop_is_the_direct_one() {
+        let mut e =
+            AlphaBeta::with_table_bytes(Board::from_fen(SHARP_MIDDLEGAME).unwrap(), TABLE_BYTES);
+        assert!(e.config.quiet_futility, "the default carries the rule");
+        let direct = i64::from(crate::eval::eval(&e.board));
+        // beta at the evaluation, so the gates pass and the margin's floor
+        // a pawn under it does not answer the node: what is read is what
+        // the loop would have been handed
+        let beta = direct as Score;
+        let mut taint = Taint::default();
+        let mut eval = None;
+        let Ok(answered) = e.shortcuts(
+            beta - 1,
+            beta,
+            1,
+            false,
+            true,
+            RootBounds::NEITHER,
+            &mut taint,
+            &mut eval,
+        ) else {
+            panic!("nothing here searches under a limit, so nothing can abort");
+        };
+        assert!(answered.is_none(), "the margin answered the node");
+        assert_eq!(eval, Some(direct));
     }
 
     /// A fired candidate is two rows, the live kind's and the shadow's,
@@ -6217,6 +6352,11 @@ mod reductions {
         let (m, _) = quiets(&e);
         let staged = staged(&e, &m, 4, None);
         assert!(e.board.make_move(&m));
+        // the tree under the scout records rows of its own here, since the
+        // quiet futility rule skips at the depths it reaches, so the
+        // staged scout's row is picked out by the position it left rather
+        // than by being the only one
+        let left = e.board.to_fen();
         let (alpha, beta): (Score, Score) = (-5000, -4999);
         let Ok(_) = e.windowed(alpha, beta, 3, false, 1, RootBounds::NEITHER, Some(&staged)) else {
             panic!("an unlimited search aborted");
@@ -6225,8 +6365,10 @@ mod reductions {
             .disarm::<reduction::Event>()
             .expect("a ledger was installed")
             .drain();
-        assert_eq!(sampled.taken.len(), 1);
-        let row = &sampled.taken[0];
+        let rows: Vec<&reduction::Event> =
+            sampled.taken.iter().filter(|row| row.fen == left).collect();
+        assert_eq!(rows.len(), 1);
+        let row = rows[0];
         assert_eq!(row.scout, Scout::High);
         assert_eq!(row.index, 4);
         assert!(!row.killer);

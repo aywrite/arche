@@ -81,8 +81,15 @@ archived games, and the code map below says what each one counts.
   integers: under its deadest band the node does not search the move at
   all. Off the index rule the model's own threshold decides the deeper
   scout instead. How many plies a scout gives up is read off a table by the
-  node's depth and the move's index. One call answers for one move, and the
-  features it scores are the ones the reduction ledger records.
+  node's depth and the move's index. Under all of that, at the depths the
+  reduction does not reach, quiet futility drops a quiet move after the
+  node's first when the node's static evaluation plus a pawn a ply cannot
+  reach alpha. Its ceiling is a ply under the deep reduction's floor, so no
+  depth is decided by both. The reduction, the index rule and the model
+  answer one call for one move, and the features they score are the ones
+  the reduction ledger records. The futility rule is settled once for the
+  node instead, since alpha is the only part of it that moves as the node
+  searches, and asked per move about the move alone.
 - **ordering.rs**: The order moves are tried in. The transposition table's
   move first, then the captures the swap prices as winning or even, by
   what each wins with most valuable victim / least valuable attacker
