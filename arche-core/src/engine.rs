@@ -60,9 +60,35 @@ const REVERSE_FUTILITY_MAX_DEPTH: u8 = 4;
 // small and it costs what searching the moves would have. Two is the
 // opening value; what moves it is a match, not the bench.
 const NULL_MOVE_REDUCTION: u8 = 2;
-// One more than the reduction, so the reduced search is never asked for a
-// depth below zero. At the floor that search is quiescence.
+// One more than the base reduction, so the pass at the shallowest depth it
+// is offered at is searched at depth zero and no lower. At that floor the
+// reduced search is quiescence. The floor is the base and not whatever the
+// depth term grows the reduction to, because the reduction is clamped to
+// what the depth leaves (`null_move_reduction`) rather than the depth being
+// raised to fit it.
 const NULL_MOVE_MIN_DEPTH: u8 = NULL_MOVE_REDUCTION + 1;
+// How many plies of depth buy one more ply of reduction. A pass proves less
+// the shallower it is searched, and what it costs to search is what the
+// depth below the node costs, which grows with that depth: so the plies
+// worth spending on the proof grow slower than the node's own depth. Six is
+// the conventional step and takes the reduction to three from depth six.
+// The bench did not choose it: three, four, five, six and eight read
+// -3.23%, -3.13%, -1.42%, -1.57% and -0.63% at depth nine, which is not
+// monotone and so is not a ranking. What moves it is a match. It leaves
+// depths three to five alone, which is what gives the residual sampler a
+// band the arm does not touch to be read against.
+const NULL_MOVE_DEPTH_DIVISOR: u8 = 6;
+// How far the static evaluation must stand above beta to buy one more ply
+// of reduction. A pawn is a hundred on this scale, so this is a ply for
+// every two pawns of clearance. The term is a bet that the wider the
+// margin the safer the pass, and the residual sampler is what the bet was
+// read against before it was taken: over the pass's own rows the wide band
+// crossed less often than the narrow one.
+const NULL_MOVE_EVAL_UNIT: Score = 200;
+// The most plies the margin alone may add. Past three the pass proves
+// almost nothing whatever the margin says, and the margins that reach that
+// far are the positions a pass was never the cheap answer to.
+const NULL_MOVE_EVAL_CAP: u8 = 3;
 // How far short of alpha a capture may leave the standing eval, with the
 // captured piece counted as fully won, and still be searched in
 // quiescence: the positional ground a capture can make up beyond the
@@ -91,6 +117,30 @@ const ASPIRATION_MIN_DEPTH: u8 = 5;
 // the edge and costs a whole re-search on the positions that swing that
 // far.
 const ASPIRATION_FAILURES: u8 = 3;
+
+/// How many plies shallower than the node a pass at `depth` is searched.
+/// `eval_beta` is how far the static evaluation stands above beta at the
+/// node, which the pass gate has already found to be at least zero.
+///
+/// The flat base with two terms on top of it, one on the depth and one on
+/// that margin, held to what the depth leaves. The clamp is the whole of
+/// the safety here: `depth - 1 - r` is the reduced search's depth and is
+/// unsigned, so an `r` past `depth - 1` would not be an over-reduction but
+/// a wrap to an enormous depth. The depth term alone never reaches it (a
+/// sixth of the depth never catches the depth), the margin term does at
+/// the shallowest depths, and the reduced search is then quiescence, as it
+/// is at the floor.
+///
+/// Off the flag this is the base and nothing else, which is what holds the
+/// bench identical to the flat reduction's.
+fn null_move_reduction(config: SearchConfig, depth: u8, eval_beta: Score) -> u8 {
+    if !config.adaptive_null_move {
+        return NULL_MOVE_REDUCTION;
+    }
+    let margin = (eval_beta.max(0) / NULL_MOVE_EVAL_UNIT).min(NULL_MOVE_EVAL_CAP as Score) as u8;
+    let grown = NULL_MOVE_REDUCTION + depth / NULL_MOVE_DEPTH_DIVISOR + margin;
+    grown.min(depth - 1)
+}
 
 /// Which places in a node's move list the node made and searched, a bit
 /// each: under a cutoff the quiet moves with a bit below the cutting
@@ -256,6 +306,14 @@ pub struct SearchConfig {
     /// Whether a node whose eval already stands above beta may hand the
     /// move to the other side and answer from a reduced search of that.
     pub null_move: bool,
+    /// Whether the plies the pass is searched shallower by grow with the
+    /// node's depth and with how far the static evaluation stands above
+    /// beta, rather than being the flat two. It changes no node's
+    /// eligibility to pass and nothing the four gates decide, only how
+    /// dearly a node that passes buys its proof. Rides on `null_move`: a
+    /// node that never passes is never asked. Off it the reduction is read
+    /// as it was, which is what the bench identity holds it to.
+    pub adaptive_null_move: bool,
     /// Whether quiescence may skip a capture that leaves the standing eval
     /// a margin short of alpha with its piece counted as fully won.
     pub delta_margin: bool,
@@ -361,6 +419,7 @@ impl SearchConfig {
             taint: TaintPolicy::Refuse,
             reverse_futility: false,
             null_move: false,
+            adaptive_null_move: false,
             delta_margin: false,
             see_pruning: false,
             late_move_reductions: false,
@@ -423,6 +482,7 @@ impl Default for SearchConfig {
             taint: TaintPolicy::Rule50,
             reverse_futility: true,
             null_move: true,
+            adaptive_null_move: true,
             delta_margin: true,
             see_pruning: true,
             late_move_reductions: true,
@@ -1503,11 +1563,12 @@ impl AlphaBeta {
         // the eval already above beta, and over a zero window: the question
         // is only whether a pass beats beta
         if pass && eval >= beta {
+            let reduction = null_move_reduction(self.config, depth, eval - beta);
             self.board.make_null_move();
             let result = self.alpha_beta(
                 -beta,
                 -beta + 1,
-                depth - 1 - NULL_MOVE_REDUCTION,
+                depth - 1 - reduction,
                 false,
                 root_bounds.child(ChildSearch::Pass),
             );
@@ -2556,8 +2617,9 @@ mod search {
     use super::Board;
     use super::Engine;
     use super::{
-        Limits, MAX_PLY, Play, RootBounds, Score, ScoreBound, SearchConfig, SearchOutcome,
-        SearchParameters, SearchResult, TaintPolicy, Value,
+        Limits, MAX_PLY, NULL_MOVE_MIN_DEPTH, NULL_MOVE_REDUCTION, Play, RootBounds, Score,
+        ScoreBound, SearchConfig, SearchOutcome, SearchParameters, SearchResult, TaintPolicy,
+        Value, null_move_reduction,
     };
     use crate::board::{fens, fens::SHARP_MIDDLEGAME, play_named};
     use crate::late_move::{
@@ -2653,6 +2715,21 @@ mod search {
             TABLE_BYTES,
             SearchConfig {
                 null_move: true,
+                ..SearchConfig::reference()
+            },
+        )
+    }
+
+    /// `passing` with the two terms on, which is the one switch between the
+    /// two: the same nodes pass, and what moves is how shallow the proof
+    /// each of them buys is searched.
+    fn passing_adaptively(board: Board) -> AlphaBeta {
+        AlphaBeta::with_config(
+            board,
+            TABLE_BYTES,
+            SearchConfig {
+                null_move: true,
+                adaptive_null_move: true,
                 ..SearchConfig::reference()
             },
         )
@@ -4137,6 +4214,148 @@ mod search {
             "the pass searched {} nodes against the reference's {}",
             e.nodes,
             cold.nodes
+        );
+    }
+
+    #[test]
+    fn the_depth_term_leaves_the_reduced_search_a_depth_it_can_hold() {
+        // `depth - 1 - r` is unsigned at the call site, so an `r` past
+        // `depth - 1` is not an over-reduction but a wrap to a depth near
+        // the top of the range, and the pass would then search deeper than
+        // the node that asked for it. Every depth a pass is offered at,
+        // and every depth past the bench's, held to leaving that
+        // subtraction a number.
+        let adaptive = SearchConfig::default();
+        for depth in NULL_MOVE_MIN_DEPTH..=u8::MAX {
+            for eval_beta in [0, 1, 199, 200, 399, 400, 599, 600, 5_000, Score::MAX] {
+                let r = null_move_reduction(adaptive, depth, eval_beta);
+                assert!(
+                    r < depth,
+                    "depth {depth} at a margin of {eval_beta} reduced by {r}, \
+                     which the subtraction cannot hold"
+                );
+                assert!(
+                    r >= NULL_MOVE_REDUCTION,
+                    "depth {depth} at a margin of {eval_beta} reduced by {r}, \
+                     under the flat base"
+                );
+            }
+        }
+    }
+
+    #[test]
+    fn the_depth_term_grows_the_reduction_and_the_switch_holds_it_flat() {
+        // the arm is the growth and nothing else, so the two configs are
+        // read at the same depths: off the switch every depth reads the
+        // base, on it the base plus a sixth of the depth. Depth 6 is the
+        // first the term moves, which is what the divisor says.
+        let flat = SearchConfig {
+            adaptive_null_move: false,
+            ..SearchConfig::default()
+        };
+        for depth in [3, 4, 5, 6, 9, 11, 12, 18] {
+            assert_eq!(
+                null_move_reduction(flat, depth, 0),
+                NULL_MOVE_REDUCTION,
+                "depth {depth} off the switch"
+            );
+            assert_eq!(
+                null_move_reduction(flat, depth, 600),
+                NULL_MOVE_REDUCTION,
+                "depth {depth} off the switch at a wide margin"
+            );
+        }
+        for (depth, expected) in [(3, 2), (5, 2), (6, 3), (9, 3), (11, 3), (12, 4), (18, 5)] {
+            assert_eq!(
+                null_move_reduction(SearchConfig::default(), depth, 0),
+                expected,
+                "depth {depth} on the switch at no margin"
+            );
+        }
+    }
+
+    #[test]
+    fn the_margin_term_steps_every_two_pawns_and_stops_at_its_cap() {
+        // read at depth 18, where the clamp cannot reach and the two terms
+        // are visible apart: the depth term gives 5 there and the margin
+        // adds a ply for each whole `NULL_MOVE_EVAL_UNIT` of clearance,
+        // three at most. The unit's own boundaries are the cases: a margin
+        // one short of a unit buys nothing.
+        let deep = 18;
+        for (eval_beta, expected) in [
+            (0, 5),
+            (199, 5),
+            (200, 6),
+            (399, 6),
+            (400, 7),
+            (599, 7),
+            (600, 8),
+            (5_000, 8),
+            (Score::MAX, 8),
+        ] {
+            assert_eq!(
+                null_move_reduction(SearchConfig::default(), deep, eval_beta),
+                expected,
+                "depth {deep} at a margin of {eval_beta}"
+            );
+        }
+    }
+
+    #[test]
+    fn the_margin_term_is_clamped_where_the_depth_cannot_hold_it() {
+        // the shallowest depths are where the cap would ask for more plies
+        // than there are. The clamp leaves the reduced search at depth
+        // zero, which is quiescence, and is the same floor the pass has at
+        // depth 3 today rather than a new behaviour.
+        for (depth, expected) in [(3, 2), (4, 3), (5, 4), (6, 5), (7, 6), (8, 6)] {
+            assert_eq!(
+                null_move_reduction(SearchConfig::default(), depth, 600),
+                expected,
+                "depth {depth} at the cap's margin"
+            );
+        }
+    }
+
+    #[test]
+    fn the_depth_term_looks_at_less_of_the_tree_than_the_flat_reduction() {
+        // the switch has to reach the search. Depth 8, because the term
+        // first moves at a node of depth 6 and a root of six reaches one
+        // such node, the root itself.
+        let mut e = passing_adaptively(Board::from_fen(SHARP_MIDDLEGAME).unwrap());
+        completed(e.search(8));
+        let mut flat = passing(Board::from_fen(SHARP_MIDDLEGAME).unwrap());
+        completed(flat.search(8));
+        assert!(
+            e.nodes < flat.nodes,
+            "the grown reduction searched {} nodes against the flat one's {}",
+            e.nodes,
+            flat.nodes
+        );
+    }
+
+    #[test]
+    fn a_mate_found_through_a_grown_pass_does_not_come_back_as_one() {
+        // the same corner as `a_mate_found_through_a_pass_does_not_come_
+        // back_as_one` and for the same reason, asked at a depth the term
+        // moves: at six the pass is searched three plies shallower rather
+        // than two. The clamp on the mate window is what holds the score
+        // under the window a caller reads mates in, and a reduction that
+        // varies must not be a way round it.
+        let board = Board::from_fen("7k/5K1N/8/8/8/8/Q7/8 w - - 0 1").unwrap();
+        let mut e = passing_adaptively(board);
+        let beta = e.eval();
+        let Ok(value) = e.alpha_beta(beta - 1, beta, 6, true, RootBounds::NEITHER) else {
+            panic!("nothing was armed to abort this search");
+        };
+        assert!(
+            value.score >= beta,
+            "the pass did not fail high, so nothing was clamped: {}",
+            value.score
+        );
+        assert!(
+            value.score < CHECKMATE_THRESHOLD,
+            "a mate proved only through a pass came back as one: {}",
+            value.score
         );
     }
 
