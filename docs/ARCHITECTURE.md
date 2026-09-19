@@ -22,13 +22,9 @@ and one per colour, with one bit per square. Most operations on them compile
 down to one or two instructions. The search is alpha beta with iterative
 deepening, quiescence search and a transposition table. Evaluation is
 material plus piece square tables, tapered between middlegame and endgame,
-plus four terms counted at the leaf: piece mobility, priced for the knight,
-the bishop, the rook and the queen; king safety, which counts the pawns in
-front of each king, the open files beside it and the enemy pawns coming for
-it; pawn structure, which counts each side's passed pawns by rank, its
-isolated pawns and its doubled ones; and the king attack zone, which counts
-how many squares of each king's ring the other side's pieces bear on. All
-four are fitted to the engine's own archived games.
+plus four terms counted at the leaf: piece mobility, king safety, pawn
+structure and the king attack zone. All four are fitted to the engine's own
+archived games, and the code map below says what each one counts.
 
 ## Code map: arche-core
 
@@ -112,10 +108,10 @@ four are fitted to the engine's own archived games.
   age and depth. A hit can answer a node outright or just say which move
   to try first. Tainted scores are counted and by default trusted anyway,
   except close to the fifty move horizon where every cutoff is refused.
-  The policies were played against each other and the cautious one lost
-  by about 45 elo, so the error is carried knowingly and the bench prints
-  the taint counters on every run. A `reference` configuration keeps the
-  cautious search as a baseline for classifying future changes.
+  The policies were played against each other and trusting won, at +48 ±23
+  over 308 games at 5+0.05, so the error is carried knowingly and the bench
+  prints the taint counters on every run. A `reference` configuration keeps
+  the cautious search as a baseline for classifying future changes.
 - **eval/**: What a position scores, a file per leaf term and two for what
   they share.
   - **mod.rs**: The material values, the phase weights the taper is read at,
@@ -264,8 +260,10 @@ under `scripts/tests` gated by the Scripts workflow:
   way of fitting against another, or fits new weights. The unit throughout is
   the game and not the position, because the label is the game's, and the
   objective weights a position by how often the corpus reached it. There are
-  three groups: three fifths of the games train, a fifth ranks the ridge, and
-  a fifth is sealed. The sealed rows are not in the matrices anything here
+  three groups: train, selection, and the sealed one, `calibration`. Drawn
+  from the key they are three fifths, a fifth and a fifth; where a file names
+  the sealed set instead, three quarters of the rest train and a quarter ranks
+  the ridge. The sealed rows are not in the matrices anything here
   scores, so no command can read a sealed row, and the duplicate rule above
   keeps a sealed game's result out of every label a fit sees. Nothing here
   knows how to evaluate a position: the engine states the coefficients and

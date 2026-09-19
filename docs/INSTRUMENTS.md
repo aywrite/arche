@@ -856,9 +856,12 @@ It keeps the full key of every entry beside the entries and prints two lines
 of whole-suite totals after the table:
 
 ```
-signature audit: probes 1173888, hits 241830, comparisons 2141471, false accepts 0 (0.000 expected), false accept cutoffs 0, aliased evictions 0
-narrow signature: 16 bit accepts 36 (32.676 expected), 24 bit accepts 0 (0.127 expected), 28 bit accepts 0 (0.007 expected)
+signature audit: probes 1090384, hits 241618, comparisons 1919443, false accepts 0 (0.000 expected), false accept cutoffs 0, aliased evictions 0
+narrow signature: 16 bit accepts 20 (29.288 expected), 24 bit accepts 0 (0.114 expected), 28 bit accepts 0 (0.007 expected)
 ```
+
+Those counts are one run of one build. They move with any change to the tree
+or to what the table keeps, so read the shape and not the digits.
 
 The word turns the shadow keys on for the tables the bench builds and for
 nothing else, so a session that plays games never allocates them. Detection
@@ -886,8 +889,8 @@ size expects half a thousandth of a false accept, so a zero is what a
 working instrument and a dead one both print. That is what the narrow line is
 for. It counts the comparisons a narrower signature would have accepted and
 this one refused, at sixteen bits, twenty four and twenty eight. Sixteen is
-the same rate scaled by sixty five thousand, so the figure is a few dozen
-instead of about zero, and a count sitting on its expectation says the rate
+the same rate scaled by sixty five thousand, so the figure is a couple of
+dozen instead of about zero, and a count near its expectation says the rate
 really does scale by two to the minus the width on this workload. The thirty
 two bit expectation beside it can then be believed where its observation
 cannot.

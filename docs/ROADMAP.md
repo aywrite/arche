@@ -11,10 +11,10 @@ compare against) is in place, so each of these arrives with its numbers: a
 `Bench:` trailer always, and an `Elo:` trailer from an SPRT when it changes how
 the engine plays. Roughly in the order they look worth doing.
 
-- the rest of the late move reductions. The first arm reduces a late quiet move by one
-  ply, flat, and a reduction that grows with the depth and the move count is the next
-  match. Reducing the losing captures and reading the history table for the eligibility
-  come after that, each measured on its own
+- the rest of the late move reductions. How far a late quiet is scouted back is read
+  off a table by the node's depth and the move's index, which took +19 ±11 over 2,000
+  games at 10+0.1. Reducing the losing captures and reading the history table for the
+  eligibility are what remain, each measured on its own
 - draw knowledge in the evaluation. The material signatures that cannot mate
   read zero. What remains is a scale factor on the endgame half for the near
   drawn endings that rule does not catch: opposite coloured bishops with pawns,
@@ -152,7 +152,7 @@ the engine plays. Roughly in the order they look worth doing.
 - a transposition score that came from a repetition or fifty move draw is trusted, except
   within four plies of the fifty move horizon, where every cutoff is refused. The search can
   therefore read a draw down a path that could not reach it; the policies were played against
-  each other and refusing such scores lost about forty five elo to trusting them, so the
+  each other and trusting such scores won, at +48 ±23 over 308 games at 5+0.05, so the
   error is carried knowingly, measured by the graph history counters, and the refusing search
   remains as the reference. `taint refuse` restores the refusal alone, on top of whatever
   else the default does; the full reference has no command line spelling
@@ -431,8 +431,9 @@ of these again without saying what is different this time.
   that move up back for a second pass cost more than they saved. Skipping
   only the run copies that land where they stood is exact and worth
   0.05%, too little to carry.
-- `#[inline(always)]` on `Board::shelter_counts`, which moved 127 instructions
-  of 3.4 billion over the bench and is not carried. It is worth recording
+- `#[inline(always)]` on the shelter count, `eval::shelter::counts_of`, which
+  moved 127 instructions of 3.4 billion over the bench and is not carried. It is
+  worth recording
   because the case for it is good and the measurement still says no: the
   function is read twice at every leaf and every quiescence node, which is
   where the attribute has paid elsewhere. It is small enough that llvm inlines
