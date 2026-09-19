@@ -143,10 +143,11 @@ struct Held {
 /// Reads one spin value for the row named, holding it to that row's range.
 /// Parsed rather than counted: a count reads a negative as a spent clock,
 /// which is right for a clock and wrong here, since a negative is outside
-/// every range the handshake advertises. A value outside the range is asking
-/// for more than we offer rather than making a mistake worth refusing, so it
-/// gets the nearest end and is told which, in the word it was sent as rather
-/// than the number that was read. The range travels as one argument rather
+/// every range the handshake advertises and is refused. A value that reads
+/// as a number and falls outside the range is asking for more than we offer
+/// rather than making a mistake worth refusing, so it gets the nearest end
+/// and is told which, in the word it was sent as rather than the number that
+/// was read. The range travels as one argument rather
 /// than as two ends of the same type, which would swap unnoticed.
 fn read_spin(name: &str, range: RangeInclusive<u64>, params: &Params) -> Result<Held, String> {
     let (word, value) = match (params.value("value"), params.parse::<u64>("value")) {
