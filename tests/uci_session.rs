@@ -252,13 +252,13 @@ fn the_move_a_swap_answers_with_opens_the_last_line_said() {
     // a node budget rather than a clock, so the iteration is cut short on
     // the same node on every machine. The budget has to land after an
     // iteration finds its better move and before that iteration ends:
-    // depth twelve answers d3b1 and finishes at 5,414,435 nodes, depth
-    // thirteen reports d3e2 from between 10,000,000 and 10,050,000 and
-    // finishes at 10,645,468. The budget moves whenever the tree does, in
+    // depth thirteen answers d3e2 and finishes at 5,453,070 nodes, depth
+    // fourteen reports d3b1 from between 7,833,000 and 7,834,000 and
+    // finishes at 8,363,826. The budget moves whenever the tree does, in
     // the commit that moved it
     let mut s = Session::start(&[]);
     s.say(&format!("position fen {}", SHARP_MIDDLEGAME));
-    s.say("go nodes 10300000");
+    s.say("go nodes 8000000");
     let answer = s.wait_for(|l| l.starts_with("bestmove"));
     let best = answer
         .strip_prefix("bestmove ")
@@ -309,11 +309,11 @@ fn an_iteration_no_root_move_reached_answers_with_the_depth_before_it() {
     // is and searched again wider. The budget lands inside that second
     // search, which reaches nothing above its own alpha either, so what
     // answers is still depth five's and not the ceiling just reported. The
-    // first search reports at 16,919 nodes and the second finishes at
-    // 32,772
+    // first search reports at 12,873 nodes and the second finishes at
+    // 25,252
     let mut s = Session::start(&[]);
     s.say("position startpos");
-    s.say("go nodes 26000");
+    s.say("go nodes 20000");
     let answer = s.wait_for(|l| l.starts_with("bestmove"));
     let best = answer
         .strip_prefix("bestmove ")
@@ -404,16 +404,16 @@ fn a_floor_answers_until_the_wider_search_replaces_it() {
     // the other half of the floor: what the engine plays when the wider
     // search never finishes. This endgame is worth 223 to white at depth
     // six, answered with d2c1; depth seven opens above that, d2e3 reaches
-    // beta at 254 and the floor is reported at 5,529 nodes, and the wider
-    // search finishes at 6,956. A budget inside it is interrupted before
+    // beta at 254 and the floor is reported at 4,511 nodes, and the wider
+    // search finishes at 5,590. A budget inside it is interrupted before
     // anything beats its alpha, so the root hands back no move at all and
-    // the floor is what is left to answer with. Any budget from 5,530 to
-    // 6,955 does it; with the floor not held the same budget answers
+    // the floor is what is left to answer with. Any budget from 4,512 to
+    // 5,589 does it; with the floor not held the same budget answers
     // d2c1, which is the move the search has just shown worse
     let endgame = "8/k1b5/P4p2/1Pp2p1p/K1P2P1P/8/3B4/8 w - - 0 1";
     let mut s = Session::start(&[]);
     s.say(&format!("position fen {}", endgame));
-    s.say("go nodes 6400");
+    s.say("go nodes 5200");
     let answer = s.wait_for(|l| l.starts_with("bestmove"));
     let best = answer
         .strip_prefix("bestmove ")

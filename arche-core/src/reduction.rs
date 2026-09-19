@@ -118,7 +118,8 @@ pub struct Event {
     /// The window the node stood in at the scout, read from its bounds.
     pub window: Window,
     /// The move's place among the searched moves. Never under the late
-    /// move threshold.
+    /// move threshold on a scouted row; a quiet futility skip records its
+    /// own, which is never under one.
     pub index: usize,
     /// The moves searched: `index + 1` on a scouted row, whose move is
     /// among them, and `index` on a skipped row, whose move never was.
@@ -159,8 +160,10 @@ pub struct Event {
 
 impl Event {
     /// The depth the reduced move was denied: what the replay searches the
-    /// fen to. Held to one for rows built by hand; a recorded row's depth
-    /// is never under the reduction's own floor.
+    /// fen to. Floored at one, which is what a depth one skip asks for: the
+    /// counterfactual is then a search of the same depth rather than
+    /// quiescence, so the label over-states what the skip denied by a ply
+    /// there rather than reading nothing at all.
     pub fn replay_depth(&self) -> u8 {
         self.depth.saturating_sub(1).max(1)
     }
@@ -530,6 +533,10 @@ impl fmt::Display for Report {
 mod tests {
     use super::*;
     use crate::board::Board;
+    use crate::late_move::{
+        DEEP_REDUCTION_MIN_DEPTH, LATE_MOVE_MIN_DEPTH, LATE_MOVE_THRESHOLD,
+        QUIET_FUTILITY_MAX_DEPTH,
+    };
     use crate::recorder::fixtures::{recording_leaves_the_search_where_it_was, suite};
     use crate::recorder::{DEFAULT_CAP, Sampler};
 
@@ -1069,18 +1076,27 @@ mod tests {
         for row in &report.rows {
             let e = &row.event;
             assert!(Board::from_fen(&e.fen).is_ok(), "{} does not parse", e.fen);
-            assert!(e.index >= 4, "{:?}", row);
             assert!(e.searched <= e.generated + 1, "{:?}", row);
             assert!(e.history <= e.history_max, "{:?}", row);
-            assert!(e.depth >= 3, "{:?}", row);
+            assert!(e.depth >= 1, "{:?}", row);
             if e.scout == Scout::Skipped {
-                // no scout ran, the move is not among the searched, and the
-                // skip never fires under the model gate's floor
+                // no scout ran and the move is not among the searched. Two
+                // rules skip, and they never meet at a depth: the model's
+                // stands on the reduction's floors, and the quiet futility
+                // rule's on its own, a move after the node's first at a
+                // depth under the model's
                 assert_eq!(e.searched, e.index, "{:?}", row);
                 assert_eq!(e.cost, 0, "{:?}", row);
                 assert_eq!(e.reduction, 0, "{:?}", row);
-                assert!(e.depth >= 4, "{:?}", row);
+                if e.depth >= DEEP_REDUCTION_MIN_DEPTH {
+                    assert!(e.index >= LATE_MOVE_THRESHOLD, "{:?}", row);
+                } else {
+                    assert!(e.depth <= QUIET_FUTILITY_MAX_DEPTH, "{:?}", row);
+                    assert!(e.index >= 1, "{:?}", row);
+                }
             } else {
+                assert!(e.index >= LATE_MOVE_THRESHOLD, "{:?}", row);
+                assert!(e.depth >= LATE_MOVE_MIN_DEPTH, "{:?}", row);
                 assert_eq!(e.searched, e.index + 1, "{:?}", row);
                 assert!(e.cost >= 1, "{:?}", row);
                 // never nothing, and never so much that the scout gives up

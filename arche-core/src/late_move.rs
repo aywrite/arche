@@ -9,10 +9,16 @@
 //! zero meaning the full search, or `Skip`. The scout itself is
 //! `windowed`'s, in `engine.rs`.
 //!
-//! Three rungs stand behind the verdict. The first is the late move
-//! reduction: a scout for a quiet move searched after the fourth at a node
-//! deep enough to keep a full width ply under it, with the exemptions
-//! `reduces` lists. The second is the attention model, a logistic
+//! Four rungs stand behind what a node does with a late quiet. The first
+//! is quiet futility, which reaches the depths the rest do not: at depth
+//! one to three a quiet move after the node's first is dropped when the
+//! node's evaluation plus a margin a ply cannot reach alpha. It is
+//! `Futility` and not part of `decide`, because everything in it but one
+//! comparison against alpha is settled by the node rather than by the
+//! move: the loop builds it once and asks it per move. The second is the
+//! late move reduction: a scout for a quiet move searched after the
+//! fourth at a node deep enough to keep a full width ply under it, with
+//! the exemptions `reduces` lists. The third is the attention model, a logistic
 //! regression over the reduction ledger's feature columns quantized to
 //! fixed point, whose score is read against two thresholds: under the
 //! first the scout runs a ply deeper than it otherwise would, under the
@@ -21,9 +27,12 @@
 //! carries, the deeper scout is decided by the move's index against a
 //! floor that rises with the node's depth, and the score decides the skip
 //! alone. That ply is relative because the model ranks how dead a move is
-//! and never names a depth. The third is `amount`, which reads how many
+//! and never names a depth. The fourth is `amount`, which reads how many
 //! plies a scout gives up off a table by the node's depth and the move's
 //! index.
+//!
+//! The first rung stops a ply under the third's floor, so no depth is
+//! decided by both.
 //!
 //! `features` derives the ledger's columns once, and the gate and the
 //! ledger both read them, so the score that decided a move and the row
@@ -48,6 +57,15 @@ pub(crate) const LATE_MOVE_MIN_DEPTH: u8 = LATE_MOVE_REDUCTION + 2;
 // How many moves a node searches at full depth before a quiet move after
 // them is scouted shallower. An opening value, not a tuned one.
 pub(crate) const LATE_MOVE_THRESHOLD: usize = 4;
+// How far under alpha a node's static evaluation may stand, per ply still
+// to search, and a quiet move still be searched. A pawn a ply, which is
+// `REVERSE_FUTILITY_MARGIN`'s figure and scale on purpose: both margins bet
+// on how far the static evaluation can be from the full search's answer at
+// the depth left, one from above beta and one from below alpha, and a pawn
+// a ply is the only reading of that error this tree has. A hundred is
+// where the rule starts rather than where a fit put it, and only games
+// can say whether it belongs higher or lower.
+pub(crate) const QUIET_FUTILITY_MARGIN: Score = 100;
 // How many plies shallower the deep reduction scouts a late quiet the gate
 // deepens, off the table: a ply over the flat amount.
 pub(crate) const DEEP_REDUCTION: u8 = 2;
@@ -59,6 +77,12 @@ pub(crate) const DEEP_REDUCTION_MIN_DEPTH: u8 = DEEP_REDUCTION + 2;
 // difference between the two constants above. Written as that difference
 // so the table below cannot drift away from the pair it replaced.
 const DEEP_REDUCTION_BONUS: u8 = DEEP_REDUCTION - LATE_MOVE_REDUCTION;
+// The deepest node the quiet futility rule decides, written as a ply under
+// the model's own floor rather than as a three. The two never decide at one
+// depth: from `DEEP_REDUCTION_MIN_DEPTH` the model has the skip and this
+// rule is silent.
+pub(crate) const QUIET_FUTILITY_MAX_DEPTH: u8 = DEEP_REDUCTION_MIN_DEPTH - 1;
+const _: () = assert!(QUIET_FUTILITY_MAX_DEPTH < DEEP_REDUCTION_MIN_DEPTH);
 // ln(x) at a scale of 1024, for every index the table below has. Held as
 // integers, so the table is built at compile time and two targets cannot
 // disagree about it. Zero at both ends of the bottom, which puts the
@@ -332,6 +356,104 @@ pub(crate) fn decide(search: &Search, node: &mut Node, m: &Play, searched: usize
     gate(search, node, m, searched)
 }
 
+/// The quiet futility rule's node half, held across a node's move loop:
+/// whether a quiet move at a node of depth one to three is not searched at
+/// all, less the part that reads the move.
+///
+/// The node's evaluation plus `QUIET_FUTILITY_MARGIN` a ply failing to
+/// reach alpha is the guess that the move cannot reach it either.
+///
+/// The exemptions are `reduces`'s, less the reduction's depth and count
+/// floors and plus the material one. The first move searched is exempt, so
+/// a node that pruned every move and answered a mate it is not in cannot
+/// happen: the loop reads no legal move as mate or stalemate. A side with
+/// no piece but pawns is exempt for the reason `shortcuts` refuses it, and
+/// that gate also puts every node the rule reaches inside the set the
+/// reverse margin evaluated, so the evaluation the rule reads is one the
+/// node had already.
+///
+/// Only `under` moves as the node searches. Alpha rises and never falls,
+/// so the margin's test is false until it becomes true and then stays
+/// true, which makes it a latch rather than a question per move. A rising
+/// alpha can climb into the mate window, though, and that window is an
+/// exemption, so the mate test is asked in front of the latch rather than
+/// folded into it.
+pub(crate) struct Futility {
+    /// Whether the node's own facts admit the rule at all: the switch, the
+    /// depth band, the check, beta and root exemptions and the material
+    /// gate.
+    admits: bool,
+    /// `QUIET_FUTILITY_MARGIN` at this node's depth, in the evaluation's
+    /// units.
+    margin: i64,
+    /// Whether the evaluation plus that margin has already failed to reach
+    /// alpha here.
+    under: bool,
+}
+
+/// What the node settles about the rule before it searches a move. The
+/// board read is here and not in the per move question, which is what the
+/// rest of the loop is left asking.
+pub(crate) fn futility(
+    config: &SearchConfig,
+    board: &Board,
+    depth: u8,
+    in_check: bool,
+    beta: Score,
+    root_bounds: RootBounds,
+) -> Futility {
+    Futility {
+        admits: config.quiet_futility
+            && (1..=QUIET_FUTILITY_MAX_DEPTH).contains(&depth)
+            && !in_check
+            && !is_mate(beta)
+            && !root_bounds.beta
+            && board.has_non_pawn_material(),
+        margin: i64::from(QUIET_FUTILITY_MARGIN) * i64::from(depth),
+        under: false,
+    }
+}
+
+impl Futility {
+    /// Whether the rule drops this move. `searched` is how many moves the
+    /// node has searched already and `alpha` its bound as the move is
+    /// reached; `eval` is the move loop's evaluation memo.
+    ///
+    /// A capture and a promotion are asked about before the margin, so a
+    /// node deciding nothing but those never evaluates. The check probe is
+    /// asked last and only of a move the margin would otherwise prune: a
+    /// pruned check is never seen at all, where a scouted one is seen
+    /// shallower, and the slider probes cost more than everything before
+    /// them.
+    #[inline]
+    pub(crate) fn skips(
+        &mut self,
+        search: &Search,
+        eval: &mut Option<i64>,
+        m: &Play,
+        searched: usize,
+        alpha: Score,
+    ) -> bool {
+        self.admits
+            && searched >= 1
+            && m.capture.is_none()
+            && m.promote.is_none()
+            && !is_mate(alpha)
+            && self.under_alpha(search, eval, alpha)
+            && !search.board.gives_check(m)
+    }
+
+    /// Whether the node stands under alpha by more than the margin, read
+    /// off the latch once it is set.
+    #[inline]
+    fn under_alpha(&mut self, search: &Search, eval: &mut Option<i64>, alpha: Score) -> bool {
+        if !self.under {
+            self.under = eval_memo(search.board, eval) + self.margin <= i64::from(alpha);
+        }
+        self.under
+    }
+}
+
 /// Whether a move at a full width node is scouted shallower before it is
 /// searched at the node's depth: the late move reduction.
 ///
@@ -372,10 +494,15 @@ fn reduces(search: &Search, node: &Node, m: &Play, searched: usize) -> bool {
         && m.promote.is_none()
 }
 
-/// The half of `reduces` that reads the node and the count rather than
-/// the move, on the node's own facts so that a move loop can ask it
-/// before it builds a `Node`: where this is false every move is
-/// searched whole, and there is nothing for `decide` to read.
+/// Whether the reduction can decide a move at this node: its half of
+/// `reduces` that reads the node and the count rather than the move, on
+/// the node's own facts so that a move loop can ask it before it builds a
+/// `Node`. Where this is false every move is searched whole, and there is
+/// nothing for `decide` to read.
+///
+/// Quiet futility is not here. It reaches depths this does not and reads
+/// none of the node facts, so the loop settles it in `Futility` and asks
+/// it before this.
 #[inline]
 pub(crate) fn admits(
     config: &SearchConfig,
@@ -389,10 +516,18 @@ pub(crate) fn admits(
     config.late_move_reductions
         && depth >= LATE_MOVE_MIN_DEPTH
         && searched >= LATE_MOVE_THRESHOLD
-        && !in_check
-        && !is_mate(alpha)
-        && !is_mate(beta)
-        && !root_bounds.beta
+        && node_admits(in_check, alpha, beta, root_bounds)
+}
+
+/// The exemptions the reduction and the futility rule share: a side in
+/// check has evasions rather than late moves, a mate window on either
+/// bound is the margin family's exemption, and a beta that is still the
+/// root's own bound is the principal variation exemption `reduces` sets
+/// out above. `Futility` reads the three fixed ones at the node and alpha
+/// per move.
+#[inline]
+fn node_admits(in_check: bool, alpha: Score, beta: Score, root_bounds: RootBounds) -> bool {
+    !in_check && !is_mate(alpha) && !is_mate(beta) && !root_bounds.beta
 }
 
 /// Whether a move `reduces` already accepted is scouted a ply shallower
@@ -512,9 +647,13 @@ pub(crate) fn features(search: &Search, node: &mut Node, m: &Play, searched: usi
 
 /// The node's static evaluation, computed once and held on the node.
 fn evaluation(search: &Search, node: &mut Node) -> i64 {
-    *node
-        .eval
-        .get_or_insert_with(|| i64::from(crate::eval::eval(search.board)))
+    eval_memo(search.board, node.eval)
+}
+
+/// The board's static evaluation through the move loop's memo, which the
+/// node facts borrow and the futility rule is handed directly.
+fn eval_memo(board: &Board, eval: &mut Option<i64>) -> i64 {
+    *eval.get_or_insert_with(|| i64::from(crate::eval::eval(board)))
 }
 
 /// The largest history score among the node's generated quiets, the
@@ -540,8 +679,9 @@ mod tests {
     use super::{
         ATTENTION_KILLER, AttentionFeatures, DEEP_INDEX_FLOOR, DEEP_INDEX_SLOPE, DEEP_REDUCTION,
         DEEP_REDUCTION_BONUS, DEEP_REDUCTION_MIN_DEPTH, DEEP_REDUCTION_THRESHOLD, Features,
-        LATE_MOVE_MIN_DEPTH, LATE_MOVE_PRUNING_THRESHOLD, LATE_MOVE_REDUCTION, LATE_MOVE_THRESHOLD,
-        Node, REDUCTION, Search, Verdict, amount, attention_score, decide, features,
+        Futility, LATE_MOVE_MIN_DEPTH, LATE_MOVE_PRUNING_THRESHOLD, LATE_MOVE_REDUCTION,
+        LATE_MOVE_THRESHOLD, Node, QUIET_FUTILITY_MARGIN, QUIET_FUTILITY_MAX_DEPTH, REDUCTION,
+        Search, Verdict, amount, attention_score, decide, features,
     };
     use crate::board::{Board, MoveList, fens, play_named};
     use crate::census::Table;
@@ -579,6 +719,25 @@ mod tests {
             deep_reductions: true,
             late_move_pruning: true,
             ..SearchConfig::reference()
+        }
+    }
+
+    /// The quiet futility rule alone, with nothing else on: whatever moves
+    /// between this and the reference at depths one to three is the rule.
+    fn futility() -> SearchConfig {
+        SearchConfig {
+            quiet_futility: true,
+            ..SearchConfig::reference()
+        }
+    }
+
+    /// The pruning with the quiet futility rule on top, which is the shape
+    /// the default carries: whatever moves between this and `pruning` is
+    /// the rule.
+    fn quiet_futile() -> SearchConfig {
+        SearchConfig {
+            quiet_futility: true,
+            ..pruning()
         }
     }
 
@@ -649,6 +808,69 @@ mod tests {
                 history_max: &mut self.history_max,
             };
             decide(&search, &mut node, m, searched)
+        }
+
+        /// The quiet futility rule's node half, built as the move loop
+        /// builds it.
+        fn rule(&self, depth: u8, beta: Score) -> Futility {
+            super::futility(
+                &self.config,
+                &self.board,
+                depth,
+                self.in_check,
+                beta,
+                self.root_bounds,
+            )
+        }
+
+        /// Whether the rule drops one move. Each call is a node of its
+        /// own, as `verdict` is: the held features are cleared first.
+        fn skips(
+            &mut self,
+            m: &Play,
+            searched: usize,
+            depth: u8,
+            alpha: Score,
+            beta: Score,
+        ) -> bool {
+            self.eval = None;
+            self.history_max = None;
+            let mut futility = self.rule(depth, beta);
+            self.asks(&mut futility, m, searched, alpha)
+        }
+
+        /// The same at a node whose evaluation the move loop already
+        /// seeded, as it seeds it from what `shortcuts` read.
+        fn skips_seeded(
+            &mut self,
+            seed: i64,
+            m: &Play,
+            searched: usize,
+            depth: u8,
+            alpha: Score,
+            beta: Score,
+        ) -> bool {
+            self.eval = Some(seed);
+            self.history_max = None;
+            let mut futility = self.rule(depth, beta);
+            self.asks(&mut futility, m, searched, alpha)
+        }
+
+        /// The question of a node half the caller is holding, so a test
+        /// can ask one node twice and see what the latch carried.
+        fn asks(
+            &mut self,
+            futility: &mut Futility,
+            m: &Play,
+            searched: usize,
+            alpha: Score,
+        ) -> bool {
+            let search = Search {
+                board: &self.board,
+                ordering: &self.ordering,
+                config: &self.config,
+            };
+            futility.skips(&search, &mut self.eval, m, searched, alpha)
         }
 
         /// What the node would tell the ledger about one move, read
@@ -1565,6 +1787,271 @@ mod tests {
             s.verdict(&quiet, SEARCHED, DEPTH, alpha + 1, beta - 2),
             Verdict::Scout(LATE_MOVE_REDUCTION)
         );
+    }
+
+    /// The margin fires where the evaluation plus a pawn a ply lands
+    /// exactly on alpha, and not one centipawn over it, at both ends of
+    /// the rule's depth range. Two depths rather than one, so the test
+    /// sees the margin scale with the depth rather than only fire.
+    #[test]
+    fn the_margin_fires_where_it_reaches_alpha_and_not_one_over_it() {
+        let mut s = Stand::new(fens::A_CAPTURE_AND_QUIETS, futility());
+        let quiet = play_named(&s.board, "a4a5");
+        let eval = s.eval();
+        for depth in [1, QUIET_FUTILITY_MAX_DEPTH] {
+            // the node's second move, which is the first the rule may
+            // reach at all
+            let searched = 1;
+            let reaches = (eval + i64::from(QUIET_FUTILITY_MARGIN) * i64::from(depth)) as Score;
+            assert!(
+                s.skips(&quiet, searched, depth, reaches, reaches + 1),
+                "at depth {depth}"
+            );
+            assert!(
+                !s.skips(&quiet, searched, depth, reaches - 1, reaches),
+                "at depth {depth}"
+            );
+        }
+    }
+
+    /// The node's first legal move is searched whatever its evaluation
+    /// says. A node that pruned every move would answer the mate or the
+    /// stalemate the move loop reads from no legal move found.
+    #[test]
+    fn the_first_move_searched_is_never_skipped() {
+        let mut s = Stand::new(fens::A_CAPTURE_AND_QUIETS, futility());
+        let quiet = play_named(&s.board, "a4a5");
+        let eval = s.eval();
+        for depth in 1..=QUIET_FUTILITY_MAX_DEPTH {
+            // alpha far past the margin's reach, so nothing but the count
+            // of searched moves stands between the move and the rule
+            let alpha = (eval + 10_000) as Score;
+            assert!(
+                !s.skips(&quiet, 0, depth, alpha, alpha + 1),
+                "at depth {depth}"
+            );
+            assert!(
+                s.skips(&quiet, 1, depth, alpha, alpha + 1),
+                "at depth {depth}"
+            );
+        }
+    }
+
+    /// The ceiling: at the model's floor the rule is silent and the
+    /// model's verdict is what it was. The row is solved onto the pruning
+    /// threshold and one over it, and the alpha that solves it stands far
+    /// enough over the evaluation that the margin would fire on it, so a
+    /// ceiling that leaked a ply would skip the move the model let
+    /// through.
+    #[test]
+    fn the_rule_decides_nothing_at_the_models_floor() {
+        const DEPTH: u8 = DEEP_REDUCTION_MIN_DEPTH;
+        const SEARCHED: usize = 20;
+        let mut with = Stand::new(fens::A_CAPTURE_AND_QUIETS, quiet_futile());
+        let mut without = Stand::new(fens::A_CAPTURE_AND_QUIETS, pruning());
+        let quiet = play_named(&with.board, "a4a5");
+        let eval = with.eval();
+        let generated = with.moves.len();
+        let score_at = |alpha: Score, beta: Score| {
+            attention_score(&AttentionFeatures {
+                depth: DEPTH,
+                index: SEARCHED,
+                hist_milli: 0,
+                killer: false,
+                tt: Table::Miss,
+                eval_beta: eval - i64::from(beta),
+                alpha_gap: i64::from(alpha) - eval,
+                generated,
+            })
+        };
+        let (alpha, beta) = solved(score_at, LATE_MOVE_PRUNING_THRESHOLD);
+        assert_eq!(score_at(alpha, beta), LATE_MOVE_PRUNING_THRESHOLD);
+        // the row's alpha stands over the evaluation by more than the
+        // margin reaches a ply lower, so a ceiling that leaked would skip
+        assert!(with.skips(&quiet, SEARCHED, QUIET_FUTILITY_MAX_DEPTH, alpha, beta));
+        assert!(!with.skips(&quiet, SEARCHED, DEPTH, alpha, beta));
+        assert_eq!(
+            without.verdict(&quiet, SEARCHED, DEPTH, alpha, beta),
+            Verdict::Skip
+        );
+        assert_eq!(
+            with.verdict(&quiet, SEARCHED, DEPTH, alpha, beta),
+            Verdict::Skip
+        );
+        // one over the threshold the model deepens the scout instead, and
+        // the rule must not turn that back into a skip
+        assert_eq!(
+            score_at(alpha + 1, beta - 2),
+            LATE_MOVE_PRUNING_THRESHOLD + 1
+        );
+        assert_eq!(
+            without.verdict(&quiet, SEARCHED, DEPTH, alpha + 1, beta - 2),
+            Verdict::Scout(DEEP_REDUCTION)
+        );
+        assert_eq!(
+            with.verdict(&quiet, SEARCHED, DEPTH, alpha + 1, beta - 2),
+            Verdict::Scout(DEEP_REDUCTION)
+        );
+    }
+
+    /// A capture and a promotion are priced on material rather than on
+    /// their place in the order, so the rule is never asked of one, and a
+    /// quiet that gives check is never skipped: a pruned check is never
+    /// seen at all, where a scouted one is seen shallower.
+    #[test]
+    fn a_capture_a_promotion_and_a_checking_quiet_are_never_skipped() {
+        let mut s = Stand::new(fens::A_CAPTURE_AND_QUIETS, quiet_futile());
+        let quiet = play_named(&s.board, "a4a5");
+        let capture = play_named(&s.board, "a4e4");
+        let checks = play_named(&s.board, "a4a8");
+        assert!(capture.capture.is_some());
+        assert!(checks.capture.is_none() && s.board.gives_check(&checks));
+        // bounds that skip the plain push at depth one
+        let alpha = (s.eval() + 10_000) as Score;
+        assert!(s.skips(&quiet, 10, 1, alpha, alpha + 1));
+        assert!(!s.skips(&capture, 10, 1, alpha, alpha + 1));
+        assert!(s.eval.is_none(), "the capture was priced by the rule");
+        assert!(!s.skips(&checks, 10, 1, alpha, alpha + 1));
+
+        // a promotion at a node with a piece behind it, so the material
+        // gate is not what refuses the move
+        let mut s = Stand::new("7k/1P6/8/8/R7/8/8/7K w - - 0 1", quiet_futile());
+        let promotes = play_named(&s.board, "b7b8q");
+        let push = play_named(&s.board, "a4a5");
+        assert!(promotes.capture.is_none() && promotes.promote.is_some());
+        let alpha = (s.eval() + 10_000) as Score;
+        assert!(s.skips(&push, 10, 1, alpha, alpha + 1));
+        assert!(!s.skips(&promotes, 10, 1, alpha, alpha + 1));
+    }
+
+    /// The four node exemptions, each against the same question with
+    /// nothing else moved: a side in check, a mate window on either bound,
+    /// a beta that is still the root's, and a side with no piece but pawns.
+    #[test]
+    fn the_node_exemptions_stand_the_rule_down() {
+        let mut s = Stand::new(fens::A_CAPTURE_AND_QUIETS, quiet_futile());
+        let quiet = play_named(&s.board, "a4a5");
+        let alpha = (s.eval() + 10_000) as Score;
+        assert!(s.skips(&quiet, 10, 2, alpha, alpha + 1));
+
+        s.in_check = true;
+        assert!(!s.skips(&quiet, 10, 2, alpha, alpha + 1));
+        s.in_check = false;
+
+        // a mate in hand as alpha, and one being proved against the side
+        // to move as beta
+        assert!(!s.skips(&quiet, 10, 2, 29_500, 29_501));
+        assert!(!s.skips(&quiet, 10, 2, -29_501, -29_500));
+
+        s.root_bounds = RootBounds::BOTH;
+        assert!(!s.skips(&quiet, 10, 2, alpha, alpha + 1));
+        s.root_bounds = RootBounds {
+            alpha: true,
+            beta: false,
+        };
+        assert!(
+            s.skips(&quiet, 10, 2, alpha, alpha + 1),
+            "alpha's bit is not the one read"
+        );
+
+        // a side with nothing but pawns is the side zugzwang happens to,
+        // which is what stands the shortcuts down and this rule with them
+        let mut pawns = Stand::new("7k/8/8/8/P7/8/8/7K w - - 0 1", quiet_futile());
+        let push = play_named(&pawns.board, "a4a5");
+        assert!(!pawns.board.has_non_pawn_material());
+        let alpha = (pawns.eval() + 10_000) as Score;
+        assert!(!pawns.skips(&push, 10, 2, alpha, alpha + 1));
+    }
+
+    /// Off the switch the search is the one that was there before: nothing
+    /// is decided at depth one or two, and at depth three the reduction
+    /// answers as it always did. The row is one the rule skips on.
+    #[test]
+    fn the_switch_off_leaves_the_shallow_depths_where_they_were() {
+        let mut on = Stand::new(fens::A_CAPTURE_AND_QUIETS, quiet_futile());
+        let mut off = Stand::new(fens::A_CAPTURE_AND_QUIETS, pruning());
+        let quiet = play_named(&on.board, "a4a5");
+        let alpha = (on.eval() + 10_000) as Score;
+        const SEARCHED: usize = 12;
+        for depth in 1..=QUIET_FUTILITY_MAX_DEPTH {
+            assert!(
+                on.skips(&quiet, SEARCHED, depth, alpha, alpha + 1),
+                "at depth {depth}"
+            );
+            assert!(
+                !off.skips(&quiet, SEARCHED, depth, alpha, alpha + 1),
+                "at depth {depth}"
+            );
+        }
+        assert_eq!(
+            off.verdict(&quiet, SEARCHED, 1, alpha, alpha + 1),
+            Verdict::Scout(0)
+        );
+        assert_eq!(
+            off.verdict(&quiet, SEARCHED, 2, alpha, alpha + 1),
+            Verdict::Scout(0)
+        );
+        assert_eq!(
+            off.verdict(&quiet, SEARCHED, LATE_MOVE_MIN_DEPTH, alpha, alpha + 1),
+            Verdict::Scout(LATE_MOVE_REDUCTION),
+            "the reduction at depth three is not the rule's to move"
+        );
+    }
+
+    /// What the rule costs a node, as a test. The margin reads the
+    /// evaluation the move loop seeded from what the shortcuts had already
+    /// computed, and computes nothing itself. It never walks the history
+    /// denominator, which the rule has no term for.
+    #[test]
+    fn the_rule_reads_the_seeded_evaluation_and_no_history() {
+        let mut s = Stand::new(fens::A_CAPTURE_AND_QUIETS, quiet_futile());
+        let quiet = play_named(&s.board, "a4a5");
+        // depth two on a seeded evaluation. The position's own evaluation
+        // stands well over these bounds, so a rule that computed one
+        // rather than reading the seed would not fire
+        let (alpha, beta): (Score, Score) = (0, 1);
+        let seed = i64::from(alpha) - i64::from(QUIET_FUTILITY_MARGIN) * 2;
+        assert!(s.eval() + i64::from(QUIET_FUTILITY_MARGIN) * 2 > i64::from(alpha));
+        assert!(!s.skips(&quiet, 1, 2, alpha, beta));
+        assert!(s.skips_seeded(seed, &quiet, 1, 2, alpha, beta));
+        assert_eq!(s.eval, Some(seed), "the rule recomputed the evaluation");
+        assert!(s.history_max.is_none(), "the rule walked the history");
+    }
+
+    /// The margin's test is settled once for the node rather than once for
+    /// the move. Alpha rises through a move loop and never falls, so the
+    /// test is false until it becomes true and then stays true, and the
+    /// rest of the node's moves read the latch. Asked here of one node
+    /// under the margin's reach, then past it, then under it again, which
+    /// a search cannot do and the latch has to survive.
+    #[test]
+    fn the_margin_is_latched_once_alpha_has_reached_it() {
+        let mut s = Stand::new(fens::A_CAPTURE_AND_QUIETS, futility());
+        let quiet = play_named(&s.board, "a4a5");
+        let reaches = (s.eval() + i64::from(QUIET_FUTILITY_MARGIN)) as Score;
+        let mut node = s.rule(1, reaches + 1);
+        assert!(!s.asks(&mut node, &quiet, 1, reaches - 1));
+        assert!(s.asks(&mut node, &quiet, 1, reaches));
+        assert!(
+            s.asks(&mut node, &quiet, 1, reaches - 1),
+            "the node's moves after the first read the latch"
+        );
+    }
+
+    /// A rising alpha can climb into the mate window, which is one of the
+    /// node exemptions. The latch must not carry the rule past it, so the
+    /// mate test is asked of every move rather than folded into the latch.
+    #[test]
+    fn a_mate_window_stands_the_latched_rule_down() {
+        let mut s = Stand::new(fens::A_CAPTURE_AND_QUIETS, futility());
+        let quiet = play_named(&s.board, "a4a5");
+        let alpha = (s.eval() + 10_000) as Score;
+        assert!(!crate::value::is_mate(alpha));
+        let mut node = s.rule(2, alpha + 1);
+        assert!(s.asks(&mut node, &quiet, 1, alpha));
+        // a child answered a mate and alpha took its score
+        assert!(crate::value::is_mate(29_500));
+        assert!(!s.asks(&mut node, &quiet, 1, 29_500));
     }
 
     /// The denominator is read once for the node and held: a row records

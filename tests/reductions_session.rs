@@ -40,8 +40,13 @@ fn the_reductions_argument_prints_a_header_rows_and_a_summary() {
             "row: {}",
             row
         );
-        // the ledger records late moves only
-        assert!(words[2].parse::<usize>().unwrap() >= 4, "row: {}", row);
+        // the ledger records late moves only. Late is four moves searched
+        // where the reduction or the model decided, and one where quiet
+        // futility did, which is the rule at the depths under the model's
+        // floor of four
+        let depth: u8 = words[0].parse().unwrap();
+        let index: usize = words[2].parse().unwrap();
+        assert!(index >= if depth < 4 { 1 } else { 4 }, "row: {}", row);
         // a fail low and a skip (a move late move pruning passed over) each
         // carry the replay's answer and its label; a fail high has dashes
         // there so the columns stand still

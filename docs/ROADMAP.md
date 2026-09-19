@@ -500,8 +500,14 @@ of these again without saying what is different this time.
   could spare at most 1.5% of the evaluations, about 0.3% of the run, before the layout
   change every pinned count is counted against. The same count found the late move gate
   scoring the position through `eval::eval` rather than the searcher's cached door at 990
-  nodes over the bench, 884 of them already scored by the shortcuts: 0.04% of the
-  evaluations, and the uncached door is the thing to change if the gate ever prices more.
+  nodes over the bench, 884 of them already scored by the shortcuts. Those 884 are gone:
+  `shortcuts` hands back the evaluation it read and the move loop seeds the decision's memo
+  with it, so a node the shortcuts scored is not scored a second time. The uncached door is
+  still there for the nodes they never reached. Read on the bench at `54d85b9`, the commit
+  this was first built on, the gate is asked for an evaluation at 2,515,532 decisions and
+  opens that door 671 times, against 23,717,724 evaluations over the run; the tree has
+  moved since and those three have not been taken again. The 990 and the 884 were read on
+  an earlier tree still and are kept here as what prompted the seeding.
 - Lazy mobility, leaving the term out at the quiescence stand pat when the rest of the
   score already clears beta by a margin. Built and played at three margins, 6,000 games at
   10+0.1 under sprt [0, 10]: +1 ±8 over 4,000 games at a margin of a hundred, and nothing
