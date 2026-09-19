@@ -414,12 +414,13 @@ company with the reference in twelve places today: the fifty move guard,
 reverse futility, the null move pass, the plies that pass is searched
 shallower by growing with the node's depth, the delta margin and the losing
 capture skip in quiescence, the late move reduction that scouts a late
-quiet move shallower, the deep reduction that scouts a late quiet its
-model calls dead a ply shallower still, the late move pruning that drops
-a late quiet the model puts in its deadest band without searching it at
-all, the reduction table those two amounts are read off, the killers and
-history table the quiet moves are ordered by, and the aspiration window
-the deepening loop opens each iteration at.
+quiet move shallower, the deep reduction that scouts a late quiet a ply
+shallower still once its place in the order passes a floor that rises with
+depth, the late move pruning that drops a late quiet the model puts in its
+deadest band without searching it at all, the reduction table those two
+amounts are read off, the killers and history table the quiet moves are
+ordered by, and the aspiration window the deepening loop opens each
+iteration at.
 `reference_node_counts_have_not_moved` pins the reference's tree beside the
 default's, so a commit's diff says which kind of change it carries. One that
 moves both counts touched the search the two share, the table, say; one that
