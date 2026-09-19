@@ -34,7 +34,7 @@ pub const TABLE_BYTES: usize = 16 * 1024 * 1024;
 /// is the gate. A change that moves it in either direction updates this
 /// number in the same commit, which puts the movement in the diff, and a
 /// change that lowers it says what the positions were spent on.
-pub const EXPECTED_PASSES: usize = 238;
+pub const EXPECTED_PASSES: usize = 237;
 
 /// The count the suite may not go under, whatever a commit says it meant to
 /// spend.
@@ -47,7 +47,7 @@ pub const EXPECTED_PASSES: usize = 238;
 /// Two hundred and ten was fourteen under the count when the floor was set
 /// (224) and is eleven under the lowest the suite has been gated at (221).
 /// Since the suite was first gated the count has been 243, 241, 240, 237,
-/// 236, 229, 221, 226, 227, 228, 231, 224, 237, 240 and 238, and the
+/// 236, 229, 221, 226, 227, 228, 231, 224, 237, 240, 238 and 237, and the
 /// largest single step down in that list is eight, so one change spending
 /// fourteen fails here rather than being written down and rearmed.
 /// Lowering the floor is a commit whose whole subject is lowering the
@@ -81,9 +81,10 @@ pub struct AcceptedLoss {
 
 /// The losses accepted so far.
 ///
-/// The reduction table took the first two, and both are the same thing: a
-/// capture the reduction never touches, whose continuation is quiet and is
-/// now stood further back than the depth can afford.
+/// All three are the same thing: a move the reduction never touches or
+/// reaches late, whose continuation is quiet and is now stood further back
+/// than the depth can afford. The reduction table took the first two and
+/// the deep reduction's index rule the third.
 pub const ACCEPTED_LOSSES: &[AcceptedLoss] = &[
     AcceptedLoss {
         id: "WAC.082",
@@ -97,6 +98,14 @@ pub const ACCEPTED_LOSSES: &[AcceptedLoss] = &[
         why: "the three quiet moves of the mate in five behind the queen check \
               are scouted further back, so depth six answers with a centipawn \
               score instead",
+        until: "0.6.0",
+    },
+    AcceptedLoss {
+        id: "WAC.210",
+        why: "the king side attack behind the rook lift to h1 is quiet from \
+              there on, and the index rule stands those moves a ply further \
+              back, so at depth six the lift never comes back above alpha and \
+              depth eight is where it is found again",
         until: "0.6.0",
     },
 ];
