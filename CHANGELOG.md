@@ -2,7 +2,7 @@
 
 All notable changes to this project will be documented in this file.
 
-## [0.4.5-rc.1] - 2026-09-19
+## [0.4.5] - 2026-09-19
 
 ### Features
 
@@ -43,6 +43,9 @@ All notable changes to this project will be documented in this file.
 - *(uci)* Shorten the comments in the protocol crate and its tests
 - *(search)* Record a third sort shape and the stored static evaluation as measured and priced
 - *(uci)* Give the terms row's formula every leaf term and the vector its width
+- *(search)* Give the taint policy result its games and its control
+- *(eval)* Correct what the whole key costs a cache entry
+- *(uci)* Say which spin values are clamped and which are refused
 
 ### Development
 
@@ -62,6 +65,9 @@ All notable changes to this project will be documented in this file.
 - *(bench)* Raise the bench depth from 7 to 9 [bench 52404553]
 - *(release)* Move the gauntlet up to bracket 2700 and add Blunder, Inanis and Zahak
 - *(deps)* Bump the mache actions from v0.2.0 to v0.3.0
+- *(docs)* Correct the speed report example and eight stale claims
+- *(ci)* Date the coverage estimate and pin the v2 figure to its commit
+- *(docker)* Name every option the engine advertises and raise Move Overhead
 
 ## [0.4.4] - 2026-09-14
 
