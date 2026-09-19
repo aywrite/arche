@@ -70,7 +70,8 @@ jobs:
         # Three x86-64 builds: the baseline, and the v2 and v3 levels, where
         # popcnt and then avx2/bmi2 live. Without popcnt the baseline spells
         # out count_ones and trailing_zeros by hand; v2 is 4.54% fewer
-        # instructions over the bench for the same tree (561ad40). The flags change
+        # instructions over the bench for the same tree, measured at a889930
+        # and written out in .cargo/config.toml. The flags change
         # instructions, not the search, so the node counts cannot move. The
         # mac runner is arm and needs no variants.
         cpu: ["", x86-64-v2, x86-64-v3]
