@@ -16,11 +16,14 @@ engine:
   # cannot ponder.
   ponder: false
 
-  # Arche advertises Hash, in megabytes, and a Threads fixed at one. Left
-  # commented out so the engine keeps its own 256MB default; raising it means
-  # raising the container's memory limit to match.
+  # Arche advertises Hash, in megabytes, a Clear Hash button, a Threads fixed
+  # at one, and Move Overhead, in milliseconds. Left commented out so the
+  # engine keeps its own defaults; raising Hash means raising the container's
+  # memory limit to match. Move Overhead starts at 50, which suits an
+  # interface on the same machine, and this one plays across the network.
   # uci_options:
   #   Hash: 256
+  #   Move Overhead: 100
 
   polyglot:
     enabled: true
