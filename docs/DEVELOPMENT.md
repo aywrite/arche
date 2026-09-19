@@ -66,18 +66,21 @@ for the speed. Unoptimised it took a minute, most of that the two perft
 suites walking a hundred and twenty million checked moves; optimised it takes
 about twenty five seconds and costs six seconds more to compile. The pinned
 bench search is the longest single test in either run since the depth went
-to nine: fifty four million nodes between the two pins, and the bench pin
+to nine: fifty three million nodes between the two pins, and the bench pin
 alone is sixteen seconds of the debug run and six and a half of the release
-one, with the rest of the run beside it on the other cores. At depth seven the two pins were six
-million nodes, under a twentieth of either run.
+one, with the rest of the run beside it on the other cores. At depth seven
+the two pins were six million nodes, under a twentieth of either run.
 
 Neither of the two suites is in either run. The tactical one searches three
 hundred positions and takes ten seconds or so, and the strategic one searches
 fifteen hundred and takes about thirteen, so both are marked ignored and asked
-for by name, and one job runs them in ci:
+for by name, in a job of their own in ci with a step each. Locally they are
+asked for the same way, since `--ignored` alone also runs `regenerate_magics`,
+which prints replacement constants rather than checking anything:
 
 ```
-cargo test --workspace --release -- --ignored
+cargo test --workspace --release -- --ignored the_suite_finds_what_it_found_before
+cargo test --workspace --release -- --ignored the_strategy_suite_scores_what_it_scored_before
 ```
 
 The tactical suite counts how many of its positions the search finds the move
@@ -125,7 +128,7 @@ What the two are for is the difference between them. The tactical suite says
 whether the search still finds the move; the strategic one says whether the
 evaluation still prefers the same kind of position, which is a change the
 tactical count can miss entirely and the games only show after thousands of
-them. So the pair says more than either does alone.
+them.
 
 What the strategic total cannot do is say which way the evaluation moved, and
 the size of that is worth knowing before a total is read. Changing one of the
@@ -153,9 +156,11 @@ files carry.
 
 Coverage has a workflow of its own and no trigger but the actions tab. It is
 not measured on a push or on a pull request, because instrumented the suite
-takes about eighteen minutes and sixteen of those are the perft tests, whose
-depths are the whole point of them; that is a real bill and nothing gates on
-the number. Run it when the question is what the tests have never reached.
+takes eighteen minutes or so, most of it the perft tests and the bench pin,
+whose depths are the whole point of them; that is a real bill and nothing
+gates on the number. The eighteen was measured before the bench depth went
+to nine and has not been taken again. Run it when the question is what the
+tests have never reached.
 Locally that wants the component the instrumented build needs, which is
 deliberately not in `rust-toolchain.toml` so that cloning does not install it
 for somebody who will never use it:
@@ -188,6 +193,12 @@ Both of these are gated in ci:
 cargo fmt --all --check
 cargo clippy --workspace --all-targets -- -D warnings
 ```
+
+A clean tree still prints one warning, that the const evaluation behind
+`MAGIC` is taking a long time. It is expected and `-D warnings` does not
+raise it, so the command exits zero with the warning on the screen. The
+`allow` beside `MAGIC` covers the emissions that would be raised, and taking
+it off fails this command, so it is not spare.
 
 The pre-commit configuration runs the formatter, and `cargo check` in place of
 clippy, along with a check that the commit message is a conventional commit,
@@ -275,10 +286,10 @@ git commit --trailer "$(scripts/bench_trailer.sh)"
 ```
 
 and a perf commit adds `--trailer "$(scripts/speed.sh | tail -n 1)"`, which
-builds the commit the tree stands on once, keeps it under `target/speed/`,
-and runs the bench for each side in turn with the side that goes first
-alternating, so the spread it prints beside the change is what the change has
-to be read against: a plus three with a six percent spread is not a claim.
+keeps its build under `target/speed/`. The spread it prints beside the change
+is what the change has to be read against: a plus three with a six percent
+spread is not a claim. What it does and how to read the rest of its report
+are under The bench and speed below.
 Both scripts build the tree as it stands rather than as it is staged, so
 stage everything first. A refactor that moves nothing still states the bench,
 since unchanged is a claim worth making, and the Bench workflow builds every
@@ -350,27 +361,29 @@ built and run on one runner, and posts the result as a comment, or to the job
 summary alone for a pull request from a fork. It reports and does not gate: the
 count is the claim, and the rate is the context it is read in.
 
-When the two sides count the same nodes, the rate is the whole story and the
-`Speed:` trailer is what to quote. When they do not, the report says so and
-adds a breakdown, because the rate on its own is then misleading in both
-directions:
+The report is one row a side and a change row under it. When the two sides
+count the same nodes the change row leaves the nodes and time cells empty,
+because the time is then the rate upside down and says nothing the rate does
+not. When they differ both cells are filled, because the rate on its own is
+then misleading in both directions:
 
 ```
-base: 4395471 nodes in 0.36 s, candidate: 4083394 nodes in 0.33 s
-fastest rounds: base 12073121 nps, candidate 12217998 nps, change +1.2%
-nodes -7.1%, nps +1.2%, time to depth -8.2%
+              nodes    time  median nps  fastest nps
+base       51236454  7.31 s     7012455      7051903
+candidate  47598112  6.70 s     7101336      7149012
+change        -7.1%   -8.3%       +1.3%        +1.4%
 ```
 
 `nps` is nodes over time, so it already divides out the size of the tree: it
 answers what a node costs, and a search that visits a tenth fewer nodes at the
-same cost each shows +0.0% while finishing a tenth sooner. Time to depth is
+same cost each shows +0.0% while finishing a tenth sooner. The time column is
 that missing number, and it is exact rather than a second measurement, since
 the count and the rate give it directly.
 
 Read neither as a claim when the counts differ. The two sides are averaging
 over different nodes, and a change that prunes can post a better rate purely
 because the nodes it stopped visiting were the dear ones, so the rate is no
-longer a like for like comparison of what a node costs either. Time to depth
+longer a like for like comparison of what a node costs either. The time column
 says what the change is worth at this depth; whether the smaller tree is the
 right tree is a question only games answer, which is what `Elo:` is for. The
 `Speed:` trailer keeps its one meaning, the change in rate against a named
@@ -686,8 +699,13 @@ its published rating and fits the one number that is unknown, which is ours:
 
 ```
 pip install mache
-rating-estimate gauntlet.pgn arche stash-v15.3:2173,stash-v17.0:2297
+rating-estimate gauntlet.pgn arche stash-v21.0:2713,zahak-6.2:2825
 ```
+
+Each opponent there is named as the pgn names it, `<engine>-<pin>`, with the
+rating after a colon. That is not the `ladder` input's spelling, which puts
+the engine and the pin in fields of their own and is described under Choosing
+the opponents below.
 
 Locally the same thing is the fastchess command from the previous section with
 more `-engine` arguments and `-tournament gauntlet`, which plays the first
