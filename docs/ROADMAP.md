@@ -373,15 +373,20 @@ of these again without saying what is different this time.
   thresholds', it lowers the two rates' mean 1.145 times against the shipped
   vector and 1.121 times against a logistic refit of the same rows (95%
   [1.070, 1.174]); the refit on its own reads 1.022 with an interval
-  covering one, so refitting the current objective buys nothing either gate
-  can read. **The whole gain is fail highs.** At the deep reduction the
-  wasted scouts fall 1.529 times (95% [1.420, 1.668]) while the harmful fail
-  lows, the moves written off wrongly, move 0.995 times (95% [0.962,
-  1.030]). The label these weights are fitted on adds a wasted scout to a
-  wrong answer, and an objective over it moves the cheaper one, because that
-  is where the rows are. Two grouped refits and this search have now
-  produced no vector worth a match. Re-ask with a feature the model does not
-  have, or with the label split into the two costs, not with another fit.
+  covering one, so refitting the current objective buys nothing that ledger
+  can read at either gate. **Nine tenths of the gain is wasted scouts.** At
+  the deep reduction the fail highs fall 1.529 times (95% [1.420, 1.668])
+  while the harmful fail lows, the moves written off wrongly, move 0.995
+  times (95% [0.962, 1.030]); decomposed on the quantity the bar read, 90.7%
+  of the gain is those fail highs and 11.5% is late move pruning's own
+  region, where every attention row is a harmful fail low. So about a ninth
+  of it is a real reduction in errors, at the gate whose rate that corpus
+  resolves worst. The label these weights are fitted on adds a wasted scout
+  to a wrong answer, and an objective over it moves mostly the cheaper one,
+  because that is where the rows are. Two grouped refits and this search
+  have now produced no vector worth a match. Re-ask with a feature the model
+  does not have, or with the label split into the two costs, not with
+  another fit.
 - Prefetching a child's transposition slot straight after `make_move`, 6.7%
   slower over six interleaved rounds. The prefetch sits immediately before the
   recursive call and the child probes the table almost first, so there is no
