@@ -250,14 +250,15 @@ const SHARP_MIDDLEGAME: &str = "r1b2rk1/ppp1qppp/4pn2/6N1/Qn1P4/2NBP3/PP3PPP/R3K
 #[test]
 fn the_move_a_swap_answers_with_opens_the_last_line_said() {
     // a node budget rather than a clock, so the iteration is cut short on
-    // the same node on every machine. The budget has to land after depth
-    // eleven finds its better move and before the iteration ends: depth
-    // ten answers d3b5 and finishes at 1,403,688 nodes, depth eleven
-    // reports d3e2 from about 3,240,000 and finishes at 3,441,769. The
-    // budget moves whenever the tree does, in the commit that moved it
+    // the same node on every machine. The budget has to land after an
+    // iteration finds its better move and before that iteration ends:
+    // depth eleven answers a4d1 and finishes at 2,439,068 nodes, depth
+    // twelve reports d3e2 from between 5,800,000 and 6,000,000 and
+    // finishes at 6,081,047. The budget moves whenever the tree does, in
+    // the commit that moved it
     let mut s = Session::start(&[]);
     s.say(&format!("position fen {}", SHARP_MIDDLEGAME));
-    s.say("go nodes 3350000");
+    s.say("go nodes 6000000");
     let answer = s.wait_for(|l| l.starts_with("bestmove"));
     let best = answer
         .strip_prefix("bestmove ")

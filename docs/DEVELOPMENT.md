@@ -410,8 +410,9 @@ does cold, and the tests in `arche-core/src/engine.rs` that say so build
 the reference and hold it to that for good. They are the soundness check: a
 change that claims to be sound keeps them green whatever else it moves. The
 default is what the engine plays with and what the bench prints. It parts
-company with the reference in eleven places today: the fifty move guard,
-reverse futility, the null move pass, the delta margin and the losing
+company with the reference in twelve places today: the fifty move guard,
+reverse futility, the null move pass, the plies that pass is searched
+shallower by growing with the node's depth, the delta margin and the losing
 capture skip in quiescence, the late move reduction that scouts a late
 quiet move shallower, the deep reduction that scouts a late quiet its
 model calls dead a ply shallower still, the late move pruning that drops
