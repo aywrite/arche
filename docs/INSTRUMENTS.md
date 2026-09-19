@@ -304,9 +304,9 @@ the bound the scout was asked about, `scout` is `low`, `high` or
 `skipped`, and `cost` is the nodes the scout spent. A fail high prints
 `-` in the `reference` and `label` columns rather than moving the others.
 
-The third outcome word is late move pruning's. A move the model prices
-in its deadest band is never scouted at all, so a sampled skip is
-recorded where the loop passes it over: the same features, a cost of
+The third outcome word is late move pruning's. A move the gate prices
+as dead is never scouted at all, so a sampled skip is recorded where
+the loop passes it over: the same features, a cost of
 zero, a reduction of zero, and a `searched` count that equals the index
 rather than standing one past it, because the move is not among the
 searched. The replay treats a skipped row as it treats a fail low,

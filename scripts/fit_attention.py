@@ -2,7 +2,7 @@
 # SPDX-License-Identifier: GPL-3.0-or-later
 # Copyright (C) 2022-2026 Andrew Wright
 
-"""Fit the attention model the deep reduction and the late move pruning gate on.
+"""Fit the attention model each late move rung reads where its index rule is off.
 
     arche reductions 8 every 1 cap 2000000 > ledger.txt
     scripts/fit_attention.py ledger.txt

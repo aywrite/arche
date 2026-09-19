@@ -274,10 +274,11 @@ pub struct SearchConfig {
     /// on. Rides on `late_move_reductions`: a move the reduction never
     /// touches is never asked.
     pub deep_reductions: bool,
-    /// Whether a late quiet the attention model prices in its deadest band
-    /// is searched at all. Rides on the reduction's eligibility and the
-    /// deep reduction's depth floor and checking exemption; its threshold is
-    /// a deeper cut of the attention model's score.
+    /// Whether a late quiet the gate prices as dead is searched at all.
+    /// Rides on the reduction's eligibility and the deep reduction's depth
+    /// floor and checking exemption. What prices it is the attention model's
+    /// deadest band, a deeper cut of the same score, or the index rule below
+    /// when that is on.
     pub late_move_pruning: bool,
     /// Whether the amount a late quiet is scouted shallower by grows with
     /// the node's depth and the move's place in the order, rather than
@@ -294,6 +295,13 @@ pub struct SearchConfig {
     /// the model's threshold is read as it was, which is what the bench
     /// identity holds it to.
     pub deep_index_rule: bool,
+    /// Whether the skip is decided by the move's index against a floor that
+    /// rises with depth, rather than by the attention model's deadest band.
+    /// With `deep_index_rule` on as well the gate computes no evaluation, no
+    /// history denominator and no score for the move. On in the default, off
+    /// in the reference, and off it the model's threshold is read as it was,
+    /// which is what the bench identity holds it to.
+    pub index_rule_pruning: bool,
     /// Whether a node orders its quiet moves by what other nodes have
     /// learned: the killers for its distance from the root, and the history
     /// table under them. Off in the reference, which keeps the pinned
@@ -376,6 +384,7 @@ impl SearchConfig {
             late_move_pruning: false,
             reduction_table: false,
             deep_index_rule: false,
+            index_rule_pruning: false,
             move_memory: false,
             aspiration: false,
         }
@@ -439,6 +448,7 @@ impl Default for SearchConfig {
             late_move_pruning: true,
             reduction_table: true,
             deep_index_rule: true,
+            index_rule_pruning: true,
             move_memory: true,
             aspiration: true,
         }
@@ -5462,8 +5472,8 @@ mod sampling {
     /// The window a real search hands the hook. The pass is asked for only
     /// under a zero width window, so its rows carry one and that is a rule.
     /// The margin reads the eval against beta and nothing about the width,
-    /// so an open window node can be answered by it; this tree holds one
-    /// such node, and one is this tree's number rather than a rule.
+    /// so an open window node could be answered by it; this tree holds no
+    /// such node, and zero is this tree's number rather than a rule.
     /// `the_recorded_beta_is_the_one_the_gate_cleared` drives the hook
     /// directly with both windows and pins the open column.
     #[test]
@@ -5482,7 +5492,7 @@ mod sampling {
             .iter()
             .filter(|s| s.kind == Shortcut::ReverseFutility && s.window == Window::Open)
             .count();
-        assert_eq!(open, 1, "the open windows the margin answers moved");
+        assert_eq!(open, 0, "the open windows the margin answers moved");
     }
 
     /// Every kind reaches the hook, not only whichever fires first. A kind

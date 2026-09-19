@@ -81,10 +81,11 @@ pub struct AcceptedLoss {
 
 /// The losses accepted so far.
 ///
-/// All three are the same thing: a move the reduction never touches or
+/// All four are the same thing: a move the reduction never touches or
 /// reaches late, whose continuation is quiet and is now stood further back
-/// than the depth can afford. The reduction table took the first two and
-/// the deep reduction's index rule the third.
+/// than the depth can afford, or dropped from the node altogether. The
+/// reduction table took the first, the deep reduction's index rule the
+/// second, and the skip's index rule the last two.
 pub const ACCEPTED_LOSSES: &[AcceptedLoss] = &[
     AcceptedLoss {
         id: "WAC.082",
@@ -94,18 +95,26 @@ pub const ACCEPTED_LOSSES: &[AcceptedLoss] = &[
         until: "0.6.0",
     },
     AcceptedLoss {
-        id: "WAC.260",
-        why: "the three quiet moves of the mate in five behind the queen check \
-              are scouted further back, so depth six answers with a centipawn \
-              score instead",
-        until: "0.6.0",
-    },
-    AcceptedLoss {
         id: "WAC.210",
         why: "the king side attack behind the rook lift to h1 is quiet from \
               there on, and the index rule stands those moves a ply further \
               back, so at depth six the lift never comes back above alpha and \
               depth eight is where it is found again",
+        until: "0.6.0",
+    },
+    AcceptedLoss {
+        id: "WAC.142",
+        why: "the moves behind the f5f6 break are quiet, and the skip's index \
+              rule drops them past its floor, so at depth six the break never \
+              comes back above alpha and the search plays h1h4 for 168 where \
+              the rule off plays f5f6 for 213",
+        until: "0.6.0",
+    },
+    AcceptedLoss {
+        id: "WAC.270",
+        why: "the d4g4 line ends in quiet moves the skip's index rule drops \
+              past its floor, so at depth six the rook trade comes back higher \
+              and e2e8 is played for 48 where the rule off plays d4g4 for 40",
         until: "0.6.0",
     },
 ];
