@@ -40,16 +40,10 @@ use crate::recorder::{self, Window, share};
 use crate::residual;
 use std::fmt;
 
-/// What the ledger contributes to a sampling key. The five salts in use
-/// (this, the census's and the three shortcut kinds') differ in their top
-/// three bits, so at any rate coarser than one in eight a node kept here
-/// is not one the others keep.
-const SALT: u64 = 0x6d84_3b2f_51c9_07ea;
-
 /// The key a scout's answer is sampled by: the position the scout judged,
 /// the node's depth, and nothing about the run, as the census builds one.
 pub fn sample_key(position_key: u64, depth: u8) -> u64 {
-    recorder::sample_key(position_key, SALT, depth)
+    recorder::sample_key(position_key, recorder::LEDGER_LANE, depth)
 }
 
 /// About one record in every this many events, unless the command says

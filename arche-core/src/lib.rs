@@ -5,6 +5,7 @@ pub mod bench;
 mod bitboard;
 mod board;
 pub mod census;
+pub mod effort;
 mod engine;
 mod eval;
 mod late_move;

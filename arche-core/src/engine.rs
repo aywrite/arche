@@ -3,6 +3,7 @@
 
 use crate::board::Board;
 use crate::census;
+use crate::effort;
 use crate::eval;
 use crate::late_move;
 use crate::limits::Limits;
@@ -883,12 +884,20 @@ pub struct AlphaBeta {
     census: Option<Sampler<census::Event>>,
     /// The reduction ledger's reservoir, or none, on the same terms.
     ledger: Option<Sampler<reduction::Event>>,
+    /// The effort instrument's reservoir, or none, on the same terms.
+    effort: Option<Sampler<effort::Event>>,
+    /// Every event the effort instrument has been offered, by depth. Beside
+    /// its reservoir rather than inside it because the reservoir holds a
+    /// sample and this counts the population. Bumped only behind the
+    /// reservoir's own check, so an engine that was never armed counts
+    /// nothing.
+    effort_depths: effort::Depths,
 }
 
 /// What a search can be armed to record: the residual's sample, the cutoff
-/// census's event or the reduction ledger's. Implemented here rather than
-/// beside the event types because what each names is a field of the
-/// engine.
+/// census's event, the reduction ledger's or the effort instrument's.
+/// Implemented here rather than beside the event types because what each
+/// names is a field of the engine.
 pub(crate) trait Recorded: Sized {
     /// What the shared recording loop calls a run of this kind, which is
     /// how it names a position it cannot read.
@@ -922,6 +931,14 @@ impl Recorded for reduction::Event {
     }
 }
 
+impl Recorded for effort::Event {
+    const WHAT: &'static str = "effort";
+
+    fn slot(engine: &mut AlphaBeta) -> &mut Option<Sampler<Self>> {
+        &mut engine.effort
+    }
+}
+
 impl AlphaBeta {
     pub fn with_table_bytes(board: Board, bytes: usize) -> Self {
         Self::with_config(board, bytes, SearchConfig::default())
@@ -945,12 +962,14 @@ impl AlphaBeta {
             sampler: None,
             census: None,
             ledger: None,
+            effort: None,
+            effort_depths: effort::Depths::default(),
         }
     }
 
     /// Arm a reservoir: have the search record what it does at the nodes
     /// the reservoir's key picks. Off until this is called; the callers are
-    /// the three recorders and the tests, and nothing the engine plays or
+    /// the four recorders and the tests, and nothing the engine plays or
     /// benches with arms one.
     pub(crate) fn arm<T: Recorded>(&mut self, sampler: Sampler<T>) {
         *T::slot(self) = Some(sampler);
@@ -1181,6 +1200,47 @@ impl AlphaBeta {
                 eval_beta: i32::from(crate::eval::eval(board)) - i32::from(beta),
                 cost,
             }
+        });
+    }
+
+    /// What the effort instrument has counted by depth. Read after a
+    /// search and before the next engine, since a run totals its positions.
+    pub(crate) fn effort_tally(&self) -> &effort::Depths {
+        &self.effort_depths
+    }
+
+    /// One node of the move loop answering, offered to the effort
+    /// instrument's reservoir and counted in its per depth tally.
+    ///
+    /// The tally is bumped in front of the key test, where `Sampler::event`
+    /// bumps `events`, so a rate rejection is still an event and the node
+    /// counts a run reports do not move with `every`. The fen is built
+    /// inside the closure, so an event the key turns away costs a hash and
+    /// nothing else.
+    // cold and out of line behind a bare is_some at each call site, for
+    // `sample`'s measured reason
+    #[cold]
+    #[inline(never)]
+    fn effort_event(&mut self, depth: u8, cut: bool, entered_at: u64) {
+        let AlphaBeta {
+            board,
+            nodes,
+            effort,
+            effort_depths,
+            ..
+        } = self;
+        let Some(effort) = effort.as_mut() else {
+            return;
+        };
+        effort_depths.count(depth);
+        let cost = *nodes - entered_at;
+        let key = effort::sample_key(board.key, depth);
+        effort.event(key, || effort::Event {
+            key,
+            fen: board.to_fen(),
+            depth,
+            cut,
+            cost,
         });
     }
 
@@ -1938,6 +1998,9 @@ impl AlphaBeta {
                                     }),
                                 );
                             }
+                            if self.effort.is_some() {
+                                self.effort_event(depth, true, entered_at);
+                            }
                             // the table's move earns its killer slot as any
                             // other cutting move does; nothing was searched
                             // before it, so there is nothing to mark down
@@ -2142,6 +2205,9 @@ impl AlphaBeta {
                             }),
                         );
                     }
+                    if self.effort.is_some() {
+                        self.effort_event(depth, true, entered_at);
+                    }
                     // the moves searched before the one that answered,
                     // captures and all, which the memories pass over
                     let tried = moves[..i]
@@ -2173,6 +2239,12 @@ impl AlphaBeta {
                 entered_at,
                 None,
             );
+        }
+        // the held half, at the same rate as the two cut ones above: a rule
+        // moves effort between held nodes and cut ones as well as away from
+        // both
+        if self.effort.is_some() {
+            self.effort_event(depth, false, entered_at);
         }
 
         if !found_legal_move {

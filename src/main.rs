@@ -12,11 +12,12 @@ use std::process::ExitCode;
 
 /// The arguments that take words, in the order the usage lists them. The
 /// two flags take none and are spelled in `usage` itself.
-const COMMANDS: [&Command; 5] = [
+const COMMANDS: [&Command; 6] = [
     &uci::BENCH,
     &instruments::RESIDUALS,
     &instruments::CUTOFFS,
     &instruments::REDUCTIONS,
+    &instruments::EFFORT,
     &instruments::TERMS,
 ];
 
@@ -49,7 +50,7 @@ fn usage() -> String {
     out
 }
 
-/// One of the four research commands: its report on stdout, or the setting
+/// One of the five research commands: its report on stdout, or the setting
 /// that could not be read on stderr with exit code 2, which the measuring
 /// scripts check.
 fn answer<S, R: std::fmt::Display>(
@@ -114,6 +115,7 @@ fn main() -> ExitCode {
             instruments::reduction_settings(&params),
             |s| s.run(),
         ),
+        Some("effort") => answer("effort", instruments::effort_settings(&params), |s| s.run()),
         Some("terms") => answer("terms", instruments::term_settings(&params), |s| s.run()),
         // asked for, so answered on stdout and succeeding; an unrecognised
         // argument keeps stderr and the failing code below
@@ -173,6 +175,7 @@ mod tests {
         assert!(instruments::residual_settings(&Params::of(instruments::RESIDUALS.name)).is_ok());
         assert!(instruments::cutoff_settings(&Params::of(instruments::CUTOFFS.name)).is_ok());
         assert!(instruments::reduction_settings(&Params::of(instruments::REDUCTIONS.name)).is_ok());
+        assert!(instruments::effort_settings(&Params::of(instruments::EFFORT.name)).is_ok());
         assert!(instruments::term_settings(&Params::of(instruments::TERMS.name)).is_ok());
     }
 

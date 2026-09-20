@@ -27,18 +27,11 @@ use crate::play::Play;
 use crate::recorder::{self, Window, share};
 use std::fmt;
 
-/// What the census contributes to a sampling key: an arbitrary constant far
-/// in its bits from the three the residual sampler holds (`Shortcut::salt`).
-/// The salts differ high in the word (bit 62 against the null move's, bit
-/// 63 against the other two), so at any rate coarser than one in four a
-/// node kept here is not one the residual kinds keep.
-const SALT: u64 = 0xc5b9_128e_66d0_3a47;
-
 /// The key a node's answer is sampled by: the position, the depth, and
 /// nothing about the run, as `residual::sample_key` builds one, so two runs
 /// of the same search record the same nodes.
 pub fn sample_key(position_key: u64, depth: u8) -> u64 {
-    recorder::sample_key(position_key, SALT, depth)
+    recorder::sample_key(position_key, recorder::CENSUS_LANE, depth)
 }
 
 /// About one record in every this many events, unless the command says

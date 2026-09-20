@@ -3,12 +3,13 @@
 
 //! The measurement instruments, as a command line asks for them.
 //!
-//! Four of them: the residual sampler, the cutoff census, the reduction
-//! ledger and the term extraction. The first three search the bench's
-//! positions, record a sample of what the search did, and print a report;
-//! the fourth searches nothing and writes down what each position's
-//! evaluation is made of. What each one measures is on its module in
-//! `arche-core`; what is here is only how a command line spells it.
+//! Five of them: the residual sampler, the cutoff census, the reduction
+//! ledger, the effort instrument and the term extraction. The first four
+//! search the bench's positions, record a sample of what the search did,
+//! and print a report; the fifth searches nothing and writes down what each
+//! position's evaluation is made of. What each one measures is on its
+//! module in `arche-core`; what is here is only how a command line spells
+//! it.
 //!
 //! Not in `uci`, because none of them is the protocol: they take minutes and
 //! answer a research question, which is why they are arguments rather than
@@ -20,12 +21,13 @@ use arche_core::Board;
 use arche_core::SearchConfig;
 use arche_core::bench;
 use arche_core::census;
+use arche_core::effort;
 use arche_core::recorder;
 use arche_core::reduction;
 use arche_core::residual;
 use arche_core::tune;
 
-/// The settings the three searching instruments share.
+/// The settings the four searching instruments share.
 struct Sampling {
     depth: u8,
     every: u32,
@@ -107,6 +109,39 @@ pub const REDUCTIONS: Command = Command {
     ],
 };
 
+pub const EFFORT: Command = Command {
+    name: "effort",
+    depth: true,
+    keywords: &[
+        Keyword {
+            word: "every",
+            value: "<n>",
+        },
+        Keyword {
+            word: "cap",
+            value: "<n>",
+        },
+        Keyword {
+            word: "epd",
+            value: "<file>",
+        },
+        Keyword {
+            word: "off",
+            value: "<switch>",
+        },
+        Keyword {
+            word: "budget",
+            value: "<n>",
+        },
+    ],
+    flags: &[],
+    summary: &[
+        "search the bench's suite, or the one named, twice, the",
+        "second time with one search switch off, and print what the",
+        "rule removed and where the effort it freed went",
+    ],
+};
+
 pub const TERMS: Command = Command {
     name: "terms",
     // the walk reads the board and the quiet test runs a capture search,
@@ -124,7 +159,7 @@ pub const TERMS: Command = Command {
 };
 
 /// How many rows a run keeps when it was not told. The recorder's, because
-/// all three record through the reservoir that module defines.
+/// all four record through the reservoir that module defines.
 const DEFAULT_CAP: usize = recorder::DEFAULT_CAP;
 
 /// Reads the settings the instruments share, or names the setting and the
@@ -286,6 +321,74 @@ impl ReductionSettings {
             self.depth,
             self.every,
             self.cap,
+        )
+    }
+}
+
+/// What an effort argument asked for: `effort [depth] [every <n>]
+/// [cap <n>] [epd <file>] [off <switch>] [budget <n>]`.
+///
+/// `off` names the `SearchConfig` field the baseline side turns off, and is
+/// absent for the null run, where both sides are the default. `budget`
+/// holds both sides to a node count instead of to the depth alone, which
+/// takes the speed channel out of the reading by construction.
+///
+/// The suite is a setting for the residual sampler's reason, and against
+/// the census's precedent: the readings here will be quoted against game
+/// results, and the bench's eighteen positions are recorded as not standing
+/// for a game.
+pub struct EffortSettings {
+    pub depth: u8,
+    pub every: u32,
+    pub cap: usize,
+    /// The switch named, already checked against the list.
+    pub off: Option<String>,
+    pub budget: Option<u64>,
+    /// The file the suite was read from, or none for the bench's own.
+    pub epd: Option<String>,
+    /// Read while the settings are, so a file that is no suite is refused
+    /// before the minutes are spent.
+    pub positions: Vec<bench::Position>,
+}
+
+pub fn effort_settings(params: &Params) -> Result<EffortSettings, String> {
+    let Sampling { depth, every, cap } = sampling(params, &EFFORT, effort::DEFAULT_EVERY)?;
+    // refused against the field names, the way `tune.py --hold TERM` is
+    // refused against the layout the extraction prints. A flag a switch
+    // would cost an edit at every arm, and a misspelling read as the null
+    // would spend the minutes saying nothing
+    let off = match params.value("off") {
+        None => None,
+        Some(word) if effort::without(word).is_some() => Some(word.to_string()),
+        Some(word) => return Err(format!("off: {word}")),
+    };
+    let budget = match params.parse::<u64>("budget") {
+        Param::Absent => None,
+        Param::Read(nodes) => Some(nodes),
+        Param::Unreadable(word) => return Err(format!("budget: {word}")),
+    };
+    let (epd, positions) = suite(params)?;
+    Ok(EffortSettings {
+        depth,
+        every,
+        cap,
+        off,
+        budget,
+        epd,
+        positions,
+    })
+}
+
+impl EffortSettings {
+    pub fn run(&self) -> effort::Report {
+        effort::run(
+            &self.positions,
+            self.epd.as_deref(),
+            self.depth,
+            self.every,
+            self.cap,
+            self.off.as_deref(),
+            self.budget,
         )
     }
 }
@@ -564,6 +667,95 @@ mod tests {
     }
 
     #[test]
+    fn an_effort_argument_reads_its_depth_rate_cap_switch_and_budget() {
+        let read = |line: &str| {
+            let settings = effort_settings(&Params::of(line)).expect(line);
+            (
+                settings.depth,
+                settings.every,
+                settings.cap,
+                settings.off,
+                settings.budget,
+            )
+        };
+        const CAP: usize = recorder::DEFAULT_CAP;
+        assert_eq!(read("effort"), (bench::DEPTH, 1000, CAP, None, None));
+        assert_eq!(read("effort 4"), (4, 1000, CAP, None, None));
+        assert_eq!(read("effort 4 every 50"), (4, 50, CAP, None, None));
+        // a keyword where the depth would be means the depth was left out
+        assert_eq!(
+            read("effort off null_move"),
+            (bench::DEPTH, 1000, CAP, Some("null_move".to_string()), None)
+        );
+        assert_eq!(
+            read("effort 4 off quiet_futility budget 4000000 cap 500"),
+            (
+                4,
+                1000,
+                500,
+                Some("quiet_futility".to_string()),
+                Some(4_000_000)
+            )
+        );
+        // every field the run can turn off is one the argument takes
+        for switch in effort::SWITCHES {
+            let line = format!("effort 2 off {switch}");
+            assert_eq!(
+                effort_settings(&Params::of(&line)).expect(&line).off,
+                Some(switch.to_string())
+            );
+        }
+    }
+
+    #[test]
+    fn an_effort_argument_reads_the_suite_it_was_given() {
+        let bench = effort_settings(&Params::of("effort")).expect("effort");
+        assert_eq!(bench.epd, None);
+        assert_eq!(bench.positions, bench::positions());
+
+        let path = concat!(env!("CARGO_MANIFEST_DIR"), "/arche-core/tactics.epd");
+        let line = format!("effort 4 epd {path}");
+        let named = effort_settings(&Params::of(&line)).expect(&line);
+        assert_eq!(named.depth, 4);
+        assert_eq!(named.epd.as_deref(), Some(path));
+        assert_eq!(named.positions, from_file(path));
+        assert_ne!(named.positions, bench::positions());
+    }
+
+    /// A switch that is not one is named before the minutes are spent, the
+    /// way a suite that is no suite is. Read as the null it would run for as
+    /// long and answer a question nobody asked.
+    #[test]
+    fn an_unreadable_effort_setting_is_named_rather_than_run() {
+        let empty = Unpositioned::written("effort");
+        for (line, what) in [
+            ("effort abc".to_string(), "depth: abc".to_string()),
+            ("effort 4 every lots".to_string(), "every: lots".to_string()),
+            ("effort 4 cap lots".to_string(), "cap: lots".to_string()),
+            (
+                "effort 4 off quiet_futilty".to_string(),
+                "off: quiet_futilty".to_string(),
+            ),
+            // a policy is not a switch, and the sampler that takes it says so
+            ("effort 4 off taint".to_string(), "off: taint".to_string()),
+            (
+                "effort 4 budget lots".to_string(),
+                "budget: lots".to_string(),
+            ),
+            (
+                format!("effort 4 epd {}", empty.path),
+                format!("epd: {}", empty.path),
+            ),
+        ] {
+            assert_eq!(
+                effort_settings(&Params::of(&line)).err(),
+                Some(what),
+                "{line}"
+            );
+        }
+    }
+
+    #[test]
     fn a_terms_argument_reads_the_suite_it_was_given() {
         let bench = term_settings(&Params::of("terms")).expect("terms");
         assert_eq!(bench.epd, None);
@@ -617,29 +809,37 @@ mod tests {
         }
     }
 
-    /// The three rate defaults are the same number today, so the assertions
+    /// The four rate defaults are the same number today, so the assertions
     /// on them cannot tell which one a caller passed. The loop below can, by
-    /// handing the three commands three rates that differ.
+    /// handing the four commands four rates that differ.
     #[test]
     fn every_instrument_defaults_to_the_benchs_depth_and_its_own_rate() {
         let residuals = residual_settings(&Params::of("residuals")).unwrap();
         let cutoffs = cutoff_settings(&Params::of("cutoffs")).unwrap();
         let reductions = reduction_settings(&Params::of("reductions")).unwrap();
+        let effort = effort_settings(&Params::of("effort")).unwrap();
 
-        for depth in [residuals.depth, cutoffs.depth, reductions.depth] {
+        for depth in [
+            residuals.depth,
+            cutoffs.depth,
+            reductions.depth,
+            effort.depth,
+        ] {
             assert_eq!(depth, bench::DEPTH);
         }
-        for cap in [residuals.cap, cutoffs.cap, reductions.cap] {
+        for cap in [residuals.cap, cutoffs.cap, reductions.cap, effort.cap] {
             assert_eq!(cap, DEFAULT_CAP);
         }
         assert_eq!(residuals.every, residual::DEFAULT_EVERY);
         assert_eq!(cutoffs.every, census::DEFAULT_EVERY);
         assert_eq!(reductions.every, reduction::DEFAULT_EVERY);
+        assert_eq!(effort.every, effort::DEFAULT_EVERY);
 
         for (command, word, default) in [
             (&RESIDUALS, "residuals", 11),
             (&CUTOFFS, "cutoffs", 22),
             (&REDUCTIONS, "reductions", 33),
+            (&EFFORT, "effort", 44),
         ] {
             let read = sampling(&Params::of(word), command, default).expect(word);
             assert_eq!(read.every, default, "{word} took a rate not its own");
