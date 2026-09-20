@@ -534,8 +534,7 @@ mod tests {
     use super::*;
     use crate::board::Board;
     use crate::late_move::{
-        DEEP_REDUCTION_MIN_DEPTH, LATE_MOVE_MIN_DEPTH, LATE_MOVE_THRESHOLD,
-        QUIET_FUTILITY_MAX_DEPTH,
+        DEEP_REDUCTION_MIN_DEPTH, LATE_MOVE_MIN_DEPTH, LATE_MOVE_THRESHOLD, SHALLOW_MAX_DEPTH,
     };
     use crate::recorder::fixtures::{recording_leaves_the_search_where_it_was, suite};
     use crate::recorder::{DEFAULT_CAP, Sampler};
@@ -1091,7 +1090,7 @@ mod tests {
                 if e.depth >= DEEP_REDUCTION_MIN_DEPTH {
                     assert!(e.index >= LATE_MOVE_THRESHOLD, "{:?}", row);
                 } else {
-                    assert!(e.depth <= QUIET_FUTILITY_MAX_DEPTH, "{:?}", row);
+                    assert!(e.depth <= SHALLOW_MAX_DEPTH, "{:?}", row);
                     assert!(e.index >= 1, "{:?}", row);
                 }
             } else {
