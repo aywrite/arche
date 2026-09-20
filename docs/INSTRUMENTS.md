@@ -1,11 +1,12 @@
 # Instruments
 
-Five measurements ask what the engine gave up rather than how large a tree it
-walked. Four are of the search: three are arguments of their own, `residuals`,
-`cutoffs` and `reductions`, and the fourth is the bench's `audit` word. The
-fifth, `terms`, is of the evaluation. Each has a section here saying what it
-answers and how to read what it prints, and the last section is the offline
-harness under `scripts/` that fits and scores the weights `terms` states.
+Six measurements ask what the engine gave up rather than how large a tree it
+walked. Five are of the search: four are arguments of their own, `residuals`,
+`cutoffs`, `reductions` and `effort`, and the fifth is the bench's `audit`
+word. The sixth, `terms`, is of the evaluation. Each has a section here saying
+what it answers and how to read what it prints, and the last section is the
+offline harness under `scripts/` that fits and scores the weights `terms`
+states.
 
 [DEVELOPMENT.md](DEVELOPMENT.md) has the bench itself, along with the build,
 the tests and everything else a change needs before it is committed. Nothing
@@ -376,9 +377,149 @@ same way: `recording_leaves_the_measured_search_where_it_was` in
 `arche-core/src/reduction.rs` searches each of its positions twice, once
 with the ledger armed and once without, and holds the two counts equal.
 
+## What a rule frees, and where the freed effort goes
+
+The four above each describe one tree. A saving is a difference between
+two, so no row any of them writes can carry one: `residuals` prices a
+shortcut's error and carries no effort column, and the `cost` columns
+`cutoffs` and `reductions` do carry say what one configuration spent. That
+is the gap `arche effort` fills:
+
+```
+target/release/arche effort [depth] [every <n>] [cap <n>] [epd <file>] [off <switch>] [budget <n>]
+```
+
+It searches the suite twice. The candidate side is `SearchConfig::default()`
+and the baseline is the default with the switch `off` names set false, and
+then the two runs are joined by the node.
+
+The join works because the sampling key is a function of the node and
+nothing about the run. Both sides record under one lane, so wherever both
+reached a position at a depth they kept it or dropped it alike, and a key
+one side holds and the other does not is a fact about the trees rather than
+about the buffers. A counter over the stream would take two unrelated sets
+and the join would be empty.
+
+`off` names a `SearchConfig` field and is refused against the list of them
+rather than being given a flag each, which would cost an edit at every new
+rule. The names are the fields: `reverse_futility`, `null_move`,
+`adaptive_null_move`, `delta_margin`, `see_pruning`,
+`late_move_reductions`, `deep_reductions`, `late_move_pruning`,
+`quiet_futility`, `reduction_table`, `deep_index_rule`, `move_memory` and
+`aspiration`. `taint` is not among them: it is a policy with four values
+rather than a switch, and `residuals` takes it already. **`off` absent
+means both sides are the default**, which the header says as `off none`.
+That run is the null, and it is the one to take first: see the end of this
+section.
+
+Each joined key is one of three outcomes, and the three are the whole of
+the reading. `both` is a node in both trees, so the difference in what sat
+under it is effort the rule moved. `only_off` is a node the baseline
+reached and the candidate never did, so what sat under it is effort the
+rule removed outright. `only_on` is a node the candidate reached and the
+baseline never did, so what sits under it is effort the rule created. The
+last is the population nothing else here reads, and the one a question
+about where a saving went turns on.
+
+Each row is `depth outcome visits_on visits_off cuts_on cuts_off cost_on
+cost_off delta fen`, whitespace separated with the fen last so a row parses
+left to right. `visits` is how many times that side's move loop answered
+this position at this depth over the whole deepening, which a deepening
+search makes larger than one; a rule that changes how often a node is
+re-reached changes that column, and the change is itself reallocation.
+`cuts` is how many of those visits ended in a cutoff rather than in the
+loop running out, so a rule that turns held nodes into cut ones reads here
+without a second run of the census. `cost` is the nodes spent under the
+node summed over that side's visits, the census's `cost` read the same way,
+with quiescence in it because the node counter counts quiescence. `delta`
+is `cost_on - cost_off`, signed, derivable and printed anyway so a row is
+read without re-deriving it. No column prints `-`: the absent side of an
+`only_` row spent nothing rather than having no value, and a 0 is what lets
+the column be summed. The fen is the candidate's where the row has one and
+the baseline's otherwise, and the key covers neither the fifty move counter
+nor the move number, so the two sides at one key can carry different ones.
+
+The events are offered where the census offers them, at the two places
+`alpha_beta`'s move loop answers, so quiescence and the root are out of
+scope as they are there, and the rows are the same full width population.
+
+The run ends with a line per depth and a line per position. **The depth
+line's `nodes on` and `nodes off` are exact and not sampled**: every
+offered event is counted into a per depth tally on each side, so those
+counts read the same at `every 1` and at `every 1000`, and the sampled rows
+beside them are for attribution. The cost columns on that line do not add
+down the depths, because a depth three node's cost holds its depth one
+descendants'; the node columns do, since every node has one depth. That
+asymmetry is why the node counts are the headline and the costs stand
+beside them.
+
+The position line is exact too, and its two node counts are each side's
+whole search, quiescence included. At the same depth and configuration the
+candidate's is the bench's number position by position, which is what makes
+that line the check against the bench and the place a switch's whole tree
+delta is read. The per depth tallies count full width nodes alone and are
+about a tenth of it, so they are checked against each other and never
+against the bench.
+
+`budget <n>` holds both sides to a node count as well as to the depth, and
+they stop at whichever comes first. The speed channel is then held out by
+construction, since a side the budget binds spends exactly it, and what is
+left on the position line is the depth each reached and the move each
+chose. That is the offline half of a reading this engine has otherwise only
+ever taken in games, and it costs two searches rather than a thousand of
+them. Read the depth and the move as answering different questions there:
+an iteration cut short by the budget still answers with a move that beat
+its alpha, so `best` is what the side would play while `reached` is the
+deepest depth it finished, and the score beside them is a floor rather than
+a value. At equal depth no iteration is cut short and the two agree.
+
+The sampling is the census's mechanism under a lane of its own, shared by
+the two sides. Two guards sit on the join. **The trim**: a reservoir keeps
+the smallest keys it is offered and gives up the rest, so if one side
+overflows and the other does not, a key kept on one and dropped on the
+other reads as `only_on` or `only_off` and the buffer manufactures the
+instrument's own finding. After both runs the smaller of the two sides'
+retained bounds is taken and every row at or above it is dropped from both,
+which the header states as `bound` and `trimmed`; a side that did not
+overflow kept everything the rate wanted and bounds nothing, so a run where
+neither overflowed says `trimmed 0`. **The collision guard**: two positions
+can agree on a 64 bit key, and a key whose visits disagree about the node,
+within one side or across the two, is counted as `collisions` and dropped.
+A row that is two positions is not a reading, and a run of minutes is not
+worth aborting over one.
+
+What it cannot see is worth saying. A change that moves no node reads as
+`both` with a zero delta everywhere, correctly, and is priced by
+instructions and the clock instead. A rule with no switch has to be given
+one first. A rule that moves effort inside quiescence moves the cost
+columns without producing rows of its own, which is the census's hole as
+well. And a node count is not a time: the quiet futility margin is 3.80% of
+the bench by count and less than that by work, and this instrument counts.
+
+**Take the null run first.** `effort 9` with no `off` searches the same
+configuration twice, so every joined key must read `both`, every `delta`
+must be 0, `only_on` and `only_off` must be empty, and the two sides' per
+depth node counts must be equal at every depth. Anything else is the
+instrument and not the tree, and no reading is worth quoting until that run
+is clean.
+
+Recording changes nothing. The reservoir is armed only by the command, an
+engine without one searches exactly the tree it searched before there was
+an effort instrument, and an armed engine's node counts equal a disarmed
+one's position by position, which
+`recording_leaves_the_measured_search_where_it_was` in
+`arche-core/src/effort.rs` asserts. This is the one instrument that
+searches under a configuration its caller chose, so
+`recording_changes_nothing_under_the_baseline_configuration_either` asks
+the same of a baseline side. There is no pinned count for a configuration
+with a switch off and there must not be one, since an instrument that
+pinned a count for every switch would be edited by every rule; what is
+asserted is armed equals disarmed under whatever configuration it is
+handed.
+
 ## What a position's evaluation is made of
 
-The three instruments above measure the search. This one measures the
+The four instruments above measure the search. This one measures the
 evaluation, and it is the engine's half of the tuner:
 
 ```

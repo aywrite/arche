@@ -171,11 +171,12 @@ archived games, and the code map below says what each one counts.
 - **bench.rs**: A fixed suite of positions searched to a fixed depth,
   printing exact node counts. This is what a commit's `Bench:` trailer
   states and what CI verifies.
-- **recorder.rs**: What the three recorders below share. The reservoir
+- **recorder.rs**: What the four recorders below share. The reservoir
   that hangs off an engine and keeps one node in every n, the loop that
-  searches a suite with one armed, the spread the three key by, and the
-  window a sample reads off the node. An engine with nothing armed
-  searches the tree it searched before there was a reservoir at all.
+  searches a suite with one armed, the spread they key by, the six lanes
+  that keep their kept sets apart, and the window a sample reads off the
+  node. An engine with nothing armed searches the tree it searched before
+  there was a reservoir at all.
 - **residual.rs**: What the shortcuts cost in accuracy. It samples the
   nodes reverse futility and the null move pass answered, and the nodes
   reverse futility could have answered and did not, then replays each one
@@ -189,6 +190,11 @@ archived games, and the code map below says what each one counts.
   sampled scout, and a fail low is replayed at the depth its move was
   denied to say whether the reduction threw a move away. Driven by the
   `reductions` argument.
+- **effort.rs**: What a rule frees, and where the freed effort goes. The
+  one instrument that describes two trees: it searches the suite twice,
+  once with a named switch off, and joins the two runs by the node, so a
+  row says whether each side reached it and what each spent under it.
+  Driven by the `effort` argument.
 - **tune.rs**: What a position's evaluation is made of. The evaluation is
   linear in the tables and the material values everywhere it is not a drawn
   signature, so a position's score is a dot product, and this writes down the
@@ -210,12 +216,12 @@ archived games, and the code map below says what each one counts.
 ## Code map: src
 
 - **main.rs**: Argument handling. `bench` runs the suite and exits, and so
-  do the four research commands, `residuals`, `cutoffs`, `reductions` and
-  `terms`. No argument starts the UCI loop.
+  do the five research commands, `residuals`, `cutoffs`, `reductions`,
+  `effort` and `terms`. No argument starts the UCI loop.
 - **uci.rs**: The protocol: what each command means, the options the
   handshake advertises, and what a `go` may spend. Every line reaches it
   through the session loop, on the thread the engine was built on.
-- **instruments.rs**: What the four research commands take, and what each
+- **instruments.rs**: What the five research commands take, and what each
   one runs. Not the protocol (an interface cannot ask for any of them, and
   would not wait for the answer), which is why they are here rather than
   beside the commands they are spelled like.

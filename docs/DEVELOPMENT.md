@@ -7,11 +7,11 @@ cargo build --release
 ```
 
 The binary is written to `target/release/arche` (`arche.exe` on windows). It starts
-in uci mode immediately. Seven arguments do anything else, five of them
+in uci mode immediately. Eight arguments do anything else, six of them
 measurements. `bench`, with the depth, table and policy words described below,
-prints the bench and exits; `residuals`, `cutoffs` and `reductions` measure the
-search and `terms` measures the evaluation, each with a section of its own in
-[INSTRUMENTS.md](INSTRUMENTS.md). `--version` and `--help` are answered too.
+prints the bench and exits; `residuals`, `cutoffs`, `reductions` and `effort`
+measure the search and `terms` measures the evaluation, each with a section of
+its own in [INSTRUMENTS.md](INSTRUMENTS.md). `--version` and `--help` are answered too.
 
 The release profile uses link time optimisation and a single codegen unit, so a
 release build is noticeably slower to compile than a debug one but is several

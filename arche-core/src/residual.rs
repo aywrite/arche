@@ -71,15 +71,13 @@ impl Shortcut {
         }
     }
 
-    /// What the kind contributes to a sampling key: arbitrary constants
-    /// differing in their top two bits, so at any rate coarser than one in
-    /// four the same position and depth is never kept under two kinds at
-    /// once.
-    fn salt(self) -> u64 {
+    /// The lane the kind keys under. The six are declared together in
+    /// `recorder.rs`, which says what keeps them apart and asserts it.
+    fn lane(self) -> u64 {
         match self {
-            Shortcut::ReverseFutility => 0x51ed_2701_c3f8_4d95,
-            Shortcut::NullMove => 0xa24b_af09_7d16_e8c3,
-            Shortcut::ShadowFutility => 0x38c6_54da_0b9e_7f12,
+            Shortcut::ReverseFutility => recorder::REVERSE_FUTILITY_LANE,
+            Shortcut::NullMove => recorder::NULL_MOVE_LANE,
+            Shortcut::ShadowFutility => recorder::SHADOW_FUTILITY_LANE,
         }
     }
 }
@@ -91,7 +89,7 @@ impl Shortcut {
 /// membership with any change to the tree, which reads as a shift in the
 /// distribution.
 pub fn sample_key(position_key: u64, kind: Shortcut, depth: u8) -> u64 {
-    recorder::sample_key(position_key, kind.salt(), depth)
+    recorder::sample_key(position_key, kind.lane(), depth)
 }
 
 /// One node a shortcut answered, with enough of the node to search it
@@ -708,7 +706,8 @@ mod tests {
         }
     }
 
-    /// The sampler's contract, asked the way `fixtures` asks all three.
+    /// The sampler's contract, asked the way `fixtures` asks every
+    /// recorder's.
     #[test]
     fn recording_leaves_the_measured_search_where_it_was() {
         recording_leaves_the_search_where_it_was(

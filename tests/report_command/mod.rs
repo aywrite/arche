@@ -2,9 +2,15 @@
 // Copyright (C) 2022-2026 Andrew Wright
 
 //! Running one of the report commands against the real binary. Cutoffs,
-//! reductions and residuals all print a header naming what the run was asked
-//! for, a row a sample and a summary, so the spawning and the splitting live
-//! here and each file beside this one says what its own rows mean.
+//! reductions, residuals and effort all print a header naming what the run
+//! was asked for, a row a sample and a summary, so the spawning and the
+//! splitting live here and each file beside this one says what its own rows
+//! mean.
+//!
+//! Effort extends the shared header rather than matching it, because it
+//! searches two configurations and has an events count a side. Its two are
+//! read by `paired_events` and the single one by `events`, so a header that
+//! lost its second count fails here rather than being read as the first.
 
 use std::io::Read;
 use std::process::{Command, Stdio};
@@ -76,15 +82,48 @@ pub fn run(arguments: &[&str]) -> Printed {
     printed
 }
 
+// Each test binary beside this one compiles the module afresh and reads
+// the header its own instrument prints, so no one of them calls all three
+// of these and every one of them would otherwise warn about the rest.
+#[allow(dead_code)]
 impl Printed {
     /// The events the header states, the denominator of every rate.
     pub fn events(&self) -> u64 {
+        self.number_after("events")
+    }
+
+    /// The two a paired run states, as `events on <a> off <b>`: the
+    /// candidate side's and the baseline side's.
+    pub fn paired_events(&self) -> (u64, u64) {
+        let words: Vec<&str> = self.header.split(' ').collect();
+        let at = words
+            .iter()
+            .position(|word| *word == "events")
+            .unwrap_or_else(|| panic!("no events in header: {}", self.header));
+        assert_eq!(
+            words.get(at + 1).copied(),
+            Some("on"),
+            "header does not state an events count a side: {}",
+            self.header
+        );
+        assert_eq!(words.get(at + 3).copied(), Some("off"), "{}", self.header);
+        let read = |at: usize| -> u64 {
+            words[at]
+                .parse()
+                .unwrap_or_else(|e| panic!("events is not a number in {}: {}", self.header, e))
+        };
+        (read(at + 2), read(at + 4))
+    }
+
+    /// The number the header states after `word`, for a caller that knows
+    /// one stands there.
+    pub fn number_after(&self, word: &str) -> u64 {
         self.header
             .split(' ')
-            .skip_while(|word| *word != "events")
+            .skip_while(|had| *had != word)
             .nth(1)
-            .unwrap_or_else(|| panic!("no events in header: {}", self.header))
+            .unwrap_or_else(|| panic!("no {} in header: {}", word, self.header))
             .parse()
-            .unwrap_or_else(|e| panic!("events is not a number in {}: {}", self.header, e))
+            .unwrap_or_else(|e| panic!("{} is not a number in {}: {}", word, self.header, e))
     }
 }

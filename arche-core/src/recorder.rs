@@ -1,14 +1,15 @@
 // SPDX-License-Identifier: GPL-3.0-or-later
 // Copyright (C) 2022-2026 Andrew Wright
 
-//! The reservoir the three recorders share.
+//! The reservoir the four recorders share.
 //!
-//! The residual sampler, the cutoff census and the reduction ledger each
-//! hang a reservoir off an engine, search a suite with it armed, and take
-//! back what it kept. Each has a module of its own for its event and its
-//! report; what is here is the loop that searches a suite with a reservoir
-//! armed, the reservoir itself, the key spread the three key by, and the
-//! window a sample reads off the node.
+//! The residual sampler, the cutoff census, the reduction ledger and the
+//! effort instrument each hang a reservoir off an engine, search a suite
+//! with it armed, and take back what it kept. Each has a module of its own
+//! for its event and its report; what is here is the loop that searches a
+//! suite with a reservoir armed, the reservoir itself, the spread they key
+//! by, the lanes that keep their kept sets apart, and the window a sample
+//! reads off the node.
 //!
 //! An engine with no reservoir armed searches the tree it searched before
 //! there was a reservoir at all, which the pinned bench counts stand behind.
@@ -59,12 +60,57 @@ impl Window {
 /// ratio, which shares no structure with the position key.
 const DEPTH_SPREAD: u64 = 0x9e37_79b9_7f4a_7c15;
 
+/// The lane each recorder keys under. Arbitrary constants, declared here
+/// together because what matters about them is a property of the six, and
+/// an assertion on that property needs the six in one place. Nothing here
+/// is a secret: a lane only keeps the recorders' choices of node apart, so
+/// it is not called a salt, which a scanner reads as a key.
+///
+/// They differ within their top three bits, so at any rate coarser than one
+/// in eight a node kept under one lane is not one another lane keeps. Six of
+/// the eight patterns are in use, and the two free ones are what a seventh
+/// recorder would take.
+pub(crate) const REVERSE_FUTILITY_LANE: u64 = 0x51ed_2701_c3f8_4d95;
+pub(crate) const NULL_MOVE_LANE: u64 = 0xa24b_af09_7d16_e8c3;
+pub(crate) const SHADOW_FUTILITY_LANE: u64 = 0x38c6_54da_0b9e_7f12;
+pub(crate) const CENSUS_LANE: u64 = 0xc5b9_128e_66d0_3a47;
+pub(crate) const LEDGER_LANE: u64 = 0x6d84_3b2f_51c9_07ea;
+/// The effort instrument's, used on both of its sides: the two runs join on
+/// the key, so a lane a side would sample two unrelated sets. They never run
+/// at once, which is what the invariant above is about.
+pub(crate) const EFFORT_LANE: u64 = 0xf3b7_0c95_a41e_d682;
+
+pub(crate) const LANES: [u64; 6] = [
+    REVERSE_FUTILITY_LANE,
+    NULL_MOVE_LANE,
+    SHADOW_FUTILITY_LANE,
+    CENSUS_LANE,
+    LEDGER_LANE,
+    EFFORT_LANE,
+];
+
+/// The invariant, checked by the compiler. It had been a comment in three
+/// modules and asserted nowhere, so a sixth lane copied from a fifth would
+/// have compiled and quietly halved what either recorder saw.
+const _: () = {
+    let mut lane = 0;
+    while lane < LANES.len() {
+        let mut other = lane + 1;
+        while other < LANES.len() {
+            assert!(
+                LANES[lane] >> 61 != LANES[other] >> 61,
+                "two sampling lanes share their top three bits"
+            );
+            other += 1;
+        }
+        lane += 1;
+    }
+};
+
 /// The key an event is sampled by: the position, the depth and the
-/// recorder's own word, and nothing about the run, so two runs of the same
-/// search record the same nodes and the three recorders' kept sets stay
-/// apart. Each recorder wraps this with its word. Nothing here is a secret:
-/// the word only keeps the recorders' choices of node apart, so the
-/// parameter is not called a salt, which a scanner reads as a key.
+/// recorder's own lane, and nothing about the run, so two runs of the same
+/// search record the same nodes and the recorders' kept sets stay apart.
+/// Each recorder wraps this with its lane.
 pub(crate) fn sample_key(position_key: u64, lane: u64, depth: u8) -> u64 {
     position_key ^ lane ^ u64::from(depth).wrapping_mul(DEPTH_SPREAD)
 }
@@ -286,8 +332,8 @@ pub(crate) fn record<T: Recorded>(
     sampler.drain()
 }
 
-/// What the three recorders' tests share: the positions they record over,
-/// and the contract each of them is held to.
+/// What the recorders' tests share: the positions they record over, and
+/// the contract each of them is held to.
 #[cfg(test)]
 pub(crate) mod fixtures {
     use crate::bench::{self, Position};
