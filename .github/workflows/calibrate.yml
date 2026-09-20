@@ -157,7 +157,7 @@ jobs:
         with:
           fetch-depth: 0
 
-      - uses: aywrite/mache/actions/resolve-ref@de8772a38f45935d692303d3465c1b4ccbb81b31 # v0.3.0
+      - uses: aywrite/mache/actions/resolve-ref@a6b91eea953c23d8fa9ffbde1e216a8843e4c70a # v0.4.0
         id: candidate
         with:
           ref: ${{ inputs.candidate }}
@@ -165,7 +165,7 @@ jobs:
           # nothing named means the commit this was dispatched on
           when_empty: head
 
-      - uses: aywrite/mache/actions/plan-ladder@de8772a38f45935d692303d3465c1b4ccbb81b31 # v0.3.0
+      - uses: aywrite/mache/actions/plan-ladder@a6b91eea953c23d8fa9ffbde1e216a8843e4c70a # v0.4.0
         id: plan
         with:
           games: ${{ inputs.games }}
@@ -211,7 +211,7 @@ jobs:
         with:
           fetch-depth: 0
 
-      - uses: aywrite/mache/actions/setup@de8772a38f45935d692303d3465c1b4ccbb81b31 # v0.3.0
+      - uses: aywrite/mache/actions/setup@a6b91eea953c23d8fa9ffbde1e216a8843e4c70a # v0.4.0
         id: tools
 
       # the cache keeps the dependencies; the engine is built from an export
@@ -238,7 +238,7 @@ jobs:
             || { echo "::error::cannot build ${OPPONENT}"; exit 1; }
           ls -l "tools/${OPPONENT}"
 
-      - uses: aywrite/mache/actions/play-shard@de8772a38f45935d692303d3465c1b4ccbb81b31 # v0.3.0
+      - uses: aywrite/mache/actions/play-shard@a6b91eea953c23d8fa9ffbde1e216a8843e4c70a # v0.4.0
         id: play
         with:
           candidate: ${{ env.ENGINE_NAME }}
@@ -347,7 +347,7 @@ jobs:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
 
       # no harness to build and no book to fetch: this job only reads games
-      - uses: aywrite/mache/actions/setup@de8772a38f45935d692303d3465c1b4ccbb81b31 # v0.3.0
+      - uses: aywrite/mache/actions/setup@a6b91eea953c23d8fa9ffbde1e216a8843e4c70a # v0.4.0
         with:
           estimator_only: true
 
@@ -360,7 +360,7 @@ jobs:
           pattern: calibrate-${{ github.run_id }}-${{ github.run_attempt }}-*
           path: rungs
 
-      - uses: aywrite/mache/actions/summarise-gauntlet@de8772a38f45935d692303d3465c1b4ccbb81b31 # v0.3.0
+      - uses: aywrite/mache/actions/summarise-gauntlet@a6b91eea953c23d8fa9ffbde1e216a8843e4c70a # v0.4.0
         id: estimate
         with:
           games: rungs
