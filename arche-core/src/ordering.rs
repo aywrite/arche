@@ -92,6 +92,18 @@ const NOWHERE: Play = Play {
 /// ordering behind one the search knows nothing about.
 type History = [[[i32; 64]; 64]; 2];
 
+/// What `order` worked out about the list while it keyed it, which the
+/// search would otherwise work out again move by move.
+pub(crate) struct Ordered {
+    /// How many moves the front holds: the table's move, when the list
+    /// has it, and the captures the swap prices as winning or even.
+    pub(crate) front: usize,
+    /// Where the table's move sorted, or none when the list does not
+    /// hold it. The search plays that move before the list exists, so
+    /// this is the place its loop passes over.
+    pub(crate) table_at: Option<usize>,
+}
+
 pub(crate) struct MoveOrdering {
     /// Scratch for the keys, reused by every sort. As a local it was a
     /// five hundred byte memset per list ordered; here only the first
@@ -220,7 +232,9 @@ impl MoveOrdering {
     /// quiet moves behind them in generated order; the losing captures,
     /// sorted, at the end. Returns how many moves the front holds, and the
     /// search calls `order_quiets` when it reaches the first move past
-    /// them, so a node the front cuts off never scores a quiet move.
+    /// them, so a node the front cuts off never scores a quiet move. It
+    /// returns where the table's move sorted as well, since the search
+    /// has to pass over a move it played before the list was generated.
     ///
     /// The table's move keeps its bonus even when the search already
     /// played it without generating and skips it here: one it declined to
@@ -244,7 +258,7 @@ impl MoveOrdering {
         moves: &mut MoveList,
         table_move: Option<Play>,
         ply: Option<usize>,
-    ) -> usize {
+    ) -> Ordered {
         let keys = &mut self.keys;
         let sorted = &mut self.sorted;
         // most lists are short (quiescence lists average under nine
@@ -258,7 +272,17 @@ impl MoveOrdering {
                 history: &self.history[board.active_color as usize],
             });
             moves.sort_by_cached_key(|m| ordering_key(board, m, table_move, quiet.as_ref()));
-            return moves.len();
+            // the same key orders this path, so the table's move is at
+            // the head here too. Three lists over the bench reach it, so
+            // the comparison is read off the sorted list rather than
+            // carried out of the closure
+            let table_at = table_move
+                .is_some_and(|table_move| moves.first() == Some(&table_move))
+                .then_some(0);
+            return Ordered {
+                front: moves.len(),
+                table_at,
+            };
         }
         // a quiet move keys zero, between the front (negative keys) and
         // the losing captures (positive), and the stable sort keeps the
@@ -267,9 +291,18 @@ impl MoveOrdering {
         let mut front = 0;
         let mut scored = 0;
         let mut plain = 0;
+        let mut table_at = None;
         for (i, m) in moves.iter().enumerate() {
-            let key = if m.capture.is_some() || table_move == Some(*m) {
-                ordering_key(board, m, table_move, None)
+            // the comparison the key makes anyway, made once here: it
+            // says where the table's move is as well as what it keys,
+            // which is what spares the search asking it of every move
+            let is_table_move = table_move == Some(*m);
+            let key = if is_table_move {
+                // nothing else reaches its bonus, so it sorts to the head
+                table_at = Some(0);
+                keyed(board, m, true, None)
+            } else if m.capture.is_some() {
+                keyed(board, m, false, None)
             } else {
                 0
             };
@@ -284,7 +317,14 @@ impl MoveOrdering {
             }
         }
         sort_on_the_stack(moves, &mut keys[..scored], plain, front, sorted);
-        front
+        if let Some(at) = table_at {
+            debug_assert_eq!(
+                Some(moves[at]),
+                table_move,
+                "the table's move did not sort to the place reported"
+            );
+        }
+        Ordered { front, table_at }
     }
 
     /// The second stage: `rest` starts at the first move past the front,
@@ -393,6 +433,13 @@ fn ordering_key(
     table_move: Option<Play>,
     quiet: Option<&Quiet<'_>>,
 ) -> i64 {
+    keyed(board, m, table_move == Some(*m), quiet)
+}
+
+/// The same, for a caller that has already compared the move with the
+/// table's and has the answer to hand.
+#[inline(always)]
+fn keyed(board: &Board, m: &Play, is_table_move: bool, quiet: Option<&Quiet<'_>>) -> i64 {
     // one look at the capture field rather than two
     let mut score = match m.capture {
         Some(victim) => capture_score(board, m, victim),
@@ -401,7 +448,7 @@ fn ordering_key(
             None => 0,
         },
     };
-    if table_move == Some(*m) {
+    if is_table_move {
         score += TABLE_MOVE_BONUS;
     }
     -score
@@ -559,7 +606,9 @@ mod order {
     fn ordered_by(fen: &str, table_move: Option<Play>, ordering: &mut MoveOrdering) -> Vec<Play> {
         let board = Board::from_fen(fen).unwrap();
         let mut moves = board.generate_moves();
-        let front = ordering.order(&board, &mut moves, table_move, Some(0));
+        let front = ordering
+            .order(&board, &mut moves, table_move, Some(0))
+            .front;
         ordering.order_quiets(&board, &mut moves[front..], 0);
         moves.to_vec()
     }
@@ -640,8 +689,12 @@ mod order {
         ] {
             let table_move = table_move.map(|name| named(&generated, name));
             let mut moves = generated.clone();
-            let front = MoveOrdering::new().order(&board, &mut moves, table_move, ply);
+            let ordered = MoveOrdering::new().order(&board, &mut moves, table_move, ply);
+            let front = ordered.front;
             assert_eq!(front, 2 + usize::from(table_move.is_some()));
+            // the place the search skips, which it plays without
+            // generating and must not play again
+            assert_eq!(ordered.table_at.map(|at| moves[at]), table_move);
             for (i, m) in moves.iter().enumerate() {
                 let winning = m.capture.is_some() && board.see(m) >= 0;
                 assert_eq!(i < front, winning || table_move == Some(*m), "{m} at {i}");
@@ -665,7 +718,9 @@ mod order {
             let table_move = table_move.map(|name| named(&moves, name));
             let spilled = moves.len() > crate::board::MOVE_LIST_INLINE;
             assert_eq!(spilled, fen == CROWDED, "{fen}");
-            let front = MoveOrdering::new().order(&board, &mut moves, table_move, None);
+            let ordered = MoveOrdering::new().order(&board, &mut moves, table_move, None);
+            let front = ordered.front;
+            assert_eq!(ordered.table_at.map(|at| moves[at]), table_move, "{fen}");
             if spilled {
                 assert_eq!(front, moves.len(), "{fen}");
                 continue;
