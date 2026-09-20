@@ -1009,20 +1009,72 @@ impl Board {
         attackers
     }
 
+    /// The piece boards as three bit planes of the code `piece as u8 + 1`,
+    /// so pawn is 1 and king is 6. A square's bit is set in plane `k` when
+    /// bit `k` of its piece's code is set, which makes the six ORs below
+    /// the codes of all sixty four squares at once. An empty square is in
+    /// no plane and reads 0, which is no piece's code.
+    ///
+    /// `the_code_planes_carry_what_the_squares_carry` holds this against
+    /// `get_piece_index`, so a reordered `Piece` fails there rather than by
+    /// ranking a queen under a pawn in the swap.
+    #[inline]
+    fn code_planes(&self) -> [u64; 3] {
+        [
+            self.pawns() | self.bishops() | self.queens(),
+            self.knights() | self.bishops() | self.kings(),
+            self.rooks() | self.queens() | self.kings(),
+        ]
+    }
+
     /// The least valuable piece of `set`: the bit of one such piece and what
-    /// it is. `set` is a subset of one side's pieces.
-    fn least_valuable(&self, set: u64) -> Option<(u64, Piece)> {
+    /// it is. `set` is a subset of one side's pieces, so every square in it
+    /// is occupied and carries a code of 1 to 6.
+    ///
+    /// The minimum is taken a plane at a time from the top bit down. Where
+    /// any square of the set has the bit clear, those squares are kept and
+    /// the bit is clear in the answer; where none has, every square keeps
+    /// it and so does the answer. Three masked tests rather than a walk
+    /// down the piece boards, which returned at whichever board the set
+    /// first met and so branched on the attacker's kind.
+    #[inline]
+    fn least_valuable(set: u64, planes: [u64; 3]) -> Option<(u64, Piece)> {
+        // the code as a piece. Slots 0 and 7 are no piece's code: 0 is an
+        // empty square, which is not in the set, and no code sets all
+        // three bits
+        const BY_CODE: [Piece; 8] = [
+            Piece::Pawn,
+            Piece::Pawn,
+            Piece::Knight,
+            Piece::Bishop,
+            Piece::Rook,
+            Piece::Queen,
+            Piece::King,
+            Piece::King,
+        ];
         // every swap ends by asking this of an empty set
         if set == 0 {
             return None;
         }
-        for piece in Piece::PIECES {
-            let subset = set & self.pieces[piece as usize];
-            if subset != 0 {
-                return Some((subset & subset.wrapping_neg(), piece));
-            }
+        let mut smallest = set;
+        let mut code = 0u32;
+        for (bit, plane) in [(4u32, planes[2]), (2, planes[1]), (1, planes[0])] {
+            let without = smallest & !plane;
+            // all ones when every square left has this bit of its code set
+            let none = ((without == 0) as u64).wrapping_neg();
+            smallest = (smallest & none) | (without & !none);
+            code |= bit & (none as u32);
         }
-        None
+        // an empty square is in no plane, so it would read 0 and win the
+        // minimum. The set is occupied by construction and this says so
+        debug_assert!(
+            (1..=6).contains(&code),
+            "least_valuable read code {code} from a set holding an empty square"
+        );
+        Some((
+            smallest & smallest.wrapping_neg(),
+            BY_CODE[(code & 7) as usize],
+        ))
     }
 
     /// Static exchange evaluation: what this capture wins, in centipawns,
@@ -1064,13 +1116,16 @@ impl Board {
         // are found once; masking by `occupied` drops the ones that have
         // already captured
         let steppers = self.steppers_onto(m.to);
+        // the piece boards do not change either, so the codes the least
+        // valuable attacker is read off are worked out once as well
+        let planes = self.code_planes();
         loop {
             let side_mask = match side {
                 Color::White => self.white,
                 Color::Black => self.black,
             };
             let attackers = (steppers | self.sliders_onto(m.to, occupied)) & occupied & side_mask;
-            let Some((bit, piece)) = self.least_valuable(attackers) else {
+            let Some((bit, piece)) = Self::least_valuable(attackers, planes) else {
                 break;
             };
             d += 1;
@@ -4121,6 +4176,32 @@ mod see {
             walk(&mut board, 2, &mut priced);
         }
         assert!(priced > 2000, "only {} captures priced", priced);
+    }
+
+    /// The planes are the piece codes bit by bit, so they have to say what
+    /// `squares` says on every square of a position. A plane built from the
+    /// wrong boards, or a reordered `Piece`, would rank attackers wrongly in
+    /// the swap and nothing else would notice.
+    #[test]
+    fn the_code_planes_carry_what_the_squares_carry() {
+        for fen in super::fens::CORE
+            .iter()
+            .chain([super::fens::KIWIPETE, super::fens::PROMOTIONS].iter())
+        {
+            let board = Board::from_fen(fen).unwrap();
+            let planes = board.code_planes();
+            for index in 0..64u8 {
+                let mut code = 0u32;
+                for (bit, plane) in planes.iter().enumerate() {
+                    code |= (((plane >> index) & 1) as u32) << bit;
+                }
+                let expected = match board.get_piece_index(index) {
+                    Some(piece) => piece as u32 + 1,
+                    None => 0,
+                };
+                assert_eq!(code, expected, "square {} of {}", index, fen);
+            }
+        }
     }
 }
 
