@@ -360,6 +360,33 @@ of these again without saying what is different this time.
   long enough for 1.7% of the tree to show, or with the skip moved to where
   it takes more than that. The `epd <file>` word on the reductions argument
   the band was read with landed on its own and stays.
+- Fitting the attention model against the two points the gates read, rather
+  than by log loss over every row of the reduction ledger. The thirteen
+  integers come from a logistic regression over the whole ledger, while the
+  search reads the ranking at two pinned coverages, so a direct search for
+  the vector that lowers the attention rate inside the skipped region and
+  the deeper-scouted band is a different objective and the one the gate
+  wants. Measured on 2026-09-19 at `54d85b9` over the 1,428 game roots at
+  depth 8 (`reductions 8 every 4`), with the features, the corpus, the split
+  by source game and the search policy held fixed so the objective was the
+  only variable. On the half no fit saw, at coverage pinned to the live
+  thresholds', it lowers the two rates' mean 1.145 times against the shipped
+  vector and 1.121 times against a logistic refit of the same rows (95%
+  [1.070, 1.174]); the refit on its own reads 1.022 with an interval
+  covering one, so refitting the current objective buys nothing that ledger
+  can read at either gate. **Nine tenths of the gain is wasted scouts.** At
+  the deep reduction the fail highs fall 1.529 times (95% [1.420, 1.668])
+  while the harmful fail lows, the moves written off wrongly, move 0.995
+  times (95% [0.962, 1.030]); decomposed on the quantity the bar read, 90.7%
+  of the gain is those fail highs and 11.5% is late move pruning's own
+  region, where every attention row is a harmful fail low. So about a ninth
+  of it is a real reduction in errors, at the gate whose rate that corpus
+  resolves worst. The label these weights are fitted on adds a wasted scout
+  to a wrong answer, and an objective over it moves mostly the cheaper one,
+  because that is where the rows are. Two grouped refits and this search
+  have now produced no vector worth a match. Re-ask with a feature the model
+  does not have, or with the label split into the two costs, not with
+  another fit.
 - Prefetching a child's transposition slot straight after `make_move`, 6.7%
   slower over six interleaved rounds. The prefetch sits immediately before the
   recursive call and the child probes the table almost first, so there is no
