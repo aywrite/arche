@@ -8,7 +8,7 @@ use crate::eval;
 use crate::late_move;
 use crate::limits::Limits;
 use crate::misc::{Color, Score};
-use crate::ordering::MoveOrdering;
+use crate::ordering::{MoveOrdering, Ordered};
 use crate::play::Play;
 use crate::recorder::{Sampler, Window};
 use crate::reduction;
@@ -1507,7 +1507,7 @@ impl AlphaBeta {
         // `front` is the table's move and the captures the swap prices as
         // winning or even; every capture behind it is a losing one. Read
         // now, because the sort's keys do not survive the recursion below
-        let front = self.ordering.order(&self.board, &mut moves, pv_play, None);
+        let Ordered { front, .. } = self.ordering.order(&self.board, &mut moves, pv_play, None);
 
         // quiescence never reads a draw itself, but a search trusting
         // tainted scores can cut on one inside a capture tree
@@ -2060,7 +2060,14 @@ impl AlphaBeta {
             self.board.generate_moves()
         };
         let ply = self.memory_ply();
-        let front = self.ordering.order(&self.board, &mut moves, pv_play, ply);
+        let Ordered { front, table_at } =
+            self.ordering.order(&self.board, &mut moves, pv_play, ply);
+        // the place the loop passes over, since the table's move was
+        // searched above before this list existed. `order` sorts by
+        // `pv_play` and the search played `tt_tried`, which differ when
+        // `is_pseudo_legal` refused the move, so a move nothing played is
+        // not skipped here
+        let tt_at = if tt_tried.is_some() { table_at } else { None };
 
         // how many moves the node has searched, which is what makes a quiet
         // move late; the table's move, when searched, is the first
@@ -2103,9 +2110,10 @@ impl AlphaBeta {
                 }
             }
             let m = &moves[i];
-            if tt_tried == Some(*m) {
-                // searched before the list existed; this is where its place
-                // in the list is known
+            if tt_at == Some(i) {
+                // searched before the list existed, at the place `order`
+                // reported it sorted to
+                debug_assert_eq!(tt_tried, Some(*m), "the place is not the table's move");
                 if tt_searched {
                     made.mark(i);
                 }
@@ -2405,20 +2413,12 @@ impl AlphaBeta {
         // the Aborted arm of iterative_deepening_search
         let pv_play = self.transpositions.ordering_play(&self.board);
         let mut moves = self.board.generate_moves();
-        // no memories at the root: the swap reasons about this order
+        // no memories at the root: the swap reasons about this order. The
+        // swap's soundness rests on the table's move sorting first, and a
+        // change that broke that (a root bonus outbidding the table move,
+        // say) fails the debug assertion in `order` rather than answering
+        // with a move never compared to the old
         self.ordering.order(&self.board, &mut moves, pv_play, None);
-        // the swap's soundness rests on that ordering, so a change that
-        // breaks it (a root bonus outbidding the table move, say) fails
-        // here rather than answering with a move never compared to the old
-        if let Some(previous) = pv_play {
-            debug_assert!(
-                moves
-                    .iter()
-                    .position(|m| *m == previous)
-                    .is_none_or(|at| at == 0),
-                "the table's move is no longer first at the root"
-            );
-        }
 
         // the root reduces nothing: it has one window to answer under and
         // its moves are few enough to search whole
