@@ -812,23 +812,27 @@ for. `MATERIAL` is held for a first fit, because
 `eval::material` is read by the delta margin in quiescence, so moving it
 changes which captures quiescence skips, which changes the tree for a reason
 that has nothing to do with the evaluation's accuracy. `--free-material` lets
-it move, for the run that reports what holding it cost. `--hold-tables` holds
-the 768 table entries in the same way, which is what a fit for a term added
-after them does: the tables were fitted on these games already, so a refit of
-them beside a new term would leave a match unable to say which of the two it
-measured. `--hold-mobility` holds the eight mobility weights for the same
-reason, `--hold-shelter` the fourteen shelter ones, `--hold-pawn` the sixteen
-pawn structure ones and `--hold-king-attack` the eight king attack ones. Each
-term earns a hold of its own as it is fitted, and a fit of the newest term
-names every hold below it, so the shelter was fitted under two, the pawn
-structure under three and the king attack zone under four.
+it move, for the run that reports what holding it cost. `--hold tables` holds
+the table entries in the same way, which is what a fit for a term added after
+them does: the tables were fitted on these games already, so a refit of them
+beside a new term would leave a match unable to say which of the two it
+measured. `--hold` also takes any of the leaf terms the layout line names after
+material, given once for each term held, and a name that line does not carry is
+refused before the rows are read. How many weights a hold freezes is twice that
+term's number on the layout line, one half of the taper each, as the evaluation
+section above spells out.
+
+Each term earns a hold of its own as it is fitted, and a fit of the newest term
+names every hold below it. The shelter was fitted under `--hold tables --hold
+mobility`, the pawn structure under those two and `--hold shelter`, and the
+king attack zone under those three and `--hold pawn_structure`.
 
 A term already in the tree can be worth fitting again on a corpus grown since,
 and then the holds are not a ladder downward. Every other term is older than
-the fit rather than newer, so a mobility refit holds the tables below it and
-the shelter, the pawn structure and the king attack zone above, and the eight
-weights are the only thing that moves. Which holds a run passes follows from
-the one term it means to move, not from where that term sits in the vector.
+the fit rather than newer, so a mobility refit is `--hold tables --hold shelter
+--hold pawn_structure --hold king_attack` and the mobility weights are the only
+thing that moves. Which holds a run passes follows from the one term it means
+to move, not from where that term sits in the vector.
 
 `--sealed` names the sealed group in a file rather than drawing it from the
 keys, one pair key to a line. The key rule seals the same fifth of the archive

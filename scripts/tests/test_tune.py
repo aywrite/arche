@@ -665,27 +665,32 @@ def test_a_fit_is_free_to_move_the_leaf_terms_weights():
 
 
 def test_a_term_is_fitted_with_every_earlier_term_held():
-    """Each hold freezes its own block, so a fit of the newest term passes
+    """Each hold freezes its own block, so a fit of the newest term names
     every hold below it and leaves that term alone free."""
-    tables = tune.frozen_slots(LAYOUT, False, True)
+    tables = tune.frozen_slots(LAYOUT, False, ["tables"])
     assert not tables[LAYOUT.start["mobility"] : LAYOUT.start["shelter"]].any()
-    both = tune.frozen_slots(LAYOUT, False, True, True)
+    both = tune.frozen_slots(LAYOUT, False, ["tables", "mobility"])
     assert both[: LAYOUT.start["shelter"]].all()
     assert not both[LAYOUT.start["shelter"] : LAYOUT.start["pawn_structure"]].any()
-    three = tune.frozen_slots(LAYOUT, False, True, True, True)
+    three = tune.frozen_slots(LAYOUT, False, ["tables", "mobility", "shelter"])
     assert three[: LAYOUT.start["pawn_structure"]].all()
     assert not three[LAYOUT.start["pawn_structure"] : LAYOUT.start["king_attack"]].any()
-    four = tune.frozen_slots(LAYOUT, False, True, True, True, True)
+    four = tune.frozen_slots(
+        LAYOUT, False, ["tables", "mobility", "shelter", "pawn_structure"]
+    )
     assert four[: LAYOUT.start["king_attack"]].all()
     assert not four[LAYOUT.start["king_attack"] :].any()
 
 
 def test_a_refit_holds_the_terms_above_it_as_well_as_the_ones_below():
-    """A mobility refit holds the tables below it and the shelter and the pawn
-    structure above, so the eight weights are the only thing that moves.
-    Without the last hold the pawn weights move too, which is the confound
-    `1b0862a` found the first time a hold was missing."""
-    refit = tune.frozen_slots(LAYOUT, False, True, False, True, True, True)
+    """A mobility refit holds the tables below it and the shelter, the pawn
+    structure and the king attack zone above, so the mobility weights are the
+    only thing that moves. Without the pawn structure hold the pawn weights
+    move too, which is the confound `1b0862a` found the first time a hold was
+    missing."""
+    refit = tune.frozen_slots(
+        LAYOUT, False, ["tables", "shelter", "pawn_structure", "king_attack"]
+    )
     assert refit[: LAYOUT.start["mobility"]].all()
     assert not refit[LAYOUT.start["mobility"] : LAYOUT.start["shelter"]].any()
     assert refit[LAYOUT.start["shelter"] :].all()
@@ -694,33 +699,112 @@ def test_a_refit_holds_the_terms_above_it_as_well_as_the_ones_below():
 def test_the_king_attack_hold_freezes_its_eight_slots_and_no_more():
     """The hold takes the eight slots the term occupies and not one either
     side."""
-    held = tune.frozen_slots(LAYOUT, True, held_king_attack=True)
+    held = tune.frozen_slots(LAYOUT, True, ["king_attack"])
     assert held.sum() == 8
     assert held[LAYOUT.block("king_attack")].all()
     assert not held[: LAYOUT.start["king_attack"]].any()
+
+
+def test_the_tables_hold_freezes_the_two_table_blocks_and_no_more():
+    """`--free-material --hold tables` is a run the fit documents, and it
+    freezes the 768 table entries and nothing else. Material is not part of the
+    tables hold: it is held by leaving `--free-material` off, which every other
+    hold test here does, so nothing but this pins the two apart."""
+    held = tune.frozen_slots(LAYOUT, True, ["tables"])
+    assert held.sum() == LAYOUT.widths["midgame"] + LAYOUT.widths["endgame"]
+    assert held[LAYOUT.block("midgame")].all()
+    assert held[LAYOUT.block("endgame")].all()
+    assert not held[LAYOUT.start["material"] :].any()
+
+
+def test_every_term_the_layout_names_can_be_held():
+    """Every leaf term of `LAYOUT_LINE` is holdable, walked from the line
+    rather than listed again here. What that guards is the holds: a term is
+    held by the name it is laid out under, so one added to the line costs no
+    edit to `frozen_slots` and none here. It does cost a `BOUNDS` entry, and
+    until it has one every command refuses the run, which
+    `test_a_term_the_layout_names_and_nothing_prices_is_refused` covers."""
+    assert LAYOUT.terms
+    for name in LAYOUT.terms:
+        held = tune.frozen_slots(LAYOUT, True, [name])
+        assert held[LAYOUT.block(name)].all()
+        assert held.sum() == 2 * LAYOUT.widths[name]
+
+
+def test_a_hold_off_the_layout_is_refused():
+    """A term the run never printed is a typo or a name from another engine,
+    and either way the fit it asks for is not the fit it would get. The refusal
+    names it and says what it could have named. A command line value, so it is
+    refused the way a share outside (0, 1] is rather than raised at."""
+    with pytest.raises(SystemExit, match="a hold of knight_outposts") as refused:
+        tune.frozen_slots(LAYOUT, False, ["mobility", "knight_outposts"])
+    for name in LAYOUT.terms:
+        assert name in str(refused.value)
+    # the fixed blocks are not names either: the tables are held as `tables`
+    # and material by leaving `--free-material` off
+    for name in ("midgame", "endgame", "material"):
+        with pytest.raises(SystemExit, match=f"a hold of {name}"):
+            tune.frozen_slots(LAYOUT, False, [name])
+
+
+def test_every_recorded_fit_recipe_freezes_what_it_froze_before():
+    """The combinations the recorded fits were run under, each against the
+    blocks it froze. The old spelling was five flags in a fixed order and is
+    gone, so the masks are stated as the blocks rather than asked of it."""
+    # what a first fit freezes: material, held unless freed, and the two table
+    # blocks that `tables` names
+    base = ["material", "midgame", "endgame"]
+    recipes = [
+        (["tables"], base),
+        (["tables", "mobility"], [*base, "mobility"]),
+        (["tables", "mobility", "shelter"], [*base, "mobility", "shelter"]),
+        (
+            ["tables", "mobility", "shelter", "pawn_structure"],
+            [*base, "mobility", "shelter", "pawn_structure"],
+        ),
+        (
+            ["tables", "shelter", "pawn_structure", "king_attack"],
+            [*base, "shelter", "pawn_structure", "king_attack"],
+        ),
+    ]
+    for held, blocks in recipes:
+        expected = np.zeros(LAYOUT.slots, dtype=bool)
+        for name in blocks:
+            expected[LAYOUT.block(name)] = True
+        assert list(tune.frozen_slots(LAYOUT, False, held)) == list(expected), held
 
 
 def test_quantizing_rounds_to_nearest():
     assert list(tune.quantize([1.4, 1.6, -1.4, -1.6, 2.5])) == [1, 2, -1, -2, 2]
 
 
-def sample(vector, count=30, plies=4):
+def sample(vector, count=30, plies=4, extra=()):
     """A corpus of whole games spread across the five slices of the key: six
     games a slice, so eighteen train, six choose the ridge and six are sealed.
     The group is the key's first byte and the fold its second, moved
     independently here because a fixture whose folds followed its groups
     would leave two folds empty.
+
+    `extra` names slots to give every row a coefficient in, signed the way the
+    material one is so the fit has something to move there. Without it the only
+    supported slots are the first table entry and a material value, which
+    leaves a claim about any other block unfalsifiable.
     """
     rows, labels = [], {}
     for index in range(count):
         result = 1.0 if index % 2 else 0.0
+        sign = 1 if index % 2 else -1
         for ply in range(plies):
             name = f"g{index:05d}p{ply:03d}"
             fen = f"4k3/8/8/8/8/{index}p/{ply}p/4K3 w - - 0 1"
             rows.append(
                 row(
                     name,
-                    [(0, 24), (LAYOUT.start["material"], 1 if index % 2 else -1)],
+                    [
+                        (0, 24),
+                        (LAYOUT.start["material"], sign),
+                        *((slot, sign) for slot in extra),
+                    ],
                     vector,
                     24,
                     fen,
@@ -821,6 +905,112 @@ def test_a_fit_holds_the_material_values_unless_it_is_told_not_to(tmp_path, caps
     fitted = json.loads(out.read_text(encoding="utf-8"))
     assert fitted[LAYOUT.start["material"] : LAYOUT.start["mobility"]] == MATERIAL
     assert len(fitted) == LAYOUT.slots
+
+
+def test_a_hold_a_run_names_reaches_the_fit(tmp_path, capsys):
+    """A term named on the command line is a term the fitted vector left alone.
+    The same fit without the hold moves that term, so the held run is held and
+    not merely unsupported: the fixture gives the mobility block a coefficient
+    on every row for that reason."""
+    vector = weights({0: 20})
+    mobility = LAYOUT.block("mobility")
+    rows, labels = sample(vector, extra=[LAYOUT.start["mobility"]])
+    terms, corpus = fixture_run(tmp_path, vector, rows, labels)
+
+    def fitted(name, held):
+        out = tmp_path / f"{name}.json"
+        run = ["fit", "--terms", str(terms), "--corpus", str(corpus)]
+        run += ["--out", str(out), "--penalties", "1e-6"]
+        for term in held:
+            run += ["--hold", term]
+        assert tune.main(run) == 0
+        capsys.readouterr()
+        return json.loads(out.read_text(encoding="utf-8"))
+
+    free = fitted("free", [])
+    held = fitted("held", ["tables", "mobility"])
+    assert held[mobility] == vector[mobility]
+    assert free[mobility] != vector[mobility]
+    for name in ("midgame", "endgame"):
+        assert held[LAYOUT.block(name)] == vector[LAYOUT.block(name)]
+    assert free[:64] != vector[:64]
+
+
+def test_a_hold_off_the_layout_is_refused_before_a_row_is_read(tmp_path):
+    """The names are checked against the extraction's layout line, which is why
+    a hold is not a flag of its own: the parser is built before any run has said
+    what its terms are. The check reads the head of the extraction and nothing
+    else, so it beats both the row rebuild, here a row that cannot rebuild at
+    all, and the corpus, here a file that is not there."""
+    vector = weights({0: 20})
+    rows, labels = sample(vector)
+    terms, _ = fixture_run(tmp_path, vector, rows, labels)
+    wrecked = "wrecked 9999 24 1 0:24 4k3/8/8/8/8/8/8/4K3 w - - 0 1"
+    terms.write_text(
+        terms.read_text(encoding="utf-8") + wrecked + "\n", encoding="utf-8"
+    )
+    # not a file, so a run that read the corpus first would raise about that
+    run = ["fit", "--terms", str(terms), "--corpus", str(tmp_path / "nowhere.epd")]
+    with pytest.raises(SystemExit, match="a hold of mobilty"):
+        tune.main([*run, "--hold", "tables", "--hold", "mobilty"])
+    # the same run with the hold spelled right gets as far as the wrecked row
+    with pytest.raises(ValueError, match="wrecked rebuilds to"):
+        tune.main([*run, "--hold", "tables", "--hold", "mobility"])
+
+
+def test_an_extraction_the_holds_cannot_be_read_off_is_left_to_the_parse(tmp_path):
+    """Where the head states no layout the names can be read off, the hold check
+    does nothing and the extraction is refused for what is wrong with it, in the
+    words `parse_terms` uses. A hold is checked against a layout line or not at
+    all: a line read past its first fault would offer a width as a term and
+    refuse a hold the run has.
+
+    The three shapes: the line missing, the line arriving after the vector it
+    describes, and a name with no width, which moves every name after it onto a
+    width.
+    """
+    vector = weights({0: 20})
+    rows, labels = sample(vector)
+    terms, corpus = fixture_run(tmp_path, vector, rows, labels)
+    lines = terms.read_text(encoding="utf-8").splitlines()
+    assert lines[1] == LAYOUT_LINE
+    dangling = LAYOUT_LINE.replace("mobility 4", "mobility")
+    run = ["fit", "--terms", str(terms), "--corpus", str(corpus)]
+    for head, refusal in (
+        ([lines[0], *lines[2:]], "carries no layout line"),
+        ([lines[0], lines[2], lines[1], *lines[3:]], "carries no layout line"),
+        ([lines[0], dangling, *lines[2:]], "a name and no width"),
+    ):
+        terms.write_text("\n".join(head) + "\n", encoding="utf-8")
+        # `shelter` is a term the layout means to name, so a check that read the
+        # broken line would refuse a hold the run offers
+        for hold in ("tables", "shelter", "mobilty"):
+            with pytest.raises(ValueError, match=refusal):
+                tune.main([*run, "--hold", hold])
+
+
+def test_a_hold_the_run_can_have_does_not_displace_its_own_refusals(tmp_path):
+    """An extraction the parse would refuse is refused for what is wrong with
+    it, as long as the holds are ones its layout line offers. Here the header is
+    one this file does not know, which is read before the rows and stays the
+    refusal.
+
+    A hold the line does not offer is answered first, on every shape whose names
+    can be read at all, because that is what checking before the parse means.
+    The extraction's own refusal comes on the next run, once the hold is spelled
+    right, which the second half of this test is.
+    """
+    vector = weights({0: 20})
+    rows, labels = sample(vector)
+    terms, corpus = fixture_run(tmp_path, vector, rows, labels)
+    lines = terms.read_text(encoding="utf-8").splitlines()
+    lines[0] = lines[0].replace(" drawn 0", "")
+    terms.write_text("\n".join(lines) + "\n", encoding="utf-8")
+    run = ["fit", "--terms", str(terms), "--corpus", str(corpus)]
+    with pytest.raises(SystemExit, match="a hold of mobilty"):
+        tune.main([*run, "--hold", "mobilty"])
+    with pytest.raises(ValueError, match="extraction is to redo"):
+        tune.main([*run, "--hold", "mobility"])
 
 
 def test_a_ridge_is_chosen_on_the_selection_games(tmp_path, capsys):

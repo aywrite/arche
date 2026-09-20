@@ -1331,10 +1331,51 @@ def learning_curve(
     return fits, summary
 
 
+def check_holds(held, terms):
+    """Refuse a `--hold` that names neither the tables nor a leaf term this run
+    has, and say what it could have named."""
+    unknown = [name for name in held if name != "tables" and name not in terms]
+    if unknown:
+        raise SystemExit(
+            "tune.py: a hold of {}, where a hold is tables or one of {}".format(
+                " ".join(unknown), " ".join(terms)
+            )
+        )
+
+
+def holds_offered(lines):
+    """The leaf terms an extraction's layout line names, taken off the line
+    rather than a parsed `Layout` so a mistyped hold is refused before the rows
+    are read. Rebuilding every row is the longest thing a run does before it
+    prints anything, and a hold it will refuse should not wait on it.
+
+    `None` where the head states no layout these names can be read off, which
+    leaves every refusal an extraction has earned to `parse_terms` and its
+    words.
+
+    What comes back is what the line offers a hold of and not a list of holds
+    that all work: the names are the line's and the prices are `BOUNDS`', so a
+    term nobody has priced is offered here and refused by `Layout` a moment
+    later, along with the rest of the run.
+    """
+    for line in lines:
+        line = line.strip()
+        if line.startswith(LAYOUT):
+            words = line.split()[1:]
+            if len(words) % 2:
+                return None
+            return [name for name in words[::2] if name not in FIXED_BLOCKS]
+        if line.split()[:1] == ["weights"]:
+            break
+    return None
+
+
 def load(args):
-    layout, weights, rows = parse_terms(
-        Path(args.terms).read_text(encoding="utf-8").splitlines()
-    )
+    lines = Path(args.terms).read_text(encoding="utf-8").splitlines()
+    offered = holds_offered(lines)
+    if offered is not None:
+        check_holds(getattr(args, "hold", ()), offered)
+    layout, weights, rows = parse_terms(lines)
     labels = parse_corpus(Path(args.corpus).read_text(encoding="utf-8").splitlines())
     sealed = sealed_pairs(args.sealed) if getattr(args, "sealed", None) else None
     corpus = Corpus(layout, weights, rows, labels, sealed)
@@ -1360,15 +1401,7 @@ def command_loss(args):
     return 0
 
 
-def frozen_slots(
-    layout,
-    free_material,
-    held_tables=False,
-    held_mobility=False,
-    held_shelter=False,
-    held_pawn=False,
-    held_king_attack=False,
-):
+def frozen_slots(layout, free_material, held=()):
     """Which weights a fit holds where they are.
 
     Material is held unless freed: the delta margin in quiescence reads
@@ -1377,29 +1410,31 @@ def frozen_slots(
     freeze that ran to the end of the vector would hold every leaf term at
     zero and print a null result.
 
-    Each term earns a hold as it is fitted, and every hold is a flag: nothing
-    is held that the caller did not name. A fit of the newest term passes
-    every hold below it, so a shelter fit passes `--hold-tables
-    --hold-mobility`, a pawn structure fit adds `--hold-shelter` and a king
-    attack fit adds `--hold-pawn`. Holding the tables but not mobility through
-    a shelter fit refits mobility beside the shelter: `1b0862a` found half of
-    the king safety fit's apparent gain to be that. A refit of an older term
-    holds the newer terms too, which is what `--hold-pawn` and
-    `--hold-king-attack` are for.
+    `held` is names, not positions: `tables` for the two piece square blocks
+    together, or one of the leaf terms the layout line names after material.
+    Each holds the block this run's layout gives it, so a term added to the
+    evaluation is holdable with no edit here. It still has to be priced in
+    `BOUNDS` before any fit of it runs, which is `Layout`'s refusal and not
+    this one's.
+
+    Each term earns a hold as it is fitted, and nothing is held that the caller
+    did not name. A fit of the newest term names every hold below it, so a
+    shelter fit passes `--hold tables --hold mobility`, a pawn structure fit
+    adds `--hold shelter` and a king attack fit adds `--hold pawn_structure`.
+    Holding the tables but not mobility through a shelter fit refits mobility
+    beside the shelter: `1b0862a` found half of the king safety fit's apparent
+    gain to be that. A refit of an older term holds the newer terms too, which
+    is what naming `pawn_structure` or `king_attack` on a mobility fit is for.
     """
+    check_holds(held, layout.terms)
     frozen = np.zeros(layout.slots, dtype=bool)
     if not free_material:
         frozen[layout.block("material")] = True
-    if held_tables:
-        frozen[layout.block("midgame")] = True
-        frozen[layout.block("endgame")] = True
-    for held, name in (
-        (held_mobility, "mobility"),
-        (held_shelter, "shelter"),
-        (held_pawn, "pawn_structure"),
-        (held_king_attack, "king_attack"),
-    ):
-        if held:
+    for name in held:
+        if name == "tables":
+            frozen[layout.block("midgame")] = True
+            frozen[layout.block("endgame")] = True
+        else:
             frozen[layout.block(name)] = True
     return frozen
 
@@ -1407,15 +1442,7 @@ def frozen_slots(
 def command_cv(args):
     corpus = load(args)
     start = corpus.weights.copy()
-    frozen = frozen_slots(
-        corpus.layout,
-        args.free_material,
-        args.hold_tables,
-        args.hold_mobility,
-        args.hold_shelter,
-        args.hold_pawn,
-        args.hold_king_attack,
-    )
+    frozen = frozen_slots(corpus.layout, args.free_material, args.hold)
     errors, outside = cross_validate(
         corpus, args.penalties, start, frozen, args.iterations
     )
@@ -1434,15 +1461,7 @@ def command_cv(args):
 def command_fit(args):
     corpus = load(args)
     start = corpus.weights.copy()
-    frozen = frozen_slots(
-        corpus.layout,
-        args.free_material,
-        args.hold_tables,
-        args.hold_mobility,
-        args.hold_shelter,
-        args.hold_pawn,
-        args.hold_king_attack,
-    )
+    frozen = frozen_slots(corpus.layout, args.free_material, args.hold)
     k = args.k or fit_k(
         corpus.scores(corpus.weights)[corpus.train],
         corpus.results[corpus.train],
@@ -1495,15 +1514,7 @@ def command_curve(args):
     corpus = load(args)
     shares = curve_shares(args.shares, args.draws)
     start = corpus.weights.copy()
-    frozen = frozen_slots(
-        corpus.layout,
-        args.free_material,
-        args.hold_tables,
-        args.hold_mobility,
-        args.hold_shelter,
-        args.hold_pawn,
-        args.hold_king_attack,
-    )
+    frozen = frozen_slots(corpus.layout, args.free_material, args.hold)
     k = args.k or fit_k(
         corpus.scores(corpus.weights)[corpus.train],
         corpus.results[corpus.train],
@@ -1673,34 +1684,15 @@ def main(argv=None):
             help="let the six material values move, which the first fit does not",
         )
         command.add_argument(
-            "--hold-tables",
-            action="store_true",
-            help="hold the 768 piece square entries, so a fit moves the term "
-            "added after them and nothing else",
-        )
-        command.add_argument(
-            "--hold-mobility",
-            action="store_true",
-            help="hold the eight mobility weights, which a fit for a term "
-            "added after them passes alongside --hold-tables",
-        )
-        command.add_argument(
-            "--hold-shelter",
-            action="store_true",
-            help="hold the fourteen king shelter weights, which a fit for a "
-            "term added after them passes alongside the two holds above",
-        )
-        command.add_argument(
-            "--hold-pawn",
-            action="store_true",
-            help="hold the sixteen pawn structure weights, which a fit for a "
-            "term added after them passes alongside the three holds above",
-        )
-        command.add_argument(
-            "--hold-king-attack",
-            action="store_true",
-            help="hold the eight king attack zone weights, which a refit of "
-            "a term below them passes so that term moves alone",
+            "--hold",
+            action="append",
+            metavar="TERM",
+            default=[],
+            help="hold a term's weights where they are, given once for each "
+            "term held: tables for the two piece square blocks, or one of the "
+            "leaf terms the run's layout line names after material. A fit for "
+            "a term added after another holds that one, so a match can say "
+            "which of the two it measured",
         )
     fit = commands.choices["fit"]
     fit.add_argument("--out", help="where to write the fitted vector")
