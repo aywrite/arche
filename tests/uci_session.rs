@@ -247,18 +247,22 @@ fn the_clear_hash_button_empties_the_table() {
 /// to change its mind.
 const SHARP_MIDDLEGAME: &str = "r1b2rk1/ppp1qppp/4pn2/6N1/Qn1P4/2NBP3/PP3PPP/R3K2R w KQ - 9 12";
 
+/// The standard perft position, which changes its root move at depth eight
+/// and reports the new move as a floor first.
+const KIWIPETE: &str = "r3k2r/p1ppqpb1/bn2pnp1/3PN3/1p2P3/2N2Q1p/PPPBBPPP/R3K2R w KQkq - 0 1";
+
 #[test]
 fn the_move_a_swap_answers_with_opens_the_last_line_said() {
     // a node budget rather than a clock, so the iteration is cut short on
     // the same node on every machine. The budget has to land after an
     // iteration finds its better move and before that iteration ends:
-    // depth thirteen answers d3e2 and finishes at 5,453,070 nodes, depth
-    // fourteen reports d3b1 from between 7,833,000 and 7,834,000 and
-    // finishes at 8,363,826. The budget moves whenever the tree does, in
+    // depth eleven answers d3b5 and finishes at 638,703 nodes, depth
+    // twelve reports d3b1 from between 1,744,000 and 1,745,000 and
+    // finishes at 2,041,148. The budget moves whenever the tree does, in
     // the commit that moved it
     let mut s = Session::start(&[]);
     s.say(&format!("position fen {}", SHARP_MIDDLEGAME));
-    s.say("go nodes 8000000");
+    s.say("go nodes 1900000");
     let answer = s.wait_for(|l| l.starts_with("bestmove"));
     let best = answer
         .strip_prefix("bestmove ")
@@ -303,17 +307,17 @@ fn line_opens_with(info: &str) -> &str {
 
 #[test]
 fn an_iteration_no_root_move_reached_answers_with_the_depth_before_it() {
-    // the opening is worth 50 to white at depth five and 0 at depth six, so
+    // the opening is worth 54 to white at depth five and 0 at depth six, so
     // depth six opens above what the position turns out to be and nothing
     // inside the window answers it: the depth is reported as the ceiling it
     // is and searched again wider. The budget lands inside that second
     // search, which reaches nothing above its own alpha either, so what
     // answers is still depth five's and not the ceiling just reported. The
-    // first search reports at 12,873 nodes and the second finishes at
-    // 25,252
+    // first search reports at 5,769 nodes and the second finishes at
+    // 11,258
     let mut s = Session::start(&[]);
     s.say("position startpos");
-    s.say("go nodes 20000");
+    s.say("go nodes 8000");
     let answer = s.wait_for(|l| l.starts_with("bestmove"));
     let best = answer
         .strip_prefix("bestmove ")
@@ -402,18 +406,23 @@ fn a_root_move_that_reaches_beta_is_reported_as_a_floor_and_then_answered_with()
 #[test]
 fn a_floor_answers_until_the_wider_search_replaces_it() {
     // the other half of the floor: what the engine plays when the wider
-    // search never finishes. This endgame is worth 223 to white at depth
-    // six, answered with d2c1; depth seven opens above that, d2e3 reaches
-    // beta at 254 and the floor is reported at 4,511 nodes, and the wider
-    // search finishes at 5,590. A budget inside it is interrupted before
-    // anything beats its alpha, so the root hands back no move at all and
-    // the floor is what is left to answer with. Any budget from 4,512 to
-    // 5,589 does it; with the floor not held the same budget answers
-    // d2c1, which is the move the search has just shown worse
-    let endgame = "8/k1b5/P4p2/1Pp2p1p/K1P2P1P/8/3B4/8 w - - 0 1";
+    // search never finishes. Kiwipete is worth -50 to white at depth
+    // seven, answered with e2a6; depth eight opens below that, d5e6
+    // reaches beta and the floor is reported at 138,001 nodes and again at
+    // 153,663 once the window has been widened, and the search finishes at
+    // 237,702. A budget inside it is interrupted before anything beats its
+    // alpha, so the root hands back no move at all and the floor is what is
+    // left to answer with. Any budget from 138,002 to 237,701 does it; with
+    // the floor not held the same budget answers e2a6, which is the move
+    // the search has just shown worse.
+    //
+    // The endgame 8/k1b5/P4p2/1Pp2p1p/K1P2P1P/8/3B4/8 was this fixture
+    // until the late move count landed. It still reports a floor, at depth
+    // fifteen, but the floor now names the move depth fourteen answered
+    // with, so the position can no longer say which of the two was held
     let mut s = Session::start(&[]);
-    s.say(&format!("position fen {}", endgame));
-    s.say("go nodes 5200");
+    s.say(&format!("position fen {}", KIWIPETE));
+    s.say("go nodes 180000");
     let answer = s.wait_for(|l| l.starts_with("bestmove"));
     let best = answer
         .strip_prefix("bestmove ")

@@ -304,11 +304,10 @@ the bound the scout was asked about, `scout` is `low`, `high` or
 `skipped`, and `cost` is the nodes the scout spent. A fail high prints
 `-` in the `reference` and `label` columns rather than moving the others.
 
-The third outcome word is the two skipping rules'. A move the model
-prices in its deadest band at depth four and up, and a quiet move at
-depth one to three the quiet futility rule declines, are both never
-scouted at all, so a sampled skip is recorded where the loop passes it
-over: the same features, a cost of zero, a reduction of zero, and a
+The third outcome word is the skipping rules'. A move the model prices in
+its deadest band at depth four and up, and a quiet move at depth one to
+three that either shallow rule declines, are never scouted at all, so a
+sampled skip is recorded where the loop passes it over: the same features, a cost of zero, a reduction of zero, and a
 `searched` count that equals the index rather than standing one past it,
 because the move is not among the searched. The replay treats a skipped
 row as it treats a fail low, since what was denied is the same full depth
@@ -317,14 +316,16 @@ at the decision; the recorder makes and unmakes it around the record
 alone, and a move that turns out illegal is not recorded, because the
 skip denied it nothing.
 
-Which of the two rules a skipped row came from is its depth. The model
-decides from four and the quiet futility rule stops at three, so a
-skipped row at depth one, two or three is the shallow rule's and one at
-four or more is the model's, and a row at one or two carries no scout
-beside it at its depth because nothing scouts there. The index says the
-same thing a second way: the model's skips are never under the late move
-threshold of four, and the shallow rule's are never under one, since the
-node's first searched move is exempt.
+Which family a skipped row came from is its depth. The model decides from
+four and both shallow rules stop at three, so a skipped row at depth one,
+two or three is a shallow rule's and one at four or more is the model's,
+and a row at one or two carries no scout beside it at its depth because
+nothing scouts there. The index says the same thing a second way: the
+model's skips are never under the late move threshold of four, and a
+shallow rule's are never under one, since the node's first searched move
+is exempt. Which of the two shallow rules took a row the ledger does not
+say, and the two overlap on the same moves, so an ablation is what
+separates them.
 
 A depth one row is the one place the replay's counterfactual is not
 exact. `Event::replay_depth` in `arche-core/src/reduction.rs` is
