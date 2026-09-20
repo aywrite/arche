@@ -869,8 +869,10 @@ mod tests {
     ///
     /// A boardful and not a legal position: what has to hold is the
     /// arithmetic the accumulator does, and it does not know what is legal.
-    /// This is the screen `tune.py::bounds_hold` applies, stated on the side
-    /// that holds the weights, and the two are meant to answer the same.
+    /// This is a screen over the terms whose maximum counts are stated here,
+    /// the tables and those two. `tune.py::bounds_hold` charges the tables and
+    /// every term the layout names, and refuses a fit that has grown past a
+    /// boardful.
     #[test]
     fn a_boardful_stays_inside_the_packed_halves() {
         let mut midgame = 0;
