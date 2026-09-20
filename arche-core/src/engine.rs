@@ -2543,8 +2543,22 @@ impl Engine for AlphaBeta {
                             // answers is what answered before it: the last
                             // depth to land inside its window, or a floor
                             // this depth reported above it. Depth one runs
-                            // without limits, so there always is one
-                            None => best,
+                            // without limits, so there always is one.
+                            //
+                            // The answer comes from before this iteration
+                            // and the nodes it spent do not: they were
+                            // spent, and the arm above carries its own, so
+                            // a count that left them out would say a search
+                            // stopped on its budget visited fewer nodes
+                            // than the budget. `self.nodes` is this
+                            // iteration's, `search_root` having zeroed it
+                            // at the start and nothing having zeroed it
+                            // since, and `total_nodes` is every iteration
+                            // before it.
+                            None => best.map(|mut answered| {
+                                answered.nodes = total_nodes + self.nodes;
+                                answered
+                            }),
                         });
                     }
                     SearchOutcome::GameOver => {
@@ -3843,6 +3857,38 @@ mod search {
             );
         }
         assert!(swaps > 0, "no budget in the sweep swapped a move in");
+    }
+
+    /// A search stopped by its budget says it spent the budget, whichever
+    /// of the two aborted answers it came back with.
+    ///
+    /// An iteration begun and then cut short spends nodes whether or not
+    /// anything in it beat the window's alpha. The answer comes from the
+    /// depth before it when nothing did, and the nodes are still the
+    /// search's: a count that left them out would say a search held to a
+    /// budget visited fewer nodes than the budget, and a caller cannot
+    /// recover them, since the two aborted answers arrive in the same
+    /// shape. Swept over budgets, because which of the two fires depends
+    /// on where inside the iteration the budget ran out.
+    #[test]
+    fn a_search_stopped_by_its_budget_counts_the_iteration_it_gave_up() {
+        let mut bound = 0;
+        for limit in [1_000u64, 2_500, 5_000, 7_500, 10_000, 25_000, 50_000] {
+            let mut e = engine(Board::new());
+            let outcome = e.iterative_deepening_search(
+                SearchParameters::new(None, Limits::starting_now(None, Some(limit))),
+                |_, _, _, _| {},
+            );
+            let SearchOutcome::Aborted(Some(result)) = outcome else {
+                panic!("budget {limit}: an unlimited depth under a budget aborts with an answer");
+            };
+            bound += 1;
+            assert_eq!(
+                result.nodes, limit,
+                "budget {limit}: the search says it spent other than its budget"
+            );
+        }
+        assert!(bound > 0, "no budget in the sweep bound the search");
     }
 
     #[test]
