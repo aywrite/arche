@@ -1259,11 +1259,17 @@ mod tests {
     }
 
     /// The other half of a reading, and the reason the cost columns are not
-    /// derivable from the outcome. The quiet futility margin skips quiet
-    /// moves at the three shallowest depths, and at this depth the two
-    /// sides hold the same full width nodes: the tree it removes is under
-    /// them, so every row reads `both` and the effort still moved. A run
-    /// that read outcomes alone would call that no change.
+    /// derivable from the outcome. The quiet futility margin decides at
+    /// `SHALLOW_MAX_DEPTH` and under, so it parts the two sides there: a
+    /// quiet child the rule cut is a node the candidate never reached, and
+    /// that row reads `only_off`. Above that depth the two sides hold the
+    /// same nodes and the tree the rule removed sits under them, so those
+    /// rows read `both` and the effort still moved. A run that read
+    /// outcomes alone would call that no change.
+    ///
+    /// The rows are read at the depths the rule leaves alone for that
+    /// reason. Read over every depth the assertion is about the shallow
+    /// rows as well, where a parted side is the instrument working.
     #[test]
     fn a_rule_can_move_effort_without_moving_a_node() {
         let report = run(
@@ -1275,9 +1281,19 @@ mod tests {
             Some("quiet_futility"),
             None,
         );
-        assert!(report.rows.iter().all(|row| row.outcome == Outcome::Both));
+        let above: Vec<&Row> = report
+            .rows
+            .iter()
+            .filter(|row| row.depth > crate::late_move::SHALLOW_MAX_DEPTH)
+            .collect();
+        // without this the three below hold over an empty set
         assert!(
-            report.rows.iter().any(|row| row.delta() != 0),
+            !above.is_empty(),
+            "no row above the depths the rule decides at"
+        );
+        assert!(above.iter().all(|row| row.outcome == Outcome::Both));
+        assert!(
+            above.iter().any(|row| row.delta() != 0),
             "the switch moved no effort either"
         );
         assert!(report.positions.iter().any(|p| p.nodes_on < p.nodes_off));
