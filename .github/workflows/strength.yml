@@ -182,7 +182,7 @@ jobs:
         with:
           fetch-depth: 0
 
-      - uses: aywrite/mache/actions/resolve-ref@a6b91eea953c23d8fa9ffbde1e216a8843e4c70a # v0.4.0
+      - uses: aywrite/mache/actions/resolve-ref@a429bcecb0b5718c0ef9fe8c02f0b360d986635b # v0.5.0
         id: candidate
         with:
           ref: ${{ inputs.candidate }}
@@ -190,7 +190,7 @@ jobs:
           # nothing named means the commit this was dispatched on
           when_empty: head
 
-      - uses: aywrite/mache/actions/resolve-ref@a6b91eea953c23d8fa9ffbde1e216a8843e4c70a # v0.4.0
+      - uses: aywrite/mache/actions/resolve-ref@a429bcecb0b5718c0ef9fe8c02f0b360d986635b # v0.5.0
         id: baseline
         with:
           ref: ${{ inputs.baseline }}
@@ -203,7 +203,7 @@ jobs:
         if: steps.baseline.outputs.sha == ''
         run: echo "::notice::No previous release to compare against, skipping"
 
-      - uses: aywrite/mache/actions/plan-shards@a6b91eea953c23d8fa9ffbde1e216a8843e4c70a # v0.4.0
+      - uses: aywrite/mache/actions/plan-shards@a429bcecb0b5718c0ef9fe8c02f0b360d986635b # v0.5.0
         id: plan
         with:
           games: ${{ inputs.games }}
@@ -251,7 +251,7 @@ jobs:
         with:
           fetch-depth: 0
 
-      - uses: aywrite/mache/actions/setup@a6b91eea953c23d8fa9ffbde1e216a8843e4c70a # v0.4.0
+      - uses: aywrite/mache/actions/setup@a429bcecb0b5718c0ef9fe8c02f0b360d986635b # v0.5.0
         id: tools
 
       # the cache keeps the dependencies; each side is built from an export of
@@ -273,7 +273,7 @@ jobs:
           scripts/build_at.sh "$CANDIDATE_SHA" tools/new
           scripts/build_at.sh "$BASELINE_SHA" tools/old
 
-      - uses: aywrite/mache/actions/play-shard@a6b91eea953c23d8fa9ffbde1e216a8843e4c70a # v0.4.0
+      - uses: aywrite/mache/actions/play-shard@a429bcecb0b5718c0ef9fe8c02f0b360d986635b # v0.5.0
         id: play
         with:
           candidate: ${{ needs.resolve.outputs.candidate_name }}
@@ -382,7 +382,7 @@ jobs:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
 
       # no harness to build and no book to fetch: this job only reads games
-      - uses: aywrite/mache/actions/setup@a6b91eea953c23d8fa9ffbde1e216a8843e4c70a # v0.4.0
+      - uses: aywrite/mache/actions/setup@a429bcecb0b5718c0ef9fe8c02f0b360d986635b # v0.5.0
         with:
           estimator_only: true
 
@@ -395,7 +395,7 @@ jobs:
           pattern: strength-${{ github.run_id }}-${{ github.run_attempt }}-shard-*
           path: shards
 
-      - uses: aywrite/mache/actions/summarise-match@a6b91eea953c23d8fa9ffbde1e216a8843e4c70a # v0.4.0
+      - uses: aywrite/mache/actions/summarise-match@a429bcecb0b5718c0ef9fe8c02f0b360d986635b # v0.5.0
         id: summary
         with:
           games: shards
