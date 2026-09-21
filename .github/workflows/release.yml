@@ -191,5 +191,22 @@ jobs:
       contents: write
     uses: ./.github/workflows/calibrate.yml
     with:
-      games: 50
+      publish: true
+
+  # The same placement against the ccrl 40/15 list. Its ladder, the 40/150
+  # it plays at and the sixteen games a rung are that list's block in
+  # scripts/ladders.sh. It takes at most about an hour and a half of wall
+  # clock, and the figure is a rough one, near sixty elo either side.
+  #
+  # After calibrate for the reasons calibrate is after strength, and on the
+  # same condition.
+  calibrate-40-15:
+    needs: [create-release, calibrate]
+    if: ${{ !cancelled() && needs.create-release.result == 'success' }}
+    permissions:
+      contents: write
+    uses: ./.github/workflows/calibrate.yml
+    with:
+      list: 40/15
+      marker: arche:rating-40-15
       publish: true

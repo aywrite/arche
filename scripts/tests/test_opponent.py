@@ -6,8 +6,8 @@
 Building one needs the network and a compiler, so what is checked is the
 table itself: that every engine it names is described completely, that an
 engine it does not name is refused rather than attempted, and that the
-default ladder names engines the table knows (which would otherwise fail a
-run rather than a check).
+ladder of every list in scripts/ladders.sh names engines the table knows
+(which would otherwise fail a run rather than a check).
 """
 
 import subprocess
@@ -15,11 +15,10 @@ import sys
 from pathlib import Path
 
 import pytest
-import yaml
 
 ROOT = Path(__file__).resolve().parent.parent.parent
 SCRIPT = ROOT / "scripts" / "opponent.sh"
-WORKFLOW = ROOT / ".github" / "workflows" / "calibrate.yml"
+LADDERS = ROOT / "scripts" / "ladders.sh"
 
 pytestmark = pytest.mark.skipif(
     sys.platform == "win32", reason="runs a shell script, which windows cannot"
@@ -39,10 +38,24 @@ def engines() -> list[str]:
 
 
 def default_ladders() -> list[str]:
-    workflow = yaml.safe_load(WORKFLOW.read_text(encoding="utf-8"))
-    # yaml reads a bare on: as a boolean, so the triggers are under True
-    triggers = workflow[True]
-    return [trigger["inputs"]["ladder"]["default"] for trigger in triggers.values()]
+    """The ladder of every list scripts/ladders.sh has a block for."""
+    listed = subprocess.run(
+        [str(LADDERS), "list"], cwd=ROOT, check=True, capture_output=True, text=True
+    )
+    ladders = []
+    for name in listed.stdout.split():
+        preset = subprocess.run(
+            [str(LADDERS), "preset", name],
+            cwd=ROOT,
+            check=True,
+            capture_output=True,
+            text=True,
+        )
+        for line in preset.stdout.splitlines():
+            key, _, value = line.partition("=")
+            if key == "ladder":
+                ladders.append(value)
+    return ladders
 
 
 def test_the_table_names_engines():
@@ -94,13 +107,10 @@ def test_the_commands_it_does_not_have_are_refused():
         assert "usage" in asked.stderr
 
 
-def test_the_default_ladder_names_engines_the_table_knows():
+def test_every_default_ladder_names_engines_the_table_knows():
     known = engines()
     ladders = default_ladders()
-    assert ladders, "the workflow has no ladder to check"
-    # one ladder written twice, once per trigger, or a run from the actions
-    # tab and a run from a release are not comparable
-    assert len(set(ladders)) == 1, ladders
+    assert ladders, "scripts/ladders.sh has no ladder to check"
     for ladder in ladders:
         for rung in ladder.split(","):
             engine, _, rest = rung.partition(":")

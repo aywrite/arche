@@ -10,24 +10,25 @@ name: Calibrate
 #
 # A rung names an engine, a pin of that engine and the rating it holds on ccrl.
 # The engines it can name are the ones scripts/opponent.sh knows how to build.
-# The rungs are an input so they can be moved up as the engine improves: a
-# pairing that ends 25-0 says little beyond "stronger than that".
+# A rating belongs to the exact version the list names, which is why every
+# rung is pinned at a released version.
 #
-# The default is eight rungs of six lineages, from 2511 to 2846, read off the
-# complete ccrl blitz list of 5 September 2026. v0.4.4 placed at 2601 on the
-# panel before this one and the release after it is planned at about a hundred
-# more, so the rungs sit four either side of 2700. A rating belongs to the
-# exact version the list names, which is why every rung is pinned at a
-# released version.
+# A run is against one ccrl list, blitz or 40/15, and scripts/ladders.sh holds
+# what each plays by default: the ladder read off it, the time control, the
+# games against each rung and the wall clock cap. The ladder, time control and
+# games boxes are empty unless filled in, and an empty box takes the list's
+# value, so choosing a list cannot leave another list's ladder in place. The
+# release plays both.
 #
 # Each rung is a job playing its own slice of the book, so no two rungs open
 # the same way, and the estimate job pools the games and fits one rating to all
-# of them. A runner plays about one and seven tenths games a minute at 20+0.2,
-# so fifty games against one opponent take about half an hour.
+# of them.
 #
 # Every rung keeps its games, its result block, the fastchess config and a
 # manifest as calibrate-<run id>-<attempt>-<engine>-<pin>, so a ladder
-# corrected afterwards can be refitted without playing the matches again.
+# corrected afterwards can be refitted without playing the matches again. A
+# 40/15 run names them calibrate-ccrl-40-15-<run id>-..., so the two gauntlets
+# of one release run neither collide nor pool each other's games.
 
 on:
   workflow_dispatch:
@@ -35,22 +36,26 @@ on:
       candidate:
         description: What to measure. A branch, tag, commit or pull request number. Defaults to the ref this is run against.
         type: string
-      games:
-        description: Games against each opponent, rounded down to an even number
-        type: number
-        default: 50
-      time_control:
-        description: Passed to fastchess as tc
+      list:
+        description: The ccrl list to place the engine on. The boxes below left empty take its values from scripts/ladders.sh.
+        type: choice
+        options:
+          - blitz
+          - 40/15
+        default: blitz
+      ladder:
+        description: Opponents to play, as engine, pin and a rating on the list above (goldfish:v2.1.1:2252,stash:v17.0:2297). Empty plays the list's own ladder.
         type: string
-        default: 20+0.2
+      time_control:
+        description: Passed to fastchess as tc. Empty plays the list's own.
+        type: string
+      games:
+        description: Games against each opponent, rounded down to an even number. Empty plays the list's own number.
+        type: string
       book:
         description: The opening set the run plays, one of the books in scripts/book.sh. Figures on different books are not comparable.
         type: string
         default: 8moves_v3
-      ladder:
-        description: Opponents to play, as engine, pin and ccrl blitz rating (goldfish:v2.1.1:2252,stash:v17.0:2297)
-        type: string
-        default: stash:v20.0.1:2511,tantabus:v2.0.0:2555,weiss:v0.9:2650,blunder:v8.5.5:2663,stash:v21.0:2713,inanis:v1.1.0:2763,zahak:6.2:2825,weiss:v0.10:2846
       seed:
         description: Seed for the region of the book the rungs play, an unsigned integer. Left empty it is the run id, and either way the manifests record it.
         type: string
@@ -59,18 +64,20 @@ on:
       candidate:
         type: string
         required: false
-      games:
-        type: number
-        default: 50
+      list:
+        type: string
+        default: blitz
+      # these three and max_match_minutes take the list's values when not
+      # given, so they have no defaults of their own
+      ladder:
+        type: string
       time_control:
         type: string
-        default: 20+0.2
+      games:
+        type: number
       book:
         type: string
         default: 8moves_v3
-      ladder:
-        type: string
-        default: stash:v20.0.1:2511,tantabus:v2.0.0:2555,weiss:v0.9:2650,blunder:v8.5.5:2663,stash:v21.0:2713,inanis:v1.1.0:2763,zahak:6.2:2825,weiss:v0.10:2846
       seed:
         type: string
       publish:
@@ -97,7 +104,6 @@ on:
       max_match_minutes:
         description: The wall clock cap on play alone
         type: number
-        default: 90
       startup_ms:
         description: How long fastchess waits for an engine to answer uci
         type: number
@@ -126,13 +132,13 @@ env:
   # default, which its result block records.
   HASH: ${{ inputs.hash_mb || 256 }}
   CONCURRENCY: ${{ inputs.concurrency || 2 }}
-  # The wall clock cap on play alone; the play job's timeout is this plus half
-  # an hour for the two builds. Fifty games at 20+0.2 is about half an hour,
-  # so this is headroom rather than a budget.
-  MAX_MATCH_MINUTES: ${{ inputs.max_match_minutes || 90 }}
   # The engine allocates its table before it answers uci, which can take
   # longer than the ten second default.
   STARTUP_MS: ${{ inputs.startup_ms || 20000 }}
+  # The list the ratings are on. The resolve job reads the rest of the run's
+  # settings from its block in scripts/ladders.sh, and refuses a list that
+  # has none.
+  LIST: ${{ inputs.list || 'blitz' }}
 
 jobs:
   # The ladder is a string and a matrix is a list, so it is picked apart here
@@ -152,10 +158,39 @@ jobs:
       spec: ${{ steps.plan.outputs.spec }}
       book: ${{ steps.plan.outputs.book }}
       play_timeout: ${{ steps.plan.outputs.play_timeout }}
+      time_control: ${{ steps.preset.outputs.time_control }}
+      max_match_minutes: ${{ steps.preset.outputs.max_match_minutes }}
+      rated_at: ${{ steps.preset.outputs.rated_at }}
+      artifact: ${{ steps.preset.outputs.artifact }}
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
           fetch-depth: 0
+
+      # A box filled in is played as given and an empty one takes the list's
+      # value. What the list rates at and the artifact prefix are not boxes.
+      # The wall clock cap is headroom rather than a budget: the play job's
+      # timeout is it plus half an hour for the two builds.
+      - name: Read the list's settings
+        id: preset
+        env:
+          LADDER: ${{ inputs.ladder }}
+          TIME_CONTROL: ${{ inputs.time_control }}
+          # a number not given may arrive as 0 rather than empty
+          GAMES: ${{ inputs.games || '' }}
+          MAX_MATCH_MINUTES: ${{ inputs.max_match_minutes || '' }}
+        run: |
+          declare -A given=(
+            [ladder]=$LADDER
+            [time_control]=$TIME_CONTROL
+            [games]=$GAMES
+            [max_match_minutes]=$MAX_MATCH_MINUTES
+          )
+          scripts/ladders.sh preset "$LIST" > preset.txt \
+            || { echo "::error::$(scripts/ladders.sh preset "$LIST" 2>&1)"; exit 1; }
+          while IFS='=' read -r key value; do
+            echo "${key}=${given[$key]:-$value}"
+          done < preset.txt | tee -a "$GITHUB_OUTPUT"
 
       - uses: aywrite/mache/actions/resolve-ref@a429bcecb0b5718c0ef9fe8c02f0b360d986635b # v0.5.0
         id: candidate
@@ -168,10 +203,10 @@ jobs:
       - uses: aywrite/mache/actions/plan-ladder@a429bcecb0b5718c0ef9fe8c02f0b360d986635b # v0.5.0
         id: plan
         with:
-          games: ${{ inputs.games }}
-          ladder: ${{ inputs.ladder }}
+          games: ${{ steps.preset.outputs.games }}
+          ladder: ${{ steps.preset.outputs.ladder }}
           book: ${{ inputs.book }}
-          max_match_minutes: ${{ env.MAX_MATCH_MINUTES }}
+          max_match_minutes: ${{ steps.preset.outputs.max_match_minutes }}
 
   play:
     needs: resolve
@@ -198,7 +233,9 @@ jobs:
       INDEX: ${{ matrix.rung.index }}
       RUNGS: ${{ needs.resolve.outputs.count }}
       PAIRS: ${{ needs.resolve.outputs.pairs }}
-      TIME_CONTROL: ${{ inputs.time_control }}
+      TIME_CONTROL: ${{ needs.resolve.outputs.time_control }}
+      MAX_MATCH_MINUTES: ${{ needs.resolve.outputs.max_match_minutes }}
+      ARTIFACT: ${{ needs.resolve.outputs.artifact }}
       BOOK: ${{ needs.resolve.outputs.book }}
       # the seed picks the region of the book each rung plays, not a shuffle.
       # The run id is one no two runs share; a seed given by hand replays an
@@ -252,7 +289,7 @@ jobs:
           shards: ${{ needs.resolve.outputs.count }}
           shard: ${{ matrix.rung.index }}
           seed: ${{ inputs.seed || github.run_id }}
-          time_control: ${{ inputs.time_control }}
+          time_control: ${{ env.TIME_CONTROL }}
           hash_mb: ${{ env.HASH }}
           concurrency: ${{ env.CONCURRENCY }}
           startup_ms: ${{ env.STARTUP_MS }}
@@ -282,7 +319,7 @@ jobs:
             echo "opponent: ${OPPONENT}"
             echo "opponent_repository: ${repository}"
             echo "opponent_pin: ${TAG}"
-            echo "opponent_rating: ${RATING} on the ccrl blitz list"
+            echo "opponent_rating: ${RATING} on the ccrl ${LIST} list"
             echo "build: scripts/build_at.sh for ${ENGINE_NAME}, scripts/opponent.sh for ${ENGINE}"
             echo "fastchess: ${FASTCHESS}"
             # the tooling that reads the games, so a figure can be read back
@@ -319,7 +356,7 @@ jobs:
         if: always()
         uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
         with:
-          name: calibrate-${{ github.run_id }}-${{ github.run_attempt }}-${{ matrix.rung.engine }}-${{ matrix.rung.tag }}
+          name: ${{ env.ARTIFACT }}-${{ github.run_id }}-${{ github.run_attempt }}-${{ matrix.rung.engine }}-${{ matrix.rung.tag }}
           path: |
             tools/games.pgn
             tools/result.txt
@@ -341,8 +378,12 @@ jobs:
     defaults:
       run:
         shell: bash
+    env:
+      TIME_CONTROL: ${{ needs.resolve.outputs.time_control }}
+      RATED_AT: ${{ needs.resolve.outputs.rated_at }}
+      ARTIFACT: ${{ needs.resolve.outputs.artifact }}
     outputs:
-      line: ${{ steps.estimate.outputs.line }}
+      line: ${{ steps.line.outputs.line }}
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
 
@@ -354,10 +395,11 @@ jobs:
       # one directory per artifact under rungs/, except that a single artifact
       # is extracted straight into rungs/; the action takes either. The
       # attempt is in the pattern so a rerun does not count an earlier
-      # attempt's games as well
+      # attempt's games as well. The prefix is followed by the run id, so a
+      # blitz run's pattern cannot match a 40/15 run's artifacts
       - uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v8.0.1
         with:
-          pattern: calibrate-${{ github.run_id }}-${{ github.run_attempt }}-*
+          pattern: ${{ env.ARTIFACT }}-${{ github.run_id }}-${{ github.run_attempt }}-*
           path: rungs
 
       - uses: aywrite/mache/actions/summarise-gauntlet@a429bcecb0b5718c0ef9fe8c02f0b360d986635b # v0.5.0
@@ -368,18 +410,36 @@ jobs:
           candidate_sha: ${{ needs.resolve.outputs.candidate_sha }}
           ladder_spec: ${{ needs.resolve.outputs.spec }}
           rungs: ${{ needs.resolve.outputs.count }}
-          time_control: ${{ inputs.time_control }}
-          # what the ccrl blitz ratings were measured at, which is not what
-          # these games are played at. The caveat the action writes names it
-          rating_time_control: 2m+1s
+          time_control: ${{ env.TIME_CONTROL }}
+          rating_list: "[ccrl](https://computerchess.org.uk/) ${{ env.LIST }}"
+          # what the ratings were measured at, which is not what these games
+          # are played at. The caveat the action writes names it
+          rating_time_control: ${{ env.RATED_AT }}
           # artifact names belong to this workflow, so the sentence naming
           # them is written here rather than by the action
           provenance: >-
             The games of each rung are kept as the
-            `calibrate-${{ github.run_id }}-${{ github.run_attempt }}-<engine>-<pin>`
+            `${{ env.ARTIFACT }}-${{ github.run_id }}-${{ github.run_attempt }}-<engine>-<pin>`
             artifacts, with a manifest saying what was played on what. The
             openings came from seed ${{ inputs.seed || github.run_id }}, which
             replays this schedule.
+
+      # mache writes the blitz scale into the line whatever the ladder was
+      # read from. A line that no longer says it is refused rather than
+      # published under the wrong list
+      - name: Name the list in the line
+        id: line
+        env:
+          LINE: ${{ steps.estimate.outputs.line }}
+        run: |
+          if [ "$LIST" != blitz ]; then
+            case "$LINE" in
+              *"ccrl blitz scale"*) ;;
+              *) echo "::error::the line does not name the blitz scale to replace: ${LINE}"; exit 1 ;;
+            esac
+            LINE=${LINE/ccrl blitz scale/ccrl ${LIST} scale}
+          fi
+          echo "line=${LINE}" >> "$GITHUB_OUTPUT"
 
   release-notes:
     needs: estimate
