@@ -702,7 +702,7 @@ number that means something next to other engines, the opponents have to be
 engines that already have a rating.
 
 The **Calibrate** workflow plays a gauntlet against engines that are ranked on
-the [ccrl](https://computerchess.org.uk/) blitz list. It holds each opponent at
+the [ccrl](https://computerchess.org.uk/) blitz or 40/15 list. It holds each opponent at
 its published rating and fits the one number that is unknown, which is ours:
 
 ```
@@ -737,10 +737,18 @@ afterwards can be applied to the artifacts without playing the matches again.
 
 ### Choosing the opponents
 
-`ladder` is a list of rungs, and a rung is an engine, a pin of that engine and
-the rating it holds on ccrl blitz: `stash:v17.0:2297,goldfish:v2.1.1:2252`. The
-engine is
-a name from the table in `scripts/opponent.sh`, which holds where each one is
+A run is against one ccrl list, chosen by the `list` input. Each list has a
+block in `scripts/ladders.sh` holding its ladder, the time control it is played
+at, the games against each rung and the wall clock cap on a rung. The `ladder`,
+`time_control` and `games` inputs have no defaults, and one left empty takes
+the list's value. So a run from the actions tab that picks 40/15 plays the
+40/15 ladder, and a blitz ladder can only reach the 40/15 scale by being typed
+into the box. `scripts/tests/test_ladders.py` fails if one of those inputs
+gains a default or the release passes one of them itself.
+
+A ladder is a list of rungs, and a rung is an engine, a pin of that engine and
+the rating it holds on the chosen list: `stash:v17.0:2297,goldfish:v2.1.1:2252`.
+The engine is a name from the table in `scripts/opponent.sh`, which holds where each one is
 cloned from, how it is built and what the build leaves its binary called. A rung
 naming an engine the table does not know, or one that is not those three fields,
 or one whose pin holds anything but letters, digits, dots, dashes and
@@ -771,10 +779,11 @@ the list names or leave the engine out.
 
 The rungs that are worth playing are the ones close enough to trade games with:
 a pairing that ends 25-0 puts no upper bound on the winner, so it contributes
-almost nothing however many games it is given. The list is an input so it can be
-moved up as the engine improves.
+almost nothing however many games it is given. A ladder is kept in
+`scripts/ladders.sh` rather than in the workflow so it can be moved up as the
+engine improves without touching either workflow.
 
-The default plays eight of them, and they sit either side of where the engine
+The blitz ladder has eight of them, and they sit either side of where the engine
 is expected to be rather than under it. v0.4.4 placed at 2601 ±31 (95%) over
 400 games on the panel before this one, and the release after it is planned at
 about a hundred more, so the panel brackets 2700, four rungs below it and four
@@ -851,7 +860,7 @@ fifty games each. Their blocks are still in `scripts/opponent.sh`, so a
 ladder can name them again.
 
 Cinnamon 2.4 at 2326, FoxSEE 8.2 at 2471 and Weiss 1.0 at 2896 have blocks
-and are not in the default. Each was built at its pin and played twenty games,
+and are not on the blitz ladder (Weiss 1.0 is on the 40/15 one). Each was built at its pin and played twenty games,
 so any of them can be named in a ladder without proving its block first.
 Cinnamon prints an illegal move at the end of a principal variation. Halogen 8
 at 2826 and Zahak 5.0 at 2726 were tried for the panel above and have no
@@ -912,8 +921,8 @@ that. It is a placement, not a rating.
 The ladder is held as exact, too. A rung whose rating is a community estimate
 rather than a ccrl ranking, which is what v10 in the table above is, hands
 whatever it is wrong by straight to the answer, and no error bar here covers
-that either. Every rung in the default is ranked, so that is a risk a ladder
-moved by hand takes on rather than one the default carries.
+that either. Every rung of both ladders in `scripts/ladders.sh` is ranked, so
+that is a risk a ladder typed in by hand takes on rather than one they carry.
 
 The time control is a compromise rather than a default worth keeping by
 accident. Ten seconds runs a rung in under ten minutes but leaves so little
@@ -930,6 +939,52 @@ on its own buys less thinking than it looks. Both are doubled here instead, and
 both halve the rate: a runner plays about three and a third games a minute at
 10+0.1 and about one and seven tenths at 20+0.2. Worth remembering before
 raising it again.
+
+### The 40/15 gauntlet
+
+A release plays the gauntlet a second time against the ccrl 40/15 list, which
+rates engines at forty moves in fifteen minutes. It is the same workflow called
+with `list: 40/15` and nothing else of the match, so everything it plays comes
+from that list's block in `scripts/ladders.sh`. The block also names the words
+around the figure (the line in the release notes says "on the ccrl 40/15
+scale") and the artifact prefix, `calibrate-ccrl-40-15`. That prefix keeps the
+two gauntlets of one release run from colliding or reading each other's games.
+mache writes the blitz scale into the line whatever the ladder was, so the
+workflow rewrites it, and refuses to publish a line it cannot find the words
+in.
+
+It plays at 40/150, a repeating forty moves in 150 seconds. That is one sixth
+of 40/15, which is roughly the scale 20+0.2 is to 2+1. A game of a hundred
+moves a side is two and a half periods, so the clock allows about twelve
+minutes a game, and sixteen games a rung at two at a time is at most about an
+hour and a half of wall clock. That is a first estimate rather than a
+measurement, and the rungs are capped at four hours of play.
+
+Sixteen games a rung over six rungs is ninety-six games, near sixty elo either
+side. It is a rough second placement at a slower control. The hundred points
+of systematic error described above apply to it as well.
+
+The ladder brackets 2700 as the blitz one does, from 2558 to 2845, read off the
+complete 40/15 list of 18 September 2026:
+
+| rung | ccrl 40/15 | ccrl blitz | |
+| --- | --- | --- | --- |
+| tantabus:v2.0.0 | 2558 ±11 | 2555 | Tantabus 2.0.0 64-bit |
+| weiss:v0.9 | 2651 ±23 | 2650 | Weiss 0.9 64-bit |
+| blunder:v8.5.5 | 2692 ±18 | 2663 | Blunder 8.5.5 64-bit |
+| inanis:v1.1.0 | 2746 ±22 | 2763 | Inanis 1.1.0 64-bit |
+| stash:v21.2 | 2785 ±20 | | Stash 21.2 64-bit |
+| weiss:v1.0 | 2845 ±26 | 2896 | Weiss 1.0 64-bit |
+
+The first four are on the blitz panel, and the 40/15 list rates each within
+thirty points of its blitz figure. The other four blitz rungs (Stash 20.0.1,
+Stash 21.0, Zahak 6.2 and Weiss 0.10) are not on the 40/15 list at all.
+Weiss 1.0 has been built and played here before. Stash 21.2 is the Stash block
+at a new pin and has not.
+
+Other rungs the 40/15 list rates and a block here can build: Stash 18.0 at
+2421, SoFCheck 0.9 beta at 2426, FoxSEE 8.2 at 2495, Inanis 1.2.0 at 2835 and
+Stash 23.0 at 2902. Halogen 8 at 2895 has no block, for the reason given above.
 
 ## Cutting a release
 
@@ -1013,7 +1068,8 @@ binaries for linux, macos and windows, the x86-64 ones at three cpu levels. It
 goes on to call three workflows that add to the release once it exists:
 **Docker** publishes the lichess-bot image and quotes it in the notes with
 its digest, **Strength** plays the match and adds the elo estimate, and
-**Calibrate** plays the gauntlet and adds the ccrl placement.
+**Calibrate** plays the gauntlet and adds the ccrl placement, once against the
+blitz list and then again against the 40/15 list.
 
 All of them edit the notes by reading them and writing them back, so they share
 a concurrency group and take turns rather than one landing on top of the other.

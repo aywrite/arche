@@ -105,7 +105,8 @@ across a network.
 
 Each release plays a short match against its predecessor, and a gauntlet against engines of
 several lineages which are ranked on the [ccrl](https://computerchess.org.uk/) blitz list.
-Both results are added to the release notes.
+A second, smaller gauntlet at a slower control places it on the ccrl 40/15 list as well.
+All three results are added to the release notes.
 The estimate is only as good as the number of games behind it, which is why the error bar is
 published alongside it.
 
