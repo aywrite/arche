@@ -73,14 +73,13 @@ pub(crate) const QUIET_FUTILITY_MARGIN: Score = 100;
 // depths the rule reaches are 4, 8 and 12. At depth one that is
 // `LATE_MOVE_THRESHOLD`, the module's own definition of a late move: the
 // count prunes at depth one exactly where the reduction would begin
-// scouting if the reduction reached depth one. At depth three it is 12,
-// which is the floor `DEEP_INDEX_FLOOR` and `DEEP_INDEX_SLOPE` put on the
-// deeper scout at depth four. The line joins the lateness threshold at the
-// bottom to the index rule's floor at the top without a new number at
-// either end, and it is a step more conservative at depth three than that
-// rule's own line would be there (10), because at depth three nothing
-// stands behind the cutoff to catch what it misses and at depth four the
-// model does. An opening value, not a tuned one: what moves it is a match.
+// scouting if the reduction reached depth one. The top of the line is not
+// pinned to anything: 12 at depth three sits well above the 8 that
+// `DEEP_INDEX_FLOOR` and `DEEP_INDEX_SLOPE` put on the deeper scout at
+// depth four, and above the 7 that rule's line would reach at depth three.
+// That is deliberate and it is the conservative direction, because at
+// depth four the model stands behind the cutoff and at depth three nothing
+// does. An opening value, not a tuned one: what moves it is a match.
 pub(crate) const LATE_MOVE_COUNT: usize = 4;
 // How many plies shallower the deep reduction scouts a late quiet the gate
 // deepens, off the table: a ply over the flat amount.

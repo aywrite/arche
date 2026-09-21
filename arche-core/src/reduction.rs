@@ -112,8 +112,8 @@ pub struct Event {
     /// The window the node stood in at the scout, read from its bounds.
     pub window: Window,
     /// The move's place among the searched moves. Never under the late
-    /// move threshold on a scouted row; a quiet futility skip records its
-    /// own, which is never under one.
+    /// move threshold on a scouted row; a shallow skip records its own,
+    /// which is never under one.
     pub index: usize,
     /// The moves searched: `index + 1` on a scouted row, whose move is
     /// among them, and `index` on a skipped row, whose move never was.
@@ -1073,11 +1073,12 @@ mod tests {
             assert!(e.history <= e.history_max, "{:?}", row);
             assert!(e.depth >= 1, "{:?}", row);
             if e.scout == Scout::Skipped {
-                // no scout ran and the move is not among the searched. Two
-                // rules skip, and they never meet at a depth: the model's
-                // stands on the reduction's floors, and the quiet futility
-                // rule's on its own, a move after the node's first at a
-                // depth under the model's
+                // no scout ran and the move is not among the searched.
+                // Three rules skip, and the model's never meets the other
+                // two at a depth: it stands on the reduction's floors,
+                // while quiet futility and the late move count take a move
+                // after the node's first at a depth under the model's. The
+                // row does not say which of those two took it
                 assert_eq!(e.searched, e.index, "{:?}", row);
                 assert_eq!(e.cost, 0, "{:?}", row);
                 assert_eq!(e.reduction, 0, "{:?}", row);
