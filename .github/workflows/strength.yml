@@ -18,16 +18,22 @@ name: Strength
 # a game the pairing left over is in the score and in nothing else.
 #
 # sprt reads the same pooled games as a sequential test of whether the
-# candidate is stronger, and a run is one batch of it. The shards play their
-# slices with nothing watching; the summary adds their pairs to the pairs the
-# earlier batches played and judges the log likelihood ratio over all of them.
-# A batch that settles it says passed or failed; one that does not says
-# inconclusive and the pairs to launch the next batch with. Looking only at
-# batch boundaries is what lets the shards play at once and leaves the bounds
-# meaning what they say.
+# candidate is stronger. The shards play their slices with nothing watching;
+# the summary adds their pairs to the pairs the earlier batches played and
+# judges the log likelihood ratio over all of them. A batch that settles it
+# says passed or failed; one that does not says inconclusive and the pairs to
+# launch the next batch with. Looking only at batch boundaries is what lets the
+# shards play at once and leaves the bounds meaning what they say.
+#
+# `batches` chains that inside one run: up to four batches, each played only
+# where the one before settled nothing. A test that decides early stops
+# playing, and one that does not hands back the pairs for a second run to carry
+# on from. The batches share a seed and reserve the book between them, so no
+# two play the same opening.
 #
 # Every shard keeps its games, the result block, the fastchess config and a
-# manifest as strength-<run id>-<attempt>-shard-<i>.
+# manifest as strength-<run id>-<attempt>-shard-<i>, with -batch-<n> before the
+# shard where the run played more than one.
 
 on:
   workflow_dispatch:
@@ -55,9 +61,13 @@ on:
         type: string
         default: 8moves_v3
       sprt:
-        description: Ask whether the candidate is stronger rather than how much. This run is one batch of a sequential test, read together with the batches before it.
+        description: Ask whether the candidate is stronger rather than how much. The run is a sequential test read over every pair its batches play.
         type: boolean
         default: false
+      batches:
+        description: Batches of the sprt to chain in this run, one to four. Each is played only where the one before settled nothing, so it is a cap rather than a plan.
+        type: number
+        default: 1
       elo0:
         description: SPRT null hypothesis, in elo. Accepting it (H0) means the candidate is not stronger.
         type: number
@@ -67,7 +77,7 @@ on:
         type: number
         default: 10
       prior_pairs:
-        description: The pairs the earlier batches of this test played, by what the candidate scored in them, as the summary of the last one printed them. Left empty this batch is the first.
+        description: The pairs the earlier runs of this test played, by what the candidate scored in them, as the summary of the last one printed them. Left empty this run opens the test.
         type: string
         default: ""
       seed:
@@ -96,6 +106,9 @@ on:
       sprt:
         type: boolean
         default: false
+      batches:
+        type: number
+        default: 1
       elo0:
         type: number
         default: 0
@@ -114,7 +127,7 @@ on:
       # What the match is played on rather than what it plays, so not boxes
       # on the actions tab. A workflow calling this can name them.
       hash_mb:
-        description: The table both sides are given, in MB
+        description: The table both sides are given, in MB. 256 is what the engine defaults to, and naming it holds both sides to the same table whatever a future default is.
         type: number
         default: 256
       concurrency:
@@ -122,16 +135,16 @@ on:
         type: number
         default: 2
       max_match_minutes:
-        description: The wall clock cap on play alone
+        description: The wall clock cap on play alone. The play job's timeout is this plus half an hour, so a shard stopped by the clock still keeps its games. A hundred game shard is about ninety minutes at 30+0.3 and half an hour at 10+0.1, so the default is headroom rather than a budget.
         type: number
         default: 150
       startup_ms:
-        description: How long fastchess waits for an engine to answer uci
+        description: How long fastchess waits for an engine to answer uci. The engine allocates its table before it answers, which four copies starting at once can take longer over than the ten second default.
         type: number
         default: 20000
       # Marks this workflow's line in the release notes, so a rerun replaces
-      # its own line. The job below repeats the default, as the env lines that
-      # read the other call inputs do.
+      # its own line. The job below repeats the default, as the expressions
+      # that read the other call inputs do.
       marker:
         description: Identifies this workflow's line in the release notes
         type: string
@@ -139,23 +152,6 @@ on:
 
 permissions:
   contents: read
-
-env:
-  # A workflow_call default is not applied to a run started from the actions
-  # tab, so each default is written here as well as on the input.
-  #
-  # 256MB is what the engine defaults to. Naming it holds both sides to the
-  # same table whatever a future default is.
-  HASH: ${{ inputs.hash_mb || 256 }}
-  CONCURRENCY: ${{ inputs.concurrency || 2 }}
-  # The wall clock cap on play alone; the play job's timeout is this plus half
-  # an hour, so a shard stopped by the clock still keeps its games. A hundred
-  # game shard is about ninety minutes at 30+0.3 and half an hour at 10+0.1,
-  # so this is headroom rather than a budget.
-  MAX_MATCH_MINUTES: ${{ inputs.max_match_minutes || 150 }}
-  # The engine allocates its table before it answers uci, which four copies
-  # starting at once can take longer over than the ten second default.
-  STARTUP_MS: ${{ inputs.startup_ms || 20000 }}
 
 jobs:
   # Split out so the match can be skipped in one place when there is nothing
@@ -181,6 +177,25 @@ jobs:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
           fetch-depth: 0
+
+      # Before a runner builds anything, and here rather than in plan-shards
+      # because it is this file's ladder that sets the ceiling, not the plan.
+      - name: Check the test fits the ladder
+        env:
+          BATCHES: ${{ inputs.batches }}
+          SPRT: ${{ inputs.sprt }}
+        run: |
+          [ "$BATCHES" -ge 1 ] && [ "$BATCHES" -le 4 ] || {
+            echo "::error::batches is 1 to 4, the stages this workflow has, and was ${BATCHES}. A longer test is carried on by a second run, with prior_pairs"
+            exit 1
+          }
+          # A run that is not a sequential test has no verdict, so every stage
+          # after the first would skip and the run would quietly play one
+          # batch of the several it was asked for.
+          [ "$BATCHES" -eq 1 ] || [ "$SPRT" = "true" ] || {
+            echo "::error::batches is ${BATCHES} and sprt is off. Only a sequential test has a verdict for the next batch to wait on; without one, ask for the games you want in one batch"
+            exit 1
+          }
 
       - uses: aywrite/mache/actions/resolve-ref@a429bcecb0b5718c0ef9fe8c02f0b360d986635b # v0.5.0
         id: candidate
@@ -213,217 +228,164 @@ jobs:
           elo1: ${{ inputs.elo1 }}
           prior_pairs: ${{ inputs.prior_pairs }}
           book: ${{ inputs.book }}
-          max_match_minutes: ${{ env.MAX_MATCH_MINUTES }}
+          max_match_minutes: ${{ inputs.max_match_minutes || 150 }}
 
-  play:
+  # The batch ladder. Actions has no loop and `uses:` is not an expression, so
+  # the stages are written out, and how many there are is the ceiling the job
+  # above checks against. Each waits on the one before and plays only where it
+  # settled nothing, which is the early stop: a decided test stops playing.
+  #
+  # Each guard says three things. The verdict is the early stop. `batches` is
+  # the cap the caller asked for, and without it a test still running at its
+  # last batch would start one more, which the book reserved no room for and
+  # every shard of which would fail. `!cancelled()` is there because a shard
+  # that fell over concludes the batch it was in as a failure, which would
+  # otherwise skip the stage after it before its verdict was read. A shard
+  # that fell over is a smaller sample, and the summary it fed still speaks
+  # for the whole test; what stops the ladder is an empty verdict.
+  #
+  # A workflow_call default is not applied to a run started from the actions
+  # tab, and the env context is not available to a job that calls a workflow,
+  # so each call-only default is repeated in the expression that reads it.
+  batch1:
     needs: resolve
     if: needs.resolve.outputs.baseline_sha != ''
-    runs-on: ubuntu-latest
-    strategy:
-      # a shard that fell over is a smaller sample, not a lost run
-      fail-fast: false
-      matrix:
-        shard: ${{ fromJSON(needs.resolve.outputs.shards) }}
-    timeout-minutes: ${{ fromJSON(needs.resolve.outputs.play_timeout) }}
-    defaults:
-      run:
-        shell: bash
-    env:
-      SHARD: ${{ matrix.shard }}
-      SHARDS: ${{ needs.resolve.outputs.count }}
-      PAIRS: ${{ needs.resolve.outputs.pairs }}
-      TIME_CONTROL: ${{ inputs.time_control }}
-      BOOK: ${{ needs.resolve.outputs.book }}
-      SPRT: ${{ inputs.sprt }}
-      ELO0: ${{ inputs.elo0 }}
-      ELO1: ${{ inputs.elo1 }}
-      PRIOR_PAIRS: ${{ inputs.prior_pairs }}
+    uses: ./.github/workflows/strength-batch.yml
+    with:
+      batch: 0
+      batches: ${{ inputs.batches }}
+      prior_pairs: ${{ inputs.prior_pairs }}
+      candidate_name: ${{ needs.resolve.outputs.candidate_name }}
+      candidate_sha: ${{ needs.resolve.outputs.candidate_sha }}
+      baseline_name: ${{ needs.resolve.outputs.baseline_name }}
+      baseline_sha: ${{ needs.resolve.outputs.baseline_sha }}
+      shards: ${{ needs.resolve.outputs.shards }}
+      count: ${{ fromJSON(needs.resolve.outputs.count) }}
+      pairs: ${{ fromJSON(needs.resolve.outputs.pairs) }}
+      play_timeout: ${{ fromJSON(needs.resolve.outputs.play_timeout) }}
+      book: ${{ needs.resolve.outputs.book }}
       # the seed picks the region of the book each shard plays, not a shuffle.
       # The run id is one no two runs share; a seed given by hand replays an
-      # earlier run
-      SEED: ${{ inputs.seed || github.run_id }}
-      CANDIDATE: ${{ needs.resolve.outputs.candidate_name }}
-      CANDIDATE_SHA: ${{ needs.resolve.outputs.candidate_sha }}
-      PREVIOUS: ${{ needs.resolve.outputs.baseline_name }}
-      BASELINE_SHA: ${{ needs.resolve.outputs.baseline_sha }}
-    steps:
-      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
-        with:
-          fetch-depth: 0
+      # earlier run. Every stage is handed the same one, and the batch index
+      # is what keeps them off each other's openings
+      seed: ${{ inputs.seed || github.run_id }}
+      time_control: ${{ inputs.time_control }}
+      sprt: ${{ inputs.sprt }}
+      elo0: ${{ inputs.elo0 }}
+      elo1: ${{ inputs.elo1 }}
+      hash_mb: ${{ inputs.hash_mb || 256 }}
+      concurrency: ${{ inputs.concurrency || 2 }}
+      max_match_minutes: ${{ inputs.max_match_minutes || 150 }}
+      startup_ms: ${{ inputs.startup_ms || 20000 }}
 
-      - uses: aywrite/mache/actions/setup@a429bcecb0b5718c0ef9fe8c02f0b360d986635b # v0.5.0
-        id: tools
+  batch2:
+    needs: [resolve, batch1]
+    if: >-
+      !cancelled()
+      && needs.batch1.outputs.verdict == 'inconclusive'
+      && inputs.batches > 1
+    uses: ./.github/workflows/strength-batch.yml
+    with:
+      batch: 1
+      batches: ${{ inputs.batches }}
+      prior_pairs: ${{ needs.batch1.outputs.carried }}
+      candidate_name: ${{ needs.resolve.outputs.candidate_name }}
+      candidate_sha: ${{ needs.resolve.outputs.candidate_sha }}
+      baseline_name: ${{ needs.resolve.outputs.baseline_name }}
+      baseline_sha: ${{ needs.resolve.outputs.baseline_sha }}
+      shards: ${{ needs.resolve.outputs.shards }}
+      count: ${{ fromJSON(needs.resolve.outputs.count) }}
+      pairs: ${{ fromJSON(needs.resolve.outputs.pairs) }}
+      play_timeout: ${{ fromJSON(needs.resolve.outputs.play_timeout) }}
+      book: ${{ needs.resolve.outputs.book }}
+      seed: ${{ inputs.seed || github.run_id }}
+      time_control: ${{ inputs.time_control }}
+      sprt: ${{ inputs.sprt }}
+      elo0: ${{ inputs.elo0 }}
+      elo1: ${{ inputs.elo1 }}
+      hash_mb: ${{ inputs.hash_mb || 256 }}
+      concurrency: ${{ inputs.concurrency || 2 }}
+      max_match_minutes: ${{ inputs.max_match_minutes || 150 }}
+      startup_ms: ${{ inputs.startup_ms || 20000 }}
 
-      # the cache keeps the dependencies; each side is built from an export of
-      # its commit
-      - uses: Swatinem/rust-cache@6323deb102c322ba6fcbdcafc7e3dddab59af2b6 # v2.9.2
+  batch3:
+    needs: [resolve, batch2]
+    if: >-
+      !cancelled()
+      && needs.batch2.outputs.verdict == 'inconclusive'
+      && inputs.batches > 2
+    uses: ./.github/workflows/strength-batch.yml
+    with:
+      batch: 2
+      batches: ${{ inputs.batches }}
+      prior_pairs: ${{ needs.batch2.outputs.carried }}
+      candidate_name: ${{ needs.resolve.outputs.candidate_name }}
+      candidate_sha: ${{ needs.resolve.outputs.candidate_sha }}
+      baseline_name: ${{ needs.resolve.outputs.baseline_name }}
+      baseline_sha: ${{ needs.resolve.outputs.baseline_sha }}
+      shards: ${{ needs.resolve.outputs.shards }}
+      count: ${{ fromJSON(needs.resolve.outputs.count) }}
+      pairs: ${{ fromJSON(needs.resolve.outputs.pairs) }}
+      play_timeout: ${{ fromJSON(needs.resolve.outputs.play_timeout) }}
+      book: ${{ needs.resolve.outputs.book }}
+      seed: ${{ inputs.seed || github.run_id }}
+      time_control: ${{ inputs.time_control }}
+      sprt: ${{ inputs.sprt }}
+      elo0: ${{ inputs.elo0 }}
+      elo1: ${{ inputs.elo1 }}
+      hash_mb: ${{ inputs.hash_mb || 256 }}
+      concurrency: ${{ inputs.concurrency || 2 }}
+      max_match_minutes: ${{ inputs.max_match_minutes || 150 }}
+      startup_ms: ${{ inputs.startup_ms || 20000 }}
 
-      # Ours rather than the action's. What builds this engine is this
-      # repository's to say, and the same script builds the bench and the
-      # speed comparison, neither of which has a match tool anywhere near it.
-      - name: Build both versions
-        run: |
-          # a pull request head is not fetched by default, and the resolve
-          # job's fetch was on another machine
-          for sha in "$CANDIDATE_SHA" "$BASELINE_SHA"; do
-            git cat-file -e "${sha}^{commit}" 2>/dev/null \
-              || git fetch -q origin "$sha" \
-              || git fetch -q origin "+refs/pull/*/head:refs/remotes/pull/*"
-          done
-          scripts/build_at.sh "$CANDIDATE_SHA" tools/new
-          scripts/build_at.sh "$BASELINE_SHA" tools/old
+  batch4:
+    needs: [resolve, batch3]
+    if: >-
+      !cancelled()
+      && needs.batch3.outputs.verdict == 'inconclusive'
+      && inputs.batches > 3
+    uses: ./.github/workflows/strength-batch.yml
+    with:
+      batch: 3
+      batches: ${{ inputs.batches }}
+      prior_pairs: ${{ needs.batch3.outputs.carried }}
+      candidate_name: ${{ needs.resolve.outputs.candidate_name }}
+      candidate_sha: ${{ needs.resolve.outputs.candidate_sha }}
+      baseline_name: ${{ needs.resolve.outputs.baseline_name }}
+      baseline_sha: ${{ needs.resolve.outputs.baseline_sha }}
+      shards: ${{ needs.resolve.outputs.shards }}
+      count: ${{ fromJSON(needs.resolve.outputs.count) }}
+      pairs: ${{ fromJSON(needs.resolve.outputs.pairs) }}
+      play_timeout: ${{ fromJSON(needs.resolve.outputs.play_timeout) }}
+      book: ${{ needs.resolve.outputs.book }}
+      seed: ${{ inputs.seed || github.run_id }}
+      time_control: ${{ inputs.time_control }}
+      sprt: ${{ inputs.sprt }}
+      elo0: ${{ inputs.elo0 }}
+      elo1: ${{ inputs.elo1 }}
+      hash_mb: ${{ inputs.hash_mb || 256 }}
+      concurrency: ${{ inputs.concurrency || 2 }}
+      max_match_minutes: ${{ inputs.max_match_minutes || 150 }}
+      startup_ms: ${{ inputs.startup_ms || 20000 }}
 
-      - uses: aywrite/mache/actions/play-shard@a429bcecb0b5718c0ef9fe8c02f0b360d986635b # v0.5.0
-        id: play
-        with:
-          candidate: ${{ needs.resolve.outputs.candidate_name }}
-          candidate_binary: ./new
-          opponent: ${{ needs.resolve.outputs.baseline_name }}
-          opponent_binary: ./old
-          book: ${{ needs.resolve.outputs.book }}
-          pairs: ${{ needs.resolve.outputs.pairs }}
-          shards: ${{ needs.resolve.outputs.count }}
-          shard: ${{ matrix.shard }}
-          seed: ${{ inputs.seed || github.run_id }}
-          time_control: ${{ inputs.time_control }}
-          hash_mb: ${{ env.HASH }}
-          concurrency: ${{ env.CONCURRENCY }}
-          startup_ms: ${{ env.STARTUP_MS }}
-          max_match_minutes: ${{ env.MAX_MATCH_MINUTES }}
-
-      # What it would take to play this shard again. Written whether or not it
-      # finished, since a shard that ended badly is the one looked into. Ours
-      # rather than the action's: this is this repository's record of its own
-      # run, scripts/build_corpus.py reads the run and the shard back out of
-      # it, and what built the engine is only sayable here.
-      - name: Write the manifest
-        if: always()
-        env:
-          FASTCHESS: ${{ steps.tools.outputs.fastchess }}
-          MACHE: ${{ steps.tools.outputs.version }}
-          OPENINGS: ${{ steps.play.outputs.openings }}
-          START: ${{ steps.play.outputs.start }}
-          STOPPED_BY: ${{ steps.play.outputs.stopped_by }}
-        run: |
-          # asked for again, since the play action may not have got that far
-          book_file=$(scripts/book.sh file "$BOOK") || book_file=unknown
-          book_sha=$(sha256sum "tools/${book_file}" | cut -d' ' -f1) || book_sha=unknown
-          toolchain=$(rustc -V) || toolchain=unknown
-          {
-            echo "candidate: ${CANDIDATE}"
-            echo "candidate_sha: ${CANDIDATE_SHA}"
-            echo "baseline: ${PREVIOUS}"
-            echo "baseline_sha: ${BASELINE_SHA}"
-            echo "build: scripts/build_at.sh, cargo build --release on an export of the commit"
-            echo "fastchess: ${FASTCHESS}"
-            # the tooling that reads the games, so a figure can be read back
-            # against the version that produced it
-            echo "mache: ${MACHE}"
-            echo "book: ${book_file}"
-            echo "book_sha256: ${book_sha}"
-            echo "book_openings: ${OPENINGS:-not counted, the shard did not get that far}"
-            echo "seed: ${SEED}"
-            echo "shard: ${SHARD}"
-            echo "start: ${START:-not chosen, the shard did not get that far}"
-            echo "pairs: ${PAIRS}"
-            echo "time_control: ${TIME_CONTROL}"
-            echo "hash_mb: ${HASH}"
-            echo "concurrency: ${CONCURRENCY}"
-            echo "startup_ms: ${STARTUP_MS}"
-            echo "games_asked: $((PAIRS * 2))"
-            if [ "$SPRT" = "true" ]; then
-              echo "sprt: judged by the summary over the pooled pairs, not by fastchess: elo0=${ELO0} elo1=${ELO1} alpha=0.05 beta=0.05 model=logistic prior_pairs=${PRIOR_PAIRS:-none}"
-            else
-              echo "sprt: off"
-            fi
-            echo "wall_clock_cap_minutes: ${MAX_MATCH_MINUTES}"
-            # unset when the play action never reached its end
-            echo "stopped_by: ${STOPPED_BY:-not recorded, the shard did not finish}"
-            echo "runner: $(uname -a)"
-            echo "cores: $(nproc)"
-            echo "rustc: ${toolchain}"
-            echo "run_id: ${GITHUB_RUN_ID}"
-            echo "run_url: ${GITHUB_SERVER_URL}/${GITHUB_REPOSITORY}/actions/runs/${GITHUB_RUN_ID}"
-          } > tools/manifest.txt
-          cat tools/manifest.txt
-
-      # The summary job reads the games from here. The attempt is in the name
-      # because an artifact cannot be uploaded twice under one name and a
-      # rerun keeps the run id.
-      - name: Keep the games
-        if: always()
-        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
-        with:
-          name: strength-${{ github.run_id }}-${{ github.run_attempt }}-shard-${{ matrix.shard }}
-          path: |
-            tools/games.pgn
-            tools/result.txt
-            tools/config.json
-            tools/manifest.txt
-          if-no-files-found: warn
-          # The maximum a public repository allows, written down because it is
-          # the tuning corpus's shelf life: an expired games artifact cannot be
-          # played again, and an implicit default can be lowered for the
-          # repository by someone thinking about disk.
-          retention-days: 90
-
-  summarise:
-    needs: [resolve, play]
-    # runs on whatever arrived, as long as there was a baseline to play
-    if: always() && needs.resolve.result == 'success' && needs.resolve.outputs.baseline_sha != ''
-    runs-on: ubuntu-latest
-    timeout-minutes: 20
-    defaults:
-      run:
-        shell: bash
-    outputs:
-      line: ${{ steps.summary.outputs.line }}
-    steps:
-      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
-
-      # no harness to build and no book to fetch: this job only reads games
-      - uses: aywrite/mache/actions/setup@a429bcecb0b5718c0ef9fe8c02f0b360d986635b # v0.5.0
-        with:
-          estimator_only: true
-
-      # one directory per artifact under shards/, except that a single
-      # artifact is extracted straight into shards/; the action takes either.
-      # The attempt is in the pattern so a rerun does not count an earlier
-      # attempt's games as well
-      - uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v8.0.1
-        with:
-          pattern: strength-${{ github.run_id }}-${{ github.run_attempt }}-shard-*
-          path: shards
-
-      - uses: aywrite/mache/actions/summarise-match@a429bcecb0b5718c0ef9fe8c02f0b360d986635b # v0.5.0
-        id: summary
-        with:
-          games: shards
-          candidate: ${{ needs.resolve.outputs.candidate_name }}
-          candidate_sha: ${{ needs.resolve.outputs.candidate_sha }}
-          baseline: ${{ needs.resolve.outputs.baseline_name }}
-          baseline_sha: ${{ needs.resolve.outputs.baseline_sha }}
-          shards: ${{ needs.resolve.outputs.count }}
-          time_control: ${{ inputs.time_control }}
-          sprt: ${{ inputs.sprt }}
-          elo0: ${{ inputs.elo0 }}
-          elo1: ${{ inputs.elo1 }}
-          prior_pairs: ${{ inputs.prior_pairs }}
-          # artifact names belong to this workflow, so the sentence naming
-          # them is written here rather than by the action
-          provenance: >-
-            The games, the results and a manifest of what each shard played
-            are kept as the
-            `strength-${{ github.run_id }}-${{ github.run_attempt }}-shard-<i>`
-            artifacts. The openings came from seed
-            ${{ inputs.seed || github.run_id }}, which replays this schedule.
-
+  # The line is the last batch that played, since its summary read every pair
+  # the test played and not just its own.
   release-notes:
-    needs: summarise
-    if: inputs.publish
+    needs: [batch1, batch2, batch3, batch4]
+    # A batch that played reports a line whether or not every shard of it
+    # came back, so the line rather than the result is what says a stage
+    # reported. A stage that played and reported nothing is the case to catch:
+    # the coalescing below would fall back to the stage before it, and publish
+    # a figure over part of the test under the whole test's name.
+    if: >-
+      !cancelled() && inputs.publish
+      && needs.batch1.outputs.line != ''
+      && (needs.batch2.result == 'skipped' || needs.batch2.outputs.line != '')
+      && (needs.batch3.result == 'skipped' || needs.batch3.outputs.line != '')
+      && (needs.batch4.result == 'skipped' || needs.batch4.outputs.line != '')
     permissions:
       contents: write
     uses: ./.github/workflows/release-note.yml
     with:
       marker: ${{ inputs.marker || 'arche:strength' }}
-      line: ${{ needs.summarise.outputs.line }}
+      line: ${{ needs.batch4.outputs.line || needs.batch3.outputs.line || needs.batch2.outputs.line || needs.batch1.outputs.line }}

@@ -32,9 +32,10 @@ archived twice, or two played move for move the same), and the counters say
 how many do.
 
 The run is read off the `manifest.txt` beside `games.pgn` as the run id and
-the shard, or off the directory's name where there is no manifest; the round
-is the pgn's `Round` header. Both are carried beside the key rather than
-folded into it, so a row can be excluded or weighted by its source.
+the shard, with the batch between them where the run chained batches, or off
+the directory's name where there is no manifest; the round is the pgn's
+`Round` header. Both are carried beside the key rather than folded into it, so
+a row can be excluded or weighted by its source.
 
 The first sixteen plies are the opening book's, and so is any further ply
 whose comment says `book`, so the corpus starts where the book stops. Games
@@ -86,10 +87,12 @@ RESULTS = {"1-0": 1.0, "0-1": 0.0, "1/2-1/2": 0.5}
 # A round the archive did not name, or a run a caller of `corpus` did not.
 UNKNOWN = "-"
 
-# The file a strength run keeps beside its games, and the two lines of it that
-# name the run: `run_id: 34468958876` and `shard: 0`.
+# The file a strength run keeps beside its games, and the lines of it that
+# name the run: `run_id: 34468958876`, `batch: 1` and `shard: 0`. A run that
+# chained batches writes the batch, since its batches share a run id and
+# repeat each other's shard numbers.
 MANIFEST = "manifest.txt"
-MANIFEST_LINE = re.compile(r"^(run_id|shard):\s*(\S+)\s*$")
+MANIFEST_LINE = re.compile(r"^(run_id|batch|shard):\s*(\S+)\s*$")
 
 # A game with the run that played it, which the game alone does not know.
 Sourced = collections.namedtuple("Sourced", "run game")
@@ -311,10 +314,10 @@ def render(entries):
 
 
 def run_of(path):
-    """The run that played the games in a pgn: the run id and the shard off
-    the manifest beside it, the run id alone where the manifest names no
-    shard, the directory's name where there is no manifest, and the file's own
-    name where there is no directory either."""
+    """The run that played the games in a pgn: the run id, the batch and the
+    shard off the manifest beside it, whichever of the three it names, the
+    directory's name where there is no manifest, and the file's own name where
+    there is no directory either."""
     manifest = path.parent / MANIFEST
     if manifest.is_file():
         found = {}
@@ -323,9 +326,10 @@ def run_of(path):
             if match:
                 found[match.group(1)] = match.group(2)
         if "run_id" in found:
-            # a run before the workflow was sharded names no shard
+            # a run before the workflow was sharded names no shard, and one
+            # that played a single batch names no batch
             return "-".join(
-                found[word] for word in ("run_id", "shard") if word in found
+                found[word] for word in ("run_id", "batch", "shard") if word in found
             )
     return path.parent.name or path.stem
 
