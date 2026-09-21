@@ -20,9 +20,9 @@ jobs:
     runs-on: ubuntu-latest
     steps:
       - run: |
-          echo "the probe workflow is pinned at d79a9ec1c4f897d885c9708c69cb9b188f4cf340"
+          echo "the probe workflow is pinned at a93844252e0fe90d95aaba1439caaca3e3ff15ac"
           echo "so a property naming the workflow's own commit reads that, and"
           echo "github.sha in the called workflow reads this repository's commit"
 
   ask-mache:
-    uses: aywrite/mache/.github/workflows/probe.yml@d79a9ec1c4f897d885c9708c69cb9b188f4cf340
+    uses: aywrite/mache/.github/workflows/probe.yml@a93844252e0fe90d95aaba1439caaca3e3ff15ac
