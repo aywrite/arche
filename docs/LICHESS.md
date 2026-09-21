@@ -8,10 +8,12 @@ which is enough to run the engine as a bot account on [lichess.org](https://lich
 docker run -e LICHESS_BOT_TOKEN=<token> ghcr.io/aywrite/arche-lichess-bot:latest
 ```
 
-The token is a lichess API token for a bot account with the `bot:play` scope. The engine
-allocates a 256MB transposition table, so give the container at least 512MB of memory. A
-different size is asked for through lichess-bot's `uci_options` map, which is commented out in
-`docker/config.yml` at the default. The same map is where `Move Overhead` is raised, which is
+The token is a lichess API token for a bot account with the `bot:play` scope. The engine asks
+for a 256MB transposition table, so give the container at least 512MB of memory. Below that it
+halves the ask until the host will give it and says on an `info string` what it settled for,
+which keeps a smaller container playing rather than failing to start, on a smaller table than
+the handshake advertises. A different size is asked for through lichess-bot's `uci_options`
+map, which is commented out in `docker/config.yml` at the default. The same map is where `Move Overhead` is raised, which is
 worth doing here: it starts at 50 milliseconds, and a bot playing across the network gives the
 move back later than one on the same machine. To change that or any other setting, mount a
 replacement over `/lichess-bot/config.yml`; the defaults are in `docker/config.yml`.

@@ -92,8 +92,9 @@ To build from source:
 cargo build --release
 ```
 
-The binary is written to `target/release/arche`. The engine allocates a 256MB transposition
-table on startup; `setoption name Hash value <megabytes>` gives it one of another size, between
+The binary is written to `target/release/arche`. The engine asks for a 256MB transposition
+table on startup, halving the ask until the host will give it and saying on an `info string`
+what it settled for; `setoption name Hash value <megabytes>` gives it one of another size, between
 1 and 16384MB, and `setoption name Clear Hash` empties the one it has without resizing it. It
 searches on one thread and says so, so a `Threads` of anything but one is reported and then
 ignored. `setoption name Move Overhead value <milliseconds>` says how much of each budget to

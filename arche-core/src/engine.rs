@@ -947,11 +947,17 @@ impl AlphaBeta {
     /// An engine searching under the policies given, with a table of the
     /// size given.
     pub fn with_config(board: Board, bytes: usize, config: SearchConfig) -> Self {
+        Self::with_table(board, TranspositionTable::of_bytes(bytes), config)
+    }
+
+    /// The table itself rather than a size, which is the one thing a
+    /// session's engine and a named size's engine differ in.
+    fn with_table(board: Board, transpositions: TranspositionTable, config: SearchConfig) -> Self {
         Self {
             board,
             config,
             nodes: 0,
-            transpositions: TranspositionTable::of_bytes(bytes),
+            transpositions,
             selective_depth: 0,
             limits: Limits::unlimited(),
             next_check: 0,
@@ -2270,8 +2276,20 @@ impl AlphaBeta {
         Ok(value)
     }
 
-    pub fn new(board: Board) -> Self {
-        AlphaBeta::with_table_bytes(board, DEFAULT_TABLE_BYTES)
+    /// The engine a session starts with, and the size its table was asked
+    /// for when the host would not give it. A machine with less memory
+    /// than the default assumes plays with a smaller table rather than
+    /// failing to start, and `table_bytes` says what it got.
+    ///
+    /// The ask is handed back rather than left to be inferred, so that
+    /// what the adapter reports and what the engine asked for are the one
+    /// fact.
+    pub fn new(board: Board) -> (Self, Option<usize>) {
+        let (transpositions, asked) = TranspositionTable::up_to_bytes(DEFAULT_TABLE_BYTES);
+        (
+            Self::with_table(board, transpositions, SearchConfig::default()),
+            asked,
+        )
     }
 
     /// One fixed depth search of the root, the one node whose answer must

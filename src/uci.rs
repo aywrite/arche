@@ -608,6 +608,19 @@ pub fn bench_settings(params: &Params) -> Result<BenchSettings, String> {
 /// figures reads like a run that found nothing.
 pub const NO_AUDIT_MEMORY: &str = "no memory for the audit's keys, which are half the table again";
 
+/// What is said when the host would not give the session the table it
+/// asked for, taking the ask from the engine that made it. None when the
+/// engine got what it asked for. The interface is told because the `Hash`
+/// the handshake advertises is then not the table in use.
+///
+/// Bytes rather than megabytes: the ask is halved until it fits, so the
+/// size it settles for need not be a whole megabyte and would read as zero.
+pub fn table_shortfall(asked: Option<usize>, got: usize) -> Option<String> {
+    asked.map(|asked| {
+        format!("info string no memory for a {asked} byte transposition table, using {got} bytes")
+    })
+}
+
 impl BenchSettings {
     /// Runs the bench, or nothing when the audit's keys could not be
     /// allocated, which the caller reports with `NO_AUDIT_MEMORY`. The
@@ -1004,6 +1017,17 @@ mod tests {
     /// not the megabytes themselves.
     fn megabytes(megabytes: usize) -> usize {
         AlphaBeta::with_table_bytes(Board::new(), megabytes * 1024 * 1024).table_bytes()
+    }
+
+    #[test]
+    fn a_table_smaller_than_the_session_asked_for_is_said_and_one_that_is_not_is_silent() {
+        assert_eq!(table_shortfall(None, 256 * 1024 * 1024), None);
+        assert_eq!(
+            table_shortfall(Some(256 * 1024 * 1024), 64 * 1024 * 1024).as_deref(),
+            Some(
+                "info string no memory for a 268435456 byte transposition table, using 67108864 bytes"
+            )
+        );
     }
 
     #[test]
