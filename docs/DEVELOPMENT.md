@@ -632,7 +632,8 @@ the games are weighed as evidence between two hypotheses, and the test ends at
 the first batch whose evidence accepts one of them. The verdicts are wrong at
 the accepted error rates, five percent each way.
 
-The unit of the test is a batch, which is one run of the workflow. The shards
+The unit of the test is a batch. One run plays a batch, or chains up to
+four. The shards
 play their slices with nothing watching, and the summary reads all of their
 games at once: `match-estimate` adds the pairs they played to the pairs the
 earlier batches of the same test played and works out the log likelihood ratio
@@ -650,19 +651,34 @@ tests rather than one.
   shards at 10+0.1 is about half an hour of wall clock, which is the default.
   Play is capped at 150 minutes as it is for any match, so a shard the clock
   stopped leaves a smaller batch rather than a lost one.
+- `batches` is how many batches one run may chain, one to four. Each is played
+  only where the one before settled nothing, so it caps the run rather than
+  planning it. It needs `sprt`: a run with no verdict has nothing for the next
+  stage to wait on, and is refused rather than quietly playing one batch.
 - `prior_pairs` is the pairs the earlier batches played, by what the candidate
   scored in them, which the summary of the last one prints. Left empty the
   batch is the first of its test.
 
 A batch that settles the question says `passed` (stronger by about `elo1` or
 more) or `failed` (not) beside its estimate. One that does not says
-`inconclusive`, and its summary gives the five counts to launch the next batch
-with: run the workflow again with the same `elo0`, `elo1`, candidate and
-baseline, and `prior_pairs` set to those counts. The seed is new each time, so the next
-batch plays openings of its own rather than the ones already spent. A change
-well outside the bounds on either side settles in a batch or two. One at
-either bound, or between them, takes several thousand games, which is why the
-roadmap's two null results ended inconclusive at their caps, and why that
+`inconclusive`, and its summary gives the five counts the batch after it takes
+as `prior_pairs`.
+
+`batches` plays that next batch in the same run. The stages wait on each other
+and each runs only where the one before settled nothing, so a test that settles
+after one batch plays one and the run costs what the test needed rather than
+what it was budgeted. They share a seed and reserve the book between them, so
+no two play the same opening. A shard that fell over leaves a smaller batch and
+the ladder carries on from the summary it fed.
+
+Past four batches the test is carried on by hand. Run the workflow again with
+the same `elo0`, `elo1`, candidate and baseline, and `prior_pairs` set to the
+counts the last summary printed. The seed is new each time, so the second run
+plays openings of its own rather than the ones already spent.
+
+A change well outside the bounds on either side settles in a batch or two. One
+at either bound, or between them, takes several thousand games, which is why
+the roadmap's two null results ended inconclusive at their caps, and why that
 ledger reads repeated runs of the same arm as one test over the pairs of both.
 
 The estimate a batch reports is its own, since the batch is the match that was

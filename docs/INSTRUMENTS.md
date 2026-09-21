@@ -821,8 +821,9 @@ gave it. No position loses every appearance, since the group that owns it is
 the group of a game that reached it.
 
 The run is read off the `manifest.txt` a strength run keeps beside its
-`games.pgn`, as the run id and the shard, and off the directory's name where
-there is no manifest; the round is the pgn's own `Round` header. Neither is
+`games.pgn`, as the run id and the shard, with the batch between them where
+the run chained batches, and off the directory's name where there is no
+manifest; the round is the pgn's own `Round` header. Neither is
 part of the key, because neither is a property of the play. They are on the
 row so that a source can be excluded or weighted after extraction, and so that
 the two games that played one opening with the colours reversed can be told

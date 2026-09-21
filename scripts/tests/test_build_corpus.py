@@ -339,6 +339,26 @@ def test_a_row_names_the_run_the_manifest_beside_its_games_names(tmp_path):
     assert 'round "7"' in line
 
 
+def test_two_batches_of_one_run_are_two_sources(tmp_path):
+    """A run that chained sprt batches plays each from the same run id and
+    numbers its shards from zero again, so the batch is what keeps shard 0 of
+    one batch from carrying shard 0 of another's name."""
+    names = []
+    for batch in (0, 1):
+        shard = tmp_path / f"strength-34468958876-1-batch-{batch}-shard-0"
+        shard.mkdir()
+        (shard / "games.pgn").write_text(pgn(), encoding="utf-8")
+        (shard / "manifest.txt").write_text(
+            f"run_id: 34468958876\nbatch: {batch}\nbatches: 4\nshard: 0\n",
+            encoding="utf-8",
+        )
+        names.append(build_corpus.run_of(shard / "games.pgn"))
+    assert names == ["34468958876-0-0", "34468958876-1-0"]
+    # `batches` is in the manifest for a reader, not for the name: two of the
+    # four lines name the source and the rest are not read here
+    assert len(set(names)) == 2
+
+
 def test_a_row_says_when_the_archive_did_not_say_where_a_game_came_from():
     """No manifest, no directory and no Round header leave the two operands
     at a dash rather than at something invented."""

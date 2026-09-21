@@ -1,0 +1,354 @@
+name: Strength batch
+
+# One batch of a sharded strength match: the shards play their slices, and the
+# summary pools them and says what the test came to. strength.yml calls it once
+# a batch and nothing else calls it.
+#
+# It is a workflow rather than a job in strength.yml because a batch ladder is
+# the same job graph written out several times. Actions has no loop and `uses:`
+# is not an expression, so the stages cannot be generated; what they can do is
+# share one definition.
+#
+# mache publishes a batch workflow of its own, and this is not it. A reusable
+# workflow cannot be handed an action, so the cache a general one offers is a
+# plain path and key rather than the cache that understands this toolchain and
+# prunes what it keeps. The manifest lines it takes from a caller are echoed
+# rather than run, so the compiler that built the two sides cannot go through
+# them. What is left is the build, which is scripts/build_at.sh and this
+# repository's to name. Keeping the job here keeps all three.
+
+on:
+  workflow_call:
+    inputs:
+      batch:
+        description: Which batch of the test this is, counted from zero.
+        type: number
+        required: true
+      batches:
+        description: >
+          How many batches the test may play. It is what reserves the book:
+          every batch of one test offsets for all of them, so no two play the
+          same opening, and they share a seed because they share a run.
+        type: number
+        required: true
+      prior_pairs:
+        description: The pair counts of every batch before this one. Empty for the first.
+        type: string
+        default: ""
+      candidate_name:
+        description: What the candidate side is called, as resolve-ref read it.
+        type: string
+        required: true
+      candidate_sha:
+        description: The commit it was built from.
+        type: string
+        required: true
+      baseline_name:
+        description: What the baseline side is called.
+        type: string
+        required: true
+      baseline_sha:
+        description: The commit it was built from.
+        type: string
+        required: true
+      shards:
+        description: The shard list, as json for the matrix.
+        type: string
+        required: true
+      count:
+        description: How many shards that is.
+        type: number
+        required: true
+      pairs:
+        description: The pairs each shard plays.
+        type: number
+        required: true
+      play_timeout:
+        description: >
+          Minutes to give a play job, worked out by plan-shards. Passed in
+          because a job that calls a workflow takes no timeout of its own.
+        type: number
+        required: true
+      book:
+        description: The book name, already checked.
+        type: string
+        required: true
+      seed:
+        description: >
+          Picks the region of the book. Every batch of one test is given the
+          same one, and the batch index is what keeps them apart.
+        type: string
+        required: true
+      time_control:
+        description: Passed to fastchess as tc.
+        type: string
+        required: true
+      sprt:
+        description: Judge a sequential test over the pooled pairs.
+        type: boolean
+        required: true
+      elo0:
+        description: The null the test is against.
+        type: number
+        required: true
+      elo1:
+        description: The alternative the test is against.
+        type: number
+        required: true
+      hash_mb:
+        description: The table each side is asked for.
+        type: number
+        required: true
+      concurrency:
+        description: Games a shard plays at once.
+        type: number
+        required: true
+      max_match_minutes:
+        description: The wall clock cap on play alone.
+        type: number
+        required: true
+      startup_ms:
+        description: How long fastchess waits for an engine to answer uci.
+        type: number
+        required: true
+    outputs:
+      line:
+        description: The one line a release note carries.
+        value: ${{ jobs.summarise.outputs.line }}
+      verdict:
+        description: >
+          What the sequential test came to over every pair played so far:
+          passed, failed or inconclusive. Empty when this was not one.
+        value: ${{ jobs.summarise.outputs.verdict }}
+      carried:
+        description: The counts the batch after this one takes as prior_pairs.
+        value: ${{ jobs.summarise.outputs.carried }}
+
+permissions:
+  contents: read
+
+env:
+  # Every batch of one test shares a run id and an attempt, so the batch goes
+  # in the artifact name too. Left out where there is only one, so an unbatched
+  # run keeps the names it has always had and scripts/harvest_games.py keeps
+  # reading the archive it already holds.
+  ARTIFACTS: strength-${{ github.run_id }}-${{ github.run_attempt }}${{ inputs.batches > 1 && format('-batch-{0}', inputs.batch) || '' }}
+
+jobs:
+  play:
+    runs-on: ubuntu-latest
+    strategy:
+      # a shard that fell over is a smaller sample, not a lost run
+      fail-fast: false
+      matrix:
+        shard: ${{ fromJSON(inputs.shards) }}
+    timeout-minutes: ${{ inputs.play_timeout }}
+    defaults:
+      run:
+        shell: bash
+    env:
+      SHARD: ${{ matrix.shard }}
+      PAIRS: ${{ inputs.pairs }}
+      BATCH: ${{ inputs.batch }}
+      BATCHES: ${{ inputs.batches }}
+      TIME_CONTROL: ${{ inputs.time_control }}
+      BOOK: ${{ inputs.book }}
+      SPRT: ${{ inputs.sprt }}
+      ELO0: ${{ inputs.elo0 }}
+      ELO1: ${{ inputs.elo1 }}
+      PRIOR_PAIRS: ${{ inputs.prior_pairs }}
+      HASH: ${{ inputs.hash_mb }}
+      CONCURRENCY: ${{ inputs.concurrency }}
+      STARTUP_MS: ${{ inputs.startup_ms }}
+      MAX_MATCH_MINUTES: ${{ inputs.max_match_minutes }}
+      SEED: ${{ inputs.seed }}
+      CANDIDATE: ${{ inputs.candidate_name }}
+      CANDIDATE_SHA: ${{ inputs.candidate_sha }}
+      PREVIOUS: ${{ inputs.baseline_name }}
+      BASELINE_SHA: ${{ inputs.baseline_sha }}
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          fetch-depth: 0
+
+      - uses: aywrite/mache/actions/setup@a429bcecb0b5718c0ef9fe8c02f0b360d986635b # v0.5.0
+        id: tools
+
+      # the cache keeps the dependencies; each side is built from an export of
+      # its commit
+      - uses: Swatinem/rust-cache@6323deb102c322ba6fcbdcafc7e3dddab59af2b6 # v2.9.2
+
+      # Ours rather than the action's. What builds this engine is this
+      # repository's to say, and the same script builds the bench and the
+      # speed comparison, neither of which has a match tool anywhere near it.
+      - name: Build both versions
+        run: |
+          # a pull request head is not fetched by default, and the resolve
+          # job's fetch was on another machine
+          for sha in "$CANDIDATE_SHA" "$BASELINE_SHA"; do
+            git cat-file -e "${sha}^{commit}" 2>/dev/null \
+              || git fetch -q origin "$sha" \
+              || git fetch -q origin "+refs/pull/*/head:refs/remotes/pull/*"
+          done
+          scripts/build_at.sh "$CANDIDATE_SHA" tools/new
+          scripts/build_at.sh "$BASELINE_SHA" tools/old
+
+      - uses: aywrite/mache/actions/play-shard@a429bcecb0b5718c0ef9fe8c02f0b360d986635b # v0.5.0
+        id: play
+        with:
+          candidate: ${{ inputs.candidate_name }}
+          candidate_binary: ./new
+          opponent: ${{ inputs.baseline_name }}
+          opponent_binary: ./old
+          book: ${{ inputs.book }}
+          pairs: ${{ inputs.pairs }}
+          shards: ${{ inputs.count }}
+          shard: ${{ matrix.shard }}
+          seed: ${{ inputs.seed }}
+          batch: ${{ inputs.batch }}
+          batches: ${{ inputs.batches }}
+          time_control: ${{ inputs.time_control }}
+          hash_mb: ${{ inputs.hash_mb }}
+          concurrency: ${{ inputs.concurrency }}
+          startup_ms: ${{ inputs.startup_ms }}
+          max_match_minutes: ${{ inputs.max_match_minutes }}
+
+      # What it would take to play this shard again. Written whether or not it
+      # finished, since a shard that ended badly is the one looked into. Ours
+      # rather than the action's: this is this repository's record of its own
+      # run, scripts/build_corpus.py reads the run and the shard back out of
+      # it, and what built the engine is only sayable here.
+      - name: Write the manifest
+        if: always()
+        env:
+          FASTCHESS: ${{ steps.tools.outputs.fastchess }}
+          MACHE: ${{ steps.tools.outputs.version }}
+          OPENINGS: ${{ steps.play.outputs.openings }}
+          START: ${{ steps.play.outputs.start }}
+          STOPPED_BY: ${{ steps.play.outputs.stopped_by }}
+        run: |
+          # asked for again, since the play action may not have got that far
+          book_file=$(scripts/book.sh file "$BOOK") || book_file=unknown
+          book_sha=$(sha256sum "tools/${book_file}" | cut -d' ' -f1) || book_sha=unknown
+          toolchain=$(rustc -V) || toolchain=unknown
+          {
+            echo "candidate: ${CANDIDATE}"
+            echo "candidate_sha: ${CANDIDATE_SHA}"
+            echo "baseline: ${PREVIOUS}"
+            echo "baseline_sha: ${BASELINE_SHA}"
+            echo "build: scripts/build_at.sh, cargo build --release on an export of the commit"
+            echo "fastchess: ${FASTCHESS}"
+            # the tooling that reads the games, so a figure can be read back
+            # against the version that produced it
+            echo "mache: ${MACHE}"
+            echo "book: ${book_file}"
+            echo "book_sha256: ${book_sha}"
+            echo "book_openings: ${OPENINGS:-not counted, the shard did not get that far}"
+            echo "seed: ${SEED}"
+            # Only where there is more than one, so an unbatched run's manifest
+            # is what it has always been. build_corpus.py names a pgn's source
+            # from these lines, and batches of one run share a run id and
+            # repeat each other's shard numbers, so without this two game sets
+            # would carry one name.
+            if [ "$BATCHES" -gt 1 ]; then
+              echo "batch: ${BATCH}"
+              echo "batches: ${BATCHES}"
+            fi
+            echo "shard: ${SHARD}"
+            echo "start: ${START:-not chosen, the shard did not get that far}"
+            echo "pairs: ${PAIRS}"
+            echo "time_control: ${TIME_CONTROL}"
+            echo "hash_mb: ${HASH}"
+            echo "concurrency: ${CONCURRENCY}"
+            echo "startup_ms: ${STARTUP_MS}"
+            echo "games_asked: $((PAIRS * 2))"
+            if [ "$SPRT" = "true" ]; then
+              echo "sprt: judged by the summary over the pooled pairs, not by fastchess: elo0=${ELO0} elo1=${ELO1} alpha=0.05 beta=0.05 model=logistic prior_pairs=${PRIOR_PAIRS:-none}"
+            else
+              echo "sprt: off"
+            fi
+            echo "wall_clock_cap_minutes: ${MAX_MATCH_MINUTES}"
+            # unset when the play action never reached its end
+            echo "stopped_by: ${STOPPED_BY:-not recorded, the shard did not finish}"
+            echo "runner: $(uname -a)"
+            echo "cores: $(nproc)"
+            echo "rustc: ${toolchain}"
+            echo "run_id: ${GITHUB_RUN_ID}"
+            echo "run_url: ${GITHUB_SERVER_URL}/${GITHUB_REPOSITORY}/actions/runs/${GITHUB_RUN_ID}"
+          } > tools/manifest.txt
+          cat tools/manifest.txt
+
+      # The summary job reads the games from here. The attempt is in the name
+      # because an artifact cannot be uploaded twice under one name and a
+      # rerun keeps the run id.
+      - name: Keep the games
+        if: always()
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+        with:
+          name: ${{ env.ARTIFACTS }}-shard-${{ matrix.shard }}
+          path: |
+            tools/games.pgn
+            tools/result.txt
+            tools/config.json
+            tools/manifest.txt
+          if-no-files-found: warn
+          # The maximum a public repository allows, written down because it is
+          # the tuning corpus's shelf life: an expired games artifact cannot be
+          # played again, and an implicit default can be lowered for the
+          # repository by someone thinking about disk.
+          retention-days: 90
+
+  summarise:
+    needs: play
+    # runs on whatever arrived: a shard that fell over is a smaller sample,
+    # not a lost batch
+    if: always()
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    defaults:
+      run:
+        shell: bash
+    outputs:
+      line: ${{ steps.summary.outputs.line }}
+      verdict: ${{ steps.summary.outputs.verdict }}
+      carried: ${{ steps.summary.outputs.carried }}
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+
+      # no harness to build and no book to fetch: this job only reads games
+      - uses: aywrite/mache/actions/setup@a429bcecb0b5718c0ef9fe8c02f0b360d986635b # v0.5.0
+        with:
+          estimator_only: true
+
+      # one directory per artifact under shards/, except that a single
+      # artifact is extracted straight into shards/; the action takes either.
+      # The attempt is in the pattern so a rerun does not count an earlier
+      # attempt's games as well, and the batch so a later one does not count
+      # the batch before it twice.
+      - uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v8.0.1
+        with:
+          pattern: ${{ env.ARTIFACTS }}-shard-*
+          path: shards
+
+      - uses: aywrite/mache/actions/summarise-match@a429bcecb0b5718c0ef9fe8c02f0b360d986635b # v0.5.0
+        id: summary
+        with:
+          games: shards
+          candidate: ${{ inputs.candidate_name }}
+          candidate_sha: ${{ inputs.candidate_sha }}
+          baseline: ${{ inputs.baseline_name }}
+          baseline_sha: ${{ inputs.baseline_sha }}
+          shards: ${{ inputs.count }}
+          time_control: ${{ inputs.time_control }}
+          sprt: ${{ inputs.sprt }}
+          elo0: ${{ inputs.elo0 }}
+          elo1: ${{ inputs.elo1 }}
+          prior_pairs: ${{ inputs.prior_pairs }}
+          # artifact names belong to this workflow, so the sentence naming
+          # them is written here rather than by the action
+          provenance: >-
+            The games, the results and a manifest of what each shard played
+            are kept as the `${{ env.ARTIFACTS }}-shard-<i>` artifacts. The
+            openings came from seed
+            ${{ inputs.seed }}${{ inputs.batches > 1 && format(', batch {0} of {1}', inputs.batch, inputs.batches) || '' }},
+            which replays this schedule.
