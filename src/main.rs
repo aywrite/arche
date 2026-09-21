@@ -78,7 +78,13 @@ fn main() -> ExitCode {
         // no argument starts the uci loop
         None => {
             let game = Board::new();
-            let e = AlphaBeta::new(game);
+            let (e, asked) = AlphaBeta::new(game);
+            // before the session, so an interface reading a smaller table
+            // than the handshake advertises finds the reason above it in
+            // the log
+            if let Some(said) = uci::table_shortfall(asked, e.table_bytes()) {
+                println!("{}", said);
+            }
             let mut uci = UCI::new_with_engine(e);
             // a panic must reach the interface's log before the process goes
             uci.report_panics();

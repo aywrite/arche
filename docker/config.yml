@@ -41,7 +41,9 @@ engine:
 
 challenge:
   # each game is an engine process with a table of its own, 256MB unless Hash
-  # above says otherwise, so the container's memory limit has to cover them all
+  # above says otherwise, so the container's memory limit has to cover them
+  # all. A process that cannot have its table halves the ask until it can, so
+  # too low a limit costs table rather than stopping the bot
   concurrency: 1
   sort_by: "best"
   accept_bot: true

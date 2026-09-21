@@ -565,6 +565,38 @@ pub struct TranspositionTable {
     audit: Option<Box<Audit>>,
 }
 
+/// The sizes `up_to_bytes` tries, largest first: the size asked for, then
+/// half of it each time, ending at one bucket. Halving rather than
+/// stepping down by a fixed amount, so the number of tries is the size's
+/// bit width however large the ask is.
+///
+/// The end is a bucket rather than nothing because `with_capacity` rounds
+/// every smaller size up to one anyway, and a chain that went on below it
+/// would be asking for the same table again.
+fn halving(bytes: usize) -> impl Iterator<Item = usize> {
+    std::iter::successors(Some(bytes), |&bytes| {
+        (bytes > mem::size_of::<Bucket>()).then_some(bytes / 2)
+    })
+}
+
+/// What `build` made from the first size in the chain it answered to, and
+/// `bytes` again when that was not the size asked for. The size the chain
+/// stopped at says whether it stepped down, where the bytes the thing
+/// occupies would not: whole buckets round an odd ask up.
+///
+/// Separate from `up_to_bytes` so that the step down can be tested. A test
+/// that went through the allocator would have to ask for a size no host
+/// can meet, and halving one of those reaches a size the kernel grants on
+/// paper long before it reaches one the machine has: the test would be
+/// killed writing the buckets rather than failing.
+fn largest<T>(
+    bytes: usize,
+    mut build: impl FnMut(usize) -> Option<T>,
+) -> Option<(T, Option<usize>)> {
+    halving(bytes)
+        .find_map(|size| build(size).map(|built| (built, (size < bytes).then_some(bytes))))
+}
+
 impl TranspositionTable {
     /// A table of at least this many entries, rounded up to whole buckets,
     /// or None if there was not the memory. The buckets are asked for
@@ -624,11 +656,32 @@ impl TranspositionTable {
         Self::with_capacity(bytes / mem::size_of::<Entry>())
     }
 
-    /// The table an engine is built with. Failing to allocate it is fatal:
-    /// there is no older table to fall back to and no game under way.
+    /// The table an engine is built with when a size was named: over the
+    /// protocol, or on a bench or an instrument command. Failing to
+    /// allocate it is fatal, because the size is part of what the run
+    /// means and a smaller one would answer a different question.
     pub fn of_bytes(bytes: usize) -> Self {
         Self::with_capacity_bytes(bytes)
             .unwrap_or_else(|| panic!("no memory for a {bytes} byte transposition table"))
+    }
+
+    /// The largest table up to `bytes` the host will give, which is the
+    /// table a session starts with, and `bytes` again when that is not the
+    /// size it got. Nothing has said how much memory there is at that
+    /// point: the size is the engine's own default and the protocol cannot
+    /// shrink it until the table already exists, so a host with less memory
+    /// than the default assumes would not start at all.
+    ///
+    /// The ask is halved until the allocator answers, down to a single
+    /// bucket, which is a table small enough that no machine running the
+    /// process can refuse it.
+    ///
+    /// The allocator's answer is not a promise that the memory is there to
+    /// use. Where the kernel overcommits, a size larger than the host has
+    /// is granted here and the process killed later as the buckets are
+    /// written, and this does not catch that.
+    pub fn up_to_bytes(bytes: usize) -> (Self, Option<usize>) {
+        largest(bytes, Self::with_capacity_bytes).expect("a table of one bucket")
     }
 
     /// The bytes the buckets occupy, which is what was asked for rounded up to
@@ -948,7 +1001,8 @@ fn entry(board: &Board, play: Play, value: Value, depth: u8, bound: Bound) -> Pv
 #[cfg(test)]
 mod tests {
     use super::{
-        Bound, NARROW_WIDTHS, Play, Pv, STALE_AFTER_SEARCHES, Score, TranspositionTable, Value,
+        Bound, Bucket, DEFAULT_TABLE_BYTES, NARROW_WIDTHS, Play, Pv, STALE_AFTER_SEARCHES, Score,
+        TranspositionTable, Value, halving, largest,
     };
     use crate::engine::MAX_PLY;
     use crate::misc::{Piece, PromotePiece};
@@ -963,6 +1017,57 @@ mod tests {
             bound,
             tainted: false,
         }
+    }
+
+    #[test]
+    fn the_sizes_a_session_falls_back_through_end_at_one_bucket() {
+        let bucket = mem::size_of::<Bucket>();
+        assert_eq!(
+            halving(8 * bucket).collect::<Vec<_>>(),
+            vec![512, 256, 128, 64]
+        );
+        // an ask already at a bucket or under it has nowhere to step down to
+        assert_eq!(halving(bucket).collect::<Vec<_>>(), vec![64]);
+        assert_eq!(halving(0).collect::<Vec<_>>(), vec![0]);
+
+        // the default is the only size anything asks for this way
+        let sizes: Vec<usize> = halving(DEFAULT_TABLE_BYTES).collect();
+        assert_eq!(sizes[0], DEFAULT_TABLE_BYTES);
+        assert_eq!(sizes[1], DEFAULT_TABLE_BYTES / 2);
+        assert_eq!(sizes.last(), Some(&bucket));
+    }
+
+    #[test]
+    fn a_size_the_host_refuses_is_halved_until_one_is_taken() {
+        // the step down without an allocator, which is why `largest` takes
+        // the builder: this host refuses everything above a kibibyte
+        let mut tried = Vec::new();
+        let took = largest(8 * 1024, |bytes| {
+            tried.push(bytes);
+            (bytes <= 1024).then_some(bytes)
+        });
+        // what it took, and the ask it could not have
+        assert_eq!(took, Some((1024, Some(8 * 1024))));
+        assert_eq!(tried, vec![8 * 1024, 4 * 1024, 2 * 1024, 1024]);
+
+        // a host that refuses nothing steps nowhere and has nothing to say
+        assert_eq!(largest(8 * 1024, Some), Some((8 * 1024, None)));
+
+        // a host that refuses everything, which `up_to_bytes` says cannot
+        // happen for the last size in the chain
+        assert_eq!(largest(8 * 1024, |_| None::<usize>), None);
+    }
+
+    #[test]
+    fn a_session_table_is_the_size_asked_for_when_the_host_has_it() {
+        let (table, asked) = TranspositionTable::up_to_bytes(1024 * 1024);
+        assert_eq!(table.bytes(), 1024 * 1024);
+        assert_eq!(asked, None);
+
+        // under a bucket is still a table, and still the size it asked for
+        let (table, asked) = TranspositionTable::up_to_bytes(0);
+        assert!(table.bytes() > 0);
+        assert_eq!(asked, None);
     }
 
     #[test]
