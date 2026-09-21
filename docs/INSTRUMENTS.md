@@ -406,12 +406,12 @@ rather than being given a flag each, which would cost an edit at every new
 rule. The names are the fields: `reverse_futility`, `null_move`,
 `adaptive_null_move`, `delta_margin`, `see_pruning`,
 `late_move_reductions`, `deep_reductions`, `late_move_pruning`,
-`quiet_futility`, `reduction_table`, `deep_index_rule`, `move_memory` and
-`aspiration`. `taint` is not among them: it is a policy with four values
-rather than a switch, and `residuals` takes it already. **`off` absent
-means both sides are the default**, which the header says as `off none`.
-That run is the null, and it is the one to take first: see the end of this
-section.
+`quiet_futility`, `late_move_count`, `reduction_table`, `deep_index_rule`,
+`move_memory` and `aspiration`. `taint` is not among them: it is a policy
+with four values rather than a switch, and `residuals` takes it already.
+**`off` absent means both sides are the default**, which the header says as
+`off none`. That run is the null, and it is the one to take first: see the
+end of this section.
 
 Each joined key is one of three outcomes, and the three are the whole of
 the reading. `both` is a node in both trees, so the difference in what sat

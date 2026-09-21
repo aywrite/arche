@@ -62,7 +62,7 @@ pub fn sample_key(position_key: u64, depth: u8) -> u64 {
 ///
 /// `taint` is not among them: it is a policy with four values rather than a
 /// switch, and `residuals` already takes it.
-pub const SWITCHES: [&str; 13] = [
+pub const SWITCHES: [&str; 14] = [
     "reverse_futility",
     "null_move",
     "adaptive_null_move",
@@ -72,6 +72,7 @@ pub const SWITCHES: [&str; 13] = [
     "deep_reductions",
     "late_move_pruning",
     "quiet_futility",
+    "late_move_count",
     "reduction_table",
     "deep_index_rule",
     "move_memory",
@@ -93,6 +94,7 @@ pub fn without(switch: &str) -> Option<SearchConfig> {
         "deep_reductions" => config.deep_reductions = false,
         "late_move_pruning" => config.late_move_pruning = false,
         "quiet_futility" => config.quiet_futility = false,
+        "late_move_count" => config.late_move_count = false,
         "reduction_table" => config.reduction_table = false,
         "deep_index_rule" => config.deep_index_rule = false,
         "move_memory" => config.move_memory = false,
