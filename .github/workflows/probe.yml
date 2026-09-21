@@ -1,0 +1,28 @@
+name: Probe
+
+# Throwaway, and deleted with the branch. Calls a probe workflow in mache to
+# ask what a reusable workflow is told about its own commit, and whether it
+# can load the actions beside it from that commit rather than from a release
+# tag. The answer decides whether mache's self pins can go away.
+#
+# Pinned at a commit rather than the branch, so the run says on its face which
+# commit should come back.
+
+on:
+  push:
+    branches: [ "claude/probe-mache-self-ref" ]
+
+permissions:
+  contents: read
+
+jobs:
+  say-what-is-expected:
+    runs-on: ubuntu-latest
+    steps:
+      - run: |
+          echo "the probe workflow is pinned at d79a9ec1c4f897d885c9708c69cb9b188f4cf340"
+          echo "so a property naming the workflow's own commit reads that, and"
+          echo "github.sha in the called workflow reads this repository's commit"
+
+  ask-mache:
+    uses: aywrite/mache/.github/workflows/probe.yml@d79a9ec1c4f897d885c9708c69cb9b188f4cf340
