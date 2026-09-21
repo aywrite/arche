@@ -82,10 +82,13 @@ archived games, and the code map below says what each one counts.
   all. Off the index rule the model's own threshold decides the deeper
   scout instead. How many plies a scout gives up is read off a table by the
   node's depth and the move's index. Under all of that, at the depths the
-  reduction does not reach, quiet futility drops a quiet move after the
-  node's first when the node's static evaluation plus a pawn a ply cannot
-  reach alpha. Its ceiling is a ply under the deep reduction's floor, so no
-  depth is decided by both. The reduction, the index rule and the model
+  reduction does not reach, two rules drop a quiet move after the node's
+  first: quiet futility where the node's static evaluation plus a pawn a
+  ply cannot reach alpha, and a count where the node has already searched
+  four moves a ply. They share their exemptions and the count is asked
+  first, since it reads no evaluation. Their ceiling is a ply under the
+  deep reduction's floor, so no depth is decided by both a shallow rule
+  and the model. The reduction, the index rule and the model
   answer one call for one move, and the features they score are the ones
   the reduction ledger records. The futility rule is settled once for the
   node instead, since alpha is the only part of it that moves as the node

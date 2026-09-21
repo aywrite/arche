@@ -308,7 +308,8 @@ the bound the scout was asked about, `scout` is `low`, `high` or
 The third outcome word is the skipping rules'. A move the model prices in
 its deadest band at depth four and up, and a quiet move at depth one to
 three that either shallow rule declines, are never scouted at all, so a
-sampled skip is recorded where the loop passes it over: the same features, a cost of zero, a reduction of zero, and a
+sampled skip is recorded where the loop passes it over: the same features,
+a cost of zero, a reduction of zero, and a
 `searched` count that equals the index rather than standing one past it,
 because the move is not among the searched. The replay treats a skipped
 row as it treats a fail low, since what was denied is the same full depth
@@ -380,10 +381,10 @@ with the ledger armed and once without, and holds the two counts equal.
 
 ## What a rule frees, and where the freed effort goes
 
-The four above each describe one tree. A saving is a difference between
+The three above each describe one tree. A saving is a difference between
 two, so no row any of them writes can carry one: `residuals` prices a
 shortcut's error and carries no effort column, and the `cost` columns
-`cutoffs` and `reductions` do carry say what one configuration spent. That
+`cutoffs` and `reductions` do carry, say what one configuration spent. That
 is the gap `arche effort` fills:
 
 ```
@@ -494,8 +495,9 @@ What it cannot see is worth saying. A change that moves no node reads as
 instructions and the clock instead. A rule with no switch has to be given
 one first. A rule that moves effort inside quiescence moves the cost
 columns without producing rows of its own, which is the census's hole as
-well. And a node count is not a time: the quiet futility margin is 3.80% of
-the bench by count and less than that by work, and this instrument counts.
+well. And a node count is not a time: the quiet futility margin is 0.50% of
+the bench by count at `b9325ae` and less than that by work, and this
+instrument counts.
 
 **Take the null run first.** `effort 9` with no `off` searches the same
 configuration twice, so every joined key must read `both`, every `delta`
@@ -513,8 +515,9 @@ one's position by position, which
 searches under a configuration its caller chose, so
 `recording_changes_nothing_under_the_baseline_configuration_either` asks
 the same of a baseline side. There is no pinned count for a configuration
-with a switch off and there must not be one, since an instrument that
-pinned a count for every switch would be edited by every rule; what is
+with a switch off and there must not be one, since a pinned count a switch
+would leave the instrument rewritten whenever the search gained a rule;
+what is
 asserted is armed equals disarmed under whatever configuration it is
 handed.
 
