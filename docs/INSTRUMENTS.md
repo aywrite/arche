@@ -402,14 +402,16 @@ one side holds and the other does not is a fact about the trees rather than
 about the buffers. A counter over the stream would take two unrelated sets
 and the join would be empty.
 
-`off` names a `SearchConfig` field and is refused against the list of them
-rather than being given a flag each, which would cost an edit at every new
-rule. The names are the fields: `reverse_futility`, `null_move`,
+`off` names a `SearchConfig` field and is refused against a list of them
+rather than being given a flag each. The list costs an edit at every new
+rule and a compile error is what makes that edit happen: a field the list
+does not name fails a destructuring in `effort.rs` that names them all.
+The names are the fields: `reverse_futility`, `null_move`,
 `adaptive_null_move`, `delta_margin`, `see_pruning`,
 `late_move_reductions`, `deep_reductions`, `late_move_pruning`,
-`quiet_futility`, `reduction_table`, `deep_index_rule`, `move_memory` and
-`aspiration`. `taint` is not among them: it is a policy with four values
-rather than a switch, and `residuals` takes it already. **`off` absent
+`quiet_futility`, `late_move_count`, `reduction_table`, `deep_index_rule`,
+`move_memory` and `aspiration`. `taint` is not among them: it is a policy
+with four values rather than a switch, and `residuals` takes it already. **`off` absent
 means both sides are the default**, which the header says as `off none`.
 That run is the null, and it is the one to take first: see the end of this
 section.

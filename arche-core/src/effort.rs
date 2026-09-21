@@ -62,7 +62,7 @@ pub fn sample_key(position_key: u64, depth: u8) -> u64 {
 ///
 /// `taint` is not among them: it is a policy with four values rather than a
 /// switch, and `residuals` already takes it.
-pub const SWITCHES: [&str; 13] = [
+pub const SWITCHES: [&str; 14] = [
     "reverse_futility",
     "null_move",
     "adaptive_null_move",
@@ -72,6 +72,7 @@ pub const SWITCHES: [&str; 13] = [
     "deep_reductions",
     "late_move_pruning",
     "quiet_futility",
+    "late_move_count",
     "reduction_table",
     "deep_index_rule",
     "move_memory",
@@ -93,6 +94,7 @@ pub fn without(switch: &str) -> Option<SearchConfig> {
         "deep_reductions" => config.deep_reductions = false,
         "late_move_pruning" => config.late_move_pruning = false,
         "quiet_futility" => config.quiet_futility = false,
+        "late_move_count" => config.late_move_count = false,
         "reduction_table" => config.reduction_table = false,
         "deep_index_rule" => config.deep_index_rule = false,
         "move_memory" => config.move_memory = false,
@@ -100,6 +102,38 @@ pub fn without(switch: &str) -> Option<SearchConfig> {
         _ => return None,
     }
     Some(config)
+}
+
+/// A compile error when `SearchConfig` gains a switch that `SWITCHES` and
+/// `without` do not name.
+///
+/// The list and the match are held to each other by a test, which cannot
+/// see a field in neither: `late_move_count` shipped and was unnameable
+/// until this was written. Nothing here has a body to run, since naming
+/// every field without a rest pattern is the whole check.
+///
+/// A new field fails to match. Rustc offers to silence that with a `_`,
+/// which defeats the check: add the field to `SWITCHES` and to `without`
+/// first, and name it here last.
+#[cfg(test)]
+const fn _every_switch_is_named(config: &SearchConfig) {
+    let SearchConfig {
+        taint: _,
+        reverse_futility: _,
+        null_move: _,
+        adaptive_null_move: _,
+        delta_margin: _,
+        see_pruning: _,
+        late_move_reductions: _,
+        deep_reductions: _,
+        late_move_pruning: _,
+        quiet_futility: _,
+        late_move_count: _,
+        reduction_table: _,
+        deep_index_rule: _,
+        move_memory: _,
+        aspiration: _,
+    } = config;
 }
 
 /// Every event offered, by depth, on one side.
