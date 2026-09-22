@@ -105,9 +105,9 @@ def test_the_stages_count_from_zero_without_a_gap():
 def test_every_stage_reserves_the_book_for_the_whole_ladder():
     ladder = stages(workflow(STRENGTH)["jobs"])
     for name, job in ladder.items():
-        assert job["with"]["batches"] == "${{ inputs.batches }}", (
-            f"{name} reserves for a different number of batches than the rest"
-        )
+        assert job["with"]["batches"] == (
+            "${{ fromJSON(needs.resolve.outputs.batches) }}"
+        ), f"{name} reserves for a different number of batches than the rest"
 
 
 def test_the_stages_share_one_seed():
@@ -145,6 +145,46 @@ def test_the_stages_hand_over_every_input_the_batch_workflow_takes():
         handed = set(job["with"])
         assert required <= handed, f"{name} misses {sorted(required - handed)}"
         assert handed <= set(takes), f"{name} names {sorted(handed - set(takes))}"
+
+
+def test_a_typed_input_is_never_handed_a_dispatch_input_raw():
+    """An input reaches a dispatch run as a string whatever its type says.
+
+    A reusable workflow call that hands a string to an input declared number
+    or boolean is refused when the template is read, so the stage never
+    becomes a job at all: no failed job, no log, and the stages after it skip
+    on a `needs` that never reported. Runs 35696029101 and 35696034898 both
+    ended that way.
+
+    So a number or a boolean the batch workflow takes is either written out,
+    or read through fromJSON, which a job output always survives. The one
+    other safe shape is an input the dispatch tab does not offer: it is empty
+    there, so the `|| <default>` beside it supplies the literal, and on a call
+    it arrives as the type it declares.
+    """
+    strength = workflow(STRENGTH)
+    # yaml reads a bare on: as a boolean, so the triggers are under True
+    triggers = strength[True]
+    dispatch = set((triggers["workflow_dispatch"] or {}).get("inputs") or {})
+    takes = workflow(BATCH)[True]["workflow_call"]["inputs"]
+    typed = {name for name, spec in takes.items() if spec["type"] != "string"}
+
+    for name, job in stages(strength["jobs"]).items():
+        for key in typed & set(job["with"]):
+            value = str(job["with"][key])
+            if "${{" not in value or "fromJSON(" in value:
+                continue
+            offered = sorted(
+                read
+                for read in re.findall(r"inputs\.([A-Za-z0-9_]+)", value)
+                if read in dispatch
+            )
+            assert not offered, (
+                f"{name} hands {key}, which is a {takes[key]['type']}, an"
+                f" expression reading {offered} off the dispatch tab, where"
+                " every input is a string. The call is refused before the"
+                " stage becomes a job"
+            )
 
 
 def test_the_published_line_is_the_last_batch_that_played():

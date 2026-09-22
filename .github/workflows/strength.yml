@@ -173,6 +173,14 @@ jobs:
       pairs: ${{ steps.plan.outputs.pairs }}
       book: ${{ steps.plan.outputs.book }}
       play_timeout: ${{ steps.plan.outputs.play_timeout }}
+      # An input reaches a dispatch run as a string whatever its type says,
+      # and reaches a call as the type it declares. A job output is a string
+      # either way, so reading these back off one is what makes the stages
+      # below type correct under both.
+      batches: ${{ inputs.batches }}
+      sprt: ${{ inputs.sprt }}
+      elo0: ${{ inputs.elo0 }}
+      elo1: ${{ inputs.elo1 }}
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
@@ -253,7 +261,7 @@ jobs:
     uses: ./.github/workflows/strength-batch.yml
     with:
       batch: 0
-      batches: ${{ inputs.batches }}
+      batches: ${{ fromJSON(needs.resolve.outputs.batches) }}
       prior_pairs: ${{ inputs.prior_pairs }}
       candidate_name: ${{ needs.resolve.outputs.candidate_name }}
       candidate_sha: ${{ needs.resolve.outputs.candidate_sha }}
@@ -270,9 +278,9 @@ jobs:
       # is what keeps them off each other's openings
       seed: ${{ inputs.seed || github.run_id }}
       time_control: ${{ inputs.time_control }}
-      sprt: ${{ inputs.sprt }}
-      elo0: ${{ inputs.elo0 }}
-      elo1: ${{ inputs.elo1 }}
+      sprt: ${{ fromJSON(needs.resolve.outputs.sprt) }}
+      elo0: ${{ fromJSON(needs.resolve.outputs.elo0) }}
+      elo1: ${{ fromJSON(needs.resolve.outputs.elo1) }}
       hash_mb: ${{ inputs.hash_mb || 256 }}
       concurrency: ${{ inputs.concurrency || 2 }}
       max_match_minutes: ${{ inputs.max_match_minutes || 150 }}
@@ -287,7 +295,7 @@ jobs:
     uses: ./.github/workflows/strength-batch.yml
     with:
       batch: 1
-      batches: ${{ inputs.batches }}
+      batches: ${{ fromJSON(needs.resolve.outputs.batches) }}
       prior_pairs: ${{ needs.batch1.outputs.carried }}
       candidate_name: ${{ needs.resolve.outputs.candidate_name }}
       candidate_sha: ${{ needs.resolve.outputs.candidate_sha }}
@@ -300,9 +308,9 @@ jobs:
       book: ${{ needs.resolve.outputs.book }}
       seed: ${{ inputs.seed || github.run_id }}
       time_control: ${{ inputs.time_control }}
-      sprt: ${{ inputs.sprt }}
-      elo0: ${{ inputs.elo0 }}
-      elo1: ${{ inputs.elo1 }}
+      sprt: ${{ fromJSON(needs.resolve.outputs.sprt) }}
+      elo0: ${{ fromJSON(needs.resolve.outputs.elo0) }}
+      elo1: ${{ fromJSON(needs.resolve.outputs.elo1) }}
       hash_mb: ${{ inputs.hash_mb || 256 }}
       concurrency: ${{ inputs.concurrency || 2 }}
       max_match_minutes: ${{ inputs.max_match_minutes || 150 }}
@@ -317,7 +325,7 @@ jobs:
     uses: ./.github/workflows/strength-batch.yml
     with:
       batch: 2
-      batches: ${{ inputs.batches }}
+      batches: ${{ fromJSON(needs.resolve.outputs.batches) }}
       prior_pairs: ${{ needs.batch2.outputs.carried }}
       candidate_name: ${{ needs.resolve.outputs.candidate_name }}
       candidate_sha: ${{ needs.resolve.outputs.candidate_sha }}
@@ -330,9 +338,9 @@ jobs:
       book: ${{ needs.resolve.outputs.book }}
       seed: ${{ inputs.seed || github.run_id }}
       time_control: ${{ inputs.time_control }}
-      sprt: ${{ inputs.sprt }}
-      elo0: ${{ inputs.elo0 }}
-      elo1: ${{ inputs.elo1 }}
+      sprt: ${{ fromJSON(needs.resolve.outputs.sprt) }}
+      elo0: ${{ fromJSON(needs.resolve.outputs.elo0) }}
+      elo1: ${{ fromJSON(needs.resolve.outputs.elo1) }}
       hash_mb: ${{ inputs.hash_mb || 256 }}
       concurrency: ${{ inputs.concurrency || 2 }}
       max_match_minutes: ${{ inputs.max_match_minutes || 150 }}
@@ -347,7 +355,7 @@ jobs:
     uses: ./.github/workflows/strength-batch.yml
     with:
       batch: 3
-      batches: ${{ inputs.batches }}
+      batches: ${{ fromJSON(needs.resolve.outputs.batches) }}
       prior_pairs: ${{ needs.batch3.outputs.carried }}
       candidate_name: ${{ needs.resolve.outputs.candidate_name }}
       candidate_sha: ${{ needs.resolve.outputs.candidate_sha }}
@@ -360,9 +368,9 @@ jobs:
       book: ${{ needs.resolve.outputs.book }}
       seed: ${{ inputs.seed || github.run_id }}
       time_control: ${{ inputs.time_control }}
-      sprt: ${{ inputs.sprt }}
-      elo0: ${{ inputs.elo0 }}
-      elo1: ${{ inputs.elo1 }}
+      sprt: ${{ fromJSON(needs.resolve.outputs.sprt) }}
+      elo0: ${{ fromJSON(needs.resolve.outputs.elo0) }}
+      elo1: ${{ fromJSON(needs.resolve.outputs.elo1) }}
       hash_mb: ${{ inputs.hash_mb || 256 }}
       concurrency: ${{ inputs.concurrency || 2 }}
       max_match_minutes: ${{ inputs.max_match_minutes || 150 }}
