@@ -1102,9 +1102,9 @@ comparisons run to tens of millions.
 The default table is not filled by any position now. The two tactical ones
 filled it, and that was enough for the sixteen bit count to reach a few
 hundred, but both are forced mates and mate distance pruning ended the
-search of them. The largest store is kiwipete's 191,462 against the million
-the table holds, and an audited bench reads 6 sixteen bit accepts against
-2.196 expected. At depth seven no position stored more than a third of its
+search of them. The largest store is kiwipete's 402,233 against the million
+the table holds, and an audited bench reads 30 sixteen bit accepts against
+18.367 expected. At depth seven no position stored more than a third of its
 slots and the count was zero. The command does not sweep sizes itself.
 
 The audit costs eight bytes an entry, half the table's own size again, and

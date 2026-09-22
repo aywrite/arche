@@ -67,8 +67,9 @@ suites walking a hundred and twenty million checked moves; optimised it takes
 about twenty five seconds and costs six seconds more to compile. The two
 pinned bench searches were the longest single tests in either run for as long
 as a proven mate was searched again on every iteration deeper, forty nine
-million nodes between them. Mate distance pruning left 3,747,774, and the
-perft suites are the long ones again.
+million nodes between them. Mate distance pruning left under four million,
+and raising the depth to eleven brought them to 8,494,469. The perft suites
+are the longer ones again.
 
 Neither of the two suites is in either run. The tactical one searches three
 hundred positions and takes ten seconds or so, and the strategic one searches
@@ -338,11 +339,14 @@ than for pinning anything: the header states what a report ran with, so one
 can be rerun from it. A fourth word, `audit`, adds what the table's key
 signature costs and is described in [INSTRUMENTS.md](INSTRUMENTS.md). The
 suite, depth and table are chosen once, because changing any of them changes
-every number the bench has ever printed. The depth was raised once, from
-seven to nine in September 2026, once the search had learned to prune: the
-last bench at seven was 4,102,609 nodes and the first at nine 52,404,553, so
-a `Bench:` trailer or a note from before then that says the bench's depth
-means seven. It is not adjusted as it goes.
+every number the bench has ever printed. The depth has been raised twice,
+each time after the search learned to prune. Seven to nine in September
+2026: the last bench at seven was 4,102,609 nodes and the first at nine
+52,404,553. Nine to eleven when mate distance pruning left the suite a
+twentieth of the size: the last bench at nine was 2,153,533 and the first at
+eleven 6,900,228. So a `Bench:` trailer or a note says the bench's depth at
+whichever of the three was current when it was written. It is not adjusted
+as it goes.
 
 Speed is measured against another build, never on its own: a rate says
 nothing across machines, and a single pair of runs says little on one.
