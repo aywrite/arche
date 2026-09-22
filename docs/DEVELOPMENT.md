@@ -64,12 +64,11 @@ root manifest. Cargo leaves `debug-assertions` and `overflow-checks` on
 whatever the optimisation level is, so nothing the run checks is given up
 for the speed. Unoptimised it took a minute, most of that the two perft
 suites walking a hundred and twenty million checked moves; optimised it takes
-about twenty five seconds and costs six seconds more to compile. The pinned
-bench search is the longest single test in either run since the depth went
-to nine: fifty three million nodes between the two pins, and the bench pin
-alone is sixteen seconds of the debug run and six and a half of the release
-one, with the rest of the run beside it on the other cores. At depth seven
-the two pins were six million nodes, under a twentieth of either run.
+about twenty five seconds and costs six seconds more to compile. The two
+pinned bench searches were the longest single tests in either run for as long
+as a proven mate was searched again on every iteration deeper, forty nine
+million nodes between them. Mate distance pruning left 3,747,774, and the
+perft suites are the long ones again.
 
 Neither of the two suites is in either run. The tactical one searches three
 hundred positions and takes ten seconds or so, and the strategic one searches

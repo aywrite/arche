@@ -174,6 +174,14 @@ the engine plays. Roughly in the order they look worth doing.
   A slip in the `madvise` is a refused call or a huge page flag on memory the table does
   not own, not undefined behaviour.
   The exposure is carried knowingly until a scheduled Miri run reports on it
+- a bench tree size measured before mate distance pruning cannot be read against one
+  measured after it. `bratko kopec 1` and `wac 4` are both forced mates, proved at depth
+  five, and without the pruning every iteration after that proved them again over a tree
+  growing four and a half times a ply. At the bench's depth the two were 45,692,972 of
+  47,836,191 nodes, 95.5%, so a percentage of "the bench tree" from before is a
+  percentage of those two and little else. An entry below that gives a figure over
+  sixteen positions is already clear of them; one that says "the bench tree" is not. The
+  suite is 2,153,533 nodes now and the largest single position is `kiwipete` at 27%
 
 ## Measured and rejected
 

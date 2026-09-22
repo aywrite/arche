@@ -1878,7 +1878,7 @@ impl AlphaBeta {
     fn alpha_beta(
         &mut self,
         mut alpha: Score,
-        beta: Score,
+        mut beta: Score,
         mut depth: u8,
         can_null: bool,
         mut root_bounds: RootBounds,
@@ -1918,6 +1918,35 @@ impl AlphaBeta {
         if self.board.line_ply >= MAX_PLY as usize {
             return Ok(Value::clean(self.eval()));
         }
+
+        // Mate distance pruning. This node cannot be mated sooner than the
+        // ply it stands at, and cannot mate sooner than the ply after it, so
+        // the window is bounded by those two whatever the caller asked for.
+        // Where the bounds cross, the caller already holds a line at least as
+        // good as the fastest mate available here, and nothing below can
+        // improve on it.
+        //
+        // Both bounds are mate scores themselves, so a window with no mate at
+        // either end is left exactly as it arrived and cannot cross. Asking
+        // that first is what every other node pays, and it is cheaper than
+        // the two clamps. Measured under callgrind against the commit before
+        // this one, over five bench positions searched to nine whose trees do
+        // not move: the clamps cost 0.642% of the instructions a node takes
+        // and the question costs 0.457%. The tree is the same either way.
+        //
+        // Where a mate is in the window, this ends every line longer than the
+        // mate already found, which is what stops a proven mate being proved
+        // again a ply deeper on each iteration.
+        if is_mate(alpha) || is_mate(beta) {
+            alpha = alpha.max(Value::mated(self.board.line_ply).score);
+            beta = beta.min(-Value::mated(self.board.line_ply + 1).score);
+            if alpha >= beta {
+                // clean: how far a mate can be from here is a property of the
+                // position and not of the path that reached it
+                return Ok(Value::clean(alpha));
+            }
+        }
+
         let mut taint = Taint::default();
         if in_check {
             depth += 1;
@@ -3137,6 +3166,39 @@ mod search {
             panic!("an unlimited search aborted");
         };
         assert_eq!(value.score, exact.score);
+    }
+
+    #[test]
+    fn a_proven_mate_is_not_searched_again_a_ply_deeper() {
+        // The bench position `wac 4`, a mate in two. Without the pruning the
+        // mate is proved and then proved again on every deeper search, over a
+        // tree that grows about four and a half times a ply. Measured here at
+        // the two depths, the counts were 22,255 and 8,558,226, a factor of
+        // 385; with the pruning they are 5,979 and 87,813, a factor of 15.
+        //
+        // The bound holds the shape rather than either count. A deeper search
+        // of a position whose mate is already in the window does more work
+        // and not hundreds of times more. What the suite counts exactly is
+        // pinned in bench.rs, so this is free to be loose.
+        const FEN: &str = "r1bq2rk/pp3pbp/2p1p1pQ/7P/3P4/2PB1N2/PP3PPR/2KR4 w - - 0 1";
+        let at_five = completed(engine(Board::from_fen(FEN).unwrap()).search(5));
+        let at_nine = completed(engine(Board::from_fen(FEN).unwrap()).search(9));
+        assert_eq!(
+            at_five.checkmate_in(),
+            Some(2),
+            "the mate moved at depth five"
+        );
+        assert_eq!(
+            at_nine.checkmate_in(),
+            Some(2),
+            "the mate moved at depth nine"
+        );
+        assert!(
+            at_nine.nodes < at_five.nodes * 50,
+            "depth nine searched {} nodes against depth five's {}",
+            at_nine.nodes,
+            at_five.nodes
+        );
     }
 
     #[test]

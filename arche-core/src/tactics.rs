@@ -34,7 +34,7 @@ pub const TABLE_BYTES: usize = 16 * 1024 * 1024;
 /// is the gate. A change that moves it in either direction updates this
 /// number in the same commit, which puts the movement in the diff, and a
 /// change that lowers it says what the positions were spent on.
-pub const EXPECTED_PASSES: usize = 235;
+pub const EXPECTED_PASSES: usize = 234;
 
 /// The count the suite may not go under, whatever a commit says it meant to
 /// spend.
@@ -93,6 +93,11 @@ pub struct AcceptedLoss {
 /// at those depths. Each entry names what depth six answers with instead
 /// and the depth the suite's move comes back at, read one position at a
 /// time on this build. Eight of the ten come back a single ply deeper.
+///
+/// The last is mate distance pruning's. The position holds no mate inside
+/// depth six, so what moved it is the reordering of a subtree deeper down
+/// that does, and it is borderline either way: this build answers d6e5 at
+/// six and at seven, and the suite's d6a3 at eight.
 pub const ACCEPTED_LOSSES: &[AcceptedLoss] = &[
     AcceptedLoss {
         id: "WAC.082",
@@ -167,6 +172,12 @@ pub const ACCEPTED_LOSSES: &[AcceptedLoss] = &[
         id: "WAC.280",
         why: "depth six answers c2e2 at 76 and the bishop to a3 comes back \
               at depth seven at 94",
+        until: "0.6.0",
+    },
+    AcceptedLoss {
+        id: "WAC.150",
+        why: "depth six answers d6e5 at 529 and the bishop retreat d6a3 comes \
+              back at depth eight at 420",
         until: "0.6.0",
     },
 ];

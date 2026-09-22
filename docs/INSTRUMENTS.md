@@ -1093,14 +1093,18 @@ The narrow figures are counted and never acted on: a search really running
 one of these widths would have stopped its scan at the first entry it
 accepted, which is a different tree.
 
-Read the narrow line off a small table, or at the bench's depth off the
-default one. An entry is sixteen bytes, so a megabyte holds sixty five
-thousand and the default sixteen a million. The bigger positions store more
-entries than a small table has slots, so it is full by the end of them, its
-buckets hold four live entries and its comparisons run to tens of millions.
-At depth nine only the two tactical positions store more than the default
-table holds, and that is still enough for the sixteen bit count to reach a
-few hundred; at depth seven no position stored more than a third of its
+Read the narrow line off a small table. An entry is sixteen bytes, so a
+megabyte holds sixty five thousand and the default sixteen a million. The
+bigger positions store more entries than a small table has slots, so it is
+full by the end of them, its buckets hold four live entries and its
+comparisons run to tens of millions.
+
+The default table is not filled by any position now. The two tactical ones
+filled it, and that was enough for the sixteen bit count to reach a few
+hundred, but both are forced mates and mate distance pruning ended the
+search of them. The largest store is kiwipete's 191,462 against the million
+the table holds, and an audited bench reads 6 sixteen bit accepts against
+2.196 expected. At depth seven no position stored more than a third of its
 slots and the count was zero. The command does not sweep sizes itself.
 
 The audit costs eight bytes an entry, half the table's own size again, and
