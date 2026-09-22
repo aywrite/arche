@@ -19,10 +19,12 @@ use std::collections::HashMap;
 use std::fmt;
 use std::time::Duration;
 
-/// The depth every position is searched to. Seven until September 2026 and
-/// nine since, so a `Bench:` trailer or a note from before then that says
-/// the bench's depth means seven.
-pub const DEPTH: u8 = 9;
+/// The depth every position is searched to. Seven until September 2026,
+/// nine from then until mate distance pruning left the suite a twentieth of
+/// the size, and eleven since. A `Bench:` trailer or a note that says the
+/// bench's depth means whichever of the three was current when it was
+/// written.
+pub const DEPTH: u8 = 11;
 
 /// The table every position is searched with. The tree moves with the
 /// table, so this is part of what the numbers mean.
@@ -714,24 +716,24 @@ mod tests {
         assert_eq!(
             counted,
             vec![
-                ("start", 118_417),
-                ("italian", 145_078),
-                ("ruy lopez", 194_904),
-                ("kiwipete", 578_132),
-                ("perft 4", 92_499),
-                ("promotions", 65_545),
-                ("middlegame", 140_125),
-                ("sharp middlegame", 142_083),
-                ("bratko kopec 1", 8_787),
-                ("wac 4", 1_530),
-                ("rook and pawns", 49_761),
-                ("tarrasch", 78_520),
-                ("lucena", 30_168),
-                ("philidor", 130_295),
-                ("minor endgame", 55_453),
-                ("queen endgame", 302_628),
-                ("king and pawn", 11_654),
-                ("trebuchet", 7_954),
+                ("start", 463_981),
+                ("italian", 633_596),
+                ("ruy lopez", 842_051),
+                ("kiwipete", 1_241_887),
+                ("perft 4", 343_312),
+                ("promotions", 397_003),
+                ("middlegame", 430_208),
+                ("sharp middlegame", 638_700),
+                ("bratko kopec 1", 11_095),
+                ("wac 4", 1_706),
+                ("rook and pawns", 118_150),
+                ("tarrasch", 290_538),
+                ("lucena", 94_347),
+                ("philidor", 422_021),
+                ("minor endgame", 241_415),
+                ("queen endgame", 669_117),
+                ("king and pawn", 33_238),
+                ("trebuchet", 27_863),
             ]
         );
     }

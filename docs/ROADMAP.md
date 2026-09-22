@@ -181,7 +181,8 @@ the engine plays. Roughly in the order they look worth doing.
   47,836,191 nodes, 95.5%, so a percentage of "the bench tree" from before is a
   percentage of those two and little else. An entry below that gives a figure over
   sixteen positions is already clear of them; one that says "the bench tree" is not. The
-  suite is 2,153,533 nodes now and the largest single position is `kiwipete` at 27%
+  suite is 6,900,228 nodes now, at the depth of eleven the same change bought, and the
+  largest single position is `kiwipete` at 18%
 
 ## Measured and rejected
 
