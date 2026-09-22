@@ -195,6 +195,15 @@ fn a_stop_with_nothing_running_is_taken_in_silence() {
     assert!(s.finished().success());
 }
 
+/// The node count an info line reports.
+fn nodes_of(info: &str) -> u64 {
+    info.split_whitespace()
+        .skip_while(|word| *word != "nodes")
+        .nth(1)
+        .and_then(|count| count.parse().ok())
+        .unwrap_or_else(|| panic!("no node count in {}", info))
+}
+
 /// The nodes the deepest info line of one search reports, read from the
 /// lines that search said.
 fn nodes_of_a_search(s: &mut Session, depth: u8) -> u64 {
@@ -206,11 +215,7 @@ fn nodes_of_a_search(s: &mut Session, depth: u8) -> u64 {
         .iter()
         .rfind(|l| l.starts_with("info depth "))
         .unwrap_or_else(|| panic!("a search reported no depth: {:#?}", s.said));
-    info.split_whitespace()
-        .skip_while(|word| *word != "nodes")
-        .nth(1)
-        .and_then(|count| count.parse().ok())
-        .unwrap_or_else(|| panic!("no node count in {}", info))
+    nodes_of(info)
 }
 
 #[test]
@@ -328,19 +333,22 @@ fn an_iteration_no_root_move_reached_answers_with_the_depth_before_it() {
         .iter()
         .filter(|l| l.starts_with("info depth "))
         .collect();
-    let last = lines
-        .last()
+    let (total, iterations) = lines
+        .split_last()
         .unwrap_or_else(|| panic!("the search reported no depth: {:#?}", s.said));
+    let ceiling = iterations
+        .last()
+        .unwrap_or_else(|| panic!("only one depth was reported: {:#?}", s.said));
     assert!(
-        last.contains(" upperbound "),
+        ceiling.contains(" upperbound "),
         "the ceiling was not reported as one: {}",
-        last
+        ceiling
     );
     // the ceiling's line opens with the move that came closest, which is
     // not the move answered with: a move nothing was shown to beat is not
     // an answer
-    assert_ne!(line_opens_with(last), best, "the closest move answered");
-    let completed = lines
+    assert_ne!(line_opens_with(ceiling), best, "the closest move answered");
+    let completed = iterations
         .iter()
         .rfind(|l| !l.contains("bound "))
         .unwrap_or_else(|| panic!("no depth completed: {:#?}", s.said));
@@ -353,10 +361,31 @@ fn an_iteration_no_root_move_reached_answers_with_the_depth_before_it() {
     // and the ceiling really was one: the position is worth less than the
     // depth answering said, which is what a search finds when it fails low
     assert!(
-        score_of(last) < score_of(completed),
+        score_of(ceiling) < score_of(completed),
         "the ceiling did not fall short of the answer: {} against {}",
-        last,
+        ceiling,
         completed
+    );
+    // the search then says the answering depth again with every node it
+    // spent on it. That line is the one a match harness copies into the
+    // game record, and the line it used to copy is the ceiling above.
+    // Neither the completed depth's count nor the ceiling's covers the
+    // iteration the budget stopped
+    assert_eq!(
+        line_opens_with(total),
+        best,
+        "the last line is not the answer's"
+    );
+    assert_eq!(
+        score_of(total),
+        score_of(completed),
+        "the last line moved the score the answering depth said"
+    );
+    assert_eq!(nodes_of(total), 8000, "the last line is not the budget");
+    assert!(
+        nodes_of(ceiling) < 8000,
+        "the ceiling already covered the whole search: {}",
+        ceiling
     );
     s.say("quit");
     assert!(s.finished().success());

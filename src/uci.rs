@@ -12,8 +12,10 @@ use arche_core::ScoreBound;
 use arche_core::SearchConfig;
 use arche_core::SearchOutcome;
 use arche_core::SearchParameters;
+use arche_core::SearchResult;
 use arche_core::bench;
-use arche_core::{PvLine, SearchResult};
+use arche_core::{Play, Score};
+use std::fmt;
 use std::io::{BufRead, Stdout, Write};
 use std::ops::RangeInclusive;
 
@@ -458,11 +460,26 @@ impl<T: Engine, W: Write> UCI<T, W> {
         // the closure writes while the engine is borrowed for the search, so
         // it goes to the writer directly rather than through say
         let out = &mut self.out;
+        let mut reported = Reported::default();
         let outcome = self
             .engine
             .iterative_deepening_search(sp, |depth, result, pv, bound| {
-                let _ = writeln!(out, "{}", format_info(depth, result, &pv, bound));
+                let pv = pv.to_string();
+                let line = format_info(depth, result, &pv, bound);
+                if bound != ScoreBound::Upper {
+                    reported.answer = Some(Answer {
+                        depth,
+                        selective_depth: result.selective_depth,
+                        best_move: result.best_move,
+                        score: result.score,
+                        bound,
+                        pv,
+                    });
+                }
+                let _ = writeln!(out, "{}", line);
+                reported.written = Some(line);
             });
+        self.say_the_search_total(&outcome, &reported);
         // an infinite search does not answer until it is told to, even when
         // it ran out of depths to search first
         if go.holds_its_answer() {
@@ -479,6 +496,63 @@ impl<T: Engine, W: Write> UCI<T, W> {
                 self.say(format_args!("bestmove 0000"));
             }
             SearchOutcome::Aborted(None) => self.say(format_args!("bestmove 0000")),
+        }
+    }
+
+    /// The last info line of a search, said for the search rather than for an
+    /// iteration of it.
+    ///
+    /// Every line above it comes from an iteration ending, and a search that
+    /// gives up inside one reports that iteration only where the root swapped
+    /// its move. So a reader taking the last line for a node count takes a
+    /// count that stops at the depth before, with the deepest and largest
+    /// iteration left out of it. A match harness reads the last line, and
+    /// that is the count it writes into the game record.
+    ///
+    /// Only the nodes and the elapsed time come from the outcome. The depth,
+    /// the seldepth, the score, the bound and the line are the last ones
+    /// reported, so what a reader records in those columns does not move.
+    /// They can lag the answer by an iteration: an interrupted iteration that
+    /// found the move already answering is not reported, and the engine then
+    /// answers with its score while the line still carries the depth before
+    /// it. Printing that score instead would need a depth to print it at,
+    /// which a `SearchResult` does not carry, and would move a column that
+    /// readings taken before this line existed are read against.
+    ///
+    /// Nothing is said where the line would repeat the one just written,
+    /// which is every search that ended on an iteration it had reported.
+    fn say_the_search_total(&mut self, outcome: &SearchOutcome, reported: &Reported) {
+        let spent = match outcome {
+            SearchOutcome::Complete(result, _) | SearchOutcome::Aborted(Some(result)) => result,
+            // neither carries a result, and both answer 0000
+            SearchOutcome::Aborted(None) | SearchOutcome::GameOver => return,
+        };
+        // an answer the deepening never reported has nothing to say it
+        // against. Depth one is searched under no limits, so a real search
+        // always has one
+        let Some(answer) = &reported.answer else {
+            return;
+        };
+        // the line opens with the move the bestmove names, which is what
+        // fastchess warns about when it does not
+        debug_assert_eq!(
+            answer.best_move, spent.best_move,
+            "the last line said names a move the search did not answer with"
+        );
+        let line = format_info(
+            answer.depth,
+            &SearchResult {
+                nodes: spent.nodes,
+                elapsed: spent.elapsed,
+                selective_depth: answer.selective_depth,
+                best_move: answer.best_move,
+                score: answer.score,
+            },
+            &answer.pv,
+            answer.bound,
+        );
+        if reported.written.as_deref() != Some(line.as_str()) {
+            self.say(format_args!("{}", line));
         }
     }
 }
@@ -651,13 +725,44 @@ fn perft_depth(params: &Params) -> u8 {
         .unwrap_or(1)
 }
 
+/// What the deepening has reported so far, kept so that the line written
+/// after it can say what the whole search spent.
+#[derive(Default)]
+struct Reported {
+    /// The last report that was not a ceiling.
+    ///
+    /// A ceiling names the move that came closest rather than one the search
+    /// would answer with, and the deepening never holds one as its answer, so
+    /// the move a search answers with is always this report's. That is what
+    /// makes one slot enough. The score beside it can be a depth older, for
+    /// the reason `say_the_search_total` gives.
+    answer: Option<Answer>,
+    /// The last line written, whatever its bound.
+    written: Option<String>,
+}
+
+/// A report the search could answer with, in the parts an info line prints.
+struct Answer {
+    depth: u8,
+    selective_depth: u8,
+    best_move: Play,
+    score: Score,
+    bound: ScoreBound,
+    pv: String,
+}
+
 /// One report from the search as a UCI info line. The elapsed time comes from
 /// the result rather than a clock read here, so the rate divides a node count
 /// by the time that same search took.
 ///
 /// A score that is a bound rather than the position's worth is qualified
 /// `lowerbound` or `upperbound`, the protocol's words for the two.
-fn format_info(depth: u8, result: &SearchResult, pv: &PvLine, bound: ScoreBound) -> String {
+fn format_info(
+    depth: u8,
+    result: &SearchResult,
+    pv: impl fmt::Display,
+    bound: ScoreBound,
+) -> String {
     let millis = result.elapsed.as_millis();
     // a search faster than a millisecond is measured as one, so the rate
     // stays finite
@@ -682,7 +787,7 @@ fn format_info(depth: u8, result: &SearchResult, pv: &PvLine, bound: ScoreBound)
 #[cfg(test)]
 mod tests {
     use super::*;
-    use arche_core::{AlphaBeta, Board, Clock};
+    use arche_core::{AlphaBeta, Board, Clock, PvLine};
     use proptest::prelude::*;
     use std::io::Cursor;
     use std::sync::mpsc::{Sender, channel};
@@ -1440,6 +1545,9 @@ go depth 3
 
     #[test]
     fn a_node_limit_is_honoured_end_to_end() {
+        // exactly the budget, not merely under it: the search polls the
+        // limits on the node it names, and the last line is said for the
+        // whole search rather than for the last iteration of it
         let mut uci = uci();
         uci.run(Cursor::new("position startpos\ngo nodes 5000\n"));
         let said = said(&uci);
@@ -1452,7 +1560,7 @@ go depth 3
             .nth(1)
             .and_then(|n| n.parse().ok())
             .unwrap_or_else(|| panic!("no node count in {}", info));
-        assert!(nodes <= 5000, "{}", said);
+        assert_eq!(nodes, 5000, "{}", said);
     }
 
     #[test]
@@ -1690,45 +1798,64 @@ go depth 3
         }
     }
 
-    /// An engine whose search ends the way one the clock catches does: a
-    /// depth completed and reported, then a better move from the aborted
-    /// iteration, which the deepening loop swaps in. Scripted, because
-    /// provoking a real swap means timing a search to the node.
-    struct Swapper;
+    /// One report a scripted search makes, in the words `on_depth` takes.
+    struct Report {
+        depth: u8,
+        result: SearchResult,
+        pv: &'static [&'static str],
+        bound: ScoreBound,
+    }
 
-    impl Swapper {
-        fn result(best_move: Play, score: arche_core::Score) -> SearchResult {
-            SearchResult {
-                nodes: 1000,
-                elapsed: Duration::from_millis(100),
-                selective_depth: 4,
-                best_move,
+    /// An engine that plays a written script rather than searching: the
+    /// reports to make, then the outcome to answer with.
+    ///
+    /// Scripted, because provoking the three endings below from a real
+    /// search means timing one to the node, and the endings are where the
+    /// protocol's last line is decided.
+    struct Scripted {
+        reports: Vec<Report>,
+        answer: SearchResult,
+    }
+
+    /// A report at `depth`, on a line of the moves named, with the nodes and
+    /// the milliseconds it was taken at.
+    fn report(
+        depth: u8,
+        nodes: u64,
+        millis: u64,
+        score: arche_core::Score,
+        pv: &'static [&'static str],
+        bound: ScoreBound,
+    ) -> Report {
+        Report {
+            depth,
+            result: SearchResult {
+                nodes,
+                elapsed: Duration::from_millis(millis),
+                selective_depth: depth + 1,
+                best_move: play_named(pv[0]),
                 score,
-            }
+            },
+            pv,
+            bound,
         }
     }
 
-    impl Engine for Swapper {
+    impl Engine for Scripted {
         fn iterative_deepening_search(
             &mut self,
             _search_options: SearchParameters,
             mut on_depth: impl FnMut(u8, &SearchResult, PvLine, ScoreBound),
         ) -> SearchOutcome {
-            let completed = Self::result(play_named("e2e4"), 20);
-            on_depth(
-                3,
-                &completed,
-                PvLine::new(vec![play_named("e2e4")]),
-                ScoreBound::Exact,
-            );
-            let swapped = Self::result(play_named("d2d4"), 35);
-            on_depth(
-                4,
-                &swapped,
-                PvLine::new(vec![play_named("d2d4")]),
-                ScoreBound::Lower,
-            );
-            SearchOutcome::Aborted(Some(swapped))
+            for report in &self.reports {
+                on_depth(
+                    report.depth,
+                    &report.result,
+                    PvLine::new(report.pv.iter().copied().map(play_named).collect()),
+                    report.bound,
+                );
+            }
+            SearchOutcome::Aborted(Some(SearchResult { ..self.answer }))
         }
 
         fn active_color(&self) -> Color {
@@ -1753,28 +1880,104 @@ go depth 3
         }
     }
 
+    /// What a scripted search says, line by line.
+    fn spoken_by(engine: Scripted) -> Vec<String> {
+        let mut uci = UCI::with_output(engine, Vec::new());
+        uci.run(Cursor::new("position startpos\ngo movetime 300\n"));
+        String::from_utf8(uci.out.clone())
+            .unwrap()
+            .lines()
+            .map(str::to_string)
+            .collect()
+    }
+
     #[test]
     fn the_move_a_swap_answers_with_opens_the_last_line_said() {
-        // fastchess warns on a bestmove the last pv does not open with
-        let mut uci = UCI::with_output(Swapper, Vec::new());
-        uci.run(Cursor::new("position startpos\ngo movetime 100\n"));
-        let said = String::from_utf8(uci.out.clone()).unwrap();
-        let lines: Vec<&str> = said.lines().collect();
-        let best = lines
-            .last()
-            .and_then(|line| line.strip_prefix("bestmove "))
-            .unwrap_or_else(|| panic!("no bestmove in {}", said));
-        let last_info = lines
-            .iter()
-            .rfind(|line| line.starts_with("info depth "))
-            .unwrap_or_else(|| panic!("no info line in {}", said));
-        let first_of_the_line = last_info
-            .split(" pv ")
-            .nth(1)
-            .and_then(|line| line.split_whitespace().next())
-            .unwrap_or_else(|| panic!("no line in {}", last_info));
-        assert_eq!(first_of_the_line, best, "{}", said);
-        assert!(last_info.contains(" lowerbound "), "{}", last_info);
+        // a depth completed and reported, then a better move from the
+        // aborted iteration, which the deepening swaps in and reports at
+        // the count it was interrupted on. fastchess warns on a bestmove
+        // the last pv does not open with
+        let swapped = report(4, 2000, 150, 35, &["d2d4"], ScoreBound::Lower);
+        let said = spoken_by(Scripted {
+            answer: SearchResult { ..swapped.result },
+            reports: vec![
+                report(3, 1000, 100, 20, &["e2e4"], ScoreBound::Exact),
+                swapped,
+            ],
+        });
+        assert_eq!(
+            said,
+            [
+                "info depth 3 seldepth 4 nodes 1000 time 100 nps 10000 score cp 20 pv e2e4",
+                "info depth 4 seldepth 5 nodes 2000 time 150 nps 13333 score cp 35 lowerbound pv d2d4",
+                "bestmove d2d4",
+            ],
+            "the swap's own report is the search's total, so nothing is added after it"
+        );
+    }
+
+    #[test]
+    fn an_iteration_that_reported_nothing_is_counted_in_the_last_line() {
+        // the ending most of a timed game's searches reach: the aborted
+        // iteration found the move already answering, so it reports
+        // nothing, and the depth before it is left to carry every node the
+        // search spent. Its own score, 33, is what the engine answers with
+        // and is not what the line says: the score stays where the last
+        // report left it
+        let said = spoken_by(Scripted {
+            reports: vec![report(
+                3,
+                1000,
+                100,
+                20,
+                &["e2e4", "g1f3"],
+                ScoreBound::Exact,
+            )],
+            answer: SearchResult {
+                nodes: 2500,
+                elapsed: Duration::from_millis(250),
+                selective_depth: 9,
+                best_move: play_named("e2e4"),
+                score: 33,
+            },
+        });
+        assert_eq!(
+            said,
+            [
+                "info depth 3 seldepth 4 nodes 1000 time 100 nps 10000 score cp 20 pv e2e4 g1f3",
+                "info depth 3 seldepth 4 nodes 2500 time 250 nps 10000 score cp 20 pv e2e4 g1f3",
+                "bestmove e2e4",
+            ]
+        );
+    }
+
+    #[test]
+    fn a_ceiling_is_not_the_report_the_last_line_is_built_from() {
+        // a ceiling names the move that came closest rather than one the
+        // search would answer with, so the line said for the search is the
+        // exact report above it and not the ceiling between them
+        let said = spoken_by(Scripted {
+            reports: vec![
+                report(3, 1000, 100, 20, &["e2e4", "g1f3"], ScoreBound::Exact),
+                report(4, 1800, 140, -5, &["d2d4"], ScoreBound::Upper),
+            ],
+            answer: SearchResult {
+                nodes: 2500,
+                elapsed: Duration::from_millis(250),
+                selective_depth: 9,
+                best_move: play_named("e2e4"),
+                score: 20,
+            },
+        });
+        assert_eq!(
+            said,
+            [
+                "info depth 3 seldepth 4 nodes 1000 time 100 nps 10000 score cp 20 pv e2e4 g1f3",
+                "info depth 4 seldepth 5 nodes 1800 time 140 nps 12857 score cp -5 upperbound pv d2d4",
+                "info depth 3 seldepth 4 nodes 2500 time 250 nps 10000 score cp 20 pv e2e4 g1f3",
+                "bestmove e2e4",
+            ]
+        );
     }
 
     // ---- generated sessions -------------------------------------------
