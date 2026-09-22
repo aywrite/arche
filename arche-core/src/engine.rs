@@ -2645,8 +2645,11 @@ impl Engine for AlphaBeta {
                             // at the start and nothing having zeroed it
                             // since, and `total_nodes` is every iteration
                             // before it.
+                            // The elapsed time is rewritten with them, for
+                            // the reason the field it sits in gives.
                             None => best.map(|mut answered| {
                                 answered.nodes = total_nodes + self.nodes;
+                                answered.elapsed = self.limits.elapsed();
                                 answered
                             }),
                         });
@@ -3847,6 +3850,49 @@ mod search {
         };
         assert_eq!(result.nodes, three.nodes);
         assert_eq!(result.best_move, three.best_move);
+    }
+
+    #[test]
+    fn an_answer_the_deepening_rewrote_times_the_nodes_it_reports() {
+        // the sweep once more, on the rows the test above skips. Where the
+        // answer comes from before the aborted iteration its count is
+        // raised to cover that iteration, and a time left where the answer
+        // was found would divide the whole search's nodes by part of the
+        // time they took. The same arithmetic tells the two arms apart
+        let mut rewritten = 0;
+        for limit in (50..6_000).step_by(97) {
+            let mut e = engine(Board::new());
+            let options = SearchParameters::new(None, nodes_only(limit));
+            let mut reported = None;
+            let outcome = e.iterative_deepening_search(options, |_, result, _, _| {
+                reported = Some((result.nodes, result.elapsed));
+            });
+            let SearchOutcome::Aborted(Some(result)) = outcome else {
+                panic!(
+                    "expected a move under a budget of {}, got {:?}",
+                    limit, outcome
+                )
+            };
+            let (nodes, elapsed) = reported.expect("a search reported no depth");
+            if nodes + e.nodes != limit {
+                // the aborted search found a move to swap in, so the answer
+                // is its own and its time was taken with its nodes
+                continue;
+            }
+            assert!(
+                result.elapsed > elapsed,
+                "budget {}: {} nodes against the {} last reported, over the same {:?}",
+                limit,
+                result.nodes,
+                nodes,
+                elapsed
+            );
+            rewritten += 1;
+        }
+        assert!(
+            rewritten > 0,
+            "no budget in the sweep answered from before the aborted iteration"
+        );
     }
 
     /// What a fresh engine answers depth four from the opening with, and
