@@ -102,6 +102,11 @@ pub(crate) struct Ordered {
     /// hold it. The search plays that move before the list exists, so
     /// this is the place its loop passes over.
     pub(crate) table_at: Option<usize>,
+    /// How many captures the swap prices as losing, which sit at the end
+    /// of the list. The quiet moves are what is left between them and
+    /// the front, so `order_quiets` is handed this rather than scanning
+    /// for the first of them.
+    pub(crate) losing: usize,
 }
 
 pub(crate) struct MoveOrdering {
@@ -282,6 +287,7 @@ impl MoveOrdering {
             return Ordered {
                 front: moves.len(),
                 table_at,
+                losing: 0,
             };
         }
         // a quiet move keys zero, between the front (negative keys) and
@@ -324,7 +330,13 @@ impl MoveOrdering {
                 "the table's move did not sort to the place reported"
             );
         }
-        Ordered { front, table_at }
+        // every key that is not negative is a losing capture: a quiet
+        // move keys zero and is counted in `plain` rather than here
+        Ordered {
+            front,
+            table_at,
+            losing: scored - front,
+        }
     }
 
     /// The second stage: `rest` starts at the first move past the front,
@@ -334,7 +346,16 @@ impl MoveOrdering {
     /// behind them are already in order. A move the history has marked
     /// down goes behind the quiets nothing is known about and still ahead
     /// of every losing capture.
-    pub(crate) fn order_quiets(&mut self, board: &Board, rest: &mut [Play], ply: usize) {
+    ///
+    /// `losing` is how many of those captures `order` counted, so the
+    /// run is the rest of `rest` and nothing here looks for its end.
+    pub(crate) fn order_quiets(
+        &mut self,
+        board: &Board,
+        rest: &mut [Play],
+        losing: usize,
+        ply: usize,
+    ) {
         debug_assert!(ply < MAX_PLY as usize, "no killers past the rail");
         // `order` hands back the whole length of a list that spilled, so
         // what reaches here fits the buffer, which the sort below indexes
@@ -343,7 +364,14 @@ impl MoveOrdering {
             rest.len() <= MOVE_LIST_INLINE,
             "the run has to fit the buffer"
         );
-        let run = rest.iter().take_while(|m| m.capture.is_none()).count();
+        let run = rest.len() - losing;
+        // the derivation rests on the bands, so the scan it replaces is
+        // kept as the check that they still hold
+        debug_assert_eq!(
+            run,
+            rest.iter().take_while(|m| m.capture.is_none()).count(),
+            "the quiet run does not end where the losing captures start"
+        );
         let quiets = &mut rest[..run];
         let quiet = Quiet {
             killers: self.killers[ply],
@@ -606,10 +634,9 @@ mod order {
     fn ordered_by(fen: &str, table_move: Option<Play>, ordering: &mut MoveOrdering) -> Vec<Play> {
         let board = Board::from_fen(fen).unwrap();
         let mut moves = board.generate_moves();
-        let front = ordering
-            .order(&board, &mut moves, table_move, Some(0))
-            .front;
-        ordering.order_quiets(&board, &mut moves[front..], 0);
+        let ordered = ordering.order(&board, &mut moves, table_move, Some(0));
+        let front = ordered.front;
+        ordering.order_quiets(&board, &mut moves[front..], ordered.losing, 0);
         moves.to_vec()
     }
 
