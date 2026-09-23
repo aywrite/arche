@@ -183,6 +183,26 @@ the engine plays. Roughly in the order they look worth doing.
   sixteen positions is already clear of them; one that says "the bench tree" is not. The
   suite is 6,900,228 nodes now, at the depth of eleven the same change bought, and the
   largest single position is `kiwipete` at 18%
+- mate distance pruning landed without a strength result that settled. Two runs played
+  3,500 games at 10+0.1 against `464d3cc`. The first was an sprt of [0, 10] and failed at
+  its third batch at -11 ±12 over 1,500 games, which only says the games did not favour
+  ten elo over nothing. The second asked [-5, 0] and carried the first's pairs in. It
+  played all four of its batches and reached neither bound, ending at a log likelihood
+  ratio of -1.81 against ±2.94. Over all 1,750 pairs the difference is -8 ±8, so the
+  change costs somewhere between about eight elo and nothing. Zero sits at the edge of
+  that interval and the last batch was +1. Carrying the test on wants `prior_pairs`
+  109,440,722,384,95, and halving the interval wants about ten thousand further games, so
+  it is not cheap to settle. It was landed for what the bullet above describes rather
+  than for strength
+- the rate a match reports for a side that prunes mates is not that side's speed. Both
+  runs put the candidate near 0.95 times the baseline's rate, and that is composition.
+  The nodes the pruning removes run at 6,841,289 nps against 2,723,277 for the other
+  sixteen bench positions, 2.51 times cheaper, and pricing the missing 7.7% of nodes at
+  that discount predicts the observed time and rate ratios to within 0.003. The cost a
+  node really carries is 0.642% of its instructions under callgrind, or 0.457% behind the
+  `is_mate` guard the commit ships, which is worth well under an elo. A reader who takes
+  that rate column for a slowdown will go looking for five percent that is not there,
+  which has happened once already
 
 ## Measured and rejected
 
