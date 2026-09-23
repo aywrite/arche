@@ -2060,8 +2060,11 @@ impl AlphaBeta {
             self.board.generate_moves()
         };
         let ply = self.memory_ply();
-        let Ordered { front, table_at } =
-            self.ordering.order(&self.board, &mut moves, pv_play, ply);
+        let Ordered {
+            front,
+            table_at,
+            losing,
+        } = self.ordering.order(&self.board, &mut moves, pv_play, ply);
         // the place the loop passes over, since the table's move was
         // searched above before this list existed. `order` sorts by
         // `pv_play` and the search played `tt_tried`, which differ when
@@ -2105,7 +2108,7 @@ impl AlphaBeta {
             if i == front {
                 if let Some(ply) = ply {
                     self.ordering
-                        .order_quiets(&self.board, &mut moves[front..], ply);
+                        .order_quiets(&self.board, &mut moves[front..], losing, ply);
                     quiets_scored = true;
                 }
             }
