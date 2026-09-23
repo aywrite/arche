@@ -215,7 +215,7 @@ class TestAcknowledged:
         assert done.returncode != 0
         assert "not-a-sha" in done.stderr
 
-    def test_the_engine_s_own_list_covers_the_four_lapses_on_master(self):
+    def test_the_engine_s_own_list_covers_the_lapses_on_master(self):
         # an edit that empties the file is caught here rather than by a
         # release failing months from now
         text = (SCRIPT.parent / "acknowledged_bench_pins.txt").read_text()
@@ -224,7 +224,9 @@ class TestAcknowledged:
             for line in text.splitlines()
             if line.strip() and not line.startswith("#")
         ]
-        assert sorted(entries) == sorted(["f1f0730", "5b12f03", "ac47935", "a0bf845"])
+        assert sorted(entries) == sorted(
+            ["f1f0730", "5b12f03", "ac47935", "a0bf845", "3298289", "b9325ae"]
+        )
 
 
 def test_two_files_of_pins_are_an_error(repo):

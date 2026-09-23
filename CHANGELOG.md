@@ -4,6 +4,17 @@ All notable changes to this project will be documented in this file.
 
 ## [0.4.6] - 2026-09-23
 
+Corrections to this section, written by hand after it was generated. The
+generated lines below are left as they were published.
+
+- Two entries here print `[bench 48354803]` and their trees pin 47836191:
+  "Count the iteration a budget gave up in the nodes a search reports"
+  (`3298289`) and "Add an effort instrument that differences two
+  configurations by the node" (`b9325ae`). Both were written on quiet
+  futility pruning, which counts 48354803, and rebased onto the late move
+  count before they landed. Neither moves a pin, so their bench is the
+  late move count's 47836191.
+
 ### Features
 
 - *(search)* Add an adaptive null move reduction that grows with depth and the eval's margin over beta [bench 50127050] [elo +27 ±16 (sprt [0, 10] passed, 1000 games, 10+0.1, vs 54d85b96)]

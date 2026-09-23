@@ -7,7 +7,7 @@
 # so a commit whose figures are not these two is not acknowledged. An entry is
 # added when the lapse is understood, not to get a release out.
 #
-# All four below were rebased before they landed, so the commit built by the
+# All six below were rebased before they landed, so the commit built by the
 # bench workflow was not the commit that arrived.
 
 # 2026-08-25, the pair the check was written from
@@ -17,3 +17,8 @@ f1f0730 36130893 35561814
 # 2026-09-07, the pair the 0.4.2 changelog notes as lapses beside their entries
 ac47935 4395471 4162584
 a0bf845 4395471 4162584
+
+# 2026-09-21, written on quiet futility and rebased onto the late move count,
+# which the 0.4.6 changelog notes as lapses beside their entries
+3298289 48354803 47836191
+b9325ae 48354803 47836191
