@@ -2,6 +2,43 @@
 
 All notable changes to this project will be documented in this file.
 
+## [0.4.6] - 2026-09-23
+
+### Features
+
+- *(search)* Add an adaptive null move reduction that grows with depth and the eval's margin over beta [bench 50127050] [elo +27 ±16 (sprt [0, 10] passed, 1000 games, 10+0.1, vs 54d85b96)]
+- *(search)* Decide the deep reduction by depth and move index [bench 50263773] [elo +2 ±9 (sprt [-10, 0] passed, 3500 games, 10+0.1, vs ac53360)]
+- *(search)* Add quiet futility pruning at depths one to three [bench 48354803] [elo +21 ±13 (sprt [0, 10] passed, 1500 games, 10+0.1, vs 92922deb)]
+- *(search)* Add a late move count at depths one to three [bench 47836191] [elo +37 ±16 (sprt [0, 10] passed, 1000 games, 10+0.1, vs bdf0befa)]
+- *(search)* Add mate distance pruning [bench 2153533]
+
+### Bug Fixes
+
+- *(search)* Count the iteration a budget gave up in the nodes a search reports [bench 48354803]
+- *(search)* Fall back to a smaller transposition table at startup [bench 47836191]
+- *(search)* Measure an aborted search's time over the nodes it reports [bench 47836191]
+- *(uci)* Write a final info line with every node the search spent
+
+### Documentation
+
+- *(search)* Record the attention model's objective as measured and rejected
+- *(search)* Correct what the late move count's line is pinned to [bench 47836191]
+
+### Development
+
+- *(deps)* Bump the actions group across 1 directory with 4 updates
+- *(bench)* Hold a term by name rather than by a flag of its own
+- *(deps)* Bump the mache actions from v0.3.0 to v0.4.0
+- *(bench)* Add an effort instrument that differences two configurations by the node [bench 48354803]
+- *(bench)* Read the effort test's outcomes above the depths the rule decides
+- *(deps)* Bump the mache actions from v0.4.0 to v0.5.0
+- *(docs)* Correct the quiet futility figure and four counts the new rules staled
+- *(release)* Add a second calibration gauntlet against the ccrl 40/15 list
+- *(bench)* Let the effort instrument ablate the late move count [bench 47836191]
+- *(ci)* Chain up to four sprt batches in one strength run
+- *(ci)* Read the ladder's numbers off resolve rather than off the inputs
+- *(bench)* Raise the bench depth from nine to eleven [bench 6900228]
+
 ## [0.4.5] - 2026-09-19
 
 ### Features
