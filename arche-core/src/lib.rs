@@ -20,6 +20,7 @@ pub mod reduction;
 pub mod residual;
 pub mod strategy;
 pub mod tactics;
+pub mod ties;
 mod transposition;
 pub mod tune;
 mod value;

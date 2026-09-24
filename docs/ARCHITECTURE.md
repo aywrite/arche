@@ -174,9 +174,9 @@ archived games, and the code map below says what each one counts.
 - **bench.rs**: A fixed suite of positions searched to a fixed depth,
   printing exact node counts. This is what a commit's `Bench:` trailer
   states and what CI verifies.
-- **recorder.rs**: What the four recorders below share. The reservoir
+- **recorder.rs**: What the five recorders below share. The reservoir
   that hangs off an engine and keeps one node in every n, the loop that
-  searches a suite with one armed, the spread they key by, the six lanes
+  searches a suite with one armed, the spread they key by, the seven lanes
   that keep their kept sets apart, and the window a sample reads off the
   node. An engine with nothing armed searches the tree it searched before
   there was a reservoir at all.
@@ -198,6 +198,11 @@ archived games, and the code map below says what each one counts.
   once with a named switch off, and joins the two runs by the node, so a
   row says whether each side reached it and what each spent under it.
   Driven by the `effort` argument.
+- **ties.rs**: Which of the tied quiet moves is tried first, and whether it
+  cut. With the ordering exploration on, the quiet moves the memories key
+  zero are tried in an order drawn from a seed, and a row a member says
+  where it was drawn, where generation order would have put it, and what
+  became of it. Driven by the `ordering` argument.
 - **tune.rs**: What a position's evaluation is made of. The evaluation is
   linear in the tables and the material values everywhere it is not a drawn
   signature, so a position's score is a dot product, and this writes down the
@@ -219,8 +224,8 @@ archived games, and the code map below says what each one counts.
 ## Code map: src
 
 - **main.rs**: Argument handling. `bench` runs the suite and exits, and so
-  do the five research commands, `residuals`, `cutoffs`, `reductions`,
-  `effort` and `terms`. No argument starts the UCI loop.
+  do the six research commands, `residuals`, `cutoffs`, `reductions`,
+  `effort`, `ordering` and `terms`. No argument starts the UCI loop.
 - **uci.rs**: The protocol: what each command means, the options the
   handshake advertises, and what a `go` may spend. Every line reaches it
   through the session loop, on the thread the engine was built on.

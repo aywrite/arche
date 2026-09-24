@@ -4,7 +4,7 @@
 //! The effort instrument: what a rule frees, and where the freed effort
 //! goes.
 //!
-//! The other four instruments each describe one tree. A saving is a
+//! The other five instruments each describe one tree. A saving is a
 //! difference between two, so no row any of them writes can carry one.
 //! Here one command searches the suite twice, once under the default and
 //! once under the default with a named switch off, and joins the two runs
@@ -132,6 +132,10 @@ const fn _every_switch_is_named(config: &SearchConfig) {
         reduction_table: _,
         deep_index_rule: _,
         move_memory: _,
+        // a measurement rather than a shortcut, off in the default, so the
+        // baseline side has nothing to turn off
+        ordering_exploration: _,
+        exploration_seed: _,
         aspiration: _,
     } = config;
 }
@@ -1392,6 +1396,7 @@ mod tests {
     fn recording_leaves_the_measured_search_where_it_was() {
         recording_leaves_the_search_where_it_was(
             4,
+            SearchConfig::default(),
             |engine| engine.arm(Sampler::<Event>::with_cap(1, DEFAULT_CAP)),
             |engine| {
                 engine

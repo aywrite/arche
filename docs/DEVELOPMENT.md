@@ -7,11 +7,12 @@ cargo build --release
 ```
 
 The binary is written to `target/release/arche` (`arche.exe` on windows). It starts
-in uci mode immediately. Eight arguments do anything else, six of them
+in uci mode immediately. Nine arguments do anything else, seven of them
 measurements. `bench`, with the depth, table and policy words described below,
-prints the bench and exits; `residuals`, `cutoffs`, `reductions` and `effort`
-measure the search and `terms` measures the evaluation, each with a section of
-its own in [INSTRUMENTS.md](INSTRUMENTS.md). `--version` and `--help` are answered too.
+prints the bench and exits; `residuals`, `cutoffs`, `reductions`, `effort` and
+`ordering` measure the search and `terms` measures the evaluation, each with a
+section of its own in [INSTRUMENTS.md](INSTRUMENTS.md). `--version` and
+`--help` are answered too.
 
 The release profile uses link time optimisation and a single codegen unit, so a
 release build is noticeably slower to compile than a debug one but is several
@@ -437,8 +438,9 @@ not use.
 
 ## The instruments
 
-[INSTRUMENTS.md](INSTRUMENTS.md) has the five measurements of the search:
-`residuals`, `cutoffs`, `reductions`, `effort` and the bench's `audit` word.
+[INSTRUMENTS.md](INSTRUMENTS.md) has the six measurements of the search:
+`residuals`, `cutoffs`, `reductions`, `effort`, `ordering` and the bench's
+`audit` word.
 It also has
 `terms`, which measures the evaluation instead, and the loss harness under
 `scripts/` that reads what `terms` prints. None of them is needed to build,
