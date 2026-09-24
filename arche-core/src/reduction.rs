@@ -1117,6 +1117,7 @@ mod tests {
         let skipped = std::cell::Cell::new(0usize);
         recording_leaves_the_search_where_it_was(
             5,
+            SearchConfig::default(),
             |engine| engine.arm(Sampler::<Event>::with_cap(1, DEFAULT_CAP)),
             |engine| {
                 let taken = engine

@@ -3,13 +3,13 @@
 
 //! The measurement instruments, as a command line asks for them.
 //!
-//! Five of them: the residual sampler, the cutoff census, the reduction
-//! ledger, the effort instrument and the term extraction. The first four
-//! search the bench's positions, record a sample of what the search did,
-//! and print a report; the fifth searches nothing and writes down what each
-//! position's evaluation is made of. What each one measures is on its
-//! module in `arche-core`; what is here is only how a command line spells
-//! it.
+//! Six of them: the residual sampler, the cutoff census, the reduction
+//! ledger, the effort instrument, the ordering instrument and the term
+//! extraction. The first five search the bench's positions, record a sample
+//! of what the search did, and print a report; the sixth searches nothing
+//! and writes down what each position's evaluation is made of. What each
+//! one measures is on its module in `arche-core`; what is here is only how
+//! a command line spells it.
 //!
 //! Not in `uci`, because none of them is the protocol: they take minutes and
 //! answer a research question, which is why they are arguments rather than
@@ -25,9 +25,10 @@ use arche_core::effort;
 use arche_core::recorder;
 use arche_core::reduction;
 use arche_core::residual;
+use arche_core::ties;
 use arche_core::tune;
 
-/// The settings the four searching instruments share.
+/// The settings the five searching instruments share.
 struct Sampling {
     depth: u8,
     every: u32,
@@ -142,6 +143,35 @@ pub const EFFORT: Command = Command {
     ],
 };
 
+pub const ORDERING: Command = Command {
+    name: "ordering",
+    depth: true,
+    keywords: &[
+        Keyword {
+            word: "every",
+            value: "<n>",
+        },
+        Keyword {
+            word: "cap",
+            value: "<n>",
+        },
+        Keyword {
+            word: "seed",
+            value: "<n>",
+        },
+        Keyword {
+            word: "epd",
+            value: "<file>",
+        },
+    ],
+    flags: &[],
+    summary: &[
+        "search the bench's suite, or the one named, with the",
+        "quiet moves nothing is known about tried in an order drawn",
+        "from the seed, and print which of them was tried and cut",
+    ],
+};
+
 pub const TERMS: Command = Command {
     name: "terms",
     // the walk reads the board and the quiet test runs a capture search,
@@ -159,7 +189,7 @@ pub const TERMS: Command = Command {
 };
 
 /// How many rows a run keeps when it was not told. The recorder's, because
-/// all four record through the reservoir that module defines.
+/// all five record through the reservoir that module defines.
 const DEFAULT_CAP: usize = recorder::DEFAULT_CAP;
 
 /// Reads the settings the instruments share, or names the setting and the
@@ -389,6 +419,54 @@ impl EffortSettings {
             self.cap,
             self.off.as_deref(),
             self.budget,
+        )
+    }
+}
+
+/// What an ordering argument asked for: `ordering [depth] [every <n>]
+/// [cap <n>] [seed <n>] [epd <file>]`. The seed turns the exploration on,
+/// since a run with it off records a group nothing drew; with no seed the
+/// group is recorded in generation order, which is the control the
+/// uniformity check is read against.
+pub struct OrderingSettings {
+    pub depth: u8,
+    pub every: u32,
+    pub cap: usize,
+    pub seed: Option<u64>,
+    /// The file the suite was read from, or none for the bench's own.
+    pub epd: Option<String>,
+    /// Read while the settings are, so a file that is no suite is refused
+    /// before the minutes are spent.
+    pub positions: Vec<bench::Position>,
+}
+
+pub fn ordering_settings(params: &Params) -> Result<OrderingSettings, String> {
+    let Sampling { depth, every, cap } = sampling(params, &ORDERING, ties::DEFAULT_EVERY)?;
+    let seed = match params.parse::<u64>("seed") {
+        Param::Absent => None,
+        Param::Read(seed) => Some(seed),
+        Param::Unreadable(word) => return Err(format!("seed: {word}")),
+    };
+    let (epd, positions) = suite(params)?;
+    Ok(OrderingSettings {
+        depth,
+        every,
+        cap,
+        seed,
+        epd,
+        positions,
+    })
+}
+
+impl OrderingSettings {
+    pub fn run(&self) -> ties::Report {
+        ties::run(
+            &self.positions,
+            self.epd.as_deref(),
+            self.depth,
+            self.every,
+            self.cap,
+            self.seed,
         )
     }
 }
@@ -667,6 +745,45 @@ mod tests {
     }
 
     #[test]
+    fn an_ordering_argument_reads_its_depth_rate_cap_seed_and_suite() {
+        let read = |line: &str| {
+            let settings = ordering_settings(&Params::of(line)).expect(line);
+            (settings.depth, settings.every, settings.cap, settings.seed)
+        };
+        const CAP: usize = recorder::DEFAULT_CAP;
+        assert_eq!(read("ordering"), (bench::DEPTH, 1000, CAP, None));
+        assert_eq!(read("ordering 8 every 4"), (8, 4, CAP, None));
+        assert_eq!(
+            read("ordering 8 every 4 cap 2000000 seed 3"),
+            (8, 4, 2_000_000, Some(3))
+        );
+        assert_eq!(read("ordering seed 0"), (bench::DEPTH, 1000, CAP, Some(0)));
+
+        let path = concat!(env!("CARGO_MANIFEST_DIR"), "/arche-core/tactics.epd");
+        let line = format!("ordering 4 seed 1 epd {path}");
+        let named = ordering_settings(&Params::of(&line)).expect(&line);
+        assert_eq!(named.epd.as_deref(), Some(path));
+        assert_eq!(named.positions, from_file(path));
+    }
+
+    #[test]
+    fn an_unreadable_ordering_setting_is_named_rather_than_run() {
+        for (line, what) in [
+            ("ordering abc", "depth: abc"),
+            ("ordering 4 every lots", "every: lots"),
+            ("ordering 4 seed lots", "seed: lots"),
+            ("ordering 4 seed -1", "seed: -1"),
+            ("ordering 4 epd no/such/file.epd", "epd: no/such/file.epd"),
+        ] {
+            assert_eq!(
+                ordering_settings(&Params::of(line)).err(),
+                Some(what.to_string()),
+                "{line}"
+            );
+        }
+    }
+
+    #[test]
     fn an_effort_argument_reads_its_depth_rate_cap_switch_and_budget() {
         let read = |line: &str| {
             let settings = effort_settings(&Params::of(line)).expect(line);
@@ -818,28 +935,38 @@ mod tests {
         let cutoffs = cutoff_settings(&Params::of("cutoffs")).unwrap();
         let reductions = reduction_settings(&Params::of("reductions")).unwrap();
         let effort = effort_settings(&Params::of("effort")).unwrap();
+        let ordering = ordering_settings(&Params::of("ordering")).unwrap();
 
         for depth in [
             residuals.depth,
             cutoffs.depth,
             reductions.depth,
             effort.depth,
+            ordering.depth,
         ] {
             assert_eq!(depth, bench::DEPTH);
         }
-        for cap in [residuals.cap, cutoffs.cap, reductions.cap, effort.cap] {
+        for cap in [
+            residuals.cap,
+            cutoffs.cap,
+            reductions.cap,
+            effort.cap,
+            ordering.cap,
+        ] {
             assert_eq!(cap, DEFAULT_CAP);
         }
         assert_eq!(residuals.every, residual::DEFAULT_EVERY);
         assert_eq!(cutoffs.every, census::DEFAULT_EVERY);
         assert_eq!(reductions.every, reduction::DEFAULT_EVERY);
         assert_eq!(effort.every, effort::DEFAULT_EVERY);
+        assert_eq!(ordering.every, ties::DEFAULT_EVERY);
 
         for (command, word, default) in [
             (&RESIDUALS, "residuals", 11),
             (&CUTOFFS, "cutoffs", 22),
             (&REDUCTIONS, "reductions", 33),
             (&EFFORT, "effort", 44),
+            (&ORDERING, "ordering", 55),
         ] {
             let read = sampling(&Params::of(word), command, default).expect(word);
             assert_eq!(read.every, default, "{word} took a rate not its own");

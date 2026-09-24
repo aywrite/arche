@@ -31,6 +31,7 @@ use crate::board::{Board, MOVE_LIST_INLINE, MoveList};
 use crate::engine::MAX_PLY;
 use crate::misc::{Color, Piece, Score};
 use crate::play::Play;
+use std::ops::Range;
 
 /// The table's move, ahead of every capture, even one whose swap loses
 /// the king's whole price. The root depends on nothing else reaching
@@ -301,13 +302,17 @@ impl MoveOrdering {
     /// leaves the quiets nothing is known about in generation order. With
     /// one they are put in the order their tags give, and nothing else in
     /// the band moves.
+    ///
+    /// Returns where in `rest` those quiets stand, which the ordering
+    /// instrument reads: a range and not a copy, since the moves do not move
+    /// again before the node answers.
     pub(crate) fn order_quiets(
         &mut self,
         board: &Board,
         rest: &mut [Play],
         ply: usize,
         explore: Option<u64>,
-    ) {
+    ) -> Range<usize> {
         debug_assert!(ply < MAX_PLY as usize, "no killers past the rail");
         // `order` hands back the whole length of a list that spilled, so
         // what reaches here fits the buffer, which the sort below indexes
@@ -345,10 +350,11 @@ impl MoveOrdering {
         }
         sort_on_the_stack(quiets, &mut keys[..scored], plain, front, sorted);
         // the plain moves now stand together straight behind the front
+        let tied = front..front + plain.count_ones() as usize;
         if let Some(draw) = explore {
-            let tied = plain.count_ones() as usize;
-            shuffle_ties(&mut quiets[front..front + tied], draw, keys, sorted);
+            shuffle_ties(&mut quiets[tied.clone()], draw, keys, sorted);
         }
+        tied
     }
 }
 
@@ -611,7 +617,7 @@ fn sort_on_the_stack(
 
 #[cfg(test)]
 mod order {
-    use super::MoveOrdering;
+    use super::{MoveOrdering, Quiet};
     use crate::board::Board;
     use crate::misc::Color;
     use crate::play::Play;
@@ -906,6 +912,49 @@ mod order {
             moved |= group != tied.as_slice();
         }
         assert!(moved, "no draw moved a tie out of generation order");
+    }
+
+    // what `order_quiets` hands back is where the quiets keyed zero stand:
+    // with nothing taught, with one key at the head (a killer) or at the
+    // foot (a marked down move), which the sort does as a rotation, and
+    // with keys either side
+    #[test]
+    fn the_range_returned_is_the_moves_keyed_zero() {
+        let board = Board::from_fen(OPEN).unwrap();
+        let generated = quiets(&board.generate_moves());
+        let (killer, liked, marked) = (generated[3], generated[7], generated[11]);
+        let taught: [&dyn Fn(&mut MoveOrdering); 4] = [
+            &|_| {},
+            &|o| o.cutoff(Color::White, &killer, &[], 0, 1),
+            &|o| o.cutoff(Color::White, &generated[0], &[marked], 1, 4),
+            &|o| {
+                o.cutoff(Color::White, &liked, &[marked], 1, 4);
+                o.cutoff(Color::White, &killer, &[], 0, 1);
+            },
+        ];
+        for (case, teach) in taught.iter().enumerate() {
+            let mut ordering = MoveOrdering::new();
+            teach(&mut ordering);
+            let quiet = Quiet {
+                killers: ordering.killers[0],
+                history: &ordering.history[Color::White as usize],
+            };
+            let zero: Vec<Play> = generated
+                .iter()
+                .filter(|m| quiet.bonus(m) == 0)
+                .copied()
+                .collect();
+            for explore in [None, Some(5)] {
+                let mut moves = board.generate_moves();
+                let front = ordering.order(&board, &mut moves, None, Some(0));
+                let tied = ordering.order_quiets(&board, &mut moves[front..], 0, explore);
+                let mut inside = moves[front..][tied].to_vec();
+                let mut expected = zero.clone();
+                inside.sort_by_key(|m| (m.from, m.to));
+                expected.sort_by_key(|m| (m.from, m.to));
+                assert_eq!(inside, expected, "case {case}, draw {explore:?}");
+            }
+        }
     }
 
     #[test]

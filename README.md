@@ -49,7 +49,7 @@ The engine is something to experiment on rather than an example to copy.
 The engine does not ship with any GUI. It currently implements a subset of the UCI protocol,
 so an open source GUI such as [Arena](http://www.playwitharena.de/) can drive it.
 
-The program starts in UCI mode immediately. Eight arguments do anything else, six of them
+The program starts in UCI mode immediately. Nine arguments do anything else, seven of them
 measurements.
 `bench [depth] [hash <MB>] [taint refuse|trust|skip|rule50] [audit]` searches a fixed set of
 positions and prints what each search counted, for measuring a change to the search or the
@@ -66,6 +66,9 @@ away.
 `effort [depth] [every <n>] [cap <n>] [epd <file>] [off <switch>] [budget <n>]` searches them
 twice, the second time with one search switch off, and joins the two runs by the node, so that
 a row says what the rule removed outright, what it created, and where the effort it freed went.
+`ordering [depth] [every <n>] [cap <n>] [seed <n>] [epd <file>]` searches them with the quiet
+moves the move ordering knows nothing about tried in an order drawn from the seed, and prints
+which of them was tried and which cut, for reading a cutoff rate the order has not censored.
 `terms [epd <file>]` prints what each quiet position's evaluation is made of, one coefficient
 per weight the position touches, which is what an offline fit of those weights reads.
 `--version` and `--help` are answered too.

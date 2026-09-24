@@ -2,7 +2,7 @@
 // Copyright (C) 2022-2026 Andrew Wright
 
 //! Running one of the report commands against the real binary. Cutoffs,
-//! reductions, residuals and effort all print a header naming what the run
+//! reductions, residuals, effort and ordering all print a header naming what the run
 //! was asked for, a row a sample and a summary, so the spawning and the
 //! splitting live here and each file beside this one says what its own rows
 //! mean.

@@ -546,6 +546,10 @@ fn a_setting_that_cannot_be_read_is_refused_on_stderr() {
             &["reductions", "every", "abc"],
             "unrecognised reductions every: abc",
         ),
+        (
+            &["ordering", "seed", "abc"],
+            "unrecognised ordering seed: abc",
+        ),
         // terms has no rate; its suite is the setting that can fail to read
         (
             &["terms", "epd", "no/such/file.epd"],

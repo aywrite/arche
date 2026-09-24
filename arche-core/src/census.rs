@@ -793,6 +793,7 @@ mod tests {
     fn recording_leaves_the_measured_search_where_it_was() {
         recording_leaves_the_search_where_it_was(
             4,
+            SearchConfig::default(),
             |engine| engine.arm(Sampler::<Event>::with_cap(1, DEFAULT_CAP)),
             |engine| {
                 engine

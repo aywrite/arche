@@ -1,14 +1,15 @@
 // SPDX-License-Identifier: GPL-3.0-or-later
 // Copyright (C) 2022-2026 Andrew Wright
 
-//! The reservoir the four recorders share.
+//! The reservoir the five recorders share.
 //!
-//! The residual sampler, the cutoff census, the reduction ledger and the
-//! effort instrument each hang a reservoir off an engine, search a suite
-//! with it armed, and take back what it kept. Each has a module of its own
-//! for its event and its report; what is here is the loop that searches a
-//! suite with a reservoir armed, the reservoir itself, the spread they key
-//! by, the lanes that keep their kept sets apart, and the window a sample
+//! The residual sampler, the cutoff census, the reduction ledger, the
+//! effort instrument and the ordering instrument each hang a reservoir off
+//! an engine, search a suite with it armed, and take back what it kept.
+//! Each has a module of its own for its event and its report; what is here
+//! is the loop that searches a suite with a reservoir armed, the reservoir
+//! itself, the spread they key by, the lanes that keep their kept sets
+//! apart, and the window a sample
 //! reads off the node.
 //!
 //! An engine with no reservoir armed searches the tree it searched before
@@ -61,15 +62,15 @@ impl Window {
 const DEPTH_SPREAD: u64 = 0x9e37_79b9_7f4a_7c15;
 
 /// The lane each recorder keys under. Arbitrary constants, declared here
-/// together because what matters about them is a property of the six, and
-/// an assertion on that property needs the six in one place. Nothing here
+/// together because what matters about them is a property of the seven, and
+/// an assertion on that property needs the seven in one place. Nothing here
 /// is a secret: a lane only keeps the recorders' choices of node apart, so
 /// it is not called a salt, which a scanner reads as a key.
 ///
 /// They differ within their top three bits, so at any rate coarser than one
-/// in eight a node kept under one lane is not one another lane keeps. Six of
-/// the eight patterns are in use, and the two free ones are what a seventh
-/// recorder would take.
+/// in eight a node kept under one lane is not one another lane keeps. Seven
+/// of the eight patterns are in use, and the free one, `000`, is what an
+/// eighth recorder would take.
 pub(crate) const REVERSE_FUTILITY_LANE: u64 = 0x51ed_2701_c3f8_4d95;
 pub(crate) const NULL_MOVE_LANE: u64 = 0xa24b_af09_7d16_e8c3;
 pub(crate) const SHADOW_FUTILITY_LANE: u64 = 0x38c6_54da_0b9e_7f12;
@@ -79,14 +80,17 @@ pub(crate) const LEDGER_LANE: u64 = 0x6d84_3b2f_51c9_07ea;
 /// the key, so a lane a side would sample two unrelated sets. They never run
 /// at once, which is what the invariant above is about.
 pub(crate) const EFFORT_LANE: u64 = 0xf3b7_0c95_a41e_d682;
+/// The ordering instrument's.
+pub(crate) const TIES_LANE: u64 = 0x9c4e_5a13_b8f6_20d7;
 
-pub(crate) const LANES: [u64; 6] = [
+pub(crate) const LANES: [u64; 7] = [
     REVERSE_FUTILITY_LANE,
     NULL_MOVE_LANE,
     SHADOW_FUTILITY_LANE,
     CENSUS_LANE,
     LEDGER_LANE,
     EFFORT_LANE,
+    TIES_LANE,
 ];
 
 /// The invariant, checked by the compiler. It had been a comment in three
@@ -351,13 +355,15 @@ pub(crate) mod fixtures {
 
     /// Every recorder's contract: an engine with one searches the tree an
     /// engine without one searches, asked of the armed engine itself
-    /// position by position.
+    /// position by position, under the configuration the recorder searches
+    /// with.
     ///
     /// `arm` turns the recorder on and `take` takes it back and says how
     /// many events it kept, which is what says the armed runs recorded at
     /// all rather than agreeing with the plain ones by doing nothing.
     pub(crate) fn recording_leaves_the_search_where_it_was(
         depth: u8,
+        config: SearchConfig,
         arm: impl Fn(&mut AlphaBeta),
         take: impl Fn(&mut AlphaBeta) -> usize,
     ) {
@@ -372,11 +378,9 @@ pub(crate) mod fixtures {
         let mut kept = 0;
         for position in &suite() {
             let board = Board::from_fen(&position.fen).unwrap();
-            let mut plain =
-                AlphaBeta::with_config(board.clone(), bench::TABLE_BYTES, SearchConfig::default());
+            let mut plain = AlphaBeta::with_config(board.clone(), bench::TABLE_BYTES, config);
             let plain_nodes = searched_nodes(&mut plain, &position.id);
-            let mut armed =
-                AlphaBeta::with_config(board, bench::TABLE_BYTES, SearchConfig::default());
+            let mut armed = AlphaBeta::with_config(board, bench::TABLE_BYTES, config);
             arm(&mut armed);
             let armed_nodes = searched_nodes(&mut armed, &position.id);
             assert_eq!(armed_nodes, plain_nodes, "{}", position.id);

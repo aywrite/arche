@@ -13,11 +13,13 @@ use crate::play::Play;
 use crate::recorder::{Sampler, Window};
 use crate::reduction;
 use crate::residual::{Sample, Shortcut};
+use crate::ties;
 use crate::transposition::{
     DEFAULT_TABLE_BYTES, GhiCounters, Probe, SignatureCounters, TranspositionTable,
 };
 use crate::value::{Taint, Value, below_the_mate_window, is_mate};
 use std::fmt;
+use std::ops::Range;
 use std::sync::Arc;
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::time;
@@ -908,6 +910,8 @@ pub struct AlphaBeta {
     ledger: Option<Sampler<reduction::Event>>,
     /// The effort instrument's reservoir, or none, on the same terms.
     effort: Option<Sampler<effort::Event>>,
+    /// The ordering instrument's reservoir, or none, on the same terms.
+    ties: Option<Sampler<ties::Event>>,
     /// Every event the effort instrument has been offered, by depth. Beside
     /// its reservoir rather than inside it because the reservoir holds a
     /// sample and this counts the population. Bumped only behind the
@@ -917,7 +921,8 @@ pub struct AlphaBeta {
 }
 
 /// What a search can be armed to record: the residual's sample, the cutoff
-/// census's event, the reduction ledger's or the effort instrument's.
+/// census's event, the reduction ledger's, the effort instrument's or the
+/// ordering instrument's.
 /// Implemented here rather than beside the event types because what each
 /// names is a field of the engine.
 pub(crate) trait Recorded: Sized {
@@ -961,6 +966,14 @@ impl Recorded for effort::Event {
     }
 }
 
+impl Recorded for ties::Event {
+    const WHAT: &'static str = "ordering";
+
+    fn slot(engine: &mut AlphaBeta) -> &mut Option<Sampler<Self>> {
+        &mut engine.ties
+    }
+}
+
 impl AlphaBeta {
     pub fn with_table_bytes(board: Board, bytes: usize) -> Self {
         Self::with_config(board, bytes, SearchConfig::default())
@@ -991,13 +1004,14 @@ impl AlphaBeta {
             census: None,
             ledger: None,
             effort: None,
+            ties: None,
             effort_depths: effort::Depths::default(),
         }
     }
 
     /// Arm a reservoir: have the search record what it does at the nodes
     /// the reservoir's key picks. Off until this is called; the callers are
-    /// the four recorders and the tests, and nothing the engine plays or
+    /// the five recorders and the tests, and nothing the engine plays or
     /// benches with arms one.
     pub(crate) fn arm<T: Recorded>(&mut self, sampler: Sampler<T>) {
         *T::slot(self) = Some(sampler);
@@ -1269,6 +1283,86 @@ impl AlphaBeta {
             depth,
             cut,
             cost,
+        });
+    }
+
+    /// One node of the move loop answering with a tie in its quiet band,
+    /// offered to the ordering instrument's reservoir. `tied` is where the
+    /// group stands in `moves`, and `cut` the place of the move that cut the
+    /// node off, if one did.
+    ///
+    /// For a kept event alone, the list is generated again to say where each
+    /// member stood in generation order, and a member the node reached and
+    /// did not search is made to say whether it was legal. The node's own
+    /// list has been sorted, and the loop does not say why it passed a move.
+    // cold and out of line behind a bare is_some at each call site, for
+    // `sample`'s measured reason
+    #[cold]
+    #[inline(never)]
+    #[allow(clippy::too_many_arguments)]
+    fn ties_event(
+        &mut self,
+        depth: u8,
+        alpha: Score,
+        beta: Score,
+        in_check: bool,
+        moves: &[Play],
+        tied: Range<usize>,
+        made: &Searched,
+        searched: usize,
+        cut: Option<usize>,
+    ) {
+        let AlphaBeta { board, ties, .. } = self;
+        let Some(ties) = ties.as_mut() else {
+            return;
+        };
+        let key = ties::sample_key(board.key, depth);
+        ties.event(key, || {
+            let generated = if in_check {
+                board.evasions()
+            } else {
+                board.generate_moves()
+            };
+            let group = &moves[tied.clone()];
+            let order: Vec<usize> = group
+                .iter()
+                .map(|m| {
+                    generated
+                        .iter()
+                        .position(|g| g == m)
+                        .expect("every member of the group was generated here")
+                })
+                .collect();
+            let members = group
+                .iter()
+                .zip(tied)
+                .zip(&order)
+                .map(|((m, at), generated_at)| {
+                    let outcome = match cut {
+                        Some(cut) if at == cut => ties::Outcome::Cut,
+                        Some(cut) if at > cut => ties::Outcome::Unreached,
+                        _ if made.holds(at) => ties::Outcome::No,
+                        _ if board.make_move(m) => {
+                            board.undo_move();
+                            ties::Outcome::Skipped
+                        }
+                        _ => ties::Outcome::Illegal,
+                    };
+                    ties::Member {
+                        play: *m,
+                        place: order.iter().filter(|o| *o < generated_at).count(),
+                        outcome,
+                    }
+                })
+                .collect();
+            ties::Event {
+                fen: board.to_fen(),
+                depth,
+                window: Window::of(alpha, beta),
+                generated: moves.len(),
+                searched,
+                members,
+            }
         });
     }
 
@@ -2094,6 +2188,9 @@ impl AlphaBeta {
         let mut made = Searched::default();
         // whether the second stage ran here, read by the census
         let mut quiets_scored = false;
+        // where the quiets the memories key zero stand once it has, read by
+        // the ordering instrument
+        let mut tied: Range<usize> = 0..0;
         // the two dear features, computed by the first move that needs
         // them and read back for the rest; locals rather than fields of
         // the node facts below, which are built afresh for each move. The
@@ -2129,8 +2226,10 @@ impl AlphaBeta {
                             beta,
                         )
                     });
-                    self.ordering
-                        .order_quiets(&self.board, &mut moves[front..], ply, explore);
+                    let group =
+                        self.ordering
+                            .order_quiets(&self.board, &mut moves[front..], ply, explore);
+                    tied = front + group.start..front + group.end;
                     quiets_scored = true;
                 }
             }
@@ -2275,6 +2374,19 @@ impl AlphaBeta {
                     if self.effort.is_some() {
                         self.effort_event(depth, true, entered_at);
                     }
+                    if self.ties.is_some() && !tied.is_empty() {
+                        self.ties_event(
+                            depth,
+                            old_alpha,
+                            beta,
+                            in_check,
+                            &moves,
+                            tied.clone(),
+                            &made,
+                            searched,
+                            Some(i),
+                        );
+                    }
                     // the moves searched before the one that answered,
                     // captures and all, which the memories pass over
                     let tried = moves[..i]
@@ -2312,6 +2424,11 @@ impl AlphaBeta {
         // both
         if self.effort.is_some() {
             self.effort_event(depth, false, entered_at);
+        }
+        if self.ties.is_some() && !tied.is_empty() {
+            self.ties_event(
+                depth, old_alpha, beta, in_check, &moves, tied, &made, searched, None,
+            );
         }
 
         if !found_legal_move {

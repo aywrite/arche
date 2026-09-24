@@ -1,18 +1,18 @@
 # Instruments
 
-Six measurements ask what the engine gave up rather than how large a tree it
-walked. Five are of the search: four are arguments of their own, `residuals`,
-`cutoffs`, `reductions` and `effort`, and the fifth is the bench's `audit`
-word. The sixth, `terms`, is of the evaluation. Each has a section here saying
-what it answers and how to read what it prints, and the last section is the
-offline harness under `scripts/` that fits and scores the weights `terms`
-states.
+Seven measurements ask what the engine gave up rather than how large a tree
+it walked. Six are of the search: five are arguments of their own,
+`residuals`, `cutoffs`, `reductions`, `effort` and `ordering`, and the sixth
+is the bench's `audit` word. The seventh, `terms`, is of the evaluation.
+Each has a section here saying what it answers and how to read what it
+prints, and the last section is the offline harness under `scripts/` that
+fits and scores the weights `terms` states.
 
 [DEVELOPMENT.md](DEVELOPMENT.md) has the bench itself, along with the build,
 the tests and everything else a change needs before it is committed. Nothing
 in this file is needed for that.
 
-Three of the five answer by asking the reference, `SearchConfig::reference()`,
+Three of the six answer by asking the reference, `SearchConfig::reference()`,
 which is alpha-beta with every shortcut off. DEVELOPMENT.md's bench section
 says where the default parts company with it.
 
@@ -523,9 +523,77 @@ what is
 asserted is armed equals disarmed under whatever configuration it is
 handed.
 
+## Which of the tied quiet moves is tried first
+
+The history table is built from cutoffs counted against tries, and the
+tries are decided by the order, which is decided by the table. A move
+ordered after the one that cut is never tried and never counted. Among the
+quiet moves the memories key zero (no killer, a history entry of exactly
+zero) the order is generation order, a fixed function of the piece and the
+square, so a count over those moves measures the generator as well as the
+moves. `arche ordering` records that group with its order drawn instead:
+
+```
+target/release/arche ordering [depth] [every <n>] [cap <n>] [seed <n>] [epd <file>]
+```
+
+`seed` turns `SearchConfig::ordering_exploration` on and sets
+`exploration_seed`, and the search is otherwise the default. Each member of
+the group then takes a tag hashed from the seed, the position key, the
+depth, the ply, the window the node was entered with and the move, and the
+group is tried in tag order, so each member of a group of `k` is first at
+one node in `k`. One seed searches one tree every time. The window is in
+the hash because a parent searches some nodes twice, a scout and then a
+wider search, and whether it does depends on what the first visit
+returned; a second visit that kept the first one's order would try the
+move that did not settle it first more often than one time in `k`. A list
+too long for the stack buffer is sorted whole in one stage, has no quiet
+band of its own, and is neither drawn nor recorded. With no seed the group is recorded in generation order,
+which is the control for the check below.
+
+An event is a node whose quiet band was scored and had a tie in it, taken
+where the node answers, and it prints a row a member of the group:
+`depth window generated searched k rank place outcome move fen`, with the
+fen last. `rank` is the member's place in the order the node would try the
+group, so rank 0 is the first draw, and `place` is its place in generation
+order. `outcome` is `cut` for the member that cut the node off, `no` for one
+searched that did not, `skip` for one the node reached and a pruning rule
+passed over, `illegal` for one the node reached that was not a legal move,
+and `-` for one the node answered before reaching. A node a killer or the
+front cut off never reached the group, prints every member at `-`, and is
+no evidence about any of them. The rows of a node are consecutive and in
+rank order.
+
+The summary line a depth gives the nodes, those that reached the group, the
+mean `k` over those, the first draws searched and how many of them cut, and
+`bins`: the first draws by generation place split in four, each beside the
+count a uniform draw puts there, worked out node by node from that node's
+`k`. With a seed the two columns agree to within the counts; with none,
+every first draw is in the first bin. A seeded run whose bins do not agree
+has a broken draw and is not a reading.
+
+The first draw is what makes this a measurement. Whether the node reaches
+the group is decided by the front and the killers, which the draw does not
+touch, so a first draw at a node that reached the group is a uniform pick
+from it, and its outcome is a cutoff rate for that move with nothing
+censored by the order. A first draw a pruning rule skipped is not a try.
+The shallow rules skip a quiet move by what it is (they spare a check and a
+promotion) and by what the node has searched so far, which at the first
+draw is the same whichever member was drawn, so dropping the skipped draws
+leaves a rate conditioned on the move being one the node would search. That is the population an ordering decides over, but it is not
+every first draw: the summary's `skipped` says how many were dropped, and
+at the shallowest depths it is most of them.
+
+Recording changes nothing, under the default and under the exploring
+configuration: `recording_leaves_the_search_where_it_was_under_either_configuration`
+in `arche-core/src/ties.rs` asserts both. The exploration itself moves the
+tree, which is the point of it, and is off in both named configurations, so
+no pinned count moves. The tree recorded with it on is not the one the
+engine plays.
+
 ## What a position's evaluation is made of
 
-The four instruments above measure the search. This one measures the
+The five instruments above measure the search. This one measures the
 evaluation, and it is the engine's half of the tuner:
 
 ```
