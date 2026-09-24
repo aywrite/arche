@@ -182,25 +182,36 @@ fn blocker_configurations(mask: u64) -> Vec<u64> {
 const STRAIGHT_ATTACKS: usize = 102_400;
 const DIAGONAL_ATTACKS: usize = 5_248;
 
+/// The arrays those tables live in, each the next power of two up. A probe
+/// masks its index to the array's length, which is a bound llvm can prove, so
+/// the probe carries no bounds check. The mask never changes an index, since
+/// every index a probe computes is one `new` wrote, below the table's width.
+const STRAIGHT_LEN: usize = 131_072;
+const DIAGONAL_LEN: usize = 8_192;
+
 /// One slider kind's lookup tables. Every square's attack sets sit end to end
 /// in a single array, with `offsets` saying where each square's block starts,
 /// so a probe is one indirection rather than two.
-struct SliderTables<const ATTACKS: usize> {
+struct SliderTables<const ATTACKS: usize, const LEN: usize> {
     blocker_masks: [u64; 64],
     magics: [u64; 64],
     /// `64 - bits` for each square, so a probe shifts without subtracting
     /// first.
     shifts: [u8; 64],
     offsets: [u32; 64],
-    attacks: [u64; ATTACKS],
+    attacks: [u64; LEN],
 }
 
-impl<const ATTACKS: usize> SliderTables<ATTACKS> {
+impl<const ATTACKS: usize, const LEN: usize> SliderTables<ATTACKS, LEN> {
     const fn new(directions: [isize; 4], magics: [u64; 64]) -> Self {
+        assert!(
+            LEN.is_power_of_two() && LEN >= ATTACKS,
+            "the array must be a power of two at least the table's width"
+        );
         let mut blocker_masks = [0u64; 64];
         let mut shifts = [0u8; 64];
         let mut offsets = [0u32; 64];
-        let mut attacks = [0u64; ATTACKS];
+        let mut attacks = [0u64; LEN];
         let mut filled = 0usize;
         let mailbox = BASE_CONVERSIONS;
 
@@ -247,13 +258,13 @@ impl<const ATTACKS: usize> SliderTables<ATTACKS> {
         let i = square as usize;
         let blockers = occupied & self.blocker_masks[i];
         let index = blockers.wrapping_mul(self.magics[i]) >> self.shifts[i];
-        self.attacks[self.offsets[i] as usize + index as usize]
+        self.attacks[(self.offsets[i] as usize + index as usize) & (LEN - 1)]
     }
 }
 
 pub struct Magic {
-    straight: SliderTables<STRAIGHT_ATTACKS>,
-    diagonal: SliderTables<DIAGONAL_ATTACKS>,
+    straight: SliderTables<STRAIGHT_ATTACKS, STRAIGHT_LEN>,
+    diagonal: SliderTables<DIAGONAL_ATTACKS, DIAGONAL_LEN>,
 }
 
 impl Magic {
