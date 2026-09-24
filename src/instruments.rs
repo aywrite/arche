@@ -17,6 +17,7 @@
 
 use crate::command::{Command, Keyword};
 use crate::params::{Param, Params};
+use arche_core::Ablation;
 use arche_core::Board;
 use arche_core::SearchConfig;
 use arche_core::bench;
@@ -341,8 +342,7 @@ pub struct EffortSettings {
     pub depth: u8,
     pub every: u32,
     pub cap: usize,
-    /// The switch named, already checked against the list.
-    pub off: Option<String>,
+    pub off: Option<Ablation>,
     pub budget: Option<u64>,
     /// The file the suite was read from, or none for the bench's own.
     pub epd: Option<String>,
@@ -351,17 +351,25 @@ pub struct EffortSettings {
     pub positions: Vec<bench::Position>,
 }
 
+/// What is said when `off` names something that is no switch: the word as it
+/// was typed, and then the names the table carries. In the refusal rather
+/// than in the usage line, which keeps `<switch>`: a fourteen name list there
+/// is long and the join awkward for what it buys, and the reader who needs
+/// the names is the one who got the word wrong.
+fn no_such_switch(word: &str) -> String {
+    let switches = SearchConfig::SWITCHES.map(|(name, _)| name).join(", ");
+    format!("off: {word} (a switch is one of {switches})")
+}
+
 pub fn effort_settings(params: &Params) -> Result<EffortSettings, String> {
     let Sampling { depth, every, cap } = sampling(params, &EFFORT, effort::DEFAULT_EVERY)?;
     // refused against the field names, the way `tune.py --hold TERM` is
-    // refused against the layout the extraction prints. A flag a switch
-    // would cost an edit at every arm, and a misspelling read as the null
-    // would spend the minutes saying nothing
-    let off = match params.value("off") {
-        None => None,
-        Some(word) if effort::without(word).is_some() => Some(word.to_string()),
-        Some(word) => return Err(format!("off: {word}")),
-    };
+    // refused against the layout the extraction prints: a misspelling read as
+    // the null would spend the minutes saying nothing
+    let off = params
+        .value("off")
+        .map(|word| SearchConfig::without(word).ok_or_else(|| no_such_switch(word)))
+        .transpose()?;
     let budget = match params.parse::<u64>("budget") {
         Param::Absent => None,
         Param::Read(nodes) => Some(nodes),
@@ -387,7 +395,7 @@ impl EffortSettings {
             self.depth,
             self.every,
             self.cap,
-            self.off.as_deref(),
+            self.off,
             self.budget,
         )
     }
@@ -674,7 +682,7 @@ mod tests {
                 settings.depth,
                 settings.every,
                 settings.cap,
-                settings.off,
+                settings.off.map(|ablation| ablation.name()),
                 settings.budget,
             )
         };
@@ -685,25 +693,17 @@ mod tests {
         // a keyword where the depth would be means the depth was left out
         assert_eq!(
             read("effort off null_move"),
-            (bench::DEPTH, 1000, CAP, Some("null_move".to_string()), None)
+            (bench::DEPTH, 1000, CAP, Some("null_move"), None)
         );
         assert_eq!(
             read("effort 4 off quiet_futility budget 4000000 cap 500"),
-            (
-                4,
-                1000,
-                500,
-                Some("quiet_futility".to_string()),
-                Some(4_000_000)
-            )
+            (4, 1000, 500, Some("quiet_futility"), Some(4_000_000))
         );
         // every field the run can turn off is one the argument takes
-        for switch in effort::SWITCHES {
+        for (switch, _) in SearchConfig::SWITCHES {
             let line = format!("effort 2 off {switch}");
-            assert_eq!(
-                effort_settings(&Params::of(&line)).expect(&line).off,
-                Some(switch.to_string())
-            );
+            let settings = effort_settings(&Params::of(&line)).expect(&line);
+            assert_eq!(settings.off.map(|ablation| ablation.name()), Some(switch));
         }
     }
 
@@ -728,16 +728,20 @@ mod tests {
     #[test]
     fn an_unreadable_effort_setting_is_named_rather_than_run() {
         let empty = Unpositioned::written("effort");
+        let switches = SearchConfig::SWITCHES.map(|(name, _)| name).join(", ");
         for (line, what) in [
             ("effort abc".to_string(), "depth: abc".to_string()),
             ("effort 4 every lots".to_string(), "every: lots".to_string()),
             ("effort 4 cap lots".to_string(), "cap: lots".to_string()),
             (
                 "effort 4 off quiet_futilty".to_string(),
-                "off: quiet_futilty".to_string(),
+                format!("off: quiet_futilty (a switch is one of {switches})"),
             ),
             // a policy is not a switch, and the sampler that takes it says so
-            ("effort 4 off taint".to_string(), "off: taint".to_string()),
+            (
+                "effort 4 off taint".to_string(),
+                format!("off: taint (a switch is one of {switches})"),
+            ),
             (
                 "effort 4 budget lots".to_string(),
                 "budget: lots".to_string(),

@@ -161,7 +161,13 @@ fn the_null_run_parts_the_two_sides_nowhere() {
 }
 
 /// A switch the engine does not have is named rather than run as the null,
-/// which would spend the minutes saying nothing.
+/// which would spend the minutes saying nothing. The refusal says what a
+/// switch may be, since the usage line prints `<switch>` and the reader who
+/// misspelled one is the reader who needs the names.
+///
+/// The line is read as a user reads it: the wording, the echoed misspelling
+/// and the separator are literals here, and the count is fourteen. Which
+/// names they are is the engine crate's own test, beside the table.
 #[test]
 fn a_switch_the_engine_does_not_have_is_refused() {
     let output = std::process::Command::new(env!("CARGO_BIN_EXE_arche"))
@@ -169,9 +175,12 @@ fn a_switch_the_engine_does_not_have_is_refused() {
         .output()
         .expect("the binary cargo built should start");
     assert_eq!(output.status.code(), Some(2));
-    assert_eq!(
-        String::from_utf8_lossy(&output.stderr).trim(),
-        "unrecognised effort off: quiet_futilty"
-    );
+    let printed = String::from_utf8_lossy(&output.stderr);
+    let printed = printed.trim();
+    let named = printed
+        .strip_prefix("unrecognised effort off: quiet_futilty (a switch is one of ")
+        .and_then(|rest| rest.strip_suffix(')'))
+        .unwrap_or_else(|| panic!("stderr: {printed}"));
+    assert_eq!(named.split(", ").count(), 14, "stderr: {printed}");
     assert!(output.stdout.is_empty());
 }

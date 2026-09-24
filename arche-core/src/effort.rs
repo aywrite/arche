@@ -34,7 +34,9 @@
 
 use crate::bench::{self, Position};
 use crate::board::Board;
-use crate::engine::{AlphaBeta, Engine, ScoreBound, SearchConfig, SearchOutcome, SearchParameters};
+use crate::engine::{
+    Ablation, AlphaBeta, Engine, ScoreBound, SearchConfig, SearchOutcome, SearchParameters,
+};
 use crate::limits::Limits;
 use crate::misc::Score;
 use crate::play::Play;
@@ -55,85 +57,6 @@ pub const DEFAULT_EVERY: u32 = 1_000;
 /// which the two sides never are.
 pub fn sample_key(position_key: u64, depth: u8) -> u64 {
     recorder::sample_key(position_key, recorder::EFFORT_LANE, depth)
-}
-
-/// The `SearchConfig` switches a run may name. Refused against this list
-/// rather than given a flag each, which would cost an edit at every arm.
-///
-/// `taint` is not among them: it is a policy with four values rather than a
-/// switch, and `residuals` already takes it.
-pub const SWITCHES: [&str; 14] = [
-    "reverse_futility",
-    "null_move",
-    "adaptive_null_move",
-    "delta_margin",
-    "see_pruning",
-    "late_move_reductions",
-    "deep_reductions",
-    "late_move_pruning",
-    "quiet_futility",
-    "late_move_count",
-    "reduction_table",
-    "deep_index_rule",
-    "move_memory",
-    "aspiration",
-];
-
-/// The default with one switch off, which is the baseline side of a run, or
-/// none when the name is not one of `SWITCHES`. The two are kept in step by
-/// a test rather than by hand.
-pub fn without(switch: &str) -> Option<SearchConfig> {
-    let mut config = SearchConfig::default();
-    match switch {
-        "reverse_futility" => config.reverse_futility = false,
-        "null_move" => config.null_move = false,
-        "adaptive_null_move" => config.adaptive_null_move = false,
-        "delta_margin" => config.delta_margin = false,
-        "see_pruning" => config.see_pruning = false,
-        "late_move_reductions" => config.late_move_reductions = false,
-        "deep_reductions" => config.deep_reductions = false,
-        "late_move_pruning" => config.late_move_pruning = false,
-        "quiet_futility" => config.quiet_futility = false,
-        "late_move_count" => config.late_move_count = false,
-        "reduction_table" => config.reduction_table = false,
-        "deep_index_rule" => config.deep_index_rule = false,
-        "move_memory" => config.move_memory = false,
-        "aspiration" => config.aspiration = false,
-        _ => return None,
-    }
-    Some(config)
-}
-
-/// A compile error when `SearchConfig` gains a switch that `SWITCHES` and
-/// `without` do not name.
-///
-/// The list and the match are held to each other by a test, which cannot
-/// see a field in neither: `late_move_count` shipped and was unnameable
-/// until this was written. Nothing here has a body to run, since naming
-/// every field without a rest pattern is the whole check.
-///
-/// A new field fails to match. Rustc offers to silence that with a `_`,
-/// which defeats the check: add the field to `SWITCHES` and to `without`
-/// first, and name it here last.
-#[cfg(test)]
-const fn _every_switch_is_named(config: &SearchConfig) {
-    let SearchConfig {
-        taint: _,
-        reverse_futility: _,
-        null_move: _,
-        adaptive_null_move: _,
-        delta_margin: _,
-        see_pruning: _,
-        late_move_reductions: _,
-        deep_reductions: _,
-        late_move_pruning: _,
-        quiet_futility: _,
-        late_move_count: _,
-        reduction_table: _,
-        deep_index_rule: _,
-        move_memory: _,
-        aspiration: _,
-    } = config;
 }
 
 /// Every event offered, by depth, on one side.
@@ -564,13 +487,11 @@ fn join(on: Vec<Folded>, off: Vec<Folded>, bound: Option<u64>) -> (Vec<Row>, usi
 
 /// Search the suite twice and join the two runs by the node.
 ///
-/// The candidate side is the default. The baseline is the default with
-/// `off` set false, or the default again when nothing is named, which is
-/// the null run: every joined key must then read `both` with a delta of
-/// zero, and an instrument that fails that is measuring its own buffer.
-/// `off` has been refused against `SWITCHES` by the caller, since a run
-/// takes minutes and a misspelling read as the null would spend them saying
-/// nothing.
+/// The candidate side is the default. The baseline is the ablation's
+/// configuration, which is the default with one switch off, or the default
+/// again when nothing is named, which is the null run: every joined key must
+/// then read `both` with a delta of zero, and an instrument that fails that
+/// is measuring its own buffer.
 #[allow(clippy::too_many_arguments)]
 pub fn run(
     positions: &[Position],
@@ -578,19 +499,14 @@ pub fn run(
     depth: u8,
     every: u32,
     cap: usize,
-    off: Option<&str>,
+    off: Option<Ablation>,
     budget: Option<u64>,
 ) -> Report {
     let depth = depth.max(1);
     // the rate the reservoirs will really keep to, so the header states the
     // run that happened
     let every = every.max(1);
-    let baseline = match off {
-        None => SearchConfig::default(),
-        Some(switch) => {
-            without(switch).unwrap_or_else(|| panic!("{switch} is not a search switch"))
-        }
-    };
+    let baseline = off.map_or_else(SearchConfig::default, Ablation::config);
     let on = side(
         positions,
         depth,
@@ -611,7 +527,7 @@ pub fn run(
         every,
         cap,
         suite: suite.map(str::to_string),
-        off: off.map(str::to_string),
+        off: off.map(|ablation| ablation.name().to_string()),
         budget,
         positions: positions
             .iter()
@@ -861,25 +777,6 @@ mod tests {
         }
     }
 
-    /// Every name the command refuses against turns a switch off, and no
-    /// two names turn the same one off. Written as a loop so the list and
-    /// the match cannot drift: a name added to one and not the other fails
-    /// here.
-    #[test]
-    fn every_switch_named_turns_one_of_its_own_off() {
-        let default = SearchConfig::default();
-        let mut seen: Vec<SearchConfig> = Vec::new();
-        for switch in SWITCHES {
-            let config = without(switch).unwrap_or_else(|| panic!("{switch} is not taken"));
-            assert_ne!(config, default, "{switch} turned nothing off");
-            assert!(!seen.contains(&config), "{switch} repeats another switch");
-            seen.push(config);
-        }
-        assert_eq!(without("taint"), None);
-        assert_eq!(without("quiet_futilty"), None);
-        assert_eq!(without(""), None);
-    }
-
     /// The four fields the key covers, and the two after it that it does
     /// not.
     #[test]
@@ -894,6 +791,12 @@ mod tests {
         );
         // a fen with fewer fields than four is nobody's, and reads whole
         assert_eq!(signature("8/8/8/8"), "8/8/8/8");
+    }
+
+    /// The baseline side of a real arm, as a run takes it. A name the table
+    /// does not carry fails here rather than running as the null.
+    fn ablation(switch: &str) -> Option<Ablation> {
+        Some(SearchConfig::without(switch).expect("a switch of the table"))
     }
 
     fn event(key: u64, depth: u8, cut: bool, cost: u64, fen: &str) -> Event {
@@ -1228,7 +1131,7 @@ mod tests {
             5,
             50,
             DEFAULT_CAP,
-            Some("quiet_futility"),
+            ablation("quiet_futility"),
             None,
         );
         let total = |depths: &Depths| -> u64 { (0..=u8::MAX).map(|d| depths.at(d)).sum() };
@@ -1269,7 +1172,7 @@ mod tests {
             4,
             1,
             DEFAULT_CAP,
-            Some("reverse_futility"),
+            ablation("reverse_futility"),
             None,
         );
         assert!(
@@ -1312,7 +1215,7 @@ mod tests {
             4,
             1,
             DEFAULT_CAP,
-            Some("quiet_futility"),
+            ablation("quiet_futility"),
             None,
         );
         let above: Vec<&Row> = report
@@ -1368,7 +1271,7 @@ mod tests {
             9,
             1000,
             DEFAULT_CAP,
-            Some("quiet_futility"),
+            ablation("quiet_futility"),
             Some(BUDGET),
         );
         for p in &report.positions {
@@ -1411,7 +1314,9 @@ mod tests {
     /// whatever configuration it is handed.
     #[test]
     fn recording_changes_nothing_under_the_baseline_configuration_either() {
-        let config = without("quiet_futility").expect("a switch of the list");
+        let config = SearchConfig::without("quiet_futility")
+            .expect("a switch of the table")
+            .config();
         let mut kept = 0;
         for position in suite() {
             let board = Board::from_fen(&position.fen).unwrap();

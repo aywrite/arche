@@ -443,7 +443,78 @@ impl TaintPolicy {
     }
 }
 
+/// What a row of `SearchConfig::SWITCHES` does: turn that row's switch off,
+/// leaving the rest of the configuration alone. A setter rather than a
+/// builder, so a run that turns two switches off is a fold over rows.
+pub type TurnOff = fn(&mut SearchConfig);
+
+/// A switch that was named against `SearchConfig::SWITCHES`, and the
+/// configuration that turns it off. Both fields are private and
+/// `SearchConfig::without` is the only thing that fills them, so a run handed
+/// one of these was handed a name the table carries rather than a word to
+/// look up and check for itself.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct Ablation {
+    name: &'static str,
+    config: SearchConfig,
+}
+
+impl Ablation {
+    /// The table's spelling of the switch, which a report's header prints.
+    pub fn name(self) -> &'static str {
+        self.name
+    }
+
+    /// The default with that switch off, the side a run reads the default
+    /// against.
+    pub fn config(self) -> SearchConfig {
+        self.config
+    }
+}
+
 impl SearchConfig {
+    /// The switches a run may name, each beside the function that turns it
+    /// off. A name is refused against this table rather than given a command
+    /// line flag of its own, and a rule that becomes ablatable is one row
+    /// here plus one name in the guard below, both in this file. The order is
+    /// the field order.
+    ///
+    /// `taint` is not among them: it is a policy with four values rather
+    /// than a switch, and `residuals` already takes it.
+    pub const SWITCHES: [(&'static str, TurnOff); 14] = [
+        ("reverse_futility", |config| config.reverse_futility = false),
+        ("null_move", |config| config.null_move = false),
+        ("adaptive_null_move", |config| {
+            config.adaptive_null_move = false
+        }),
+        ("delta_margin", |config| config.delta_margin = false),
+        ("see_pruning", |config| config.see_pruning = false),
+        ("late_move_reductions", |config| {
+            config.late_move_reductions = false
+        }),
+        ("deep_reductions", |config| config.deep_reductions = false),
+        ("late_move_pruning", |config| {
+            config.late_move_pruning = false
+        }),
+        ("quiet_futility", |config| config.quiet_futility = false),
+        ("late_move_count", |config| config.late_move_count = false),
+        ("reduction_table", |config| config.reduction_table = false),
+        ("deep_index_rule", |config| config.deep_index_rule = false),
+        ("move_memory", |config| config.move_memory = false),
+        ("aspiration", |config| config.aspiration = false),
+    ];
+
+    /// The default with one switch off, which is the baseline side of an
+    /// effort run, or none for a name the table does not carry.
+    pub fn without(name: &str) -> Option<Ablation> {
+        let (name, turn_off) = Self::SWITCHES
+            .into_iter()
+            .find(|(switch, _)| *switch == name)?;
+        let mut config = Self::default();
+        turn_off(&mut config);
+        Some(Ablation { name, config })
+    }
+
     /// The search with every shortcut off: what the exactness tests hold
     /// the search to, and the side a shortcut is measured against.
     pub const fn reference() -> Self {
@@ -529,6 +600,103 @@ impl Default for SearchConfig {
             deep_index_rule: true,
             move_memory: true,
             aspiration: true,
+        }
+    }
+}
+
+/// A compile error when `SearchConfig` gains a field this does not name.
+///
+/// The table is walked by a test, which says nothing about a field the table
+/// never named: `late_move_count` shipped and was unnameable until this was
+/// written. Nothing here has a body to run, since naming every field
+/// without a rest pattern is the whole check.
+///
+/// A new field fails to match. Rustc offers to silence that with a `_`,
+/// which defeats the check: decide whether the field is a switch, give it a
+/// row in `SWITCHES` if it is, and name it here last either way.
+#[cfg(test)]
+const fn _every_switch_is_named(config: &SearchConfig) {
+    let SearchConfig {
+        taint: _,
+        reverse_futility: _,
+        null_move: _,
+        adaptive_null_move: _,
+        delta_margin: _,
+        see_pruning: _,
+        late_move_reductions: _,
+        deep_reductions: _,
+        late_move_pruning: _,
+        quiet_futility: _,
+        late_move_count: _,
+        reduction_table: _,
+        deep_index_rule: _,
+        move_memory: _,
+        aspiration: _,
+    } = config;
+}
+
+#[cfg(test)]
+mod switches {
+    use super::*;
+    use pretty_assertions::assert_eq;
+
+    /// Every name the table carries turns a switch off, and no two names
+    /// turn the same one off. So a row whose setter touches the field
+    /// another row names reads here as two names with one configuration.
+    #[test]
+    fn every_switch_named_turns_one_of_its_own_off() {
+        let default = SearchConfig::default();
+        let mut seen: Vec<SearchConfig> = Vec::new();
+        for (switch, _) in SearchConfig::SWITCHES {
+            let ablation =
+                SearchConfig::without(switch).unwrap_or_else(|| panic!("{switch} is not taken"));
+            assert_eq!(ablation.name(), switch);
+            let config = ablation.config();
+            assert_ne!(config, default, "{switch} turned nothing off");
+            assert!(!seen.contains(&config), "{switch} repeats another switch");
+            seen.push(config);
+        }
+        assert_eq!(SearchConfig::without("taint"), None);
+        assert_eq!(SearchConfig::without("quiet_futilty"), None);
+        assert_eq!(SearchConfig::without(""), None);
+    }
+
+    /// Every setter of the table folded over the default is the reference, so
+    /// the two literals part company in the fourteen switches and in the
+    /// taint policy, which no row names and which this test overwrites.
+    #[test]
+    fn turning_every_switch_off_gives_the_reference() {
+        let mut folded = SearchConfig::default();
+        for (_, turn_off) in SearchConfig::SWITCHES {
+            turn_off(&mut folded);
+        }
+        folded.taint = SearchConfig::reference().taint;
+        assert_eq!(folded, SearchConfig::reference());
+    }
+
+    /// Each row's name is the field its setter turns off, read out of the
+    /// derived `Debug` rather than out of the table. Every other test takes
+    /// the name from the table, so a row spelling `reverse_futilty` and
+    /// setting `reverse_futility` would pass all of them; this is what says a
+    /// name is a field's.
+    #[test]
+    fn every_switch_names_the_field_its_setter_turns_off() {
+        for (switch, turn_off) in SearchConfig::SWITCHES {
+            let mut config = SearchConfig::default();
+            turn_off(&mut config);
+            let printed = format!("{config:?}");
+            // the leading space, so `null_move` does not read as the tail of
+            // `adaptive_null_move`
+            assert!(
+                printed.contains(&format!(" {switch}: false")),
+                "{switch} is not the field it turns off: {printed}"
+            );
+            // the default has every switch on, so one setter leaves one off
+            assert_eq!(
+                printed.matches(": false").count(),
+                1,
+                "{switch} turned more than its own field off: {printed}"
+            );
         }
     }
 }
