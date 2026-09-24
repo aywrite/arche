@@ -524,7 +524,7 @@ impl Default for SearchConfig {
             deep_reductions: true,
             late_move_pruning: true,
             quiet_futility: true,
-            late_move_count: true,
+            late_move_count: false,
             reduction_table: true,
             deep_index_rule: true,
             move_memory: true,
