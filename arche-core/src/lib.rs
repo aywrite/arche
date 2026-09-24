@@ -27,8 +27,8 @@ mod zobrist;
 
 pub use board::Board;
 pub use engine::{
-    AlphaBeta, Engine, MAX_PLY, PvLine, ScoreBound, SearchConfig, SearchOutcome, SearchParameters,
-    SearchResult,
+    Ablation, AlphaBeta, Engine, MAX_PLY, PvLine, ScoreBound, SearchConfig, SearchOutcome,
+    SearchParameters, SearchResult,
 };
 pub use limits::{Clock, Limits};
 pub use misc::{Color, Score};

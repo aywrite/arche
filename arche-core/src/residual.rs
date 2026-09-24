@@ -585,6 +585,16 @@ mod tests {
         assert_eq!(Shortcut::ShadowFutility.word(), "shadow_futility");
     }
 
+    /// A live kind's word is a switch, so a row here and an effort run name
+    /// the same rule. The shadow kind's is not, since it watches a
+    /// population rather than a rule the configuration can turn off.
+    #[test]
+    fn a_live_kinds_word_is_a_switch_of_the_search() {
+        assert!(SearchConfig::without(Shortcut::ReverseFutility.word()).is_some());
+        assert!(SearchConfig::without(Shortcut::NullMove.word()).is_some());
+        assert_eq!(SearchConfig::without(Shortcut::ShadowFutility.word()), None);
+    }
+
     /// The delta's sign, pinned against a claim made up to be wrong in a
     /// known direction. The replay is driven straight, with no recording
     /// run in front of it, so the claimed value can be anything.
