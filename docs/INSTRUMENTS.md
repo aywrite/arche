@@ -898,7 +898,7 @@ different scoring rules and if they disagree about a candidate that is worth
 seeing, which is the only reason both are printed. The scaling constant K is
 fitted once on the training games at the shipped weights and held there,
 because K and the overall scale of the weights are one degree of freedom and
-the scale is not free: `REVERSE_FUTILITY_MARGIN` at 100 a ply, `DELTA_MARGIN`
+the scale is not free: `REVERSE_FUTILITY_MARGIN` at 95 a ply, `DELTA_MARGIN`
 at 200 and the ledger's `eval_beta` column all read the evaluation on the
 assumption that a pawn is about a hundred.
 

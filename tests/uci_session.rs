@@ -261,13 +261,13 @@ fn the_move_a_swap_answers_with_opens_the_last_line_said() {
     // a node budget rather than a clock, so the iteration is cut short on
     // the same node on every machine. The budget has to land after an
     // iteration finds its better move and before that iteration ends:
-    // depth eleven answers d3b5 and finishes at 638,703 nodes, depth
-    // twelve reports d3b1 from between 1,744,000 and 1,745,000 and
-    // finishes at 2,041,148. The budget moves whenever the tree does, in
+    // depth thirteen answers d3e2 and finishes at 2,663,941 nodes, depth
+    // fourteen reports d3b1 from between 4,920,000 and 4,930,000 and
+    // finishes at 5,195,065. The budget moves whenever the tree does, in
     // the commit that moved it
     let mut s = Session::start(&[]);
     s.say(&format!("position fen {}", SHARP_MIDDLEGAME));
-    s.say("go nodes 1900000");
+    s.say("go nodes 5100000");
     let answer = s.wait_for(|l| l.starts_with("bestmove"));
     let best = answer
         .strip_prefix("bestmove ")
@@ -435,15 +435,14 @@ fn a_root_move_that_reaches_beta_is_reported_as_a_floor_and_then_answered_with()
 #[test]
 fn a_floor_answers_until_the_wider_search_replaces_it() {
     // the other half of the floor: what the engine plays when the wider
-    // search never finishes. Kiwipete is worth -50 to white at depth
-    // seven, answered with e2a6; depth eight opens below that, d5e6
-    // reaches beta and the floor is reported at 138,001 nodes and again at
-    // 153,663 once the window has been widened, and the search finishes at
-    // 237,702. A budget inside it is interrupted before anything beats its
-    // alpha, so the root hands back no move at all and the floor is what is
-    // left to answer with. Any budget from 138,002 to 237,701 does it; with
-    // the floor not held the same budget answers e2a6, which is the move
-    // the search has just shown worse.
+    // search never finishes. Kiwipete is worth -95 to white at depth ten,
+    // answered with d5e6; depth eleven opens below that, e2a6 reaches beta
+    // and the floor is reported at 996,594 nodes, and the search finishes
+    // at 1,354,319. A budget inside it is interrupted before anything
+    // beats its alpha, so the root hands back no move at all and the floor
+    // is what is left to answer with. Any budget from 996,595 to 1,354,318
+    // does it; with the floor not held the same budget answers d5e6, which
+    // is the move the search has just shown worse.
     //
     // The endgame 8/k1b5/P4p2/1Pp2p1p/K1P2P1P/8/3B4/8 was this fixture
     // until the late move count landed. It still reports a floor, at depth
@@ -451,7 +450,7 @@ fn a_floor_answers_until_the_wider_search_replaces_it() {
     // with, so the position can no longer say which of the two was held
     let mut s = Session::start(&[]);
     s.say(&format!("position fen {}", KIWIPETE));
-    s.say("go nodes 180000");
+    s.say("go nodes 1150000");
     let answer = s.wait_for(|l| l.starts_with("bestmove"));
     let best = answer
         .strip_prefix("bestmove ")

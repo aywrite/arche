@@ -48,14 +48,14 @@ const _: () = assert!(MAX_PLY < u8::MAX);
 // about two thirds of a percent of the tree over ninety. The boundary was
 // between eighty five and ninety when the figure was chosen, ninety one
 // before the piece square tables were fitted, and ninety at the last
-// reading, so it is re-measured rather than read off this line; the round
-// number above it has been a hundred each time. That test no longer holds
-// the boundary. The late move count prunes the quiet that begins the mate
-// at depths three to five, so the test's floor is one of its four depths,
-// and a margin of eighty nine passes it with the count on and with it off.
-// Re-measure the boundary on this position before moving the figure.
-// docs/ROADMAP.md has the shadow lane's reading.
-const REVERSE_FUTILITY_MARGIN: Score = 100;
+// reading; the round number above it was a hundred each time. That
+// position no longer has a boundary. At 0.4.6, with the late move count
+// on or off, every margin from eighty to a hundred finds the mate at the
+// same depths and misses it at the same depths, so it no longer says
+// where the figure goes. Ninety five is a match's candidate: the shadow
+// lane that kept a hundred read the band between on about ten crossings.
+// docs/ROADMAP.md has that reading.
+const REVERSE_FUTILITY_MARGIN: Score = 95;
 // The deepest node the margin may answer. The margin grows a fixed step a
 // ply, and the bench says the plies past this prune nothing: four, six and
 // eight are the same count to a tenth of a percent.
@@ -3174,7 +3174,11 @@ mod search {
         // mate is proved and then proved again on every deeper search, over a
         // tree that grows about four and a half times a ply. Measured here at
         // the two depths, the counts were 22,255 and 8,558,226, a factor of
-        // 385; with the pruning they are 5,979 and 87,813, a factor of 15.
+        // 385; with the pruning they were 5,979 and 87,813, a factor of 15.
+        // At a reverse futility margin of 95 they are 4,376 and 235,679, a
+        // factor of 54, and every margin from 90 to 99 reads between 24 and
+        // 94 with no order in the margin, so the factor is this tree's
+        // shape and not a trend.
         //
         // The bound holds the shape rather than either count. A deeper search
         // of a position whose mate is already in the window does more work
@@ -3194,7 +3198,7 @@ mod search {
             "the mate moved at depth nine"
         );
         assert!(
-            at_nine.nodes < at_five.nodes * 50,
+            at_nine.nodes < at_five.nodes * 100,
             "depth nine searched {} nodes against depth five's {}",
             at_nine.nodes,
             at_five.nodes
@@ -5964,7 +5968,7 @@ mod sampling {
     #[test]
     fn a_candidate_under_the_margin_is_shadowed_and_not_answered() {
         let eval = engine(SHARP_MIDDLEGAME).eval();
-        // at depth one the margin claims `eval - 100`, so a beta fifty
+        // at depth one the margin claims `eval - 95`, so a beta fifty
         // under the evaluation is a candidate the test declines
         let beta = eval - 50;
         let mut e = engine(SHARP_MIDDLEGAME);
@@ -6117,7 +6121,7 @@ mod sampling {
         };
         assert_eq!(
             (open(Shortcut::ReverseFutility), open(Shortcut::NullMove)),
-            (1, 2),
+            (3, 0),
             "the open windows the two shortcuts answer moved"
         );
     }
