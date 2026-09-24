@@ -476,7 +476,7 @@ impl Shallow {
     /// node's own integers and nothing else: no board read, no evaluation
     /// and no history.
     #[inline]
-    fn counted(&self, searched: usize) -> bool {
+    pub(crate) fn counted(&self, searched: usize) -> bool {
         self.count.is_some_and(|count| searched >= count)
     }
 

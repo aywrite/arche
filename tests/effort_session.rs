@@ -88,6 +88,7 @@ fn the_effort_argument_prints_a_header_rows_and_two_summaries() {
 
     let mut depths = 0;
     let mut positions = 0;
+    let mut provenances = 0;
     for line in &printed.summary {
         if line.starts_with("depth ") {
             depths += 1;
@@ -114,11 +115,27 @@ fn the_effort_argument_prints_a_header_rows_and_two_summaries() {
             ] {
                 assert!(line.contains(word), "no {} in: {}", word.trim(), line);
             }
+        } else if line.starts_with("provenance ") {
+            // the diagnostic build's line, one a position
+            provenances += 1;
+            for word in [" chosen on ", " fired on "] {
+                assert!(line.contains(word), "no {} in: {}", word.trim(), line);
+            }
         } else {
             panic!("summary line: {}", line);
         }
     }
     assert!(depths > 0, "no depth lines in:\n{}", printed.all);
+    assert_eq!(
+        provenances,
+        if cfg!(feature = "provenance") {
+            positions
+        } else {
+            0
+        },
+        "a provenance line a position, and only in the diagnostic build:\n{}",
+        printed.all
+    );
     assert_eq!(
         positions,
         printed.number_after("positions") as usize,

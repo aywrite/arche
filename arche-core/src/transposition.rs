@@ -16,6 +16,7 @@
 use crate::board::Board;
 use crate::misc::Score;
 use crate::play::Play;
+use crate::provenance::Mask;
 use crate::value::{Value, is_mate};
 use std::cell::Cell;
 use std::mem;
@@ -242,6 +243,8 @@ struct Pv {
     /// `TaintPolicy`; which half of the problem the flag does not cover is
     /// under known limitations in `docs/ROADMAP.md`.
     tainted: bool,
+    /// The shortcuts the score leaned on, under the `provenance` feature.
+    mask: Mask,
     depth: u8,
     bound: Bound,
 }
@@ -299,7 +302,9 @@ pub enum Probe {
 /// never written. Two bytes are set aside for the static evaluation, which
 /// the correction history arm (shelved, see docs/ROADMAP.md) would store
 /// beside the score; reserving them now means the layout, and with it
-/// every node count, changes once rather than twice.
+/// every node count, changes once rather than twice. Until then the
+/// `provenance` feature keeps a score's mask there, and every other build
+/// writes zero.
 #[derive(Copy, Clone, Debug)]
 #[repr(C)]
 struct Entry {
@@ -308,7 +313,6 @@ struct Entry {
     score: Score,
     depth: u8,
     flags: u8,
-    #[allow(dead_code)]
     static_eval: i16,
 }
 
@@ -369,7 +373,7 @@ impl Entry {
             score: pv.score,
             depth: pv.depth,
             flags: (pv.bound as u8) | (u8::from(pv.tainted) << 2) | (generation << 3),
-            static_eval: 0,
+            static_eval: pv.mask.stored(),
         }
     }
 
@@ -381,6 +385,7 @@ impl Entry {
             depth: self.depth,
             bound: Bound::from_bits(self.flags),
             tainted: self.flags & 0b100 != 0,
+            mask: Mask::from_stored(self.static_eval),
         }
     }
 
@@ -957,7 +962,7 @@ impl TranspositionTable {
                 self.ghi.score_cutoffs += 1;
                 self.ghi.tainted_score_cutoffs += u64::from(pv.tainted);
                 self.count_false_accept_cutoff(foreign);
-                return Probe::Cut(Value::with_taint(score, pv.tainted));
+                return Probe::Cut(Value::with_taint(score, pv.tainted).carrying(pv.mask));
             }
         }
         Probe::Order(pv.play)
@@ -995,6 +1000,7 @@ fn entry(board: &Board, play: Play, value: Value, depth: u8, bound: Bound) -> Pv
         score: score_to_tt(value.score, board.line_ply),
         bound,
         tainted: value.tainted,
+        mask: value.mask,
     }
 }
 
@@ -1006,6 +1012,7 @@ mod tests {
     };
     use crate::engine::MAX_PLY;
     use crate::misc::{Piece, PromotePiece};
+    use crate::provenance::{Gate, Mask};
     use pretty_assertions::assert_eq;
     use std::mem;
 
@@ -1016,6 +1023,7 @@ mod tests {
             depth,
             bound,
             tainted: false,
+            mask: Mask::default(),
         }
     }
 
@@ -1121,6 +1129,11 @@ mod tests {
                 depth: MAX_PLY,
                 bound,
                 tainted: true,
+                // every gate, which is short of the reserved bytes' sign
+                // bit while there are fewer than sixteen
+                mask: Gate::ALL
+                    .iter()
+                    .fold(Mask::default(), |mask, &gate| mask.with(gate)),
             };
             table.set(key, pv);
             let read = table.get(key).expect("stored");
@@ -1128,6 +1141,7 @@ mod tests {
             assert_eq!(read.score, pv.score);
             assert_eq!(read.depth, pv.depth);
             assert!(read.tainted);
+            assert_eq!(read.mask, pv.mask);
             assert!(
                 mem::discriminant(&read.bound) == mem::discriminant(&bound),
                 "{bound:?} came back as {:?}",

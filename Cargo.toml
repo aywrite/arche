@@ -48,6 +48,11 @@ license = "GPL-3.0-or-later"
 [dependencies]
 arche-core = { path = "./arche-core" }
 
+# The engine's diagnostic build, passed through so the binary can be built
+# with it: `cargo build --release --features provenance`.
+[features]
+provenance = ["arche-core/provenance"]
+
 [dev-dependencies]
 # already the engine's, so this adds an edge rather than a package
 proptest = "1.7"

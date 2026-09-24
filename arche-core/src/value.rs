@@ -20,6 +20,7 @@
 //! and cannot force anything.
 
 use crate::misc::Score;
+use crate::provenance::{Gate, Mask};
 
 const CHECKMATE_SCORE: Score = 30_000;
 // Any score this close to CHECKMATE_SCORE is a forced mate. Regular evals are
@@ -56,6 +57,8 @@ pub struct Value {
     /// True if the score flowed from a repetition or a fifty move draw
     /// somewhere below it.
     pub tainted: bool,
+    /// The shortcuts the score leaned on, under the `provenance` feature.
+    pub mask: Mask,
 }
 
 impl Value {
@@ -65,6 +68,7 @@ impl Value {
         Self {
             score,
             tainted: false,
+            mask: Mask::default(),
         }
     }
 
@@ -74,6 +78,7 @@ impl Value {
         Self {
             score,
             tainted: true,
+            mask: Mask::default(),
         }
     }
 
@@ -81,7 +86,31 @@ impl Value {
     /// for a score whose taint was established elsewhere: a stored entry
     /// read back, or a pass's answer clamped under the mate window.
     pub fn with_taint(score: Score, tainted: bool) -> Self {
-        Self { score, tainted }
+        Self {
+            score,
+            tainted,
+            mask: Mask::default(),
+        }
+    }
+
+    /// The same value leaning on the shortcuts given as well.
+    #[inline(always)]
+    #[must_use]
+    pub(crate) fn carrying(self, mask: Mask) -> Self {
+        Self {
+            mask: self.mask | mask,
+            ..self
+        }
+    }
+
+    /// The same value leaning on one more shortcut.
+    #[inline(always)]
+    #[must_use]
+    pub(crate) fn gated(self, gate: Gate) -> Self {
+        Self {
+            mask: self.mask.with(gate),
+            ..self
+        }
     }
 
     /// The side to move is mated, this many plies into the line. Clean, since
@@ -101,7 +130,7 @@ impl std::ops::Neg for Value {
     fn neg(self) -> Self {
         Self {
             score: -self.score,
-            tainted: self.tainted,
+            ..self
         }
     }
 }
@@ -109,18 +138,39 @@ impl std::ops::Neg for Value {
 /// What a node has seen so far. The taint of a node is the taint of every
 /// child it looked at, not of the one it chose: a best move found beside a
 /// tainted score still stands on a comparison against that score.
+///
+/// The mask is accumulated the other way: the shortcuts the node took
+/// itself, and the mask of the one child it chose. Or'd over every child it
+/// would name every shortcut that fired anywhere below.
 #[derive(Copy, Clone, Debug, Default)]
-pub(crate) struct Taint(bool);
+pub(crate) struct Taint {
+    tainted: bool,
+    own: Mask,
+    chosen: Mask,
+}
 
 impl Taint {
     pub(crate) fn absorb(&mut self, value: Value) {
-        self.0 |= value.tainted;
+        self.tainted |= value.tainted;
+    }
+
+    /// The child whose score the node now answers with.
+    #[inline(always)]
+    pub(crate) fn choose(&mut self, value: Value) {
+        self.chosen = value.mask;
+    }
+
+    /// A shortcut the node took itself.
+    #[inline(always)]
+    pub(crate) fn gate(&mut self, gate: Gate) {
+        self.own = self.own.with(gate);
     }
 
     pub(crate) fn stamp(self, score: Score) -> Value {
         Value {
             score,
-            tainted: self.0,
+            tainted: self.tainted,
+            mask: self.own | self.chosen,
         }
     }
 }

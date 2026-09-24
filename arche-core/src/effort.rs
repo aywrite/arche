@@ -38,6 +38,7 @@ use crate::engine::{AlphaBeta, Engine, ScoreBound, SearchConfig, SearchOutcome, 
 use crate::limits::Limits;
 use crate::misc::Score;
 use crate::play::Play;
+use crate::provenance::Reading;
 use crate::recorder::{self, Sampled, Sampler};
 use std::fmt;
 
@@ -343,6 +344,10 @@ pub struct Reached {
     pub score_off: Score,
     pub nodes_on: u64,
     pub nodes_off: u64,
+    /// Which shortcuts each side's root score leaned on and which fired at
+    /// all, under the `provenance` feature. Empty without it.
+    pub provenance_on: Reading,
+    pub provenance_off: Reading,
 }
 
 /// A whole run: what it was asked for, what each side counted, and a row a
@@ -394,6 +399,7 @@ struct Answered {
     best: Play,
     score: Score,
     nodes: u64,
+    provenance: Reading,
 }
 
 /// Search the suite once with the effort reservoir armed, under the
@@ -452,6 +458,7 @@ fn side(
             best: result.best_move,
             score: result.score,
             nodes: result.nodes,
+            provenance: engine.provenance(),
         });
     }
     Side {
@@ -627,6 +634,8 @@ pub fn run(
                 score_off: off.score,
                 nodes_on: on.nodes,
                 nodes_off: off.nodes,
+                provenance_on: on.provenance,
+                provenance_off: off.provenance,
             })
             .collect(),
         events_on: on.sampled.events,
@@ -833,6 +842,19 @@ impl fmt::Display for Report {
                 p.nodes_off,
                 p.id,
             )?;
+            // a line of its own, so a run without the feature prints what
+            // it always has
+            if cfg!(feature = "provenance") {
+                writeln!(
+                    f,
+                    "provenance chosen on {} off {} fired on {} off {} {}",
+                    p.provenance_on.chosen,
+                    p.provenance_off.chosen,
+                    p.provenance_on.fired,
+                    p.provenance_off.fired,
+                    p.id,
+                )?;
+            }
         }
         Ok(())
     }

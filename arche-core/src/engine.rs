@@ -10,6 +10,7 @@ use crate::limits::Limits;
 use crate::misc::{Color, Score};
 use crate::ordering::{MoveOrdering, Ordered};
 use crate::play::Play;
+use crate::provenance::{Gate, Reading};
 use crate::recorder::{Sampler, Window};
 use crate::reduction;
 use crate::residual::{Sample, Shortcut};
@@ -892,6 +893,9 @@ pub struct AlphaBeta {
     /// reservoir's own check, so an engine that was never armed counts
     /// nothing.
     effort_depths: effort::Depths,
+    /// What the `provenance` feature read of the last search, and nothing
+    /// without it.
+    provenance: Reading,
 }
 
 /// What a search can be armed to record: the residual's sample, the cutoff
@@ -970,6 +974,7 @@ impl AlphaBeta {
             ledger: None,
             effort: None,
             effort_depths: effort::Depths::default(),
+            provenance: Reading::default(),
         }
     }
 
@@ -1533,12 +1538,14 @@ impl AlphaBeta {
                         && standing + crate::eval::material(captured) as Score + DELTA_MARGIN
                             < alpha
                     {
+                        self.gate(&mut taint, Gate::DeltaMargin);
                         continue;
                     }
                     // every capture behind the front is one the swap priced
                     // as losing, so the class is read off the order rather
                     // than from a second swap
                     if self.config.see_pruning && i >= front {
+                        self.gate(&mut taint, Gate::SeePruning);
                         continue;
                     }
                 }
@@ -1555,6 +1562,7 @@ impl AlphaBeta {
                 if score > best {
                     best = score;
                     best_move = Some(*m);
+                    taint.choose(value);
                 }
                 if score > alpha {
                     if score >= beta {
@@ -1667,7 +1675,8 @@ impl AlphaBeta {
                 if self.sampler.is_some() {
                     self.sample(Shortcut::ReverseFutility, depth, floor, alpha, beta, eval);
                 }
-                return Ok(Some(Value::clean(floor)));
+                self.fire(Gate::ReverseFutility);
+                return Ok(Some(Value::clean(floor).gated(Gate::ReverseFutility)));
             }
         }
 
@@ -1676,6 +1685,13 @@ impl AlphaBeta {
         // is only whether a pass beats beta
         if pass && eval >= beta {
             let reduction = null_move_reduction(self.config, depth, eval - beta);
+            // the flat reduction is what the pass would have searched at
+            // with the adaptive rule off, so only a deeper one is its doing
+            let adaptive = reduction != NULL_MOVE_REDUCTION;
+            self.fire(Gate::NullMove);
+            if adaptive {
+                self.fire(Gate::AdaptiveNullMove);
+            }
             self.board.make_null_move();
             let result = self.alpha_beta(
                 -beta,
@@ -1699,7 +1715,13 @@ impl AlphaBeta {
                 if self.sampler.is_some() {
                     self.sample(Shortcut::NullMove, depth, score, alpha, beta, eval);
                 }
-                return Ok(Some(Value::with_taint(score, value.tainted)));
+                let mut answer = Value::with_taint(score, value.tainted)
+                    .carrying(value.mask)
+                    .gated(Gate::NullMove);
+                if adaptive {
+                    answer = answer.gated(Gate::AdaptiveNullMove);
+                }
+                return Ok(Some(answer));
             }
             // a pass that failed still read whatever it read on the way
             taint.absorb(value);
@@ -1786,6 +1808,7 @@ impl AlphaBeta {
             // what the scout's cost is measured from: a read of a field,
             // no branch, so the disarmed search is unchanged
             let entered_at = self.nodes;
+            self.fire(Gate::LateMoveReductions);
             let scout = -self.alpha_beta(
                 -alpha - 1,
                 -alpha,
@@ -1805,7 +1828,7 @@ impl AlphaBeta {
                 );
             }
             if scout.score <= alpha {
-                return Ok(scout);
+                return Ok(scout.gated(Gate::LateMoveReductions));
             }
             // the scout's fail high asked for the full depth, so whatever
             // it depended on, the passes below do too
@@ -1823,7 +1846,9 @@ impl AlphaBeta {
         // which is what the root opens at below the aspiration depth and
         // wherever its window has widened to the edge
         if probe.score <= alpha || alpha + 1 >= beta {
-            return Ok(Value::with_taint(probe.score, probe.tainted || tainted));
+            return Ok(
+                Value::with_taint(probe.score, probe.tainted || tainted).carrying(probe.mask)
+            );
         }
         let proof = -self.alpha_beta(
             -beta,
@@ -1834,10 +1859,33 @@ impl AlphaBeta {
         )?;
         // the probe's fail high asked for the proof, so the proof depends
         // on whatever the probe did
-        Ok(Value::with_taint(
-            proof.score,
-            proof.tainted || probe.tainted || tainted,
-        ))
+        Ok(
+            Value::with_taint(proof.score, proof.tainted || probe.tainted || tainted)
+                .carrying(proof.mask),
+        )
+    }
+
+    /// A shortcut a node took, which its score now leans on.
+    #[inline(always)]
+    fn gate(&mut self, taint: &mut Taint, gate: Gate) {
+        self.fire(gate);
+        taint.gate(gate);
+    }
+
+    /// A shortcut that changed the tree somewhere in this search, whether or
+    /// not the root's score came to lean on it. Where the rule asked first
+    /// is off, the other of a pair can still drop the same move, so this can
+    /// name a gate whose switch leaves the tree as it was, never the reverse.
+    #[inline(always)]
+    fn fire(&mut self, gate: Gate) {
+        self.provenance.fired = self.provenance.fired.with(gate);
+    }
+
+    /// What the `provenance` feature read of the last search: the root's
+    /// mask from the deepest iteration that finished inside its window, and
+    /// every gate that fired. Empty without the feature.
+    pub fn provenance(&self) -> Reading {
+        self.provenance
     }
 
     /// A fail high at a full width node: the move that proved it goes to
@@ -2009,6 +2057,7 @@ impl AlphaBeta {
                     if tt_score > best {
                         best = tt_score;
                         best_move = Some(tt);
+                        taint.choose(value);
                     }
                     if tt_score > alpha {
                         if tt_score >= beta {
@@ -2127,6 +2176,14 @@ impl AlphaBeta {
             // not, so facts built for them would be facts built at most of
             // the interior of the tree
             if shallow.skips(&self.deciding(), &mut eval, m, searched, alpha) {
+                // the count is asked first, so a move both rules drop is
+                // the count's
+                let gate = if shallow.counted(searched) {
+                    Gate::LateMoveCount
+                } else {
+                    Gate::QuietFutility
+                };
+                self.gate(&mut taint, gate);
                 // never made, so whether it was even legal is never
                 // learned; skipping an illegal move is a no-op, since the
                 // loop would have passed over it anyway. `searched` stands
@@ -2180,6 +2237,10 @@ impl AlphaBeta {
                 };
                 match late_move::decide(&self.deciding(), &mut node, m, searched) {
                     late_move::Verdict::Skip => {
+                        // decided only where the reduction is admitted, so
+                        // the reduction's switch removes it as well
+                        self.gate(&mut taint, Gate::LateMovePruning);
+                        self.gate(&mut taint, Gate::LateMoveReductions);
                         // never made, as above
                         if self.ledger.is_some() {
                             let staged = self.staged_reduction(m, searched, &mut node);
@@ -2227,6 +2288,7 @@ impl AlphaBeta {
             if score > best {
                 best = score;
                 best_move = Some(*m);
+                taint.choose(value);
             }
             if score > alpha {
                 if score >= beta {
@@ -2338,6 +2400,7 @@ impl AlphaBeta {
     /// searching: a stored score can come from a line whose repetition and
     /// fifty move context differ from the game being played.
     pub fn search(&mut self, depth: u8) -> SearchOutcome {
+        self.provenance = Reading::default();
         self.transpositions.new_search();
         self.ordering.forget();
         self.search_within(depth, Limits::unlimited())
@@ -2453,6 +2516,7 @@ impl AlphaBeta {
                     let score = value.score;
                     if top.is_none_or(|(_, best)| score > best) {
                         top = Some((*m, score));
+                        taint.choose(value);
                     }
                     if score > alpha {
                         alpha = score;
@@ -2495,6 +2559,7 @@ impl AlphaBeta {
         } else {
             self.transpositions
                 .record_answer(&self.board, play, value, depth);
+            self.provenance.chosen = value.mask;
             ScoreBound::Exact
         };
         SearchOutcome::Complete(self.result_for(play, score), bound)
@@ -2589,6 +2654,7 @@ impl Engine for AlphaBeta {
         let mut exact: Option<Score> = None;
         // each iteration counts its own nodes, so the deepening totals them
         let mut total_nodes: u64 = 0;
+        self.provenance = Reading::default();
         // no depth means as deep as the engine goes, which the rail ends
         // for a search under neither clock nor budget
         let max_depth = match search_options.depth {
@@ -2854,6 +2920,7 @@ mod search {
     };
     use crate::limits::Clock;
     use crate::misc::{Color, Piece};
+    use crate::provenance::Gate;
     use crate::value::CHECKMATE_THRESHOLD;
     use pretty_assertions::assert_eq;
     use std::sync::Arc;
@@ -3327,7 +3394,7 @@ mod search {
             panic!("an unlimited search aborted");
         };
         assert_eq!(e.nodes, 1);
-        assert_eq!(value, Value::clean(standing));
+        assert_eq!(value, Value::clean(standing).gated(Gate::DeltaMargin));
 
         // at the edge, where the pawn and the margin reach alpha exactly,
         // the capture is searched
@@ -3415,7 +3482,7 @@ mod search {
         let standing = e.eval();
         let (skipped, value) = quiet_nodes(e);
         assert_eq!(skipped, 1);
-        assert_eq!(value, Value::clean(standing));
+        assert_eq!(value, Value::clean(standing).gated(Gate::SeePruning));
     }
 
     #[test]
@@ -4851,7 +4918,7 @@ mod search {
         let Ok(value) = e.alpha_beta(-1, 0, 3, true, RootBounds::NEITHER) else {
             panic!("nothing was armed to abort this search");
         };
-        assert_eq!(value, Value::tainted(0));
+        assert_eq!(value, Value::tainted(0).gated(Gate::NullMove));
     }
 
     #[test]
@@ -4946,7 +5013,7 @@ mod search {
             panic!("an unlimited search aborted");
         };
         assert_eq!(e.nodes, scout_nodes);
-        assert_eq!(value, scout_value);
+        assert_eq!(value, scout_value.gated(Gate::LateMoveReductions));
 
         let mut probe = at_reducible_child(SearchConfig::reference());
         let Ok(unreduced) =
@@ -5166,7 +5233,7 @@ mod search {
             panic!("an unlimited search aborted");
         };
         assert_eq!(e.nodes, scout_nodes);
-        assert_eq!(value, scout_value);
+        assert_eq!(value, scout_value.gated(Gate::LateMoveReductions));
 
         let mut shallower = at_reducible_child(SearchConfig::reference());
         let Ok(one_ply) = shallower.windowed(

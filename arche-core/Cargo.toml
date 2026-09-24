@@ -23,6 +23,12 @@ bench = false #https://bheisler.github.io/criterion.rs/book/faq.html#cargo-bench
 [lints.rust]
 unsafe_op_in_unsafe_fn = "deny"
 
+# A diagnostic build that records which of the search's shortcuts each
+# score leaned on (src/provenance.rs). It changes no search decision and no
+# node count, and nothing that plays or benches turns it on.
+[features]
+provenance = []
+
 [dependencies]
 smallvec = "1.15.1"
 

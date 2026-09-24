@@ -523,6 +523,58 @@ what is
 asserted is armed equals disarmed under whatever configuration it is
 handed.
 
+### Which shortcuts a root score leaned on
+
+A switch that is off changes a root's move at some roots and not at others,
+and `effort` reads which. The `provenance` build records, for each root,
+which shortcuts its score was built on and which fired at all:
+
+```
+cargo build --release --features provenance
+target/release/arche effort 8 off <switch> epd <file>
+```
+
+Each position line is then followed by a `provenance` line:
+`provenance chosen on <gates> off <gates> fired on <gates> off <gates> <id>`,
+where a gate list is switch names joined by commas, or `none`.
+
+A score carries a mask, one bit a shortcut, and each bit is named by the
+switch that removes it: `reverse_futility`, `null_move`,
+`adaptive_null_move` (a pass reduced further than the flat reduction),
+`late_move_count`, `quiet_futility`, `late_move_pruning`,
+`late_move_reductions` (a reduced scout that failed low and was returned,
+or a late move pruned, since the pruning is decided only where the
+reduction is admitted), `delta_margin` and `see_pruning`. The count is
+asked before the quiet futility margin and the delta margin before SEE, so
+a move both of a pair would drop is credited to the first.
+
+`chosen` is the mask of the root's score. A node's mask is the gates it
+took itself, or'd with the mask of the child whose score it returned: the
+best move's, or at a fail high the cutting move's. So it names the gates
+along the line the score came from, from the deepest iteration that
+finished inside its window. It is not the draw taint's rule. The taint is
+or'd from every child a node looked at, and a mask built that way would
+name every gate that fired anywhere in the tree. So `chosen` is a trace of
+one line, not everything the score depends on: a node that failed low
+answers with the best of its children, and a gate that held a sibling
+under it can move the score too without being named.
+
+`fired` is that union, once for the whole search: every gate that changed
+the tree anywhere. A gate it does not name changed nothing, so turning its
+switch off leaves the tree as it was and the root cannot change its move.
+`chosen` is always within `fired`. A root compared on `chosen` should be
+compared only against roots where the same gate fired. Both hold for an
+engine searched from an empty table, which is what `effort` builds for each
+position: a table carried over from an earlier search can hand back a mask
+that search stored. Under a `budget`, the move printed can come from an
+iteration cut short, and the mask is still the deepest finished one's.
+
+The build searches the same tree. The mask is stored in the entry's two
+bytes that are reserved for a static evaluation, so the table's layout does
+not move, and nothing the search decides reads a mask; the bench counts
+6,900,228 nodes either way at `57ec3c6`. Without the feature the mask has
+no field and the line is not printed.
+
 ## What a position's evaluation is made of
 
 The four instruments above measure the search. This one measures the

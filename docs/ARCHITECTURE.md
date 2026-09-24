@@ -198,6 +198,10 @@ archived games, and the code map below says what each one counts.
   once with a named switch off, and joins the two runs by the node, so a
   row says whether each side reached it and what each spent under it.
   Driven by the `effort` argument.
+- **provenance.rs**: Which shortcuts a score leaned on, as a mask carried
+  beside the taint and kept in the table entry's two reserved bytes. Built
+  only under the `provenance` cargo feature, which changes no decision and
+  no node count. `effort` prints each root's mask when it is on.
 - **tune.rs**: What a position's evaluation is made of. The evaluation is
   linear in the tables and the material values everywhere it is not a drawn
   signature, so a position's score is a dot product, and this writes down the

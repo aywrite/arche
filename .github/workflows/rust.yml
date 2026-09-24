@@ -44,6 +44,12 @@ jobs:
     - uses: Swatinem/rust-cache@6323deb102c322ba6fcbdcafc7e3dddab59af2b6 # v2.9.2
     - name: Run clippy
       run: cargo clippy --workspace --locked --all-targets -- -D warnings
+    # the provenance build is diagnostic and nothing plays it, so it is
+    # checked here, once, rather than across the matrix
+    - name: Run clippy on the provenance build
+      run: cargo clippy --workspace --locked --all-targets --features provenance -- -D warnings
+    - name: Run the tests on the provenance build
+      run: cargo test --workspace --locked --release --features provenance
 
   # the release profile turns off the overflow checks and debug assertions, so
   # the tests are run once more without it
