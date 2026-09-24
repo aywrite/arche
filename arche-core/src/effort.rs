@@ -132,6 +132,10 @@ const fn _every_switch_is_named(config: &SearchConfig) {
         reduction_table: _,
         deep_index_rule: _,
         move_memory: _,
+        // a measurement rather than a shortcut, off in the default, so the
+        // baseline side has nothing to turn off
+        ordering_exploration: _,
+        exploration_seed: _,
         aspiration: _,
     } = config;
 }

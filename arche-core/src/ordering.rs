@@ -9,10 +9,12 @@
 //! captures and leaves the quiet moves in generated order between the two
 //! capture bands; `order_quiets` scores and sorts the quiet moves, and the
 //! search calls it only when it reaches the first of them. Both sorts are
-//! stable and generation order breaks their ties. The quiet moves are
-//! scored by the memories as they stand when the search reaches them, not
-//! when the node was entered, so the node count tests pin the sort, the
-//! generation order and when the scoring happens.
+//! stable and generation order breaks their ties, except among the quiet
+//! moves the memories key zero when `SearchConfig::ordering_exploration`
+//! draws their order instead. The quiet moves are scored by the memories
+//! as they stand when the search reaches them, not when the node was
+//! entered, so the node count tests pin the sort, the generation order and
+//! when the scoring happens.
 //!
 //! Two memories carry across nodes: the killers, the quiet moves that cut
 //! a node off at each distance from the root, and the history, how often
@@ -27,7 +29,7 @@
 
 use crate::board::{Board, MOVE_LIST_INLINE, MoveList};
 use crate::engine::MAX_PLY;
-use crate::misc::{Color, Piece};
+use crate::misc::{Color, Piece, Score};
 use crate::play::Play;
 
 /// The table's move, ahead of every capture, even one whose swap loses
@@ -294,7 +296,18 @@ impl MoveOrdering {
     /// behind them are already in order. A move the history has marked
     /// down goes behind the quiets nothing is known about and still ahead
     /// of every losing capture.
-    pub(crate) fn order_quiets(&mut self, board: &Board, rest: &mut [Play], ply: usize) {
+    ///
+    /// `explore` is the node's draw from `exploration_draw`, or none, which
+    /// leaves the quiets nothing is known about in generation order. With
+    /// one they are put in the order their tags give, and nothing else in
+    /// the band moves.
+    pub(crate) fn order_quiets(
+        &mut self,
+        board: &Board,
+        rest: &mut [Play],
+        ply: usize,
+        explore: Option<u64>,
+    ) {
         debug_assert!(ply < MAX_PLY as usize, "no killers past the rail");
         // `order` hands back the whole length of a list that spilled, so
         // what reaches here fits the buffer, which the sort below indexes
@@ -331,7 +344,71 @@ impl MoveOrdering {
             }
         }
         sort_on_the_stack(quiets, &mut keys[..scored], plain, front, sorted);
+        // the plain moves now stand together straight behind the front
+        if let Some(draw) = explore {
+            let tied = plain.count_ones() as usize;
+            shuffle_ties(&mut quiets[front..front + tied], draw, keys, sorted);
+        }
     }
+}
+
+/// What a node's tie break is drawn from: the seed, the node and the window
+/// it was entered with, and nothing about the run or about the order the
+/// tree was reached in, so a seed searches the same tree every time and the
+/// pinned counts need no clock. `position_key` alone would give a position
+/// the same order at every depth and ply it recurs at.
+///
+/// The window is there for the node a parent searches twice, a scout and
+/// then a wider search. Whether the second visit happens depends on what
+/// the first returned, so a second visit that kept the first one's order
+/// would try first, more often than one time in `k`, the move that did not
+/// settle it the first time.
+pub(crate) fn exploration_draw(
+    seed: u64,
+    position_key: u64,
+    depth: u8,
+    ply: usize,
+    alpha: Score,
+    beta: Score,
+) -> u64 {
+    let node = (u64::from(depth) << 32) | ply as u64;
+    let window = (u64::from(alpha as u16) << 16) | u64::from(beta as u16);
+    mix(seed ^ mix(position_key ^ mix(node ^ mix(window))))
+}
+
+/// A move's tag under a node's draw: its from and to squares and its
+/// promotion, the four promotions of one pawn step being four moves.
+fn tie_tag(draw: u64, m: &Play) -> u64 {
+    let promote = m.promote.map_or(0, |piece| piece as u64 + 1);
+    mix(draw ^ (u64::from(m.from) | (u64::from(m.to) << 6) | (promote << 12)))
+}
+
+/// The finaliser of splitmix64: every input bit reaches every output bit,
+/// so tags drawn from inputs a square apart are unrelated.
+fn mix(mut x: u64) -> u64 {
+    x = x.wrapping_add(0x9e37_79b9_7f4a_7c15);
+    x = (x ^ (x >> 30)).wrapping_mul(0xbf58_476d_1ce4_e5b9);
+    x = (x ^ (x >> 27)).wrapping_mul(0x94d0_49bb_1331_11eb);
+    x ^ (x >> 31)
+}
+
+/// Put a run of tied moves in the order of their tags. The tag goes above
+/// the place in the key, so the stack sort orders the run and hands it back
+/// without moving a move twice; the top bits are dropped to keep the key
+/// positive, and two tags alike in the rest fall back to generation order.
+fn shuffle_ties(
+    tied: &mut [Play],
+    draw: u64,
+    keys: &mut [i64; MOVE_LIST_INLINE],
+    sorted: &mut [Play; MOVE_LIST_INLINE],
+) {
+    if tied.len() < 2 {
+        return;
+    }
+    for (place, m) in tied.iter().enumerate() {
+        keys[place] = pack((tie_tag(draw, m) >> (PLACE_BITS + 1)) as i64, place);
+    }
+    sort_on_the_stack(tied, &mut keys[..tied.len()], 0, 0, sorted);
 }
 
 /// What the memories say at one node: this ply's killers, and the side to
@@ -560,7 +637,7 @@ mod order {
         let board = Board::from_fen(fen).unwrap();
         let mut moves = board.generate_moves();
         let front = ordering.order(&board, &mut moves, table_move, Some(0));
-        ordering.order_quiets(&board, &mut moves[front..], 0);
+        ordering.order_quiets(&board, &mut moves[front..], 0, None);
         moves.to_vec()
     }
 
@@ -781,6 +858,108 @@ mod order {
         expected.extend_from_slice(&tried);
         assert_eq!(quiets(&moves), expected);
         assert!(position_of(&moves, "h5h7") > position_of(&moves, &tried[1].to_string()));
+    }
+
+    // after 1. e4 e5 2. Nf3 Nc6: twenty odd quiet moves and no capture, so
+    // the tie group is most of the list
+    const OPEN: &str = "r1bqkbnr/pppp1ppp/2n5/4p3/4P3/5N2/PPPP1PPP/RNBQKB1R w KQkq - 2 3";
+
+    fn explored(fen: &str, ordering: &mut MoveOrdering, draw: u64) -> Vec<Play> {
+        let board = Board::from_fen(fen).unwrap();
+        let mut moves = board.generate_moves();
+        let front = ordering.order(&board, &mut moves, None, Some(0));
+        ordering.order_quiets(&board, &mut moves[front..], 0, Some(draw));
+        quiets(&moves)
+    }
+
+    // a killer, a move the history likes and one it has marked down keep
+    // their places, and the moves between them are the same moves in
+    // another order
+    #[test]
+    fn exploring_draws_the_order_of_the_ties_and_of_nothing_else() {
+        let board = Board::from_fen(OPEN).unwrap();
+        let generated = quiets(&board.generate_moves());
+        let (killer, liked, marked) = (generated[3], generated[7], generated[11]);
+        let mut ordering = MoveOrdering::new();
+        // the liked move and the marked one taught at another ply, so they
+        // sort by history alone; the killer at this one
+        ordering.cutoff(Color::White, &liked, &[marked], 1, 4);
+        ordering.cutoff(Color::White, &killer, &[], 0, 1);
+        let tied: Vec<Play> = generated
+            .iter()
+            .filter(|m| ![killer, liked, marked].contains(m))
+            .copied()
+            .collect();
+
+        let mut moved = false;
+        for draw in 0..16 {
+            let moves = explored(OPEN, &mut ordering, draw);
+            assert_eq!(moves[0], killer, "draw {draw}");
+            assert_eq!(moves[1], liked, "draw {draw}");
+            assert_eq!(*moves.last().unwrap(), marked, "draw {draw}");
+            let group = &moves[2..moves.len() - 1];
+            let mut sorted_group = group.to_vec();
+            let mut sorted_tied = tied.clone();
+            sorted_group.sort_by_key(|m| (m.from, m.to));
+            sorted_tied.sort_by_key(|m| (m.from, m.to));
+            assert_eq!(sorted_group, sorted_tied, "draw {draw}");
+            moved |= group != tied.as_slice();
+        }
+        assert!(moved, "no draw moved a tie out of generation order");
+    }
+
+    #[test]
+    fn one_draw_orders_the_ties_the_same_way_every_time() {
+        let first = explored(OPEN, &mut MoveOrdering::new(), 7);
+        assert_eq!(first, explored(OPEN, &mut MoveOrdering::new(), 7));
+        assert_ne!(first, explored(OPEN, &mut MoveOrdering::new(), 8));
+    }
+
+    // the draw is the seed, the node and its window, so two seeds differ at
+    // a node, and so do two depths, two plies and two windows of one
+    // position
+    #[test]
+    fn a_draw_is_the_seed_the_position_the_depth_the_ply_and_the_window() {
+        let draw = super::exploration_draw(1, 0x0123_4567_89ab_cdef, 6, 3, -30, -29);
+        assert_eq!(
+            draw,
+            super::exploration_draw(1, 0x0123_4567_89ab_cdef, 6, 3, -30, -29)
+        );
+        for other in [
+            super::exploration_draw(2, 0x0123_4567_89ab_cdef, 6, 3, -30, -29),
+            super::exploration_draw(1, 0x0123_4567_89ab_cdee, 6, 3, -30, -29),
+            super::exploration_draw(1, 0x0123_4567_89ab_cdef, 7, 3, -30, -29),
+            super::exploration_draw(1, 0x0123_4567_89ab_cdef, 6, 4, -30, -29),
+            super::exploration_draw(1, 0x0123_4567_89ab_cdef, 6, 3, -30, 40),
+            super::exploration_draw(1, 0x0123_4567_89ab_cdef, 6, 3, -31, -30),
+        ] {
+            assert_ne!(draw, other);
+        }
+    }
+
+    // what the instrument's uniformity check reads, asked here of the tags
+    // alone: over many draws each member of the group is first about as
+    // often as any other
+    #[test]
+    fn each_tie_is_drawn_first_about_equally_often() {
+        const DRAWS: u64 = 20_000;
+        let generated = quiets(&Board::from_fen(OPEN).unwrap().generate_moves());
+        let k = generated.len();
+        let mut first = vec![0u64; k];
+        let mut ordering = MoveOrdering::new();
+        for seed in 0..DRAWS {
+            let draw = super::exploration_draw(seed, 0x5eed, 8, 2, -30, -29);
+            let moves = explored(OPEN, &mut ordering, draw);
+            first[generated.iter().position(|m| *m == moves[0]).unwrap()] += 1;
+        }
+        let expected = DRAWS / k as u64;
+        for (place, count) in first.iter().enumerate() {
+            // five standard deviations of a binomial at this size
+            assert!(
+                count.abs_diff(expected) < expected / 5,
+                "place {place} first {count} times against {expected}"
+            );
+        }
     }
 
     // the same band on the spilled list path, where one sort orders the

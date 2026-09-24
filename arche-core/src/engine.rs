@@ -8,7 +8,7 @@ use crate::eval;
 use crate::late_move;
 use crate::limits::Limits;
 use crate::misc::{Color, Score};
-use crate::ordering::MoveOrdering;
+use crate::ordering::{self, MoveOrdering};
 use crate::play::Play;
 use crate::recorder::{Sampler, Window};
 use crate::reduction;
@@ -387,6 +387,24 @@ pub struct SearchConfig {
     /// produced, so the default's move and score may move where the
     /// reference's may not.
     pub move_memory: bool,
+    /// Whether the quiet moves the memories key zero (no killer and a
+    /// history entry of exactly zero) are tried in an order drawn from
+    /// `exploration_seed` rather than in generation order. Nothing else
+    /// about the order changes: the front, the killers and the moves the
+    /// history has scored keep their places.
+    ///
+    /// A measurement and not a policy. Generation order decides which of
+    /// the tied moves is tried first, so a cutoff count over them measures
+    /// the generator as well as the moves; drawing the order makes each
+    /// member of a group of `k` first in one node in `k`, which the
+    /// ordering instrument reads. Off in both named configurations, so no
+    /// pinned count moves. Rides on `move_memory`: a node that never
+    /// scores its quiet moves never reaches the group.
+    pub ordering_exploration: bool,
+    /// What the draw above is keyed by, with the node's position, depth, ply
+    /// and window. The same seed searches the same tree every time. Read only
+    /// while `ordering_exploration` is on.
+    pub exploration_seed: u64,
     /// Whether the deepening loop opens each iteration from
     /// `ASPIRATION_MIN_DEPTH` on at a window around the last one's score
     /// rather than at the full one, widening the side that fails until the
@@ -462,6 +480,8 @@ impl SearchConfig {
             reduction_table: false,
             deep_index_rule: false,
             move_memory: false,
+            ordering_exploration: false,
+            exploration_seed: 0,
             aspiration: false,
         }
     }
@@ -528,6 +548,8 @@ impl Default for SearchConfig {
             reduction_table: true,
             deep_index_rule: true,
             move_memory: true,
+            ordering_exploration: false,
+            exploration_seed: 0,
             aspiration: true,
         }
     }
@@ -2097,8 +2119,18 @@ impl AlphaBeta {
             // is scored and sorted before the first move past it is tried
             if i == front {
                 if let Some(ply) = ply {
+                    let explore = self.config.ordering_exploration.then(|| {
+                        ordering::exploration_draw(
+                            self.config.exploration_seed,
+                            self.board.key,
+                            depth,
+                            ply,
+                            old_alpha,
+                            beta,
+                        )
+                    });
                     self.ordering
-                        .order_quiets(&self.board, &mut moves[front..], ply);
+                        .order_quiets(&self.board, &mut moves[front..], ply, explore);
                     quiets_scored = true;
                 }
             }
@@ -5318,6 +5350,27 @@ mod search {
         completed(cold.search(3));
         assert_eq!(cold.ordering.history_marked_down(Color::White), 0);
         assert_eq!(cold.ordering.history_marked_down(Color::Black), 0);
+    }
+
+    #[test]
+    fn a_seed_searches_one_tree_and_another_seed_another() {
+        // the exploration draws the order of the ties from the seed and the
+        // node alone, so one seed is as deterministic as the default, and
+        // two seeds search two trees. Switched off it is the default
+        let nodes = |exploring: bool, seed: u64| {
+            let config = SearchConfig {
+                ordering_exploration: exploring,
+                exploration_seed: seed,
+                ..SearchConfig::default()
+            };
+            let board = Board::from_fen(SHARP_MIDDLEGAME).unwrap();
+            let mut e = AlphaBeta::with_config(board, 1 << 20, config);
+            completed(e.iterative_deepening_search(SearchParameters::to_depth(6), |_, _, _, _| {}))
+                .nodes
+        };
+        assert_eq!(nodes(true, 1), nodes(true, 1));
+        assert_ne!(nodes(true, 1), nodes(true, 2));
+        assert_eq!(nodes(false, 1), nodes(false, 2));
     }
 
     #[test]
