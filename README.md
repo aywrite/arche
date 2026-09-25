@@ -63,9 +63,10 @@ sampled node off, or that none did, for reading what the move ordering earns.
 reduction trusts over the same positions, or the ones an epd file names, along with the moves
 the pruning skipped, and asks a full depth search whether each fail low or skip threw a move
 away.
-`effort [depth] [every <n>] [cap <n>] [epd <file>] [off <switch>] [budget <n>]` searches them
-twice, the second time with one search switch off, and joins the two runs by the node, so that
-a row says what the rule removed outright, what it created, and where the effort it freed went.
+`effort [depth] [every <n>] [cap <n>] [epd <file>] [off <switch>[,<switch>]] [budget <n>]`
+searches them twice, the second time with one search switch off or two, and joins the two runs
+by the node, so that a row says what the rule removed outright, what it created, and where the
+effort it freed went.
 `terms [epd <file>]` prints what each quiet position's evaluation is made of, one coefficient
 per weight the position touches, which is what an offline fit of those weights reads.
 `--version` and `--help` are answered too.
