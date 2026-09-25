@@ -28,6 +28,14 @@ pub type MoveList = SmallVec<[Play; MOVE_LIST_INLINE]>;
 /// and nothing else.
 const MAX_GENERATED: usize = 512;
 
+/// See `Board::check_info`.
+#[derive(Clone, Copy, Debug)]
+pub(crate) struct CheckInfo {
+    king: u8,
+    squares: [u64; 6],
+    blockers: u64,
+}
+
 /// A move list while it is being generated: a plain array and a length.
 ///
 /// A `SmallVec` push asks whether the list has spilled and whether it is
@@ -1718,6 +1726,75 @@ impl Board {
             }
         }
         checkers
+    }
+
+    /// What `gives_check_with` reads about the other side's king, fixed for
+    /// as long as the position is: for each piece kind, the squares a piece
+    /// of ours of that kind would check it from, and our pieces that alone
+    /// stand between one of our sliders and it.
+    pub(crate) fn check_info(&self) -> CheckInfo {
+        let king = self.king_index(!self.active_color);
+        let attack_masks = &ATTACK_MASKS;
+        let magic = &MAGIC;
+        let occupied = self.white | self.black;
+        let (ours, _) = self.sides(self.active_color);
+        let pawns = match self.active_color {
+            Color::White => attack_masks.white_pawns[king as usize],
+            Color::Black => attack_masks.black_pawns[king as usize],
+        };
+        let diagonal = magic.get_diagonal_move(king, occupied);
+        let straight = magic.get_straight_move(king, occupied);
+        let mut snipers = (attack_masks.diagonal[king as usize] & (self.bishops() | self.queens())
+            | attack_masks.straight[king as usize] & (self.rooks() | self.queens()))
+            & ours;
+        let mut blockers = 0;
+        while snipers != 0 {
+            let sniper = pop_lsb(&mut snipers);
+            let between = BETWEEN[king as usize][sniper as usize] & occupied;
+            if between != 0 && between & (between - 1) == 0 {
+                blockers |= between & ours;
+            }
+        }
+        CheckInfo {
+            king,
+            squares: [
+                pawns,
+                attack_masks.knights[king as usize],
+                diagonal,
+                straight,
+                diagonal | straight,
+                0,
+            ],
+            blockers,
+        }
+    }
+
+    /// `gives_check`, answered from what `check_info` read of this position.
+    #[inline(always)]
+    pub(crate) fn gives_check_with(&self, info: &CheckInfo, m: &Play) -> bool {
+        let answer = self.gives_check_from(info, m);
+        debug_assert_eq!(
+            answer,
+            self.gives_check(m),
+            "the check table disagrees on {m}"
+        );
+        answer
+    }
+
+    #[inline(always)]
+    fn gives_check_from(&self, info: &CheckInfo, m: &Play) -> bool {
+        if m.castle || m.en_passant || m.promote.is_some() {
+            return self.gives_check(m);
+        }
+        let Some(piece) = self.get_piece_index(m.from) else {
+            return self.gives_check(m);
+        };
+        if info.squares[piece as usize] & (1u64 << m.to) != 0 {
+            return true;
+        }
+        info.blockers & (1u64 << m.from) != 0
+            && BETWEEN[info.king as usize][m.to as usize] & (1u64 << m.from) == 0
+            && BETWEEN[info.king as usize][m.from as usize] & (1u64 << m.to) == 0
     }
 
     /// Whether this move checks the opponent, asked of the board before the
