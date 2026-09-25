@@ -185,7 +185,7 @@ pub struct Event {
     /// nothing was generated or the table has marked every quiet down.
     pub history_max: i32,
     /// Whether the staged ordering ever scored the quiet band here, or the
-    /// front answered before `order_quiets` ran. A list too long for the
+    /// front answered before the quiets were keyed. A list too long for the
     /// stack is sorted whole, memories included, and still reads unscored;
     /// such a node is rare and shows itself by its generated count.
     pub quiets_scored: bool,

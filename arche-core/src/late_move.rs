@@ -478,9 +478,6 @@ impl Shallow {
                 .gives_check_with(check.get_or_insert_with(|| search.board.check_info()), m)
     }
 
-    /// Whether the node has searched the count's moves a ply already. The
-    /// node's own integers and nothing else: no board read, no evaluation
-    /// and no history.
     /// Whether either rule would drop every quiet move from here on that
     /// neither gives check nor promotes: the half of `skips` that does not
     /// read the move. Both parts are latches while alpha stays short of a
@@ -499,6 +496,9 @@ impl Shallow {
             && (self.counted(searched) || self.under_alpha(search, eval, alpha))
     }
 
+    /// Whether the node has searched the count's moves a ply already. The
+    /// node's own integers and nothing else: no board read, no evaluation
+    /// and no history.
     #[inline]
     fn counted(&self, searched: usize) -> bool {
         self.count.is_some_and(|count| searched >= count)

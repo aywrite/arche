@@ -5,14 +5,18 @@
 //! `Board::see` prices as winning or even, the killers, the quiet moves by
 //! history, and the losing captures last.
 //!
-//! The list is sorted in two stages. `order` keys the table's move and the
-//! captures and leaves the quiet moves in generated order between the two
-//! capture bands; `order_quiets` scores and sorts the quiet moves, and the
-//! search calls it only when it reaches the first of them. Both sorts are
-//! stable and generation order breaks their ties. The quiet moves are
-//! scored by the memories as they stand when the search reaches them, not
-//! when the node was entered, so the node count tests pin the sort, the
-//! generation order and when the scoring happens.
+//! The list is ordered in two stages. `order` sorts the table's move and
+//! the captures and leaves the quiet moves in generated order between the
+//! two capture bands. The search keys the quiet moves (`key_quiets`) only
+//! when it reaches the first of them, and orders them only as far as it
+//! reads: `pick` selects the first few, then `sort_rest` sorts what is left,
+//! or once a shallow skip rule turns on, `keep_unskippable` keeps only the
+//! moves it would still search. A node the reduction ledger watches has its
+//! quiets sorted whole by `order_quiets` instead. Generation order breaks
+//! every tie, since each key carries the move's place in its low bits. The
+//! quiet moves are scored by the memories as they stand when the search
+//! reaches them, not when the node was entered, so the node count tests pin
+//! the order, the generation order and when the scoring happens.
 //!
 //! Two memories carry across nodes: the killers, the quiet moves that cut
 //! a node off at each distance from the root, and the history, how often
@@ -104,7 +108,7 @@ pub(crate) struct Ordered {
     pub(crate) table_at: Option<usize>,
     /// How many captures the swap prices as losing, which sit at the end
     /// of the list. The quiet moves are what is left between them and
-    /// the front, so `order_quiets` is handed this rather than scanning
+    /// the front, so the second stage is handed this rather than scanning
     /// for the first of them.
     pub(crate) losing: usize,
 }
@@ -243,8 +247,8 @@ impl MoveOrdering {
     /// winning and even captures, sorted, at the front of the list; the
     /// quiet moves behind them in generated order; the losing captures,
     /// sorted, at the end. Returns how many moves the front holds, and the
-    /// search calls `order_quiets` when it reaches the first move past
-    /// them, so a node the front cuts off never scores a quiet move. It
+    /// search keys the quiets when it reaches the first move past them, so
+    /// a node the front cuts off never scores a quiet move. It
     /// returns where the table's move sorted as well, since the search
     /// has to pass over a move it played before the list was generated.
     ///
@@ -346,13 +350,15 @@ impl MoveOrdering {
         }
     }
 
-    /// The second stage: `rest` starts at the first move past the front,
-    /// and the quiet moves run from there to the first losing capture.
-    /// They are scored by the memories as they stand now, killers first
-    /// and the rest by history, and sorted in place; the losing captures
-    /// behind them are already in order. A move the history has marked
-    /// down goes behind the quiets nothing is known about and still ahead
-    /// of every losing capture.
+    /// The second stage sorted whole, for a node the reduction ledger
+    /// watches; the search orders every other node's quiets lazily with
+    /// `key_quiets` and the three beside it. `rest` starts at the first
+    /// move past the front, and the quiet moves run from there to the
+    /// first losing capture. They are scored by the memories as they stand
+    /// now, killers first and the rest by history, and sorted in place; the
+    /// losing captures behind them are already in order. A move the history
+    /// has marked down goes behind the quiets nothing is known about and
+    /// still ahead of every losing capture.
     ///
     /// `losing` is how many of those captures `order` counted, so the
     /// run is the rest of `rest` and nothing here looks for its end.
