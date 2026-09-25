@@ -33,8 +33,9 @@
 //! plies a scout gives up off a table by the node's depth and the move's
 //! index.
 //!
-//! The two shallow rungs stop a ply under the model's floor, so a shallow
-//! rule and the model never decide at one depth.
+//! The two shallow rungs stop a ply under the deeper scout's floor. The
+//! skip reaches that ply too, and there it is asked only of a move neither
+//! shallow rule dropped.
 //!
 //! `features` derives the ledger's columns once, and the gate and the
 //! ledger both read them, so the score that decided a move and the row
@@ -93,11 +94,17 @@ pub(crate) const DEEP_REDUCTION_MIN_DEPTH: u8 = DEEP_REDUCTION + 2;
 // so the table below cannot drift away from the pair it replaced.
 const DEEP_REDUCTION_BONUS: u8 = DEEP_REDUCTION - LATE_MOVE_REDUCTION;
 // The deepest node either shallow rule decides, written as a ply under the
-// model's own floor rather than as a three. The shallow rules and the model
-// never decide at one depth: from `DEEP_REDUCTION_MIN_DEPTH` the model has
-// the skip and both shallow rules are silent.
+// deeper scout's floor rather than as a three. From `DEEP_REDUCTION_MIN_DEPTH`
+// the model has both its decisions and both shallow rules are silent.
 pub(crate) const SHALLOW_MAX_DEPTH: u8 = DEEP_REDUCTION_MIN_DEPTH - 1;
 const _: () = assert!(SHALLOW_MAX_DEPTH < DEEP_REDUCTION_MIN_DEPTH);
+// The shallowest node the model's skip decides: a ply under the deeper
+// scout's floor, and the reduction's own floor. Here the skip shares a
+// depth with the two shallow rules, which ask first, so it reaches only a
+// late quiet neither of them dropped. The deeper scout keeps its own floor,
+// since under it the scout would be quiescence.
+pub(crate) const LATE_MOVE_PRUNING_MIN_DEPTH: u8 = DEEP_REDUCTION_MIN_DEPTH - 1;
+const _: () = assert!(LATE_MOVE_PRUNING_MIN_DEPTH >= LATE_MOVE_MIN_DEPTH);
 // ln(x) at a scale of 1024, for every index the table below has. Held as
 // integers, so the table is built at compile time and two targets cannot
 // disagree about it. Zero at both ends of the bottom, which puts the
@@ -573,16 +580,15 @@ fn node_admits(in_check: bool, alpha: Score, beta: Score, root_bounds: RootBound
 /// Whether a move `reduces` already accepted is scouted a ply shallower
 /// than the amount alone would give it, or not searched at all: the skip is
 /// asked first, off the model's score, and the deeper scout after it, off
-/// whichever rule `deepens` reads. The node must be deep enough for the
-/// deeper scout to keep its full width ply, a floor the skip inherits,
-/// and the move must not give check: the exemption arm measured checks
-/// as the scout's blind spot, so neither the deeper scout nor the skip
-/// is offered one. The check test runs last because the slider probes
+/// whichever rule `deepens` reads. The deeper scout needs a node deep
+/// enough to keep its full width ply, and the skip asks from a ply
+/// shallower. Neither is offered a move that gives check: the exemption
+/// arm measured checks as the scout's blind spot. The check test runs last because the slider probes
 /// cost more than everything before them.
 fn gate(search: &Search, node: &mut Node, m: &Play, searched: usize) -> Verdict {
-    if (!search.config.deep_reductions && !search.config.late_move_pruning)
-        || node.depth < DEEP_REDUCTION_MIN_DEPTH
-    {
+    let deepens_here = search.config.deep_reductions && node.depth >= DEEP_REDUCTION_MIN_DEPTH;
+    let skips_here = search.config.late_move_pruning && node.depth >= LATE_MOVE_PRUNING_MIN_DEPTH;
+    if !deepens_here && !skips_here {
         return Verdict::Scout(amount(search.config, node.depth, searched, 0));
     }
     let eval = evaluation(search, node);
@@ -597,14 +603,14 @@ fn gate(search: &Search, node: &mut Node, m: &Play, searched: usize) -> Verdict 
         alpha_gap: i64::from(node.alpha) - eval,
         generated: f.generated,
     });
-    if search.config.late_move_pruning && score <= LATE_MOVE_PRUNING_THRESHOLD {
+    if skips_here && score <= LATE_MOVE_PRUNING_THRESHOLD {
         return if search.board.gives_check(m) {
             Verdict::Scout(amount(search.config, node.depth, searched, 0))
         } else {
             Verdict::Skip
         };
     }
-    if search.config.deep_reductions
+    if deepens_here
         && deepens(search.config, node.depth, searched, score)
         && !search.board.gives_check(m)
     {
@@ -719,9 +725,10 @@ mod tests {
     use super::{
         ATTENTION_KILLER, AttentionFeatures, DEEP_INDEX_FLOOR, DEEP_INDEX_SLOPE, DEEP_REDUCTION,
         DEEP_REDUCTION_BONUS, DEEP_REDUCTION_MIN_DEPTH, DEEP_REDUCTION_THRESHOLD, Features,
-        LATE_MOVE_COUNT, LATE_MOVE_MIN_DEPTH, LATE_MOVE_PRUNING_THRESHOLD, LATE_MOVE_REDUCTION,
-        LATE_MOVE_THRESHOLD, Node, QUIET_FUTILITY_MARGIN, REDUCTION, SHALLOW_MAX_DEPTH, Search,
-        Shallow, Verdict, amount, attention_score, decide, features,
+        LATE_MOVE_COUNT, LATE_MOVE_MIN_DEPTH, LATE_MOVE_PRUNING_MIN_DEPTH,
+        LATE_MOVE_PRUNING_THRESHOLD, LATE_MOVE_REDUCTION, LATE_MOVE_THRESHOLD, Node,
+        QUIET_FUTILITY_MARGIN, REDUCTION, SHALLOW_MAX_DEPTH, Search, Shallow, Verdict, amount,
+        attention_score, decide, features,
     };
     use crate::board::{Board, MoveList, fens, play_named};
     use crate::census::Table;
@@ -1657,14 +1664,20 @@ mod tests {
             },
         );
         assert_eq!(alone.verdict(&quiet, 10, 6, alpha, beta), Verdict::Skip);
-        // and under the shared floor nothing is scored at all
+        // a ply under the deeper scout's floor the skip still asks, and
+        // the deeper scout alone scores nothing there
         let mut s = Stand::new(fens::A_CAPTURE_AND_QUIETS, pruning());
         assert_eq!(
-            s.verdict(&quiet, 10, DEEP_REDUCTION_MIN_DEPTH - 1, alpha, beta),
+            s.verdict(&quiet, 10, LATE_MOVE_PRUNING_MIN_DEPTH, alpha, beta),
+            Verdict::Skip
+        );
+        let mut d = Stand::new(fens::A_CAPTURE_AND_QUIETS, deep_reducing());
+        assert_eq!(
+            d.verdict(&quiet, 10, DEEP_REDUCTION_MIN_DEPTH - 1, alpha, beta),
             Verdict::Scout(LATE_MOVE_REDUCTION)
         );
         assert!(
-            s.eval.is_none() && s.history_max.is_none(),
+            d.eval.is_none() && d.history_max.is_none(),
             "the refused gate computed the features"
         );
     }
@@ -2155,8 +2168,11 @@ mod tests {
             off.verdict(&quiet, SEARCHED, 2, alpha, alpha + 1),
             Verdict::Scout(0)
         );
+        // the model's skip answers at depth three under `pruning`, so the
+        // reduction is read without it
+        let mut reducing = Stand::new(fens::A_CAPTURE_AND_QUIETS, deep_reducing());
         assert_eq!(
-            off.verdict(&quiet, SEARCHED, LATE_MOVE_MIN_DEPTH, alpha, alpha + 1),
+            reducing.verdict(&quiet, SEARCHED, LATE_MOVE_MIN_DEPTH, alpha, alpha + 1),
             Verdict::Scout(LATE_MOVE_REDUCTION),
             "the reduction at depth three is not a shallow rule's to move"
         );

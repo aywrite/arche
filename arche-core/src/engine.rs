@@ -339,14 +339,16 @@ pub struct SearchConfig {
     pub deep_reductions: bool,
     /// Whether a late quiet the attention model prices in its deadest band
     /// is searched at all. Rides on the reduction's eligibility and the
-    /// deep reduction's depth floor and checking exemption; its threshold is
-    /// a deeper cut of the attention model's score.
+    /// deep reduction's checking exemption, and asks from a ply under the
+    /// deep reduction's depth floor; its threshold is a deeper cut of the
+    /// attention model's score.
     pub late_move_pruning: bool,
     /// Whether a quiet move after the node's first is dropped at depths one
     /// to three because the node's static evaluation plus
     /// `QUIET_FUTILITY_MARGIN` a ply cannot reach alpha. Its ceiling is a
-    /// ply under `DEEP_REDUCTION_MIN_DEPTH`, so the rule and the attention
-    /// model never decide at one depth, and it carries the shortcuts'
+    /// ply under `DEEP_REDUCTION_MIN_DEPTH`, so the rule and the deeper
+    /// scout never decide at one depth. At that ply the model's skip asks
+    /// after it, of a move it let through. It carries the shortcuts'
     /// exemptions: not in check, no mate window, beta not the root's, and a
     /// side with a piece besides pawns. A capture, a promotion and a quiet
     /// that gives check are exempt as the reduction's are. Off, the search
