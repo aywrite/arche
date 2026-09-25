@@ -356,9 +356,11 @@ of these again without saying what is different this time.
   takes off the shallowest nodes is given back as the tree around them
   widens, so nothing of it is left at the depths a game reaches. Both
   together are 1.18% of the bench tree, 223 tactical and 91625 strategic.
-  Re-ask only with a reason the depth three nodes have become expensive,
-  which is a change to what a depth one search costs rather than a change to
-  the reduction.
+  The skip alone at depth three was later played against `57ec3c6`: -11 ±21
+  over 500 games at 10+0.1, an sprt of [0, 10] stopped after that batch
+  because its estimate was under zero. Re-ask only with a reason the depth
+  three nodes have become expensive, which is a change to what a depth one
+  search costs rather than a change to the reduction.
 - Widening the late move pruning band, so that a late quiet the attention
   model prices at or under -6000 is skipped where the threshold stood at
   -7954. The offline reading was favourable and the games could not see it.
