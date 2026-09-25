@@ -25,9 +25,9 @@ set -euo pipefail
 declare -A LADDER TIME_CONTROL GAMES MINUTES RATED_AT ARTIFACT
 
 # The ccrl blitz list of 5 September 2026. Eight rungs of six lineages
-# bracketing 2700, at 20+0.2, which is roughly a sixth of 2+1. Fifty games
+# bracketing 2800, at 20+0.2, which is roughly a sixth of 2+1. Fifty games
 # against a rung take about half an hour.
-LADDER[blitz]=stash:v20.0.1:2511,tantabus:v2.0.0:2555,weiss:v0.9:2650,blunder:v8.5.5:2663,stash:v21.0:2713,inanis:v1.1.0:2763,zahak:6.2:2825,weiss:v0.10:2846
+LADDER[blitz]=tantabus:v2.0.0:2555,blunder:v8.5.5:2663,stash:v21.0:2713,inanis:v1.1.0:2763,zahak:6.2:2825,weiss:v0.10:2846,weiss:v1.0:2896,stash:v25.0:2932
 TIME_CONTROL[blitz]=20+0.2
 GAMES[blitz]=50
 MINUTES[blitz]=90
