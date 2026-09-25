@@ -91,7 +91,10 @@ impl fmt::Display for BaseConversions {
 // compile time too: a const initialiser may not read a static
 const BASE_CONVERSIONS: BaseConversions = BaseConversions::new();
 // the lint is a guard against a const that loops forever; this one is only
-// long, a hundred thousand ray walks filling the two attack tables
+// long, a hundred thousand ray walks filling the two attack tables. Each call
+// in them is interpreted, so the loops make none they can do without (`d < 4`
+// rather than `directions.len()`), which keeps the build short of rustc's
+// warning that it is taking a long time.
 #[allow(long_running_const_eval)]
 pub(crate) static MAGIC: Magic = Magic::new();
 
@@ -104,7 +107,7 @@ pub(crate) static MAGIC: Magic = Magic::new();
 const fn blocker_mask(mailbox: &BaseConversions, from: u8, directions: [isize; 4]) -> u64 {
     let mut mask = 0u64;
     let mut d = 0;
-    while d < directions.len() {
+    while d < 4 {
         let step = directions[d];
         let mut square = from;
         while let Some(next) = mailbox.step(square, step) {
@@ -134,7 +137,7 @@ const fn attacks_from(
 ) -> u64 {
     let mut moves = 0u64;
     let mut d = 0;
-    while d < directions.len() {
+    while d < 4 {
         let step = directions[d];
         let mut square = from;
         while let Some(next) = mailbox.step(square, step) {
@@ -152,17 +155,16 @@ const fn attacks_from(
 /// One subset of the mask's set bits: bit `n` of `index` says whether the
 /// mask's `n`th set bit is occupied.
 const fn blocker_configuration(mask: u64, index: u64) -> u64 {
-    let bits = mask.count_ones();
-    let mut board = mask;
+    let mut board = 0u64;
     let mut remaining = mask;
-    let mut bit = 0;
-    while bit < bits {
-        let square = remaining.trailing_zeros();
-        remaining &= remaining - 1;
-        if index & (1u64 << bit) == 0 {
-            board &= !(1u64 << square);
+    let mut index = index;
+    while remaining != 0 {
+        let rest = remaining & (remaining - 1);
+        if index & 1 != 0 {
+            board |= remaining ^ rest;
         }
-        bit += 1;
+        remaining = rest;
+        index >>= 1;
     }
     board
 }
