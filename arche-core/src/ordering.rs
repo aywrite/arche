@@ -25,7 +25,7 @@
 //! so nothing may outrank that bonus at the root; the deepening loop says
 //! why.
 
-use crate::board::{Board, MOVE_LIST_INLINE, MoveList};
+use crate::board::{Board, MOVE_LIST_INLINE, MoveList, SEE_VALUES};
 use crate::engine::MAX_PLY;
 use crate::misc::{Color, Piece};
 use crate::play::Play;
@@ -129,6 +129,42 @@ pub(crate) struct MoveOrdering {
     /// place indexes.
     quiet_keys: Box<[[i64; MOVE_LIST_INLINE]; MAX_PLY as usize]>,
     quiet_orig: Box<[[Play; MOVE_LIST_INLINE]; MAX_PLY as usize]>,
+    /// Quiescence's captures at each ply, still to be taken, by the bounds
+    /// on their keys: see `Captures`.
+    captures: Box<[Pool; MAX_PLY as usize]>,
+}
+
+/// The bounds on the keys of one quiescence list's captures: `best` is the
+/// key the capture would get if the swap won the whole victim, `worst` the
+/// key if it lost the capturer as well, the two are equal once the swap has
+/// run, and both carry the capture's place in their low bits. `Captures`
+/// keeps the ones still to be taken sorted by `best`.
+struct Pool {
+    best: [i64; MOVE_LIST_INLINE],
+    worst: [i64; MOVE_LIST_INLINE],
+}
+
+impl Pool {
+    const EMPTY: Self = Self {
+        best: [0; MOVE_LIST_INLINE],
+        worst: [0; MOVE_LIST_INLINE],
+    };
+
+    /// Put the pair at `at` in its place among `at..end`, which is sorted
+    /// by `best` past `at`: a key only ever gets worse, so it only moves
+    /// towards the end.
+    #[inline]
+    fn settle(&mut self, at: usize, end: usize) {
+        let (best, worst) = (self.best[at], self.worst[at]);
+        let mut j = at;
+        while j + 1 < end && self.best[j + 1] < best {
+            self.best[j] = self.best[j + 1];
+            self.worst[j] = self.worst[j + 1];
+            j += 1;
+        }
+        self.best[j] = best;
+        self.worst[j] = worst;
+    }
 }
 
 impl MoveOrdering {
@@ -140,6 +176,7 @@ impl MoveOrdering {
             history: [[[0; 64]; 64]; 2],
             quiet_keys: Box::new([[0; MOVE_LIST_INLINE]; MAX_PLY as usize]),
             quiet_orig: Box::new([[NOWHERE; MOVE_LIST_INLINE]; MAX_PLY as usize]),
+            captures: Box::new([Pool::EMPTY; MAX_PLY as usize]),
         }
     }
 
@@ -511,6 +548,326 @@ impl MoveOrdering {
             run[j] = m;
         }
         kept
+    }
+}
+
+/// Quiescence's list outside check, taken in the order `order` gives it
+/// without running the swap on every capture first.
+///
+/// `order` puts the table's move first, then the captures the swap prices
+/// as winning or even, then the moves with no victim in generated order,
+/// then the losing captures, each band sorted by key. The swap's result is
+/// bracketed by the victim's price (nothing recaptures) and the victim's
+/// less the capturer's (the capturer is lost and the exchange stops), so a
+/// capture's key lies between two keys that cost nothing to work out. The
+/// next capture is the one with the best upper key, and it needs the swap
+/// only when its lower key does not already beat the next capture's upper
+/// key or when the two straddle the line between the bands.
+///
+/// Two more captures are spared the swap. One quiescence's delta margin
+/// will skip is skipped wherever the order puts it, since alpha only
+/// rises, so it leaves the pool unpriced. The exception is an alpha that
+/// reaches a mate score, which lifts the margin: `mate_found` then puts
+/// back each such capture the full order would still have to come to. And
+/// once the best capture left is losing, every one left is, and quiescence
+/// skips a losing capture that does not promote, so the band is priced
+/// only when one of them promotes or when the skip is off.
+pub(crate) struct Captures {
+    ply: usize,
+    /// The captures still to be taken are the pool's `head..end`.
+    head: usize,
+    end: usize,
+    table: Option<usize>,
+    stage: Stage,
+    /// The places of the moves with no victim, still to be taken.
+    plain: u64,
+    /// The places of the captures in the pool, and of those that promote.
+    pooled: u64,
+    promoting: u64,
+    /// The places of the captures the delta margin skipped unpriced.
+    dropped: u64,
+    /// Where the move last handed out sorts, against which a capture put
+    /// back by `mate_found` is placed: a move with no victim counts as
+    /// zero, between the bands, and the table's move ahead of everything.
+    /// A capture's key may have been handed out as a bound, so the capture
+    /// is kept instead and priced if a mate is found.
+    last: i64,
+    last_capture: Option<usize>,
+}
+
+#[derive(Clone, Copy, PartialEq, Eq)]
+enum Stage {
+    Table,
+    Winning,
+    Plain,
+    Losing,
+    LosingPriced,
+}
+
+impl Captures {
+    /// The list as generated: the table's move is found and the captures
+    /// go into the pool with their bounds. `ply` is the quiescence node's
+    /// distance from the root, below the rail.
+    pub(crate) fn new(
+        ordering: &mut MoveOrdering,
+        board: &Board,
+        moves: &[Play],
+        table_move: Option<Play>,
+        ply: usize,
+    ) -> Self {
+        debug_assert!(moves.len() <= MOVE_LIST_INLINE);
+        let pool = &mut ordering.captures[ply];
+        let mut end = 0;
+        let mut table = None;
+        let mut plain = 0;
+        let mut pooled = 0;
+        let mut promoting = 0;
+        for (i, m) in moves.iter().enumerate() {
+            if table_move == Some(*m) {
+                table = Some(i);
+                continue;
+            }
+            let Some(victim) = m.capture else {
+                plain |= 1 << i;
+                continue;
+            };
+            pooled |= 1 << i;
+            if m.promote.is_some() {
+                promoting |= 1 << i;
+            }
+            let attacker = board
+                .get_piece_index(m.from)
+                .expect("a capture moves a piece of ours");
+            let won = i64::from(SEE_VALUES[victim as usize]);
+            let lost = won - i64::from(SEE_VALUES[attacker as usize]);
+            let tiebreak = VICTIM_SCORES[victim as usize] + ATTACKER_SCORES[attacker as usize];
+            let best = pack(-banded(won, tiebreak), i);
+            let worst = pack(-banded(lost, tiebreak), i);
+            // sorted by the upper key as they arrive, a handful at most
+            let mut j = end;
+            while j > 0 && pool.best[j - 1] > best {
+                pool.best[j] = pool.best[j - 1];
+                pool.worst[j] = pool.worst[j - 1];
+                j -= 1;
+            }
+            pool.best[j] = best;
+            pool.worst[j] = worst;
+            end += 1;
+        }
+        Self {
+            ply,
+            head: 0,
+            end,
+            table,
+            stage: Stage::Table,
+            plain,
+            pooled,
+            promoting,
+            dropped: 0,
+            last: i64::MIN,
+            last_capture: None,
+        }
+    }
+
+    /// The next move and whether it is a losing capture, or none when the
+    /// list is done. `dropped` says whether the delta margin skips a
+    /// capture of that victim now, and `skip_losing` whether quiescence
+    /// skips the losing captures that do not promote now.
+    #[inline]
+    pub(crate) fn next(
+        &mut self,
+        ordering: &mut MoveOrdering,
+        board: &Board,
+        moves: &[Play],
+        dropped: impl Fn(Piece) -> bool,
+        skip_losing: bool,
+    ) -> Option<(Play, bool)> {
+        loop {
+            match self.stage {
+                Stage::Table => {
+                    self.stage = Stage::Winning;
+                    if let Some(t) = self.table {
+                        return Some((moves[t], false));
+                    }
+                }
+                Stage::Winning => match self.head_key(ordering, board, moves, &dropped) {
+                    Some(key) if key < 0 => return Some(self.take(moves, key, false)),
+                    _ => self.stage = Stage::Plain,
+                },
+                Stage::Plain => {
+                    if self.plain != 0 {
+                        let i = self.plain.trailing_zeros() as usize;
+                        self.plain &= self.plain - 1;
+                        self.last = 0;
+                        self.last_capture = None;
+                        return Some((moves[i], false));
+                    }
+                    self.stage = Stage::Losing;
+                }
+                Stage::Losing => {
+                    if self.pooled == 0 || skip_losing && self.pooled & self.promoting == 0 {
+                        return None;
+                    }
+                    self.price_all(ordering, board, moves);
+                    self.stage = Stage::LosingPriced;
+                }
+                Stage::LosingPriced => {
+                    let key = self.head_key(ordering, board, moves, &dropped)?;
+                    return Some(self.take(moves, key, true));
+                }
+            }
+        }
+    }
+
+    /// Hand out the capture at the head of the pool, whose key, or a bound
+    /// on it, is `key`.
+    #[inline]
+    fn take(&mut self, moves: &[Play], key: i64, losing: bool) -> (Play, bool) {
+        let place = (key & PLACE_MASK) as usize;
+        self.head += 1;
+        self.pooled &= !(1 << place);
+        self.last_capture = Some(place);
+        (moves[place], losing)
+    }
+
+    /// The key of the capture that comes next, the head of the pool once
+    /// its bounds settle that, or none when the pool is empty. A capture
+    /// `dropped` names leaves the pool rather than being priced. The key
+    /// returned may be a bound, but it is on the right side of zero.
+    #[inline(always)]
+    fn head_key(
+        &mut self,
+        ordering: &mut MoveOrdering,
+        board: &Board,
+        moves: &[Play],
+        dropped: &impl Fn(Piece) -> bool,
+    ) -> Option<i64> {
+        let pool = &mut ordering.captures[self.ply];
+        loop {
+            if self.head == self.end {
+                return None;
+            }
+            let (best, worst) = (pool.best[self.head], pool.worst[self.head]);
+            if best == worst {
+                return Some(best);
+            }
+            let next = if self.head + 1 < self.end {
+                pool.best[self.head + 1]
+            } else {
+                i64::MAX
+            };
+            if worst < next && (best < 0) == (worst < 0) {
+                return Some(best);
+            }
+            let place = (best & PLACE_MASK) as usize;
+            let m = &moves[place];
+            let victim = m.capture.expect("the pool holds captures");
+            if m.promote.is_none() && dropped(victim) {
+                self.dropped |= 1 << place;
+                self.pooled &= !(1 << place);
+                self.head += 1;
+                continue;
+            }
+            let key = priced(board, m, best);
+            pool.best[self.head] = key;
+            pool.worst[self.head] = key;
+            pool.settle(self.head, self.end);
+        }
+    }
+
+    /// Run the swap on every capture left, for a losing band that will be
+    /// searched rather than skipped.
+    #[inline(never)]
+    fn price_all(&mut self, ordering: &mut MoveOrdering, board: &Board, moves: &[Play]) {
+        let pool = &mut ordering.captures[self.ply];
+        for at in self.head..self.end {
+            if pool.best[at] != pool.worst[at] {
+                let best = pool.best[at];
+                let key = priced(board, &moves[(best & PLACE_MASK) as usize], best);
+                pool.best[at] = key;
+                pool.worst[at] = key;
+            }
+        }
+        // exact keys, sorted afresh
+        for i in self.head + 1..self.end {
+            let key = pool.best[i];
+            let mut j = i;
+            while j > self.head && pool.best[j - 1] > key {
+                pool.best[j] = pool.best[j - 1];
+                pool.worst[j] = pool.worst[j - 1];
+                j -= 1;
+            }
+            pool.best[j] = key;
+            pool.worst[j] = key;
+        }
+    }
+
+    /// Alpha has just reached a mate score, which lifts the delta margin:
+    /// every capture it skipped unpriced whose key falls after the move
+    /// last handed out goes back into the pool, priced.
+    #[inline(never)]
+    pub(crate) fn mate_found(
+        &mut self,
+        ordering: &mut MoveOrdering,
+        board: &Board,
+        moves: &[Play],
+    ) {
+        let last = match self.last_capture {
+            Some(place) => {
+                let m = &moves[place];
+                pack(
+                    -capture_score(board, m, m.capture.expect("a capture")),
+                    place,
+                )
+            }
+            None => self.last,
+        };
+        let pool = &mut ordering.captures[self.ply];
+        let mut dropped = self.dropped;
+        self.dropped = 0;
+        while dropped != 0 {
+            let place = dropped.trailing_zeros() as usize;
+            dropped &= dropped - 1;
+            let m = &moves[place];
+            let key = pack(
+                -capture_score(board, m, m.capture.expect("a capture")),
+                place,
+            );
+            if key <= last {
+                continue;
+            }
+            // the head moves back one to make room, and the key settles
+            // among the rest from there
+            self.head -= 1;
+            pool.best[self.head] = key;
+            pool.worst[self.head] = key;
+            pool.settle(self.head, self.end);
+            self.pooled |= 1 << place;
+        }
+    }
+}
+
+/// A capture's exact key worked out from its upper one, which carries its
+/// tiebreak and its place: the swap's result replaces the victim's price.
+#[inline(always)]
+fn priced(board: &Board, m: &Play, best: i64) -> i64 {
+    let victim = m.capture.expect("only captures are priced");
+    let won = i64::from(SEE_VALUES[victim as usize]);
+    let see = i64::from(board.see(m));
+    let upper = -(best >> PLACE_BITS);
+    let tiebreak = upper - WINNING_CAPTURE_BASE - won * SEE_UNIT;
+    pack(-banded(see, tiebreak), (best & PLACE_MASK) as usize)
+}
+
+/// A capture's score from a swap result and its tiebreak, as
+/// `capture_score` banks it.
+#[inline(always)]
+fn banded(see: i64, tiebreak: i64) -> i64 {
+    let score = see * SEE_UNIT + tiebreak;
+    if see >= 0 {
+        WINNING_CAPTURE_BASE + score
+    } else {
+        score
     }
 }
 
@@ -1300,5 +1657,170 @@ mod stack_sort {
             let (sorted, expected) = both_orders(&input);
             assert_eq!(sorted, expected, "keys {input:?}");
         }
+    }
+}
+
+#[cfg(test)]
+mod lazy_captures {
+    use super::{Captures, MoveOrdering};
+    use crate::board::Board;
+    use crate::engine::DELTA_MARGIN;
+    use crate::misc::{Piece, Score};
+    use crate::play::Play;
+    use crate::value::is_mate;
+
+    /// What quiescence skips outside check, given whether the move is a
+    /// losing capture: the delta margin, then the losing capture skip,
+    /// neither for a promotion or under a mate alpha.
+    fn skipped(m: &Play, losing: bool, standing: Score, alpha: Score) -> bool {
+        let Some(captured) = m.capture else {
+            return false;
+        };
+        if is_mate(alpha) || m.promote.is_some() {
+            return false;
+        }
+        standing + crate::eval::material(captured) as Score + DELTA_MARGIN < alpha || losing
+    }
+
+    /// A deterministic stand in for what the searched moves return: most
+    /// leave alpha alone, some raise it a little, and some to a mate.
+    struct Script(u64);
+
+    impl Script {
+        fn after(&mut self, alpha: Score) -> Score {
+            self.0 = self
+                .0
+                .wrapping_mul(6_364_136_223_846_793_005)
+                .wrapping_add(1);
+            match (self.0 >> 33) % 8 {
+                0 | 1 => alpha
+                    .saturating_add(((self.0 >> 40) % 400) as Score)
+                    .min(28_000),
+                2 => 29_990,
+                _ => alpha,
+            }
+        }
+    }
+
+    /// The moves searched, in order, when the whole list is sorted first.
+    fn by_the_sort(
+        board: &Board,
+        table: Option<Play>,
+        standing: Score,
+        alpha: Score,
+        seed: u64,
+    ) -> Vec<Play> {
+        let mut moves = board.generate_captures();
+        let front = MoveOrdering::new()
+            .order(board, &mut moves, table, None)
+            .front;
+        let mut script = Script(seed);
+        let mut alpha = alpha;
+        let mut searched = Vec::new();
+        for (i, m) in moves.iter().enumerate() {
+            if skipped(m, i >= front, standing, alpha) {
+                continue;
+            }
+            searched.push(*m);
+            alpha = script.after(alpha);
+        }
+        searched
+    }
+
+    /// The same, taken from `Captures`.
+    fn by_the_pool(
+        board: &Board,
+        table: Option<Play>,
+        standing: Score,
+        alpha: Score,
+        seed: u64,
+    ) -> Vec<Play> {
+        let moves = board.generate_captures();
+        let mut ordering = MoveOrdering::new();
+        let mut captures = Captures::new(&mut ordering, board, &moves, table, 3);
+        let mut script = Script(seed);
+        let mut alpha = alpha;
+        let mut searched = Vec::new();
+        loop {
+            let skips = !is_mate(alpha);
+            let dropped = |captured: Piece| {
+                skips && standing + crate::eval::material(captured) as Score + DELTA_MARGIN < alpha
+            };
+            let Some((m, losing)) = captures.next(&mut ordering, board, &moves, dropped, skips)
+            else {
+                break;
+            };
+            if skipped(&m, losing, standing, alpha) {
+                continue;
+            }
+            searched.push(m);
+            let raised = script.after(alpha);
+            if !is_mate(alpha) && is_mate(raised) {
+                captures.mate_found(&mut ordering, board, &moves);
+            }
+            alpha = raised;
+        }
+        searched
+    }
+
+    /// Every position of the three suites and every capture one move on
+    /// from each, under a spread of standing evals and alphas, each with
+    /// no table move and with each capture as the table's: the pool
+    /// searches the moves the sorted list does, in the same order.
+    #[test]
+    fn the_pool_searches_what_the_sorted_list_does() {
+        let suites = [
+            include_str!("../bench.epd"),
+            include_str!("../tactics.epd"),
+            include_str!("../strategy.epd"),
+        ];
+        let windows: [(Score, Score); 5] =
+            [(0, 0), (-300, 100), (0, 500), (-50, -50), (100, 29_500)];
+        let mut lists = 0;
+        let mut several = 0;
+        for line in suites.iter().flat_map(|s| s.lines()) {
+            let fields: Vec<&str> = line.split_whitespace().take(4).collect();
+            if fields.len() < 4 {
+                continue;
+            }
+            let Ok(mut board) = Board::from_fen(&format!("{} 0 1", fields.join(" "))) else {
+                continue;
+            };
+            if board.in_check() {
+                continue;
+            }
+            let mut boards = vec![board.to_fen()];
+            for m in board.generate_captures().iter() {
+                if board.make_move(m) {
+                    if !board.in_check() {
+                        boards.push(board.to_fen());
+                    }
+                    board.undo_move();
+                }
+            }
+            for fen in boards {
+                let board = Board::from_fen(&fen).expect("a fen the board wrote");
+                let moves = board.generate_captures();
+                let tables = std::iter::once(None).chain(moves.iter().take(3).map(|m| Some(*m)));
+                for table in tables {
+                    for (w, &(standing, alpha)) in windows.iter().enumerate() {
+                        let seed = (lists as u64) << 8 | w as u64;
+                        let sorted = by_the_sort(&board, table, standing, alpha, seed);
+                        let pooled = by_the_pool(&board, table, standing, alpha, seed);
+                        assert_eq!(
+                            pooled, sorted,
+                            "{fen} table {table:?} window {standing} {alpha}"
+                        );
+                        several += usize::from(sorted.len() > 1);
+                        lists += 1;
+                    }
+                }
+            }
+        }
+        assert!(lists > 10_000, "only {lists} lists were compared");
+        assert!(
+            several > 1_000,
+            "only {several} lists searched more than one move"
+        );
     }
 }

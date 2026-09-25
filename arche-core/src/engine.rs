@@ -1,14 +1,14 @@
 // SPDX-License-Identifier: GPL-3.0-or-later
 // Copyright (C) 2022-2026 Andrew Wright
 
-use crate::board::Board;
+use crate::board::{Board, MOVE_LIST_INLINE};
 use crate::census;
 use crate::effort;
 use crate::eval;
 use crate::late_move;
 use crate::limits::Limits;
 use crate::misc::{Color, Score};
-use crate::ordering::{MoveOrdering, Ordered};
+use crate::ordering::{Captures, MoveOrdering, Ordered};
 use crate::play::Play;
 use crate::recorder::{Sampler, Window};
 use crate::reduction;
@@ -99,7 +99,7 @@ const NULL_MOVE_EVAL_CAP: u8 = 3;
 // quiescence: the positional ground a capture can make up beyond the
 // piece. Two hundred is the conventional figure for conventional piece
 // values.
-const DELTA_MARGIN: Score = 200;
+pub(crate) const DELTA_MARGIN: Score = 200;
 // How far either side of the previous iteration's score the root opens.
 // A pawn is a hundred, so this is three tenths of one: wide enough that
 // most iterations land inside it, and narrow enough that the first root
@@ -1672,16 +1672,67 @@ impl AlphaBeta {
             self.board.generate_captures()
         };
         // no memories here: they say nothing about captures or evasions.
+        // Outside check the list is taken in `order`'s order by `Captures`,
+        // which runs the swap only where the order or a skip needs it. An
+        // evasion list, and one that spilled the buffer, is ordered whole:
         // `front` is the table's move and the captures the swap prices as
-        // winning or even; every capture behind it is a losing one. Read
-        // now, because the sort's keys do not survive the recursion below
-        let Ordered { front, .. } = self.ordering.order(&self.board, &mut moves, pv_play, None);
+        // winning or even, and every capture behind it is a losing one
+        let ply = self.board.line_ply;
+        let mut captures = None;
+        let mut front = 0;
+        if standing.is_some() && moves.len() <= MOVE_LIST_INLINE {
+            captures = Some(Captures::new(
+                &mut self.ordering,
+                &self.board,
+                &moves,
+                pv_play,
+                ply,
+            ));
+        } else {
+            front = self
+                .ordering
+                .order(&self.board, &mut moves, pv_play, None)
+                .front;
+        }
 
         // quiescence never reads a draw itself, but a search trusting
         // tainted scores can cut on one inside a capture tree
         let mut taint = Taint::default();
         let mut found_legal_move = false;
-        for (i, m) in moves.iter().enumerate() {
+        let mut i = 0;
+        loop {
+            let (m, losing) = match captures.as_mut() {
+                Some(captures) => {
+                    // the two skips below, as they stand at this alpha
+                    let skips = !is_mate(alpha);
+                    let floor = standing.unwrap_or(0);
+                    let dropped = |captured: crate::misc::Piece| {
+                        skips
+                            && self.config.delta_margin
+                            && floor + crate::eval::material(captured) as Score + DELTA_MARGIN
+                                < alpha
+                    };
+                    let skip_losing = skips && self.config.see_pruning;
+                    match captures.next(
+                        &mut self.ordering,
+                        &self.board,
+                        &moves,
+                        dropped,
+                        skip_losing,
+                    ) {
+                        Some(next) => next,
+                        None => break,
+                    }
+                }
+                None => {
+                    let Some(&m) = moves.get(i) else {
+                        break;
+                    };
+                    i += 1;
+                    (m, i > front)
+                }
+            };
+            let m = &m;
             // two skips the reference does not make, under one set of
             // exemptions. A promotion is exempt because the swap prices the
             // arriving piece as the pawn that left. An evasion is exempt
@@ -1703,10 +1754,10 @@ impl AlphaBeta {
                     {
                         continue;
                     }
-                    // every capture behind the front is one the swap priced
-                    // as losing, so the class is read off the order rather
-                    // than from a second swap
-                    if self.config.see_pruning && i >= front {
+                    // a capture the order put behind the front is one the
+                    // swap priced as losing, so the class is read off the
+                    // order rather than from a second swap
+                    if self.config.see_pruning && losing {
                         continue;
                     }
                 }
@@ -1731,6 +1782,13 @@ impl AlphaBeta {
                             self.transpositions.record_cutoff(&self.board, *m, value, 0);
                         }
                         return Ok(value);
+                    }
+                    // a mate lifts the delta margin, so a capture it had
+                    // skipped unpriced may be searched after all
+                    if let Some(captures) = captures.as_mut() {
+                        if !is_mate(alpha) && is_mate(score) {
+                            captures.mate_found(&mut self.ordering, &self.board, &moves);
+                        }
                     }
                     alpha = score;
                 }
