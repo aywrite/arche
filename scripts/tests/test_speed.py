@@ -122,6 +122,81 @@ def test_the_rounds_alternate_which_side_runs_first(tmp_path):
     assert calls == ["base", "candidate", "candidate", "base", "base", "candidate"]
 
 
+def test_a_loaded_round_is_run_again_at_the_end(tmp_path):
+    # the fourth round's base run is a tenth slow, which takes its pair 5%
+    # below the others. A seventh round takes its place and goes candidate
+    # first, as the fourth did, so the kept rounds stay three and three
+    base = fake_engine(tmp_path, "base", [100, 100, 100, 90, 100, 100, 100])
+    candidate = fake_engine(tmp_path, "candidate", [101] * 7)
+    measured = speed.measure(str(base), str(candidate), rounds=6, depth=1)
+    assert measured.rounds == [1, 2, 3, 5, 6, 7]
+    assert measured.base_nps == [100] * 6
+    assert measured.candidate_nps == [101] * 6
+    assert measured.replaced == [(4, 90, 101)]
+    calls = (tmp_path / "calls.log").read_text().split()
+    assert calls[-2:] == ["candidate", "base"]
+
+
+def test_a_round_is_chosen_by_its_pair_and_not_by_one_side(tmp_path):
+    # the candidate's fourth run is 4% below its own median, past the cut on
+    # its own. Choosing by one side would trim that side's low tail, which is
+    # the ratio's tail; the pair is 2% below, inside the cut
+    base = fake_engine(tmp_path, "base", [100] * 6)
+    candidate = fake_engine(tmp_path, "candidate", [101, 101, 101, 97, 101, 101])
+    measured = speed.measure(str(base), str(candidate), rounds=6, depth=1)
+    assert measured.replaced == []
+
+
+def test_the_fastest_column_counts_the_runs_of_replaced_rounds():
+    # the replaced round's candidate run was that side's quietest
+    measured = speed.Measured(
+        base_nps=[100] * 6,
+        candidate_nps=[101] * 6,
+        base_nodes=100,
+        candidate_nodes=100,
+        rounds=[1, 2, 3, 5, 6, 7],
+        replaced=[(4, 80, 105)],
+    )
+    assert speed.summary(measured)[2].endswith("  105")
+
+
+def test_no_more_than_a_fifth_of_the_rounds_are_run_again(tmp_path):
+    # two loaded rounds and room to replace one: the one furthest below goes
+    base = fake_engine(tmp_path, "base", [90, 100, 100, 100, 100, 88, 100])
+    candidate = fake_engine(tmp_path, "candidate", [101] * 7)
+    measured = speed.measure(str(base), str(candidate), rounds=6, depth=1)
+    assert measured.replaced == [(6, 88, 101)]
+    assert measured.base_nps == [90, 100, 100, 100, 100, 100]
+    assert len((tmp_path / "calls.log").read_text().split()) == 14
+
+
+def test_a_real_change_is_not_a_loaded_round(tmp_path):
+    # the candidate is a tenth slower every round, which moves its median
+    # with it, so no run of it stands out
+    base = fake_engine(tmp_path, "base", [100] * 6)
+    candidate = fake_engine(tmp_path, "candidate", [90] * 6)
+    measured = speed.measure(str(base), str(candidate), rounds=6, depth=1)
+    assert measured.replaced == []
+
+
+def test_a_cut_of_zero_runs_nothing_again(tmp_path):
+    base = fake_engine(tmp_path, "base", [100, 100, 100, 50, 100, 100])
+    candidate = fake_engine(tmp_path, "candidate", [101] * 6)
+    measured = speed.measure(str(base), str(candidate), rounds=6, depth=1, cut=0)
+    assert measured.replaced == []
+    assert measured.base_nps == [100, 100, 100, 50, 100, 100]
+
+
+def test_the_report_lists_the_rounds_run_again(tmp_path, capsys):
+    base = fake_engine(tmp_path, "base", [100, 100, 100, 90, 100, 100, 100])
+    candidate = fake_engine(tmp_path, "candidate", [101] * 7)
+    assert speed.main([str(base), str(candidate), "--rounds", "6"]) == 0
+    out = capsys.readouterr().out
+    assert "run again, each pair more than 3% below the median pair:" in out
+    assert "    4           90            101  +12.2%" in out
+    assert "    7          100            101   +1.0%" in out
+
+
 def test_the_sides_are_told_apart_even_when_they_are_one_binary(tmp_path):
     # an engine measured against itself is the first thing anyone tries
     engine = fake_engine(tmp_path, "engine", [100] * 4, nodes=100)
@@ -187,7 +262,9 @@ def test_the_fastest_rounds_are_compared_beside_the_medians(tmp_path, capsys):
     # says nothing changed
     base = fake_engine(tmp_path, "base", [100, 80] * 3, nodes=100)
     candidate = fake_engine(tmp_path, "candidate", [90, 100] * 3, nodes=100)
-    assert speed.main([str(base), str(candidate), "--rounds", "6"]) == 0
+    # kept loaded, since the loaded rounds are the point
+    argv = [str(base), str(candidate), "--rounds", "6", "--loaded", "0"]
+    assert speed.main(argv) == 0
     out = capsys.readouterr().out
     assert "change                         +5.6%        +0.0%" in out
 

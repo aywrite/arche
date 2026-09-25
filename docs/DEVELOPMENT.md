@@ -376,10 +376,31 @@ of 53, close to the one in twenty the confidence allows. Release version
 bumps and comment sweeps, which change only the layout, posted offsets near
 1.5% whose intervals excluded zero, so a change that small is not a speed
 change the clock can show. More rounds do not help there, because the offset
-belongs to the binary and not to the run. One badly loaded round widens the
-interval rather than moving the estimate, because its averages with every
-other round sit together at one end. The verdict then says not resolved,
-which errs the safe way.
+belongs to the binary and not to the run.
+
+One badly loaded round widens the interval rather than moving the estimate,
+because its averages with every other round sit together at one end. So a
+round whose pair ran more than 3% below the median pair, reading a pair by
+the geometric mean of its two rates, is run again at the end. It goes first
+on the same side the round it replaces did, at most a fifth of the rounds
+are replaced, and the report lists them. `--loaded` sets the cut, and
+`--loaded 0` keeps every round.
+
+The pair says how fast the machine was that round and, when the two sides
+are as noisy as each other, nothing about their ratio. Reading each run
+against its own side's median looks like the same test and is not: it trims
+the low tail of whichever side is noisier, which is a tail of the ratio. In
+simulation with the candidate five times as noisy as the base, that moved a
++1.0% change to +1.5% and a quarter of the intervals missed it. The pair
+leans the same way when the noise differs, by +0.06 at worst in those runs.
+With a tenth of the runs slowed by 3% to 15%, the pair rule took the
+interval at nine rounds from 7.0% wide to 4.1%, and at twenty five from
+2.0% to 1.4%, while the intervals held the true change 94% to 97% of the
+time. The runner's noise is mostly small and even, so over the pull
+requests up to #321 the rule marked 41 of 1,791 rounds and changed little.
+It is for a machine whose load comes in bursts. Load that keeps coming back
+uses up the replacements and ends in a wide interval, which the verdict
+calls not resolved.
 
 The report also compares the two sides at their fastest round each, since
 nothing sharing the machine ever makes a run faster, and that pair is a
