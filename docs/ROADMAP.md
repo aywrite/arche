@@ -70,10 +70,6 @@ the engine plays. Roughly in the order they look worth doing.
     them, is refused rather than acted on
   - `ponderhit`, `debug` and `register` are not handled, so pondering is still out of reach
     even though `stop` is answered now
-  - a move in a `position` line that cannot be played is reported the same way whether
-    no move of that name exists here or the move exists and leaves the king in check.
-    `make_move_str` answers with a bool, so the interface is told which move failed and
-    not what was wrong with it
 - read an opening book in the engine, only the lichess-bot image has one at the moment and it is
   lichess-bot that reads it rather than the engine
 - winboard

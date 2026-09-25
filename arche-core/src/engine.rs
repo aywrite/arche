@@ -1,7 +1,7 @@
 // SPDX-License-Identifier: GPL-3.0-or-later
 // Copyright (C) 2022-2026 Andrew Wright
 
-use crate::board::Board;
+use crate::board::{Board, Unplayable};
 use crate::census;
 use crate::effort;
 use crate::eval;
@@ -187,7 +187,11 @@ pub trait Engine {
     /// no longer applies to it.
     fn new_game(&mut self);
 
-    fn make_move_str(&mut self, play: &str) -> bool;
+    /// Play the move of this name, in the coordinate notation the protocol
+    /// sends. Refused when no move of that name exists here, or when the
+    /// move would leave the king in check, and a refused move changes
+    /// nothing.
+    fn make_move_str(&mut self, play: &str) -> Result<(), Unplayable>;
 
     /// Give the engine a transposition table of `bytes` bytes, discarding
     /// whatever the old one held: a bucket is chosen from the number of
@@ -2978,15 +2982,8 @@ impl Engine for AlphaBeta {
         }
     }
 
-    fn make_move_str(&mut self, play: &str) -> bool {
-        // a `Play` prints itself as the coordinate notation the protocol
-        // sends
-        for p in self.board.generate_moves() {
-            if play == p.to_string() {
-                return self.board.make_move(&p);
-            }
-        }
-        false
+    fn make_move_str(&mut self, play: &str) -> Result<(), Unplayable> {
+        self.board.play_by_name(play)
     }
 
     fn board_display(&self) -> String {
@@ -5746,7 +5743,7 @@ mod search {
         for m in [
             "a8b8", "a1b1", "b8a8", "b1a1", "a8b8", "a1b1", "b8a8", "b1a1",
         ] {
-            assert!(e.make_move_str(m), "failed to play {}", m);
+            assert_eq!(e.make_move_str(m), Ok(()), "failed to play {}", m);
         }
         assert!(e.board.is_repetition());
         assert!(matches!(e.search(3), SearchOutcome::Complete(_, _)));

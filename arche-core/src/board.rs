@@ -394,6 +394,25 @@ pub(crate) const fn pawn_attacks(pawns: u64, color: Color) -> u64 {
 /// the table's bounds to prove its bands apart.
 pub(crate) const SEE_VALUES: [i32; 6] = [100, 300, 300, 500, 900, 10_000];
 
+/// Why `Board::play_by_name` refused a move.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum Unplayable {
+    /// No move of that name exists in this position.
+    NoSuchMove,
+    /// The move exists and would leave the mover's king in check.
+    LeavesKingInCheck,
+}
+
+/// The reason as a short phrase, for the protocol to put after the move.
+impl fmt::Display for Unplayable {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        f.write_str(match self {
+            Unplayable::NoSuchMove => "no such move here",
+            Unplayable::LeavesKingInCheck => "leaves the king in check",
+        })
+    }
+}
+
 /// The whole position with its history, a little over forty kilobytes. The
 /// search makes and unmakes moves on the one board and never clones it; the
 /// type is not `Copy`, so a copy has to be written as a clone.
@@ -404,7 +423,8 @@ pub(crate) const SEE_VALUES: [i32; 6] = [100, 300, 300, 500, 900, 10_000];
 /// passant square. In a debug build `debug_assert_state_in_step` recomputes
 /// the first four after every move, and `make_move` checks `checkers`
 /// beside it. Outside the crate the position is read through the accessors
-/// and moved through `try_make` and `try_undo`.
+/// and moved on through `play_by_name`, which has no counterpart that takes
+/// a move back.
 #[derive(Debug, PartialEq, Clone, Eq)]
 pub struct Board {
     // One board per piece, indexed by `Piece`, rather than a field each: as
@@ -487,32 +507,36 @@ impl Board {
         self.line_ply = 0;
     }
 
-    /// Play a move from outside the crate, where it may be one this position
-    /// never generated (carried over from another position, or from this one
-    /// before something else was played). Such a move is refused, and so is
-    /// one that leaves the king in check. True when the move was made.
+    /// The move of this name here, or none. The name is the coordinate
+    /// notation a `Play` prints as, which is what the protocol sends.
     ///
-    /// Checked by generating rather than by `is_pseudo_legal`, which refuses
-    /// castling, en passant and promotion.
-    pub fn try_make(&mut self, play: &Play) -> bool {
-        self.generate_moves().contains(play) && self.make_move(play)
+    /// Read from `generate_moves`, the whole pseudo legal list, so a move
+    /// that leaves the king in check is still found. Not from `evasions`,
+    /// which would drop a move that ignores a check and so report it as no
+    /// move at all.
+    pub(crate) fn move_named(&self, name: &str) -> Option<Play> {
+        self.generate_moves()
+            .iter()
+            .find(|m| m.to_string() == name)
+            .copied()
     }
 
-    /// Take back the last move `try_make` made. False when the history has
-    /// nothing behind this position: a position read from a fen starts at
-    /// the ply its move number says with nothing behind it, and the history
-    /// keeps only the last `MAX_GAME_SIZE` plies.
-    pub fn try_undo(&mut self) -> bool {
-        if self.ply == 0 {
-            return false;
+    /// Play the move of this name, or say why not. A refused move leaves the
+    /// board as it was.
+    ///
+    /// A name is the only way in from outside the crate, because `make_move`
+    /// reads a move's capture, castle and promotion as a description of this
+    /// board, and a `Play` carried over from another position would corrupt
+    /// it. The move a name finds is always this board's own.
+    pub fn play_by_name(&mut self, name: &str) -> Result<(), Unplayable> {
+        let play = self.move_named(name).ok_or(Unplayable::NoSuchMove)?;
+        // a false from make_move is a move that exposed its own king, and it
+        // has already been taken back
+        if self.make_move(&play) {
+            Ok(())
+        } else {
+            Err(Unplayable::LeavesKingInCheck)
         }
-        let Some(last) = self.history[history_index(self.ply - 1)] else {
-            return false;
-        };
-        // the search never leaves a pass behind for a caller to find
-        debug_assert_ne!(last.play, NULL_PLAY, "the last ply was a pass");
-        self.undo_move();
-        true
     }
 
     /// Whether this move is one `generate_moves` would produce here.
@@ -2423,10 +2447,8 @@ pub(crate) mod fens {
 /// the rest of the world writes it.
 #[cfg(test)]
 pub(crate) fn play_named(board: &Board, name: &str) -> Play {
-    *board
-        .generate_moves()
-        .iter()
-        .find(|m| format!("{}", m) == name)
+    board
+        .move_named(name)
         .unwrap_or_else(|| panic!("{} is not a move here", name))
 }
 
@@ -4202,60 +4224,123 @@ mod see {
 }
 
 #[cfg(test)]
-mod try_make {
+mod play_by_name {
     use super::fens;
     use super::play_named;
-    use super::{Board, Color};
+    use super::{Board, Color, Unplayable};
     use pretty_assertions::assert_eq;
 
-    #[test]
-    fn a_move_from_another_position_is_refused_and_changes_nothing() {
-        let foreign = play_named(&Board::from_fen(fens::KIWIPETE).unwrap(), "e2a6");
-        let mut board = Board::new();
+    /// Why the move of this name is refused on this board, having checked
+    /// that the refusal left every field of the board as it was.
+    fn refused_on(board: &mut Board, name: &str) -> Unplayable {
         let before = board.clone();
-        assert!(!board.try_make(&foreign));
-        assert_eq!(board, before);
+        let why = board.play_by_name(name).expect_err("the move was played");
+        assert_eq!(*board, before, "{} moved the board", name);
+        why
     }
 
-    #[test]
-    fn a_move_the_position_has_moved_on_from_is_refused() {
+    fn refused(fen: &str, name: &str) -> Unplayable {
+        refused_on(&mut Board::from_fen(fen).unwrap(), name)
+    }
+
+    /// The board after the moves of a line, each played by name.
+    fn after(line: &[&str]) -> Board {
         let mut board = Board::new();
-        let opening = play_named(&board, "e2e4");
-        assert!(board.try_make(&opening));
-        // the same value again: the pawn is no longer on e2
-        assert!(!board.try_make(&opening));
-        assert_eq!(board.active_color(), Color::Black);
+        for name in line {
+            assert_eq!(board.play_by_name(name), Ok(()), "{}", name);
+        }
+        board
+    }
+
+    /// The board after the move of this name, held to the one `make_move`
+    /// gives for the same move.
+    fn played(fen: &str, name: &str) -> Board {
+        let mut by_name = Board::from_fen(fen).unwrap();
+        let mut made = by_name.clone();
+        let play = play_named(&made, name);
+        assert!(made.make_move(&play));
+        assert_eq!(by_name.play_by_name(name), Ok(()));
+        assert_eq!(by_name, made);
+        by_name
     }
 
     #[test]
-    fn a_castle_is_made() {
-        // is_pseudo_legal would refuse this; try_make checks by generating
-        let mut board = Board::from_fen(fens::KIWIPETE).unwrap();
-        let castle = play_named(&board, "e1g1");
-        assert!(castle.castle);
-        assert!(board.try_make(&castle));
-        assert_eq!(board.active_color(), Color::Black);
+    fn a_name_no_move_has_is_refused() {
+        assert_eq!(refused(fens::START, "e2e5"), Unplayable::NoSuchMove);
+        assert_eq!(refused(fens::START, "wibble"), Unplayable::NoSuchMove);
     }
 
     #[test]
-    fn a_move_that_leaves_the_king_in_check_is_refused() {
+    fn a_move_of_the_side_not_to_move_is_refused() {
+        assert_eq!(refused(fens::START, "e7e5"), Unplayable::NoSuchMove);
+    }
+
+    #[test]
+    fn a_name_plays_this_boards_move_and_not_another_positions() {
+        // e2a6 is a bishop taking a bishop in kiwipete and a quiet bishop
+        // move here, so the two moves of that name differ in their capture
+        let quiet = "4k3/8/8/8/8/8/4B3/4K3 w - - 0 1";
+        let elsewhere = play_named(&Board::from_fen(fens::KIWIPETE).unwrap(), "e2a6");
+        let here = play_named(&Board::from_fen(quiet).unwrap(), "e2a6");
+        assert!(elsewhere.capture.is_some());
+        assert_eq!(here.capture, None);
+        played(quiet, "e2a6");
+    }
+
+    #[test]
+    fn a_move_already_played_is_refused_and_changes_nothing() {
+        let mut board = after(&["e2e4"]);
+        assert_eq!(refused_on(&mut board, "e2e4"), Unplayable::NoSuchMove);
+    }
+
+    #[test]
+    fn a_pinned_pawn_is_refused_after_a_line_and_changes_nothing() {
+        // c2c3 blocked the bishop's check, and c3c4 steps off its line
+        let mut board = after(&["e2e4", "e7e5", "d2d4", "f8b4", "c2c3", "g8f6"]);
+        assert_eq!(
+            refused_on(&mut board, "c3c4"),
+            Unplayable::LeavesKingInCheck
+        );
+    }
+
+    #[test]
+    fn a_pinned_piece_leaving_its_line_is_refused() {
         // white's queen is pinned to the king by the rook on e8
-        let mut board = Board::from_fen("4r1k1/8/8/8/8/8/4Q3/4K3 w - - 0 1").unwrap();
-        let before = board.clone();
-        let pinned = play_named(&board, "e2a6");
-        assert!(!board.try_make(&pinned));
-        assert_eq!(board, before);
+        assert_eq!(
+            refused("4r1k1/8/8/8/8/8/4Q3/4K3 w - - 0 1", "e2a6"),
+            Unplayable::LeavesKingInCheck
+        );
     }
 
     #[test]
-    fn undo_gives_back_the_position_and_refuses_an_empty_history() {
-        let mut board = Board::new();
-        assert!(!board.try_undo());
-        let start = board.clone();
-        assert!(board.try_make(&play_named(&board, "g1f3")));
-        assert!(board.try_undo());
-        assert_eq!(board, start);
-        assert!(!board.try_undo());
+    fn a_move_that_ignores_a_check_is_refused_as_leaving_the_king_in_check() {
+        // the bishop on b4 checks the king, and a2a3 is still a move here
+        // because the lookup reads the whole pseudo legal list
+        let checked = "rnbqk1nr/pppp1ppp/8/4p3/1b1PP3/8/PPP2PPP/RNBQKBNR w KQkq - 1 3";
+        assert_eq!(refused(checked, "a2a3"), Unplayable::LeavesKingInCheck);
+    }
+
+    #[test]
+    fn a_move_is_played_as_make_move_plays_it() {
+        let board = played(fens::START, "e2e4");
+        assert_eq!(board.active_color(), Color::Black);
+    }
+
+    #[test]
+    fn the_moves_is_pseudo_legal_refuses_are_played_by_name() {
+        // castling, en passant and promotion, each checked to be the kind
+        // of move it is named for before it is played
+        let castle = Board::from_fen(fens::KIWIPETE).unwrap();
+        assert!(play_named(&castle, "e1g1").castle);
+        played(fens::KIWIPETE, "e1g1");
+
+        let en_passant = "rnbqkbnr/ppp1pppp/8/8/3pP3/8/PPPP1PPP/RNBQKBNR b KQkq e3 0 1";
+        assert!(play_named(&Board::from_fen(en_passant).unwrap(), "d4e3").en_passant);
+        played(en_passant, "d4e3");
+
+        let promotion = Board::from_fen(fens::PROMOTIONS).unwrap();
+        assert!(play_named(&promotion, "d7c8q").promote.is_some());
+        played(fens::PROMOTIONS, "d7c8q");
     }
 }
 
