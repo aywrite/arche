@@ -530,18 +530,17 @@ book order from an offset, the first shard's offset is a remainder of the seed
 and each shard after it starts a slice further along, so no two shards play the
 same opening. The `book-slice` tool works the offsets out and the manifests
 record them, which is what makes a run replayable without depending on how
-fastchess draws its own openings. The estimate is then pooled over every
-shard's games by `match-estimate`, rather than taken from fastchess, which only
-ever sees the shard it ran. The figure and its interval are both read off pairs,
-since the two games of an opening are one draw and not two. A shard the clock
-stopped can leave a game with no partner, and such a game is in the score the
-shard table prints and in nothing else, so that the figure and the interval
-describe the same games.
+fastchess draws its own openings. `match-estimate` pools the estimate over
+every shard and reads it off pairs, and mache's readme says why neither can be
+left to fastchess. A shard the clock stopped can leave a game with no partner,
+and such a game is in the score the shard table prints and in nothing else, so
+that the figure and the interval describe the same games.
 
-The four tools a match is read with are the `mache` package, which has a
-repository of its own and is not in this tree: `match-estimate` pools the
-shards, `rating-estimate` fits the placement below, `match-terminations` counts
-how the games ended and `book-slice` cuts the openings. Both workflows get them
+The four tools a match is read with are the
+[`mache`](https://github.com/aywrite/mache) package, which has a repository of
+its own and is not in this tree: `match-estimate` pools the shards,
+`rating-estimate` fits the placement below, `match-terminations` counts how the
+games ended and `book-slice` cuts the openings. Both workflows get them
 from its composite action, which builds fastchess and fetches the books in the
 same step, so a match job installs nothing. What each tool computes, and what
 its figures do and do not describe, is written there.
@@ -641,10 +640,8 @@ play their slices with nothing watching, and the summary reads all of their
 games at once: `match-estimate` adds the pairs they played to the pairs the
 earlier batches of the same test played and works out the log likelihood ratio
 over all of them, under the same logistic model fastchess uses and against the
-same bounds. fastchess is not asked to run the test in ci at all, sharded or
-not. A test that stopped inside one shard would be looking after every game of
-a fifth of the evidence, and five shards each stopping themselves would be five
-tests rather than one.
+same bounds. fastchess is not asked to run the test in ci, for the reason
+mache's readme gives under "The part that is not obvious".
 
 - `elo0` and `elo1` are the hypotheses, in the same elo the summary reports.
   The defaults ask "is this worth ten elo, or nothing", about the size of
@@ -701,11 +698,9 @@ statistic from the ratio the pairs together give. Simulated over the default
 games reach different verdicts the two ways about one test in twenty. The
 counts add exactly, so the counts are what is carried.
 
-Looking only between batches is what keeps the error rates. Wald's bounds hold
-for a test that looks at the boundaries of blocks it fixed in advance, which is
-what a batch of shards playing slices settled before they started is. The price
-is fastchess's early stop inside a batch: a change decisive enough to settle
-part way through still plays the batch out.
+Looking only between batches is what keeps the error rates, and the same
+section of mache's readme says why. The price is that a change decisive enough
+to settle part way through a batch still plays the batch out.
 
 The same test can be run locally on one machine by adding
 `-sprt elo0=0 elo1=10 alpha=0.05 beta=0.05 model=logistic` to the fastchess
