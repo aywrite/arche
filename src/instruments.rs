@@ -16,7 +16,7 @@
 //! commands. `bench` stays in `uci` because the engine answers it as both.
 
 use crate::command::{Command, Keyword};
-use crate::params::{Param, Params};
+use crate::params::{NO_VALUE, Param, Params};
 use arche_core::Ablation;
 use arche_core::Board;
 use arche_core::SearchConfig;
@@ -163,25 +163,23 @@ pub const TERMS: Command = Command {
 /// all four record through the reservoir that module defines.
 const DEFAULT_CAP: usize = recorder::DEFAULT_CAP;
 
-/// Reads the settings the instruments share, or names the setting and the
-/// word that could not be read. Running the default in place of a word
+/// Reads the settings the instruments share, or names the setting and what
+/// stood where its value would. Running the default in place of a word
 /// nobody typed would take minutes and explain nothing.
 ///
 /// `default_every` is the rate the instrument samples at when the line names
 /// none, the one setting they do not share.
 fn sampling(params: &Params, command: &Command, default_every: u32) -> Result<Sampling, String> {
     let depth = command.depth(params, bench::DEPTH)?;
-    let every = match params.parse::<u32>("every") {
-        Param::Absent => default_every,
-        // zero records every event up to the cap, which is a thing to ask for
-        Param::Read(every) => every,
-        Param::Unreadable(word) => return Err(format!("every: {word}")),
-    };
-    let cap = match params.parse::<usize>("cap") {
-        Param::Absent => DEFAULT_CAP,
-        Param::Read(cap) => cap,
-        Param::Unreadable(word) => return Err(format!("cap: {word}")),
-    };
+    // zero records every event up to the cap, which is a thing to ask for
+    let every = params
+        .parse::<u32>("every")
+        .or_refuse("every")?
+        .unwrap_or(default_every);
+    let cap = params
+        .parse::<usize>("cap")
+        .or_refuse("cap")?
+        .unwrap_or(DEFAULT_CAP);
     // last, so a word that was going to be read as the depth has already
     // been refused under the better name
     command.claim(params)?;
@@ -226,7 +224,7 @@ pub fn residual_settings(params: &Params) -> Result<ResidualSettings, String> {
 /// positions read from it or the bench's own. The path is kept because the
 /// report's header states it.
 fn suite(params: &Params) -> Result<(Option<String>, Vec<bench::Position>), String> {
-    let epd = params.value("epd").map(str::to_string);
+    let epd = params.value("epd").or_refuse("epd")?.map(str::to_string);
     let positions = match &epd {
         None => bench::positions(),
         Some(path) => read_epd(path)?,
@@ -332,9 +330,10 @@ impl ReductionSettings {
 /// `off` names the `SearchConfig` field the baseline side turns off, or two
 /// joined by a comma, and is absent for the null run, where both sides are
 /// the default. A pair is one word rather than `off` twice because a keyword
-/// sent twice reads the first, and the second would be dropped unsaid. `budget`
-/// holds both sides to a node count instead of to the depth alone, which
-/// takes the speed channel out of the reading by construction.
+/// sent twice reads the first, which is why `off` twice is refused rather
+/// than read. `budget` holds both sides to a node count instead of to the
+/// depth alone, which takes the speed channel out of the reading by
+/// construction.
 ///
 /// The suite is a setting for the residual sampler's reason, and against
 /// the census's precedent: the readings here will be quoted against game
@@ -353,11 +352,14 @@ pub struct EffortSettings {
     pub positions: Vec<bench::Position>,
 }
 
-/// What is said when `off` names something that is no switch: the word as it
-/// was typed, and then the names the table carries. In the refusal rather
-/// than in the usage line, which says `<switch>`: a fourteen name list there
-/// is long and the join awkward for what it buys, and the reader who needs
-/// the names is the one who got the word wrong.
+/// What is said when `off` names something that is no switch, or names
+/// nothing at all: what stood where a switch would, and then the names the
+/// table carries. In the refusal rather than in the usage line, which says
+/// `<switch>`: a fourteen name list there is long and the join awkward for
+/// what it buys, and the reader who needs the names is the one who did not
+/// name a switch. That reader is likelier to type `off` and stop than to
+/// misspell a name, so the word with nothing after it is answered with the
+/// list too.
 fn no_such_switch(word: &str) -> String {
     let switches = SearchConfig::SWITCHES.map(|(name, _)| name).join(", ");
     format!("off: {word} (a switch is one of {switches})")
@@ -386,12 +388,13 @@ pub fn effort_settings(params: &Params) -> Result<EffortSettings, String> {
     // refused against the field names, the way `tune.py --hold TERM` is
     // refused against the layout the extraction prints: a misspelling read as
     // the null would spend the minutes saying nothing
-    let off = params.value("off").map(ablation).transpose()?;
-    let budget = match params.parse::<u64>("budget") {
+    let off = match params.value("off") {
         Param::Absent => None,
-        Param::Read(nodes) => Some(nodes),
-        Param::Unreadable(word) => return Err(format!("budget: {word}")),
+        Param::Read(word) => Some(ablation(word)?),
+        Param::Bare => return Err(no_such_switch(NO_VALUE)),
+        Param::Unreadable(word) => return Err(no_such_switch(word)),
     };
+    let budget = params.parse::<u64>("budget").or_refuse("budget")?;
     let (epd, positions) = suite(params)?;
     Ok(EffortSettings {
         depth,
@@ -809,6 +812,59 @@ mod tests {
                 "{line}"
             );
         }
+    }
+
+    /// A keyword typed with nothing after it is refused under its own name
+    /// rather than read as the keyword being absent. Read as absent, `effort
+    /// 4 off` would search the suite twice as the null for as long as the run
+    /// asked for takes and answer a question nobody asked.
+    #[test]
+    fn a_setting_given_no_value_is_named_rather_than_run() {
+        for (line, what) in [
+            ("residuals 4 every", "every: no value"),
+            ("residuals 4 cap", "cap: no value"),
+            ("residuals 4 taint", "taint: no value"),
+            ("residuals 4 epd", "epd: no value"),
+        ] {
+            assert_eq!(
+                residual_settings(&Params::of(line)).err(),
+                Some(what.to_string()),
+                "{line}"
+            );
+        }
+        assert_eq!(
+            effort_settings(&Params::of("effort 4 budget")).err(),
+            Some("budget: no value".to_string())
+        );
+        // `off` carries the switch names on this refusal as well as on a
+        // misspelling, for the reason on `no_such_switch`
+        let switches = SearchConfig::SWITCHES.map(|(name, _)| name).join(", ");
+        assert_eq!(
+            effort_settings(&Params::of("effort 4 off")).err(),
+            Some(format!("off: no value (a switch is one of {switches})"))
+        );
+        assert_eq!(
+            term_settings(&Params::of("terms epd")).err(),
+            Some("epd: no value".to_string())
+        );
+    }
+
+    /// The first of them is what the setting reads, so the second is read by
+    /// nobody and a second standing last would be a word given no value that
+    /// nothing looked at.
+    #[test]
+    fn a_setting_given_twice_is_named_rather_than_run() {
+        for line in ["residuals 4 cap 10 cap 20", "residuals 4 cap 10 cap"] {
+            assert_eq!(
+                residual_settings(&Params::of(line)).err(),
+                Some("cap: given twice".to_string()),
+                "{line}"
+            );
+        }
+        assert_eq!(
+            effort_settings(&Params::of("effort 4 off null_move off")).err(),
+            Some("off: given twice".to_string())
+        );
     }
 
     #[test]
