@@ -980,8 +980,9 @@ Sixteen games a rung over six rungs is ninety-six games, near sixty elo either
 side. It is a rough second placement at a slower control. The hundred points
 of systematic error described above apply to it as well.
 
-The ladder brackets 2700 as the blitz one does, from 2558 to 2845, read off the
-complete 40/15 list of 18 September 2026:
+The ladder brackets 2700, from 2558 to 2845, read off the complete 40/15 list
+of 18 September 2026. It did not move up when the blitz panel did, to bracket
+2800 on 25 September:
 
 | rung | ccrl 40/15 | ccrl blitz | |
 | --- | --- | --- | --- |
@@ -992,11 +993,14 @@ complete 40/15 list of 18 September 2026:
 | stash:v21.2 | 2785 ±20 | | Stash 21.2 64-bit |
 | weiss:v1.0 | 2845 ±26 | 2896 | Weiss 1.0 64-bit |
 
-The first four are on the blitz panel, and the 40/15 list rates each within
-thirty points of its blitz figure. The other four blitz rungs (Stash 20.0.1,
-Stash 21.0, Zahak 6.2 and Weiss 0.10) are not on the 40/15 list at all.
-Weiss 1.0 has been built and played here before. Stash 21.2 is the Stash block
-at a new pin and has not.
+Four of these are on the blitz panel. The 40/15 list rates Tantabus 2.0.0,
+Blunder 8.5.5 and Inanis 1.1.0 each within thirty points of its blitz figure,
+and Weiss 1.0 fifty one points under its own. Weiss 0.9 left the blitz panel
+when it moved up and keeps its blitz figure here for the comparison. The other
+four blitz rungs are not on this ladder. Three of them (Stash 21.0, Zahak 6.2
+and Weiss 0.10) are not on the 40/15 list at all. Stash 25.0 joined the blitz
+panel a week after this ladder was read off the 40/15 list. Weiss 1.0 has been built and played here before. Stash 21.2 is
+the Stash block at a new pin and has not.
 
 Other rungs the 40/15 list rates and a block here can build: Stash 18.0 at
 2421, SoFCheck 0.9 beta at 2426, FoxSEE 8.2 at 2495, Inanis 1.2.0 at 2835 and
