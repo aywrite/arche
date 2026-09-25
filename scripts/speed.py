@@ -41,6 +41,15 @@ CONFIDENCE = 0.95
 # not average that away, since it belongs to the binary and not to the run.
 THRESHOLD = 2.0
 
+# How far below the median pair a round's pair can run before the round is
+# run again, as a fraction. Simulated with a tenth of the runs slowed by 3%
+# to 15%, it took the interval at nine rounds from 7.0% wide to 4.1% and at
+# twenty five from 2.0% to 1.4%, and the intervals went on holding the true
+# change 94% to 97% of the time. The runner's noise is mostly small and even,
+# so over the same pull requests it marked 41 of 1,791 rounds and changed
+# little; it is for a machine whose load comes in bursts.
+LOADED = 0.03
+
 
 @dataclass
 class Measured:
@@ -48,6 +57,10 @@ class Measured:
     candidate_nps: list[int] = field(default_factory=list)
     base_nodes: int = 0
     candidate_nodes: int = 0
+    # the number each kept round was run as, counting from one
+    rounds: list[int] = field(default_factory=list)
+    # the rounds run again, as their number and the two rates they measured
+    replaced: list[tuple[int, int, int]] = field(default_factory=list)
 
 
 @dataclass
@@ -87,14 +100,45 @@ def bench(binary: str, depth: int | None) -> tuple[int, int]:
     return read
 
 
-def measure(base: str, candidate: str, rounds: int, depth: int | None) -> Measured:
+def loaded(measured: Measured, cut: float) -> list[int]:
+    """The kept rounds whose pair ran more than `cut` below the median pair,
+    as indices, the furthest below first.
+
+    A pair is read by the geometric mean of its two rates, which says how
+    fast the machine was that round and, when the two sides are as noisy as
+    each other, nothing about their ratio. Reading each run against its own
+    side instead looks like the same thing and is not: it trims the low tail
+    of whichever side is noisier, which is the ratio's tail. In simulation
+    with one side five times as noisy, that moved a +1.0% change to +1.5% and
+    missed it with a quarter of its intervals. The geometric mean still leans
+    that way when the noise differs, by +0.06 at worst in the same runs."""
+    pairs = [
+        math.sqrt(b * c) for b, c in zip(measured.base_nps, measured.candidate_nps)
+    ]
+    median = statistics.median(pairs)
+    shortfalls = [(1 - pair / median, i) for i, pair in enumerate(pairs)]
+    return [i for shortfall, i in sorted(shortfalls, reverse=True) if shortfall > cut]
+
+
+def measure(
+    base: str, candidate: str, rounds: int, depth: int | None, cut: float = LOADED
+) -> Measured:
+    """Run the rounds, then run again any the machine was loaded for.
+
+    A loaded round is replaced by a new one at the end, rather than dropped,
+    so the count stays what was asked for. At most a fifth of the rounds are
+    replaced, so load that keeps coming back ends in a wide interval rather
+    than a loop. A `cut` of zero replaces nothing."""
     measured = Measured()
-    for round_ in range(rounds):
-        # alternating, so a machine warming up or cooling down leans on
-        # neither side. The side is carried rather than read off the path,
-        # which both share when an engine is measured against itself
+    # which side each kept round ran first
+    base_first: list[bool] = []
+
+    def one_round(first: bool) -> None:
+        number = len(measured.rounds) + len(measured.replaced) + 1
+        # the side is carried rather than read off the path, which both
+        # share when an engine is measured against itself
         order = [(True, base), (False, candidate)]
-        if round_ % 2:
+        if not first:
             order.reverse()
         for is_base, binary in order:
             nodes, nps = bench(binary, depth)
@@ -104,6 +148,31 @@ def measure(base: str, candidate: str, rounds: int, depth: int | None) -> Measur
             else:
                 measured.candidate_nps.append(nps)
                 measured.candidate_nodes = nodes
+        measured.rounds.append(number)
+        base_first.append(first)
+
+    # alternating, so a machine warming up or cooling down leans on neither
+    # side
+    for round_ in range(rounds):
+        one_round(round_ % 2 == 0)
+    budget = rounds // 5 if cut > 0 else 0
+    while budget and (worst := loaded(measured, cut)[:budget]):
+        firsts = []
+        for i in sorted(worst, reverse=True):
+            measured.replaced.append(
+                (
+                    measured.rounds.pop(i),
+                    measured.base_nps.pop(i),
+                    measured.candidate_nps.pop(i),
+                )
+            )
+            firsts.append(base_first.pop(i))
+        # a replacement goes first on the side its round did, so the kept
+        # rounds stay as balanced as the alternation made them
+        for first in firsts:
+            one_round(first)
+        budget -= len(worst)
+    measured.replaced.sort()
     return measured
 
 
@@ -217,15 +286,19 @@ def summary(measured: Measured) -> list[str]:
 
     The fastest column is there because nothing sharing the machine ever
     makes a run faster, so each side's best round is its least interfered
-    one. It is a second reading and has no interval. When the counts match,
-    the change row leaves nodes and time empty: the time is then the rate
-    upside down and would say nothing the nps cell does not.
+    one. It is a second reading and has no interval, and it counts the runs
+    of replaced rounds too, since the other run of a loaded round can be its
+    side's quietest. When the counts match, the change row leaves nodes and
+    time empty: the time is then the rate upside down and would say nothing
+    the nps cell does not.
     """
     base_seconds, candidate_seconds = time_to_depth(measured)
     base_rate = statistics.median(measured.base_nps)
     candidate_rate = statistics.median(measured.candidate_nps)
-    base_fastest = max(measured.base_nps)
-    candidate_fastest = max(measured.candidate_nps)
+    base_fastest = max(measured.base_nps + [b for _, b, _ in measured.replaced])
+    candidate_fastest = max(
+        measured.candidate_nps + [c for _, _, c in measured.replaced]
+    )
     differ = measured.base_nodes != measured.candidate_nodes
     columns = [
         (
@@ -287,6 +360,13 @@ def main(argv: list[str]) -> int:
     parser.add_argument("--depth", type=int, default=None)
     parser.add_argument("--base-ref", default="base")
     parser.add_argument("--threshold", type=float, default=THRESHOLD)
+    parser.add_argument(
+        "--loaded",
+        type=float,
+        default=100 * LOADED,
+        help="percent below the median pair that has a round run again, "
+        "or 0 to run none again",
+    )
     args = parser.parse_args(argv)
     if signed_rank_depth(args.rounds) == 0:
         parser.error(
@@ -294,10 +374,17 @@ def main(argv: list[str]) -> int:
             "so they are no measurement"
         )
 
-    measured = measure(args.base, args.candidate, args.rounds, args.depth)
+    measured = measure(
+        args.base, args.candidate, args.rounds, args.depth, args.loaded / 100
+    )
     print(f"{'round':>5} {'base nps':>12} {'candidate nps':>14} {'change':>7}")
-    for i, (b, c) in enumerate(zip(measured.base_nps, measured.candidate_nps), 1):
-        print(f"{i:>5} {b:>12} {c:>14} {change(b, c):>+6.1f}%")
+    for n, b, c in zip(measured.rounds, measured.base_nps, measured.candidate_nps):
+        print(f"{n:>5} {b:>12} {c:>14} {change(b, c):>+6.1f}%")
+    if measured.replaced:
+        print()
+        print(f"run again, each pair more than {args.loaded:g}% below the median pair:")
+        for n, b, c in measured.replaced:
+            print(f"{n:>5} {b:>12} {c:>14} {change(b, c):>+6.1f}%")
     print()
     for line in summary(measured):
         print(line)
