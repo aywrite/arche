@@ -41,20 +41,20 @@ const _: () = assert!(MAX_PLY < u8::MAX);
 // search, for a node to be answered from it: what the opponent may win
 // back over those plies, a pawn a ply. The bench argues for less and not
 // by much (sixty through a hundred and twenty span about five percent of
-// the count, not monotone). What fixed the figure was the depth four mate
-// in two in the_mate_distance_survives_a_deeper_warm_search: eighty nine
-// lost it and ninety kept it, and a margin one notch from a mate it can
-// miss is no margin, so this is the round number above that boundary, at
-// about two thirds of a percent of the tree over ninety. The boundary was
-// between eighty five and ninety when the figure was chosen, ninety one
-// before the piece square tables were fitted, and ninety at the last
-// reading, so it is re-measured rather than read off this line; the round
-// number above it has been a hundred each time. That test no longer holds
-// the boundary. The late move count prunes the quiet that begins the mate
-// at depths three to five, so the test's floor is one of its four depths,
-// and a margin of eighty nine passes it with the count on and with it off.
-// Re-measure the boundary on this position before moving the figure.
-// docs/ROADMAP.md has the shadow lane's reading.
+// the count, not monotone). What fixed the figure was a depth four mate in
+// two: a margin one notch from a mate it can miss is no margin, so this is
+// the round number above the boundary where the mate goes. Read on the
+// default search, the boundary was between eighty five and ninety when the
+// figure was chosen, ninety one before the piece square tables were
+// fitted, and ninety later. The default's other shortcuts now lose that
+// mate at depth four at every margin from sixty to a hundred, so the
+// boundary is read with this shortcut alone on the reference, in
+// the_reverse_futility_margin_keeps_the_depth_four_mate: seventy seven
+// keeps the mate and seventy six loses it. That test guards only a cut
+// below seventy seven. The hundred rests on the readings on the default
+// search above, not on this boundary, whose round number above would be
+// eighty. Re-measure it before moving the figure. docs/ROADMAP.md has
+// the shadow lane's reading.
 const REVERSE_FUTILITY_MARGIN: Score = 100;
 // The deepest node the margin may answer. The margin grows a fixed step a
 // ply, and the bench says the plies past this prune nothing: four, six and
@@ -3479,6 +3479,19 @@ mod search {
             );
         }
         assert!(found > 0, "no depth of the four saw the mate");
+    }
+
+    /// What holds `REVERSE_FUTILITY_MARGIN` above the boundary its comment
+    /// gives. The reference finds this mate at depth four, and with the
+    /// shortcut the only thing added, a margin of seventy six or less cuts
+    /// off the line it is found in. Cold, so no table decides it either.
+    #[test]
+    fn the_reverse_futility_margin_keeps_the_depth_four_mate() {
+        let game =
+            Board::from_fen("2rr3k/pp3pp1/1nnqbN1p/3pN3/2pP4/2P3Q1/PPB4P/R4RK1 w - - 0 0").unwrap();
+        let result = completed(shortcut(game).search(4));
+        assert_eq!(result.checkmate_in(), Some(2));
+        assert_eq!(format!("{}", result.best_move), "g3g6");
     }
 
     #[test]
