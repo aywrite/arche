@@ -342,13 +342,17 @@ impl<T: Engine, W: Write> UCI<T, W> {
     /// `setoption name <option> [value <value>]`. An option not in `OPTIONS`
     /// is said back rather than acted on, so an interface sending one meant
     /// for another engine is told. The name is every word between `name` and
-    /// `value`, since `Clear Hash` has two.
+    /// `value`, since `Clear Hash` has two, and is matched ignoring case, as
+    /// the protocol asks.
     fn set_option(&mut self, line: &str) -> Result<(), String> {
         let params = Params::of(line);
         let Some(name) = params.phrase("name", "value") else {
             return Err(format!("setoption without an option name: {}", line));
         };
-        let Some(option) = OPTIONS.iter().find(|option| option.name == name) else {
+        let Some(option) = OPTIONS
+            .iter()
+            .find(|option| option.name.eq_ignore_ascii_case(&name))
+        else {
             return Err(format!("unrecognised option: {}", name));
         };
         match option.kind {
@@ -1402,6 +1406,25 @@ go depth 3
                 line
             );
         }
+    }
+
+    #[test]
+    fn an_option_name_is_matched_whatever_its_case() {
+        let mut uci = uci();
+        assert!(uci.handle("setoption name hash value 1"));
+        assert_eq!(uci.engine.table_bytes(), megabytes(1));
+        assert!(uci.handle("setoption name MOVE OVERHEAD value 200"));
+        assert_eq!(uci.move_overhead, 200);
+        // said back under the name the engine advertises
+        assert!(uci.handle("setoption name move overhead value 99999"));
+        assert_eq!(
+            said(&uci),
+            "info string Move Overhead 99999 is outside 0 to 5000, using 5000\n"
+        );
+
+        let mut uci = UCI::with_output(Recorder::to_move(Color::White), Vec::new());
+        uci.run(Cursor::new("setoption name clear hash\n"));
+        assert_eq!(uci.engine.cleared, 1);
     }
 
     #[test]
