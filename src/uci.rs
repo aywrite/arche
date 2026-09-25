@@ -439,8 +439,8 @@ impl<T: Engine, W: Write> UCI<T, W> {
 
         if let Some(moves) = move_list {
             for m in moves.split_whitespace() {
-                if !self.engine.make_move_str(m.trim()) {
-                    return Err(format!("could not play {}", m));
+                if let Err(why) = self.engine.make_move_str(m.trim()) {
+                    return Err(format!("could not play {}: {}", m, why));
                 }
             }
         }
@@ -787,7 +787,7 @@ fn format_info(
 #[cfg(test)]
 mod tests {
     use super::*;
-    use arche_core::{AlphaBeta, Board, Clock, PvLine};
+    use arche_core::{AlphaBeta, Board, Clock, PvLine, Unplayable};
     use proptest::prelude::*;
     use std::io::Cursor;
     use std::sync::mpsc::{Sender, channel};
@@ -841,8 +841,8 @@ mod tests {
             Ok(())
         }
         fn new_game(&mut self) {}
-        fn make_move_str(&mut self, _play: &str) -> bool {
-            true
+        fn make_move_str(&mut self, _play: &str) -> Result<(), Unplayable> {
+            Ok(())
         }
         fn set_table_bytes(&mut self, _bytes: usize) -> bool {
             true
@@ -919,6 +919,30 @@ mod tests {
                 "expected an error: {}",
                 line
             );
+        }
+    }
+
+    #[test]
+    fn a_move_that_cannot_be_played_is_reported_with_the_reason() {
+        for (line, expected) in [
+            (
+                "position startpos moves e2e5",
+                "info string could not play e2e5: no such move here",
+            ),
+            // the pawn on c3 blocks the bishop's check and steps off its line
+            (
+                "position startpos moves e2e4 e7e5 d2d4 f8b4 c2c3 g8f6 c3c4",
+                "info string could not play c3c4: leaves the king in check",
+            ),
+            // a move that ignores the check is a move here, and refused
+            (
+                "position startpos moves e2e4 e7e5 d2d4 f8b4 a2a3",
+                "info string could not play a2a3: leaves the king in check",
+            ),
+        ] {
+            let mut uci = uci();
+            uci.handle(line);
+            assert_eq!(said(&uci).trim_end(), expected, "{}", line);
         }
     }
 
@@ -1865,8 +1889,8 @@ go depth 3
             Ok(())
         }
         fn new_game(&mut self) {}
-        fn make_move_str(&mut self, _play: &str) -> bool {
-            true
+        fn make_move_str(&mut self, _play: &str) -> Result<(), Unplayable> {
+            Ok(())
         }
         fn set_table_bytes(&mut self, _bytes: usize) -> bool {
             true

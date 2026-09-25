@@ -25,7 +25,7 @@ pub mod tune;
 mod value;
 mod zobrist;
 
-pub use board::Board;
+pub use board::{Board, Unplayable};
 pub use engine::{
     Ablation, AlphaBeta, Engine, MAX_PLY, PvLine, ScoreBound, SearchConfig, SearchOutcome,
     SearchParameters, SearchResult,
