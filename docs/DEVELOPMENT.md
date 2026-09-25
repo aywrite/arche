@@ -194,11 +194,12 @@ cargo fmt --all --check
 cargo clippy --workspace --all-targets -- -D warnings
 ```
 
-A clean tree still prints one warning, that the const evaluation behind
-`MAGIC` is taking a long time. It is expected and `-D warnings` does not
-raise it, so the command exits zero with the warning on the screen. The
-`allow` beside `MAGIC` covers the emissions that would be raised, and taking
-it off fails this command, so it is not spare.
+A clean tree prints no warnings. The const evaluation behind `MAGIC` runs
+long enough to trip the `long_running_const_eval` lint, and the `allow` beside
+it covers that; taking it off fails the build, so it is not spare. Past twice
+that length rustc also prints that the evaluation is taking a long time, which
+no `allow` silences, so the loops that build the tables make no call they can
+do without, since the interpreter runs each one on every pass.
 
 The pre-commit configuration runs the formatter, and `cargo check` in place of
 clippy, along with a check that the commit message is a conventional commit,
