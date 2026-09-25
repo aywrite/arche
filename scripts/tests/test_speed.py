@@ -52,17 +52,63 @@ def test_the_last_line_is_read_for_nodes_and_rate():
     assert speed.last_line(text) == (42847751, 12473872)
 
 
-def test_the_change_is_between_medians_and_the_spread_is_the_wider_side():
-    # the spread is the base's four points over the lower median, not the
-    # candidate's four over the higher one. Then a fall, with its sign
-    base = [100, 102, 98, 101, 99]
-    candidate = [103, 105, 101, 104, 102]
-    assert speed.trailer(base, candidate, "a1b2c3d") == (
-        "Speed: +3.0% (bench nps, 5 interleaved rounds vs a1b2c3d, spread 4.0%)"
+def test_the_interval_steps_in_as_far_as_the_signed_rank_tables_say():
+    # the published two sided 5% critical values are 0 at six rounds, 5 at
+    # nine and 89 at twenty five, and the bound is the next Walsh average
+    # after them. Five rounds have no interval at all: even the most extreme
+    # sign pattern turns up one time in thirty two
+    assert speed.signed_rank_depth(5) == 0
+    assert speed.signed_rank_depth(6) == 1
+    assert speed.signed_rank_depth(9) == 6
+    assert speed.signed_rank_depth(25) == 90
+
+
+def test_the_trailer_carries_the_paired_change_and_its_interval():
+    base = [100] * 6
+    assert speed.trailer(base, [103] * 6, "a1b2c3d") == (
+        "Speed: +3.0% (bench nps, 95% interval +3.0% to +3.0%, "
+        "6 interleaved rounds vs a1b2c3d)"
     )
-    assert speed.trailer([200, 200, 200], [195, 195, 195], "a1b2c3d") == (
-        "Speed: -2.5% (bench nps, 3 interleaved rounds vs a1b2c3d, spread 0.0%)"
+    assert speed.trailer(base, [97] * 6, "a1b2c3d") == (
+        "Speed: -3.0% (bench nps, 95% interval -3.0% to -3.0%, "
+        "6 interleaved rounds vs a1b2c3d)"
     )
+
+
+def test_each_round_is_read_against_its_own_pair():
+    # the runner halves in speed partway through and both sides with it. The
+    # medians of each side land wherever the halving puts them, while every
+    # round's pair still says five percent
+    base = [200, 200, 200, 100, 100, 100, 100]
+    candidate = [210, 210, 210, 105, 105, 105, 105]
+    estimate = speed.paired(base, candidate)
+    assert estimate.change == pytest.approx(5.0)
+    assert (estimate.low, estimate.high) == pytest.approx((5.0, 5.0))
+
+
+def test_one_loaded_round_moves_the_estimate_little_and_widens_the_interval():
+    base = [100] * 9
+    candidate = [102, 101, 103, 102, 101, 103, 102, 102, 70]
+    estimate = speed.paired(base, candidate)
+    assert 1.5 < estimate.change < 2.5
+    # its averages with the other eight carry the lower bound out towards
+    # it, so the interval declines a claim the other eight rounds would make
+    assert estimate.low < -10
+    assert speed.verdict(estimate, 1.0).startswith("not resolved")
+
+
+def test_a_change_is_claimed_only_when_the_interval_is_past_the_threshold():
+    def says(low, high):
+        return speed.verdict(speed.Estimate((low + high) / 2, low, high), 2.0)
+
+    assert says(2.5, 4.0).startswith("faster")
+    assert says(-4.0, -2.5).startswith("slower")
+    # clear of zero, but not of the threshold
+    assert says(0.5, 1.8).startswith("no change beyond ±2.0%")
+    assert says(-1.0, 1.0).startswith("no change beyond ±2.0%")
+    # past zero and past the threshold on one side, clear of neither
+    assert says(0.6, 2.9).startswith("not resolved")
+    assert says(-3.0, 3.0).startswith("not resolved")
 
 
 def test_the_rounds_alternate_which_side_runs_first(tmp_path):
@@ -100,11 +146,11 @@ def test_the_time_is_taken_a_round_at_a_time_not_from_the_median_rate():
 def test_the_report_breaks_the_change_down_when_the_counts_differ(tmp_path, capsys):
     # the tree loses a tenth of itself at the same cost a node, so the rate
     # says nothing happened while the search finishes a tenth sooner
-    base = fake_engine(tmp_path, "base", [100] * 2, nodes=100)
-    candidate = fake_engine(tmp_path, "candidate", [100] * 2, nodes=90)
+    base = fake_engine(tmp_path, "base", [100] * 6, nodes=100)
+    candidate = fake_engine(tmp_path, "candidate", [100] * 6, nodes=90)
     assert (
         speed.main(
-            [str(base), str(candidate), "--rounds", "2", "--base-ref", "abc1234"]
+            [str(base), str(candidate), "--rounds", "6", "--base-ref", "abc1234"]
         )
         == 0
     )
@@ -114,79 +160,63 @@ def test_the_report_breaks_the_change_down_when_the_counts_differ(tmp_path, caps
     assert "candidate      90  0.90 s         100          100" in out
     assert "change     -10.0%  -10.0%       +0.0%        +0.0%" in out
     assert speed.COUNTS_DIFFER in out
+    # the rates are over different trees, so no verdict is read off them
+    assert "no change beyond" not in out
     # and the trailer goes on saying the one thing it has always said
     assert out.strip().endswith(
-        "Speed: +0.0% (bench nps, 2 interleaved rounds vs abc1234, spread 0.0%)"
+        "Speed: +0.0% (bench nps, 95% interval +0.0% to +0.0%, "
+        "6 interleaved rounds vs abc1234)"
     )
 
 
 def test_the_report_leaves_the_breakdown_out_when_the_counts_match(tmp_path, capsys):
     # with the tree held still the time is the inverse of the rate
-    base = fake_engine(tmp_path, "base", [100] * 2, nodes=100)
-    candidate = fake_engine(tmp_path, "candidate", [110] * 2, nodes=100)
-    assert speed.main([str(base), str(candidate), "--rounds", "2"]) == 0
+    base = fake_engine(tmp_path, "base", [100] * 6, nodes=100)
+    candidate = fake_engine(tmp_path, "candidate", [110] * 6, nodes=100)
+    assert speed.main([str(base), str(candidate), "--rounds", "6"]) == 0
     out = capsys.readouterr().out
     assert "candidate    100  0.91 s         110          110" in out
     assert "change                        +10.0%       +10.0%" in out
+    assert "paired change +10.0%, 95% interval +10.0% to +10.0%" in out
     assert speed.COUNTS_DIFFER not in out
+    assert "faster: the whole interval is above +2.0%" in out
 
 
 def test_the_fastest_rounds_are_compared_beside_the_medians(tmp_path, capsys):
     # the loaded rounds drag the medians apart while the fastest pair still
     # says nothing changed
-    base = fake_engine(tmp_path, "base", [100, 80], nodes=100)
-    candidate = fake_engine(tmp_path, "candidate", [90, 100], nodes=100)
-    assert speed.main([str(base), str(candidate), "--rounds", "2"]) == 0
+    base = fake_engine(tmp_path, "base", [100, 80] * 3, nodes=100)
+    candidate = fake_engine(tmp_path, "candidate", [90, 100] * 3, nodes=100)
+    assert speed.main([str(base), str(candidate), "--rounds", "6"]) == 0
     out = capsys.readouterr().out
     assert "change                         +5.6%        +0.0%" in out
 
 
-def test_a_change_inside_the_spread_says_it_makes_no_claim(tmp_path, capsys):
-    base = fake_engine(tmp_path, "base", [100, 104], nodes=100)
-    candidate = fake_engine(tmp_path, "candidate", [101, 105], nodes=100)
-    assert speed.main([str(base), str(candidate), "--rounds", "2"]) == 0
+def test_the_verdict_stands_above_the_trailer(tmp_path, capsys):
+    base = fake_engine(tmp_path, "base", [100] * 6, nodes=100)
+    candidate = fake_engine(tmp_path, "candidate", [101] * 6, nodes=100)
+    assert speed.main([str(base), str(candidate), "--rounds", "6"]) == 0
     out = capsys.readouterr().out
-    assert speed.NO_CLAIM in out
-    # the paragraph points at the fastest column, so it must stand above
-    assert out.index("fastest nps") < out.index(speed.NO_CLAIM)
-    # and the trailer stays the last line, which is what speed.sh pipes on
-    assert out.strip().splitlines()[-1].startswith("Speed: ")
+    assert "no change beyond ±2.0%" in out
+    # the trailer stays the last line, which is what speed.sh pipes on
+    assert out.strip().splitlines()[-1].startswith("Speed: +1.0% ")
 
 
-def test_a_change_outside_the_spread_stands_unqualified(tmp_path, capsys):
-    base = fake_engine(tmp_path, "base", [100, 101], nodes=100)
-    candidate = fake_engine(tmp_path, "candidate", [110, 111], nodes=100)
-    assert speed.main([str(base), str(candidate), "--rounds", "2"]) == 0
-    assert speed.NO_CLAIM not in capsys.readouterr().out
+def test_the_threshold_can_be_set(tmp_path, capsys):
+    base = fake_engine(tmp_path, "base", [100] * 6, nodes=100)
+    candidate = fake_engine(tmp_path, "candidate", [101] * 6, nodes=100)
+    argv = [str(base), str(candidate), "--rounds", "6", "--threshold", "0.5"]
+    assert speed.main(argv) == 0
+    assert "faster: the whole interval is above +0.5%" in capsys.readouterr().out
 
 
-def test_differing_counts_keep_the_no_claim_paragraph_out(tmp_path, capsys):
-    # the counts-differ block has already said no number here is a claim
-    base = fake_engine(tmp_path, "base", [100, 104], nodes=100)
-    candidate = fake_engine(tmp_path, "candidate", [101, 105], nodes=90)
-    assert speed.main([str(base), str(candidate), "--rounds", "2"]) == 0
-    out = capsys.readouterr().out
-    assert speed.COUNTS_DIFFER in out
-    assert speed.NO_CLAIM not in out
-
-
-def test_a_perfectly_repeatable_measurement_makes_its_claim_at_any_size(
-    tmp_path, capsys
-):
-    # zero spread is zero doubt: a change of nothing at all is not talked down
-    base = fake_engine(tmp_path, "base", [100] * 2, nodes=100)
-    candidate = fake_engine(tmp_path, "candidate", [100] * 2, nodes=100)
-    assert speed.main([str(base), str(candidate), "--rounds", "2"]) == 0
-    assert speed.NO_CLAIM not in capsys.readouterr().out
-
-
-def test_fewer_than_two_rounds_is_refused(tmp_path, capsys):
-    base = fake_engine(tmp_path, "base", [100])
-    candidate = fake_engine(tmp_path, "candidate", [100])
+def test_fewer_than_six_rounds_is_refused(tmp_path, capsys):
+    base = fake_engine(tmp_path, "base", [100] * 5)
+    candidate = fake_engine(tmp_path, "candidate", [100] * 5)
     with pytest.raises(SystemExit) as left:
-        speed.main([str(base), str(candidate), "--rounds", "1"])
+        speed.main([str(base), str(candidate), "--rounds", "5"])
     assert left.value.code == 2
-    assert "rounds" in capsys.readouterr().err
+    assert "six rounds" in capsys.readouterr().err
 
 
 def test_an_engine_that_prints_no_bench_is_named_rather_than_a_traceback(tmp_path):
@@ -201,7 +231,11 @@ def test_an_engine_that_prints_no_bench_is_named_rather_than_a_traceback(tmp_pat
 def test_the_trailer_passes_the_hook():
     import check_trailers
 
-    line = speed.trailer([100, 101, 99], [104, 103, 105], "a1b2c3d")
+    # an interval from below zero to above it, so both signs are printed
+    line = speed.trailer(
+        [100, 101, 99, 100, 102, 98], [104, 99, 105, 101, 97, 103], "a1b2c3d"
+    )
+    assert " interval -" in line and " to +" in line
     message = f"perf(search): Sort less\n\nBench: 1\n{line}\n"
     assert check_trailers.problems(message) == []
 
@@ -259,7 +293,7 @@ def test_the_wrapper_builds_the_base_commit_and_measures_against_it(tmp_path):
         cwd=repo,
         env={
             "PATH": f"{shims}:{Path(sys.executable).parent}:/usr/bin:/bin",
-            "ROUNDS": "2",
+            "ROUNDS": "6",
         },
         check=False,
         capture_output=True,
@@ -267,7 +301,8 @@ def test_the_wrapper_builds_the_base_commit_and_measures_against_it(tmp_path):
     )
     assert result.returncode == 0, result.stderr
     assert result.stdout.strip().endswith(
-        f"Speed: +0.0% (bench nps, 2 interleaved rounds vs {base}, spread 0.0%)"
+        "Speed: +0.0% (bench nps, 95% interval +0.0% to +0.0%, "
+        f"6 interleaved rounds vs {base})"
     )
     # the base binary is kept for the next measurement
     assert (repo / "target" / "speed" / base / "arche").exists()

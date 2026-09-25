@@ -75,7 +75,8 @@ def test_a_perf_commit_on_the_build_needs_neither():
 def test_the_speed_format_is_fixed():
     good = (
         "perf(search): Sort less\n\nBench: 42847751\n"
-        "Speed: +3.1% (bench nps, 5 interleaved rounds vs a1b2c3d, spread 2.4%)\n"
+        "Speed: +3.1% (bench nps, 95% interval +1.8% to +4.4%, "
+        "15 interleaved rounds vs a1b2c3d)\n"
     )
     assert problems(good) == []
     bad = "perf(search): Sort less\n\nBench: 42847751\nSpeed: faster\n"
@@ -157,8 +158,12 @@ def test_only_the_final_paragraph_holds_trailers_as_git_reads_it():
     assert problems(message) == []
 
 
-def test_a_speed_of_one_round_is_not_a_measurement():
-    line = "Speed: +3.1% (bench nps, 1 interleaved rounds vs a1b2c3d, spread 0.0%)"
+def test_a_speed_of_five_rounds_is_not_a_measurement():
+    # five rounds have no 95% interval, so speed.py never prints one over them
+    line = (
+        "Speed: +3.1% (bench nps, 95% interval +1.8% to +4.4%, "
+        "5 interleaved rounds vs a1b2c3d)"
+    )
     assert problems(f"perf(search): x\n\nBench: 1\n{line}\n") == [
         f"Speed: is not in the shape scripts/speed.sh prints, got {line[7:]}"
     ]

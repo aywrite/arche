@@ -6,23 +6,40 @@
 
 A single pair of runs says nothing: this box swings ten percent between runs.
 So the two binaries take turns, which side goes first alternating each round,
-the medians are compared, and the spread of the rounds is printed beside the
-change. The node counts and the time to depth are printed too: a search change
-moves the counts and a speed change must not, and nps normalises for the size
-of the tree, so a search that visits fewer nodes at the same cost each
-finishes sooner while the rate says nothing happened.
+and each round's pair gives one ratio. The change is the Hodges-Lehmann
+estimate over those ratios, with its 95% interval from the signed rank test,
+and a verdict reads the interval against a threshold set above what moving
+the code about can do to the rate on its own. The node counts and the time
+to depth are printed too: a search change moves the counts and a speed
+change must not, and nps normalises for the size of the tree, so a search
+that visits fewer nodes at the same cost each finishes sooner while the
+rate says nothing happened.
 
     speed.py <base binary> <candidate binary> [--rounds N] [--depth D]
-             [--base-ref SHA]
+             [--base-ref SHA] [--threshold PCT]
 
 scripts/speed.sh builds the base commit and calls this.
 """
 
 import argparse
+import math
 import statistics
 import subprocess
 import sys
+import textwrap
 from dataclasses import dataclass, field
+
+# The confidence of the interval. Two sided, so each tail gets half.
+CONFIDENCE = 0.95
+
+# How far the rate moves between two builds that differ only in where the
+# code lands, as a percentage. Read off the Bench workflow's speed job over
+# the pull requests up to #321. Of the 53 that changed no build input, so
+# that both sides were one binary, 4 had an interval that excluded zero.
+# Release version bumps and comment sweeps, which change nothing but layout,
+# posted offsets near 1.5% with intervals that excluded zero. More rounds do
+# not average that away, since it belongs to the binary and not to the run.
+THRESHOLD = 2.0
 
 
 @dataclass
@@ -31,6 +48,15 @@ class Measured:
     candidate_nps: list[int] = field(default_factory=list)
     base_nodes: int = 0
     candidate_nodes: int = 0
+
+
+@dataclass
+class Estimate:
+    """A change as a percentage, and the interval around it."""
+
+    change: float
+    low: float
+    high: float
 
 
 def last_line(text: str) -> tuple[int, int] | None:
@@ -81,15 +107,64 @@ def measure(base: str, candidate: str, rounds: int, depth: int | None) -> Measur
     return measured
 
 
-def spread(rates: list[int]) -> float:
-    """How far the rounds ranged, as a share of the median."""
-    return 100.0 * (max(rates) - min(rates)) / statistics.median(rates)
-
-
 def change(base: float, candidate: float) -> float:
     """The candidate against the base, as a percentage. Below zero is less of
     whatever was counted: faster for a time, slower for a rate."""
     return 100.0 * (candidate - base) / base
+
+
+def signed_rank_depth(rounds: int) -> int:
+    """How far each bound of the interval steps in from its end of the sorted
+    Walsh averages: the most k with P(W < k) no more than half of what the
+    confidence leaves, W being the signed rank statistic of that many rounds
+    when nothing changed. Counted exactly rather than from the normal
+    approximation, which is poor at the rounds a laptop can spare. Zero when
+    no interval reaches the confidence, which at 95% is below six rounds."""
+    # ways[w] is how many of the 2^n sign patterns have a rank sum of w
+    ways = [1]
+    for rank in range(1, rounds + 1):
+        grown = ways + [0] * rank
+        for w, count in enumerate(ways):
+            grown[w + rank] += count
+        ways = grown
+    tail = (1 - CONFIDENCE) / 2 * 2**rounds
+    below = 0
+    for k, count in enumerate(ways):
+        if below + count > tail:
+            return k
+        below += count
+    return len(ways)
+
+
+def paired(base: list[int], candidate: list[int]) -> Estimate:
+    """The Hodges-Lehmann estimate of the change, and its interval.
+
+    A round's two runs sit next to each other, so their ratio cancels
+    whatever the machine was doing then; a runner that drifts through a job
+    moves the medians apart and leaves the ratios alone. The estimate is the
+    median of the averages of every pair of ratios, which one loaded round
+    moves little. The interval is the one the signed rank test gives, which
+    assumes only that the ratios are spread evenly about the true change. A
+    loaded round does move the interval: its averages with every other ratio
+    sit together at one end, and at nine rounds one such round is enough to
+    carry the bound out to it. That errs towards no claim, and more rounds
+    take more loaded ones to do it. Worked in logs, so that half as fast and
+    twice as fast are the same distance from no change.
+    """
+    ratios = [math.log(c / b) for b, c in zip(base, candidate)]
+    walsh = sorted(
+        (ratios[i] + ratios[j]) / 2
+        for i in range(len(ratios))
+        for j in range(i, len(ratios))
+    )
+    k = signed_rank_depth(len(ratios))
+    if k == 0:
+        raise ValueError(f"{len(ratios)} rounds have no interval at {CONFIDENCE:.0%}")
+    return Estimate(
+        100.0 * math.expm1(statistics.median(walsh)),
+        100.0 * math.expm1(walsh[k - 1]),
+        100.0 * math.expm1(walsh[-k]),
+    )
 
 
 def seconds(nodes: int, rates: list[int]) -> list[float]:
@@ -120,18 +195,29 @@ one. nps only says what a node costs. Time to depth is what the change is
 worth at this depth, and whether the new tree is the right one is for
 games to say."""
 
-# Said when the change between the medians is inside the spread of the rounds.
-NO_CLAIM = """the change is inside the spread, so the medians make no claim; the
-fastest column is the steadier comparison when the machine was not
-quiet"""
+
+def verdict(estimate: Estimate, threshold: float) -> str:
+    """What the interval says against the threshold. A change is claimed only
+    when the whole interval is past the threshold, and ruled out only when
+    the whole interval is inside it. Anything else wants more rounds."""
+    if estimate.low > threshold:
+        return f"faster: the whole interval is above +{threshold:.1f}%"
+    if estimate.high < -threshold:
+        return f"slower: the whole interval is below -{threshold:.1f}%"
+    if -threshold <= estimate.low and estimate.high <= threshold:
+        return f"no change beyond ±{threshold:.1f}%: the whole interval is inside it"
+    return (
+        f"not resolved: the interval reaches past ±{threshold:.1f}% without "
+        "clearing it, so more rounds are needed to say either way"
+    )
 
 
 def summary(measured: Measured) -> list[str]:
     """One row per side and the change under each column.
 
     The fastest column is there because nothing sharing the machine ever
-    makes a run faster, so each side's best round is its least interfered one
-    and the comparison that survives a loaded runner. When the counts match,
+    makes a run faster, so each side's best round is its least interfered
+    one. It is a second reading and has no interval. When the counts match,
     the change row leaves nodes and time empty: the time is then the rate
     upside down and would say nothing the nps cell does not.
     """
@@ -179,15 +265,17 @@ def summary(measured: Measured) -> list[str]:
     return lines
 
 
+def interval(estimate: Estimate) -> str:
+    return f"{estimate.low:+.1f}% to {estimate.high:+.1f}%"
+
+
 def trailer(base: list[int], candidate: list[int], base_ref: str) -> str:
-    """The Speed trailer: the change between medians, and the wider of the
-    two sides' spreads."""
-    change = 100.0 * (statistics.median(candidate) - statistics.median(base))
-    change /= statistics.median(base)
-    widest = max(spread(base), spread(candidate))
+    """The Speed trailer: the paired change and its interval."""
+    estimate = paired(base, candidate)
     return (
-        f"Speed: {change:+.1f}% (bench nps, {len(base)} interleaved rounds "
-        f"vs {base_ref}, spread {widest:.1f}%)"
+        f"Speed: {estimate.change:+.1f}% (bench nps, "
+        f"{CONFIDENCE:.0%} interval {interval(estimate)}, "
+        f"{len(base)} interleaved rounds vs {base_ref})"
     )
 
 
@@ -195,41 +283,38 @@ def main(argv: list[str]) -> int:
     parser = argparse.ArgumentParser(description=__doc__.splitlines()[0])
     parser.add_argument("base")
     parser.add_argument("candidate")
-    parser.add_argument("--rounds", type=int, default=5)
+    parser.add_argument("--rounds", type=int, default=15)
     parser.add_argument("--depth", type=int, default=None)
     parser.add_argument("--base-ref", default="base")
+    parser.add_argument("--threshold", type=float, default=THRESHOLD)
     args = parser.parse_args(argv)
-    if args.rounds < 2:
+    if signed_rank_depth(args.rounds) == 0:
         parser.error(
-            "at least two rounds: one shows no spread, so it is no measurement"
+            f"at least six rounds: fewer have no {CONFIDENCE:.0%} interval, "
+            "so they are no measurement"
         )
 
     measured = measure(args.base, args.candidate, args.rounds, args.depth)
-    print(f"{'round':>5} {'base nps':>12} {'candidate nps':>14}")
+    print(f"{'round':>5} {'base nps':>12} {'candidate nps':>14} {'change':>7}")
     for i, (b, c) in enumerate(zip(measured.base_nps, measured.candidate_nps), 1):
-        print(f"{i:>5} {b:>12} {c:>14}")
+        print(f"{i:>5} {b:>12} {c:>14} {change(b, c):>+6.1f}%")
     print()
     for line in summary(measured):
         print(line)
-    base_rate = statistics.median(measured.base_nps)
-    candidate_rate = statistics.median(measured.candidate_nps)
+    estimate = paired(measured.base_nps, measured.candidate_nps)
+    print()
+    print(
+        f"paired change {estimate.change:+.1f}%, "
+        f"{CONFIDENCE:.0%} interval {interval(estimate)}"
+    )
+    print()
     if measured.base_nodes != measured.candidate_nodes:
-        # the trailer stays the last line, which is what speed.sh reads
-        print()
+        # the rates are then over different trees, and a verdict would read
+        # them as if they were not
         print(COUNTS_DIFFER)
-    widest = max(spread(measured.base_nps), spread(measured.candidate_nps))
-    # a spread of exactly zero is a perfectly repeatable measurement, where
-    # any change is a claim. When the counts differ the block above has
-    # already said no number here is one, and the fastest pair it would point
-    # at compares rates over different trees. Compared at full precision, so
-    # the one divergence a reader can see is a printed tie
-    if (
-        measured.base_nodes == measured.candidate_nodes
-        and widest > 0
-        and abs(change(base_rate, candidate_rate)) <= widest
-    ):
-        print()
-        print(NO_CLAIM)
+    else:
+        print(textwrap.fill(verdict(estimate, args.threshold), width=72))
+    # the trailer stays the last line, which is what speed.sh reads
     print()
     print(trailer(measured.base_nps, measured.candidate_nps, args.base_ref))
     return 0

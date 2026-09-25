@@ -11,7 +11,7 @@
 # Run before the commit exists, which is why the base is head and not its
 # parent. The base binary is kept under target/speed/<sha>/, so measuring
 # again against the same commit costs only the rounds. The tree is built as
-# it stands, not as it is staged. ROUNDS sets the rounds, five by default.
+# it stands, not as it is staged. ROUNDS sets the rounds, fifteen by default.
 set -euo pipefail
 
 base=$(git rev-parse --verify "${1:-HEAD}^{commit}")
@@ -25,4 +25,4 @@ fi
 cargo build --release --quiet
 
 python3 scripts/speed.py "$kept" "${target}/release/arche" \
-    --base-ref "$short" --rounds "${ROUNDS:-5}"
+    --base-ref "$short" --rounds "${ROUNDS:-15}"
