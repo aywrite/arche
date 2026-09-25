@@ -47,8 +47,10 @@ impl TimeControl {
     /// A clock or a move time that was sent but cannot be read stands in as
     /// spent rather than being discarded: discarded, it would read as absent,
     /// and a `go` with no time at all searches without a limit. Playing a
-    /// weak move is recoverable and thinking for ever is not. A count of
-    /// moves is left alone, since a missing one is already a number assumed.
+    /// weak move is recoverable and thinking for ever is not. A word sent
+    /// with nothing after it is the same case and reads the same way, since
+    /// the clock was still sent. A count of moves is left alone, since a
+    /// missing one is already a number assumed.
     pub fn of(params: &Params, color: Color) -> Self {
         let (clock, increment) = match color {
             Color::White => ("wtime", "winc"),

@@ -173,6 +173,62 @@ mod tests {
         }
     }
 
+    /// What a command's words are read into, as far as a test that only asks
+    /// whether they were read needs to know.
+    type Reader = fn(&Params) -> Result<(), String>;
+
+    /// Every command beside the reader that answers it, so that a test can
+    /// ask each of them the same question. Written out rather than taken from
+    /// the dispatch in `main`, which answers with a report rather than with
+    /// the settings a report was run at.
+    fn readers() -> [(&'static Command, Reader); 6] {
+        [
+            (&uci::BENCH, |p| uci::bench_settings(p).map(|_| ())),
+            (&instruments::RESIDUALS, |p| {
+                instruments::residual_settings(p).map(|_| ())
+            }),
+            (&instruments::CUTOFFS, |p| {
+                instruments::cutoff_settings(p).map(|_| ())
+            }),
+            (&instruments::REDUCTIONS, |p| {
+                instruments::reduction_settings(p).map(|_| ())
+            }),
+            (&instruments::EFFORT, |p| {
+                instruments::effort_settings(p).map(|_| ())
+            }),
+            (&instruments::TERMS, |p| {
+                instruments::term_settings(p).map(|_| ())
+            }),
+        ]
+    }
+
+    /// Every keyword of every command, because the refusal is only worth
+    /// having if a keyword added later is covered by it as well. A word typed
+    /// with nothing after it used to read as the word being absent, so the
+    /// run went ahead at a default and said nothing about it.
+    #[test]
+    fn every_keyword_given_no_value_is_refused_by_the_reader_that_takes_it() {
+        for (command, read) in readers() {
+            for keyword in command.keywords {
+                let line = format!("{} {}", command.name, keyword.word);
+                let what = read(&Params::of(&line)).expect_err(&line);
+                assert!(
+                    what.starts_with(&format!("{}: no value", keyword.word)),
+                    "{line} was refused as {what}"
+                );
+            }
+        }
+    }
+
+    /// The commands the table holds are the commands the usage names, so a
+    /// reader added to one reaches the other.
+    #[test]
+    fn every_command_in_the_usage_has_a_reader_beside_it() {
+        let named: Vec<&str> = readers().iter().map(|(c, _)| c.name).collect();
+        let listed: Vec<&str> = COMMANDS.iter().map(|c| c.name).collect();
+        assert_eq!(named, listed);
+    }
+
     /// The other way round, a dispatch arm with no entry in the table, is not
     /// caught: the match is code rather than data.
     #[test]

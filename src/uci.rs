@@ -149,11 +149,14 @@ struct Held {
 /// as a number and falls outside the range is asking for more than we offer
 /// rather than making a mistake worth refusing, so it gets the nearest end
 /// and is told which, in the word it was sent as rather than the number that
-/// was read. The range travels as one argument rather
+/// was read. A `value` with nothing after it is no different here from no
+/// `value` at all, since either way the interface sent nothing to apply; the
+/// arguments tell those two apart, because a run at a default nobody asked
+/// for costs minutes. The range travels as one argument rather
 /// than as two ends of the same type, which would swap unnoticed.
 fn read_spin(name: &str, range: RangeInclusive<u64>, params: &Params) -> Result<Held, String> {
     let (word, value) = match (params.value("value"), params.parse::<u64>("value")) {
-        (Some(word), Param::Read(value)) => (word, value),
+        (Param::Read(word), Param::Read(value)) => (word, value),
         (_, Param::Unreadable(word)) => {
             return Err(format!("unrecognised {} value: {}", name, word));
         }
@@ -651,23 +654,22 @@ pub const BENCH: Command = Command {
 /// line names none. A word that is no policy is refused under the setting's
 /// name, for the bench and the instruments alike.
 pub(crate) fn taint(params: &Params) -> Result<SearchConfig, String> {
-    match params.value("taint") {
+    match params.value("taint").or_refuse("taint")? {
         None => Ok(SearchConfig::default()),
         Some(word) => SearchConfig::with_taint(word).ok_or_else(|| format!("taint: {word}")),
     }
 }
 
-/// Reads the bench settings, or names the setting and the word that could not
-/// be read. Running the default in its place would take seconds and explain
-/// nothing.
+/// Reads the bench settings, or names the setting and what stood where its
+/// value would. Running the default in its place would take seconds and
+/// explain nothing.
 pub fn bench_settings(params: &Params) -> Result<BenchSettings, String> {
     let depth = BENCH.depth(params, bench::DEPTH)?;
-    let table_bytes = match params.parse::<u64>("hash") {
-        Param::Absent => bench::TABLE_BYTES,
+    let table_bytes = match params.parse::<u64>("hash").or_refuse("hash")? {
+        None => bench::TABLE_BYTES,
         // the range the uci Hash option advertises
-        Param::Read(mb) if (HASH_MIN_MB..=HASH_MAX_MB).contains(&mb) => mb as usize * 1024 * 1024,
-        Param::Read(mb) => return Err(format!("hash: {mb}")),
-        Param::Unreadable(word) => return Err(format!("hash: {word}")),
+        Some(mb) if (HASH_MIN_MB..=HASH_MAX_MB).contains(&mb) => mb as usize * 1024 * 1024,
+        Some(mb) => return Err(format!("hash: {mb}")),
     };
     let config = taint(params)?;
     // last, so a word that was going to be read as the depth has already
@@ -1561,14 +1563,22 @@ go depth 3
     #[test]
     fn a_clock_that_cannot_be_read_is_a_spent_one_rather_than_no_clock() {
         // discarding it would read as the keyword being absent, and a go with
-        // no time at all searches without a limit
-        let control = TimeControl::of(&Params::of("go wtime abc winc x"), Color::White);
-        assert_eq!(control.time, Some(0));
-        assert_eq!(control.increment, Some(0));
-        assert!(
-            control.budget(DEFAULT_MOVE_OVERHEAD_MS).is_some(),
-            "an unreadable clock must still bound the search"
-        );
+        // no time at all searches without a limit. A word with nothing after
+        // it is a clock that was sent too, so it reads the same way
+        for (line, increment) in [
+            ("go wtime abc winc x", Some(0)),
+            ("go winc x wtime", Some(0)),
+            ("go wtime", None),
+        ] {
+            let control = TimeControl::of(&Params::of(line), Color::White);
+            assert_eq!(control.time, Some(0), "{}: clock", line);
+            assert_eq!(control.increment, increment, "{}: increment", line);
+            assert!(
+                control.budget(DEFAULT_MOVE_OVERHEAD_MS).is_some(),
+                "{}: a clock that cannot be read must still bound the search",
+                line
+            );
+        }
     }
 
     #[test]
@@ -1579,6 +1589,8 @@ go depth 3
             ("go depth 5", Some(5)),
             ("go depth 999", Some(arche_core::MAX_PLY)),
             ("go depth abc", None),
+            // and a depth word with nothing after it is no depth either
+            ("go depth", None),
             ("go infinite", None),
         ] {
             assert_eq!(
@@ -1676,7 +1688,8 @@ go depth 3
         let mut uci = uci();
         uci.run(Cursor::new(
             "bench abc\nbench 300\nbench 1 hash 0\nbench 1 hash 99999\n\
-             bench 1 hash big\nbench 1 taint maybe\n",
+             bench 1 hash big\nbench 1 taint maybe\nbench 1 hash\nbench 1 taint\n\
+             bench 1 hash 1 hash\n",
         ));
         assert_eq!(
             said(&uci),
@@ -1685,19 +1698,21 @@ go depth 3
              info string unrecognised bench hash: 0\n\
              info string unrecognised bench hash: 99999\n\
              info string unrecognised bench hash: big\n\
-             info string unrecognised bench taint: maybe\n"
+             info string unrecognised bench taint: maybe\n\
+             info string unrecognised bench hash: no value\n\
+             info string unrecognised bench taint: no value\n\
+             info string unrecognised bench hash: given twice\n"
         );
     }
 
     #[test]
     fn a_bench_command_takes_a_table_size_and_a_taint_policy() {
-        // the words may come in either order, the depth may be left out, and
-        // a keyword with nothing after it is the setting left out. The
-        // left-out depth is checked on the settings alone, since running the
-        // suite at the bench's own depth would cost seconds
+        // the words may come in either order and the depth may be left out.
+        // The left-out depth is checked on the settings alone, since running
+        // the suite at the bench's own depth would cost seconds
         let mut uci = uci();
         uci.run(Cursor::new(
-            "bench 1 hash 1 taint trust\nbench 1 taint refuse hash 2\nbench 1 taint\n",
+            "bench 1 hash 1 taint trust\nbench 1 taint refuse hash 2\n",
         ));
         let said = said(&uci);
         let headers: Vec<&str> = said
@@ -1717,8 +1732,6 @@ go depth 3
                 "taint trust",
                 "bench depth 1 hash 2MB",
                 "taint refuse",
-                "bench depth 1 hash 16MB",
-                "taint rule50",
             ],
             "{}",
             said
@@ -1729,6 +1742,12 @@ go depth 3
         assert_eq!(left_out.depth, bench::DEPTH);
         assert_eq!(left_out.table_bytes, 1024 * 1024);
         assert_eq!(left_out.config.taint_word(), "trust");
+
+        // a setting left off the line takes its default; one named with
+        // nothing after it is the refusal above rather than the default
+        let neither = bench_settings(&Params::of("bench 1")).expect("neither word");
+        assert_eq!(neither.table_bytes, bench::TABLE_BYTES);
+        assert_eq!(neither.config.taint_word(), "rule50");
     }
 
     #[test]
@@ -2466,6 +2485,10 @@ go depth 3
         assert!(holds("go nodes 99999999999999999999999"));
         assert!(!holds("go movetime 500"));
         assert!(!holds("go wtime 1000"));
+        // a time word with nothing after it is one that was sent, so it
+        // bounds the search rather than leaving it to be stopped
+        assert!(!holds("go wtime"));
+        assert!(!holds("go movetime"));
         // the overhead shrinks a budget and never takes one away
         let held_back = |line: &str| {
             Go::of(&Params::of(line), Color::White, OVERHEAD_MAX_MS).holds_its_answer()

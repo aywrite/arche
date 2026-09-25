@@ -13,7 +13,9 @@
 //! option meant for another engine and the protocol says to carry on; a
 //! person typing `hsah 16` at a shell would rather be told. The bench is both
 //! and takes the strict reading: a measurement at settings nobody asked for
-//! is worse than one not taken.
+//! is worse than one not taken. A keyword typed with nothing after it is
+//! refused for the same reason. The setting's own reader refuses it, not this
+//! one, because that is what can name the setting rather than only the word.
 
 use crate::params::{Param, Params};
 
@@ -45,7 +47,10 @@ impl Command {
     /// under the depth's name rather than run at the default.
     pub fn depth(&self, params: &Params, default: u8) -> Result<u8, String> {
         match params.parse::<u8>(self.name) {
-            Param::Absent => Ok(default),
+            // the command's own word standing last is the line asking for no
+            // depth, which is how the default is asked for, rather than a
+            // setting left half typed
+            Param::Absent | Param::Bare => Ok(default),
             Param::Read(depth) => Ok(depth),
             Param::Unreadable(word) if self.takes(word) => Ok(default),
             Param::Unreadable(word) => Err(format!("depth: {word}")),
@@ -62,39 +67,41 @@ impl Command {
         self.keywords.iter().any(|k| k.word == word)
     }
 
-    /// The first word of the line that this argument does not know, if there
-    /// is one. Walked rather than compared as a set, because a keyword claims
-    /// the value after it: `hash 16` claims the `16`.
+    /// `Ok` unless the line names a word this argument does not know, or
+    /// names one of its keywords twice. Walked rather than compared as a set,
+    /// because a keyword claims the value after it: `hash 16` claims the
+    /// `16`, and a `cap` standing where a file name goes is that file name.
     ///
     /// The first word is whatever invoked us. The second may be the depth,
     /// which the caller's own parse judges and refuses as `depth: abc`, so
-    /// this runs after that parse.
-    pub fn unclaimed<'a>(&self, params: &Params<'a>) -> Option<&'a str> {
+    /// this runs after that parse. The refusals are shaped `<what>: <word>`
+    /// and `<setting>: <what>` like the others, since the caller prints them
+    /// all the same way.
+    pub fn claim(&self, params: &Params) -> Result<(), String> {
         let words = params.words();
+        let mut seen: Vec<&str> = Vec::new();
         let mut at = 1;
         while at < words.len() {
             let word = words[at];
             if self.is_keyword(word) {
+                // one keyword cannot mean two things, and the second copy is
+                // read by nobody: the setting's own reader takes the first,
+                // so a repeat standing last would be a word given no value
+                // that nothing refused
+                if seen.contains(&word) {
+                    return Err(format!("{word}: given twice"));
+                }
+                seen.push(word);
                 // a keyword standing last claims a word that is not there,
-                // which leaves the setting at its default
+                // which the setting's own reader refuses under its name
                 at += 2;
             } else if self.flags.contains(&word) || (self.depth && at == 1) {
                 at += 1;
             } else {
-                return Some(word);
+                return Err(format!("word: {word}"));
             }
         }
-        None
-    }
-
-    /// `Ok` unless the line names a word this argument does not know. The
-    /// refusal is shaped `<what>: <word>` like the others, since the caller
-    /// prints them all the same way.
-    pub fn claim(&self, params: &Params) -> Result<(), String> {
-        match self.unclaimed(params) {
-            None => Ok(()),
-            Some(word) => Err(format!("word: {word}")),
-        }
+        Ok(())
     }
 
     /// How the line is spelled, for the usage.
@@ -146,8 +153,9 @@ mod tests {
         summary: &["a command that takes no depth"],
     };
 
-    fn unclaimed(line: &str) -> Option<String> {
-        TAKES.unclaimed(&Params::of(line)).map(str::to_string)
+    /// What the argument refuses the line for, if anything.
+    fn refused(line: &str) -> Option<String> {
+        TAKES.claim(&Params::of(line)).err()
     }
 
     #[test]
@@ -161,37 +169,67 @@ mod tests {
             "probe 4 audit",
             "probe audit every 50",
         ] {
-            assert_eq!(unclaimed(line), None, "{line}");
+            assert_eq!(refused(line), None, "{line}");
         }
     }
 
     #[test]
     fn a_word_it_does_not_know_is_named() {
-        assert_eq!(unclaimed("probe 4 evrey 50"), Some("evrey".to_string()));
+        assert_eq!(refused("probe 4 evrey 50"), Some("word: evrey".to_string()));
         assert_eq!(
-            unclaimed("probe 4 every 50 spare"),
-            Some("spare".to_string())
+            refused("probe 4 every 50 spare"),
+            Some("word: spare".to_string())
         );
-        assert_eq!(unclaimed("probe 4 audit extra"), Some("extra".to_string()));
+        assert_eq!(
+            refused("probe 4 audit extra"),
+            Some("word: extra".to_string())
+        );
     }
 
     #[test]
     fn a_keywords_value_is_not_judged_on_its_own() {
-        assert_eq!(unclaimed("probe every 50"), None);
-        assert_eq!(unclaimed("probe cap 20"), None);
+        assert_eq!(refused("probe every 50"), None);
+        assert_eq!(refused("probe cap 20"), None);
+        // a value that is spelled like a keyword is still only a value
+        assert_eq!(refused("probe cap 20 every cap"), None);
     }
 
-    /// A keyword last on the line claims a word that is not there, and the
-    /// setting takes its default.
+    /// The setting's own reader takes the first of them, so the second is
+    /// read by nobody, and a second standing last is a keyword given no value
+    /// that no reader is looking at.
     #[test]
-    fn a_keyword_with_no_value_left_is_not_a_refusal() {
-        assert_eq!(unclaimed("probe 4 every"), None);
+    fn a_keyword_given_twice_is_refused_under_its_own_name() {
+        for line in ["probe 4 every 50 every 60", "probe 4 every 50 every"] {
+            assert_eq!(
+                refused(line),
+                Some("every: given twice".to_string()),
+                "{line}"
+            );
+        }
+    }
+
+    /// A keyword last on the line claims a word that is not there. It is
+    /// refused, but by the reader of the setting it names, which can say
+    /// which setting was left without a value where this would only say the
+    /// word was unknown.
+    #[test]
+    fn a_keyword_with_no_value_left_is_left_to_its_own_reader() {
+        assert_eq!(refused("probe 4 every"), None);
+    }
+
+    /// The command's own word is last on every line that names no depth,
+    /// which is the usual spelling rather than a setting given no value.
+    #[test]
+    fn the_command_word_standing_last_asks_for_the_default_depth() {
+        assert_eq!(TAKES.depth(&Params::of("probe"), 9), Ok(9));
+        assert_eq!(TAKES.depth(&Params::of("probe 4"), 9), Ok(4));
+        assert_eq!(TAKES.depth(&Params::of("probe every 50"), 9), Ok(9));
     }
 
     /// The caller's own parse judges the depth and says `depth: abc`.
     #[test]
     fn the_depths_place_is_left_to_the_caller() {
-        assert_eq!(unclaimed("probe abc"), None);
+        assert_eq!(refused("probe abc"), None);
     }
 
     #[test]

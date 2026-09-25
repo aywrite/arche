@@ -16,6 +16,12 @@ Three of the five answer by asking the reference, `SearchConfig::reference()`,
 which is alpha-beta with every shortcut off. DEVELOPMENT.md's bench section
 says where the default parts company with it.
 
+Every setting below is optional and takes its default when the line leaves it
+out. A setting named with nothing after it is refused by name instead, as
+`effort 4 cap` is refused with `cap: no value`, and so is one named twice. A
+run takes minutes, and one started at a default nobody typed would spend them
+answering a question that was not asked.
+
 ## What the shortcuts cost in accuracy
 
 The bench says how much of the tree a shortcut removes. It cannot say how
@@ -417,9 +423,10 @@ not among them: it is a policy with four values rather than a switch, and
 and the baseline then has both off. Read against the two singles and the
 null, a pair says whether two rules' savings multiply, as rules acting on
 unrelated parts of the tree would, or whether the pair frees more or less
-than that. A pair is one word because a keyword sent twice reads the first.
-The same switch twice is refused, since it would be the single run under a
-pair's name, and so is a third. Where one switch of a pair is only ever
+than that. A pair is one word because a keyword sent twice reads the first,
+so `off` twice is refused rather than read as a pair. The same switch twice
+is refused as well, since it would be the single run under a pair's name, and
+so is a third. Where one switch of a pair is only ever
 asked under the other (`adaptive_null_move` under `null_move`;
 `deep_reductions`, `late_move_pruning`, `reduction_table` and
 `deep_index_rule` under `late_move_reductions`; `deep_index_rule` under
