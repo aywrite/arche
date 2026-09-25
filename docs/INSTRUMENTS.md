@@ -309,14 +309,16 @@ The third outcome word is the skipping rules'. A move the model prices in
 its deadest band at depth four and up, and a quiet move at depth one to
 three that either shallow rule declines, are never scouted at all, so a
 sampled skip is recorded where the loop passes it over: the same features,
-a cost of zero, a reduction of zero, and a
-`searched` count that equals the index rather than standing one past it,
-because the move is not among the searched. The replay treats a skipped
-row as it treats a fail low, since what was denied is the same full depth
-search. The search never makes a skipped move, so its legality is unknown
-at the decision; the recorder makes and unmakes it around the record
-alone, and a move that turns out illegal is not recorded, because the
-skip denied it nothing.
+a cost of zero and a reduction of zero. Its `searched` count stands one past
+the index, as a scouted row's does, although the move was never searched:
+the column is the attention model's searched feature. The model's own skips
+read that value; a shallow rule's skip reads the index, which the row
+carries beside it. A ledger printed before 25 September 2026 has the index
+there instead. The replay treats a skipped row as it treats a fail
+low, since what was denied is the same full depth search. The search never
+makes a skipped move, so its legality is unknown at the decision; the
+recorder makes and unmakes it around the record alone, and a move that
+turns out illegal is not recorded, because the skip denied it nothing.
 
 Which family a skipped row came from is its depth. The model decides from
 four and both shallow rules stop at three, so a skipped row at depth one,

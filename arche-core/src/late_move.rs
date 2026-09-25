@@ -190,7 +190,7 @@ const DEEP_REDUCTION_THRESHOLD: i64 = -4637;
 // games is the gate at 39%, so moving it to the quartile is an arm of its
 // own. The corpus rather than the bench because a skip spends the model's
 // word where the games go.
-const LATE_MOVE_PRUNING_THRESHOLD: i64 = -7954;
+pub(crate) const LATE_MOVE_PRUNING_THRESHOLD: i64 = -7954;
 // The index the deep reduction's rule wants a move to have reached, and
 // how much further along the order per ply of depth over the floor the
 // deeper scout starts at. Chosen offline on the training half of a ledger
@@ -258,6 +258,28 @@ fn attention_score(f: &AttentionFeatures) -> i64 {
         + ATTENTION_GENERATED * f.generated as i64
         + ATTENTION_SEARCHED * (index + 1)
         + ATTENTION_INTERCEPT
+}
+
+/// A reduction ledger row scored as `scripts/fit_attention.py` reads it,
+/// with the searched column as printed rather than derived from the index.
+/// What holds the printed column to the one the gate read.
+#[cfg(test)]
+pub(crate) fn ledger_row_score(e: &crate::reduction::Event) -> i64 {
+    let f = AttentionFeatures {
+        depth: e.depth,
+        index: e.index,
+        hist_milli: if e.history_max > 0 {
+            i64::from(e.history.max(0)) * 1000 / i64::from(e.history_max)
+        } else {
+            0
+        },
+        killer: e.killer,
+        tt: e.tt,
+        eval_beta: i64::from(e.eval_beta),
+        alpha_gap: i64::from(e.alpha_gap),
+        generated: e.generated,
+    };
+    attention_score(&f) + ATTENTION_SEARCHED * (e.searched as i64 - (e.index as i64 + 1))
 }
 
 /// What the decision reads of the search. Three references rather than
