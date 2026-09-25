@@ -277,7 +277,7 @@ git keeps at the end of a message, and the commit-msg hook checks them:
 | trailer | required on | produced by |
 | --- | --- | --- |
 | `Bench: 4395471` | `feat`, `fix`, `perf`, `refactor` and `revert` to `board`, `eval`, `magic`, `search` or `zobrist` | `scripts/bench_trailer.sh` |
-| `Speed: +3.1% (bench nps, 5 interleaved rounds vs a1b2c3d, spread 2.4%)` | `perf` to one of those scopes | `scripts/speed.sh` |
+| `Speed: +3.1% (bench nps, 95% interval +2.4% to +3.9%, 15 interleaved rounds vs a1b2c3d)` | `perf` to one of those scopes | `scripts/speed.sh` |
 | `Elo: +12 ±8 (sprt [0, 10] passed, 1240 games, 10+0.1, vs v0.3.10)` | nothing, checked when present | the Strength workflow's summary |
 
 So an engine commit is made as
@@ -287,10 +287,13 @@ git commit --trailer "$(scripts/bench_trailer.sh)"
 ```
 
 and a perf commit adds `--trailer "$(scripts/speed.sh | tail -n 1)"`, which
-keeps its build under `target/speed/`. The spread it prints beside the change
-is what the change has to be read against: a plus three with a six percent
-spread is not a claim. What it does and how to read the rest of its report
-are under The bench and speed below.
+keeps its build under `target/speed/`. The interval it prints beside the
+change is what the change has to be read against: a plus three whose interval
+reaches down to plus one is not a claim. What it does and how to read the
+rest of its report are under The bench and speed below. Trailers written
+before September 2026 carry the range of the rounds as a spread instead of
+an interval, and the hook now refuses that shape, so a perf commit measured
+before then is measured again.
 Both scripts build the tree as it stands rather than as it is staged, so
 stage everything first. A refactor that moves nothing still states the bench,
 since unchanged is a claim worth making, and the Bench workflow builds every
@@ -352,20 +355,44 @@ as it goes.
 Speed is measured against another build, never on its own: a rate says
 nothing across machines, and a single pair of runs says little on one.
 `scripts/speed.sh` builds the commit the tree stands on, from an export rather
-than a checkout so the tree is left as it is, runs the bench for each side in
-turn with the side that goes first alternating, and prints the
-change between medians with the spread beside it, which is the `Speed:`
-trailer a perf commit carries. The report also compares the two sides at
-their fastest round each, since nothing sharing the machine ever makes a run
-faster and that pair is the one that survives a loaded runner. It says
-outright when the change between the medians is inside the spread, which
-is a measurement making no claim. The Bench workflow's speed job does the same
-on every pull request, over nine rounds rather than the local five, both sides
-built and run on one runner, and posts the result as a comment, or to the job
-summary alone for a pull request from a fork. It reports and does not gate: the
-count is the claim, and the rate is the context it is read in.
+than a checkout so the tree is left as it is, and runs the bench for each side
+in turn with the side that goes first alternating. Each round's two runs give
+one ratio, which cancels whatever the machine was doing during that round.
+The change is the Hodges-Lehmann estimate over the ratios (the median of the
+averages of every pair of them), with the 95% interval the signed rank test
+gives, and that pair is the `Speed:` trailer a perf commit carries. Fewer
+than six rounds have no such interval and are refused. The interval narrows
+with the square root of the rounds, where the range of the rounds that was
+read before it only grew.
 
-The report is one row a side and a change row under it. When the two sides
+A verdict then holds the interval against a threshold, 2% by default and set
+with `--threshold`. The change is called faster or slower only when the whole
+interval is past it, and no change only when the whole interval is inside it.
+Anything else is not resolved. The threshold is not about the runs. It sits
+above how far the rate moves between two builds that differ only in where
+the code lands. Over the pull requests up to #321, those that changed no build input
+(so that both sides were one binary) had an interval that excluded zero in 4
+of 53, close to the one in twenty the confidence allows. Release version
+bumps and comment sweeps, which change only the layout, posted offsets near
+1.5% whose intervals excluded zero, so a change that small is not a speed
+change the clock can show. More rounds do not help there, because the offset
+belongs to the binary and not to the run. One badly loaded round widens the
+interval rather than moving the estimate, because its averages with every
+other round sit together at one end. The verdict then says not resolved,
+which errs the safe way.
+
+The report also compares the two sides at their fastest round each, since
+nothing sharing the machine ever makes a run faster, and that pair is a
+second reading with no interval. The Bench workflow's speed job does the same
+on every pull request, over twenty five rounds rather than the local fifteen,
+both sides built and run on one runner, and posts the result as a comment, or
+to the job summary alone for a pull request from a fork. It reports and does
+not gate: the count is the claim, and the rate is the context it is read in.
+
+The report lists each round with its own change, then gives one row a side
+and a change row under it, then the paired change and its interval. The
+median and fastest cells in the change row compare each side's own rounds.
+The paired line is the one the trailer and the verdict read. When the two sides
 count the same nodes the change row leaves the nodes and time cells empty,
 because the time is then the rate upside down and says nothing the rate does
 not. When they differ both cells are filled, because the rate on its own is

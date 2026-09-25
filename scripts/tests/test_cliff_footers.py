@@ -3,7 +3,7 @@
 
 """The changelog prints a trailer's whole value or none of it.
 
-`Speed: +6.4% (bench nps, 9 interleaved rounds vs abc1234, spread 50.5%)`
+`Speed: +1.6% (bench nps, 95% interval +0.6% to +2.9%, 9 interleaved rounds vs abc1234)`
 says the change and what it has to be read against. The template once printed
 the first word and dropped the rest, which turned eighteen of twenty two
 non-claims into claims.
