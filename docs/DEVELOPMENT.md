@@ -798,28 +798,30 @@ almost nothing however many games it is given. A ladder is kept in
 engine improves without touching either workflow.
 
 The blitz ladder has eight of them, and they sit either side of where the engine
-is expected to be rather than under it. v0.4.4 placed at 2601 ±31 (95%) over
+is expected to be rather than under it. v0.4.6 placed at 2760 ±30 (95%) over
 400 games on the panel before this one, and the release after it is planned at
-about a hundred more, so the panel brackets 2700, four rungs below it and four
-above, from 2511 to 2846:
+about fifty more, so the panel brackets 2800, four rungs below it and four
+above, from 2555 to 2932:
 
 | rung | ccrl blitz | |
 | --- | --- | --- |
-| stash:v20.0.1 | 2511 ±23 | Stash 20.0.1 64-bit |
 | tantabus:v2.0.0 | 2555 ±13 | Tantabus 2.0.0 64-bit |
-| weiss:v0.9 | 2650 ±19 | Weiss 0.9 64-bit |
 | blunder:v8.5.5 | 2663 ±11 | Blunder 8.5.5 64-bit |
 | stash:v21.0 | 2713 ±14 | Stash 21.0 64-bit |
 | inanis:v1.1.0 | 2763 ±17 | Inanis 1.1.0 64-bit |
 | zahak:6.2 | 2825 ±17 | Zahak 6.2 64-bit |
 | weiss:v0.10 | 2846 ±17 | Weiss 0.10 64-bit |
+| weiss:v1.0 | 2896 | Weiss 1.0 64-bit |
+| stash:v25.0 | 2932 | Stash 25.0 64-bit |
 
-The 2601 is the Calibrate job of release run 34843479746 on 14 September 2026,
-fifty games a rung at 20+0.2 on the previous panel of 2252 to 2713. Its per
-rung scores are what moved the panel: 89% against Goldfish 2.1.1, 81% against
-Stash 17.0, 75% against SoFCheck 0.9 beta and 73% against Stash 19.0, then
-64%, 53%, 43% and 37% against the four rungs that stay. At 2700 the expected
-score against the eight above runs from 75% at the bottom to 30% at the top.
+The 2760 is the Calibrate job of the v0.4.6 release run on 23 September 2026,
+fifty games a rung at 20+0.2 on the previous panel of 2511 to 2846. It sat
+above six of those eight rungs and scored 44% against the top one. Stash
+20.0.1 at 2511 and Weiss 0.9 at 2650 came off the bottom, and Weiss 1.0 and
+Stash 25.0 went on the top. Dropping Weiss 0.9 rather than Tantabus keeps
+Weiss at two rungs. At 2810 the expected score against the eight above runs
+from 81% at the bottom to 33% at the top; on the old panel it would have run
+from 85% to 45%.
 
 Six lineages, none holding more than two rungs. This started as a ladder of
 Stash alone, and a ladder of one lineage measures partly how this engine does
@@ -839,22 +841,21 @@ why both are given. A list is redone as games arrive, so a figure here can
 drift from the published one; the date is what says how old these are.
 
 Every rung was cloned at its pin, built and played against this engine before
-it was named. The four that stay have played fifty games apiece in each of the
-last two release gauntlets. The four new ones were proved by Calibrate run
-35347904642 on 18 September 2026, twenty games each at 20+0.2 against master at
-`b0c353d` carrying only this change, and Weiss 1.0 at 2896 was proved beside
-them for the move after this one. The engine scored 35% against Blunder 8.5.5,
-17.5% against Inanis 1.1.0, 17.5% against Zahak 6.2, 25% against Weiss 0.10 and
-10% against Weiss 1.0, which the fit reads as 2558 ±67 (95%) over the hundred
-games. That interval covers the 2601, and the point sits under it: either a
-hundred games is a hundred games, or these lineages find something a panel that
-was half Stash did not, and that is the first thing to look at if the release
-gauntlet comes back lower than the panel it replaced. All hundred ended
-normally, with no illegal move, no loss on time and nothing dropping the
-connection. Inanis prints principal variations that walk on past a threefold
-repetition, as Tantabus does, so those two rungs fill their logs with warnings
-about moves nobody played; the other six print none. All eight take the 256MB
-both sides are asked for.
+it was named. Six of the eight have played fifty games apiece in at least one
+release gauntlet. Blunder 8.5.5, Inanis 1.1.0, Zahak 6.2 and Weiss 0.10 were
+proved by Calibrate run 35347904642 on 18 September 2026, twenty games each at
+20+0.2 against master at `b0c353d`, with Weiss 1.0 beside them, and scored
+35%, 17.5%, 17.5%, 25% and 10%. Weiss 1.0 and Stash 25.0 were proved again for
+this panel by Calibrate run 36119521634 on 25 September 2026, twenty games each
+at 20+0.2 against the v0.4.6 tag (`5f7d358`). The engine scored 35% against
+Stash 25.0 and 37.5% against Weiss 1.0, which the fit reads as 2816 ±94 (95%)
+over the forty games, inside the 2760 ±30 the release placed it at. All forty
+ended normally, with no illegal move, no loss on time and nothing dropping the
+connection. Stash 25.0 twice played a move that was not the start of its last
+principal variation, which fastchess warns about.
+Inanis prints principal variations that walk on past a threefold repetition,
+as Tantabus does, so those two rungs fill their logs with warnings about moves
+nobody played. All eight take the 256MB both sides are asked for.
 
 fastchess will not send a size an engine declares itself unable to take, and
 such an engine plays on its own default instead. None of the eight is one, but
@@ -870,12 +871,13 @@ reason and for one more: they are five elo apart, so the bottom of the panel
 was two rungs answering the same question. Goldfish 2.1.1 at 2252, Stash 17.0
 at 2297, SoFCheck 0.9 beta at 2384 and Stash 19.0 at 2473 came off when the
 panel moved up to bracket 2700, having given v0.4.4 between 73% and 89% of
-fifty games each. Their blocks are still in `scripts/opponent.sh`, so a
-ladder can name them again.
+fifty games each. Stash 20.0.1 at 2511 and Weiss 0.9 at 2650 came off when it
+moved up again to bracket 2800. Their blocks are still in
+`scripts/opponent.sh`, so a ladder can name them again.
 
-Cinnamon 2.4 at 2326, FoxSEE 8.2 at 2471 and Weiss 1.0 at 2896 have blocks
-and are not on the blitz ladder (Weiss 1.0 is on the 40/15 one). Each was built at its pin and played twenty games,
-so any of them can be named in a ladder without proving its block first.
+Cinnamon 2.4 at 2326 and FoxSEE 8.2 at 2471 have blocks and are not on the
+blitz ladder. Each was built at its pin and played twenty games, so either can
+be named in a ladder without proving its block first.
 Cinnamon prints an illegal move at the end of a principal variation. Halogen 8
 at 2826 and Zahak 5.0 at 2726 were tried for the panel above and have no
 block: the first does not compile under a current g++ and the second builds
@@ -884,7 +886,7 @@ but crashes in its hash under a current Go.
 The stash releases a ladder can pick from, with whether ccrl ranked the version
 itself or the figure is a community estimate from the games around it.
 Everything from v13 up was read off the 5 September list. v22 to v24 are not
-on it, so v25.0 at 2932 is the next Stash rung above the panel:
+on it, so v25.0 at 2932 is the Stash rung at the top of the panel:
 
 | tag | ccrl blitz | |
 | --- | --- | --- |
