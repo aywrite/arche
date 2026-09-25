@@ -481,6 +481,24 @@ impl Shallow {
     /// Whether the node has searched the count's moves a ply already. The
     /// node's own integers and nothing else: no board read, no evaluation
     /// and no history.
+    /// Whether either rule would drop every quiet move from here on that
+    /// neither gives check nor promotes: the half of `skips` that does not
+    /// read the move. Both parts are latches while alpha stays short of a
+    /// mate, since `searched` and alpha only rise.
+    #[inline]
+    pub(crate) fn active(
+        &mut self,
+        search: &Search,
+        eval: &mut Option<i64>,
+        searched: usize,
+        alpha: Score,
+    ) -> bool {
+        self.admits
+            && searched >= 1
+            && !is_mate(alpha)
+            && (self.counted(searched) || self.under_alpha(search, eval, alpha))
+    }
+
     #[inline]
     fn counted(&self, searched: usize) -> bool {
         self.count.is_some_and(|count| searched >= count)

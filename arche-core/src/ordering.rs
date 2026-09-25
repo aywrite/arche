@@ -124,6 +124,11 @@ pub(crate) struct MoveOrdering {
     /// node's list.
     killers: [[Option<Play>; 2]; MAX_PLY as usize],
     history: History,
+    /// The quiet run's packed keys at each ply, kept beside the run as the
+    /// search picks from it, and the run in generated order, which a key's
+    /// place indexes.
+    quiet_keys: Box<[[i64; MOVE_LIST_INLINE]; MAX_PLY as usize]>,
+    quiet_orig: Box<[[Play; MOVE_LIST_INLINE]; MAX_PLY as usize]>,
 }
 
 impl MoveOrdering {
@@ -133,6 +138,8 @@ impl MoveOrdering {
             sorted: [NOWHERE; MOVE_LIST_INLINE],
             killers: [[None; 2]; MAX_PLY as usize],
             history: [[[0; 64]; 64]; 2],
+            quiet_keys: Box::new([[0; MOVE_LIST_INLINE]; MAX_PLY as usize]),
+            quiet_orig: Box::new([[NOWHERE; MOVE_LIST_INLINE]; MAX_PLY as usize]),
         }
     }
 
@@ -399,6 +406,111 @@ impl MoveOrdering {
             }
         }
         sort_on_the_stack(quiets, &mut keys[..scored], plain, front, sorted);
+    }
+}
+
+impl MoveOrdering {
+    /// The second stage, keyed but not sorted: every quiet move of the run
+    /// gets its packed key (a zero key included, so the plain moves keep
+    /// their generated order by place), and the search takes them in order
+    /// with `pick`, `sort_rest` and `keep_unskippable`. Returns the run's
+    /// length.
+    #[inline]
+    pub(crate) fn key_quiets(
+        &mut self,
+        board: &Board,
+        rest: &mut [Play],
+        losing: usize,
+        ply: usize,
+    ) -> usize {
+        let run = rest.len() - losing;
+        let quiet = Quiet {
+            killers: self.killers[ply],
+            history: &self.history[board.active_color as usize],
+        };
+        let keys = &mut self.quiet_keys[ply];
+        let orig = &mut self.quiet_orig[ply];
+        orig[..run].copy_from_slice(&rest[..run]);
+        for (i, m) in rest[..run].iter().enumerate() {
+            keys[i] = pack(-quiet.bonus(m), i);
+        }
+        run
+    }
+
+    /// Put the best of the run's moves from `t` on at `t`.
+    #[inline]
+    pub(crate) fn pick(&mut self, run: &mut [Play], t: usize, ply: usize) {
+        let keys = &mut self.quiet_keys[ply];
+        let mut best = t;
+        let mut key = keys[t];
+        for (j, &k) in keys[t + 1..run.len()].iter().enumerate() {
+            if k < key {
+                key = k;
+                best = t + 1 + j;
+            }
+        }
+        keys.swap(t, best);
+        run.swap(t, best);
+    }
+
+    /// Sort the run from `t` on whole.
+    #[inline(never)]
+    pub(crate) fn sort_rest(&mut self, run: &mut [Play], t: usize, ply: usize) {
+        let keys = &mut self.quiet_keys[ply][t..run.len()];
+        for i in 1..keys.len() {
+            let k = keys[i];
+            let mut j = i;
+            while j > 0 && keys[j - 1] > k {
+                keys[j] = keys[j - 1];
+                j -= 1;
+            }
+            keys[j] = k;
+        }
+        let orig = &self.quiet_orig[ply];
+        for (slot, key) in run[t..].iter_mut().zip(keys.iter()) {
+            *slot = orig[(key & PLACE_MASK) as usize];
+        }
+    }
+
+    /// With the shallow rules on for the rest of the node, only a move that
+    /// gives check or promotes will be searched: those go first from `t`
+    /// in key order, and the rest behind them in any order.
+    #[inline(never)]
+    pub(crate) fn keep_unskippable(
+        &mut self,
+        board: &Board,
+        run: &mut [Play],
+        t: usize,
+        ply: usize,
+        check: &mut Option<crate::board::CheckInfo>,
+    ) -> usize {
+        let info = *check.get_or_insert_with(|| board.check_info());
+        let keys = &mut self.quiet_keys[ply];
+        let len = run.len();
+        // survivors to the front of [t..), in place, carrying their keys
+        let mut kept = t;
+        for j in t..len {
+            let m = run[j];
+            if m.promote.is_some() || board.gives_check_with(&info, &m) {
+                keys.swap(kept, j);
+                run.swap(kept, j);
+                kept += 1;
+            }
+        }
+        // the survivors in key order, a handful at most
+        for i in t + 1..kept {
+            let k = keys[i];
+            let m = run[i];
+            let mut j = i;
+            while j > t && keys[j - 1] > k {
+                keys[j] = keys[j - 1];
+                run[j] = run[j - 1];
+                j -= 1;
+            }
+            keys[j] = k;
+            run[j] = m;
+        }
+        kept
     }
 }
 

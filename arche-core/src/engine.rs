@@ -1875,6 +1875,7 @@ impl AlphaBeta {
     /// down on the principal variation. Carried the same way and for the
     /// same reason: a register per node rather than a field written and
     /// read back around every child.
+    #[allow(clippy::too_many_lines)]
     fn alpha_beta(
         &mut self,
         mut alpha: Score,
@@ -2104,15 +2105,62 @@ impl AlphaBeta {
             beta,
             root_bounds,
         );
+        // the quiet run still being taken in order: where it ends and how
+        // many moves have been picked from it one at a time
+        let mut lazy: Option<(usize, u8)> = None;
+        let mut filtered = false;
+        // the places from which the rest of the run is known to be dropped
+        let mut dropped = usize::MAX..usize::MAX;
         for i in 0..moves.len() {
             // the front did not cut this node off, so the rest of the list
-            // is scored and sorted before the first move past it is tried
+            // is keyed before the first move past it is tried, and put in
+            // order only as far as the node reads it
             if i == front {
                 if let Some(ply) = ply {
-                    self.ordering
-                        .order_quiets(&self.board, &mut moves[front..], losing, ply);
+                    // the reduction ledger records every move the rules
+                    // pass over at the place the full sort gives it, so a
+                    // node it watches is ordered whole
+                    if self.ledger.is_some() {
+                        self.ordering
+                            .order_quiets(&self.board, &mut moves[front..], losing, ply);
+                    } else {
+                        let run =
+                            self.ordering
+                                .key_quiets(&self.board, &mut moves[front..], losing, ply);
+                        if run > 1 {
+                            lazy = Some((front + run, 0));
+                        }
+                    }
                     quiets_scored = true;
                 }
+            }
+            if let Some((end, picks)) = lazy.as_mut() {
+                let ply = ply.expect("a keyed run has a ply");
+                let end = *end;
+                if i + 1 >= end {
+                    lazy = None;
+                } else if shallow.active(&self.deciding(), &mut eval, searched, alpha) {
+                    let kept = self.ordering.keep_unskippable(
+                        &self.board,
+                        &mut moves[front..end],
+                        i - front,
+                        ply,
+                        &mut check_info,
+                    );
+                    dropped = front + kept..end;
+                    lazy = None;
+                    filtered = true;
+                } else if *picks >= 4 {
+                    self.ordering
+                        .sort_rest(&mut moves[front..end], i - front, ply);
+                    lazy = None;
+                } else {
+                    self.ordering.pick(&mut moves[front..end], i - front, ply);
+                    *picks += 1;
+                }
+            }
+            if dropped.contains(&i) {
+                continue;
             }
             let m = &moves[i];
             if tt_at == Some(i) {
@@ -2275,6 +2323,15 @@ impl AlphaBeta {
                     return Ok(self.cutoff(m, tried, taint, score, depth));
                 }
                 alpha = score;
+                // the dropped moves stay dropped only while alpha is short of
+                // a mate, which the filter cannot see end: the rules admit no
+                // node whose beta is a mate score, beta does not rise after
+                // they are settled, and so any mate a survivor finds is at or
+                // above beta and has cut the node off before reaching here
+                debug_assert!(
+                    !(filtered && is_mate(alpha)),
+                    "a filtered node raised alpha to a mate without cutting off"
+                );
                 // as at the table's move above
                 root_bounds = root_bounds.alpha_raised();
             }
