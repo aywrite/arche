@@ -1,13 +1,13 @@
 // SPDX-License-Identifier: GPL-3.0-or-later
 // Copyright (C) 2022-2026 Andrew Wright
 
-use crate::board::{Board, Unplayable};
+use crate::board::{Board, MOVE_LIST_INLINE, Unplayable};
 use crate::census;
 use crate::effort;
 use crate::eval;
 use crate::late_move;
 use crate::limits::Limits;
-use crate::misc::{Color, Score};
+use crate::misc::{Color, Piece, Score};
 use crate::ordering::{MoveOrdering, Ordered};
 use crate::play::Play;
 use crate::recorder::{Sampler, Window};
@@ -145,6 +145,13 @@ fn null_move_reduction(config: SearchConfig, depth: u8, eval_beta: Score) -> u8 
     let margin = (eval_beta.max(0) / NULL_MOVE_EVAL_UNIT).min(NULL_MOVE_EVAL_CAP as Score) as u8;
     let grown = NULL_MOVE_REDUCTION + depth / NULL_MOVE_DEPTH_DIVISOR + margin;
     grown.min(depth - 1)
+}
+
+/// Quiescence's delta test: a capture short of alpha with its piece counted
+/// as fully won is expected to be worth less than alpha. Which captures it
+/// applies to is the caller's, and the move loop says why.
+fn short_of_alpha(standing: Score, captured: Piece, alpha: Score) -> bool {
+    standing + eval::material(captured) as Score + DELTA_MARGIN < alpha
 }
 
 /// Which places in a node's move list the node made and searched, a bit
@@ -1790,6 +1797,29 @@ impl AlphaBeta {
         } else {
             self.board.generate_captures()
         };
+        // the delta test at the alpha the loop starts from, taken before the
+        // order prices every capture with the swap. Alpha only rises in the
+        // loop, so the loop would skip each capture dropped here, and it
+        // keeps its own test for those that fall short as alpha rises. Two
+        // cases would not match the loop, and are left to it. Under a mate
+        // beta a mating capture can lift alpha into the mate window, and the
+        // loop then searches every capture. A list that spills the buffer is
+        // ordered with no front, so the swap skips nothing there, and
+        // shortening it could bring the skip back
+        if let Some(standing) = standing {
+            if self.config.delta_margin
+                && !is_mate(alpha)
+                && !is_mate(beta)
+                && moves.len() <= MOVE_LIST_INLINE
+            {
+                moves.retain(|m| match m.capture {
+                    Some(captured) if m.promote.is_none() => {
+                        !short_of_alpha(standing, captured, alpha)
+                    }
+                    _ => true,
+                });
+            }
+        }
         // no memories here: they say nothing about captures or evasions.
         // `front` is the table's move and the captures the swap prices as
         // winning or even; every capture behind it is a losing one. Read
@@ -1814,12 +1844,7 @@ impl AlphaBeta {
             // skipped like any other losing capture
             if let (Some(standing), Some(captured)) = (standing, m.capture) {
                 if !is_mate(alpha) && m.promote.is_none() {
-                    // a capture short of alpha with its piece counted as
-                    // fully won is expected to be worth less than alpha
-                    if self.config.delta_margin
-                        && standing + crate::eval::material(captured) as Score + DELTA_MARGIN
-                            < alpha
-                    {
+                    if self.config.delta_margin && short_of_alpha(standing, captured, alpha) {
                         continue;
                     }
                     // every capture behind the front is one the swap priced
