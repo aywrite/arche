@@ -175,33 +175,29 @@ fn blocker_configurations(mask: u64) -> Vec<u64> {
         .collect()
 }
 
-/// How wide each kind's attack table is: the sum over the squares of two to the
-/// power of the bits in that square's blocker mask. Stated rather than counted
-/// because an array is sized before it is filled; `new` asserts that the masks
-/// fill it exactly, so a wrong number fails the build.
-const STRAIGHT_ATTACKS: usize = 102_400;
-const DIAGONAL_ATTACKS: usize = 5_248;
+/// How many index bits every square's block uses: the widest blocker mask of
+/// each kind, twelve for a rook in the corner and nine for a bishop in the
+/// middle. A magic that maps a square's configurations onto `bits` bits
+/// without a harmful collision still does at any wider width, since the wider
+/// index refines the narrower one, so the committed magics serve unchanged.
+const STRAIGHT_BITS: u32 = 12;
+const DIAGONAL_BITS: u32 = 9;
 
-/// One slider kind's lookup tables. Every square's attack sets sit end to end
-/// in a single array, with `offsets` saying where each square's block starts,
-/// so a probe is one indirection rather than two.
-struct SliderTables<const ATTACKS: usize> {
+/// One slider kind's lookup tables, a block of `1 << BITS` attack sets per
+/// square. A probe shifts by the same constant for every square, which bounds
+/// the index by its type, so the probe needs neither a per square shift nor an
+/// offset, and carries no bounds check.
+struct SliderTables<const BITS: u32, const PER: usize> {
     blocker_masks: [u64; 64],
     magics: [u64; 64],
-    /// `64 - bits` for each square, so a probe shifts without subtracting
-    /// first.
-    shifts: [u8; 64],
-    offsets: [u32; 64],
-    attacks: [u64; ATTACKS],
+    attacks: [[u64; PER]; 64],
 }
 
-impl<const ATTACKS: usize> SliderTables<ATTACKS> {
+impl<const BITS: u32, const PER: usize> SliderTables<BITS, PER> {
     const fn new(directions: [isize; 4], magics: [u64; 64]) -> Self {
+        assert!(PER == 1 << BITS, "a block is one attack set an index");
         let mut blocker_masks = [0u64; 64];
-        let mut shifts = [0u8; 64];
-        let mut offsets = [0u32; 64];
-        let mut attacks = [0u64; ATTACKS];
-        let mut filled = 0usize;
+        let mut attacks = [[0u64; PER]; 64];
         let mailbox = BASE_CONVERSIONS;
 
         let mut square = 0u8;
@@ -209,35 +205,27 @@ impl<const ATTACKS: usize> SliderTables<ATTACKS> {
             let i = square as usize;
             let mask = blocker_mask(&mailbox, square, directions);
             let bits = mask.count_ones();
+            assert!(bits <= BITS, "a blocker mask is wider than its block");
             blocker_masks[i] = mask;
-            shifts[i] = 64 - bits as u8;
-            offsets[i] = filled as u32;
 
             let configurations = 1u64 << bits;
             let mut configuration = 0u64;
             while configuration < configurations {
                 let blockers = blocker_configuration(mask, configuration);
-                let index = (blockers.wrapping_mul(magics[i]) >> shifts[i]) as usize;
+                let index = (blockers.wrapping_mul(magics[i]) >> (64 - BITS)) as usize;
                 let moves = attacks_from(&mailbox, square, blockers, directions);
                 // two configurations may share an index only when they admit
                 // the same moves, which is what makes the magic a valid one
-                assert!(attacks[filled + index] == 0 || attacks[filled + index] == moves);
-                attacks[filled + index] = moves;
+                assert!(attacks[i][index] == 0 || attacks[i][index] == moves);
+                attacks[i][index] = moves;
                 configuration += 1;
             }
-            filled += configurations as usize;
             square += 1;
         }
-        assert!(
-            filled == ATTACKS,
-            "the table is not the width the masks ask for"
-        );
 
         Self {
             blocker_masks,
             magics,
-            shifts,
-            offsets,
             attacks,
         }
     }
@@ -246,14 +234,14 @@ impl<const ATTACKS: usize> SliderTables<ATTACKS> {
     fn attacks(&self, square: u8, occupied: u64) -> u64 {
         let i = square as usize;
         let blockers = occupied & self.blocker_masks[i];
-        let index = blockers.wrapping_mul(self.magics[i]) >> self.shifts[i];
-        self.attacks[self.offsets[i] as usize + index as usize]
+        let index = blockers.wrapping_mul(self.magics[i]) >> (64 - BITS);
+        self.attacks[i][index as usize]
     }
 }
 
 pub struct Magic {
-    straight: SliderTables<STRAIGHT_ATTACKS>,
-    diagonal: SliderTables<DIAGONAL_ATTACKS>,
+    straight: SliderTables<STRAIGHT_BITS, 4096>,
+    diagonal: SliderTables<DIAGONAL_BITS, 512>,
 }
 
 impl Magic {
