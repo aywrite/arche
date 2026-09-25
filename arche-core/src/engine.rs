@@ -2087,6 +2087,8 @@ impl AlphaBeta {
         // the node facts below, which are built afresh for each move. The
         // evaluation is seeded above by whatever the shortcuts read
         let mut history_max: Option<i32> = None;
+        // what the check test reads of this position, taken once a node
+        let mut check_info: Option<crate::board::CheckInfo> = None;
         // what the node's table probe gave it, settled here: the probe and
         // the table's move are behind it
         let tt = census::Table::of(pv_play.is_some(), tt_tried.is_some());
@@ -2126,7 +2128,14 @@ impl AlphaBeta {
             // they read none of them: they reach depths the reduction does
             // not, so facts built for them would be facts built at most of
             // the interior of the tree
-            if shallow.skips(&self.deciding(), &mut eval, m, searched, alpha) {
+            if shallow.skips(
+                &self.deciding(),
+                &mut eval,
+                &mut check_info,
+                m,
+                searched,
+                alpha,
+            ) {
                 // never made, so whether it was even legal is never
                 // learned; skipping an illegal move is a no-op, since the
                 // loop would have passed over it anyway. `searched` stands
@@ -2143,6 +2152,7 @@ impl AlphaBeta {
                         moves: &moves,
                         eval: &mut eval,
                         history_max: &mut history_max,
+                        check: &mut check_info,
                     };
                     let staged = self.staged_reduction(m, searched, &mut node);
                     self.ledger_skip(staged, depth, alpha, beta);
@@ -2177,6 +2187,7 @@ impl AlphaBeta {
                     moves: &moves,
                     eval: &mut eval,
                     history_max: &mut history_max,
+                    check: &mut check_info,
                 };
                 match late_move::decide(&self.deciding(), &mut node, m, searched) {
                     late_move::Verdict::Skip => {
@@ -6485,6 +6496,7 @@ mod reductions {
             moves: &moves,
             eval: &mut eval,
             history_max: &mut history_max,
+            check: &mut None,
         };
         e.staged_reduction(m, searched, &mut node)
     }

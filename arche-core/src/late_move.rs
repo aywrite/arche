@@ -302,6 +302,9 @@ pub(crate) struct Node<'a> {
     /// what the gate scored: a child search between two of the node's
     /// moves can teach the history, and the two readings would part.
     pub(crate) history_max: &'a mut Option<i32>,
+    /// What the check test reads of the position, taken by the first move
+    /// that asks and read back for the rest.
+    pub(crate) check: &'a mut Option<crate::board::CheckInfo>,
 }
 
 /// What the decision settled for one late quiet: how many plies
@@ -459,6 +462,7 @@ impl Shallow {
         &mut self,
         search: &Search,
         eval: &mut Option<i64>,
+        check: &mut Option<crate::board::CheckInfo>,
         m: &Play,
         searched: usize,
         alpha: Score,
@@ -469,7 +473,9 @@ impl Shallow {
             && m.promote.is_none()
             && !is_mate(alpha)
             && (self.counted(searched) || self.under_alpha(search, eval, alpha))
-            && !search.board.gives_check(m)
+            && !search
+                .board
+                .gives_check_with(check.get_or_insert_with(|| search.board.check_info()), m)
     }
 
     /// Whether the node has searched the count's moves a ply already. The
@@ -598,7 +604,8 @@ fn gate(search: &Search, node: &mut Node, m: &Play, searched: usize) -> Verdict 
         generated: f.generated,
     });
     if search.config.late_move_pruning && score <= LATE_MOVE_PRUNING_THRESHOLD {
-        return if search.board.gives_check(m) {
+        let info = node.check.get_or_insert_with(|| search.board.check_info());
+        return if search.board.gives_check_with(info, m) {
             Verdict::Scout(amount(search.config, node.depth, searched, 0))
         } else {
             Verdict::Skip
@@ -606,7 +613,10 @@ fn gate(search: &Search, node: &mut Node, m: &Play, searched: usize) -> Verdict 
     }
     if search.config.deep_reductions
         && deepens(search.config, node.depth, searched, score)
-        && !search.board.gives_check(m)
+        && !search.board.gives_check_with(
+            node.check.get_or_insert_with(|| search.board.check_info()),
+            m,
+        )
     {
         return Verdict::Scout(amount(
             search.config,
@@ -870,6 +880,7 @@ mod tests {
                 moves: &self.moves,
                 eval: &mut self.eval,
                 history_max: &mut self.history_max,
+                check: &mut None,
             };
             decide(&search, &mut node, m, searched)
         }
@@ -927,7 +938,7 @@ mod tests {
                 ordering: &self.ordering,
                 config: &self.config,
             };
-            shallow.skips(&search, &mut self.eval, m, searched, alpha)
+            shallow.skips(&search, &mut self.eval, &mut None, m, searched, alpha)
         }
 
         /// What the node would tell the ledger about one move, read
@@ -950,6 +961,7 @@ mod tests {
                 moves: &self.moves,
                 eval: &mut self.eval,
                 history_max: &mut self.history_max,
+                check: &mut None,
             };
             features(&search, &mut node, m, searched)
         }
