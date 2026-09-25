@@ -390,7 +390,7 @@ shortcut's error and carries no effort column, and the `cost` columns
 is the gap `arche effort` fills:
 
 ```
-target/release/arche effort [depth] [every <n>] [cap <n>] [epd <file>] [off <switch>] [budget <n>]
+target/release/arche effort [depth] [every <n>] [cap <n>] [epd <file>] [off <switch>[,<switch>]] [budget <n>]
 ```
 
 It searches the suite twice. The candidate side is `SearchConfig::default()`
@@ -411,10 +411,24 @@ that edit happen: beside the table is a destructuring that names every field,
 and a field it does not name fails there. The names are the fields, and a run
 that names anything else is refused and told what a switch may be. `taint` is
 not among them: it is a policy with four values rather than a switch, and
-`residuals` takes it already. **`off` absent
-means both sides are the default**, which the header says as `off none`.
-That run is the null, and it is the one to take first: see the end of this
-section.
+`residuals` takes it already.
+
+`off` may name two switches joined by a comma, `off late_move_count,quiet_futility`,
+and the baseline then has both off. Read against the two singles and the
+null, a pair says whether two rules' savings multiply, as rules acting on
+unrelated parts of the tree would, or whether the pair frees more or less
+than that. A pair is one word because a keyword sent twice reads the first.
+The same switch twice is refused, since it would be the single run under a
+pair's name, and so is a third. Where one switch of a pair is only ever
+asked under the other (`adaptive_null_move` under `null_move`;
+`deep_reductions`, `late_move_pruning`, `reduction_table` and
+`deep_index_rule` under `late_move_reductions`; `deep_index_rule` under
+`deep_reductions`), the pair searches as many nodes as the outer single,
+position by position.
+
+**`off` absent means both sides are the default**, which the header says
+as `off none`. That run is the null, and it is the one to take first: see
+the end of this section.
 
 Each joined key is one of three outcomes, and the three are the whole of
 the reading. `both` is a node in both trees, so the difference in what sat

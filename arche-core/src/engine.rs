@@ -452,25 +452,55 @@ impl TaintPolicy {
 /// builder, so a run that turns two switches off is a fold over rows.
 pub type TurnOff = fn(&mut SearchConfig);
 
-/// A switch that was named against `SearchConfig::SWITCHES`, and the
-/// configuration that turns it off. Both fields are private and
-/// `SearchConfig::without` is the only thing that fills them, so a run handed
-/// one of these was handed a name the table carries rather than a word to
-/// look up and check for itself.
+/// One switch or two that were named against `SearchConfig::SWITCHES`, and
+/// the configuration that turns them off. The fields are private and
+/// `SearchConfig::without` and `Ablation::and` are the only things that fill
+/// them, so a run handed one of these was handed names the table carries
+/// rather than words to look up and check for itself.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub struct Ablation {
     name: &'static str,
+    /// The second switch of a pair, which is what a reading of how two
+    /// rules' savings combine turns off.
+    also: Option<&'static str>,
     config: SearchConfig,
 }
 
 impl Ablation {
-    /// The table's spelling of the switch, which a report's header prints.
-    pub fn name(self) -> &'static str {
-        self.name
+    /// The table's spelling of the switches, which a report's header prints:
+    /// the one name, or the two joined by a comma in the order they were
+    /// named, which is how the argument takes them back.
+    pub fn name(self) -> String {
+        match self.also {
+            Some(also) => format!("{},{also}", self.name),
+            None => self.name.to_string(),
+        }
     }
 
-    /// The default with that switch off, the side a run reads the default
-    /// against.
+    /// This switch and another off together, or none when the other is the
+    /// same switch or either side is already a pair. The same switch twice
+    /// would be the single run under a pair's name. The configuration is
+    /// the other's setter folded over this one's, so the order the two were
+    /// named in changes the header and nothing else.
+    pub fn and(self, other: Ablation) -> Option<Ablation> {
+        if self.also.is_some() || other.also.is_some() || self.name == other.name {
+            return None;
+        }
+        let (_, turn_off) = SearchConfig::SWITCHES
+            .into_iter()
+            .find(|(switch, _)| *switch == other.name)
+            .expect("an ablation is only ever built from a row of the table");
+        let mut config = self.config;
+        turn_off(&mut config);
+        Some(Ablation {
+            name: self.name,
+            also: Some(other.name),
+            config,
+        })
+    }
+
+    /// The default with its switch or its two off, the side a run reads the
+    /// default against.
     pub fn config(self) -> SearchConfig {
         self.config
     }
@@ -516,7 +546,11 @@ impl SearchConfig {
             .find(|(switch, _)| *switch == name)?;
         let mut config = Self::default();
         turn_off(&mut config);
-        Some(Ablation { name, config })
+        Some(Ablation {
+            name,
+            also: None,
+            config,
+        })
     }
 
     /// The search with every shortcut off: what the exactness tests hold
@@ -702,6 +736,87 @@ mod switches {
                 "{switch} turned more than its own field off: {printed}"
             );
         }
+    }
+
+    /// A pair turns off both of its switches and nothing else, whichever
+    /// order it was named in, and the header names them in that order.
+    #[test]
+    fn a_pair_turns_both_of_its_switches_off() {
+        let switches = SearchConfig::SWITCHES.map(|(name, _)| name);
+        for (i, first) in switches.into_iter().enumerate() {
+            for second in switches.into_iter().skip(i + 1) {
+                let a = SearchConfig::without(first).expect(first);
+                let b = SearchConfig::without(second).expect(second);
+                let pair = a.and(b).unwrap_or_else(|| panic!("{first},{second}"));
+                assert_eq!(pair.name(), format!("{first},{second}"));
+                assert_eq!(
+                    b.and(a).map(Ablation::config),
+                    Some(pair.config()),
+                    "{first},{second} depends on its order"
+                );
+                let printed = format!("{:?}", pair.config());
+                for switch in [first, second] {
+                    assert!(printed.contains(&format!(" {switch}: false")), "{printed}");
+                }
+                assert_eq!(printed.matches(": false").count(), 2, "{printed}");
+            }
+        }
+    }
+
+    /// Where one switch is only asked under another, the pair with the outer
+    /// one off searches as many nodes as the outer single, position by
+    /// position, and the inner one alone still moves the count. A reader of
+    /// a pair's matrix can skip these cells because this test holds them.
+    #[test]
+    fn a_rule_asked_only_under_another_has_no_site_with_that_one_off() {
+        const DEPTH: u8 = 6;
+        let positions = crate::bench::positions();
+        let nodes = |config| {
+            crate::bench::run_suite(&positions, DEPTH, crate::bench::TABLE_BYTES, config)
+                .positions
+                .iter()
+                .map(|p| p.nodes)
+                .collect::<Vec<u64>>()
+        };
+        let one = |name| SearchConfig::without(name).expect(name);
+        let default = nodes(SearchConfig::default());
+        let outers: Vec<(&str, Vec<u64>)> =
+            ["null_move", "late_move_reductions", "deep_reductions"]
+                .into_iter()
+                .map(|outer| (outer, nodes(one(outer).config())))
+                .collect();
+        for (outer, inner) in [
+            ("null_move", "adaptive_null_move"),
+            ("late_move_reductions", "deep_reductions"),
+            ("late_move_reductions", "late_move_pruning"),
+            ("late_move_reductions", "reduction_table"),
+            ("late_move_reductions", "deep_index_rule"),
+            ("deep_reductions", "deep_index_rule"),
+        ] {
+            assert_ne!(nodes(one(inner).config()), default, "{inner} did nothing");
+            let pair = one(outer).and(one(inner)).expect("a pair");
+            let (_, alone) = outers
+                .iter()
+                .find(|(name, _)| *name == outer)
+                .expect("an outer switch");
+            assert_eq!(
+                &nodes(pair.config()),
+                alone,
+                "{inner} has a site with {outer} off"
+            );
+        }
+    }
+
+    /// The same switch twice is the single run under a pair's name, and a
+    /// third switch is more than a pair.
+    #[test]
+    fn a_pair_is_two_different_switches() {
+        let one = |name| SearchConfig::without(name).expect(name);
+        let null_move = one("null_move");
+        assert_eq!(null_move.and(null_move), None);
+        let pair = null_move.and(one("aspiration")).expect("a pair");
+        assert_eq!(pair.and(one("quiet_futility")), None);
+        assert_eq!(one("quiet_futility").and(pair), None);
     }
 }
 

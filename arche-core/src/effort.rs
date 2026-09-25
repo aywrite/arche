@@ -279,7 +279,8 @@ pub struct Report {
     pub cap: usize,
     /// The file the suite was read from, or none for the bench's own.
     pub suite: Option<String>,
-    /// The switch the baseline side turned off, or none for the null run.
+    /// The switch the baseline side turned off, or the two joined by a comma,
+    /// or none for the null run.
     pub off: Option<String>,
     /// The node budget both sides searched under, or none for equal depth.
     pub budget: Option<u64>,
@@ -488,10 +489,10 @@ fn join(on: Vec<Folded>, off: Vec<Folded>, bound: Option<u64>) -> (Vec<Row>, usi
 /// Search the suite twice and join the two runs by the node.
 ///
 /// The candidate side is the default. The baseline is the ablation's
-/// configuration, which is the default with one switch off, or the default
-/// again when nothing is named, which is the null run: every joined key must
-/// then read `both` with a delta of zero, and an instrument that fails that
-/// is measuring its own buffer.
+/// configuration, which is the default with one switch off or two, or the
+/// default again when nothing is named, which is the null run: every joined
+/// key must then read `both` with a delta of zero, and an instrument that
+/// fails that is measuring its own buffer.
 #[allow(clippy::too_many_arguments)]
 pub fn run(
     positions: &[Position],
@@ -527,7 +528,7 @@ pub fn run(
         every,
         cap,
         suite: suite.map(str::to_string),
-        off: off.map(|ablation| ablation.name().to_string()),
+        off: off.map(Ablation::name),
         budget,
         positions: positions
             .iter()

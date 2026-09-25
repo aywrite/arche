@@ -128,7 +128,7 @@ pub const EFFORT: Command = Command {
         },
         Keyword {
             word: "off",
-            value: "<switch>",
+            value: "<switch>[,<switch>]",
         },
         Keyword {
             word: "budget",
@@ -138,8 +138,8 @@ pub const EFFORT: Command = Command {
     flags: &[],
     summary: &[
         "search the bench's suite, or the one named, twice, the",
-        "second time with one search switch off, and print what the",
-        "rule removed and where the effort it freed went",
+        "second time with one search switch off or two, and print",
+        "what the rules removed and where the effort they freed went",
     ],
 };
 
@@ -327,10 +327,12 @@ impl ReductionSettings {
 }
 
 /// What an effort argument asked for: `effort [depth] [every <n>]
-/// [cap <n>] [epd <file>] [off <switch>] [budget <n>]`.
+/// [cap <n>] [epd <file>] [off <switch>[,<switch>]] [budget <n>]`.
 ///
-/// `off` names the `SearchConfig` field the baseline side turns off, and is
-/// absent for the null run, where both sides are the default. `budget`
+/// `off` names the `SearchConfig` field the baseline side turns off, or two
+/// joined by a comma, and is absent for the null run, where both sides are
+/// the default. A pair is one word rather than `off` twice because a keyword
+/// sent twice reads the first, and the second would be dropped unsaid. `budget`
 /// holds both sides to a node count instead of to the depth alone, which
 /// takes the speed channel out of the reading by construction.
 ///
@@ -353,7 +355,7 @@ pub struct EffortSettings {
 
 /// What is said when `off` names something that is no switch: the word as it
 /// was typed, and then the names the table carries. In the refusal rather
-/// than in the usage line, which keeps `<switch>`: a fourteen name list there
+/// than in the usage line, which says `<switch>`: a fourteen name list there
 /// is long and the join awkward for what it buys, and the reader who needs
 /// the names is the one who got the word wrong.
 fn no_such_switch(word: &str) -> String {
@@ -361,15 +363,30 @@ fn no_such_switch(word: &str) -> String {
     format!("off: {word} (a switch is one of {switches})")
 }
 
+/// The switch or the pair `off` names. Every refusal echoes the whole word,
+/// since that is what was typed.
+fn ablation(word: &str) -> Result<Ablation, String> {
+    let named = |name: &str| SearchConfig::without(name).ok_or_else(|| no_such_switch(word));
+    let mut names = word.split(',');
+    let first = named(names.next().unwrap_or_default())?;
+    let Some(second) = names.next() else {
+        return Ok(first);
+    };
+    let second = named(second)?;
+    if names.next().is_some() {
+        return Err(format!("off: {word} (a pair is two switches)"));
+    }
+    first
+        .and(second)
+        .ok_or_else(|| format!("off: {word} (a pair is two different switches)"))
+}
+
 pub fn effort_settings(params: &Params) -> Result<EffortSettings, String> {
     let Sampling { depth, every, cap } = sampling(params, &EFFORT, effort::DEFAULT_EVERY)?;
     // refused against the field names, the way `tune.py --hold TERM` is
     // refused against the layout the extraction prints: a misspelling read as
     // the null would spend the minutes saying nothing
-    let off = params
-        .value("off")
-        .map(|word| SearchConfig::without(word).ok_or_else(|| no_such_switch(word)))
-        .transpose()?;
+    let off = params.value("off").map(ablation).transpose()?;
     let budget = match params.parse::<u64>("budget") {
         Param::Absent => None,
         Param::Read(nodes) => Some(nodes),
@@ -682,7 +699,7 @@ mod tests {
                 settings.depth,
                 settings.every,
                 settings.cap,
-                settings.off.map(|ablation| ablation.name()),
+                settings.off.map(Ablation::name),
                 settings.budget,
             )
         };
@@ -693,17 +710,34 @@ mod tests {
         // a keyword where the depth would be means the depth was left out
         assert_eq!(
             read("effort off null_move"),
-            (bench::DEPTH, 1000, CAP, Some("null_move"), None)
+            (bench::DEPTH, 1000, CAP, Some("null_move".to_string()), None)
         );
         assert_eq!(
             read("effort 4 off quiet_futility budget 4000000 cap 500"),
-            (4, 1000, 500, Some("quiet_futility"), Some(4_000_000))
+            (
+                4,
+                1000,
+                500,
+                Some("quiet_futility".to_string()),
+                Some(4_000_000)
+            )
+        );
+        // a pair is one word, and the header gives it back in the order typed
+        assert_eq!(
+            read("effort 4 off late_move_count,quiet_futility"),
+            (
+                4,
+                1000,
+                CAP,
+                Some("late_move_count,quiet_futility".to_string()),
+                None
+            )
         );
         // every field the run can turn off is one the argument takes
         for (switch, _) in SearchConfig::SWITCHES {
             let line = format!("effort 2 off {switch}");
             let settings = effort_settings(&Params::of(&line)).expect(&line);
-            assert_eq!(settings.off.map(|ablation| ablation.name()), Some(switch));
+            assert_eq!(settings.off.map(Ablation::name), Some(switch.to_string()));
         }
     }
 
@@ -741,6 +775,24 @@ mod tests {
             (
                 "effort 4 off taint".to_string(),
                 format!("off: taint (a switch is one of {switches})"),
+            ),
+            // either half of a pair is refused as a single word would be,
+            // and the refusal echoes the whole of what was typed
+            (
+                "effort 4 off null_move,quiet_futilty".to_string(),
+                format!("off: null_move,quiet_futilty (a switch is one of {switches})"),
+            ),
+            (
+                "effort 4 off null_move,".to_string(),
+                format!("off: null_move, (a switch is one of {switches})"),
+            ),
+            (
+                "effort 4 off null_move,null_move".to_string(),
+                "off: null_move,null_move (a pair is two different switches)".to_string(),
+            ),
+            (
+                "effort 4 off null_move,aspiration,move_memory".to_string(),
+                "off: null_move,aspiration,move_memory (a pair is two switches)".to_string(),
             ),
             (
                 "effort 4 budget lots".to_string(),
