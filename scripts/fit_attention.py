@@ -35,7 +35,9 @@ never negative.
 
 The parser follows the engine in two places: a negative history counts as no
 history, the way `late_move.rs` clamps it before dividing, and a row the pruning
-skipped is not a scout and is left out of the fit.
+skipped is not a scout and is left out of the fit. A skipped row's `searched`
+is one past its index, the model's feature as the gate read it, in a ledger
+printed from 25 September 2026 on, and equal to the index before that.
 
 Features, all integers: depth, index, band8_15, band16p, hist_milli (1000 *
 history // history_max, zero when nothing in the list has any), killer,

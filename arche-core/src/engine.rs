@@ -1194,9 +1194,9 @@ impl AlphaBeta {
     /// the record alone, and one that turns out illegal is not recorded,
     /// since the skip denied it nothing. The fen and the sampling key are
     /// the position the move leaves, as for a scouted move, so the replay
-    /// reads a skipped row as it reads a low one. The move is not among
-    /// the searched, so the row's searched count is its index and not one
-    /// past it.
+    /// reads a skipped row as it reads a low one. The searched count is one
+    /// past the index, as on a scouted row: it is the attention model's
+    /// feature, which the model's own skips read.
     #[cold]
     #[inline(never)]
     fn ledger_skip(&mut self, staged: reduction::Staged, depth: u8, alpha: Score, beta: Score) {
@@ -1225,7 +1225,7 @@ impl AlphaBeta {
                 depth,
                 window: Window::of(alpha, beta),
                 index: staged.features.index,
-                searched: staged.features.index,
+                searched: staged.features.index + 1,
                 generated: staged.features.generated,
                 history: staged.features.history,
                 history_max: staged.features.history_max,

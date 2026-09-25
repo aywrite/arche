@@ -10,8 +10,10 @@ the format it declares and that the fit is a fit.
 `reductions_sample.txt` is a real ledger, `arche reductions 8 every 220 cap
 800` on the bench suite at ccd1804: 791 rows over five depths, 205 skipped by
 the pruning, 607 with a negative history, and one row worth attention, which
-is what a few hundred rows of this data looks like. The sample covers the
-parse and the run; the planted cases cover the fit and the grouped split.
+is what a few hundred rows of this data looks like. Its skipped rows predate
+the engine printing `searched` one past the index on a skip, so they carry the
+index there. The sample covers the parse and the run; the planted cases cover
+the fit and the grouped split.
 """
 
 import subprocess
