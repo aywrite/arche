@@ -708,7 +708,7 @@ mod tests {
     #[test]
     #[cfg_attr(
         feature = "machine-test",
-        ignore = "pins a search the evaluation without the pair term makes"
+        ignore = "pins a search made with the shipped factor table, which the test rank replaces"
     )]
     fn node_counts_have_not_moved() {
         let report = run_suite(&positions(), DEPTH, TABLE_BYTES, SearchConfig::default());
@@ -720,24 +720,24 @@ mod tests {
         assert_eq!(
             counted,
             vec![
-                ("start", 582_440),
-                ("italian", 567_591),
-                ("ruy lopez", 507_624),
-                ("kiwipete", 1_228_093),
-                ("perft 4", 382_507),
-                ("promotions", 373_540),
-                ("middlegame", 375_323),
-                ("sharp middlegame", 668_415),
-                ("bratko kopec 1", 11_093),
-                ("wac 4", 1_687),
-                ("rook and pawns", 93_298),
-                ("tarrasch", 394_586),
-                ("lucena", 76_962),
-                ("philidor", 373_587),
-                ("minor endgame", 117_195),
-                ("queen endgame", 622_298),
-                ("king and pawn", 30_096),
-                ("trebuchet", 21_390),
+                ("start", 871_640),
+                ("italian", 1_036_907),
+                ("ruy lopez", 445_772),
+                ("kiwipete", 1_023_658),
+                ("perft 4", 370_986),
+                ("promotions", 338_956),
+                ("middlegame", 331_182),
+                ("sharp middlegame", 361_181),
+                ("bratko kopec 1", 11_047),
+                ("wac 4", 1_597),
+                ("rook and pawns", 111_395),
+                ("tarrasch", 171_749),
+                ("lucena", 108_139),
+                ("philidor", 331_467),
+                ("minor endgame", 122_262),
+                ("queen endgame", 568_857),
+                ("king and pawn", 41_408),
+                ("trebuchet", 24_709),
             ]
         );
     }
@@ -752,7 +752,7 @@ mod tests {
     #[test]
     #[cfg_attr(
         feature = "machine-test",
-        ignore = "pins a search the evaluation without the pair term makes"
+        ignore = "pins a search made with the shipped factor table, which the test rank replaces"
     )]
     fn reference_node_counts_have_not_moved() {
         const REFERENCE_DEPTH: u8 = 5;
@@ -770,24 +770,24 @@ mod tests {
         assert_eq!(
             counted,
             vec![
-                ("start", 28_084),
-                ("italian", 172_025),
-                ("ruy lopez", 157_139),
-                ("kiwipete", 202_700),
-                ("perft 4", 194_044),
-                ("promotions", 95_802),
-                ("middlegame", 170_340),
-                ("sharp middlegame", 215_348),
-                ("bratko kopec 1", 6_464),
+                ("start", 49_988),
+                ("italian", 187_516),
+                ("ruy lopez", 110_154),
+                ("kiwipete", 187_990),
+                ("perft 4", 185_770),
+                ("promotions", 94_335),
+                ("middlegame", 161_495),
+                ("sharp middlegame", 335_497),
+                ("bratko kopec 1", 6_493),
                 ("wac 4", 706),
-                ("rook and pawns", 23_505),
-                ("tarrasch", 44_565),
-                ("lucena", 23_866),
-                ("philidor", 45_214),
-                ("minor endgame", 29_549),
-                ("queen endgame", 125_468),
-                ("king and pawn", 1_480),
-                ("trebuchet", 714),
+                ("rook and pawns", 21_515),
+                ("tarrasch", 54_375),
+                ("lucena", 23_262),
+                ("philidor", 30_711),
+                ("minor endgame", 15_685),
+                ("queen endgame", 197_929),
+                ("king and pawn", 1_482),
+                ("trebuchet", 766),
             ]
         );
     }

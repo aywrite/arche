@@ -228,6 +228,17 @@ impl MoveOrdering {
             .count()
     }
 
+    /// Test-only: the side's entries above zero, which only a cutoff's bonus
+    /// can produce.
+    #[cfg(test)]
+    pub(crate) fn history_credited(&self, color: Color) -> usize {
+        self.history[color as usize]
+            .iter()
+            .flatten()
+            .filter(|&&e| e > 0)
+            .count()
+    }
+
     /// The killers standing at a ply. A hot path and not only an
     /// instrument's: the late move decision reads it, since whether the
     /// move is a killer is a feature of the attention score. The cutoff

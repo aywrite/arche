@@ -559,9 +559,10 @@ each one's evaluation is made of.
 
 The evaluation is material plus a tapered piece square score plus a tapered
 mobility score plus a tapered king shelter score plus a tapered pawn structure
-score plus a tapered king attack score, and it is linear in the numbers those
-are read from. So a position's score is a dot product of the position against
-the weights, and a row is the position's half of it: for every weight the
+score plus a tapered king attack score, which are linear in the numbers they
+are read from, plus an untapered pair term, which is not. So a position's score
+is a dot product of the position against the weights plus that term, and a row
+is the position's half of the dot product and the term's score: for every weight the
 position touches, the integer that weight is multiplied by. The weights are a
 flat vector of 820, in this order: the 384 midgame table entries, the 384
 endgame ones in the same order, then the six material values, then four
@@ -647,7 +648,9 @@ quieter: a table copied out and left behind fits weights against a position it
 scores differently from the engine, and nothing says so.
 
 Each row after that is `id eval phase n slot:coefficient... fen`, whitespace
-separated. Both ends of it can hold spaces: a fen is six fields, and an id is
+separated. While the pair term is on, a `factors <rank> <scale>` line follows
+the weights and each row carries the term's score, from the side to move, as a
+fourth number after `n`. Both ends of it can hold spaces: a fen is six fields, and an id is
 whatever the epd put in the quotes, which in the bench's own suite is "ruy
 lopez" and in the strategic suite "7th Rank.001". An epd line that names no id
 is called by its own fen, so an id can be six fields itself. So a row is read

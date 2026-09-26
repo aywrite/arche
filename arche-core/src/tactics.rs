@@ -34,7 +34,7 @@ pub const TABLE_BYTES: usize = 16 * 1024 * 1024;
 /// is the gate. A change that moves it in either direction updates this
 /// number in the same commit, which puts the movement in the diff, and a
 /// change that lowers it says what the positions were spent on.
-pub const EXPECTED_PASSES: usize = 230;
+pub const EXPECTED_PASSES: usize = 229;
 
 /// The count the suite may not go under, whatever a commit says it meant to
 /// spend.
@@ -47,7 +47,8 @@ pub const EXPECTED_PASSES: usize = 230;
 /// Two hundred and ten was fourteen under the count when the floor was set
 /// (224) and is eleven under the lowest the suite has been gated at (221).
 /// Since the suite was first gated the count has been 243, 241, 240, 237,
-/// 236, 229, 221, 226, 227, 228, 231, 224, 237, 240, 238, 237 and 235, and
+/// 236, 229, 221, 226, 227, 228, 231, 224, 237, 240, 238, 237, 235, 234, 230
+/// and 229, and
 /// the largest single step down in that list is eight, so one change
 /// spending fourteen fails here rather than being written down and
 /// rearmed.
@@ -82,28 +83,18 @@ pub struct AcceptedLoss {
 
 /// The losses accepted so far.
 ///
-/// The first is the reduction table's: a move it never touches or reaches
-/// late, whose continuation is quiet and is now stood further back than the
-/// depth can afford.
-///
-/// The four under it are the late move count's. The count refuses a quiet a
+/// All four are the late move count's. The count refuses a quiet a
 /// node of depth one to three has reached past four moves a ply, so a
 /// winning line with such a quiet in it is not searched at all at those
 /// depths. Each entry names what depth six answered with instead and the
 /// depth the suite's move came back at, read one position at a time on the
 /// build that took the loss.
 ///
-/// Eight more stood here until the linear weights were refitted on 59,049
-/// games, which found all eight again: the reduction table's WAC.260, six of
-/// the count's ten, and mate distance pruning's WAC.150.
+/// Nine more stood here. The joint refit of the linear weights on 59,049
+/// games found eight of them again (the reduction table's WAC.260, six of
+/// the count's ten, and mate distance pruning's WAC.150), and the
+/// evaluation's pair term found the reduction table's WAC.082.
 pub const ACCEPTED_LOSSES: &[AcceptedLoss] = &[
-    AcceptedLoss {
-        id: "WAC.082",
-        why: "the quiet queen lift and rook swing behind the h7 sacrifice are \
-              scouted further back, so the sacrifice never comes back above \
-              alpha at depth six",
-        until: "0.6.0",
-    },
     AcceptedLoss {
         id: "WAC.232",
         why: "depth six answers a6b7 at 19 and the rook trade b8e8 comes \

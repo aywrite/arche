@@ -5102,7 +5102,7 @@ mod search {
     #[test]
     #[cfg_attr(
         feature = "machine-test",
-        ignore = "pins a search the evaluation without the pair term makes"
+        ignore = "pins a search made with the shipped factor table, which the test rank replaces"
     )]
     fn the_depth_term_looks_at_less_of_the_tree_than_the_flat_reduction() {
         // the switch has to reach the search. Depth 8, because the term
@@ -5686,11 +5686,14 @@ mod search {
         // quiet, so the history must be black's alone and the killers must
         // stand at ply one exactly. This is the search level check that the
         // update sites read the board after the move is unmade: the wrong
-        // colour or the wrong ply lands the entries somewhere else
+        // colour or the wrong ply lands the entries somewhere else. Black is
+        // asked for a credited entry rather than a positive total: the malus
+        // marks down the moves tried before a cutoff, and at depth two it can
+        // outweigh the credit (-14 with the pair term on)
         let mut e = remembering(Board::new());
         completed(e.search(2));
         assert_eq!(e.ordering.history_total(Color::White), 0);
-        assert!(e.ordering.history_total(Color::Black) > 0);
+        assert!(e.ordering.history_credited(Color::Black) > 0);
         assert_eq!(e.ordering.killers_at(0), [None; 2]);
         assert!(e.ordering.killers_at(1).iter().any(|k| k.is_some()));
         assert_eq!(e.ordering.killers_at(2), [None; 2]);
@@ -6503,7 +6506,7 @@ mod sampling {
     #[test]
     #[cfg_attr(
         feature = "machine-test",
-        ignore = "pins a search the evaluation without the pair term makes"
+        ignore = "pins a search made with the shipped factor table, which the test rank replaces"
     )]
     fn the_windows_a_search_records_are_mostly_the_zero_ones() {
         let mut e = engine(SHARP_MIDDLEGAME);
@@ -6519,7 +6522,7 @@ mod sampling {
         };
         assert_eq!(
             (open(Shortcut::ReverseFutility), open(Shortcut::NullMove)),
-            (3, 0),
+            (0, 0),
             "the open windows the two shortcuts answer moved"
         );
     }

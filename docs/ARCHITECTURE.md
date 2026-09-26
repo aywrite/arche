@@ -131,13 +131,21 @@ archived games, and the code map below says what each one counts.
     material and the piece square score are carried rather than counted;
     anything too dear to keep in step is computed at the leaf instead.
     Material that cannot mate is answered with a hard zero before any of
-    that, which is the one place the score is not a sum over the weights.
+    that, which with the pair term below is where the score is not a sum
+    over the weights.
     Also here is `TERMS`, a descriptor per leaf term (its name, how many
     counts it is measured in, its weights and its counts), which is what the
     tuner lays its slot vector out from. And the one walk over each side's
     knights, bishops, rooks and queens that mobility and the king attack zone
     both read at the leaf: each piece's attack set is probed once and read
     against both terms' masks.
+  - **factors.rs**: The pair term, a factorization machine over the piece
+    square features: a weight for every pair of pieces on the board, as the
+    inner product of two rows of sixteen factors. The accumulator keeps each
+    perspective's sum of the rows, so the leaf reads two sums of squares.
+    The table is `factors16.rs`, generated from the fit; the `machine-test`
+    feature swaps in a seeded rank 8 table so the tests check the term on a
+    table no fit chose.
   - **cache.rs**: The one cache type a remembered term is kept in: direct
     mapped, as wide as the term measured it wants, holding a score under the
     whole of its key. A term that remembers itself names its key and its fold,
@@ -199,9 +207,10 @@ archived games, and the code map below says what each one counts.
   row says whether each side reached it and what each spent under it.
   Driven by the `effort` argument.
 - **tune.rs**: What a position's evaluation is made of. The evaluation is
-  linear in the tables and the material values everywhere it is not a drawn
-  signature, so a position's score is a dot product, and this writes down the
-  coefficients: one per weight the
+  linear in the tables, the leaf terms' weights and the material values
+  everywhere it is not a drawn signature, plus the pair term, which a row
+  carries as a number of its own. So a position's score is a dot product and
+  that number, and this writes down the coefficients: one per weight the
   position touches, in the side to move's frame. `reconstruct` folds a row
   back against the live tables and has to give the evaluation exactly,
   which is asserted on every row printed as well as over three suites in a

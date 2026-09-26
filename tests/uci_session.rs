@@ -252,26 +252,31 @@ fn the_clear_hash_button_empties_the_table() {
 /// to change its mind.
 const SHARP_MIDDLEGAME: &str = "r1b2rk1/ppp1qppp/4pn2/6N1/Qn1P4/2NBP3/PP3PPP/R3K2R w KQ - 9 12";
 
-/// The bench's Italian opening, which changes its root move at depth five
-/// and reports the new move as a floor first.
+/// The bench's Italian opening, whose depth five fails low.
 const ITALIAN: &str = "r1bqk2r/pppp1ppp/2n2n2/2b1p3/2B1P3/5N2/PPPP1PPP/RNBQK2R w KQkq - 0 1";
+
+/// The bench's Tarrasch rook ending, whose depth seven fails high.
+const TARRASCH: &str = "r5k1/5ppp/P7/8/8/8/5PPP/3R1K2 w - - 0 1";
+
+/// WAC.021 of the tactical suite, which changes its root move at depth nine
+/// and reports the new move as a floor first.
+const WAC_021: &str = "5rk1/1b3p1p/pp3p2/3n1N2/1P6/P1qB1PP1/3Q3P/4R1K1 w - - 0 1";
 
 #[test]
 #[cfg_attr(
     feature = "machine-test",
-    ignore = "pins a search the evaluation without the pair term makes"
+    ignore = "pins a search made with the shipped factor table, which the test rank replaces"
 )]
 fn the_move_a_swap_answers_with_opens_the_last_line_said() {
     // a node budget rather than a clock, so the iteration is cut short on
     // the same node on every machine. The budget has to land after an
     // iteration finds its better move and before that iteration ends:
-    // depth eleven answers a4d1 and finishes at 668,395 nodes, depth
-    // twelve reports d3e2 from between 1,280,469 and 1,281,250 and
-    // finishes at 1,327,471. The budget moves whenever the tree does, in
-    // the commit that moved it
+    // depth six answers a4d1 and finishes at 20,362 nodes, depth seven
+    // reports d3e2 from between 39,046 and 39,088 and finishes at 42,405.
+    // The budget moves whenever the tree does, in the commit that moved it
     let mut s = Session::start(&[]);
     s.say(&format!("position fen {}", SHARP_MIDDLEGAME));
-    s.say("go nodes 1300000");
+    s.say("go nodes 40000");
     let answer = s.wait_for(|l| l.starts_with("bestmove"));
     let best = answer
         .strip_prefix("bestmove ")
@@ -315,18 +320,23 @@ fn line_opens_with(info: &str) -> &str {
 }
 
 #[test]
+#[cfg_attr(
+    feature = "machine-test",
+    ignore = "pins a search made with the shipped factor table, which the test rank replaces"
+)]
 fn an_iteration_no_root_move_reached_answers_with_the_depth_before_it() {
-    // the opening is worth 54 to white at depth five and 0 at depth six, so
-    // depth six opens above what the position turns out to be and nothing
-    // inside the window answers it: the depth is reported as the ceiling it
-    // is and searched again wider. The budget lands inside that second
-    // search, which reaches nothing above its own alpha either, so what
-    // answers is still depth five's and not the ceiling just reported. The
-    // first search reports at 5,769 nodes and the second finishes at
-    // 11,258
+    // the Italian opening is worth 9 to white at depth four, answered with
+    // b1c3, and depth five opens above what the position turns out to be:
+    // nothing inside the window answers it, so the depth is reported as the
+    // ceiling it is (f3g5 at -21) and searched again wider. The budget lands
+    // inside that second search, which reaches nothing above its own alpha
+    // either, so what answers is still depth four's and not the ceiling just
+    // reported. The first search reports at 9,832 nodes and the second
+    // finishes at 10,951. The start position was this fixture until the
+    // evaluation's pair term, under which it fails low at no depth to twelve
     let mut s = Session::start(&[]);
-    s.say("position startpos");
-    s.say("go nodes 8000");
+    s.say(&format!("position fen {}", ITALIAN));
+    s.say("go nodes 10200");
     let answer = s.wait_for(|l| l.starts_with("bestmove"));
     let best = answer
         .strip_prefix("bestmove ")
@@ -385,9 +395,9 @@ fn an_iteration_no_root_move_reached_answers_with_the_depth_before_it() {
         score_of(completed),
         "the last line moved the score the answering depth said"
     );
-    assert_eq!(nodes_of(total), 8000, "the last line is not the budget");
+    assert_eq!(nodes_of(total), 10200, "the last line is not the budget");
     assert!(
-        nodes_of(ceiling) < 8000,
+        nodes_of(ceiling) < 10200,
         "the ceiling already covered the whole search: {}",
         ceiling
     );
@@ -398,18 +408,19 @@ fn an_iteration_no_root_move_reached_answers_with_the_depth_before_it() {
 #[test]
 #[cfg_attr(
     feature = "machine-test",
-    ignore = "pins a search the evaluation without the pair term makes"
+    ignore = "pins a search made with the shipped factor table, which the test rank replaces"
 )]
 fn a_root_move_that_reaches_beta_is_reported_as_a_floor_and_then_answered_with() {
-    // the opening is worth 0 to white at depth six and 49 at depth seven, so
-    // depth seven's window is left behind on the other side: a move reaches
-    // beta, the depth reports the floor that move is, and the search runs
-    // again with beta raised. Both of depth seven's lines name the same
-    // move, which is the point of storing it: the wider search tries it
-    // first. A fixed depth rather than a budget, so nothing here is aborted
-    // and the only bound a line can carry is the root's own
+    // the Tarrasch rook ending is worth 222 to white at depth six and 260
+    // at depth seven, so depth seven's window is left behind on the other
+    // side: a6a7 reaches beta, the depth reports the floor that move is, and
+    // the search runs again with beta raised. Both of depth seven's lines
+    // name the same move, which is the point of storing it: the wider search
+    // tries it first. A fixed depth rather than a budget, so nothing here is
+    // aborted and the only bound a line can carry is the root's own. The
+    // start position was this fixture until the evaluation's pair term
     let mut s = Session::start(&[]);
-    s.say("position startpos");
+    s.say(&format!("position fen {}", TARRASCH));
     s.say("go depth 7");
     let answer = s.wait_for(|l| l.starts_with("bestmove"));
     let best = answer
@@ -443,27 +454,28 @@ fn a_root_move_that_reaches_beta_is_reported_as_a_floor_and_then_answered_with()
 #[test]
 #[cfg_attr(
     feature = "machine-test",
-    ignore = "pins a search the evaluation without the pair term makes"
+    ignore = "pins a search made with the shipped factor table, which the test rank replaces"
 )]
 fn a_floor_answers_until_the_wider_search_replaces_it() {
     // the other half of the floor: what the engine plays when the wider
-    // search never finishes. The Italian opening is worth -36 to white at
-    // depth four, answered with d1e2; depth five opens above that, b1c3
-    // reaches beta and the floor is reported at 7,575 nodes, and the search
-    // finishes at 10,250. A budget inside it is interrupted before anything
-    // beats its alpha, so the root hands back no move at all and the floor
-    // is what is left to answer with. Any budget from 7,576 to 10,249 does
-    // it; with the floor not held the same budget answers d1e2, which is the
-    // move the search has just shown worse.
+    // search never finishes. WAC.021 is answered with d2c3 at depth eight;
+    // depth nine opens below what d2h6 is worth, d2h6 reaches beta and the
+    // floor is reported at 69,848 nodes, and the search finishes at 97,706.
+    // A budget inside it is interrupted before anything beats its alpha, so
+    // the root hands back no move at all and the floor is what is left to
+    // answer with. With the floor not held the same budget answers d2c3,
+    // which is the move the search has just shown worse.
     //
-    // Kiwipete was this fixture until the linear weights were refitted on
-    // 59,049 games. It still reports floors, at depths ten and twelve, but
-    // each names the move the depth before answered with. Before Kiwipete
-    // it was the endgame 8/k1b5/P4p2/1Pp2p1p/K1P2P1P/8/3B4/8, until the late
-    // move count landed, for the same reason
+    // The Italian opening was this fixture from the joint refit of the
+    // linear weights until the evaluation's pair term, whose tree reports no
+    // floor on a new move there. Kiwipete was before that, until the refit,
+    // after which each floor it reported named the move the depth before
+    // answered with. Before Kiwipete it was the endgame
+    // 8/k1b5/P4p2/1Pp2p1p/K1P2P1P/8/3B4/8, until the late move count
+    // landed, for the same reason
     let mut s = Session::start(&[]);
-    s.say(&format!("position fen {}", ITALIAN));
-    s.say("go nodes 9000");
+    s.say(&format!("position fen {}", WAC_021));
+    s.say("go nodes 85000");
     let answer = s.wait_for(|l| l.starts_with("bestmove"));
     let best = answer
         .strip_prefix("bestmove ")

@@ -4,13 +4,15 @@
 //! What a position's evaluation is made of, weight by weight.
 //!
 //! The evaluation is material plus five tapered terms (piece square, mobility,
-//! king shelter, pawn structure, king attack), and it is linear in the weights
-//! those are read from. A position's score is a dot product of one coefficient
-//! per weight it touches against the weights themselves. This module writes
-//! the coefficients down and a fit run outside the engine, `scripts/tune.py`,
+//! king shelter, pawn structure, king attack), which are linear in the weights
+//! they are read from, plus the pair term (`eval::factors`), which is not. A
+//! position's score is a dot product of one coefficient per weight it touches
+//! against the weights themselves, plus that term, which a row carries as a
+//! number of its own and a fit reads as a constant. This module writes the
+//! coefficients down and a fit run outside the engine, `scripts/tune.py`,
 //! reads them.
 //!
-//! The one place the evaluation is not linear is material that cannot mate,
+//! The other place the evaluation is not linear is material that cannot mate,
 //! which `eval` answers with a hard zero. Every weight vector scores such a
 //! position the same, so a fit learns nothing from it. `run` turns those
 //! positions away and counts them in the header, and `scripts/tune.py`
