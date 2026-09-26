@@ -784,7 +784,7 @@ mod tests {
         );
         assert_eq!(
             i32::from(eval::eval(&board)),
-            material + numerator / TOTAL_PHASE
+            material + numerator / TOTAL_PHASE + terms.machine
         );
     }
 
@@ -996,8 +996,16 @@ mod tests {
             "{}",
             text.lines().next().unwrap_or_default()
         );
-        // the header, the layout, the weights and a row a position
-        assert_eq!(text.lines().count(), report.rows.len() + 3);
+        // the header, the layout, the weights, the pair term's line while it
+        // is on, and a row a position
+        let on = usize::from(factors::RANK != 0);
+        assert_eq!(text.lines().count(), report.rows.len() + 3 + on);
+        if on == 1 {
+            assert_eq!(
+                text.lines().nth(3),
+                Some(format!("factors {} {}", factors::RANK, factors::Q).as_str())
+            );
+        }
     }
 
     /// What reads the rows has no copy of the layout, so this line is the
@@ -1078,18 +1086,24 @@ mod tests {
             }],
         };
         let text = report.to_string();
-        let row = text.lines().nth(3).expect("a row");
+        // one line more while the pair term is on, and one number more a row
+        let on = usize::from(factors::RANK != 0);
+        let row = text.lines().nth(3 + on).expect("a row");
         let words: Vec<&str> = row.split(' ').collect();
         // the fen is the last six fields
         let (head, last_six) = words.split_at(words.len() - 6);
         assert_eq!(last_six.join(" "), fen);
         // the coefficients are the run before it, which cannot walk back into
         // the id because the three numbers in between hold no colon
-        let count_at = head
+        let last_number = head
             .iter()
             .rposition(|word| !word.contains(':'))
             .expect("a count");
-        for word in &head[count_at + 1..] {
+        let count_at = last_number - on;
+        if on == 1 {
+            assert_eq!(head[last_number], report.rows[0].terms.machine.to_string());
+        }
+        for word in &head[last_number + 1..] {
             let (slot, coefficient) = word.split_once(':').expect(word);
             assert!(slot.parse::<usize>().expect(word) < SLOTS);
             coefficient.parse::<i32>().expect(word);
