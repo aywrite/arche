@@ -26,120 +26,84 @@ use std::time;
 
 /// The ply every search stops at: a requested depth is held to it, the
 /// full width search ends a line at it whatever depth the check extension
-/// has left, and the reported line is walked no further. It is also the
-/// killer table's length, so a node past it would order its quiets without
-/// one.
+/// has left, and the reported line is walked no further. It also sizes the
+/// ordering's per ply tables.
 ///
-/// It sits well inside the two things a longer line would break: the
-/// board's history ring (1024 plies, less the fifty move window) and the
-/// mate score window (a thousand under the mate score). Sixty four would
-/// fit; moving the rail is a play change with a match behind it, so it was
-/// set where it need not move again.
+/// It sits well inside the board's history ring (1024 plies, less the
+/// fifty move window) and the mate score window (a thousand under the mate
+/// score). Sixty four would fit; it was set where a play change need not
+/// move it again.
 pub const MAX_PLY: u8 = 128;
 // the root deepens by one more when it is in check, so a depth held to the
 // rail has to leave room for that inside a byte
 const _: () = assert!(MAX_PLY < u8::MAX);
 // How far above beta the static eval has to stand, per ply still to
-// search, for a node to be answered from it: what the opponent may win
-// back over those plies, a pawn a ply. The bench argues for less and not
-// by much (sixty through a hundred and twenty span about five percent of
-// the count, not monotone). What fixed the figure was a depth four mate in
-// two: a margin one notch from a mate it can miss is no margin, so this is
-// the round number above the boundary where the mate goes. Read on the
-// default search, the boundary was between eighty five and ninety when the
-// figure was chosen, ninety one before the piece square tables were
-// fitted, and ninety later. The default's other shortcuts now lose that
-// mate at depth four at every margin from sixty to a hundred, so the
-// boundary is read with this shortcut alone on the reference, in
-// the_reverse_futility_margin_keeps_the_depth_four_mate: seventy seven
-// keeps the mate and seventy six loses it. That test guards only a cut
-// below seventy seven. The hundred rests on the readings on the default
-// search above, not on this boundary, whose round number above would be
-// eighty. Re-measure it before moving the figure. docs/ROADMAP.md has
-// the shadow lane's reading.
+// search, for a node to be answered from it: a pawn a ply. The bench
+// prefers a little less (sixty to a hundred and twenty span about five
+// percent of the count, not monotone). The figure is held above the margin
+// at which a depth four mate in two is lost. On the default search that
+// boundary read between eighty five and ninety one while it could be read
+// there; the default's other shortcuts now lose the mate at every margin
+// from sixty to a hundred. With this shortcut alone on the reference the
+// boundary is seventy seven, which
+// the_reverse_futility_margin_keeps_the_depth_four_mate pins. That test
+// guards only a cut below seventy seven, so re-measure before moving the
+// figure. docs/ROADMAP.md has the shadow lane's reading.
 const REVERSE_FUTILITY_MARGIN: Score = 100;
-// The deepest node the margin may answer. The margin grows a fixed step a
-// ply, and the bench says the plies past this prune nothing: four, six and
-// eight are the same count to a tenth of a percent.
+// The deepest node the margin may answer. Four, six and eight give the
+// same bench count to a tenth of a percent.
 const REVERSE_FUTILITY_MAX_DEPTH: u8 = 4;
-// How many plies shallower than the node the pass itself is searched: what
-// the shortcut costs. Too large and the reduced search proves nothing, too
-// small and it costs what searching the moves would have. Two is the
-// opening value; what moves it is a match, not the bench.
+// How many plies shallower than the node the pass is searched. An opening
+// value; what moves it is a match, not the bench.
 const NULL_MOVE_REDUCTION: u8 = 2;
 // One more than the base reduction, so the pass at the shallowest depth it
-// is offered at is searched at depth zero and no lower. At that floor the
-// reduced search is quiescence. The floor is the base and not whatever the
-// depth term grows the reduction to, because the reduction is clamped to
-// what the depth leaves (`null_move_reduction`) rather than the depth being
-// raised to fit it.
+// is offered at is searched at depth zero (quiescence). The deeper terms
+// are clamped to the depth by `null_move_reduction` rather than raising
+// this floor.
 const NULL_MOVE_MIN_DEPTH: u8 = NULL_MOVE_REDUCTION + 1;
-// How many plies of depth buy one more ply of reduction. A pass proves less
-// the shallower it is searched, and what it costs to search is what the
-// depth below the node costs, which grows with that depth: so the plies
-// worth spending on the proof grow slower than the node's own depth. Six is
-// the conventional step and takes the reduction to three from depth six.
-// The bench did not choose it: three, four, five, six and eight read
-// -3.23%, -3.13%, -1.42%, -1.57% and -0.63% at depth nine, which is not
-// monotone and so is not a ranking. What moves it is a match. It leaves
-// depths three to five alone, which is what gives the residual sampler a
-// band the arm does not touch to be read against.
+// How many plies of depth buy one more ply of reduction: the conventional
+// step, taking the reduction to three from depth six. The bench did not
+// choose it (ba921e1 has a sweep that ranks nothing). It leaves depths
+// three to five alone, which gives the residual sampler a band the term
+// does not touch to be read against.
 const NULL_MOVE_DEPTH_DIVISOR: u8 = 6;
 // How far the static evaluation must stand above beta to buy one more ply
-// of reduction. A pawn is a hundred on this scale, so this is a ply for
-// every two pawns of clearance. The term is a bet that the wider the
-// margin the safer the pass, and the residual sampler is what the bet was
-// read against before it was taken: over the pass's own rows the wide band
-// crossed less often than the narrow one.
+// of reduction: a ply for every two pawns of clearance. The residual
+// sampler's split at this margin (ba921e1) supports the direction of the
+// bet, not its size.
 const NULL_MOVE_EVAL_UNIT: Score = 200;
 // The most plies the margin alone may add. Past three the pass proves
-// almost nothing whatever the margin says, and the margins that reach that
-// far are the positions a pass was never the cheap answer to.
+// almost nothing, whatever the margin says.
 const NULL_MOVE_EVAL_CAP: u8 = 3;
 // How far short of alpha a capture may leave the standing eval, with the
 // captured piece counted as fully won, and still be searched in
-// quiescence: the positional ground a capture can make up beyond the
-// piece. Two hundred is the conventional figure for conventional piece
-// values.
+// quiescence. The conventional figure for conventional piece values.
 const DELTA_MARGIN: Score = 200;
 // How far either side of the previous iteration's score the root opens.
-// A pawn is a hundred, so this is three tenths of one: wide enough that
-// most iterations land inside it, and narrow enough that the first root
-// move's own subtree is searched under bounds a search can reach rather
-// than under the mate edges. Read off the bench at depth nine over ten,
-// fifteen, twenty, thirty and forty, which prices the re-searches a narrow
-// window pays for: only fifteen, twenty and thirty cost less there than
-// opening full, and of those this is the widest inside a percent of the
-// cheapest, a window being the thing that fails on the positions the suite
-// does not hold. It is also the cheapest of all five at depth seven. What
-// moves it is another sweep, not a guess.
+// Chosen by a bench sweep of ten to forty at depth nine as the widest
+// width within a percent of the cheapest that also cost less than opening
+// full (5902681 has the table).
 const ASPIRATION_WIDTH: Score = 30;
 // The first depth the root opens narrow at. Below it the whole iteration
-// costs less than one re-search deeper down, and the score at depth two
-// predicts depth three badly. A judgment rather than a swept figure.
+// costs less than one re-search deeper down. A judgment rather than a
+// swept figure.
 const ASPIRATION_MIN_DEPTH: u8 = 5;
 // How many times one side of the window may fail before that side opens to
 // the edge. The width doubles each time, so the sides tried are the width,
-// twice it, four times it, and then the edge; a fifth try buys little over
-// the edge and costs a whole re-search on the positions that swing that
-// far.
+// twice it, four times it, and then the edge.
 const ASPIRATION_FAILURES: u8 = 3;
 
 /// How many plies shallower than the node a pass at `depth` is searched.
 /// `eval_beta` is how far the static evaluation stands above beta at the
 /// node, which the pass gate has already found to be at least zero.
 ///
-/// The flat base with two terms on top of it, one on the depth and one on
-/// that margin, held to what the depth leaves. The clamp is the whole of
-/// the safety here: `depth - 1 - r` is the reduced search's depth and is
-/// unsigned, so an `r` past `depth - 1` would not be an over-reduction but
-/// a wrap to an enormous depth. The depth term alone never reaches it (a
-/// sixth of the depth never catches the depth), the margin term does at
-/// the shallowest depths, and the reduced search is then quiescence, as it
-/// is at the floor.
+/// The clamp to `depth - 1` is the safety here: the reduced search's depth
+/// is `depth - 1 - r` and unsigned, so a larger `r` would wrap to an
+/// enormous depth rather than over-reduce. The margin term reaches the
+/// clamp at the shallowest depths, where the reduced search is quiescence.
 ///
-/// Off the flag this is the base and nothing else, which is what holds the
-/// bench identical to the flat reduction's.
+/// Off the flag this is the flat base, which holds the bench identical to
+/// the flat reduction's.
 fn null_move_reduction(config: SearchConfig, depth: u8, eval_beta: Score) -> u8 {
     if !config.adaptive_null_move {
         return NULL_MOVE_REDUCTION;
@@ -160,8 +124,7 @@ fn short_of_alpha(standing: Score, captured: Piece, alpha: Score) -> bool {
 /// each: under a cutoff the quiet moves with a bit below the cutting
 /// move's place are the history's malus.
 ///
-/// Four words: a position can hold two hundred and eighteen moves, and the
-/// list buffer is sixty four wide and spills past that.
+/// Four words, because a position can hold two hundred and eighteen moves.
 #[derive(Default)]
 struct Searched([u64; 4]);
 
@@ -175,18 +138,16 @@ impl Searched {
         self.0[place / 64] >> (place % 64) & 1 == 1
     }
 
-    /// How many places are marked. The move loop holds this to its own
-    /// count of the moves it searched, so a stray mark shows up at the next
-    /// move searched rather than as a malus elsewhere in the tree; a move
-    /// the model skipped and a move that turned out illegal raise neither.
+    /// How many places are marked. The move loop asserts this against its
+    /// own searched count, so a stray mark fails at the next move rather
+    /// than showing up as a malus elsewhere in the tree.
     fn count(&self) -> usize {
         self.0.iter().map(|word| word.count_ones() as usize).sum()
     }
 }
 
 /// What the protocol interface asks of an engine: positions in, answers
-/// out. The deepening loop is required rather than provided because how an
-/// implementation searches is its own business.
+/// out.
 pub trait Engine {
     fn parse_fen(&mut self, fen_string: &str) -> Result<(), String>;
 
@@ -203,29 +164,24 @@ pub trait Engine {
     fn make_move_str(&mut self, play: &str) -> Result<(), Unplayable>;
 
     /// Give the engine a transposition table of `bytes` bytes, discarding
-    /// whatever the old one held: a bucket is chosen from the number of
-    /// buckets there are, so every entry moves when that number does.
+    /// whatever the old one held.
     ///
     /// False if the buckets could not be reserved, in which case the engine
-    /// keeps the table it had: the size arrives from an interface, which
-    /// may ask for more than the machine has, and a game is better carried
-    /// on with the old table than lost with no engine.
+    /// keeps the table it had: an interface may ask for more than the
+    /// machine has, and a game is better carried on with the old table.
     ///
-    /// The answer is the allocator's. It is not a promise that the memory
-    /// is there to use: where the kernel overcommits, a size that fits in
-    /// ram and swap is granted here and the process killed later as the
-    /// entries are written.
+    /// The answer is the allocator's. Where the kernel overcommits, a size
+    /// that fits in ram and swap is granted here and the process killed
+    /// later as the entries are written.
     #[must_use]
     fn set_table_bytes(&mut self, bytes: usize) -> bool;
 
     /// Empty the transposition table and leave everything else as it is:
-    /// the protocol's `Clear Hash`. A size change empties the table too, by
-    /// building another; this keeps the buckets.
+    /// the protocol's `Clear Hash`.
     fn clear_table(&mut self);
 
-    /// The position, printed the way the board prints itself. A string
-    /// rather than a write: the library never prints, and the adapter owns
-    /// where its bytes go and what lock they take.
+    /// The position, printed the way the board prints itself. A string,
+    /// because the library never prints.
     fn board_display(&self) -> String;
 
     fn perft(&mut self, depth: u8) -> u64;
@@ -233,11 +189,9 @@ pub trait Engine {
     fn active_color(&self) -> Color;
 
     /// Search each depth in turn until one is the last to finish. Every
-    /// completed iteration is reported through `on_depth`, which is where a
-    /// protocol adapter reports progress from; the library never prints. A
-    /// result's node count covers the whole deepening so far, not the one
-    /// iteration, which is what the uci info convention expects and what
-    /// makes it divisible by the time since the search began.
+    /// completed iteration is reported through `on_depth`. A result's node
+    /// count covers the whole deepening so far, as the uci info convention
+    /// expects.
     ///
     /// One report is not a completed iteration: the answer an aborted
     /// iteration replaces a completed one with is reported too, as a lower
@@ -251,22 +205,16 @@ pub trait Engine {
 
 pub struct SearchParameters {
     /// The depth to deepen to, or none for as deep as the engine goes.
-    /// Reaching it is how a search finishes, which is why it is not one of
-    /// the limits below.
     pub depth: Option<u8>,
-    /// What the search may spend: the clock it started on and the nodes it
-    /// may visit.
     pub limits: Limits,
-    /// Set by another thread to stop the search at the next poll, which is
-    /// how the protocol's `stop` reaches a search already running. None for
-    /// a search nobody can interrupt. Beside the limits rather than inside
-    /// them so that `Limits` stays `Copy`.
+    /// Set by another thread to stop the search at the next poll: the
+    /// protocol's `stop`. None for a search nobody can interrupt. Beside
+    /// the limits rather than inside them so that `Limits` stays `Copy`.
     pub stop: Option<Arc<AtomicBool>>,
 }
 
 impl SearchParameters {
-    /// A search to the depth given, under the limits given, which nothing
-    /// can stop early.
+    /// A search nothing can stop early.
     pub fn new(depth: Option<u8>, limits: Limits) -> Self {
         Self {
             depth,
@@ -275,7 +223,6 @@ impl SearchParameters {
         }
     }
 
-    /// The same, with a flag another thread may set to stop it.
     pub fn stoppable(depth: Option<u8>, limits: Limits, stop: Arc<AtomicBool>) -> Self {
         Self {
             depth,
@@ -300,23 +247,23 @@ impl SearchParameters {
 }
 
 /// The policies a search runs under: the shortcuts it takes and the scores
-/// it trusts. Each is a fact about the tree searched, so changing one
-/// moves the bench.
+/// it trusts. Each changes the tree searched, so changing one moves the
+/// bench.
 ///
 /// Two configurations are named. The reference has every shortcut off and
 /// every refusal on: alpha-beta with a table that only speeds it up, so a
 /// position searched warm answers as it does cold, deepened as it does
 /// direct, and with a small table as with a large one. The exactness tests
-/// hold the reference to that and a shortcut leaves it alone. The default
-/// is what the engine plays with, every shortcut on, and the two played
-/// against each other say what the shortcuts are worth.
+/// hold the reference to that. The default is what the engine plays with.
+///
+/// A switch that rides on another is never asked with that one off, which
+/// `a_rule_asked_only_under_another_has_no_site_with_that_one_off` holds.
+/// The late move switches are described where they are decided, in
+/// `late_move.rs`.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub struct SearchConfig {
-    /// What the search does about draw tainted transposition scores, the
-    /// ones that describe the path that stored them rather than the
-    /// position. The policies are the graph history experiment's arms;
-    /// what each costs is measured, not written here: run
-    /// `bench hash <MB> taint <word>` against another word.
+    /// What the search does about draw tainted transposition scores. What
+    /// each policy costs is measured with `bench hash <MB> taint <word>`.
     pub taint: TaintPolicy,
     /// Whether a node near the leaves may answer from its static evaluation
     /// alone when that stands far enough above beta.
@@ -324,13 +271,9 @@ pub struct SearchConfig {
     /// Whether a node whose eval already stands above beta may hand the
     /// move to the other side and answer from a reduced search of that.
     pub null_move: bool,
-    /// Whether the plies the pass is searched shallower by grow with the
-    /// node's depth and with how far the static evaluation stands above
-    /// beta, rather than being the flat two. It changes no node's
-    /// eligibility to pass and nothing the four gates decide, only how
-    /// dearly a node that passes buys its proof. Rides on `null_move`: a
-    /// node that never passes is never asked. Off it the reduction is read
-    /// as it was, which is what the bench identity holds it to.
+    /// Whether the null move reduction grows with depth and with the eval's
+    /// margin over beta rather than being the flat two. Rides on
+    /// `null_move`, and changes no node's eligibility to pass.
     pub adaptive_null_move: bool,
     /// Whether quiescence may skip a capture that leaves the standing eval
     /// a margin short of alpha with its piece counted as fully won.
@@ -338,79 +281,47 @@ pub struct SearchConfig {
     /// Whether quiescence may skip a capture the swap prices as losing. The
     /// swap sees no pins and nothing beyond its square.
     pub see_pruning: bool,
-    /// Whether a quiet move searched late at a full width node is scouted
-    /// shallower first, by what the reduction table reads or by a flat ply
-    /// with that off, and searched at full depth only when the scout comes
-    /// back above alpha. A scout that fails low is trusted.
+    /// Whether a late quiet at a full width node is scouted shallower
+    /// first and searched at full depth only when the scout beats alpha.
     pub late_move_reductions: bool,
     /// Whether the scout of a late quiet the gate prices as dead runs a ply
-    /// shallower still, at nodes deep enough for the scout to keep its full
-    /// width ply, and never for a move that gives check. What prices it is
-    /// the attention model's threshold, or the index rule below when that is
-    /// on. Rides on `late_move_reductions`: a move the reduction never
-    /// touches is never asked.
+    /// shallower still. Rides on `late_move_reductions`.
     pub deep_reductions: bool,
     /// Whether a late quiet the attention model prices in its deadest band
-    /// is searched at all. Rides on the reduction's eligibility and the
-    /// deep reduction's depth floor and checking exemption; its threshold is
-    /// a deeper cut of the attention model's score.
+    /// is searched at all. Rides on `late_move_reductions`.
     pub late_move_pruning: bool,
-    /// Whether a quiet move after the node's first is dropped at depths one
-    /// to three because the node's static evaluation plus
-    /// `QUIET_FUTILITY_MARGIN` a ply cannot reach alpha. Its ceiling is a
-    /// ply under `DEEP_REDUCTION_MIN_DEPTH`, so the rule and the attention
-    /// model never decide at one depth, and it carries the shortcuts'
-    /// exemptions: not in check, no mate window, beta not the root's, and a
-    /// side with a piece besides pawns. A capture, a promotion and a quiet
-    /// that gives check are exempt as the reduction's are. Off, the search
-    /// is the one that was there before, which the bench identity holds it
-    /// to.
+    /// Whether a quiet move at depths one to three is dropped when the
+    /// static evaluation plus a margin a ply cannot reach alpha.
     pub quiet_futility: bool,
-    /// Whether a quiet move after the node's first is dropped at depths one
-    /// to three because the node has already searched `LATE_MOVE_COUNT`
-    /// moves a ply. It shares the rule above's ceiling and exemptions and
-    /// reads none of the evaluation: a node this alone decides never
-    /// computes one. A switch of its own rather than the one above, so an
-    /// ablation can tell the two apart. Off, the search is the one that was
-    /// there before, which the bench identity holds it to.
+    /// Whether a quiet move at depths one to three is dropped once the node
+    /// has searched `LATE_MOVE_COUNT` moves a ply. Separate from
+    /// `quiet_futility` so an ablation can tell the two apart.
     pub late_move_count: bool,
-    /// Whether the amount a late quiet is scouted shallower by grows with
-    /// the node's depth and the move's place in the order, rather than
-    /// being the flat ply and the gate's second one. It changes no move's
-    /// eligibility and nothing the gate decides, only how far the scout of
-    /// a move already reduced is stood back. On in the default, off in the
-    /// reference, and off it the two constants are read as they were,
-    /// which is what the bench identity holds it to.
+    /// Whether the late move reduction's amount is read off the table by
+    /// depth and move index rather than being the flat ply. Rides on
+    /// `late_move_reductions`.
     pub reduction_table: bool,
-    /// Whether the deep reduction's extra ply is decided by the move's index
-    /// against a floor that rises with depth, rather than by the attention
-    /// model's threshold. It changes nothing the skip decides and nothing
-    /// about the amount. On in the default, off in the reference, and off it
-    /// the model's threshold is read as it was, which is what the bench
-    /// identity holds it to.
+    /// Whether the deep reduction's extra ply is decided by the move's
+    /// index against a floor that rises with depth rather than by the
+    /// attention model's threshold. Rides on `deep_reductions`.
     pub deep_index_rule: bool,
-    /// Whether a node orders its quiet moves by what other nodes have
-    /// learned: the killers for its distance from the root, and the history
-    /// table under them. Off in the reference, which keeps the pinned
-    /// reference tree the one alpha-beta and the capture ordering produce.
+    /// Whether a node orders its quiet moves by the killers and the history
+    /// table. Off in the reference, which keeps the pinned reference tree
+    /// the one alpha-beta and the capture ordering produce.
     ///
     /// Ordering rather than pruning, so under the reference the answer is
     /// the same either way and only the tree moves. Under the default a
     /// shortcut fires against the window the parent's search order
-    /// produced, so the default's move and score may move where the
-    /// reference's may not.
+    /// produced, so the default's move and score may move too.
     pub move_memory: bool,
     /// Whether the deepening loop opens each iteration from
-    /// `ASPIRATION_MIN_DEPTH` on at a window around the last one's score
-    /// rather than at the full one, widening the side that fails until the
-    /// score lands inside.
+    /// `ASPIRATION_MIN_DEPTH` on at a window around the last one's score,
+    /// widening the side that fails until the score lands inside.
     ///
-    /// Off in the reference. A window is a cost policy: it changes how
-    /// dearly a depth is reached rather than what the depth answers, so it
-    /// belongs on the measured side and the reference's pinned tree stays
-    /// the control the default's is read against. Nothing outside the
-    /// deepening loop reads it, so a search asked for a fixed depth opens
-    /// full whatever this says.
+    /// Off in the reference: a window changes how dearly a depth is reached
+    /// rather than what it answers, so the reference's pinned tree stays
+    /// the control. Only the deepening loop reads it, so a search asked for
+    /// a fixed depth opens full.
     pub aspiration: bool,
 }
 
@@ -462,15 +373,13 @@ impl TaintPolicy {
 pub type TurnOff = fn(&mut SearchConfig);
 
 /// One switch or two that were named against `SearchConfig::SWITCHES`, and
-/// the configuration that turns them off. The fields are private and
-/// `SearchConfig::without` and `Ablation::and` are the only things that fill
-/// them, so a run handed one of these was handed names the table carries
-/// rather than words to look up and check for itself.
+/// the configuration that turns them off. The fields are private, so only
+/// `SearchConfig::without` and `Ablation::and` build one, and a run handed
+/// one was handed names the table carries.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub struct Ablation {
     name: &'static str,
-    /// The second switch of a pair, which is what a reading of how two
-    /// rules' savings combine turns off.
+    /// The second switch of a pair.
     also: Option<&'static str>,
     config: SearchConfig,
 }
@@ -487,9 +396,7 @@ impl Ablation {
     }
 
     /// This switch and another off together, or none when the other is the
-    /// same switch or either side is already a pair. The same switch twice
-    /// would be the single run under a pair's name. The configuration is
-    /// the other's setter folded over this one's, so the order the two were
+    /// same switch or either side is already a pair. The order the two were
     /// named in changes the header and nothing else.
     pub fn and(self, other: Ablation) -> Option<Ablation> {
         if self.also.is_some() || other.also.is_some() || self.name == other.name {
@@ -508,8 +415,7 @@ impl Ablation {
         })
     }
 
-    /// The default with its switch or its two off, the side a run reads the
-    /// default against.
+    /// The default with its switch or its two off.
     pub fn config(self) -> SearchConfig {
         self.config
     }
@@ -517,10 +423,8 @@ impl Ablation {
 
 impl SearchConfig {
     /// The switches a run may name, each beside the function that turns it
-    /// off. A name is refused against this table rather than given a command
-    /// line flag of its own, and a rule that becomes ablatable is one row
-    /// here plus one name in the guard below, both in this file. The order is
-    /// the field order.
+    /// off, in field order. A new switch is a row here and a name in
+    /// `_every_switch_is_named`.
     ///
     /// `taint` is not among them: it is a policy with four values rather
     /// than a switch, and `residuals` already takes it.
@@ -547,8 +451,8 @@ impl SearchConfig {
         ("aspiration", |config| config.aspiration = false),
     ];
 
-    /// The default with one switch off, which is the baseline side of an
-    /// effort run, or none for a name the table does not carry.
+    /// The default with one switch off, or none for a name the table does
+    /// not carry.
     pub fn without(name: &str) -> Option<Ablation> {
         let (name, turn_off) = Self::SWITCHES
             .into_iter()
@@ -584,9 +488,8 @@ impl SearchConfig {
         }
     }
 
-    /// The word the bench prints for what this configuration does with a
-    /// draw tainted score, and reads back with `with_taint`. The words are
-    /// the policies the graph history experiments compare.
+    /// The word the bench prints for the taint policy, and reads back with
+    /// `with_taint`.
     pub fn taint_word(self) -> &'static str {
         match self.taint {
             TaintPolicy::Refuse => "refuse",
@@ -597,9 +500,7 @@ impl SearchConfig {
     }
 
     /// The default with its taint policy set by word, or none for a word
-    /// that is no policy. The default rather than the reference, so the
-    /// word a bench's header prints names what it ran and can be handed
-    /// back to it.
+    /// that is no policy.
     pub fn with_taint(word: &str) -> Option<Self> {
         let taint = match word {
             "refuse" => TaintPolicy::Refuse,
@@ -617,19 +518,11 @@ impl SearchConfig {
 
 impl Default for SearchConfig {
     /// What the engine plays with: every shortcut on, the memories on, and
-    /// the table trusted behind the fifty move guard. The four taint
-    /// policies played each other and trusting won, at +48 ±23 over 308
-    /// games at 5+0.05, paid in shallower endgame search; the guard
-    /// cost nothing a match could see and covers the one regime where a
-    /// wrong cutoff provably loses. The shortcuts are guesses about the
-    /// tree rather than rules about a score, which is why the reference
-    /// keeps them off; the memories prune nothing and are off there only
-    /// so its tree stays the one the capture ordering produces.
-    ///
-    /// The pruning cuts nothing falsely on its own account: skipping a move
-    /// can only lower this node's answer, never raise it, and the lowered
-    /// answer travels as every bound does. What it risks is a good move
-    /// written off, which the threshold's band prices.
+    /// the table trusted behind the fifty move guard. Trusting tainted
+    /// scores beat refusing them by +48 ±23 over 308 games at 5+0.05
+    /// (286c60b); refusing paid in shallower endgame search. The guard cost
+    /// nothing a match could see and covers the one regime where a wrong
+    /// cutoff provably loses.
     fn default() -> Self {
         Self {
             taint: TaintPolicy::Rule50,
@@ -652,15 +545,12 @@ impl Default for SearchConfig {
 }
 
 /// A compile error when `SearchConfig` gains a field this does not name.
+/// The tests walk `SWITCHES`, which says nothing about a field the table
+/// never named.
 ///
-/// The table is walked by a test, which says nothing about a field the table
-/// never named: `late_move_count` shipped and was unnameable until this was
-/// written. Nothing here has a body to run, since naming every field
-/// without a rest pattern is the whole check.
-///
-/// A new field fails to match. Rustc offers to silence that with a `_`,
-/// which defeats the check: decide whether the field is a switch, give it a
-/// row in `SWITCHES` if it is, and name it here last either way.
+/// Rustc offers to silence a new field with a `_`, which defeats the
+/// check: decide whether the field is a switch, give it a row in `SWITCHES`
+/// if it is, and name it here either way.
 #[cfg(test)]
 const fn _every_switch_is_named(config: &SearchConfig) {
     let SearchConfig {
@@ -708,9 +598,8 @@ mod switches {
         assert_eq!(SearchConfig::without(""), None);
     }
 
-    /// Every setter of the table folded over the default is the reference, so
-    /// the two literals part company in the fourteen switches and in the
-    /// taint policy, which no row names and which this test overwrites.
+    /// Every setter folded over the default is the reference, less the
+    /// taint policy, which no row names.
     #[test]
     fn turning_every_switch_off_gives_the_reference() {
         let mut folded = SearchConfig::default();
@@ -722,10 +611,8 @@ mod switches {
     }
 
     /// Each row's name is the field its setter turns off, read out of the
-    /// derived `Debug` rather than out of the table. Every other test takes
-    /// the name from the table, so a row spelling `reverse_futilty` and
-    /// setting `reverse_futility` would pass all of them; this is what says a
-    /// name is a field's.
+    /// derived `Debug`. Every other test takes the name from the table, so
+    /// a misspelt row would pass all of them.
     #[test]
     fn every_switch_names_the_field_its_setter_turns_off() {
         for (switch, turn_off) in SearchConfig::SWITCHES {
@@ -774,8 +661,7 @@ mod switches {
 
     /// Where one switch is only asked under another, the pair with the outer
     /// one off searches as many nodes as the outer single, position by
-    /// position, and the inner one alone still moves the count. A reader of
-    /// a pair's matrix can skip these cells because this test holds them.
+    /// position, and the inner one alone still moves the count.
     #[test]
     fn a_rule_asked_only_under_another_has_no_site_with_that_one_off() {
         const DEPTH: u8 = 6;
@@ -832,27 +718,21 @@ mod switches {
 /// Which of a node's two bounds is still the one the root opened with,
 /// rather than a score a search returned. That is narrower than being a
 /// principal variation node: a node searched at an open window can have
-/// neither bit set, which is what the proof of a node whose beta is a
-/// returned score is, and a node at a zero window never has one.
+/// neither bit set, and a node at a zero window never has one.
 ///
 /// A bound the root opened with is one the tree under it has said nothing
-/// about, which is what the shortcuts and the late move reduction are
-/// refused on wherever beta is one: the principal variation exemption,
-/// written here rather than left to the mate window gates beside it. The
-/// shortcuts are refused at every open window as well, which `shortcuts`
-/// reads from the bounds rather than the bits.
-///
-/// Both bits at the root. Where they go from there is `child` and
-/// `alpha_raised` and nowhere else, so no call site spells the rule out
-/// for itself.
+/// about, so the shortcuts and the late move reduction are refused wherever
+/// beta is one: the principal variation exemption. The shortcuts are also
+/// refused at every open window, which `shortcuts` reads from the bounds.
+/// The bits change only in `child` and `alpha_raised`.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub(crate) struct RootBounds {
     pub(crate) alpha: bool,
     pub(crate) beta: bool,
 }
 
-/// The searches a node asks of a child, which is what the bits a child
-/// carries are keyed on.
+/// The searches a node asks of a child, which the bits a child carries are
+/// keyed on.
 #[derive(Clone, Copy)]
 enum ChildSearch {
     /// The node's first move, at the window as it stands.
@@ -881,10 +761,8 @@ impl RootBounds {
 
     /// What a child search carries. The first move and the proof take
     /// this node's window turned round, so they take these bits turned
-    /// round with it: the child's alpha is this node's beta negated, and
-    /// the other way about. The other three take a zero window, which is
-    /// this node's own question about alpha rather than the window the
-    /// root opened, so they take neither bound.
+    /// round with it. The other three take a zero window, which is this
+    /// node's own question about alpha, so they take neither bound.
     fn child(self, search: ChildSearch) -> Self {
         match search {
             ChildSearch::FirstMove | ChildSearch::Proof => Self {
@@ -895,9 +773,8 @@ impl RootBounds {
         }
     }
 
-    /// What a raise of alpha leaves. Alpha is a score a child returned
-    /// from there on, so its bit goes; beta is untouched, since a raised
-    /// alpha proves nothing about it.
+    /// What a raise of alpha leaves: alpha is a returned score from there
+    /// on, and beta is untouched.
     fn alpha_raised(self) -> Self {
         Self {
             alpha: false,
@@ -911,13 +788,11 @@ mod root_bounds {
     use super::{ChildSearch, RootBounds};
     use pretty_assertions::assert_eq;
 
-    /// Where the propagation rule lives is `child` and `alpha_raised`,
-    /// and this is what holds them to it. The bench cannot: at the full
-    /// window every bit the search reads is read beside a mate gate that
-    /// answers the same way, so a child handed the wrong bits moves no
-    /// node count. The bounds the cases start from are asymmetric for
-    /// the same reason, since a flip the wrong way round is invisible on
-    /// a pair that agree.
+    /// At a full window every bit the search reads sits beside a mate
+    /// gate that answers the same way, so the reference's pinned counts
+    /// cannot see a wrong bit and this is what holds the rule. The cases
+    /// start from asymmetric bounds because a flip the wrong way round is
+    /// invisible on a pair that agree.
     #[test]
     fn what_a_child_carries_and_what_a_raise_leaves() {
         let alpha_only = RootBounds {
@@ -955,26 +830,17 @@ mod root_bounds {
 /// The window the deepening loop opens an iteration at, and what a failed
 /// iteration widens it to.
 ///
-/// A deepening search knows roughly what the next iteration is worth: the
-/// last one's score. Two things come of opening around it. The first root
-/// move's own subtree is searched under bounds a search can reach instead
-/// of the mate edges, which is where most of the saving is; the later
-/// moves were already scouted at a zero window against the first move's
-/// score, since the first move always raised alpha at the full window. And
-/// where the first move comes back under the window, alpha stays at the
-/// window's floor rather than dropping to that score, so the moves after
-/// it are scouted against the tighter of the two. The price is an
-/// iteration whose score lands outside the window, which proves only a
-/// bound and has to be searched again wider.
-///
-/// A value of its own rather than a pair of scores in the loop, so the
-/// rule is a thing that can be tested without running a search.
+/// Opening around the last iteration's score searches the first root
+/// move's subtree under bounds a search can reach instead of the mate
+/// edges, which is where most of the saving is. The price is an iteration
+/// whose score lands outside the window, which proves only a bound and has
+/// to be searched again wider.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 struct Aspiration {
     alpha: Score,
     beta: Score,
-    /// The score the window is centred on, which each widening is measured
-    /// from. Meaningless where both sides are already at the edge.
+    /// The score each widening is measured from. Meaningless where both
+    /// sides are already at the edge.
     centre: Score,
     /// How often each side has failed. A side at `ASPIRATION_FAILURES` is
     /// at the edge and stays there.
@@ -1019,9 +885,8 @@ impl Aspiration {
     }
 
     /// The window after an iteration answered `bound` rather than a score
-    /// inside this one. Only the side that failed moves: the other proved
-    /// nothing, and widening both on every failure would reach the full
-    /// window in three failures where this takes six.
+    /// inside this one. Only the side that failed moves, since the other
+    /// proved nothing.
     fn widen(self, bound: ScoreBound) -> Self {
         match bound {
             ScoreBound::Upper => {
@@ -1050,13 +915,10 @@ impl Aspiration {
     /// failures: the width doubled once per failure, and the edge once the
     /// doublings are spent.
     ///
-    /// No clamp against the edge, because no width the sweep chooses from
-    /// can reach it. A centre the mate gate let through is inside the mate
-    /// window, so under thirty thousand, and the widest the doublings
-    /// reach is four times the width; a width of a few hundred still
-    /// leaves thousands of room. The arithmetic saturates rather than
-    /// wrapping, which is not a licence to set the width by the thousand:
-    /// a width that large wants the clamp back.
+    /// No clamp against the edge: a centre the mate gate let through is
+    /// under thirty thousand and the doublings reach four times the width.
+    /// A width in the thousands would want a clamp; the saturating
+    /// arithmetic only stops a wrap.
     fn below(centre: Score, failures: u8) -> Score {
         if failures >= ASPIRATION_FAILURES {
             return Self::FULL_ALPHA;
@@ -1083,8 +945,6 @@ mod aspiration {
     use super::{ASPIRATION_MIN_DEPTH, ASPIRATION_WIDTH, Aspiration, Score, ScoreBound};
     use pretty_assertions::assert_eq;
 
-    /// The width the whole schedule is written in, so a sweep that moves
-    /// the constant moves these cases with it.
     const W: Score = ASPIRATION_WIDTH;
     const AT: u8 = ASPIRATION_MIN_DEPTH;
 
@@ -1094,17 +954,13 @@ mod aspiration {
 
     #[test]
     fn the_window_a_depth_opens_at() {
-        // below the starting depth the score predicts the next one badly
-        // and the whole iteration costs less than one re-search deeper
         assert_eq!(Aspiration::open(Some(30), AT - 1), full());
-        // and with nothing to aim at there is no centre
         assert_eq!(Aspiration::open(None, AT + 4), full());
 
         let opened = Aspiration::open(Some(30), AT);
         assert_eq!((opened.alpha, opened.beta), (30 - W, 30 + W));
 
-        // a mate score is not a centipawn estimate, so a window round it
-        // would refuse the alternatives to the mate for nothing
+        // never around a mate score
         assert_eq!(Aspiration::open(Some(29_995), AT + 4), full());
         assert_eq!(Aspiration::open(Some(-29_995), AT + 4), full());
     }
@@ -1118,8 +974,7 @@ mod aspiration {
         let high = opened.widen(ScoreBound::Lower);
         assert_eq!((high.alpha, high.beta), (30 - W, 30 + 2 * W));
 
-        // and each doubling is measured from the centre, not from where
-        // the last one left the bound
+        // each doubling is measured from the centre, not from the last bound
         let twice = low.widen(ScoreBound::Upper);
         assert_eq!((twice.alpha, twice.beta), (30 - 4 * W, 30 + W));
     }
@@ -1131,15 +986,13 @@ mod aspiration {
             window = window.widen(ScoreBound::Upper);
         }
         assert_eq!(window.alpha, Aspiration::FULL_ALPHA);
-        // the other side is where it was opened: a fail low says nothing
-        // about beta
+        // a fail low says nothing about beta
         assert_eq!(window.beta, 30 + W);
 
         for _ in 0..3 {
             window = window.widen(ScoreBound::Lower);
         }
-        // both sides spent, which is the full window and where the
-        // widening stops
+        // both sides spent is the full window
         assert_eq!((window.alpha, window.beta), (full().alpha, full().beta));
     }
 }
@@ -1152,31 +1005,24 @@ pub struct AlphaBeta {
     selective_depth: u8,
     // search state
     /// What the search call under way may spend. The deepening loop hands
-    /// each iteration its own, which is how depth one runs with none.
+    /// each iteration its own.
     limits: Limits,
-    /// The node count at which the limits are looked at next, which the
-    /// limits themselves decide.
+    /// The node count at which the limits are looked at next.
     next_check: u64,
     /// The flag another thread sets to stop the search, or none while
-    /// nothing may. Armed by `SearchParameters::for_iteration` exactly as
-    /// the clock is, and written by `search_root` from its signature, so a
-    /// search asked directly for a depth never reads one.
+    /// nothing may. Armed by `SearchParameters::for_iteration` as the clock
+    /// is, so a search asked directly for a depth never reads one.
     stop: Option<Arc<AtomicBool>>,
-    /// The nodes quiescence visited, a part of `nodes`. Counted for the
-    /// bench, which reports what share of the tree the captures are. Never
-    /// reset, like the ghi counters: the bench reads it from an engine made
-    /// for the one search.
+    /// The nodes quiescence visited, a part of `nodes`, for the bench. Never
+    /// reset: the bench reads it from an engine made for the one search.
     quiescence_nodes: u64,
-    /// The move ordering and its scratch buffer: one per engine, reused by
-    /// every node.
     ordering: MoveOrdering,
     /// The leaf terms' memos. Never cleared between searches: an entry is
-    /// read only against the key that wrote it, so what the last search
-    /// left is a warm start and not a stale answer.
+    /// read only against the key that wrote it.
     caches: eval::Caches,
     /// The residual sampler, or none, which is what every constructor
     /// builds. An engine with none takes no branch a search without a
-    /// sampler did not take, which is what the pinned node counts stand on.
+    /// sampler did not take, which the pinned node counts stand on.
     sampler: Option<Sampler<Sample>>,
     /// The cutoff census's reservoir, or none, on the sampler's terms.
     census: Option<Sampler<census::Event>>,
@@ -1184,21 +1030,17 @@ pub struct AlphaBeta {
     ledger: Option<Sampler<reduction::Event>>,
     /// The effort instrument's reservoir, or none, on the same terms.
     effort: Option<Sampler<effort::Event>>,
-    /// Every event the effort instrument has been offered, by depth. Beside
-    /// its reservoir rather than inside it because the reservoir holds a
-    /// sample and this counts the population. Bumped only behind the
-    /// reservoir's own check, so an engine that was never armed counts
-    /// nothing.
+    /// Every event the effort instrument has been offered, by depth: the
+    /// population its reservoir samples. Bumped only when the reservoir is
+    /// armed.
     effort_depths: effort::Depths,
 }
 
-/// What a search can be armed to record: the residual's sample, the cutoff
-/// census's event, the reduction ledger's or the effort instrument's.
-/// Implemented here rather than beside the event types because what each
-/// names is a field of the engine.
+/// What a search can be armed to record. Implemented here rather than
+/// beside the event types because each names a field of the engine.
 pub(crate) trait Recorded: Sized {
-    /// What the shared recording loop calls a run of this kind, which is
-    /// how it names a position it cannot read.
+    /// What the shared recording loop calls a run of this kind when a
+    /// position does not parse.
     const WHAT: &'static str;
 
     /// The engine's slot for a reservoir of this kind.
@@ -1242,14 +1084,10 @@ impl AlphaBeta {
         Self::with_config(board, bytes, SearchConfig::default())
     }
 
-    /// An engine searching under the policies given, with a table of the
-    /// size given.
     pub fn with_config(board: Board, bytes: usize, config: SearchConfig) -> Self {
         Self::with_table(board, TranspositionTable::of_bytes(bytes), config)
     }
 
-    /// The table itself rather than a size, which is the one thing a
-    /// session's engine and a named size's engine differ in.
     fn with_table(board: Board, transpositions: TranspositionTable, config: SearchConfig) -> Self {
         Self {
             board,
@@ -1272,17 +1110,16 @@ impl AlphaBeta {
     }
 
     /// Arm a reservoir: have the search record what it does at the nodes
-    /// the reservoir's key picks. Off until this is called; the callers are
-    /// the four recorders and the tests, and nothing the engine plays or
-    /// benches with arms one.
+    /// the reservoir's key picks. Nothing the engine plays or benches with
+    /// arms one.
     pub(crate) fn arm<T: Recorded>(&mut self, sampler: Sampler<T>) {
         *T::slot(self) = Some(sampler);
     }
 
     /// The reservoir back with everything it collected, leaving the engine
     /// recording nothing. None from an engine that was never armed. Handed
-    /// back rather than emptied in place, so one reservoir can be carried
-    /// across a run of searches with its cap describing the whole run.
+    /// back so one reservoir can be carried across a run of searches with
+    /// its cap describing the whole run.
     pub(crate) fn disarm<T: Recorded>(&mut self) -> Option<Sampler<T>> {
         T::slot(self).take()
     }
@@ -1290,8 +1127,7 @@ impl AlphaBeta {
     /// What the node knew about a move at the gate, gathered for a
     /// ledger row: the staged half of a scouted event, and the whole of
     /// a skipped one.
-    // cold and out of line behind a bare is_some, as `sample` is and for
-    // `sample`'s measured reason.
+    // cold and out of line behind a bare is_some, for `sample`'s reason
     #[cold]
     #[inline(never)]
     fn staged_reduction(
@@ -1307,9 +1143,8 @@ impl AlphaBeta {
     }
 
     /// The three references the late move decision reads the search
-    /// through. Built at the call and nowhere held, so the borrow ends
-    /// with the question and the move loop can hand the board straight on
-    /// to `search_child`.
+    /// through. Built at the call and never held, so the borrow ends with
+    /// the question.
     fn deciding(&self) -> late_move::Search<'_> {
         late_move::Search {
             board: &self.board,
@@ -1318,20 +1153,15 @@ impl AlphaBeta {
         }
     }
 
-    /// A skipped move offered to the ledger: the third outcome, with no
-    /// scout behind it. The search never makes a skipped move, so its
-    /// legality is unknown at the decision; it is made and unmade around
-    /// the record alone, and one that turns out illegal is not recorded,
-    /// since the skip denied it nothing. The fen and the sampling key are
-    /// the position the move leaves, as for a scouted move, so the replay
-    /// reads a skipped row as it reads a low one. The searched count is one
-    /// past the index, as on a scouted row: it is the attention model's
-    /// feature, which the model's own skips read.
+    /// A skipped move offered to the ledger, with no scout behind it. The
+    /// search never makes a skipped move, so it is made and unmade around
+    /// the record alone, and one that turns out illegal is not recorded.
+    /// The fen and the sampling key are the position the move leaves, as
+    /// for a scouted move, so the replay reads a skipped row as it reads a
+    /// low one.
     #[cold]
     #[inline(never)]
     fn ledger_skip(&mut self, staged: reduction::Staged, depth: u8, alpha: Score, beta: Score) {
-        // the fields are borrowed apart rather than through `self`, for
-        // `ledger_event`'s reason
         let board = &mut self.board;
         let Some(ledger) = self.ledger.as_mut() else {
             return;
@@ -1342,8 +1172,7 @@ impl AlphaBeta {
         let key = reduction::sample_key(board.key, depth);
         ledger.event(key, || {
             let fen = board.to_fen();
-            // the node's own eval, by stepping back and replaying: undo and
-            // make are exact inverses, which the debug builds assert
+            // the node's own eval, by stepping back and replaying
             board.undo_move();
             let eval = i32::from(crate::eval::eval(board));
             assert!(
@@ -1398,8 +1227,6 @@ impl AlphaBeta {
         let key = reduction::sample_key(board.key, depth);
         ledger.event(key, || {
             let fen = board.to_fen();
-            // undo and make are exact inverses, which the debug builds
-            // assert
             board.undo_move();
             let eval = i32::from(crate::eval::eval(board));
             assert!(
@@ -1432,16 +1259,13 @@ impl AlphaBeta {
     }
 
     /// One node answering out of the move loop, offered to the census:
-    /// which move cut it off and what it cut ahead of, or the same portrait
-    /// with no cutting move when the loop ran out.
+    /// which move cut it off, or none when the loop ran out.
     ///
-    /// `cutting` is none for a held node. The killers and the history are
-    /// read before `cutoff` teaches them the move, so a row says what the
-    /// node knew when it chose. The evaluation is computed inside the
-    /// closure, for kept events alone: exact rather than a cache read, and
-    /// off the measured path.
-    // cold and out of line behind a bare is_some at each call site, for
-    // `sample`'s measured reason
+    /// The killers and the history are read before `cutoff` teaches them
+    /// the move, so a row says what the node knew when it chose. The
+    /// evaluation is computed only for kept events, exact rather than a
+    /// cache read.
+    // cold and out of line behind a bare is_some, for `sample`'s reason
     #[cold]
     #[inline(never)]
     #[allow(clippy::too_many_arguments)]
@@ -1507,8 +1331,7 @@ impl AlphaBeta {
         });
     }
 
-    /// What the effort instrument has counted by depth. Read after a
-    /// search and before the next engine, since a run totals its positions.
+    /// What the effort instrument has counted by depth.
     pub(crate) fn effort_tally(&self) -> &effort::Depths {
         &self.effort_depths
     }
@@ -1516,13 +1339,10 @@ impl AlphaBeta {
     /// One node of the move loop answering, offered to the effort
     /// instrument's reservoir and counted in its per depth tally.
     ///
-    /// The tally is bumped in front of the key test, where `Sampler::event`
-    /// bumps `events`, so a rate rejection is still an event and the node
-    /// counts a run reports do not move with `every`. The fen is built
-    /// inside the closure, so an event the key turns away costs a hash and
-    /// nothing else.
-    // cold and out of line behind a bare is_some at each call site, for
-    // `sample`'s measured reason
+    /// The tally is bumped in front of the key test, as `Sampler::event`
+    /// bumps `events`, so the counts a run reports do not move with
+    /// `every`.
+    // cold and out of line behind a bare is_some, for `sample`'s reason
     #[cold]
     #[inline(never)]
     fn effort_event(&mut self, depth: u8, cut: bool, entered_at: u64) {
@@ -1549,15 +1369,12 @@ impl AlphaBeta {
     }
 
     /// One node a shortcut has just answered, or a shadow candidate it was
-    /// measured against, offered to the sampler. The fen is built inside
-    /// the closure, so an event the key turns away costs a hash and nothing
-    /// else. The evaluation is passed in rather than taken again, so a row
-    /// states the number the gate really read.
+    /// measured against, offered to the sampler. The evaluation is passed
+    /// in, so a row states the number the gate read.
     // cold and out of line, behind a bare is_some at each call site:
-    // inlining the sample body grew alpha_beta enough to move other code,
-    // and the moved jump tables aliased in the branch predictor for half a
-    // million extra mispredicts on a bench 5, counted with callgrind. The
-    // option check is all the hot path keeps.
+    // inlined, the body grew alpha_beta enough that moved jump tables
+    // aliased in the branch predictor, for half a million extra mispredicts
+    // on a bench 5 under callgrind (6e8842a).
     #[cold]
     #[inline(never)]
     fn sample(
@@ -1573,8 +1390,6 @@ impl AlphaBeta {
         let Some(sampler) = self.sampler.as_mut() else {
             return;
         };
-        // the guard stays here as well as at the call sites, so an engine
-        // with no sampler pays for no hash whoever calls
         let key = crate::residual::sample_key(board.key, kind, depth);
         sampler.event(key, || Sample {
             fen: board.to_fen(),
@@ -1589,17 +1404,15 @@ impl AlphaBeta {
     }
 
     /// The score at this node, with the memoised terms read from the
-    /// engine's caches. `&mut self` for the memos alone: the score is the
-    /// one `eval::eval` gives.
+    /// engine's caches. The score is the one `eval::eval` gives.
     fn eval(&mut self) -> Score {
         crate::eval::eval_cached(&self.board, &mut self.caches)
     }
 
     /// The ply the quiet memories are indexed by at this node, or none when
-    /// the configuration has them off or the ply is past the killer table.
-    /// The rail stops every line inside the table, so the second test never
-    /// fires in a search; it is what makes the index safe here rather than
-    /// at every caller.
+    /// the configuration has them off or the ply is past the table. The
+    /// rail keeps every line inside the table; the second test makes the
+    /// index safe here rather than at every caller.
     fn memory_ply(&self) -> Option<usize> {
         if !self.config.move_memory {
             return None;
@@ -1626,9 +1439,8 @@ impl AlphaBeta {
         }
     }
 
-    /// Whether a result may be stored under the taint policy. A tainted
-    /// one that may not be is counted as skipped, so the policy's cost is
-    /// a figure rather than an absence.
+    /// Whether a result may be stored under the taint policy. A refused
+    /// store is counted as skipped.
     fn keeps(&mut self, value: Value) -> bool {
         if value.tainted && !self.config.taint.stores_tainted() {
             self.transpositions.count_skipped_store();
@@ -1647,25 +1459,19 @@ impl AlphaBeta {
         self.transpositions.bytes()
     }
 
-    /// The policies this engine searches under. Asked by the residuals
-    /// replay's tests, which have to say the search answering the sampled
-    /// positions is the reference and not the default.
     pub fn config(&self) -> SearchConfig {
         self.config
     }
 
     /// How much of the search's use of the transposition table depended on
-    /// the path taken rather than on the position: see the graph history
-    /// notes on the counters.
+    /// the path taken rather than on the position.
     pub fn ghi(&self) -> GhiCounters {
         self.transpositions.ghi()
     }
 
-    /// Have the table keep the full key of every entry, so what its thirty
-    /// two bit signature costs can be counted: see
-    /// `TranspositionTable::audit_signatures`. The search is the same
-    /// either way, and the table starts empty. False if there was not the
-    /// memory for the keys, in which case nothing is counted.
+    /// Have the table keep the full key of every entry: see
+    /// `TranspositionTable::audit_signatures`. False if there was not the
+    /// memory for the keys.
     #[must_use]
     pub fn audit_signatures(&mut self) -> bool {
         self.transpositions.audit_signatures()
@@ -1683,10 +1489,9 @@ impl AlphaBeta {
         self.quiescence_nodes
     }
 
-    /// Cooperative limit check. The limits say when to look at them again:
-    /// every few thousand nodes for the clock, and the node budget itself,
-    /// exactly. The count is incremented after this is asked, so a budget
-    /// of n is n nodes visited.
+    /// Cooperative limit check. The limits say when to look at them again.
+    /// The count is incremented after this is asked, so a budget of n is n
+    /// nodes visited.
     fn poll_deadline(&mut self) -> Result<(), Aborted> {
         if self.nodes < self.next_check {
             return Ok(());
@@ -1694,18 +1499,16 @@ impl AlphaBeta {
         self.check_limits()
     }
 
-    /// The slow half of `poll_deadline`: reading the clock and arming the
-    /// next check happen once in thousands of nodes, and inlined at every
-    /// poll they only made the hot loop larger.
+    /// The slow half of `poll_deadline`, out of line because it runs once
+    /// in thousands of nodes.
     #[cold]
     #[inline(never)]
     fn check_limits(&mut self) -> Result<(), Aborted> {
         if self.limits.expired(self.nodes) {
             return Err(Aborted);
         }
-        // relaxed: the flag is the whole of what the two threads share, so
-        // there is nothing to order it against, and a few thousand nodes
-        // of latency is well under what an interface can notice
+        // relaxed: the flag is all the two threads share, so there is
+        // nothing to order it against
         if self
             .stop
             .as_ref()
@@ -1728,14 +1531,10 @@ impl AlphaBeta {
     }
 
     /// What a capture search makes of the position this engine holds, over
-    /// the open window and under no limits, so what comes back is a value
-    /// and the search cannot be interrupted. Whether the shortcuts inside
-    /// it are on is the engine's configuration.
-    ///
-    /// A door for the laboratory, not the search: the tuner's quiet test
-    /// keeps a position when this comes back at the static evaluation.
-    /// `quiescence` itself stays private, because a caller free to choose
-    /// the window could be handed a bound and read it as a value.
+    /// the open window and under no limits, so what comes back is a value.
+    /// For the tuner's quiet test. `quiescence` itself stays private,
+    /// because a caller free to choose the window could read a bound as a
+    /// value.
     pub(crate) fn quiescence_value(&mut self) -> Score {
         self.limits = Limits::unlimited();
         self.stop = None;
@@ -1761,14 +1560,12 @@ impl AlphaBeta {
         self.nodes += 1;
         self.quiescence_nodes += 1;
 
-        // standing pat is declining to move, which a side in check cannot,
-        // so its static eval is no floor. The full search never enters here
-        // in check (the extension searches those nodes full width), so a
-        // check seen here was delivered by a capture searched here.
-        // fail soft: what leaves is the best score seen, not the window edge
+        // a side in check cannot stand pat, so its static eval is no floor.
+        // The full search never enters here in check (the extension
+        // searches those nodes full width), so a check seen here was
+        // delivered by a capture searched here. Fail soft.
         let mut best = Score::MIN + 1;
         let in_check = self.board.in_check();
-        // none in check, which is what exempts evasions from the margin below
         let standing = if in_check { None } else { Some(self.eval()) };
         if let Some(score) = standing {
             if score >= beta {
@@ -1801,15 +1598,13 @@ impl AlphaBeta {
         } else {
             self.board.generate_captures()
         };
-        // the delta test at the alpha the loop starts from, taken before the
-        // order prices every capture with the swap. Alpha only rises in the
-        // loop, so the loop would skip each capture dropped here, and it
-        // keeps its own test for those that fall short as alpha rises. Two
-        // cases would not match the loop, and are left to it. Under a mate
-        // beta a mating capture can lift alpha into the mate window, and the
-        // loop then searches every capture. A list that spills the buffer is
-        // ordered with no front, so the swap skips nothing there, and
-        // shortening it could bring the skip back
+        // the delta test at the starting alpha, before the order prices
+        // each capture with the swap. Alpha only rises, so the loop would
+        // skip every capture dropped here. Two cases are left to the loop
+        // because filtering them would change the search: under a mate beta
+        // a mating capture can lift alpha into the mate window, after which
+        // the loop searches every capture, and a list that spills the
+        // buffer is ordered with no losing band (`MoveOrdering::order`)
         if let Some(standing) = standing {
             if self.config.delta_margin
                 && !is_mate(alpha)
@@ -1824,27 +1619,21 @@ impl AlphaBeta {
                 });
             }
         }
-        // no memories here: they say nothing about captures or evasions.
-        // `front` is the table's move and the captures the swap prices as
-        // winning or even; every capture behind it is a losing one. Read
-        // now, because the sort's keys do not survive the recursion below
+        // no memories here: they say nothing about captures or evasions
         let Ordered { front, .. } = self.ordering.order(&self.board, &mut moves, pv_play, None);
 
-        // quiescence never reads a draw itself, but a search trusting
+        // quiescence never reads a draw itself, but a probe trusting
         // tainted scores can cut on one inside a capture tree
         let mut taint = Taint::default();
         let mut found_legal_move = false;
         for (i, m) in moves.iter().enumerate() {
-            // two skips the reference does not make, under one set of
-            // exemptions. A promotion is exempt because the swap prices the
-            // arriving piece as the pawn that left. An evasion is exempt
-            // because a side in check has no standing eval to measure from.
-            // A mate window alpha is exempt because a static eval cannot
-            // come near it, so the margin's arithmetic would skip every
-            // capture, the mating one included; the stand pat lifts alpha
-            // to the eval, so alpha is inside the window only when it
-            // arrived there positive, a mate already in hand. A sacrifice
-            // that would find a first mate, with alpha nowhere near one, is
+            // two skips the reference does not make. A promotion is exempt
+            // because the swap prices the arriving piece as the pawn that
+            // left, and an evasion because a side in check has no standing
+            // eval. A mate window alpha is exempt because the margin's
+            // arithmetic would skip every capture, the mating one included;
+            // after the stand pat, alpha is in the window only with a mate
+            // already in hand. A sacrifice that would find a first mate is
             // skipped like any other losing capture
             if let (Some(standing), Some(captured)) = (standing, m.capture) {
                 if !is_mate(alpha) && m.promote.is_none() {
@@ -1852,8 +1641,7 @@ impl AlphaBeta {
                         continue;
                     }
                     // every capture behind the front is one the swap priced
-                    // as losing, so the class is read off the order rather
-                    // than from a second swap
+                    // as losing
                     if self.config.see_pruning && i >= front {
                         continue;
                     }
@@ -1861,8 +1649,7 @@ impl AlphaBeta {
             }
             if self.board.make_move(m) {
                 found_legal_move = true;
-                // undo before an abort can propagate, or the board would keep
-                // the aborted line
+                // undo before an abort can propagate
                 let result = self.quiescence(-beta, -alpha);
                 self.board.undo_move();
                 let value = -result?;
@@ -1886,8 +1673,6 @@ impl AlphaBeta {
         }
 
         if in_check && !found_legal_move {
-            // checkmate at the end of a capture sequence, scored as the full
-            // search scores one
             return Ok(Value::mated(self.board.line_ply));
         }
 
@@ -1906,42 +1691,31 @@ impl AlphaBeta {
     }
 
     /// What can answer a full width node before a move of it is searched:
-    /// the margin, then the pass. Each claims the position already stands
-    /// above beta, the margin from the static eval alone and the pass from
-    /// a reduced search, which is dearer and reaches where a margin cannot.
-    /// Nothing is stored on either: an entry names the play it was reached
-    /// by, and no move was searched here.
+    /// reverse futility, then the null move. Each claims the position
+    /// already stands above beta, the margin from the static eval alone and
+    /// the pass from a reduced search. Nothing is stored on either: an entry
+    /// names the play it was reached by, and no move was searched here.
     ///
-    /// Both rest on quiescence's standing pat: the side to move need not
-    /// make things worse, so its static eval is a floor. The three shared
-    /// gates are where that floor gives way. A side in check cannot decline
-    /// to move. A side down to pawns and a king is the material zugzwang
-    /// happens to. And a beta inside the mate window is cleared by every
-    /// eval, so a cutoff against one would leave a faster mate unsearched;
-    /// the positive half of that gate is redundant while material bounds
-    /// the eval, and stands in case the eval grows terms that reach higher.
-    /// A fourth gate stands beside them: a beta that is still the root's
-    /// own bound, which `root_bounds` says, or an open window. Nothing has
-    /// claimed the root's bound, so there is nothing here for the node to
-    /// stand above, and an open window asks for the node's score rather
-    /// than a bound on it. The bit alone leaves the proof after a probe
-    /// fails high open to both shortcuts at every other ply, since it takes
-    /// the window turned round with its beta bit clear. The reductions and
-    /// the shallow rules still read the bit alone: exempting every open
-    /// window from them as well measured a loss.
+    /// Both rest on the static eval being a floor, which gives way in four
+    /// gates. A side in check cannot decline to move. A side down to pawns
+    /// and a king is where zugzwang happens. A beta inside the mate window
+    /// is cleared by every eval, so a cutoff against one would leave a
+    /// faster mate unsearched (the positive half is redundant while
+    /// material bounds the eval, and kept in case the eval grows terms that
+    /// reach higher). And a beta that is still the root's own bound, or an
+    /// open window, has had nothing claimed of it to stand above: an open
+    /// window asks for the node's score rather than a bound on it. The bit
+    /// alone would leave the proof after a probe fails high open to both
+    /// shortcuts, since it takes the window turned round with its beta bit
+    /// clear. The reductions and the shallow rules still read the bit alone:
+    /// exempting every open window from them as well measured a loss.
     ///
     /// A `Some` answers the node. A pass that failed answers nothing but
     /// leaves whatever it read in the node's taint.
     ///
-    /// `eval` is filled wherever the gates passed and an evaluation was
-    /// read, fired or not, so the move loop can seed the memo the late move
-    /// decision reads and a node this answered nothing at evaluates once
-    /// rather than twice. It is the same score `eval::eval` gives, through
-    /// the memoised door.
-    ///
-    /// Alpha is read by neither shortcut, and nor is its bit. Alpha is
-    /// here for the open window and for the sampler, which records the
-    /// window the node was asked under.
+    /// `eval_memo` is filled wherever the gates passed and an evaluation
+    /// was read, fired or not, so the move loop does not evaluate twice.
+    /// Alpha is read only for the open window and by the sampler.
     // two arguments past clippy's limit: the root bounds and the evaluation
     // handed back to the loop.
     #[allow(clippy::too_many_arguments)]
@@ -1959,9 +1733,8 @@ impl AlphaBeta {
         let margin = self.config.reverse_futility && depth <= REVERSE_FUTILITY_MAX_DEPTH;
         // no pass directly under a pass, or the search would answer a
         // position from a line neither side moved in. Unreachable while the
-        // eval gate below stands (a node passes only with its eval at or
-        // above beta, and the window and the eval turn round under it) and
-        // kept for the day that gate is dropped or given a margin
+        // eval gate below stands (the window and the eval turn round under a
+        // pass), and kept for the day that gate is dropped or given a margin
         let pass = self.config.null_move && can_null && depth >= NULL_MOVE_MIN_DEPTH;
         if (!margin && !pass)
             || in_check
@@ -1977,14 +1750,12 @@ impl AlphaBeta {
         let eval = self.eval();
         *eval_memo = Some(i64::from(eval));
 
-        // what the margin proves is a lower bound, `eval - margin`, and fail
-        // soft returns that rather than beta or the whole eval, which
-        // nothing here argues for. Clean: a static eval consulted no path
+        // the margin proves `eval - margin` as a lower bound, and fail soft
+        // returns that. Clean: a static eval consulted no path
         if margin {
             let floor = eval.saturating_sub(REVERSE_FUTILITY_MARGIN * depth as Score);
-            // the shadow row: every candidate the margin test reads, fired
-            // or not, since the fired rows alone say nothing about the
-            // region a tighter margin would newly fire on
+            // the shadow row: every candidate, fired or not, since the fired
+            // rows say nothing about where a tighter margin would fire
             if self.sampler.is_some() && eval >= beta {
                 self.sample(Shortcut::ShadowFutility, depth, floor, alpha, beta, eval);
             }
@@ -1996,9 +1767,7 @@ impl AlphaBeta {
             }
         }
 
-        // the pass spends a reduced search, so it is asked for only with
-        // the eval already above beta, and over a zero window: the question
-        // is only whether a pass beats beta
+        // a zero window: the question is only whether a pass beats beta
         if pass && eval >= beta {
             let reduction = null_move_reduction(self.config, depth, eval - beta);
             self.board.make_null_move();
@@ -2009,37 +1778,30 @@ impl AlphaBeta {
                 false,
                 root_bounds.child(ChildSearch::Pass),
             );
-            // undo before an abort can propagate, or the board would keep
-            // the passed line
+            // undo before an abort can propagate
             self.board.undo_null_move();
             let value = -result?;
             if value.score >= beta {
-                // a mate found through a pass is not a mate: the pass is
-                // not a move either side has, so what was proved is that
-                // the position is very good, and the score is held under
-                // the window a caller reads mates in
+                // a mate found through a pass is not a mate, since the pass
+                // is not a legal move, so the score is held under the window
+                // a caller reads mates in
                 let score = below_the_mate_window(value.score);
-                // the board is back from the pass, so the fen the sampler
-                // prints is the node itself
                 if self.sampler.is_some() {
                     self.sample(Shortcut::NullMove, depth, score, alpha, beta, eval);
                 }
                 return Ok(Some(Value::with_taint(score, value.tainted)));
             }
-            // a pass that failed still read whatever it read on the way
             taint.absorb(value);
         }
         Ok(None)
     }
 
     /// One child of a full width node, or nothing when the move is not
-    /// legal here. The undo comes before the abort can propagate, or the
-    /// board would keep the aborted line; propagating is what keeps an
-    /// aborted frame's meaningless score away from every store above. Every
-    /// child of the full width search enters through here, so the window
-    /// discipline in `windowed` is written once; `reduction` is how many
-    /// plies shallower the scout runs, zero for no scout, and `staged` is
-    /// what the ledger has about the move, or nothing.
+    /// legal here. The undo comes before the abort propagates; propagating
+    /// is what keeps an aborted frame's meaningless score away from every
+    /// store above. `reduction` is how many plies shallower the scout runs,
+    /// zero for no scout, and `staged` is what the ledger has about the
+    /// move, or nothing.
     // two arguments past clippy's limit: the staging travelling as a
     // parameter rather than as a field of the engine, and the root bounds.
     #[inline(always)]
@@ -2076,10 +1838,6 @@ impl AlphaBeta {
     /// fails high goes on to the probe and the proof as an unreduced move
     /// does.
     ///
-    /// The root bounds travel with the windows, so each of the three
-    /// searches asks `RootBounds::child` what it carries rather than
-    /// saying so here.
-    ///
     /// A body of its own rather than `search_child`'s so that an abort from
     /// any pass runs through the one undo there.
     #[allow(clippy::too_many_arguments)]
@@ -2105,11 +1863,8 @@ impl AlphaBeta {
         }
         let mut tainted = false;
         if reduction > 0 {
-            // the floors on the two reductions keep a full width ply under
-            // the scout, so the subtraction below never wraps
+            // `late_move::amount` clamps the reduction to `depth - 2`
             debug_assert!(depth > reduction + 1, "the scout would be quiescence");
-            // what the scout's cost is measured from: a read of a field,
-            // no branch, so the disarmed search is unchanged
             let entered_at = self.nodes;
             let scout = -self.alpha_beta(
                 -alpha - 1,
@@ -2132,8 +1887,8 @@ impl AlphaBeta {
             if scout.score <= alpha {
                 return Ok(scout);
             }
-            // the scout's fail high asked for the full depth, so whatever
-            // it depended on, the passes below do too
+            // the scout's fail high asked for the searches below, so they
+            // carry its taint
             tainted = scout.tainted;
         }
         let probe = -self.alpha_beta(
@@ -2144,9 +1899,7 @@ impl AlphaBeta {
             root_bounds.child(ChildSearch::Probe),
         )?;
         // `alpha + 1 >= beta` is the zero window, spelt without the
-        // subtraction: `beta - alpha` overflows a Score at the full window,
-        // which is what the root opens at below the aspiration depth and
-        // wherever its window has widened to the edge
+        // subtraction: `beta - alpha` overflows a Score at the full window
         if probe.score <= alpha || alpha + 1 >= beta {
             return Ok(Value::with_taint(probe.score, probe.tainted || tainted));
         }
@@ -2157,8 +1910,6 @@ impl AlphaBeta {
             true,
             root_bounds.child(ChildSearch::Proof),
         )?;
-        // the probe's fail high asked for the proof, so the proof depends
-        // on whatever the probe did
         Ok(Value::with_taint(
             proof.score,
             proof.tainted || probe.tainted || tainted,
@@ -2167,12 +1918,10 @@ impl AlphaBeta {
 
     /// A fail high at a full width node: the move that proved it goes to
     /// the quiet memories with the moves the node searched before it and,
-    /// when the taint policy allows, to the table. The one place a full
-    /// width cutoff is acted on.
+    /// when the taint policy allows, to the table.
     ///
-    /// `tried` is the moves the node searched, not the whole list: what the
-    /// history marks down is what the node asked and got nothing from. The
-    /// captures among them are the memories' to pass over.
+    /// `tried` is the moves the node searched, not the whole list: the
+    /// history marks down what the node asked and got nothing from.
     fn cutoff<'a>(
         &mut self,
         m: &Play,
@@ -2191,15 +1940,8 @@ impl AlphaBeta {
     }
 
     /// One full width node. `can_null` is false only directly under a
-    /// pass: a position neither side has moved in is not one a reduced
-    /// search says anything about. A parameter rather than a field toggled
-    /// around the call, so reading the recursion says which nodes may pass.
-    ///
-    /// `root_bounds` says which of the two bounds handed in is still the
-    /// root's own, which is what stands the shortcuts and the reduction
-    /// down on the principal variation. Carried the same way and for the
-    /// same reason: a register per node rather than a field written and
-    /// read back around every child.
+    /// pass. `root_bounds` says which of the two bounds handed in is still
+    /// the root's own.
     #[allow(clippy::too_many_lines)]
     fn alpha_beta(
         &mut self,
@@ -2212,18 +1954,15 @@ impl AlphaBeta {
         self.poll_deadline()?;
         self.selective_depth = self.selective_depth.max(self.board.line_ply as u8);
         self.nodes += 1;
-        // what the census's cost column is measured from; read
-        // unconditionally so the disarmed search is unchanged
         let entered_at = self.nodes;
 
         // every node here sits below the root, so a repetition is a draw
         // either side can take; at the root the engine still has to move
         let in_check = self.board.in_check();
         if self.board.fifty_move_expired() {
-            // a mate delivered by the hundredth half move is a mate: the
-            // game ends on it before the side mated can claim the draw. Not
-            // asked of a repetition, which cannot be a mate (the position
-            // would have ended the game the first time it came up)
+            // a mate delivered by the hundredth half move is a mate. A
+            // repeated position cannot be one: it would have ended the game
+            // the first time it came up
             if in_check && !self.board.has_legal_move() {
                 return Ok(Value::mated(self.board.line_ply));
             }
@@ -2234,19 +1973,15 @@ impl AlphaBeta {
         if self.board.has_repeated() {
             return Ok(Value::tainted(0));
         }
-        // the check extension holds a node's depth where it was, and a line
-        // of checks that keeps capturing and never repeats is ended by
-        // neither draw rule, so the rail ends it here, before the ring a
-        // repetition is read from and the ply a mate score stops being told
-        // from an eval by. The answer is quiescence's at its own rail: a
-        // static eval, clean because it consulted no path. It gives up the
-        // mate a node standing here may be in
+        // a line of checks that keeps capturing is ended by neither draw
+        // rule nor depth, since the extension holds the depth, so the rail
+        // ends it. A static eval, clean because it consulted no path; it
+        // gives up the mate a node standing here may be in
         if self.board.line_ply >= MAX_PLY as usize {
             return Ok(Value::clean(self.eval()));
         }
 
-        // mate distance pruning bounds the window by the fastest mate either
-        // side can reach from this ply
+        // mate distance pruning
         let (mut alpha, beta) = match mate_distance_window(alpha, beta, self.board.line_ply) {
             MateDistanceWindow::Open { alpha, beta } => (alpha, beta),
             // clean: how far a mate can be from here is a property of the
@@ -2266,8 +2001,7 @@ impl AlphaBeta {
         let old_alpha = alpha;
         let mut found_legal_move = false;
         let mut best_move: Option<Play> = None;
-        // fail soft, as in quiescence: a cutoff stores the best score seen,
-        // a floor at least as tight as beta
+        // fail soft, as in quiescence
         let mut best = Score::MIN + 1;
         let pv_play = match self.transpositions.probe(
             &self.board,
@@ -2282,9 +2016,8 @@ impl AlphaBeta {
             Probe::Miss => None,
         };
 
-        // the node's static evaluation, read by the shortcuts and seeded
-        // into the late move decision's memo below rather than read a
-        // second time there. Declared here so the shortcuts can fill it
+        // the node's static evaluation, filled by the shortcuts and read by
+        // the late move decision
         let mut eval: Option<i64> = None;
         if let Some(value) = self.shortcuts(
             alpha,
@@ -2299,10 +2032,9 @@ impl AlphaBeta {
             return Ok(value);
         }
 
-        // the table's move sorts ahead of everything else, and when there
-        // is one it takes the cutoff nine times in ten, so it is searched
-        // before the rest are generated: the nodes it cuts never generate
-        // or sort at all, and the tree searched is unchanged
+        // the table's move sorts ahead of everything else, so it is searched
+        // before the rest are generated: the nodes it cuts never generate or
+        // sort at all, and the tree searched is unchanged
         let mut tt_tried: Option<Play> = None;
         if let Some(tt) = pv_play {
             if self.board.is_pseudo_legal(&tt) {
@@ -2319,8 +2051,7 @@ impl AlphaBeta {
                     }
                     if tt_score > alpha {
                         if tt_score >= beta {
-                            // before the cutoff teaches the memories; the
-                            // list is empty because nothing was generated
+                            // before the cutoff teaches the memories
                             if self.census.is_some() {
                                 self.census_event(
                                     depth,
@@ -2343,22 +2074,15 @@ impl AlphaBeta {
                             if self.effort.is_some() {
                                 self.effort_event(depth, true, entered_at);
                             }
-                            // the table's move earns its killer slot as any
-                            // other cutting move does; nothing was searched
-                            // before it, so there is nothing to mark down
                             return Ok(self.cutoff(&tt, &[], taint, tt_score, depth));
                         }
                         alpha = tt_score;
-                        // a score a search returned, so alpha is no longer
-                        // the bound the node arrived with
                         root_bounds = root_bounds.alpha_raised();
                     }
                 }
             }
         }
 
-        // read before the loop moves `found_legal_move` past it: the
-        // table's move's bit in the list below stands on this
         let tt_searched = found_legal_move;
 
         let mut moves = if in_check {
@@ -2372,37 +2096,20 @@ impl AlphaBeta {
             table_at,
             losing,
         } = self.ordering.order(&self.board, &mut moves, pv_play, ply);
-        // the place the loop passes over, since the table's move was
-        // searched above before this list existed. `order` sorts by
-        // `pv_play` and the search played `tt_tried`, which differ when
-        // `is_pseudo_legal` refused the move, so a move nothing played is
-        // not skipped here
+        // the place the loop passes over, since the table's move was searched
+        // above. `order` sorts by `pv_play` and the search played
+        // `tt_tried`, which differ when `is_pseudo_legal` refused the move
         let tt_at = if tt_tried.is_some() { table_at } else { None };
 
-        // how many moves the node has searched, which is what makes a quiet
-        // move late; the table's move, when searched, is the first
         let mut searched = usize::from(found_legal_move);
-        // which places the node made and searched, the history's malus
-        // under a cutoff. A move either skipping rule passed over, the
-        // model's at depth four and up or a shallow rule's below it, has
-        // no bit, and nor has one that turned out illegal
+        // a skipped move has no bit, and nor has one that turned out illegal
         let mut made = Searched::default();
-        // whether the second stage ran here, read by the census
         let mut quiets_scored = false;
-        // the two dear features, computed by the first move that needs
-        // them and read back for the rest; locals rather than fields of
-        // the node facts below, which are built afresh for each move. The
-        // evaluation is seeded above by whatever the shortcuts read
+        // computed by the first move that needs it and read back for the
+        // rest, since the node facts below are built afresh for each move
         let mut history_max: Option<i32> = None;
-        // what the check test reads of this position, taken once a node
         let mut check_info: Option<crate::board::CheckInfo> = None;
-        // what the node's table probe gave it, settled here: the probe and
-        // the table's move are behind it
         let tt = census::Table::of(pv_play.is_some(), tt_tried.is_some());
-        // the two shallow rules' node half, settled once here. Every part
-        // of them but the margin's own test is the node's rather than the
-        // move's, and that test is a latch: alpha only rises, so it is
-        // false until it becomes true and then stays true
         let mut shallow = late_move::shallow(
             &self.config,
             &self.board,
@@ -2412,20 +2119,19 @@ impl AlphaBeta {
             root_bounds,
         );
         // the quiet run still being taken in order: where it ends and how
-        // many moves have been picked from it one at a time
+        // many moves have been picked from it one at a time. After four
+        // picks the rest is sorted whole
         let mut lazy: Option<(usize, u8)> = None;
         let mut filtered = false;
         // the places from which the rest of the run is known to be dropped
         let mut dropped = usize::MAX..usize::MAX;
         for i in 0..moves.len() {
-            // the front did not cut this node off, so the rest of the list
-            // is keyed before the first move past it is tried, and put in
-            // order only as far as the node reads it
+            // the front did not cut this node off, so the quiets are keyed
+            // and put in order only as far as the node reads them
             if i == front {
                 if let Some(ply) = ply {
-                    // the reduction ledger records every move the rules
-                    // pass over at the place the full sort gives it, so a
-                    // node it watches is ordered whole
+                    // the ledger records a skipped move at the place the full
+                    // sort gives it, so a node it watches is ordered whole
                     if self.ledger.is_some() {
                         self.ordering
                             .order_quiets(&self.board, &mut moves[front..], losing, ply);
@@ -2470,18 +2176,14 @@ impl AlphaBeta {
             }
             let m = &moves[i];
             if tt_at == Some(i) {
-                // searched before the list existed, at the place `order`
-                // reported it sorted to
                 debug_assert_eq!(tt_tried, Some(*m), "the place is not the table's move");
                 if tt_searched {
                     made.mark(i);
                 }
                 continue;
             }
-            // the shallow rules, asked before the node facts below because
-            // they read none of them: they reach depths the reduction does
-            // not, so facts built for them would be facts built at most of
-            // the interior of the tree
+            // the shallow rules read none of the node facts below, and reach
+            // depths the reduction does not, so they are asked first
             if shallow.skips(
                 &self.deciding(),
                 &mut eval,
@@ -2490,10 +2192,8 @@ impl AlphaBeta {
                 searched,
                 alpha,
             ) {
-                // never made, so whether it was even legal is never
-                // learned; skipping an illegal move is a no-op, since the
-                // loop would have passed over it anyway. `searched` stands
-                // where it was and nothing is taught about the move
+                // never made, so whether it was legal is never learned, and
+                // nothing is taught about it
                 if self.ledger.is_some() {
                     let mut node = late_move::Node {
                         depth,
@@ -2513,14 +2213,11 @@ impl AlphaBeta {
                 }
                 continue;
             }
-            // the node's facts as this move is decided, built here rather
-            // than once for the node because alpha rises as the node
-            // searches and the list is sorted under the loop above, and
-            // only where the node admits a reduction at all: most moves
-            // are searched whole, and writing the facts out for each of
-            // them measured a percent of the run. The ledger's staged half
-            // is carried to the scout as a parameter so the reduced moves
-            // inside it cannot mistake it for their own
+            // the node's facts, built per move because alpha rises and the
+            // list is sorted under the loop, and only where the node admits
+            // a reduction: most moves are searched whole. The ledger's
+            // staged half travels to the scout as a parameter so the
+            // reduced moves inside it cannot mistake it for their own
             let (reduction, staged) = if late_move::admits(
                 &self.config,
                 depth,
@@ -2545,7 +2242,6 @@ impl AlphaBeta {
                 };
                 match late_move::decide(&self.deciding(), &mut node, m, searched) {
                     late_move::Verdict::Skip => {
-                        // never made, as above
                         if self.ledger.is_some() {
                             let staged = self.staged_reduction(m, searched, &mut node);
                             self.ledger_skip(staged, depth, alpha, beta);
@@ -2564,7 +2260,6 @@ impl AlphaBeta {
             } else {
                 (0, None)
             };
-            // read by the census's row
             let reduced = reduction > 0;
             let Some(value) = self.search_child(
                 m,
@@ -2595,8 +2290,7 @@ impl AlphaBeta {
             }
             if score > alpha {
                 if score >= beta {
-                    // before the cutoff teaches the memories, so the row
-                    // reads what the node chose under
+                    // before the cutoff teaches the memories
                     if self.census.is_some() {
                         self.census_event(
                             depth,
@@ -2619,8 +2313,6 @@ impl AlphaBeta {
                     if self.effort.is_some() {
                         self.effort_event(depth, true, entered_at);
                     }
-                    // the moves searched before the one that answered,
-                    // captures and all, which the memories pass over
                     let tried = moves[..i]
                         .iter()
                         .enumerate()
@@ -2630,21 +2322,19 @@ impl AlphaBeta {
                 }
                 alpha = score;
                 // the dropped moves stay dropped only while alpha is short of
-                // a mate, which the filter cannot see end: the rules admit no
-                // node whose beta is a mate score, beta does not rise after
-                // they are settled, and so any mate a survivor finds is at or
-                // above beta and has cut the node off before reaching here
+                // a mate. The rules admit no node whose beta is a mate score,
+                // so any mate a survivor finds is at or above beta and has
+                // cut the node off before reaching here
                 debug_assert!(
                     !(filtered && is_mate(alpha)),
                     "a filtered node raised alpha to a mate without cutting off"
                 );
-                // as at the table's move above
                 root_bounds = root_bounds.alpha_raised();
             }
         }
 
-        // the held half of the census, recorded at the same rate: a
-        // cut-only stream would reproduce the censoring the census measures
+        // the held half, at the same rate: a cut-only stream would
+        // reproduce the censoring the census measures
         if self.census.is_some() {
             self.census_event(
                 depth,
@@ -2660,16 +2350,14 @@ impl AlphaBeta {
                 None,
             );
         }
-        // the held half, at the same rate as the two cut ones above: a rule
-        // moves effort between held nodes and cut ones as well as away from
-        // both
+        // the held half: a rule moves effort between held nodes and cut ones
+        // as well as away from both
         if self.effort.is_some() {
             self.effort_event(depth, false, entered_at);
         }
 
         if !found_legal_move {
-            // mate and stalemate are properties of the position, not of the
-            // path that reached it
+            // clean: mate and stalemate are properties of the position
             if in_check {
                 return Ok(Value::mated(self.board.line_ply));
             }
@@ -2694,10 +2382,6 @@ impl AlphaBeta {
     /// for when the host would not give it. A machine with less memory
     /// than the default assumes plays with a smaller table rather than
     /// failing to start, and `table_bytes` says what it got.
-    ///
-    /// The ask is handed back rather than left to be inferred, so that
-    /// what the adapter reports and what the engine asked for are the one
-    /// fact.
     pub fn new(board: Board) -> (Self, Option<usize>) {
         let (transpositions, asked) = TranspositionTable::up_to_bytes(DEFAULT_TABLE_BYTES);
         (
@@ -2717,32 +2401,27 @@ impl AlphaBeta {
         self.search_within(depth, Limits::unlimited())
     }
 
-    /// One fixed depth search under the limits given. The deepening loop
-    /// hands each iteration its own, which is how depth one runs with none.
+    /// One fixed depth search under the limits given.
     ///
-    /// The caller owns the table's generation and the quiet memories.
-    /// `search` and the deepening loop each start a generation with
-    /// `new_search`, so what their iterations store ages together from the
-    /// next search; a caller that skips that leaves every entry looking
-    /// current, so nothing goes stale and the oldest entries are never the
-    /// ones given up. A search through here keeps whatever the memories
-    /// learned before it.
+    /// The caller owns the table's generation and the quiet memories. A
+    /// caller that never starts a generation with `new_search` leaves every
+    /// entry looking current, so the oldest entries are never the ones
+    /// given up. A search through here keeps whatever the memories learned
+    /// before it.
     pub fn search_within(&mut self, depth: u8, limits: Limits) -> SearchOutcome {
         self.search_root(depth, limits, None, Aspiration::open(None, depth))
     }
 
-    /// The body of one fixed depth search, under the window `window`
-    /// opens. Everything that may interrupt it arrives in the signature,
-    /// and the prologue, not the caller, writes the fields the poll reads.
+    /// The body of one fixed depth search, under the window given.
+    /// Everything that may interrupt it arrives in the signature, and the
+    /// prologue writes the fields the poll reads.
     ///
     /// Fail soft, and the answer says which of three things its score is.
-    /// A score inside the window is the position's worth and the move
-    /// beside it is the best of them. A move that reached beta makes the
-    /// score a floor: the rest of the moves were never tried. A window no
-    /// move reached alpha in makes it a ceiling, and the move beside it is
-    /// only the one that came closest, which proves nothing and is never
-    /// answered with. At the full window the last of the three cannot
-    /// happen: every score beats an alpha at the end of the score type.
+    /// A score inside the window is the position's worth. A move that
+    /// reached beta makes the score a floor: the rest of the moves were
+    /// never tried. A window no move reached alpha in makes it a ceiling,
+    /// and the move beside it is only the one that came closest, which is
+    /// never answered with. At the full window a ceiling cannot happen.
     fn search_root(
         &mut self,
         mut depth: u8,
@@ -2750,8 +2429,7 @@ impl AlphaBeta {
         stop: Option<Arc<AtomicBool>>,
         window: Aspiration,
     ) -> SearchOutcome {
-        // held to the rail here and not only at the interface, so a library
-        // caller cannot ask the check extension below to overflow
+        // held to the rail here too, so the check extension cannot overflow
         depth = depth.min(MAX_PLY);
         self.limits = limits;
         self.stop = stop;
@@ -2772,33 +2450,20 @@ impl AlphaBeta {
         let opening_alpha = window.alpha;
         let beta = window.beta;
         let mut alpha = opening_alpha;
-        // where the exemption starts: the root opened with both of these
-        // and proved neither, and they stay marked down the leftmost line.
-        // Nothing here reads how wide they are, which is what lets the
-        // window narrow without the exemption moving
         let mut root_bounds = RootBounds::BOTH;
-        // the best any move scored and the move that scored it, which is
-        // the fail soft answer whether or not anything reached alpha
+        // the fail soft answer, whether or not anything reached alpha
         let mut top: Option<(Play, Score)> = None;
         let mut found_legal_move = false;
         let mut taint = Taint::default();
 
-        // the entry here is the one the last iteration answered with, stored
-        // past the depth contest, and `order` puts the table's move first.
-        // So a deepening search tries the previous depth's best first,
-        // which is what lets an aborted iteration's best replace it: see
-        // the Aborted arm of iterative_deepening_search
+        // the previous depth's answer is tried first, which the aborted
+        // iteration's swap in `iterative_deepening_search` rests on. The
+        // debug assertion in `order` holds the table's move at the head
         let pv_play = self.transpositions.ordering_play(&self.board);
         let mut moves = self.board.generate_moves();
-        // no memories at the root: the swap reasons about this order. The
-        // swap's soundness rests on the table's move sorting first, and a
-        // change that broke that (a root bonus outbidding the table move,
-        // say) fails the debug assertion in `order` rather than answering
-        // with a move never compared to the old
         self.ordering.order(&self.board, &mut moves, pv_play, None);
 
-        // the root reduces nothing: it has one window to answer under and
-        // its moves are few enough to search whole
+        // the root reduces nothing
         for m in &moves {
             match self.search_child(
                 m,
@@ -2811,10 +2476,8 @@ impl AlphaBeta {
                 None,
             ) {
                 Err(Aborted) => {
-                    // a move that beat the opening alpha is a floor under
-                    // the position and may be answered with. The closest
-                    // move of a window nothing reached is not: it was
-                    // never shown better than anything
+                    // only a move that beat the opening alpha may be
+                    // answered with
                     let answerable = (alpha != opening_alpha).then_some(top).flatten();
                     return SearchOutcome::Aborted(
                         answerable.map(|(play, score)| self.result_for(play, score)),
@@ -2830,13 +2493,10 @@ impl AlphaBeta {
                     }
                     if score > alpha {
                         alpha = score;
-                        // the root's lower bound is a score from here on
                         root_bounds = root_bounds.alpha_raised();
                     }
                     if score >= beta {
-                        // the window asked whether anything here is worth
-                        // beta and this move answers it. What the rest are
-                        // worth is a question the wider re-search asks
+                        // the rest are the wider re-search's to ask
                         break;
                     }
                 }
@@ -2844,22 +2504,18 @@ impl AlphaBeta {
         }
 
         if !found_legal_move {
-            // checkmate or stalemate, the only way out of here without a
-            // move. An expired fifty move counter is not another: that draw
-            // is claimable and not automatic (FIDE 9.3), so the side to
-            // move may still play, and the tree below scores the draw at
-            // every child the move does not reset
+            // checkmate or stalemate. An expired fifty move counter is not
+            // a way out: that draw is claimable and not automatic (FIDE
+            // 9.3), so the side to move may still play
             return SearchOutcome::GameOver;
         }
 
         let (play, score) = top.expect("a legal move was found, so one of them scored best");
         let value = taint.stamp(score);
-        // what the root leaves for the re-search and for the next
-        // iteration to order by. The answer and the floor are stored past
-        // the depth contest, because the reported line is read back from
-        // this slot; a ceiling is not stored at all, so the table keeps
-        // the last answer and the closest move is never promoted over a
-        // move it was not shown to beat
+        // the answer and the floor are stored past the depth contest,
+        // because the reported line is read back from this slot. A ceiling
+        // is not stored, so the closest move is never promoted over a move
+        // it was not shown to beat
         let bound = if score >= beta {
             self.transpositions
                 .record_floor_answer(&self.board, play, value, depth);
@@ -2874,18 +2530,15 @@ impl AlphaBeta {
         SearchOutcome::Complete(self.result_for(play, score), bound)
     }
 
-    /// Replay the line the table holds on a copy of the board, one stored
-    /// move at a time. Walking the positions is what lets the line be
-    /// checked as it is built: whether a stored move is legal here, and
-    /// whether the line has reached a draw.
+    /// Replay the line the table holds on a copy of the board, checking
+    /// each stored move is legal there and stopping at a draw.
     pub fn pv_line(&self) -> PvLine {
         self.pv_line_from(self.transpositions.intended_play(&self.board))
     }
 
     /// The same line read from a first move given rather than from the
-    /// table's. An aborted iteration stores nothing at the root, so the
-    /// entry there still holds the move the depth before it answered, and
-    /// the move the swap answers with has to be handed in.
+    /// table's, for a root answer the table does not hold (an aborted
+    /// iteration's swap, or a ceiling).
     fn pv_line_from(&self, first: Option<Play>) -> PvLine {
         let mut line = Vec::new();
         let mut board = self.board.clone();
@@ -2904,8 +2557,6 @@ impl AlphaBeta {
                 break;
             }
             line.push(play);
-            // a draw from here, so whatever the table holds next would
-            // never be played
             if board.fifty_move_expired() || board.has_repeated() {
                 break;
             }
@@ -2954,44 +2605,33 @@ impl Engine for AlphaBeta {
         mut on_depth: impl FnMut(u8, &SearchResult, PvLine, ScoreBound),
     ) -> SearchOutcome {
         // what answers if the search stops here: the deepest score that
-        // landed inside its window, or a move a later depth proved worth
-        // more than it
+        // landed inside its window, or a floor a later depth proved
         let mut best: Option<SearchResult> = None;
-        // the deepest score that landed inside its window, which is what
-        // the next window is opened around. A floor is not one: it says a
-        // move is worth at least beta and not what it is worth
+        // what the next window is opened around. Never a floor, which is a
+        // bound and not a score
         let mut exact: Option<Score> = None;
-        // each iteration counts its own nodes, so the deepening totals them
         let mut total_nodes: u64 = 0;
-        // no depth means as deep as the engine goes, which the rail ends
-        // for a search under neither clock nor budget
         let max_depth = match search_options.depth {
             // held to the rail, or the depths past it would each rerun it
             Some(depth) => depth.min(MAX_PLY),
             None => MAX_PLY,
         };
-        // one search, however many iterations: what they store is one
-        // generation's, and the memories are kept from one iteration to the
-        // next, since a killer found at depth six is what orders seven
+        // one generation for every iteration, and the memories kept from
+        // one iteration to the next
         self.transpositions.new_search();
         self.ordering.forget();
 
         for depth in 1..=max_depth {
-            // the soft bound: an iteration there is not enough clock left
-            // for is not begun, and what is in hand answers. The deadline
-            // stays as the backstop for an iteration that is begun. Asked
-            // once a depth and not once a search: giving up inside a fail
-            // low would answer with the move the search has just found
-            // worse than it believed
+            // the soft bound, asked once a depth rather than before each
+            // re-search: giving up inside a fail low would answer with the
+            // move the search has just found worse than it believed. The
+            // deadline stays as the backstop
             if !search_options
                 .limits
                 .worth_another_iteration(best.is_some())
             {
                 return SearchOutcome::Aborted(best);
             }
-            // the window this depth opens at, from the last exact score,
-            // and the widening it is searched again under when the score
-            // lands outside
             let mut window =
                 Aspiration::open(self.config.aspiration.then_some(exact).flatten(), depth);
             loop {
@@ -3000,29 +2640,19 @@ impl Engine for AlphaBeta {
                     SearchOutcome::Aborted(deeper) => {
                         // the interrupted search's best outranks what
                         // answers now, whenever it has one. The move it
-                        // hands back beat the window's alpha, which is
-                        // what `search_root` checks before it hands one
-                        // back at all; the moves it never reached could
-                        // only raise the score further, so the score is a
-                        // floor under the position. Some of the moves it
-                        // did reach fell under that alpha, and nothing
-                        // here claims otherwise. The swap is sound because
-                        // the move it replaces is among the moves
-                        // searched: the root orders by the table's entry,
-                        // which is the last answer or a move shown better
-                        // than it, so what answers now was the first move
-                        // tried. Without that the new move would be better
-                        // only over a subset the old one need not belong
-                        // to. A search that reached nothing above its
-                        // alpha has no move to swap in and says so, and
-                        // then whatever answered going in answers still:
-                        // see the arm below.
+                        // hands back beat the window's alpha, and the moves
+                        // it never reached could only raise the score, so
+                        // the score is a floor. The swap is sound because
+                        // the move it replaces was the first move tried:
+                        // the root orders by the table's entry, which is
+                        // the last answer or a floor shown better than it.
+                        // Without that the new move would be better only
+                        // over a subset the old one need not belong to.
                         return SearchOutcome::Aborted(match deeper {
                             Some(mut result) => {
                                 result.nodes += total_nodes;
                                 // no completed depth named this move, so it
-                                // is reported here, as the bound it is,
-                                // before it is answered with
+                                // is reported here as the bound it is
                                 if best.as_ref().map(|had| had.best_move) != Some(result.best_move)
                                 {
                                     let pv = self.pv_line_from(Some(result.best_move));
@@ -3036,23 +2666,16 @@ impl Engine for AlphaBeta {
                                 Some(result)
                             }
                             // nothing beat this search's alpha, so what
-                            // answers is what answered before it: the last
-                            // depth to land inside its window, or a floor
-                            // this depth reported above it. Depth one runs
-                            // without limits, so there always is one.
+                            // answered before it answers still. Depth one
+                            // runs without limits, so there always is one.
                             //
-                            // The answer comes from before this iteration
-                            // and the nodes it spent do not: they were
-                            // spent, and the arm above carries its own, so
-                            // a count that left them out would say a search
-                            // stopped on its budget visited fewer nodes
-                            // than the budget. `self.nodes` is this
-                            // iteration's, `search_root` having zeroed it
-                            // at the start and nothing having zeroed it
-                            // since, and `total_nodes` is every iteration
-                            // before it.
-                            // The elapsed time is rewritten with them, for
-                            // the reason the field it sits in gives.
+                            // The nodes this iteration spent are counted
+                            // all the same, or a search stopped on its
+                            // budget would report fewer nodes than the
+                            // budget. `self.nodes` is this iteration's and
+                            // `total_nodes` every iteration before it. The
+                            // elapsed time is rewritten with them, for the
+                            // reason `SearchResult::elapsed` gives.
                             None => best.map(|mut answered| {
                                 answered.nodes = total_nodes + self.nodes;
                                 answered.elapsed = self.limits.elapsed();
@@ -3064,15 +2687,11 @@ impl Engine for AlphaBeta {
                         return SearchOutcome::GameOver;
                     }
                     SearchOutcome::Complete(mut result, bound) => {
-                        // a failed search is a search: it spent its nodes
-                        // and the limits are handed what is left
+                        // a failed search spent its nodes too
                         total_nodes += result.nodes;
                         result.nodes = total_nodes;
-                        // the answer and the floor were both stored past
-                        // any leftover, so the table's line opens with the
-                        // move reported. A ceiling stored nothing, and its
-                        // closest move is not the table's, so its line is
-                        // read from the move itself
+                        // a ceiling stored nothing, so its line is read
+                        // from the move itself
                         let pv = match bound {
                             ScoreBound::Upper => self.pv_line_from(Some(result.best_move)),
                             _ => self.pv_line(),
@@ -3089,21 +2708,15 @@ impl Engine for AlphaBeta {
                             break;
                         }
                         if bound == ScoreBound::Lower {
-                            // a move worth at least beta, searched whole at
-                            // this depth, so it outranks what answers now:
-                            // that move was tried first here and came back
-                            // under beta. Held as the answer in case the
-                            // wider search is interrupted before it reaches
-                            // the move again, which would otherwise give up
-                            // a move the search has just proved better. It
-                            // is not what the next window aims at, which is
-                            // a score and not a floor
+                            // a move worth at least beta outranks what
+                            // answers now, which was tried first here and
+                            // came back under beta. Held as the answer in
+                            // case the wider search is interrupted before it
+                            // reaches the move again
                             best = Some(result);
                         }
-                        // the score landed outside the window, so the depth
-                        // is searched again with the side that failed
-                        // widened. A side that has failed its last opens to
-                        // the edge, which is where this ends
+                        // search the depth again with the failed side
+                        // widened, which ends at the full window
                         window = window.widen(bound);
                     }
                 }
@@ -3130,8 +2743,7 @@ pub struct PvLine {
 }
 
 impl PvLine {
-    /// A line built by hand, which is how a protocol adapter's tests pin the
-    /// format of a reported line without running a search.
+    /// A line built by hand, for a protocol adapter's tests.
     pub fn new(line: Vec<Play>) -> Self {
         Self { line }
     }
@@ -3144,33 +2756,30 @@ impl fmt::Display for PvLine {
     }
 }
 
-/// The verdict of one fixed-depth search of the root.
+/// The verdict of a search of the root, fixed depth or deepening.
 #[derive(Debug)]
 pub enum SearchOutcome {
     /// The search finished the requested depth, with what its score says
-    /// about the position beside it: exact where the score landed inside
-    /// the window it opened at, and a bound where it did not. A search at
-    /// the full window is always exact.
+    /// about the position beside it. A search at the full window is always
+    /// exact.
     Complete(SearchResult, ScoreBound),
-    /// The root has no play to make: checkmate or stalemate. Searching
-    /// deeper cannot change it.
+    /// The root has no play to make: checkmate or stalemate.
     GameOver,
-    /// A limit ran out partway through, carrying a best-so-far when the
-    /// root got far enough to have one. Its score is a lower bound on the
-    /// position, `ScoreBound::Lower` in a report: exact over the moves the
-    /// root searched, and the moves it never reached could only raise it.
+    /// A limit ran out partway through, carrying an answer when there is
+    /// one. From one fixed depth search its score is a floor: the moves
+    /// the root never reached could only raise it. From the deepening loop
+    /// it is whatever answered last, which may be a completed depth's
+    /// exact score.
     Aborted(Option<SearchResult>),
 }
 
 /// What a reported score says about the position.
 ///
-/// `Exact` is the whole worth of it: every root move was searched and the
-/// score landed inside the window. `Lower` is a floor, from an aborted
-/// iteration whose remaining moves could only raise it or from a root move
-/// that reached beta. `Upper` is a ceiling, from an iteration no root move
-/// reached alpha in: the position is worth this or less, and the move
-/// beside it is only the one that came closest. Uci prints the last two as
-/// `lowerbound` and `upperbound`.
+/// `Exact`: every root move was searched and the score landed inside the
+/// window. `Lower` is a floor, from an aborted iteration or from a root
+/// move that reached beta. `Upper` is a ceiling, from an iteration no root
+/// move reached alpha in, and the move beside it is only the one that came
+/// closest.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum ScoreBound {
     Exact,
@@ -3179,9 +2788,9 @@ pub enum ScoreBound {
 }
 
 /// The search hit a limit and unwound without finishing. The score of an
-/// aborted frame is meaningless, and returning this instead of a score is
-/// what keeps it out of the transposition table: propagation with `?`
-/// never reaches the stores.
+/// aborted frame is meaningless; returning this instead keeps it out of the
+/// transposition table, since propagation with `?` never reaches the
+/// stores.
 struct Aborted;
 
 #[derive(Debug)]
@@ -3227,9 +2836,8 @@ mod search {
     use std::sync::atomic::{AtomicBool, Ordering};
     use std::time;
 
-    /// The default table is 256MB, and one per test dominated the memory
-    /// and the run time of the suite. This is still far larger than
-    /// anything here searches deeply enough to fill.
+    /// The default table is 256MB, and one per test dominated the suite's
+    /// memory and run time.
     const TABLE_BYTES: usize = 16 * 1024 * 1024;
 
     fn engine(board: Board) -> AlphaBeta {
@@ -3241,8 +2849,7 @@ mod search {
         let mut e = engine(Board::new());
         assert!(e.set_table_bytes(1024 * 1024));
 
-        // the table a new engine asked for a megabyte would have been given,
-        // which is the whole buckets that fit in one rather than the megabyte
+        // whole buckets, as a new engine asked for a megabyte would have
         assert_eq!(
             e.table_bytes(),
             AlphaBeta::with_table_bytes(Board::new(), 1024 * 1024).table_bytes()
@@ -3253,13 +2860,8 @@ mod search {
 
     #[test]
     fn a_table_there_is_no_memory_for_leaves_the_old_one_in_place() {
-        // the size arrives from an interface, which may ask for more than the
-        // machine has. Losing the engine mid game over it would be worse than
-        // playing on with the table we already had.
-        //
-        // both ways of failing: usize::MAX asks for more bytes than an
-        // allocation may describe and is refused before the allocator is
-        // reached, while isize::MAX asks for a number it may describe and no
+        // both ways of failing: usize::MAX is refused before the allocator
+        // is reached, while isize::MAX is a size it may describe and no
         // machine can meet, which is the refusal a real oversized Hash hits
         for bytes in [usize::MAX, isize::MAX as usize] {
             let mut e = engine(Board::new());
@@ -3271,8 +2873,6 @@ mod search {
 
     #[test]
     fn a_table_too_small_to_hold_an_entry_is_still_a_table() {
-        // the size arrives from the protocol, so a nonsense one has to be
-        // survivable rather than a panic in the middle of a game
         let mut e = engine(Board::new());
         assert!(e.set_table_bytes(0));
         assert!(e.table_bytes() > 0);
@@ -3280,16 +2880,12 @@ mod search {
     }
 
     /// The reference search, for the tests that hold it to answering the
-    /// same whatever the table holds: the exactness contract, which every
-    /// shortcut leaves green because a shortcut moves the default and not
-    /// this.
+    /// same whatever the table holds.
     fn reference(board: Board) -> AlphaBeta {
         AlphaBeta::with_config(board, TABLE_BYTES, SearchConfig::reference())
     }
 
-    /// The reference with reverse futility on and nothing else touched,
-    /// which is what an arm is: whatever moves between this and
-    /// `reference` is the one switch.
+    /// The reference with reverse futility on and nothing else touched.
     fn shortcut(board: Board) -> AlphaBeta {
         AlphaBeta::with_config(
             board,
@@ -3313,9 +2909,7 @@ mod search {
         )
     }
 
-    /// `passing` with the two terms on, which is the one switch between the
-    /// two: the same nodes pass, and what moves is how shallow the proof
-    /// each of them buys is searched.
+    /// `passing` with the adaptive reduction on.
     fn passing_adaptively(board: Board) -> AlphaBeta {
         AlphaBeta::with_config(
             board,
@@ -3328,9 +2922,8 @@ mod search {
         )
     }
 
-    /// The reference with the quiet memories on. They order rather than
-    /// prune, so whatever moves between this and `reference` is the tree
-    /// and never the answer.
+    /// The reference with the quiet memories on, which move the tree and
+    /// never the answer.
     fn remembering(board: Board) -> AlphaBeta {
         AlphaBeta::with_config(
             board,
@@ -3394,8 +2987,6 @@ mod search {
         )
     }
 
-    /// Unwrap the outcome these tests expect: a search that ran to the depth
-    /// asked of it.
     fn completed(outcome: SearchOutcome) -> SearchResult {
         match outcome {
             SearchOutcome::Complete(result, _) => result,
@@ -3409,8 +3000,8 @@ mod search {
 
     #[test]
     fn a_losing_position_is_still_losing_with_a_warm_table() {
-        // This is a losing position but running a search on a previous position then the losing
-        // position seems to cause hash/cache collisions in some cases.
+        // a search of another position first once left entries that made
+        // this losing position look better
         let game =
             Board::from_fen("r4rk1/pppb1ppp/4pn2/6N1/3P4/2qBP3/P4PPP/3R1R1K w - - 2 16").unwrap();
         let mut e = engine(game);
@@ -3500,14 +3091,10 @@ mod search {
     #[test]
     fn a_re_search_answers_with_its_own_score_not_the_probes() {
         // The node count above says a re-search ran, not whose answer came
-        // back: a windowed that re-searched and then returned the probe's
-        // bound would count the same. So the probe is made to fail high
-        // short of the exact score, with a ceiling planted at the position
-        // the move leaves, one point inside the probe's window and outside
-        // the re-search's. The probe cuts on it and comes back at alpha
-        // plus one; the re-search cannot cut and has to look. The exact
-        // score comes from an engine of its own, whose table nothing here
-        // reads, and only the re-search's answer matches it.
+        // back. A ceiling planted one point inside the probe's window and
+        // outside the re-search's makes the probe fail high short of the
+        // exact score, which comes from an engine of its own; only the
+        // re-search's answer matches it.
         const FEN: &str = "8/8/8/8/8/8/2k4P/K7 w - - 0 1";
         let mut oracle = reference(Board::from_fen(FEN).unwrap());
         let m = play_named(&oracle.board, "h2h4");
@@ -3540,16 +3127,10 @@ mod search {
 
     #[test]
     fn a_proven_mate_is_not_searched_again_a_ply_deeper() {
-        // The bench position `wac 4`, a mate in two. Without the pruning the
-        // mate is proved and then proved again on every deeper search, over a
-        // tree that grows about four and a half times a ply. Measured here at
-        // the two depths, the counts were 22,255 and 8,558,226, a factor of
-        // 385; with the pruning they are 5,979 and 87,813, a factor of 15.
-        //
-        // The bound holds the shape rather than either count. A deeper search
-        // of a position whose mate is already in the window does more work
-        // and not hundreds of times more. What the suite counts exactly is
-        // pinned in bench.rs, so this is free to be loose.
+        // The bench position `wac 4`, a mate in two. When mate distance
+        // pruning landed (c7730f1) depth nine searched 385 times depth
+        // five's nodes without it and 15 times with it. The bound holds
+        // that shape loosely; bench.rs pins the exact counts.
         const FEN: &str = "r1bq2rk/pp3pbp/2p1p1pQ/7P/3P4/2PB1N2/PP3PPR/2KR4 w - - 0 1";
         let at_five = completed(engine(Board::from_fen(FEN).unwrap()).search(5));
         let at_nine = completed(engine(Board::from_fen(FEN).unwrap()).search(9));
@@ -3574,23 +3155,10 @@ mod search {
     #[test]
     fn the_mate_distance_survives_a_deeper_warm_search() {
         // Searching again deeper off a warm table reuses mate scores stored
-        // at other plies, and the distance reported must not move when it
-        // does. That is what this holds, and it holds it at every depth the
-        // one engine reaches rather than at one chosen depth.
-        //
-        // A chosen depth would be testing the search's shortcuts instead.
-        // Whether a given depth finds this mate at all is not monotone in
-        // the depth: the 2026-09-13 mobility refit finds it at three,
-        // misses it at four and finds it again from five. So the test asks
-        // that no depth disagree with another, and that some depth find it.
-        //
-        // The floor is one of the four rather than three, because the late
-        // move count prunes the quiet that begins the line. Measured on
-        // this build, the count on finds the mate at six, seven and eight
-        // and misses it at three, four and five; the count off finds it at
-        // every depth from three to eight. Losing a shallow mate is what
-        // pruning a late quiet by the count of moves searched does, and
-        // one of four is what the shipped switches read here.
+        // at other plies, and the distance reported must not move. Whether
+        // a given depth finds this mate under the shortcuts is not monotone
+        // in the depth (the late move count loses it at three to five), so
+        // the test asks that no depth disagree and that some depth find it.
         let game =
             Board::from_fen("2rr3k/pp3pp1/1nnqbN1p/3pN3/2pP4/2P3Q1/PPB4P/R4RK1 w - - 0 0").unwrap();
         let mut e = engine(game);
@@ -3613,9 +3181,9 @@ mod search {
     }
 
     /// What holds `REVERSE_FUTILITY_MARGIN` above the boundary its comment
-    /// gives. The reference finds this mate at depth four, and with the
-    /// shortcut the only thing added, a margin of seventy six or less cuts
-    /// off the line it is found in. Cold, so no table decides it either.
+    /// gives: with the shortcut the only thing added to the reference, a
+    /// margin of seventy six or less cuts off the line this mate is found
+    /// in. Cold, so no table decides it.
     #[test]
     fn the_reverse_futility_margin_keeps_the_depth_four_mate() {
         let game =
@@ -3634,13 +3202,8 @@ mod search {
         assert_eq!(result.checkmate_in(), Some(-1));
     }
 
-    /// Material that cannot mate is searched as the draw it is.
-    ///
-    /// Each of these was played as a win before the rule: the knight read
-    /// +327 at depth twelve from its own side and -336 from the bare one, the
-    /// bishop +341, and the two knights +663. Nothing in the tree knew the
-    /// position was dead, so the engine spent the fifty move rule looking for
-    /// a mate that is not there.
+    /// Material that cannot mate is searched as the draw it is. Before the
+    /// rule each of these read as a win of three pawns or more.
     #[test]
     fn material_that_cannot_mate_is_searched_as_a_draw() {
         for fen in [
@@ -3658,16 +3221,10 @@ mod search {
     }
 
     /// A mate inside the horizon is still found in a position the rule calls
-    /// drawn.
-    ///
-    /// This is why the rule sits in the evaluation and not at the node. Mate
-    /// comes from the move generator, so a static zero leaves it reachable; a
-    /// `Value::clean(0)` returned from `alpha_beta` before the moves were
-    /// generated would save the subtree and lose this.
-    ///
-    /// Two knights against a bare king cannot force mate, which is why the
-    /// signature returns zero, but helpmates exist and the black king here
-    /// stands in one.
+    /// drawn, which is why the rule sits in the evaluation and not at the
+    /// node: a `Value::clean(0)` returned from `alpha_beta` before the moves
+    /// were generated would lose this. Two knights cannot force mate, but
+    /// the black king here stands in a helpmate.
     #[test]
     fn a_helpmate_survives_the_rule() {
         let mut e = engine(Board::from_fen("k7/3N4/1K6/1N6/8/8/8/8 w - - 0 1").unwrap());
@@ -3678,12 +3235,9 @@ mod search {
 
     #[test]
     fn quiescence_does_not_stand_pat_out_of_a_mate() {
-        // the queen on a8 hangs, and taking it is losing: Rxa8 Nxf2 is mate,
-        // the knight covered by nothing and capturable by nothing, the king
-        // shut in by its own rook and pawns. The mate arrives by a capture
-        // two plies into quiescence, where the mated node used to stand pat
-        // as though it could decline to move: the capture only cost a pawn,
-        // so taking the queen read as winning it, and the search took it.
+        // the queen on a8 hangs and taking it loses: Rxa8 Nxf2 is mate, by a
+        // capture two plies into quiescence, where the mated node used to
+        // stand pat as though it could decline to move
         let game = Board::from_fen("q7/7k/8/8/6n1/8/5PPP/R5RK w - - 0 1").unwrap();
         let mut e = engine(game);
         let result = completed(e.search(1));
@@ -3692,10 +3246,8 @@ mod search {
 
     #[test]
     fn a_capture_that_cannot_reach_alpha_is_not_searched() {
-        // the rook can take the pawn and nothing else can take anything,
-        // so what quiescence does with the one capture is the node count:
-        // one node when it is skipped, two when it is searched down to the
-        // stand pat below it
+        // one capture on the board: one node when it is skipped, two when
+        // it is searched
         let fen = "7k/8/8/8/R3p3/8/8/7K w - - 0 1";
         let mut e = engine(Board::from_fen(fen).unwrap());
         let standing = e.eval();
@@ -3709,8 +3261,7 @@ mod search {
         assert_eq!(e.nodes, 1);
         assert_eq!(value, Value::clean(standing));
 
-        // at the edge, where the pawn and the margin reach alpha exactly,
-        // the capture is searched
+        // at the edge the capture is searched
         let mut e = engine(Board::from_fen(fen).unwrap());
         let alpha = standing + gain + super::DELTA_MARGIN;
         assert!(e.quiescence(alpha, alpha + 1).is_ok());
@@ -3719,10 +3270,8 @@ mod search {
 
     #[test]
     fn an_evasion_is_searched_whatever_the_margin_says() {
-        // the queen gives check and taking it is the one evasion, at an
-        // alpha no capture could reach under the margin: a side in check
-        // has no standing eval, so the margin does not apply and the
-        // evasion is searched for what it is really worth
+        // taking the checking queen is the one evasion, at an alpha no
+        // capture could reach under the margin
         let fen = "7k/8/8/8/8/8/1q6/K7 w - - 0 1";
         let mut b = Board::from_fen(fen).unwrap();
         let takes = play_named(&b, "a1b2");
@@ -3740,9 +3289,7 @@ mod search {
     #[test]
     fn a_promotion_is_searched_whatever_the_margin_says() {
         // the pawn can promote, taking the rook or pushing, at an alpha far
-        // past what any margin allows. A promotion is exempt because the
-        // piece that arrives is not the pawn that left, so the node visits
-        // children rather than answering from its standing eval alone
+        // past what any margin allows
         let fen = "r6k/1P6/8/8/8/8/8/7K w - - 0 1";
         let mut e = engine(Board::from_fen(fen).unwrap());
         assert!(e.quiescence(10_000, 10_001).is_ok());
@@ -3752,11 +3299,8 @@ mod search {
     #[test]
     fn a_mating_capture_is_searched_whatever_the_margin_says() {
         // rook takes rook and mates on the back rank, asked under an alpha
-        // inside the mate window. A static eval is bounded by the material
-        // on the board, far under any mate score, so without the exemption
-        // the margin's arithmetic would call every capture hopeless here,
-        // the mating one included, and the node would answer from its
-        // standing eval with the mate unfound
+        // inside the mate window, where the margin would call every capture
+        // hopeless
         let fen = "3r3k/6pp/8/8/8/8/8/3R3K w - - 0 1";
         let mut e = engine(Board::from_fen(fen).unwrap());
         let Ok(value) = e.quiescence(29_500, 29_501) else {
@@ -3783,10 +3327,8 @@ mod search {
 
     #[test]
     fn a_losing_capture_is_not_searched() {
-        // the rook can take the pawn on e4 and the pawn on d5 takes it
-        // back: a rook for a pawn, which the swap prices as losing, and the
-        // one capture on the board. The reference searches it down to the
-        // exchange; the skip answers from the stand pat alone, in one node
+        // the one capture, the rook taking the e4 pawn, loses the rook to
+        // the d5 pawn
         let fen = "7k/8/8/3p4/R3p3/8/8/7K w - - 0 1";
         let (searched, _) = quiet_nodes(reference(Board::from_fen(fen).unwrap()));
         assert!(searched > 1, "the reference did not search the capture");
@@ -3800,9 +3342,7 @@ mod search {
 
     #[test]
     fn a_winning_and_an_even_capture_are_searched_whatever_the_swap_says() {
-        // the rook takes a pawn nothing defends, and a rook takes a rook
-        // that a rook takes back: winning and even, and the skip leaves
-        // both trees exactly as the reference searches them
+        // a winning capture and an even one
         for fen in [
             "7k/8/8/8/R3p3/8/8/7K w - - 0 1",
             "3rr2k/8/8/8/8/8/8/4R2K w - - 0 1",
@@ -3819,11 +3359,9 @@ mod search {
 
     #[test]
     fn a_side_in_check_searches_a_losing_evasion() {
-        // the knight gives check and the queen taking it is the one
-        // evasion, with the pawn on d3 taking the queen back: a losing
-        // swap, and searched all the same, because a side in check has no
-        // stand pat to answer from and the evasion path is not pruned. Three
-        // nodes: this one, the queen's capture and the pawn's recapture
+        // the queen taking the checking knight is the one evasion, and the
+        // d3 pawn takes her back. Three nodes: this one, the capture and
+        // the recapture
         let fen = "7k/8/8/8/8/3p4/PPn5/KQ6 w - - 0 1";
         for mut e in [
             reference(Board::from_fen(fen).unwrap()),
@@ -3843,13 +3381,10 @@ mod search {
 
     #[test]
     fn a_promoting_capture_is_never_skipped() {
-        // the pawn takes the rook on a8 and promotes, and the rook on b8
-        // takes the queen back. The swap prices a promoting capture at
-        // its victim less a pawn, since the piece that arrives is counted
-        // as the pawn that left, so today no promoting capture prices as
-        // losing and the exemption has nothing to catch; it is there so a
-        // swap that one day prices the promotion cannot skip one. What the
-        // test holds is the promise: the capture is searched under the skip
+        // the pawn takes the rook on a8 and promotes, and the b8 rook takes
+        // the queen back. Today's swap prices no promoting capture as
+        // losing, so the exemption has nothing to catch; this holds the
+        // promise for a swap that one day does
         let fen = "rr5k/1P6/8/8/8/8/8/7K w - - 0 1";
         let board = Board::from_fen(fen).unwrap();
         let promotes = play_named(&board, "b7a8q");
@@ -3869,13 +3404,10 @@ mod search {
     #[test]
     fn the_mate_window_stands_the_skip_down() {
         // queen takes rook on e8 and mates: the knight that could take her
-        // back is pinned to its king by the bishop, which the swap does not
-        // see, so the swap prices the capture as a queen for a rook and the
-        // skip would throw the mate away. Asked under an alpha inside the
-        // mate window, a mate already in hand that this one would beat,
-        // the exemption stands the skip down and the mate is found; asked
-        // under a window nowhere near a mate, the same capture is skipped,
-        // which is what says the exemption and not the swap saved it
+        // back is pinned, which the swap does not see, so it prices the
+        // capture as losing. Under a mate window alpha the exemption stands
+        // the skip down; under an ordinary window the same capture is
+        // skipped, which says the exemption and not the swap saved it
         let fen = "4r2k/5pnp/8/8/8/2B5/8/K3Q3 w - - 0 1";
         let board = Board::from_fen(fen).unwrap();
         assert!(board.see(&play_named(&board, "e1e8")) < 0);
@@ -3891,10 +3423,8 @@ mod search {
             value.score
         );
 
-        // wide rather than one point around the standing eval: the even
-        // capture of the knight sorts first and wins the rook a move later,
-        // and a narrow window would cut the node off on it before either
-        // arm reached the queen's capture
+        // wide, because a narrow window would cut the node off on the even
+        // capture of the knight before either arm reached the queen's
         let wide = |mut e: AlphaBeta| {
             assert!(e.quiescence(-10_000, 10_000).is_ok());
             e.nodes
@@ -3909,11 +3439,9 @@ mod search {
 
     #[test]
     fn the_horizon_sees_a_promotion_coming() {
-        // the rook can win the knight across the board or take the pawn one
-        // step from promoting. The pawn's push captures nothing, so
-        // quiescence used not to generate it: the knight looked free to take
-        // and the queen appeared only after the horizon. Taking the pawn is
-        // the move.
+        // the rook can win the knight or take the pawn one step from
+        // promoting. The push captures nothing, so quiescence used not to
+        // generate it and the knight looked free to take
         let game = Board::from_fen("4k3/8/8/R5n1/8/8/p5K1/8 w - - 0 1").unwrap();
         let mut e = engine(game);
         let result = completed(e.search(1));
@@ -3922,10 +3450,8 @@ mod search {
 
     #[test]
     fn a_shallow_search_still_sees_the_recapture() {
-        // the queen can take a pawn which another pawn defends. A depth one
-        // search ends on the capture, so only quiescence sees the recapture
-        // that loses the queen for it. Shallow searches used to skip
-        // quiescence and walk into it.
+        // the queen can take a defended pawn, and at depth one only
+        // quiescence sees the recapture
         let game = Board::from_fen("4k3/8/3p4/2p5/8/2Q5/8/4K3 w - - 0 1").unwrap();
         let mut e = engine(game);
         let result = completed(e.search(1));
@@ -3935,13 +3461,9 @@ mod search {
     #[test]
     fn deepening_through_shallow_depths_matches_a_cold_search() {
         // iterations shallower than four used to store scores whose leaves
-        // were never quiesced, and deeper iterations then read those entries
-        // back as if they had been: the same depth then answered differently
-        // warm than cold. On the promotions position the difference was
-        // visible at the root, deepening promoted to a queen where a cold
-        // search of the same depth chose the rook.
-        // a_warm_cache_matches_a_cold_search cannot see any of this because
-        // it searches each depth directly rather than deepening to it.
+        // were never quiesced, so the same depth answered differently warm
+        // than cold. a_warm_cache_matches_a_cold_search searches each depth
+        // directly and cannot see this
         let positions = [
             fens::KIWIPETE,
             // the pawn endgame, with the fifty move counter wound on
@@ -3968,14 +3490,9 @@ mod search {
 
     #[test]
     fn a_narrowed_root_answers_what_the_full_one_does() {
-        // the reference plays with the window switched on, which nothing
-        // else does. Its contract is that a depth reached by deepening
-        // answers as one searched directly, and a window is meant to cost
-        // less rather than to answer differently: a score inside it is the
-        // position's worth, and one outside is a bound the widening
-        // searches again. So this is the exactness contract asked of the
-        // mechanism rather than of the table, and a failure here is a
-        // failure of the schedule.
+        // the reference with the window on: a depth reached by deepening
+        // under a window answers as one searched directly, so a failure
+        // here is a failure of the schedule
         let aspiring = SearchConfig {
             aspiration: true,
             ..SearchConfig::reference()
@@ -4010,8 +3527,6 @@ mod search {
             );
             narrowed_somewhere |= result.nodes != full.nodes;
         }
-        // and the answers above are the same because the window is exact
-        // rather than because nothing was narrowed
         assert!(
             narrowed_somewhere,
             "the window cost nothing anywhere, so the answers prove nothing"
@@ -4020,20 +3535,18 @@ mod search {
 
     #[test]
     fn a_losing_side_plays_for_the_fifty_move_draw() {
-        // white is a bishop down here, and every move but a pawn push or a
-        // capture takes the clock to a hundred, so the draw is the best of it
+        // white is a bishop down, and every move but a pawn push or a
+        // capture takes the clock to a hundred
         let game = Board::from_fen("5k2/1p3p1p/p3pK1P/P1P1P3/4bP2/8/8/8 w - - 99 112").unwrap();
         let mut e = engine(game);
         let result = completed(e.search(3));
         assert_eq!(result.score, 0);
     }
 
-    /// A fifty move draw is claimable and not automatic (FIDE 9.3; only
-    /// seventy five moves under 9.6 ends a game without a claim), so a root
-    /// whose counter has expired still answers with a move. It used to
-    /// report game over, and the interface printed `bestmove 0000`, a
-    /// forfeit in any GUI that asks rather than adjudicating. The score is
-    /// zero because every move here leaves the counter running.
+    /// A fifty move draw is claimable and not automatic (FIDE 9.3), so a
+    /// root whose counter has expired still answers with a move rather
+    /// than `bestmove 0000`. The score is zero because every move here
+    /// leaves the counter running.
     #[test]
     fn a_root_whose_fifty_move_counter_has_expired_still_answers_with_a_move() {
         let game = Board::from_fen("5k2/1p3p1p/p3pK1P/P1P1P3/4bP2/8/8/8 w - - 100 112").unwrap();
@@ -4047,8 +3560,8 @@ mod search {
         );
     }
 
-    /// The same position one ply before expiry, which always answered a move,
-    /// so the pair says the counter is what changed and not the position.
+    /// The same position one ply before expiry, so the pair says the
+    /// counter is what changed and not the position.
     #[test]
     fn the_same_root_one_ply_before_expiry_answers_the_same_way() {
         let game = Board::from_fen("5k2/1p3p1p/p3pK1P/P1P1P3/4bP2/8/8/8 w - - 99 112").unwrap();
@@ -4057,9 +3570,7 @@ mod search {
         assert_eq!(result.score, 0);
     }
 
-    /// A root mated on the hundredth half move is still game over: there is
-    /// no legal move, and the game ended on the mate before the side mated
-    /// had a move to claim on.
+    /// A root mated on the hundredth half move is still game over.
     #[test]
     fn a_mate_on_the_hundredth_half_move_is_still_game_over() {
         let game = Board::from_fen("7k/6Q1/6K1/8/8/8/8/8 b - - 100 112").unwrap();
@@ -4067,13 +3578,9 @@ mod search {
         assert!(matches!(e.search(3), SearchOutcome::GameOver));
     }
 
-    /// A move that resets the counter is worth what it wins.
-    ///
-    /// Queens face each other down the d file with the counter expired. Every
-    /// quiet move leaves the counter running, and the tree below answers zero
-    /// for those. The capture resets it and wins a queen. So the search picks
-    /// between the draw and the win on their scores, which is what a root
-    /// that answered the null move could not do.
+    /// A move that resets the counter is worth what it wins: with the
+    /// counter expired, every quiet move here scores zero and the queen
+    /// capture resets it.
     #[test]
     fn an_expired_counter_does_not_cost_a_win_a_capture_is_worth() {
         let game = Board::from_fen("3q3k/8/8/8/8/8/8/3Q2K1 w - - 100 1").unwrap();
@@ -4089,10 +3596,8 @@ mod search {
 
     #[test]
     fn a_depth_past_the_rail_from_a_check_is_clamped_in_the_library_too() {
-        // the interface clamps what it parses, but search() is public and
-        // the root deepens by one more when it is in check: the largest
-        // depth a byte holds plus that one used to overflow it before the
-        // search could answer
+        // search() is public, and the check extension on u8::MAX used to
+        // overflow
         let game = Board::from_fen("3R2k1/5ppp/8/8/8/8/8/6K1 b - - 0 1").unwrap();
         let mut e = engine(game);
         assert!(matches!(e.search(u8::MAX), SearchOutcome::GameOver));
@@ -4105,9 +3610,8 @@ mod search {
 
     #[test]
     fn a_full_width_line_stops_at_the_rail() {
-        // a node standing on the rail answers from the static eval, and
-        // answers from it whatever depth it still holds, which is the
-        // depth a line of checks would have left it
+        // a node on the rail answers from the static eval whatever depth
+        // it still holds
         let mut e = engine(Board::from_fen(IN_CHECK).unwrap());
         assert!(e.board.in_check());
         e.board.line_ply = MAX_PLY as usize;
@@ -4118,16 +3622,13 @@ mod search {
         };
         assert_eq!(e.nodes, 1, "the node on the rail searched on");
         assert_eq!(railed.score, e.eval());
-        // the one judgement in the rail: a static eval consulted no path
         assert!(!railed.tainted);
     }
 
     #[test]
     fn the_ply_under_the_rail_is_searched() {
-        // the boundary from the other side. The ply under the rail
-        // searches, and the one evasion it has is the node that rails, so
-        // the two of them are the whole count: a rail a ply early would
-        // answer here instead, and no rail at all would search on.
+        // the ply under the rail searches its one evasion, which rails: a
+        // rail a ply early would count one, and no rail would search on
         let mut e = engine(Board::from_fen(IN_CHECK).unwrap());
         e.board.line_ply = MAX_PLY as usize - 1;
 
@@ -4141,10 +3642,8 @@ mod search {
 
     #[test]
     fn a_mate_on_the_hundredth_half_move_is_a_mate_not_a_draw() {
-        // Rh8 mates, and it is the hundredth half move since anything
-        // irreversible. Checkmate ends the game on the spot, before the mated
-        // side has a move on which to claim the draw, so the mate outranks
-        // the fifty move rule rather than the other way round
+        // Rh8 mates on the hundredth half move, and the mate outranks the
+        // fifty move rule
         let game = Board::from_fen("k7/8/1K6/8/8/8/8/7R w - - 99 100").unwrap();
         let mut e = engine(game);
         let result = completed(e.search(2));
@@ -4154,8 +3653,7 @@ mod search {
 
     #[test]
     fn a_check_that_does_not_mate_on_the_hundredth_half_move_is_still_a_draw() {
-        // the same rook gives check on h8 but the king slips out to a7, so
-        // the hundredth half move ends the game as a draw after all
+        // the same check, but the king slips out to a7
         let game = Board::from_fen("k7/8/2K5/8/8/8/8/7R w - - 99 100").unwrap();
         let mut e = engine(game);
         let result = completed(e.search(3));
@@ -4178,8 +3676,7 @@ mod search {
 
     #[test]
     fn a_blown_deadline_stops_before_it_searches() {
-        // the first poll happens before the root is counted, so a clock
-        // already gone costs nothing at all rather than a poll interval
+        // the first poll happens before the root is counted
         let mut e = engine(Board::new());
         assert!(matches!(
             e.search_within(5, already_spent()),
@@ -4190,9 +3687,8 @@ mod search {
 
     #[test]
     fn deepening_with_no_time_budget_still_answers_depth_one() {
-        // a clock that has already run out must still get a legal move back:
-        // depth one is a few dozen nodes, so it runs whatever the clock says,
-        // and only then is the budget allowed to stop anything
+        // depth one runs whatever the clock says, so a spent clock still
+        // gets a legal move back
         let mut e = engine(Board::new());
         let options = SearchParameters::new(None, already_spent());
         let mut depths = Vec::new();
@@ -4207,9 +3703,8 @@ mod search {
 
     #[test]
     fn a_node_budget_stops_the_search_on_exactly_that_node() {
-        // a spread of budgets, so the last node falls in the full search and
-        // in quiescence by turns, and now and then exactly on the end of an
-        // iteration, which leaves the next one nothing and aborts it at once
+        // a spread of budgets, so the last node falls in the full search,
+        // in quiescence and now and then exactly on an iteration's end
         for limit in (50..6_000).step_by(97) {
             let mut e = engine(Board::new());
             let options = SearchParameters::new(None, nodes_only(limit));
@@ -4221,13 +3716,9 @@ mod search {
                 "{}",
                 limit
             );
-            // an abort leaves the count in one of two shapes, and both say
-            // every node visited is the budget to the node. Usually the
-            // last thing reported is the last search that finished, and the
-            // aborted search's own nodes are still on the engine, so the
-            // two add up. Where the aborted search found a move to swap in,
-            // it reported that move at the node it was interrupted on, and
-            // that report already covers the whole deepening
+            // either the last report is the last finished search and the
+            // aborted search's nodes are still on the engine, or the report
+            // is a swapped move's and already covers the whole deepening
             assert!(
                 completed + e.nodes == limit || completed == limit,
                 "budget {}: {} reported with {} left on the engine",
@@ -4240,11 +3731,8 @@ mod search {
 
     #[test]
     fn an_aborted_iteration_still_counts_the_whole_deepening() {
-        // the same sweep as above read the other way round: wherever the root
-        // finished a move before the budget ran out, that move answers rather
-        // than the completed depth's, and its count covers the aborted
-        // iteration as well as the depths before it, which together are the
-        // budget to the node
+        // wherever the root finished a move before the budget ran out, that
+        // move answers, and its count is the budget to the node
         let mut deeper = 0;
         for limit in (50..6_000).step_by(97) {
             let mut e = engine(Board::new());
@@ -4259,12 +3747,9 @@ mod search {
                 )
             };
             if reported + e.nodes == limit {
-                // the aborted search reached no move to swap in, so what
-                // answers is what answered going in. The last thing
-                // reported is the last search that finished, which need not
-                // be the answer: a ceiling finishes and does not answer, so
-                // the answer's own count can be shallower than this. The
-                // test above is what says these two add up
+                // no move to swap in. A ceiling finishes and does not
+                // answer, so the answer's own count can be shallower than
+                // the last report; the test above covers this arm
                 continue;
             }
             assert_eq!(result.nodes, limit, "budget {}", limit);
@@ -4278,9 +3763,8 @@ mod search {
 
     #[test]
     fn an_iteration_that_searched_no_root_move_leaves_the_completed_depth_answering() {
-        // a budget of exactly what three depths cost leaves the fourth
-        // nothing at all: it aborts on its first poll with no move of its
-        // own, so the answer is still the one depth three completed
+        // a budget of exactly what three depths cost aborts the fourth on
+        // its first poll
         let mut e = engine(Board::new());
         let three = completed(e.iterative_deepening_search(
             SearchParameters::new(Some(3), Limits::unlimited()),
@@ -4299,11 +3783,9 @@ mod search {
 
     #[test]
     fn an_answer_the_deepening_rewrote_times_the_nodes_it_reports() {
-        // the sweep once more, on the rows the test above skips. Where the
-        // answer comes from before the aborted iteration its count is
-        // raised to cover that iteration, and a time left where the answer
-        // was found would divide the whole search's nodes by part of the
-        // time they took. The same arithmetic tells the two arms apart
+        // the rows the test above skips: an answer from before the aborted
+        // iteration has its count raised to cover it, and its time has to
+        // be raised with it
         let mut rewritten = 0;
         for limit in (50..6_000).step_by(97) {
             let mut e = engine(Board::new());
@@ -4320,8 +3802,6 @@ mod search {
             };
             let (nodes, elapsed) = reported.expect("a search reported no depth");
             if nodes + e.nodes != limit {
-                // the aborted search found a move to swap in, so the answer
-                // is its own and its time was taken with its nodes
                 continue;
             }
             assert!(
@@ -4342,8 +3822,7 @@ mod search {
 
     /// What a fresh engine answers depth four from the opening with, and
     /// what a depth five search under `budget` answers after it. Built anew
-    /// for every budget so that the table each one searches with is the
-    /// same and the answer depends on the budget alone.
+    /// for every budget so the answer depends on the budget alone.
     fn five_after_four(budget: u64) -> (Play, SearchOutcome) {
         let mut e = engine(Board::new());
         let four = completed(e.search(4));
@@ -4353,15 +3832,11 @@ mod search {
 
     #[test]
     fn the_root_searches_the_previous_depths_best_move_first() {
-        // what makes the swap above sound, and the one thing that would
-        // silently unmake it. The smallest budget an aborted iteration has a
-        // move to answer with is the one that just covers the first root
-        // move it tried, so whatever answers at that budget is the move the
-        // root tried first, and it has to be the one the depth before
-        // answered with
+        // what makes the swap sound. Whatever answers at the smallest budget
+        // with a move in hand is the move the root tried first, and it has
+        // to be the one the depth before answered with
         let finished = |budget| !matches!(five_after_four(budget).1, SearchOutcome::Aborted(None));
-        // more nodes is never fewer root moves finished, so the smallest
-        // budget with a move in hand can be bisected for
+        // more nodes is never fewer root moves finished, so bisect
         let (mut none, mut some) = (0, 100_000);
         assert!(
             finished(some),
@@ -4389,11 +3864,9 @@ mod search {
 
     #[test]
     fn a_swapped_answer_is_reported_before_the_search_ends() {
-        // the swap is the one answer no completed depth reported, so without
-        // a report of its own the last line the caller heard opens with the
-        // move being given up. A sweep of budgets, because which of them
-        // ends an iteration on a better move is a fact about this position
-        // rather than one to work out here
+        // the swap is the one answer no completed depth reported. A sweep of
+        // budgets, because which of them ends an iteration on a better move
+        // is a fact about this position
         let mut swaps = 0;
         for limit in (500..40_000).step_by(311) {
             let mut e = engine(Board::from_fen(SHARP_MIDDLEGAME).unwrap());
@@ -4410,14 +3883,8 @@ mod search {
                 .rfind(|(_, _, bound)| *bound == ScoreBound::Exact)
                 .map(|(play, _, _)| *play);
             if completed == Some(result.best_move) {
-                // the deepest completed depth answered, which its own report
-                // already described. A depth may still say something after
-                // it: a ceiling names the move that came closest and not an
-                // answer, and a fail high that finished names a floor under
-                // the move already in hand. What would be wrong is a floor
-                // opening with a move the search does not answer with, since
-                // that is the line an unreported swap would leave the caller
-                // holding
+                // the deepest completed depth answered. A later ceiling names
+                // no answer; a later floor must name the move in hand
                 if let Some((play, _, ScoreBound::Lower)) = reports.last() {
                     assert_eq!(
                         *play, result.best_move,
@@ -4441,16 +3908,8 @@ mod search {
     }
 
     /// A search stopped by its budget says it spent the budget, whichever
-    /// of the two aborted answers it came back with.
-    ///
-    /// An iteration begun and then cut short spends nodes whether or not
-    /// anything in it beat the window's alpha. The answer comes from the
-    /// depth before it when nothing did, and the nodes are still the
-    /// search's: a count that left them out would say a search held to a
-    /// budget visited fewer nodes than the budget, and a caller cannot
-    /// recover them, since the two aborted answers arrive in the same
-    /// shape. Swept over budgets, because which of the two fires depends
-    /// on where inside the iteration the budget ran out.
+    /// of the two aborted answers it came back with. A caller cannot recover
+    /// the count itself, since the two arrive in the same shape.
     #[test]
     fn a_search_stopped_by_its_budget_counts_the_iteration_it_gave_up() {
         let mut bound = 0;
@@ -4486,8 +3945,7 @@ mod search {
 
     #[test]
     fn a_node_budget_and_a_clock_stop_at_whichever_comes_first() {
-        // the clock wins: a spent clock and a generous budget end after
-        // depth one, which runs whatever either says
+        // the clock wins, after depth one
         let mut e = engine(Board::new());
         let options = SearchParameters::new(
             None,
@@ -4502,8 +3960,7 @@ mod search {
         assert!(matches!(outcome, SearchOutcome::Aborted(Some(_))));
         assert_eq!(depths, vec![1]);
 
-        // the budget wins: a clock with time to spare and a small budget stop
-        // on the budget's node
+        // the budget wins, on its node
         let mut e = engine(Board::new());
         let limit = 1_000;
         let options = SearchParameters::new(
@@ -4522,8 +3979,7 @@ mod search {
 
     #[test]
     fn a_stop_flag_already_set_still_answers_the_first_depth() {
-        // the flag is armed the way the clock is, so depth one runs whatever
-        // it says and there is always a real move to answer with
+        // the flag is armed the way the clock is, so depth one runs
         let mut e = engine(Board::new());
         let stop = Arc::new(AtomicBool::new(true));
         let options = SearchParameters::stoppable(None, Limits::unlimited(), Arc::clone(&stop));
@@ -4539,9 +3995,8 @@ mod search {
 
     #[test]
     fn a_stop_flag_set_mid_search_ends_the_deepening_with_a_move() {
-        // an unlimited search of a sharp position would run for minutes.
-        // A thread sets the flag once a depth has been reported, and what
-        // comes back is the move in hand rather than nothing
+        // an unlimited search of a sharp position, stopped from the report
+        // of depth three
         let mut e = engine(Board::from_fen(SHARP_MIDDLEGAME).unwrap());
         let stop = Arc::new(AtomicBool::new(false));
         let options = SearchParameters::stoppable(None, Limits::unlimited(), Arc::clone(&stop));
@@ -4578,8 +4033,7 @@ mod search {
 
     #[test]
     fn a_search_asked_for_directly_carries_no_flag_to_read() {
-        // what keeps the bench counting what it counted before there was a
-        // flag: nothing but the deepening loop ever arms one
+        // nothing but the deepening loop ever arms a flag
         let mut e = engine(Board::new());
         e.stop = Some(Arc::new(AtomicBool::new(true)));
         assert!(matches!(e.search(2), SearchOutcome::Complete(_, _)));
@@ -4630,9 +4084,7 @@ mod search {
                 node_counts.push(result.nodes);
             });
         assert_eq!(depths, vec![1, 2, 3]);
-        // the count covers the whole deepening so far, so each report says
-        // more than the one before: reporting one iteration's count against
-        // the whole search's clock is the bug this pins shut
+        // the count covers the whole deepening so far
         assert!(
             node_counts.windows(2).all(|w| w[0] < w[1]),
             "node counts must grow with each depth: {:?}",
@@ -4650,8 +4102,7 @@ mod search {
 
     #[test]
     fn a_finished_game_is_game_over_with_no_depth_to_report() {
-        // fool's mate, white to move with no reply, and a stalemate: there is
-        // nothing to play, so a search says so and deepening reports nothing
+        // fool's mate and a stalemate
         let fens = [
             "rnb1kbnr/pppp1ppp/8/4p3/6Pq/5P2/PPPPP2P/RNBQKBNR w KQkq - 1 3",
             "k7/8/1Q6/8/8/8/8/7K b - - 0 1",
@@ -4667,26 +4118,19 @@ mod search {
         }
     }
 
-    /// Every quiet past the node's first may be pruned at depths one to
-    /// three, and the move loop reads no legal move found as mate or
-    /// stalemate. So the first move searched is exempt, and this is the
-    /// test of that: a node whose every quiet the rule would prune still
-    /// answers with what a move of it is worth rather than with the
-    /// stalemate's zero. The exactness tests cannot see this, because the
-    /// reference has the rule off, so it is asked of the default here.
+    /// The move loop reads no legal move found as mate or stalemate, so the
+    /// shallow rules exempt the first move searched: a node whose every
+    /// quiet the rule would prune still answers with what a move is worth
+    /// rather than the stalemate's zero. Asked of the default, since the
+    /// reference has the rule off.
     #[test]
     fn a_node_that_prunes_every_late_quiet_is_not_stalemated() {
-        // white a knight and a bishop against a bare king, with no capture
-        // and no move that gives check, so every move the node has is one
-        // the rule can reach. The knight's own moves and the light squared
-        // bishop's both stay off the dark corner the black king stands on,
-        // which is what keeps the check exemption out of the test.
+        // no capture and no move that gives check, so the rule can reach
+        // every move the node has
         let mut e = engine(Board::from_fen("7k/8/8/8/8/8/8/KN1B4 w - - 0 1").unwrap());
         assert!(e.config.quiet_futility, "the default carries the rule");
         let eval = e.eval();
         assert!(eval > 100, "the side to move is a piece up twice: {eval}");
-        // alpha far past anything the margin can reach, so every quiet
-        // past the first is futile at every depth the rule decides
         let alpha = eval + 10_000;
         assert!(!crate::value::is_mate(alpha));
         for depth in 1..=crate::late_move::SHALLOW_MAX_DEPTH {
@@ -4703,13 +4147,8 @@ mod search {
 
     #[test]
     fn a_clock_that_runs_out_mid_deepening_still_answers_with_a_move() {
-        // the one clock in the suite that is not zero. A zero budget aborts
-        // on the first poll, before the next check is ever armed, so this
-        // is the only test of the clock being read again thousands of nodes
-        // on. Fifty milliseconds from the opening is orders of magnitude
-        // short of the ply rail, so the clock wins, and whether the move comes
-        // from the last depth to finish or from the one it stopped in the
-        // middle of, there has to be one
+        // the one clock in the suite that is not already spent, so the only
+        // test of the clock being read again thousands of nodes on
         let mut e = engine(Board::new());
         let params = SearchParameters::new(
             None,
@@ -4722,10 +4161,8 @@ mod search {
     #[test]
     fn a_deepening_stops_before_an_iteration_the_clock_will_not_cover() {
         // more than the soft share of a second has gone and the second
-        // itself has not, so the deadline would let a second depth start and
-        // the soft bound does not. Which fraction of the budget that is, and
-        // why, belongs to Limits; what is asserted here is that the deepening
-        // loop asks it at all, and asks it only of a share of a game clock
+        // itself has not. The fraction belongs to Limits; this asserts the
+        // deepening loop asks it, and only of a share of a game clock
         for (kind, depths) in [
             (Clock::Share as fn(time::Duration) -> Clock, vec![1]),
             (Clock::Fixed as fn(time::Duration) -> Clock, vec![1, 2]),
@@ -4755,11 +4192,8 @@ mod search {
     #[test]
     fn draw_taint_is_still_recorded_and_never_trusted() {
         // the pawn endgame carries the most draw traffic of the bench
-        // positions. tainted_stores at zero means taint propagation broke
-        // and the probe's refusal is refusing nothing; tainted_score_cutoffs
-        // moving off zero means a probe path without the refusal guard was
-        // added. The refusal is the reference's policy, so the reference is
-        // what is built
+        // positions. No tainted stores means propagation broke; a tainted
+        // cutoff means a probe path without the refusal guard was added
         let fen = fens::PAWN_ENDGAME;
         let mut e = reference(Board::from_fen(fen).unwrap());
         for depth in 1..=7 {
@@ -4775,9 +4209,6 @@ mod search {
             0,
             "a path dependent score was trusted"
         );
-        // the refusals are what the policy costs, so they are counted as
-        // the cutoffs would have been: a refusal that went uncounted would
-        // make the policy look free
         assert!(
             e.ghi().refused_cutoffs > 0,
             "the refusal refused nothing, or refused without counting"
@@ -4786,10 +4217,7 @@ mod search {
 
     #[test]
     fn every_taint_word_names_a_policy_and_the_policy_names_it_back() {
-        // the bench reads a word and prints one, and they have to be the
-        // same word or a report could not be rerun from its header; and
-        // the word the default prints has to name the default, or a bench
-        // told nothing and a bench told that word would run apart
+        // a report has to be rerunnable from the word its header prints
         for word in ["refuse", "trust", "skip", "rule50"] {
             let config =
                 SearchConfig::with_taint(word).unwrap_or_else(|| panic!("{word} is not a policy"));
@@ -4806,12 +4234,9 @@ mod search {
     #[test]
     fn taint_crosses_a_quiescence_frame_whose_tainted_capture_is_not_last() {
         // a trusting search that cuts on a tainted entry inside a capture
-        // tree must taint what flows out of that tree. The queen forks the
-        // rook and the pawn, and no white move saves both, so every line
-        // concedes something and the capture tree is really searched. The
-        // rook is taken first, into a seeded tainted entry; the pawn
-        // capture searched after it must not launder the flag on its way
-        // out, and the stores that follow say whether it did
+        // tree must taint what flows out of it. The queen forks rook and
+        // pawn; the rook is taken first, into a seeded tainted entry, and
+        // the pawn capture searched after it must not launder the flag
         let fen = "7k/3q4/8/8/R5P1/8/8/K7 w - - 0 1";
         let seeded = |config: SearchConfig| {
             let mut e = AlphaBeta::with_config(Board::from_fen(fen).unwrap(), TABLE_BYTES, config);
@@ -4823,15 +4248,13 @@ mod search {
             let any = play_named(&board, "b1c1");
             e.transpositions
                 .record_best(&board, any, Value::tainted(0), 9);
-            // the root's own entry names the king move, so the seeded line
-            // is searched first, with the whole window still open: no
-            // sibling's value has yet shrunk it to where standing pat ends
-            // the frame before the captures run
+            // the root's entry names the king move, so the seeded line is
+            // searched first, at the open window, before standing pat could
+            // end the frame
             let king = play_named(&e.board, "a1b1");
             e.transpositions
                 .record_best(&e.board, king, Value::clean(0), 9);
-            // the seeding itself counts one tainted store, so the search's
-            // own contribution is what the two policies are compared on
+            // the seeding itself counts one tainted store
             let seeded = e.ghi().tainted_stores;
             completed(e.search(1));
             e.ghi().tainted_stores - seeded
@@ -4853,13 +4276,8 @@ mod search {
 
     #[test]
     fn a_search_told_to_trust_tainted_scores_takes_their_cutoffs() {
-        // the refusal is what the reference carries, and a search told to
-        // trust those scores is the control arm of the graph history
-        // experiments. The switch has to reach the probe: a field the search
-        // never reads would make every comparison against the reference a
-        // comparison of the reference with itself
+        // the switch has to reach the probe
         let fen = fens::PAWN_ENDGAME;
-        // the reference with the one switch flipped
         let trusting = SearchConfig {
             taint: TaintPolicy::Trust,
             ..SearchConfig::reference()
@@ -4881,8 +4299,7 @@ mod search {
 
     #[test]
     fn the_static_shortcut_looks_at_less_of_the_tree() {
-        // the switch has to reach the search, or every comparison with the
-        // reference would be of the reference with itself
+        // the switch has to reach the search
         let mut e = shortcut(Board::from_fen(SHARP_MIDDLEGAME).unwrap());
         completed(e.search(6));
         let mut cold = reference(Board::from_fen(SHARP_MIDDLEGAME).unwrap());
@@ -4897,16 +4314,9 @@ mod search {
 
     #[test]
     fn the_static_shortcut_is_never_taken_by_a_node_in_check() {
-        // hxg7+ Kxg7 Rxh7+ Kxh7 Qf6 mates, and every node of that line
-        // after the first is a node in check: white hands over a pawn and
-        // a rook to open the king up, so at each of them black is the
-        // material to the good and a static eval standing still there
-        // reads as winning. A shortcut that fired in check would answer
-        // those nodes from that material and the mate would go with them,
-        // the position reading a piece down for white instead. In check
-        // there is no declining to move, so no static floor exists to be
-        // answered from, which is the same reason quiescence does not
-        // stand pat there.
+        // hxg7+ Kxg7 Rxh7+ Kxh7 Qf6 mates. Every node of the line after the
+        // first is in check with black the material up, so a shortcut that
+        // fired in check would answer from that material and lose the mate
         let fen = "r5rk/2p1Nppp/3p3P/pp2p1P1/4P3/2qnPQK1/8/R6R w - - 0 1";
         let mut e = shortcut(Board::from_fen(fen).unwrap());
         let result = completed(e.search(4));
@@ -4923,15 +4333,11 @@ mod search {
 
     #[test]
     fn a_mate_in_the_window_is_searched_for_rather_than_guessed_at() {
-        // Once a mate is in hand, everything searched after it is searched
-        // with minus that mate for a beta, and every eval of a board stands
-        // above a number like that: a shortcut that did not look at beta
-        // would answer the whole of the rest of the list from the static
-        // eval, and a faster mate hiding in it would never be looked for.
-        // A canary rather than a discrimination: on every position tried,
-        // dropping the guard changed the tree by a seventh and the answers
-        // not at all, so what this holds is that the mate distances stay
-        // right, not that the guard alone keeps them so.
+        // once a mate is in hand, later siblings are searched against a
+        // mate beta that every eval clears. A canary rather than a
+        // discrimination: on every position tried, dropping the guard
+        // changed the tree and not the answers, so this holds that the mate
+        // distances stay right, not that the guard alone keeps them so
         let fens = [
             "5n1k/5Kpp/8/8/8/8/8/2Q4R w - - 0 1",
             "2rr3k/pp3pp1/1nnqbN1p/3pN3/2pP4/2P3Q1/PPB4P/R4RK1 w - - 0 1",
@@ -4955,12 +4361,9 @@ mod search {
 
     #[test]
     fn the_static_shortcut_is_never_taken_by_a_side_holding_only_pawns() {
-        // the trebuchet, where whoever is to move loses: both kings are in
-        // zugzwang, every move there is worsens the position, and a static
-        // floor is exactly the thing that is not true of it. Neither side
-        // has a piece and neither pawn can ever promote past the other, so
-        // the shortcut is refused at every node of this tree and the arm
-        // searches what the reference searches, node for node.
+        // the trebuchet, mutual zugzwang, where a static floor is exactly
+        // what is not true. Neither side ever has a piece, so the arm
+        // searches what the reference searches, node for node
         let fen = "8/8/8/4p3/4Pk2/3K4/8/8 w - - 0 1";
         let mut e = shortcut(Board::from_fen(fen).unwrap());
         let result = completed(e.search(7));
@@ -4976,7 +4379,6 @@ mod search {
 
     #[test]
     fn passing_looks_at_less_of_the_tree() {
-        // the switch has to reach the search, as above
         let mut e = passing(Board::from_fen(SHARP_MIDDLEGAME).unwrap());
         completed(e.search(6));
         let mut cold = reference(Board::from_fen(SHARP_MIDDLEGAME).unwrap());
@@ -4991,12 +4393,8 @@ mod search {
 
     #[test]
     fn the_depth_term_leaves_the_reduced_search_a_depth_it_can_hold() {
-        // `depth - 1 - r` is unsigned at the call site, so an `r` past
-        // `depth - 1` is not an over-reduction but a wrap to a depth near
-        // the top of the range, and the pass would then search deeper than
-        // the node that asked for it. Every depth a pass is offered at,
-        // and every depth past the bench's, held to leaving that
-        // subtraction a number.
+        // `depth - 1 - r` is unsigned at the call site, so every depth a
+        // pass is offered at is held to leaving it a number
         let adaptive = SearchConfig::default();
         for depth in NULL_MOVE_MIN_DEPTH..=u8::MAX {
             for eval_beta in [0, 1, 199, 200, 399, 400, 599, 600, 5_000, Score::MAX] {
@@ -5017,10 +4415,8 @@ mod search {
 
     #[test]
     fn the_depth_term_grows_the_reduction_and_the_switch_holds_it_flat() {
-        // the arm is the growth and nothing else, so the two configs are
-        // read at the same depths: off the switch every depth reads the
-        // base, on it the base plus a sixth of the depth. Depth 6 is the
-        // first the term moves, which is what the divisor says.
+        // off the switch every depth reads the base, on it the base plus a
+        // sixth of the depth
         let flat = SearchConfig {
             adaptive_null_move: false,
             ..SearchConfig::default()
@@ -5048,11 +4444,7 @@ mod search {
 
     #[test]
     fn the_margin_term_steps_every_two_pawns_and_stops_at_its_cap() {
-        // read at depth 18, where the clamp cannot reach and the two terms
-        // are visible apart: the depth term gives 5 there and the margin
-        // adds a ply for each whole `NULL_MOVE_EVAL_UNIT` of clearance,
-        // three at most. The unit's own boundaries are the cases: a margin
-        // one short of a unit buys nothing.
+        // at depth 18 the clamp cannot reach and the depth term gives 5
         let deep = 18;
         for (eval_beta, expected) in [
             (0, 5),
@@ -5075,10 +4467,7 @@ mod search {
 
     #[test]
     fn the_margin_term_is_clamped_where_the_depth_cannot_hold_it() {
-        // the shallowest depths are where the cap would ask for more plies
-        // than there are. The clamp leaves the reduced search at depth
-        // zero, which is quiescence, and is the same floor the pass has at
-        // depth 3 today rather than a new behaviour.
+        // the clamp leaves the reduced search at depth zero, quiescence
         for (depth, expected) in [(3, 2), (4, 3), (5, 4), (6, 5), (7, 6), (8, 6)] {
             assert_eq!(
                 null_move_reduction(SearchConfig::default(), depth, 600),
@@ -5091,8 +4480,7 @@ mod search {
     #[test]
     fn the_depth_term_looks_at_less_of_the_tree_than_the_flat_reduction() {
         // the switch has to reach the search. Depth 8, because the term
-        // first moves at a node of depth 6 and a root of six reaches one
-        // such node, the root itself.
+        // first moves at a node of depth 6
         let mut e = passing_adaptively(Board::from_fen(SHARP_MIDDLEGAME).unwrap());
         completed(e.search(8));
         let mut flat = passing(Board::from_fen(SHARP_MIDDLEGAME).unwrap());
@@ -5107,12 +4495,8 @@ mod search {
 
     #[test]
     fn a_mate_found_through_a_grown_pass_does_not_come_back_as_one() {
-        // the same corner as `a_mate_found_through_a_pass_does_not_come_
-        // back_as_one` and for the same reason, asked at a depth the term
-        // moves: at six the pass is searched three plies shallower rather
-        // than two. The clamp on the mate window is what holds the score
-        // under the window a caller reads mates in, and a reduction that
-        // varies must not be a way round it.
+        // `a_mate_found_through_a_pass_does_not_come_back_as_one` at a
+        // depth the term moves
         let board = Board::from_fen("7k/5K1N/8/8/8/8/Q7/8 w - - 0 1").unwrap();
         let mut e = passing_adaptively(board);
         let beta = e.eval();
@@ -5133,12 +4517,8 @@ mod search {
 
     #[test]
     fn a_side_holding_only_pawns_never_passes() {
-        // the trebuchet again, and for the same reason: whoever is to move
-        // loses, so passing is better there than every move there is and a
-        // reduced search of one proves nothing about them. That is what
-        // zugzwang is, and pawns and a king is the material it happens to.
-        // The gate refuses the pass at every node of this tree, so the arm
-        // searches what the reference searches, node for node.
+        // the trebuchet again: in zugzwang a pass is better than every move
+        // there is, so a reduced search of one proves nothing
         let fen = "8/8/8/4p3/4Pk2/3K4/8/8 w - - 0 1";
         let mut e = passing(Board::from_fen(fen).unwrap());
         let result = completed(e.search(7));
@@ -5154,12 +4534,7 @@ mod search {
 
     #[test]
     fn a_mate_only_a_move_refutes_survives_the_pass() {
-        // hxg7+ Kxg7 Rxh7+ Kxh7 Qf6 mates, and white is a pawn and a rook
-        // down along the way. Every node after the first is a node in
-        // check, where there is no declining to move, and the sacrifices
-        // are only answered by the moves that deliver them. A pass taken
-        // in either place would answer those nodes from the material and
-        // the mate would go with it.
+        // the sacrifice line above, with the pass in place of the margin
         let fen = "r5rk/2p1Nppp/3p3P/pp2p1P1/4P3/2qnPQK1/8/R6R w - - 0 1";
         let mut e = passing(Board::from_fen(fen).unwrap());
         let result = completed(e.search(4));
@@ -5176,22 +4551,12 @@ mod search {
 
     #[test]
     fn a_mate_found_through_a_pass_does_not_come_back_as_one() {
-        // Black's king stands in the corner with white's knight the only
-        // square it can step to. Pass, and black has to take the knight,
-        // after which Qh2 mates: the reduced search under the pass comes
-        // back with a mate score. It is not a mate. White never had the
-        // pass to play, so what was proved is that the position is very
-        // good, and the node answers below the window a caller reads mates
-        // in. The mate that is really there is found by searching the moves.
-        //
-        // Beta is the eval, which is the largest one the pass is tried
-        // under, and that is what makes the mate the only score that can
-        // come back: taking the knight puts white under beta, so nothing
-        // short of the mate clears it. The node is asked for directly
-        // because a mate invented here has to be caught where it is
-        // invented. By the time the root has searched its moves the real
-        // mate outscores the invented one and nothing above can tell them
-        // apart.
+        // after a pass black has to take the knight and Qh2 mates, so the
+        // reduced search comes back with a mate white never had. Beta is
+        // the eval, the largest the pass is tried under, so only the mate
+        // clears it. Asked of the node directly, because by the time the
+        // root has searched its moves the real mate outscores the invented
+        // one
         let board = Board::from_fen("7k/5K1N/8/8/8/8/Q7/8 w - - 0 1").unwrap();
         let mut e = passing(board);
         let beta = e.eval();
@@ -5210,22 +4575,14 @@ mod search {
         );
     }
 
-    /// One ply short of the fifty move horizon, and arranged so that the
-    /// pass is the only way to reach it. Every move white has is a capture
-    /// or a pawn move, which puts the counter back to nothing, so no line
-    /// white can play reads a draw; the pass moves no piece and takes no
-    /// pawn, so the counter runs on and the position under it is drawn.
-    /// Whatever taint comes out of a node here came out of the pass.
+    /// One ply short of the fifty move horizon. Every move white has resets
+    /// the counter and the pass does not, so whatever taint comes out of a
+    /// node here came out of the pass.
     const ONLY_A_PASS_READS_THE_DRAW: &str = "1k6/8/8/8/8/5p1p/4P1PP/6NK w - - 99 60";
 
     #[test]
     fn a_cutoff_from_a_pass_carries_the_pass_taint() {
-        // The pass runs the counter out, so what comes back is the draw,
-        // which is a fact about the line and not about the position. Beta
-        // is nothing, so that draw clears it and the node is answered from
-        // the pass. The answer has to say what it depended on, or the
-        // table stores a score as if the position were worth it whatever
-        // the counter said.
+        // the pass reads the draw, which clears a beta of zero
         let board = Board::from_fen(ONLY_A_PASS_READS_THE_DRAW).unwrap();
         let mut e = passing(board);
         let Ok(value) = e.alpha_beta(-1, 0, 3, true, RootBounds::NEITHER) else {
@@ -5236,12 +4593,8 @@ mod search {
 
     #[test]
     fn a_pass_that_failed_still_taints_the_node() {
-        // The same position with beta at the eval, which is the largest one
-        // the pass is tried under. The draw the pass reads is worth nothing
-        // and beta is worth more, so the pass fails and the moves are
-        // searched. It still read the draw on the way, and the node has to
-        // carry that: white is winning here, so the score the node settles
-        // on is one of its own moves and the taint is the pass's alone.
+        // beta at the eval, so the pass fails and the moves are searched,
+        // and the node still carries the draw the pass read
         let board = Board::from_fen(ONLY_A_PASS_READS_THE_DRAW).unwrap();
         let mut e = passing(board);
         let beta = e.eval();
@@ -5269,9 +4622,8 @@ mod search {
         e
     }
 
-    /// The scout on its own: the zero width search of the child a ply
-    /// shallower than the probe would be, as `windowed` asks it.
-    /// What it costs and what it answers, from the parent's side.
+    /// The scout on its own, as `windowed` asks it: what it costs and what
+    /// it answers, from the parent's side.
     fn scout(e: &mut AlphaBeta, alpha: Score, depth: u8) -> (u64, Value) {
         let Ok(value) = e.alpha_beta(
             -alpha - 1,
@@ -5287,12 +4639,9 @@ mod search {
 
     #[test]
     fn a_late_quiet_is_scouted_a_ply_shallower_and_answered_by_a_scout_that_fails_low() {
-        // `windowed` driven at the child with the reduction asked for by
-        // the flag rather than earned by a move count, so what is counted
-        // is the seam and nothing else. Alpha stands well above anything
-        // the move is worth, so the scout fails low, and the reduced call
-        // then costs exactly the scout's nodes and answers with the scout's
-        // value. The probe it stood in for is dearer, which is the saving.
+        // `windowed` driven at the child with the reduction asked for
+        // directly. Alpha stands well above the move, so the scout fails
+        // low and the call costs exactly the scout's nodes
         const DEPTH: u8 = 3;
         let mut oracle = at_reducible_child(SearchConfig::reference());
         let Ok(exact) = oracle.windowed(
@@ -5345,13 +4694,10 @@ mod search {
 
     #[test]
     fn a_scout_that_fails_high_is_re_searched_at_full_depth() {
-        // The same child under a window the move sits inside, so the scout
-        // fails high and the move earns the depth it was denied. Reduced,
-        // the call costs exactly what the scout costs and then what an
-        // unreduced call costs on the table the scout left behind, which
-        // is the second engine here, and it answers what the unreduced
-        // call answers: the exact score, since the window is an open one
-        // and the proof runs at the full window.
+        // a window the move sits inside, so the scout fails high. The
+        // reduced call costs the scout and then an unreduced call on the
+        // table the scout left (the second engine), and answers the exact
+        // score
         const DEPTH: u8 = 3;
         let mut oracle = at_reducible_child(SearchConfig::reference());
         let Ok(exact) = oracle.windowed(
@@ -5404,15 +4750,10 @@ mod search {
 
     #[test]
     fn a_node_in_check_searches_what_the_reference_searches() {
-        // the rook checks along the file and white has seven evasions, four
-        // king steps and three interpositions, every one of them quiet.
-        // Asked at depth two the node extends to three, the floor, so a
-        // reduction that ignored the check would scout the evasions after
-        // the fourth, while the children stand at depth two and can reduce
-        // nothing themselves. So the arm searches what the reference
-        // searches, node for node, if and only if the node in check
-        // declines to reduce; that it declines is
-        // `late_move::tests::a_node_in_check_reduces_nothing`
+        // seven quiet evasions. Asked at depth two the node extends to the
+        // floor and its children can reduce nothing, so the arm searches
+        // what the reference searches if and only if the node in check
+        // declines to reduce (`late_move::tests::a_node_in_check_reduces_nothing`)
         let fen = "4r2k/8/8/8/8/8/2Q2N2/4K3 w - - 0 1";
         let board = Board::from_fen(fen).unwrap();
         assert!(board.in_check());
@@ -5446,15 +4787,10 @@ mod search {
 
     #[test]
     fn the_mate_window_searches_what_the_reference_searches() {
-        // a zero width window inside the mate scores turns round at every
-        // ply, so every node of the tree stands at one edge or the other
-        // and none of them reduces: the arm searches what the reference
-        // searches, node for node, where the same node under an ordinary
-        // window reduces plenty. Depth five, so that the grandchildren,
-        // which a child cutting off on its first move leaves searching
-        // every move of theirs, stand at the floor with alpha the mate in
-        // hand. That either edge stands the decision down is
-        // `late_move::tests::the_mate_window_stands_the_reduction_down`
+        // a zero window inside the mate scores puts every node at a mate
+        // edge, so none reduces, where an ordinary window reduces plenty.
+        // Depth five puts the grandchildren at the floor with alpha the
+        // mate in hand (`late_move::tests::the_mate_window_stands_the_reduction_down`)
         let fen = SHARP_MIDDLEGAME;
         let mut e = reducing(Board::from_fen(fen).unwrap());
         let Ok(value) = e.alpha_beta(29_500, 29_501, 5, true, RootBounds::NEITHER) else {
@@ -5481,7 +4817,6 @@ mod search {
 
     #[test]
     fn reducing_looks_at_less_of_the_tree() {
-        // the switch has to reach the search, as above
         let mut e = reducing(Board::from_fen(SHARP_MIDDLEGAME).unwrap());
         completed(e.search(6));
         let mut cold = reference(Board::from_fen(SHARP_MIDDLEGAME).unwrap());
@@ -5496,13 +4831,9 @@ mod search {
 
     #[test]
     fn a_dead_quiet_is_scouted_two_plies_shallower_and_answered_by_its_scout() {
-        // the seam at the reduction the model asks for: `windowed` driven
-        // with two plies rather than one, at the deep floor, where the
-        // scout stands at depth one. Alpha is far above the position, the
-        // scout fails low and is trusted, and the reduced call costs
-        // exactly the two ply scout's nodes and answers with its value;
-        // the one ply scout beside it is dearer, which is what the model
-        // is spending its word on
+        // the seam driven with two plies at the deep floor: the scout fails
+        // low, the call costs exactly its nodes, and the one ply scout
+        // beside it is dearer
         const DEPTH: u8 = DEEP_REDUCTION_MIN_DEPTH;
         let mut oracle = at_reducible_child(SearchConfig::reference());
         let Ok(exact) = oracle.windowed(
@@ -5571,8 +4902,7 @@ mod search {
 
     #[test]
     fn the_deep_reduction_looks_at_less_of_the_tree() {
-        // the switch has to reach the search, measured against the rung
-        // below it
+        // measured against the rung below it
         let mut e = deep_reducing(Board::from_fen(SHARP_MIDDLEGAME).unwrap());
         completed(e.search(6));
         let mut one_ply = reducing(Board::from_fen(SHARP_MIDDLEGAME).unwrap());
@@ -5587,12 +4917,9 @@ mod search {
 
     #[test]
     fn the_pruning_reaches_the_search() {
-        // the switch has to reach the search, measured against the rung
-        // below it. A different tree rather than a smaller one: skipping a
-        // move changes what the table holds and what the ordering does with
-        // it, so the pruning can cost nodes as well as save them, and the
-        // 2026-09-13 mobility refit made it cost them on three of the
-        // bench's positions at this depth, this one among them
+        // a different tree rather than a smaller one: skipping a move
+        // changes what the table and the ordering hold, so the pruning can
+        // cost nodes, as it does here
         let mut e = pruning(Board::from_fen(SHARP_MIDDLEGAME).unwrap());
         completed(e.search(6));
         let mut deep = deep_reducing(Board::from_fen(SHARP_MIDDLEGAME).unwrap());
@@ -5605,11 +4932,9 @@ mod search {
 
     #[test]
     fn a_node_that_skips_its_dead_quiets_still_answers_from_the_front() {
-        // the soundness shape the skip stands on: a skipped move can
-        // lower a node's answer and never raise it, so at a position
-        // whose answer the first moves carry, the search with the skip
-        // answers what the search without it answers and pays fewer
-        // nodes for it
+        // a skipped move can lower a node's answer and never raise it, so
+        // where the first moves carry the answer the skip changes only the
+        // cost
         let mut e = pruning(Board::from_fen(fens::A_CAPTURE_AND_QUIETS).unwrap());
         let pruned = completed(e.search(6));
         let mut deep = deep_reducing(Board::from_fen(fens::A_CAPTURE_AND_QUIETS).unwrap());
@@ -5626,9 +4951,8 @@ mod search {
 
     #[test]
     fn the_quiet_memories_look_at_less_of_the_tree_for_the_same_answer() {
-        // the switch has to reach the search, and this one owes more than
-        // the shortcuts do: nothing here prunes, so the root's score stands
-        // and only the tree that proved it may move
+        // nothing here prunes, so the root's score stands and only the tree
+        // may move
         let mut e = remembering(Board::from_fen(SHARP_MIDDLEGAME).unwrap());
         let result = completed(e.search(6));
         let mut cold = reference(Board::from_fen(SHARP_MIDDLEGAME).unwrap());
@@ -5644,12 +4968,7 @@ mod search {
 
     #[test]
     fn the_quiet_memories_refuse_a_ply_past_the_rail() {
-        // the killer table is as long as the rail, and every search stops
-        // at the rail, so no node one reaches indexes past the table. The
-        // ply is refused rather than indexed with anyway, which is what
-        // makes the index safe here rather than at every caller, and this
-        // is what says so, from a ply set by hand because a search no
-        // longer arrives at one
+        // a search no longer arrives past the rail, so the ply is set by hand
         let mut e = remembering(Board::new());
         assert_eq!(e.memory_ply(), Some(0));
         e.board.line_ply = MAX_PLY as usize - 1;
@@ -5657,8 +4976,6 @@ mod search {
         e.board.line_ply = MAX_PLY as usize;
         assert_eq!(e.memory_ply(), None);
 
-        // and the configuration is asked first, so the reference reads
-        // nothing whatever the ply is
         let mut off = reference(Board::new());
         off.board.line_ply = 3;
         assert_eq!(off.memory_ply(), None);
@@ -5666,12 +4983,10 @@ mod search {
 
     #[test]
     fn a_cutoff_is_credited_to_the_side_that_played_it() {
-        // at depth two every full width cutoff is a black reply refuting a
-        // white root move, and from the start position every black reply is
-        // quiet, so the history must be black's alone and the killers must
-        // stand at ply one exactly. This is the search level check that the
-        // update sites read the board after the move is unmade: the wrong
-        // colour or the wrong ply lands the entries somewhere else
+        // at depth two every full width cutoff is a quiet black reply to a
+        // white root move, so the history must be black's alone and the
+        // killers at ply one exactly: the update sites read the board after
+        // the move is unmade
         let mut e = remembering(Board::new());
         completed(e.search(2));
         assert_eq!(e.ordering.history_total(Color::White), 0);
@@ -5683,20 +4998,15 @@ mod search {
 
     #[test]
     fn the_moves_a_node_tried_before_its_cutoff_reach_the_history() {
-        // the malus is the half of the update the memories did not have
-        // before, and nothing but a marked down move can put an entry
-        // under zero, so a negative entry is the search level proof that
-        // the move loop hands the table its own moves and not only the one
-        // that cut. Most quiet cutoffs come with nothing searched before
-        // them, so the position is one whose quiet band is contested
+        // only a marked down move puts an entry under zero, so a negative
+        // entry says the move loop hands the table the moves it tried and
+        // not only the one that cut
         let mut e = engine(Board::from_fen(SHARP_MIDDLEGAME).unwrap());
         completed(e.search(3));
         let marked = e.ordering.history_marked_down(Color::White)
             + e.ordering.history_marked_down(Color::Black);
         assert!(marked > 0, "nothing was marked down");
 
-        // and the reference neither reads nor writes the table, which is
-        // what keeps its own pinned tree still under this change
         let mut cold = reference(Board::from_fen(SHARP_MIDDLEGAME).unwrap());
         completed(cold.search(3));
         assert_eq!(cold.ordering.history_marked_down(Color::White), 0);
@@ -5705,11 +5015,8 @@ mod search {
 
     #[test]
     fn every_search_starts_with_the_quiet_memories_empty() {
-        // a killer from the position before would order this one, and the
-        // count would then say what the engine had been asked earlier
-        // rather than what this position costs. Both entry points empty
-        // them: the deepening loop is what a `go` runs, and `search` is
-        // what a fixed depth measurement runs
+        // a killer from the position before would order this one. Both
+        // entry points empty them
         fn run(e: &mut AlphaBeta, deepened: bool) -> SearchResult {
             let depth = 5;
             if deepened {
@@ -5734,13 +5041,8 @@ mod search {
         }
     }
 
-    /// Whether `played` is worth `score` to the side to move in `fen`.
-    ///
-    /// A root's answer is the best of its moves' negated replies, so a move
-    /// that reaches it is one a correct search may return and a move that
-    /// does not is one no correct search returns. Asked of an engine with
-    /// nothing in its table, a ply below the root, so nothing the warm
-    /// search saw can reach the answer.
+    /// Whether `played` is worth `score` to the side to move in `fen`, asked
+    /// a ply below the root of an engine with nothing in its table.
     fn worth(fen: &str, played: &Play, score: Score) -> bool {
         let mut board = Board::from_fen(fen).unwrap();
         assert!(
@@ -5754,20 +5056,11 @@ mod search {
 
     #[test]
     fn a_warm_cache_matches_cold_across_draw_context() {
-        // the same pieces hash to the same key whatever the fifty move
-        // counter says, so a search made a few plies from the draw fills
-        // the table with scores true of that path only, and a fresh game
-        // reaching the same position must not read them.
-        //
-        // Six of white's moves here are worth the answer (c3a1, c3e1, c3b2,
-        // c3d2, c3b4 and c3d4, measured a ply down from cold engines). The
-        // near-draw table reorders this search (20,579 nodes warm against
-        // 16,179 cold at the last reading, where warming from an unrelated
-        // position leaves the count identical to cold), so which of the six
-        // comes back first is luck. So the move is asserted by what it is
-        // worth rather than by name: a score read out of the draw context
-        // would be one this position is not worth, and a move chosen on it
-        // would not reach the answer
+        // the key ignores the fifty move counter, so a search a few plies
+        // from the draw fills the table with scores true of that path only.
+        // Six of white's moves are worth the answer and the near-draw table
+        // reorders the search, so the move is asserted by what it is worth
+        // rather than by name
         let near_draw = "5k2/1p3p1p/p3pK1P/P1P1P3/4bP2/2B5/8/8 w - - 96 112";
         let fresh = "5k2/1p3p1p/p3pK1P/P1P1P3/4bP2/2B5/8/8 w - - 0 1";
         let mut warm = reference(Board::from_fen(near_draw).unwrap());
@@ -5788,12 +5081,9 @@ mod search {
 
     #[test]
     fn a_skipping_search_matches_cold_across_draw_context_with_nothing_to_refuse() {
-        // the skip policy keeps tainted scores out of the table instead of
-        // refusing them on the way out, so it owes the same answer warm as
-        // cold without the refusal ever firing. The root's answer slot is
-        // the stated exception. On the reference, since the answer is only
-        // owed there: the default's move may move with what the table
-        // holds, and a reduction decided by the table's order did so here
+        // the skip policy keeps tainted scores out of the table, so it owes
+        // the same answer warm as cold without the refusal firing. On the
+        // reference, since the answer is only owed there
         let near_draw = "5k2/1p3p1p/p3pK1P/P1P1P3/4bP2/2B5/8/8 w - - 96 112";
         let fresh = "5k2/1p3p1p/p3pK1P/P1P1P3/4bP2/2B5/8/8 w - - 0 1";
         let skipping = SearchConfig {
@@ -5804,8 +5094,7 @@ mod search {
             AlphaBeta::with_config(Board::from_fen(near_draw).unwrap(), TABLE_BYTES, skipping);
         completed(warm.search(6));
         assert!(warm.ghi().skipped_stores > 0, "nothing was ever skipped");
-        // the root's answer slot is the one stated exception, stored once
-        // a search whatever its taint, so one search allows one
+        // the root's answer slot is stored whatever its taint
         assert!(
             warm.ghi().tainted_stores <= 1,
             "a tainted score was kept beyond the root's answer slot"
@@ -5827,8 +5116,6 @@ mod search {
 
     #[test]
     fn a_warm_cache_matches_a_cold_search() {
-        // Searching a position with a cache warmed by unrelated positions must give the same
-        // result as searching it with an empty cache
         let fens = [
             "r3k2r/p1ppqpb1/bn2pnp1/3PN3/1p2P3/2N2Q1p/PPPBBPPP/R3K2R w KQkq - 0 1",
             "8/2p5/3p4/KP5r/1R3p1k/8/4P1P1/8 w - - 10 10",
@@ -5857,7 +5144,6 @@ mod search {
 
     #[test]
     fn a_small_table_matches_a_large_table() {
-        // a table small enough to force constant collisions must not change the result
         let fen = SHARP_MIDDLEGAME;
         let mut big = reference(Board::from_fen(fen).unwrap());
         let expected = completed(big.search(5));
@@ -5908,10 +5194,7 @@ mod search {
 
     #[test]
     fn the_pv_line_stops_at_a_repetition() {
-        // a shuffle both sides are content with leaves the table holding a line
-        // that goes round for ever. The line stops once the position comes back,
-        // because from there it is a draw either side can take, rather than
-        // reporting a continuation nobody would go on to play.
+        // a shuffle leaves the table holding a line that goes round for ever
         let game = Board::from_fen(fens::SHUFFLE).unwrap();
         let mut e = engine(game);
         let cycle = ["a8b8", "a1b1", "b8a8", "b1a1"];
@@ -5939,16 +5222,12 @@ mod search {
         }
         assert!(board.fifty_move_expired());
 
-        // the first move draws by the fifty move rule, so the reply the table
-        // holds is one the game never gets to
         assert_eq!(format!("{}", e.pv_line()), "c3d4");
     }
 
     #[test]
     fn the_pv_line_does_not_follow_a_move_which_is_illegal_here() {
-        // two positions which hash to the same key share an entry, so the move
-        // a probe comes back with is not always a move of the position asked
-        // about
+        // a colliding entry's move need not belong to this position
         let mut e = engine(Board::new());
         let a2 = 8;
         let a5 = 32;
@@ -5961,10 +5240,8 @@ mod search {
 
     #[test]
     fn the_pv_line_does_not_follow_a_quiescence_entry() {
-        // quiescence looks at captures and promotions alone, so its move is
-        // fit for ordering the next search and not for saying what the engine
-        // means to play. Its entries are the depth zero ones, and that is
-        // what the line walk refuses
+        // a depth zero entry's move is fit for ordering and not for saying
+        // what the engine means to play
         let mut e = engine(Board::new());
         let play = play_named(&e.board, "e2e4");
         e.transpositions
@@ -5975,10 +5252,8 @@ mod search {
 
     #[test]
     fn the_pv_line_does_not_follow_a_move_which_leaves_the_king_in_check() {
-        // moves are generated pseudo legally, so a pinned piece's move is in
-        // the list for this position and still cannot be played. Asking whether
-        // the move belongs to this position is not enough on its own, which is
-        // why the walk goes on to check that making it succeeds.
+        // a pinned piece's move is in the pseudo legal list and still cannot
+        // be played
         let board = Board::from_fen("4r2k/8/8/8/8/8/4N3/4K3 w - - 0 1").unwrap();
         let mut e = engine(board);
         let pinned = play_named(&e.board, "e2d4");
@@ -5990,13 +5265,9 @@ mod search {
 
     #[test]
     fn the_pv_line_is_bounded_by_the_ply_rail() {
-        // a line longer than the rail, laid down a ply at a time. Each ply
-        // takes a move that neither repeats a position nor lets the fifty
-        // move counter run out, which are the two things the line walk
-        // stops at of its own accord, so nothing but the bound can end this
-        // one. A pawn move is preferred wherever there is one, because that
-        // is what resets the counter, and the thirty two of them are spread
-        // far enough through this to keep the rest of it inside the rule
+        // a line longer than the rail that never repeats and never runs the
+        // fifty move counter out, so nothing but the bound can end it. Pawn
+        // moves first, since they reset the counter
         let mut e = engine(Board::new());
         let mut board = e.board.clone();
         let wanted = super::MAX_PLY as usize + 4;
@@ -6034,11 +5305,8 @@ mod search {
 
     #[test]
     fn quiescence_resolves_captures_past_the_depth_it_used_to_stop_at() {
-        // the old cap was twenty plies from the root, so no line could
-        // report a selective depth past it. Each pruning change has moved
-        // which depth clears it with room to spare; ten reaches twenty
-        // seven under the late move reductions, where eight and nine clear
-        // by a single ply
+        // the old cap was twenty plies from the root. Which search depth
+        // clears it with room moves with every pruning change
         let mut e = engine(Board::from_fen(SHARP_MIDDLEGAME).unwrap());
         let result = completed(e.search(10));
         assert!(
@@ -6055,9 +5323,6 @@ mod search {
         let mut cold = reference(game);
         let expected = completed(cold.search(6));
 
-        // a search whose clock has run out stops immediately, and must not
-        // leave partial results in the table which change the outcome of the
-        // next search
         let game = Board::from_fen(fen).unwrap();
         let mut e = reference(game);
         assert!(matches!(
@@ -6074,10 +5339,9 @@ mod search {
     }
 }
 
-/// The residual sampler seen from the search: that it is off unless it is
-/// asked for, and that what it records describes the nodes the shortcuts
-/// answered and the candidates the margin was measured against. What the
-/// samples are worth is the residuals command's business.
+/// The residual sampler seen from the search: off unless asked for, and
+/// recording the nodes the shortcuts answered and the candidates the margin
+/// was measured against.
 #[cfg(test)]
 mod sampling {
     use super::{
@@ -6095,15 +5359,11 @@ mod sampling {
         AlphaBeta::with_table_bytes(Board::from_fen(fen).unwrap(), TABLE_BYTES)
     }
 
-    /// The shortcut frame driven on its own, with the bounds named rather
-    /// than whatever a search happened to be carrying. What comes back is
-    /// what the sampler recorded of it.
-    ///
-    /// The only way to hold the beta column to the beta the gate read. A
-    /// sample cannot be asked: its evaluation column is measured against the
-    /// same value the beta column states, so substituting another bound
-    /// moves both together and every identity between them survives. The
-    /// bound has to come from outside, which is what this does.
+    /// The shortcut frame driven on its own with the bounds named, and what
+    /// the sampler recorded of it. The only way to hold the beta column to
+    /// the beta the gate read: a sample's evaluation column is measured
+    /// against the beta column, so every identity between them survives a
+    /// wrong bound.
     fn shortcut_at(config: SearchConfig, alpha: Score, beta: Score, depth: u8) -> Vec<Sample> {
         let mut e = AlphaBeta::with_config(
             Board::from_fen(SHARP_MIDDLEGAME).unwrap(),
@@ -6128,9 +5388,7 @@ mod sampling {
         collected(&mut e).taken
     }
 
-    /// The gate the whole design rests on. An engine nobody asked samples of
-    /// holds no sampler, and the bench's pinned counts beside this say the
-    /// search it runs is the search it ran before there was one.
+    /// An engine nobody asked samples of holds no sampler.
     #[test]
     fn an_engine_samples_nothing_until_it_is_asked_to() {
         let mut e = engine(SHARP_MIDDLEGAME);
@@ -6142,16 +5400,13 @@ mod sampling {
         assert!(e.disarm::<Sample>().is_none());
     }
 
-    /// What every test below asks of an engine once it has searched: the
-    /// sampler back, emptied into what it collected.
     fn collected(e: &mut AlphaBeta) -> Sampled<Sample> {
         e.disarm::<Sample>()
             .expect("a sampler was installed")
             .drain()
     }
 
-    /// The one sample of a kind in what was taken. Drain hands samples back
-    /// in key order, which says nothing, so a test reads a row by its kind.
+    /// The one sample of a kind in what was taken.
     fn one_of(taken: &[Sample], kind: Shortcut) -> &Sample {
         let mut of_kind = taken.iter().filter(|s| s.kind == kind);
         let sample = of_kind
@@ -6174,34 +5429,23 @@ mod sampling {
         let sampled = collected(&mut e);
         assert!(!sampled.taken.is_empty(), "the hooks offered nothing");
         for sample in &sampled.taken {
-            // the fen is the whole point: a sample nothing can search again
-            // measures nothing
             Board::from_fen(&sample.fen)
                 .unwrap_or_else(|e| panic!("{} does not parse: {}", sample.fen, e));
             assert!(Shortcut::KINDS.contains(&sample.kind), "{:?}", sample);
-            // a node has less depth left than the root it hangs under, and
             // the root deepens by one when it is in check
             assert!(sample.depth >= 1, "{:?}", sample);
             assert!(sample.depth <= DEPTH + 1, "{:?}", sample);
         }
     }
 
-    /// The decision columns, taken from the node the shortcut answered
-    /// rather than worked out afterwards. A live claim clears the beta
-    /// beside it, because that is what a shortcut fires on; a shadow claim
-    /// need not, which is the point of it, and its evaluation column stands
-    /// at or above beta because that is what a candidate is. The fifty move
-    /// column agrees with the fen it was taken from.
+    /// The decision columns, taken from the node the shortcut answered. A
+    /// live claim clears its beta; a shadow claim need not, but its
+    /// evaluation stands at or above beta.
     ///
-    /// The identity ties the claim, the evaluation column and the depth
-    /// together: reverse futility claims `eval - margin * depth` and fires
-    /// when that clears beta, so `claimed - beta` and
-    /// `eval_beta - margin * depth` are the same number written two ways,
-    /// and a shadow row claims the same expression. It catches a column
-    /// built from the wrong evaluation or scaled by the wrong depth. It
-    /// cannot catch the wrong bound, since both sides are measured against
-    /// whatever the beta column states; that is what
-    /// `the_recorded_beta_is_the_one_the_gate_cleared` is for.
+    /// Reverse futility claims `eval - margin * depth`, so `claimed - beta`
+    /// and `eval_beta - margin * depth` are the same number. That catches a
+    /// column built from the wrong evaluation or depth, not the wrong bound,
+    /// which `the_recorded_beta_is_the_one_the_gate_cleared` holds.
     #[test]
     fn every_sample_carries_the_decision_it_was_taken_at() {
         let mut e = engine(SHARP_MIDDLEGAME);
@@ -6233,8 +5477,7 @@ mod sampling {
     }
 
     /// The rate is a key and not a counter: every node recorded at a rate of
-    /// four keys into the first quarter of the range, and a sample is enough
-    /// to recover the key it was drawn by.
+    /// four keys into the first quarter of the range.
     #[test]
     fn a_rate_records_only_the_nodes_its_keys_fall_under() {
         const EVERY: u32 = 4;
@@ -6254,23 +5497,17 @@ mod sampling {
     }
 
     /// The beta a row states is the beta the gate cleared, and the window
-    /// beside it is read from the alpha and the beta the node really had,
-    /// which is a zero window: an open one is exempt. Both shortcuts,
-    /// because they are two call sites and a bound can go astray at one of
-    /// them.
-    ///
-    /// The evaluation is read from the engine, so what the columns are held
-    /// to is a number the test knows before the shortcut runs: reverse
-    /// futility claims a margin under it, and the distance recorded is the
-    /// whole gap to the beta named here.
+    /// beside it is read from the node's real bounds, which are a zero
+    /// window, since an open one is exempt. Both shortcuts, because they
+    /// are two call sites. The evaluation is read from the engine, so the
+    /// test knows the number the columns are held to before the shortcut
+    /// runs.
     #[test]
     fn the_recorded_beta_is_the_one_the_gate_cleared() {
         let eval = engine(SHARP_MIDDLEGAME).eval();
 
         // the margin at depth one claims `eval - 100`, which clears a beta
-        // two hundred under the evaluation. The fired node arrives under
-        // the live kind and the shadow, so the live row is picked out by
-        // its kind rather than its place
+        // two hundred under the evaluation
         let beta = eval - 200;
         let taken = shortcut_at(SearchConfig::default(), beta - 1, beta, 1);
         assert_eq!(taken.len(), 2);
@@ -6280,8 +5517,7 @@ mod sampling {
         assert_eq!(fired.claimed, eval - REVERSE_FUTILITY_MARGIN);
         assert_eq!(fired.window, Window::Zero);
 
-        // the pass, with the margin switched off so that nothing answers the
-        // node before it does
+        // the pass, with the margin off so nothing answers the node first
         let passing = SearchConfig {
             reverse_futility: false,
             ..SearchConfig::default()
@@ -6295,18 +5531,13 @@ mod sampling {
         assert_eq!(taken[0].window, Window::Zero);
     }
 
-    /// The exemption at this gate: the same beta answers the node at a zero
-    /// window with neither bound marked, and answers nothing when it is
-    /// still the root's own or when the window is open. The refusal comes
-    /// before the eval is read, so the node spends no search and the
-    /// sampler is offered no row.
+    /// The same beta answers the node at a zero window with neither bound
+    /// marked, and nothing when it is still the root's own or the window is
+    /// open, before the eval is read.
     #[test]
     fn an_exempt_node_answers_no_shortcut() {
         let eval = engine(SHARP_MIDDLEGAME).eval();
-        // past the margin's depth, so the pass is what answers, and six
-        // hundred under the evaluation, so it answers comfortably. The
-        // pass's own reduced search is sampled for the shortcuts it takes,
-        // so the row looked for here is named rather than counted
+        // past the margin's depth, so the pass is what answers
         let beta = eval - 600;
         let taken = shortcut_at(SearchConfig::default(), beta - 1, beta, 5);
         assert!(taken.iter().any(|s| s.kind == Shortcut::NullMove));
@@ -6351,15 +5582,13 @@ mod sampling {
         }
     }
 
-    /// The seam the shadow exists for: a candidate the margin declines is
-    /// recorded all the same. The live rows cannot show one, since every
-    /// node they describe cleared the margin; only the shadow sees the
-    /// candidates a smaller margin would add.
+    /// A candidate the margin declines is recorded all the same: only the
+    /// shadow sees the candidates a smaller margin would add.
     #[test]
     fn a_candidate_under_the_margin_is_shadowed_and_not_answered() {
         let eval = engine(SHARP_MIDDLEGAME).eval();
-        // at depth one the margin claims `eval - 100`, so a beta fifty
-        // under the evaluation is a candidate the test declines
+        // a beta fifty under the evaluation is a candidate the margin
+        // declines at depth one
         let beta = eval - 50;
         let mut e = engine(SHARP_MIDDLEGAME);
         e.arm(Sampler::<Sample>::every(1));
@@ -6382,15 +5611,12 @@ mod sampling {
         assert_eq!(taken[0].kind, Shortcut::ShadowFutility);
         assert_eq!(taken[0].beta, beta);
         assert_eq!(taken[0].eval_beta, 50);
-        // the claim is the margin's own expression, and here it sits under
-        // beta, which no live row's can
         assert_eq!(taken[0].claimed, eval - REVERSE_FUTILITY_MARGIN);
         assert!(taken[0].claimed < taken[0].beta);
     }
 
-    /// The eval gate: a node the evaluation leaves below beta is no
-    /// candidate, because no margin schedule at or above nothing can fire
-    /// on it, and the shadow does not record it.
+    /// A node the evaluation leaves below beta is no candidate, since no
+    /// non-negative margin can fire on it.
     #[test]
     fn a_node_below_beta_is_not_a_candidate() {
         let eval = engine(SHARP_MIDDLEGAME).eval();
@@ -6414,20 +5640,18 @@ mod sampling {
         assert!(collected(&mut e).taken.is_empty());
     }
 
-    /// The evaluation the shortcut frame hands back to the move loop,
-    /// which seeds the memo the late move decision reads. It comes off the
-    /// memoised door and the module's own reads `eval::eval` directly, so
-    /// a node the quiet futility rule decides would be deciding on a
-    /// different number if the two ever parted.
+    /// The evaluation the shortcut frame hands back to the move loop comes
+    /// off the memoised door, and the late move decision's own read is
+    /// `eval::eval`; a node would decide on a different number if the two
+    /// ever parted.
     #[test]
     fn the_evaluation_handed_to_the_loop_is_the_direct_one() {
         let mut e =
             AlphaBeta::with_table_bytes(Board::from_fen(SHARP_MIDDLEGAME).unwrap(), TABLE_BYTES);
         assert!(e.config.quiet_futility, "the default carries the rule");
         let direct = i64::from(crate::eval::eval(&e.board));
-        // beta at the evaluation, so the gates pass and the margin's floor
-        // a pawn under it does not answer the node: what is read is what
-        // the loop would have been handed
+        // beta at the evaluation, so the gates pass and the margin does not
+        // answer
         let beta = direct as Score;
         let mut taint = Taint::default();
         let mut eval = None;
@@ -6448,9 +5672,7 @@ mod sampling {
     }
 
     /// A fired candidate is two rows, the live kind's and the shadow's,
-    /// claiming the same number against the same beta. The shadow
-    /// population contains the fired nodes, so the two kinds agree
-    /// wherever they overlap and the columns keep their meanings.
+    /// claiming the same number against the same beta.
     #[test]
     fn a_fired_candidate_is_shadowed_with_the_same_claim() {
         let eval = engine(SHARP_MIDDLEGAME).eval();
@@ -6466,10 +5688,8 @@ mod sampling {
         assert_eq!(shadow.fen, live.fen);
     }
 
-    /// The margin's depth gate bounds the shadow too. The node here is past
-    /// it, so the pass answers and no shadow row is taken at its depth; the
-    /// pass's reduced search runs under the same sampler, which is where
-    /// every shallower sample comes from.
+    /// The margin's depth gate bounds the shadow too. The shallower samples
+    /// come from the pass's reduced search.
     #[test]
     fn the_shadow_keeps_to_the_margins_depths() {
         let eval = engine(SHARP_MIDDLEGAME).eval();
@@ -6502,9 +5722,7 @@ mod sampling {
         assert!(open.is_empty(), "an open window was sampled: {open:?}");
     }
 
-    /// Every kind reaches the hook, not only whichever fires first. A kind
-    /// that stopped being recorded would otherwise show up as a thinner
-    /// distribution rather than as a failure.
+    /// Every kind reaches the hook, not only whichever fires first.
     #[test]
     fn all_kinds_are_recorded() {
         let mut e = engine(SHARP_MIDDLEGAME);
@@ -6520,8 +5738,7 @@ mod sampling {
         }
     }
 
-    /// A key and not a draw, so a distribution printed today is printed
-    /// again tomorrow by the same command.
+    /// A key and not a draw, so a distribution is reproducible.
     #[test]
     fn two_runs_of_the_same_search_record_the_same_samples() {
         let run = || {
@@ -6533,9 +5750,7 @@ mod sampling {
         assert_eq!(run(), run());
     }
 
-    /// The cap holds and says how much it dropped, which is what keeps a
-    /// long run at a low rate from asking for the memory of every fen in the
-    /// tree. What survives it is the reservoir's business, tested there.
+    /// The cap holds and says how much it dropped.
     #[test]
     fn a_search_past_the_cap_stops_growing_and_counts_the_rest() {
         let mut e = engine(SHARP_MIDDLEGAME);
@@ -6547,11 +5762,9 @@ mod sampling {
     }
 
     /// The margin each shortcut is betting on, recorded at the node it fired
-    /// at. The pass gates on the evaluation standing at or above beta, so it
-    /// cannot record a negative distance; the margin gates on the evaluation
-    /// standing a whole margin above it, so it cannot record less than that.
-    /// The weaker bound would pass on a column that had lost the depth it is
-    /// scaled by.
+    /// at: at least zero for the pass, at least the whole margin for
+    /// reverse futility. The weaker bound would pass on a column that had
+    /// lost its depth scaling.
     #[test]
     fn the_recorded_distance_is_the_evaluation_over_beta() {
         let mut e = engine(SHARP_MIDDLEGAME);
@@ -6562,8 +5775,6 @@ mod sampling {
                 Shortcut::ReverseFutility => {
                     i32::from(REVERSE_FUTILITY_MARGIN) * i32::from(sample.depth)
                 }
-                // the pass and the shadow both gate on the evaluation
-                // standing at or above beta and nothing more
                 Shortcut::NullMove | Shortcut::ShadowFutility => 0,
             };
             assert!(sample.eval_beta >= floor, "{:?} under {}", sample, floor);
@@ -6571,12 +5782,10 @@ mod sampling {
     }
 }
 
-/// The cutoff census seen from the search: that it is off unless it is
-/// asked for, and that a row reads the node as it stood at the moment it
-/// answered. The recorder is driven directly here, with the memories
-/// taught by hand, which is the only way to hold a row's history column to
-/// a history the test chose. What the rows are worth is the cutoffs
-/// command's business.
+/// The cutoff census seen from the search: off unless asked for, and a row
+/// reads the node as it stood when it answered. The recorder is driven
+/// directly, with the memories taught by hand, so a row's history column
+/// can be held to a history the test chose.
 #[cfg(test)]
 mod cutoffs {
     use super::{AlphaBeta, Board, Score, SearchConfig};
@@ -6595,8 +5804,7 @@ mod cutoffs {
     }
 
     /// A from and to square pair no move in the list uses, for teaching
-    /// the history an entry the list cannot read. The table is butterfly
-    /// indexed, so the squares are the whole of what makes an entry.
+    /// the (butterfly indexed) history an entry the list cannot read.
     fn unmade_journey(moves: &[Play]) -> Play {
         (0u8..64)
             .flat_map(|from| (0u8..64).map(move |to| (from, to)))
@@ -6616,10 +5824,7 @@ mod cutoffs {
         (first, second)
     }
 
-    /// The same gate the residual sampler stands behind: an engine nobody
-    /// asked a census of holds none, and the pinned bench counts beside
-    /// this say the search it runs is the search it ran before there was
-    /// a census at all.
+    /// An engine nobody asked a census of holds none.
     #[test]
     fn an_engine_records_no_census_until_it_is_asked_to() {
         let mut e =
@@ -6641,8 +5846,8 @@ mod cutoffs {
         let mut e = engine(SHARP_MIDDLEGAME);
         let (killer, cool) = quiets(&e);
         let color = e.board.active_color;
-        // taught at another ply, so what makes the class a killer is the
-        // slot at this one; its history entry is the larger of the two
+        // the first is taught at another ply with the larger history, so
+        // only the killer slot makes the second the class
         e.ordering.cutoff(color, &cool, &[], 1, 5);
         e.ordering.cutoff(color, &killer, &[], 0, 4);
         let moves = e.board.generate_moves();
@@ -6684,7 +5889,6 @@ mod cutoffs {
         assert!(row.quiets_scored);
         assert_eq!(row.tt, Table::Miss);
         assert_eq!(row.fen, e.board.to_fen());
-        // the eval column is computed at record time and exact
         assert_eq!(
             row.eval_beta,
             i32::from(crate::eval::eval(&e.board)) - i32::from(beta)
@@ -6701,9 +5905,8 @@ mod cutoffs {
         let (cut, _) = quiets(&e);
         let color = e.board.active_color;
         let moves = e.board.generate_moves();
-        // the move that took the bonus makes a journey no move here makes,
-        // so nothing in the list holds the entry it landed on and every
-        // quiet in the list is marked down
+        // the bonus lands on a journey no move here makes, and every quiet
+        // in the list is marked down
         let elsewhere = unmade_journey(&moves);
         let marked: Vec<Play> = moves
             .iter()
@@ -6819,12 +6022,10 @@ mod cutoffs {
     }
 }
 
-/// The reduction ledger seen from the search: that it is off unless it is
-/// asked for, and that a row reads the decision as the node made it. The
-/// two halves of the recorder are driven directly, the staging at the
-/// parent and `windowed` at the child, with the memories taught by hand
-/// for the census tests' reason. What the rows are worth is the
-/// reductions command's business.
+/// The reduction ledger seen from the search: off unless asked for, and a
+/// row reads the decision as the node made it. The staging at the parent
+/// and `windowed` at the child are driven directly, with the memories
+/// taught by hand.
 #[cfg(test)]
 mod reductions {
     use super::{AlphaBeta, Board, RootBounds, Score};
@@ -6844,9 +6045,8 @@ mod reductions {
         e
     }
 
-    /// The staging the move loop would hand the scout, built by hand:
-    /// these tests drive the recorder without a move loop. The features
-    /// read neither the depth nor the bounds, so both stand at nothing.
+    /// The staging the move loop would hand the scout. The features read
+    /// neither the depth nor the bounds, so both stand at nothing.
     fn staged(e: &AlphaBeta, m: &Play, searched: usize, ply: Option<usize>) -> reduction::Staged {
         let moves = e.board.generate_moves();
         let mut eval = None;
@@ -6888,10 +6088,7 @@ mod reductions {
         (first, second)
     }
 
-    /// The same gate the census stands behind: an engine nobody asked a
-    /// ledger of holds none, and the pinned bench counts beside this say
-    /// the search it runs is the search it ran before there was a ledger
-    /// at all.
+    /// An engine nobody asked a ledger of holds none.
     #[test]
     fn an_engine_records_no_ledger_until_it_is_asked_to() {
         let mut e =
@@ -6901,18 +6098,17 @@ mod reductions {
         assert!(e.disarm::<reduction::Event>().is_none());
     }
 
-    /// A staged scout that fails low, driven through the two halves by
-    /// hand: the row carries the features the node knew, the fen of the
-    /// position the move left, and the node's own eval against its
-    /// bounds. The board comes back exactly as the recorder found it,
-    /// which is the step-back-and-replay the eval column is taken by.
+    /// A staged scout that fails low: the row carries the features the node
+    /// knew, the fen of the position the move left, and the node's own eval
+    /// against its bounds. The board comes back exactly as the recorder
+    /// found it after stepping back for that eval.
     #[test]
     fn a_row_reads_the_decision_as_the_node_made_it() {
         let mut e = engine(SHARP_MIDDLEGAME);
         let (killer, cool) = quiets(&e);
         let color = e.board.active_color;
-        // taught at another ply, so what makes the flag a killer is the
-        // slot at this one; its history entry is the larger of the two
+        // the first is taught at another ply with the larger history, so
+        // only the killer slot makes the second the class
         e.ordering.cutoff(color, &cool, &[], 1, 5);
         e.ordering.cutoff(color, &killer, &[], 0, 4);
         let moves = e.board.generate_moves();
@@ -6921,8 +6117,6 @@ mod reductions {
         assert!(e.board.make_move(&killer));
         let child_fen = e.board.to_fen();
         let child_key = e.board.key;
-        // alpha stands far above anything the position is worth, and
-        // under the mate window, so the scout fails low and is trusted
         let (alpha, beta): (Score, Score) = (5000, 5001);
         let Ok(value) = e.windowed(alpha, beta, 3, false, 1, RootBounds::NEITHER, Some(&staged))
         else {
@@ -6956,17 +6150,14 @@ mod reductions {
         assert_eq!(row.reduction, 1);
     }
 
-    /// A reduced move the table has marked down: the staged half carries
-    /// the signed entry, and its denominator is the largest clamped at
-    /// zero, which is zero when every quiet in the list is marked down.
+    /// A reduced move the table has marked down stages the signed entry
+    /// and a denominator clamped at zero.
     #[test]
     fn a_marked_down_move_stages_a_signed_history_and_no_denominator() {
         let mut e = engine(SHARP_MIDDLEGAME);
         let (m, _) = quiets(&e);
         let color = e.board.active_color;
         let moves = e.board.generate_moves();
-        // the move that took the bonus makes a journey no move here makes,
-        // so nothing in the list is left with a history to be read against
         let elsewhere = unmade_journey(&moves);
         let marked: Vec<Play> = moves
             .iter()
@@ -6979,9 +6170,7 @@ mod reductions {
         assert_eq!(staged.features.history_max, 0);
     }
 
-    /// The reduction column reads what `windowed` was handed: a scout run
-    /// two plies shallower writes a two, so a run's rows say how far each
-    /// scout was stood back.
+    /// The reduction column reads what `windowed` was handed.
     #[test]
     fn the_row_carries_the_reduction_the_scout_ran_at() {
         let mut e = engine(SHARP_MIDDLEGAME);
@@ -7002,24 +6191,21 @@ mod reductions {
         let row = &sampled.taken[0];
         assert_eq!(row.depth, 4);
         assert_eq!(row.reduction, 2);
-        // the replay's counterfactual is unchanged: the depth the move
-        // was denied is the node's less one, however short the scout ran
+        // the depth the move was denied is the node's less one, however
+        // short the scout ran
         assert_eq!(row.replay_depth(), 3);
     }
 
-    /// The same seam under bounds the move clears: the scout fails high,
-    /// the row says so, and its cost counts the scout alone rather than
-    /// the full depth search the fail high asked for.
+    /// A scout that fails high is recorded so, and its cost counts the
+    /// scout alone rather than the full depth search it asked for.
     #[test]
     fn a_scout_that_fails_high_is_recorded_as_high() {
         let mut e = engine(SHARP_MIDDLEGAME);
         let (m, _) = quiets(&e);
         let staged = staged(&e, &m, 4, None);
         assert!(e.board.make_move(&m));
-        // the tree under the scout records rows of its own here, since the
-        // quiet futility rule skips at the depths it reaches, so the
-        // staged scout's row is picked out by the position it left rather
-        // than by being the only one
+        // the tree under the scout records skip rows of its own, so the
+        // staged row is picked out by the position it left
         let left = e.board.to_fen();
         let (alpha, beta): (Score, Score) = (-5000, -4999);
         let Ok(_) = e.windowed(alpha, beta, 3, false, 1, RootBounds::NEITHER, Some(&staged)) else {
@@ -7045,33 +6231,24 @@ mod reductions {
         );
     }
 
-    /// The exemption threaded through the recursion rather than read at
-    /// one gate. The bounds are real on both sides, far enough inside the
-    /// mate scores that the mate window gates say nothing, so the only
-    /// thing that can keep a scout off the root's beta is the flag. A bit
-    /// dropped at a call site or a flip forgotten shows up as an open node
-    /// reducing against a beta of twenty thousand, which the ledger
-    /// records. The other error, a bit left set on a bound a search
-    /// produced (a clear forgotten where alpha is raised), can only add
-    /// refusals and is invisible here; what pins that one is
-    /// `what_a_child_carries_and_what_a_raise_leaves`, on the rule itself.
+    /// The exemption threaded through the recursion. The bounds sit inside
+    /// the mate scores, so only the bits can keep a scout off the root's
+    /// beta, and a bit dropped or a flip forgotten shows up as an open node
+    /// reducing against a beta of twenty thousand. A bit left set where it
+    /// should clear only adds refusals and is invisible here;
+    /// `what_a_child_carries_and_what_a_raise_leaves` pins that.
     ///
-    /// Twenty thousand is above anything the evaluation produces and under
-    /// the mate threshold, so an open window carrying it can only have the
-    /// root's beta: an open window's beta is either the root's or the
-    /// negation of a raised alpha, and a raised alpha is a child's score. A
-    /// zero window can carry it too, under a node whose first child was
-    /// mated, which is why the count is of open rows.
-    ///
-    /// The second half is what makes the first one a claim: the same
-    /// search with neither bound marked reduces against that beta plenty.
+    /// Twenty thousand is above anything the evaluation produces, so an
+    /// open window carrying it can only have the root's beta. A zero window
+    /// can carry it under a node whose first child was mated, which is why
+    /// the count is of open rows. The second half shows the same search
+    /// with neither bound marked does reduce against that beta.
     #[test]
     fn no_open_node_reduces_against_a_beta_that_is_still_the_roots() {
         const ALPHA: Score = -20_000;
         const BETA: Score = 20_000;
 
-        // every row of the search, since a count of none is a claim about
-        // all of them and a reservoir at its cap describes a share
+        // every row, since a count of none is a claim about all of them
         fn rows_at_the_roots_beta(root_bounds: RootBounds) -> (usize, usize) {
             let mut e = AlphaBeta::with_table_bytes(
                 Board::from_fen(SHARP_MIDDLEGAME).unwrap(),
