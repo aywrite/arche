@@ -3493,9 +3493,9 @@ mod search {
             );
 
             assert_eq!(result.score, expected.score, "score differs for {}", fen);
-            // the pinned positions have one best move each without the pair
-            // term; the test rank's table ties a queen and a rook promotion,
-            // and the two searches break the tie differently
+            // the pinned positions have one best move each with the fitted
+            // table; the test rank's ties a queen and a rook promotion, and
+            // the two searches break the tie differently
             if !cfg!(feature = "machine-test") {
                 assert_eq!(
                     format!("{}", result.best_move),
@@ -4454,10 +4454,6 @@ mod search {
     }
 
     #[test]
-    #[cfg_attr(
-        feature = "machine-test",
-        ignore = "pins a search made with the shipped factor table, which the test rank replaces"
-    )]
     fn the_depth_term_looks_at_less_of_the_tree_than_the_flat_reduction() {
         // the switch has to reach the search. Depth 8, because the term
         // first moves at a node of depth 6

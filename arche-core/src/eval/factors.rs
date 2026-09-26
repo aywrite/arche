@@ -18,16 +18,17 @@
 //! sums of squares. White's perspective less black's is the term, which makes
 //! it white relative like the rest of the accumulator. It is not tapered.
 //!
-//! `RANK` is the switch. At 0 every array here has no length, every loop has
-//! nothing to walk and [`Machine::score`] answers 0 before reading anything,
-//! so the term compiles away.
+//! At a `RANK` of 0 every array here has no length and [`Machine::score`]
+//! answers 0 before reading anything, so the term compiles away. The shipped
+//! table is sixteen wide, so turning the term off takes an empty table in
+//! place of `factors16.rs` as well as the rank.
 
 use crate::misc::{Color, Piece};
 
-/// How many factors a feature has. 0 turns the term off. 16 is the rank
-/// chosen on 2026-09-26 against a cost bar fixed before it was measured:
-/// ranks 8, 16 and 32 cost 6.2%, 4.4% and 8.2% of the bench's nodes a
-/// second, and 16 bought the most held out loss for what it cost.
+/// How many factors a feature has. 16 is the rank chosen on 2026-09-26
+/// against a cost bar fixed before it was measured: ranks 8, 16 and 32 cost
+/// 6.2%, 4.4% and 8.2% of the bench's nodes a second, and 16 bought the most
+/// held out loss for what it cost.
 #[cfg(not(feature = "machine-test"))]
 pub(crate) const RANK: usize = 16;
 
@@ -47,7 +48,7 @@ pub(crate) const RANK: usize = 8;
 #[cfg(feature = "machine-test")]
 pub(crate) const Q: i64 = 64;
 
-/// Two perspectives times six pieces times sixty four squares.
+/// Own and other side, six pieces, sixty four squares.
 pub(crate) const FEATURES: usize = 2 * 6 * 64;
 
 /// The most pieces a legal position stands, which is what bounds a lane.
@@ -369,9 +370,9 @@ mod features {
         }
     }
 
-    /// The state check runs after every move made and not after one
-    /// unmade, so unmaking is asked here: two plies deep from every bench
-    /// and core position, the accumulator comes back equal.
+    /// Two plies deep from every bench and core position, each unmake gives
+    /// the accumulator back. The board's unmake tests compare it as part of
+    /// the whole board; this reaches a ply further over more positions.
     #[test]
     fn unmaking_a_move_restores_the_accumulator() {
         let mut fens: Vec<String> = fens::CORE.iter().map(|f| f.to_string()).collect();
@@ -396,10 +397,10 @@ mod features {
         }
     }
 
-    /// The tests above hold at rank 0 with nothing to check, so under the
-    /// test rank they have to be seen to be checking something.
+    /// The tests above would pass on a term that scored nothing, so at any
+    /// rank but 0 it has to be seen to score.
     #[test]
-    fn the_test_rank_scores_something() {
+    fn the_term_scores_something() {
         if RANK == 0 {
             return;
         }
