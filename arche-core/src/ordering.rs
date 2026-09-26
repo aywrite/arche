@@ -219,6 +219,17 @@ impl MoveOrdering {
             .count()
     }
 
+    /// Test-only: the side's entries above zero, which only a cutoff's bonus
+    /// can produce.
+    #[cfg(test)]
+    pub(crate) fn history_credited(&self, color: Color) -> usize {
+        self.history[color as usize]
+            .iter()
+            .flatten()
+            .filter(|&&e| e > 0)
+            .count()
+    }
+
     /// The killers standing at a ply. On the hot path: the attention score
     /// reads it.
     pub(crate) fn killers_at(&self, ply: usize) -> [Option<Play>; 2] {

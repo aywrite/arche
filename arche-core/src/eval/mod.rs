@@ -198,9 +198,11 @@ impl Memo for Caches {
 /// the walk out for a zero weight, so at a constant false the summand is not
 /// compiled and the walk takes no ring counts.
 ///
-/// Material that cannot mate reads zero before any of it. That is the one
-/// place the evaluation is not a dot product against the weights, which is
-/// why `tune::run` turns such a position away rather than fitting it. It sits
+/// Material that cannot mate reads zero before any of it. That and the pair
+/// term (`factors`) are the two places the evaluation is not a dot product
+/// against the weights: the first is why `tune::run` turns such a position
+/// away rather than fitting it, and the second is why a row carries the
+/// term's score as a number of its own. It sits
 /// here rather than at the node because the model gate, the tuner's walk and
 /// the instruments all read this function.
 #[inline]

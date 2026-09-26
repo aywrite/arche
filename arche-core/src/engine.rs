@@ -4454,7 +4454,7 @@ mod search {
     #[test]
     #[cfg_attr(
         feature = "machine-test",
-        ignore = "pins a search the evaluation without the pair term makes"
+        ignore = "pins a search made with the shipped factor table, which the test rank replaces"
     )]
     fn the_depth_term_looks_at_less_of_the_tree_than_the_flat_reduction() {
         // the switch has to reach the search. Depth 8, because the term
@@ -4964,11 +4964,13 @@ mod search {
         // at depth two every full width cutoff is a quiet black reply to a
         // white root move, so the history must be black's alone and the
         // killers at ply one exactly: the update sites read the board after
-        // the move is unmade
+        // the move is unmade. Black is asked for a credited entry rather than
+        // a positive total, since the malus on the moves tried before a
+        // cutoff can outweigh the credit (-14 with the pair term on)
         let mut e = remembering(Board::new());
         completed(e.search(2));
         assert_eq!(e.ordering.history_total(Color::White), 0);
-        assert!(e.ordering.history_total(Color::Black) > 0);
+        assert!(e.ordering.history_credited(Color::Black) > 0);
         assert_eq!(e.ordering.killers_at(0), [None; 2]);
         assert!(e.ordering.killers_at(1).iter().any(|k| k.is_some()));
         assert_eq!(e.ordering.killers_at(2), [None; 2]);

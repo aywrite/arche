@@ -389,14 +389,15 @@ suite, or the one named, keeps the positions that are quiet, and prints what
 each one's evaluation is made of.
 
 The evaluation is material plus a tapered piece square score plus the tapered
-leaf terms, and it is linear in the numbers those are read from. So a
-position's score is a dot product of the position against the weights, and a
-row is the position's half of it: for every weight the position touches, the
-integer that weight is multiplied by. The weights are a flat vector: the 384
-midgame table entries, the 384 endgame ones in the same order, the six material
-values, then each leaf term's midgame weights followed by its endgame weights.
-A slot's table entry is a square as black sees it, because black reads the
-tables as they are written.
+leaf terms, which are linear in the numbers they are read from, plus an
+untapered pair term, which is not. So a position's score is a dot product of
+the position against the weights plus that term, and a row is the position's
+half of the dot product and the term's score: for every weight the position
+touches, the integer that weight is multiplied by. The weights are a flat
+vector: the 384 midgame table entries, the 384 endgame ones in the same order,
+the six material values, then each leaf term's midgame weights followed by its
+endgame weights. A slot's table entry is a square as black sees it, because
+black reads the tables as they are written.
 
 What each leaf term counts is in its own file under `arche-core/src/eval/`.
 Every count is carried as white's less black's, in the side to move's frame.
@@ -425,12 +426,15 @@ slots would be read against the wrong weights, and is refused too.
 The line after that is `weights <n> <w0> <w1> ...`, the vector as the live
 tables hold it, so that nothing reading these rows transcribes psqt.rs.
 
-Each row after that is `id eval phase n slot:coefficient... fen`. Both ends can
+Each row after that is `id eval phase n slot:coefficient... fen`. While the
+pair term is on, a `factors <rank> <scale>` line follows the weights and each
+row carries the term's score, from the side to move, as a fourth number after
+`n`. Both ends can
 hold spaces: a fen is six fields, and an id is whatever the epd put in the
 quotes ("ruy lopez", "7th Rank.001"), or the fen itself when the epd names none.
 So a row is read from the end whose width is fixed: the fen is the last six
 fields, the coefficients are the run of `slot:coefficient` in front of it, and
-what is left before the three numbers is the id. `n` is printed so the two ends
+what is left before the numbers is the id. `n` is printed so the two ends
 can be checked against each other. The coefficients are in the side to move's
 frame, so the row's own arithmetic is the evaluation:
 

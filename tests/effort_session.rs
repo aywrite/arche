@@ -15,7 +15,7 @@ const ARGUMENTS: [&str; 6] = ["effort", "4", "every", "50", "off", "quiet_futili
 #[test]
 #[cfg_attr(
     feature = "machine-test",
-    ignore = "pins a search the evaluation without the pair term makes"
+    ignore = "pins a search made with the shipped factor table, which the test rank replaces"
 )]
 fn the_effort_argument_prints_a_header_rows_and_two_summaries() {
     let printed = report_command::run(&ARGUMENTS);

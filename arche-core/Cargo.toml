@@ -23,9 +23,9 @@ bench = false #https://bheisler.github.io/criterion.rs/book/faq.html#cargo-bench
 [lints.rust]
 unsafe_op_in_unsafe_fn = "deny"
 
-# Runs the evaluation's pair term at rank 8 on a seeded table, so the tests
-# exercise it while it is off everywhere else. For tests only: a build that
-# plays never turns it on.
+# Runs the evaluation's pair term at rank 8 on a seeded table in place of the
+# fitted rank 16 one, so the tests check the term on a table no fit chose. For
+# tests only: a build that plays never turns it on.
 [features]
 machine-test = []
 
