@@ -112,4 +112,4 @@ def test_a_missing_engine_fails_rather_than_printing_an_empty_trailer(tmp_path):
     )
     assert result.returncode != 0
     assert "Bench:" not in result.stdout
-    assert os.path.basename(SCRIPT) in result.stderr or result.stderr
+    assert os.path.basename(SCRIPT) in result.stderr

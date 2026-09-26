@@ -17,8 +17,9 @@ SPDX = "SPDX-License-Identifier: GPL-3.0-or-later"
 SUFFIXES = {".rs", ".py", ".sh"}
 
 # pruned rather than filtered afterwards, because walking target/ takes real
-# seconds
-PRUNE = {".git", "target", "__pycache__", ".venv", "node_modules"}
+# seconds. shell.nix keeps its toolchain and crate sources in .rustup and
+# .cargo, which are not ours.
+PRUNE = {".git", "target", "__pycache__", ".venv", "node_modules", ".cargo", ".rustup"}
 
 
 def source_files():

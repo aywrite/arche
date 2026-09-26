@@ -105,6 +105,15 @@ def test_the_workflow_has_no_setting_of_its_own_for_a_list_to_lose_to():
                 assert "default" not in spec, f"{trigger_name} defaults {key}"
 
 
+def test_no_expression_puts_a_setting_back_in_front_of_the_list():
+    # an input read as inputs.<key> || <value> plays that value on a dispatch
+    # run whatever list was chosen; || '' leaves the choice to the list
+    text = CALIBRATE.read_text(encoding="utf-8")
+    for key in FROM_THE_LIST:
+        for fallback in re.findall(rf"inputs\.{key}\s*\|\|\s*([^\s}}]+)", text):
+            assert fallback == "''", f"calibrate.yml reads {key} || {fallback}"
+
+
 def test_the_release_plays_the_table_rather_than_settings_of_its_own():
     jobs = yaml.safe_load(RELEASE.read_text(encoding="utf-8"))["jobs"]
     called = [
