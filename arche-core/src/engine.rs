@@ -6519,7 +6519,7 @@ mod sampling {
         };
         assert_eq!(
             (open(Shortcut::ReverseFutility), open(Shortcut::NullMove)),
-            (1, 2),
+            (3, 0),
             "the open windows the two shortcuts answer moved"
         );
     }

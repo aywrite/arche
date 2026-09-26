@@ -21,10 +21,11 @@ the engine plays. Roughly in the order they look worth doing.
   and a pawnless minor piece advantage, neither of which the signatures reach
 - the rest of evaluation: the rest of king safety, the rest of pawn structure, and
   special cases such as the bishop pair and open files. Mobility is counted for the
-  knight, the bishop, the rook and the queen and has been fitted twice. The first fit
-  read 1,812 games and rounded six of the eight weights to zero, which left the term a
-  rook count; the refit read twenty four times as many games, priced all four kinds and
-  left no weight at zero, so nothing is skipped at the leaf now. King safety counts the
+  knight, the bishop, the rook and the queen and has been fitted three times. The first
+  fit read 1,812 games and rounded six of the eight weights to zero, which left the term a
+  rook count; the second read twenty four times as many games, priced all four kinds and
+  left no weight at zero, so nothing is skipped at the leaf now; the third moved it with
+  every other weight but material, on 59,049 games in September 2026. King safety counts the
   pawns on the two ranks in front of the king, the open and half open files beside it,
   and the enemy pawns on the three ranks in front of it, and all fourteen of its weights
   are fitted. The storm is followed three ranks and no further, so a pawn four ranks out
@@ -32,8 +33,9 @@ the engine plays. Roughly in the order they look worth doing.
   The squares the enemy pieces attack around the king are counted too: for each side,
   how many squares of the other king's ring its knights, bishops, rooks and queens bear
   on, off the attack sets the mobility count already walks, with a square two pieces
-  attack counted twice. All eight of its weights are fitted, trained on 32,516 of the
-  archive's 50,677 games with every other term held. The fit's figure is the sealed
+  attack counted twice. All eight of its weights are fitted, first on 32,516 of the
+  archive's 50,677 games with every other term held and then jointly with every other
+  weight but material on 59,049. The first fit's figure is the sealed
   group's -0.000143 against a standard error of 0.000059. The selection group read
   -0.000395 against 0.000052, about 3.2 standard errors away, and by the rule the fit
   was registered with that disagreement means the selection group overstated it. On the
@@ -85,10 +87,11 @@ the engine plays. Roughly in the order they look worth doing.
   Recapturing takes 90.7% of its points already and can only regress, and Square Vacancy
   and Advancement of a/b/c pawns lose under every arbitrary vector tried
 - the fitted term makes the engine keep the pawns in front of its own king at home, and
-  one graded theme says that is wrong. The midgame cover weights are +10 and +21, and they
-  do what they say: over the strategic suite the engine advances a pawn on its king's file
-  or a neighbour 100 times where it advanced 123 before, and 167 times with the weights
-  negated. AKPC grades such a push as the best move in 79 of its 100 positions and the
+  one graded theme says that is wrong. The first fit's midgame cover weights were +10 and
+  +21, and they did what they said: over the strategic suite the engine advanced a pawn on
+  its king's file or a neighbour 100 times where it advanced 123 before, and 167 times with
+  the weights negated. The joint refit puts them at +19 and +19, and the counts in this
+  entry were read on the first fit and not again. AKPC grades such a push as the best move in 79 of its 100 positions and the
   engine now plays one in 22 of them against 31 before. That is the one place the suite
   and the term disagree about chess rather than about noise, and the games were played
   with the term as it stands, so what is unresolved is whether declining those pushes is
@@ -128,7 +131,8 @@ the engine plays. Roughly in the order they look worth doing.
 - a held-out loss on our own games cannot resolve a fit of the piece square tables one way
   or the other, so an sprt is what decides a re-tune. Measured 2026-09-10 over 1,812
   archived games, 100,726 quiet positions across 1,807 of them: the shipped weights score
-  0.093561 on the selection games and the fit psqt.rs now holds beats them by 0.000618
+  0.093561 on the selection games and the fit psqt.rs held until the joint refit beats
+  them by 0.000618
   against a standard error of 0.000627, which is inside its own interval. The sealed third
   of the games, opened once after the vector was frozen, reads the same fit 0.001754 better
   against 0.000674, which is outside it. The two readings differ by 1.23 standard errors,
@@ -137,8 +141,10 @@ the engine plays. Roughly in the order they look worth doing.
   positions it never reaches are unlabelled, and that is the ceiling on what any fit of it
   can say. The 2026-09-12 corpus holds sixteen times the games and did resolve a fit, at
   5.6 standard errors, but of fourteen weights rather than 768, so it says the corpus was
-  small for that question as well as the question hard. A re-tune of the tables on it has
-  not been run
+  small for that question as well as the question hard. The tables were refitted jointly
+  with every other weight but material on 59,049 games in September 2026, which five fold
+  cross validation with whole pairs held out reads 0.000832 better than the weights they
+  replaced, against a standard error of 0.000040
 - the harness said otherwise until 2026-09-10, and why is worth keeping. It split the
   corpus on the fen, and 1,805 of the corpus's 1,809 games had rows on both sides: 53.1% of
   the held-out rows had the position a ply away, from the same game and carrying the same
@@ -177,8 +183,8 @@ the engine plays. Roughly in the order they look worth doing.
   47,836,191 nodes, 95.5%, so a percentage of "the bench tree" from before is a
   percentage of those two and little else. An entry below that gives a figure over
   sixteen positions is already clear of them; one that says "the bench tree" is not. The
-  suite is 6,900,228 nodes now, at the depth of eleven the same change bought, and the
-  largest single position is `kiwipete` at 18%
+  suite is 6,427,725 nodes now, at the depth of eleven the same change bought, and the
+  largest single position is `kiwipete` at 19%
 - mate distance pruning landed without a strength result that settled. Two runs played
   3,500 games at 10+0.1 against `464d3cc`. The first was an sprt of [0, 10] and failed at
   its third batch at -11 ±12 over 1,500 games, which only says the games did not favour

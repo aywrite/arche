@@ -25,8 +25,10 @@ pub(crate) const COUNTS: usize = mobility::PIECES.len();
 /// What one attacked square of the enemy king's ring is worth to each of
 /// [`mobility::PIECES`], as the packed pairs the taper is read from.
 ///
-/// Fitted 2026-09-16 by `scripts/tune.py` over the whole archived strength
-/// run, 50,677 games and 2,890,773 quiet rows extracted by `arche terms` at
+/// Refitted 2026-09-26 with every weight but material, in the joint refit the tables' comment in `psqt.rs` describes.
+///
+/// First fitted 2026-09-16 by `scripts/tune.py` over the whole archived
+/// strength run, 50,677 games and 2,890,773 quiet rows extracted by `arche terms` at
 /// the 820 slot layout (corpus sha256 `a0798d51`, sealed pairs `a723887f`,
 /// rows `6001063b`, fitted vector `f65aa57e`), K held at 1.0821, every other
 /// weight held, at a ridge of zero. The fit's figure is the sealed group's:
@@ -44,17 +46,18 @@ pub(crate) const COUNTS: usize = mobility::PIECES.len();
 /// accounts for at most six of the ten missing games, and where the other
 /// four went is not established.
 ///
-/// The ridge of zero was not overruled: the largest weight is the rook's 27,
-/// and the rook column is the best supported of the four.
+/// The first fit's ridge of zero was not overruled: its largest weight was
+/// the rook's 27, and the rook column is the best supported of the four. The
+/// refit keeps the rook largest, at 29.
 ///
 /// [`SCORED`] is true at these weights, so the leaf counts the ring at every
 /// evaluation; what that costs is in docs/ROADMAP.md and 7991f40.
 ///
 /// `bounds_hold` charges one piece of each kind two squares of the ring for a
 /// knight, three for a bishop, four for a rook and six for a queen, both sides
-/// counted. That puts this term at 584 in the midgame and the whole vector's
-/// boardful at 9,762, against the 32,767 a half has to stay inside.
-static KING_ATTACK: [i32; COUNTS] = [pack(11, 3), pack(20, -2), pack(27, -3), pack(17, 9)];
+/// counted. That puts this term at 624 in the midgame and the whole vector's
+/// boardful at 10,118, against the 32,767 a half has to stay inside.
+static KING_ATTACK: [i32; COUNTS] = [pack(11, 3), pack(22, -3), pack(29, -3), pack(18, 9)];
 
 /// The weight of one piece's count, as the packed pair, read through
 /// [`super::TERMS`] so that a slot names the live weight rather than a copy.

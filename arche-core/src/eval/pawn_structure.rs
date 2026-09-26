@@ -129,8 +129,10 @@ pub(super) const fn files_of(pawns: u64) -> u8 {
 /// What one of those eight counts is worth, as the packed pairs the taper is
 /// read from.
 ///
-/// Fitted 2026-09-12 by `scripts/tune.py` over the whole archived strength
-/// run, 34,175 games and 1,922,548 quiet rows extracted by `arche terms` at
+/// Refitted 2026-09-26 with every weight but material, in the joint refit the tables' comment in `psqt.rs` describes.
+///
+/// First fitted 2026-09-12 by `scripts/tune.py` over the whole archived
+/// strength run, 34,175 games and 1,922,548 quiet rows extracted by `arche terms` at
 /// 39da0fe (corpus sha256 `f9ff326c`, rows `35fd184d`), K held at 1.1959,
 /// every other weight held, at a ridge of 1e-8. The sealed group, opened once
 /// after the weights were frozen, scores 0.084236 at zero and 0.083240 at
@@ -139,7 +141,8 @@ pub(super) const fn files_of(pawns: u64) -> u8 {
 /// standard errors from the selection group's reading. Commit 5c3175b holds
 /// the selection figures, the phase split and the learning curve.
 ///
-/// The ridge overrules the grid, which ranked no regularisation first. That
+/// At that first fit the ridge overruled the grid, which ranked no
+/// regularisation first. That
 /// vector put 239 on a passed pawn's seventh rank in the midgame and -29 in
 /// the ending, on the count with the fewest rows (5.31%) and the smallest
 /// summed midgame coefficient of the sixteen: the direction the corpus
@@ -155,23 +158,22 @@ pub(super) const fn files_of(pawns: u64) -> u8 {
 /// position with a passer on the seventh is rarely quiet unless the pawn is
 /// blockaded or about to be lost, so those are the rows that reach the fit.
 /// Passed pawns on the second through the fourth are a midgame penalty, and
-/// a doubled pawn is worth 8 in the midgame.
+/// a doubled pawn is worth 4 in the midgame. All three survive the refit.
 ///
 /// One pawn can be passed, isolated and doubled at once, but no count exceeds
-/// eight and the six passed counts share the eight pawns, so this term adds
-/// at most 776 to the midgame half and 440 to the ending half, both sides
-/// counted, against the 32,767 a half has to stay inside. `bounds_hold`
-/// charges eight of every count, which is the looser screen: 3,024 of a
-/// boardful of 8,622.
+/// eight and the six passed counts share the eight pawns, so this term stays
+/// far inside the 32,767 a half has to stay inside. `bounds_hold` charges
+/// eight of every count, which is the looser screen, and puts the whole
+/// vector's boardful at 10,118.
 static PAWN_STRUCTURE: [i32; COUNTS] = [
-    pack(-18, 18),
-    pack(-25, 15),
-    pack(-22, 28),
-    pack(6, 30),
-    pack(53, 39),
-    pack(46, 13),
-    pack(-11, -6),
-    pack(8, -10),
+    pack(-20, 20),
+    pack(-27, 18),
+    pack(-21, 37),
+    pack(9, 44),
+    pack(60, 50),
+    pack(50, 19),
+    pack(-13, -7),
+    pack(4, -17),
 ];
 
 /// The weight of one count, as the packed pair, read through

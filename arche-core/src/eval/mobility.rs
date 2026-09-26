@@ -25,8 +25,10 @@ pub(crate) const COUNTS: usize = PIECES.len();
 /// What one square of scope is worth to each of [`PIECES`], as the packed
 /// pairs the taper is read from.
 ///
-/// Refitted 2026-09-13 by `scripts/tune.py` over the whole archived strength
-/// run, 43,675 games and 2,461,322 quiet rows extracted by `arche terms` at
+/// Refitted 2026-09-26 with every weight but material, in the joint refit the tables' comment in `psqt.rs` describes.
+///
+/// Before that, refitted 2026-09-13 by `scripts/tune.py` over the whole
+/// archived strength run, 43,675 games and 2,461,322 quiet rows extracted by `arche terms` at
 /// 2105b55 (corpus sha256 `b37ebf0c`, rows `49aa715a`), K held at 1.1350,
 /// every other weight held, at a ridge of zero. The sealed group, opened once
 /// afterwards over 9,452 games, scores 0.080507 at the old weights and
@@ -35,14 +37,14 @@ pub(crate) const COUNTS: usize = PIECES.len();
 /// -0.000798 against 0.000113, 1.85 standard errors away, so it overstates
 /// the fit by about a third. Commit 7e6ddd7 holds the rest.
 ///
-/// The first fit read 1,812 games and priced one piece; this one reads twenty
-/// four times as many and prices all four, so [`SCORED_KINDS`] skips nothing
-/// and every kind is counted at every leaf again. The ridge of zero is not
-/// the trap it was for the pawn structure fit: the vector quantizes
-/// identically at zero, 1e-8 and 1e-7, the largest weight is 7, and every
-/// slot carries a coefficient in 37% to 70% of the training rows.
+/// The first fit read 1,812 games and priced one piece; the refits since
+/// price all four, so [`SCORED_KINDS`] skips nothing and every kind is
+/// counted at every leaf. The 2026-09-13 refit's ridge of zero was not the
+/// trap it was for the pawn structure fit: its vector quantized identically
+/// at zero, 1e-8 and 1e-7, and every slot carried a coefficient in 37% to 70%
+/// of the training rows. The largest weight was 7 then and is 7 now.
 ///
-/// By phase the sealed reading is -0.000160 at six pieces or fewer,
+/// By phase the 2026-09-13 sealed reading was -0.000160 at six pieces or fewer,
 /// -0.001725 from seven to twelve, and +0.000703 at thirteen or more, so the
 /// term costs something in the opening, the phase a mobility count would be
 /// expected to earn most. That is worth an ablation and is not one this arm
@@ -51,7 +53,7 @@ pub(crate) const COUNTS: usize = PIECES.len();
 /// A count is at most twenty seven for a queen and a boardful comes to a few
 /// hundred, so a weight in single figures leaves the order of magnitude in
 /// hand that `pack` asks for.
-const MOBILITY: [i32; COUNTS] = [pack(4, 1), pack(6, 3), pack(4, 4), pack(1, 7)];
+const MOBILITY: [i32; COUNTS] = [pack(6, 0), pack(7, 2), pack(4, 4), pack(2, 7)];
 
 /// The weight of one piece's count, as the packed pair, read through
 /// [`super::TERMS`] so that a slot names the live weight rather than a copy.

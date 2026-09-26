@@ -34,7 +34,7 @@ pub const TABLE_BYTES: usize = 16 * 1024 * 1024;
 /// is the gate. A change that moves it in either direction updates this
 /// number in the same commit, which puts the movement in the diff, and a
 /// change that lowers it says what the positions were spent on.
-pub const EXPECTED_PASSES: usize = 234;
+pub const EXPECTED_PASSES: usize = 230;
 
 /// The count the suite may not go under, whatever a commit says it meant to
 /// spend.
@@ -82,60 +82,26 @@ pub struct AcceptedLoss {
 
 /// The losses accepted so far.
 ///
-/// The first two are the reduction table's: a move it never touches or
-/// reaches late, whose continuation is quiet and is now stood further back
-/// than the depth can afford.
+/// The first is the reduction table's: a move it never touches or reaches
+/// late, whose continuation is quiet and is now stood further back than the
+/// depth can afford.
 ///
-/// The ten under them are the late move count's. The count is the only
-/// thing between this build and the one before it, and what it does is
-/// refuse a quiet a node of depth one to three has reached past four moves
-/// a ply, so a winning line with such a quiet in it is not searched at all
-/// at those depths. Each entry names what depth six answers with instead
-/// and the depth the suite's move comes back at, read one position at a
-/// time on this build. Eight of the ten come back a single ply deeper.
+/// The four under it are the late move count's. The count refuses a quiet a
+/// node of depth one to three has reached past four moves a ply, so a
+/// winning line with such a quiet in it is not searched at all at those
+/// depths. Each entry names what depth six answered with instead and the
+/// depth the suite's move came back at, read one position at a time on the
+/// build that took the loss.
 ///
-/// The last is mate distance pruning's. The position holds no mate inside
-/// depth six, so what moved it is the reordering of a subtree deeper down
-/// that does, and it is borderline either way: this build answers d6e5 at
-/// six and at seven, and the suite's d6a3 at eight.
+/// Eight more stood here until the linear weights were refitted on 59,049
+/// games, which found all eight again: the reduction table's WAC.260, six of
+/// the count's ten, and mate distance pruning's WAC.150.
 pub const ACCEPTED_LOSSES: &[AcceptedLoss] = &[
     AcceptedLoss {
         id: "WAC.082",
         why: "the quiet queen lift and rook swing behind the h7 sacrifice are \
               scouted further back, so the sacrifice never comes back above \
               alpha at depth six",
-        until: "0.6.0",
-    },
-    AcceptedLoss {
-        id: "WAC.260",
-        why: "the three quiet moves of the mate in five behind the queen check \
-              are scouted further back, so depth six answers with a centipawn \
-              score instead",
-        until: "0.6.0",
-    },
-    AcceptedLoss {
-        id: "WAC.022",
-        why: "depth six answers d1h5 at 31 and the knight sacrifice on f7 \
-              comes back at depth nine, the furthest of the count's losses \
-              but one",
-        until: "0.6.0",
-    },
-    AcceptedLoss {
-        id: "WAC.023",
-        why: "depth six answers d4f4 at 301 and the pawn push g2g4 comes \
-              back at depth seven at 387",
-        until: "0.6.0",
-    },
-    AcceptedLoss {
-        id: "WAC.069",
-        why: "depth six answers e6e8 at 370 and the quiet luft f2f3 comes \
-              back at depth seven at the same 370",
-        until: "0.6.0",
-    },
-    AcceptedLoss {
-        id: "WAC.167",
-        why: "depth six answers f2f1 at 184 and depth seven answers f2g2 \
-              with a mate in five",
         until: "0.6.0",
     },
     AcceptedLoss {
@@ -157,27 +123,9 @@ pub const ACCEPTED_LOSSES: &[AcceptedLoss] = &[
         until: "0.6.0",
     },
     AcceptedLoss {
-        id: "WAC.243",
-        why: "depth six answers h2h3 at 145 and the queen step f2e2 comes \
-              back at depth seven at 144",
-        until: "0.6.0",
-    },
-    AcceptedLoss {
         id: "WAC.266",
         why: "depth six answers f2g3 at 11 and depth seven answers h8h2 \
               with a mate in six",
-        until: "0.6.0",
-    },
-    AcceptedLoss {
-        id: "WAC.280",
-        why: "depth six answers c2e2 at 76 and the bishop to a3 comes back \
-              at depth seven at 94",
-        until: "0.6.0",
-    },
-    AcceptedLoss {
-        id: "WAC.150",
-        why: "depth six answers d6e5 at 529 and the bishop retreat d6a3 comes \
-              back at depth eight at 420",
         until: "0.6.0",
     },
 ];
