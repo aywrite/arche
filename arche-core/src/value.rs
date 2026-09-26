@@ -108,15 +108,18 @@ pub(crate) enum MateDistanceWindow {
 /// cross, the caller already holds a line at least as good as the fastest
 /// mate available here, and nothing below can improve on it, so the node
 /// answers the narrowed alpha. The window handed in is never empty: alpha
-/// is below beta, as it is at every node the search makes.
+/// is below beta, as it is at every node the search makes, and a debug
+/// build asserts it in `can_narrow`.
 ///
 /// Both bounds are mate scores themselves, so a window with no mate at
-/// either end is left exactly as it arrived and cannot cross. Asking that
-/// first is what every other node pays, and it is cheaper than the two
-/// clamps. Measured under callgrind when the rule landed, over five bench
-/// positions searched to nine whose trees do not move: the clamps cost
-/// 0.642% of the instructions a node takes and the question costs 0.457%.
-/// The tree is the same either way.
+/// either end is left exactly as it arrived and cannot cross. That is
+/// asked first, one bound a side (`can_narrow`), and it is what every other
+/// node pays. Measured under callgrind at bench depth five when the guard
+/// changed to the one-sided question: the question takes 8 instructions a
+/// node, 0.257% of the total, where asking `is_mate` of both bounds took 12
+/// and 0.380%. The two clamps and the cross test after it take 11, on the
+/// nodes that pass it, about one in twenty there. The tree is the same
+/// either way.
 ///
 /// Where a mate is in the window, this ends every line longer than the mate
 /// already found, which is what stops a proven mate being proved again a
@@ -126,7 +129,7 @@ pub(crate) fn mate_distance_window(
     mut beta: Score,
     line_ply: usize,
 ) -> MateDistanceWindow {
-    if is_mate(alpha) || is_mate(beta) {
+    if can_narrow(alpha, beta) {
         alpha = alpha.max(Value::mated(line_ply).score);
         beta = beta.min(-Value::mated(line_ply + 1).score);
         if alpha >= beta {
@@ -134,6 +137,17 @@ pub(crate) fn mate_distance_window(
         }
     }
     MateDistanceWindow::Open { alpha, beta }
+}
+
+/// Whether mate distance pruning can move either bound: only a score of
+/// being mated at alpha, or of mating at beta, can be narrowed. With alpha
+/// below beta this answers as `is_mate(alpha) || is_mate(beta)` does. A
+/// mate at alpha's top end puts one at beta's too, and one at beta's bottom
+/// end puts one at alpha's, so the two one-sided tests are the only ones
+/// that can decide.
+fn can_narrow(alpha: Score, beta: Score) -> bool {
+    debug_assert!(alpha < beta, "an empty window ({alpha}, {beta})");
+    alpha < -CHECKMATE_THRESHOLD || beta > CHECKMATE_THRESHOLD
 }
 
 /// From the other side of the board. The score changes sign; where it came
@@ -171,8 +185,8 @@ impl Taint {
 #[cfg(test)]
 mod tests {
     use super::{
-        CHECKMATE_THRESHOLD, MateDistanceWindow, Taint, Value, below_the_mate_window, checkmate_in,
-        is_mate, mate_distance_window,
+        CHECKMATE_SCORE, CHECKMATE_THRESHOLD, MateDistanceWindow, Taint, Value,
+        below_the_mate_window, can_narrow, checkmate_in, is_mate, mate_distance_window,
     };
     use crate::engine::MAX_PLY;
     use crate::misc::Score;
@@ -210,6 +224,35 @@ mod tests {
             }
         }
         windows
+    }
+
+    #[test]
+    fn the_one_sided_question_answers_as_asking_both_bounds_would() {
+        // every value within four of zero, of both thresholds, of both
+        // mate scores and of the ends of the range, and every window they
+        // make. Score::MIN is left out: no bound reaches it, and it is the
+        // one value `abs` cannot take
+        let mut values = Vec::new();
+        for centre in [
+            0,
+            CHECKMATE_THRESHOLD,
+            -CHECKMATE_THRESHOLD,
+            CHECKMATE_SCORE,
+            -CHECKMATE_SCORE,
+        ] {
+            values.extend(centre - 4..=centre + 4);
+        }
+        values.extend(Score::MIN + 1..=Score::MIN + 5);
+        values.extend(Score::MAX - 5..=Score::MAX);
+        for &alpha in &values {
+            for &beta in values.iter().filter(|&&beta| beta > alpha) {
+                assert_eq!(
+                    can_narrow(alpha, beta),
+                    is_mate(alpha) || is_mate(beta),
+                    "({alpha}, {beta})"
+                );
+            }
+        }
     }
 
     #[test]
