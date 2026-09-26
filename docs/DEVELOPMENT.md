@@ -47,7 +47,18 @@ nothing about them. The second run is still compiled optimised (`opt-level =
 2` on the test profile in the root manifest), which leaves those checks on.
 The perft suites are its longest tests.
 
-The tactical and strategic suites are in neither run. They are marked ignored
+CI runs the tests a third time, in debug, with the evaluation's pair term on a
+seeded rank 8 table in place of the fitted one, so the term is tested on
+factors no fit chose:
+
+```
+cargo test --workspace --features machine-test
+```
+
+A test that pins node counts or a tree made with the fitted table is ignored
+under the feature, with its reason, so a new one needs the same `cfg_attr`.
+
+The tactical and strategic suites are in none of these runs. They are marked ignored
 and asked for by name, locally as in ci, since `--ignored` alone also runs
 `regenerate_magics`, which prints replacement constants rather than checking
 anything:
@@ -131,11 +142,12 @@ scripts are checked out with unix line endings whatever `core.autocrlf` says.
 
 ## Lints
 
-Both are gated in ci, and a clean tree prints no warnings:
+They are gated in ci, and a clean tree prints no warnings:
 
 ```
 cargo fmt --all --check
 cargo clippy --workspace --all-targets -- -D warnings
+cargo clippy --workspace --all-targets --features machine-test -- -D warnings
 ```
 
 The `allow(long_running_const_eval)` beside `MAGIC` in `arche-core/src/magic.rs`
@@ -217,7 +229,7 @@ keeps at the end of a message), and the commit-msg hook checks them:
 
 | trailer | required on | produced by |
 | --- | --- | --- |
-| `Bench: 6810240` | `feat`, `fix`, `perf`, `refactor` and `revert` to `board`, `eval`, `magic`, `search` or `zobrist` | `scripts/bench_trailer.sh` |
+| `Bench: 1234567` | `feat`, `fix`, `perf`, `refactor` and `revert` to `board`, `eval`, `magic`, `search` or `zobrist` | `scripts/bench_trailer.sh` |
 | `Speed: +3.1% (bench nps, 95% interval +2.4% to +3.9%, 15 interleaved rounds over shuffled layouts vs a1b2c3d)` | `perf` to one of those scopes | `scripts/speed.sh` |
 | `Elo: +12 ±8 (sprt [0, 10] passed, 1240 games, 10+0.1, vs v0.3.10)` | nothing, checked when present | the Strength workflow's summary |
 

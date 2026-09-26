@@ -5,7 +5,7 @@ is only for what reading it will not tell you.
 
 ## Before you commit
 
-Read [docs/DEVELOPMENT.md](docs/DEVELOPMENT.md). It has the build, the two test
+Read [docs/DEVELOPMENT.md](docs/DEVELOPMENT.md). It has the build, the test
 runs, the lints, the commit scopes and the trailers an engine commit carries. A
 commit-msg hook checks the scope, so a guess at one is rejected rather than
 quietly accepted.
