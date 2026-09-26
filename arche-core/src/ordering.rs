@@ -12,11 +12,12 @@
 //! reads: `pick` selects the first few, then `sort_rest` sorts what is left,
 //! or once a shallow skip rule turns on, `keep_unskippable` keeps only the
 //! moves it would still search. A node the reduction ledger watches has its
-//! quiets sorted whole by `order_quiets` instead. Generation order breaks
-//! every tie, since each key carries the move's place in its low bits. The
-//! quiet moves are scored by the memories as they stand when the search
-//! reaches them, not when the node was entered, so the node count tests pin
-//! the order, the generation order and when the scoring happens.
+//! quiets sorted whole by `order_quiets` instead, and the two paths search
+//! the same tree (the ledger's `recording_leaves_the_measured_search_where_it_was`
+//! holds them to it). Generation order breaks every tie, since each key carries
+//! the move's place in its low bits. The quiets are scored by the memories
+//! as they stand when the search reaches them, so the node count tests pin
+//! when the scoring happens as well as the order.
 //!
 //! Two memories carry across nodes: the killers, the quiet moves that cut
 //! a node off at each distance from the root, and the history, how often
@@ -35,8 +36,7 @@ use crate::misc::{Color, Piece};
 use crate::play::Play;
 
 /// The table's move, ahead of every capture, even one whose swap loses
-/// the king's whole price. The root depends on nothing else reaching
-/// this; see the module comment.
+/// the king's whole price.
 const TABLE_MOVE_BONUS: i64 = 1_000_000_000_000;
 /// Where the winning and even captures start, above the killers, ordered
 /// within the band by SEE. An even exchange still opens lines and forces
@@ -50,13 +50,11 @@ const SEE_UNIT: i64 = 2_000;
 /// The two killers, in the order they are tried. Both sit under the
 /// smallest even capture, and above the quiet moves themselves.
 const KILLER_BONUS: [i64; 2] = [9_000_000, 8_000_000];
-/// The bound `gravitate` holds a history entry to, either way. Nothing
-/// halves the table and nothing else ages it. Both bands hold with room:
-/// this is three orders under the second killer, so no history score
-/// reaches the killers, and a marked down quiet keys at most `HISTORY_MAX`
-/// where the least losing capture keys at `SEE_UNIT * 100` less the
-/// largest tiebreak, so a quiet stays ahead of every losing capture on
-/// the spilled list path. `the_bands_do_not_overlap` checks both.
+/// The bound `gravitate` holds a history entry to, either way. Three
+/// orders under the second killer, and under the least losing capture's
+/// `SEE_UNIT * 100` less the largest tiebreak, so a marked down quiet stays
+/// ahead of every losing capture on the spilled list path.
+/// `the_bands_do_not_overlap` checks both.
 const HISTORY_MAX: i32 = 8_192;
 
 /// Most valuable victim: what taking each piece is worth.
@@ -67,7 +65,6 @@ const ATTACKER_SCORES: [i64; 6] = [6, 5, 4, 3, 2, 1];
 /// How many low bits of a sort key hold the place the move was generated
 /// in. Six, since a list wider than the buffer takes the other sort.
 const PLACE_BITS: u32 = 6;
-/// Those bits on their own.
 const PLACE_MASK: i64 = (1 << PLACE_BITS) - 1;
 /// The buffer's width has been moved before, and moving it past the place
 /// field would reorder moves quietly.
@@ -77,9 +74,8 @@ const _: () = assert!(MOVE_LIST_INLINE <= 1 << PLACE_BITS);
 /// not widen that.
 const _: () = assert!(MOVE_LIST_INLINE <= u64::BITS as usize);
 
-/// What the scratch buffer holds before a sort has written to it: a move
-/// no generator produces. Nothing reads it, since the sort fills every
-/// slot it goes on to look at.
+/// What the scratch buffers hold before a sort has written to them: a
+/// move no generator produces, never read.
 const NOWHERE: Play = Play {
     from: 0,
     to: 0,
@@ -96,8 +92,7 @@ const NOWHERE: Play = Play {
 /// ordering behind one the search knows nothing about.
 type History = [[[i32; 64]; 64]; 2];
 
-/// What `order` worked out about the list while it keyed it, which the
-/// search would otherwise work out again move by move.
+/// What `order` worked out about the list while it keyed it.
 pub(crate) struct Ordered {
     /// How many moves the front holds: the table's move, when the list
     /// has it, and the captures the swap prices as winning or even.
@@ -106,31 +101,27 @@ pub(crate) struct Ordered {
     /// hold it. The search plays that move before the list exists, so
     /// this is the place its loop passes over.
     pub(crate) table_at: Option<usize>,
-    /// How many captures the swap prices as losing, which sit at the end
-    /// of the list. The quiet moves are what is left between them and
-    /// the front, so the second stage is handed this rather than scanning
-    /// for the first of them.
+    /// How many captures the swap prices as losing, at the end of the
+    /// list. The quiet run is what lies between them and the front.
     pub(crate) losing: usize,
 }
 
 pub(crate) struct MoveOrdering {
-    /// Scratch for the keys, reused by every sort. As a local it was a
-    /// five hundred byte memset per list ordered; here only the first
-    /// `len` entries are touched. No two uses are alive at once, since a
+    /// Scratch for the keys, reused by every sort rather than a five
+    /// hundred byte local per list. No two uses are alive at once, since a
     /// sort finishes before the search recurses.
     keys: [i64; MOVE_LIST_INLINE],
-    /// Where a sorted run is built. Either sort shifts keys and never a
-    /// move, so the moves are put in order in one pass at the end, read
-    /// from here while the list is written over.
+    /// A copy of the list, read while the sorted order is written over it.
     sorted: [Play; MOVE_LIST_INLINE],
     /// The two most recent quiet cutoffs at each distance from the root.
     /// A killer not legal at the node reading it is simply not in that
     /// node's list.
     killers: [[Option<Play>; 2]; MAX_PLY as usize],
     history: History,
-    /// The quiet run's packed keys at each ply, kept beside the run as the
-    /// search picks from it, and the run in generated order, which a key's
-    /// place indexes.
+    /// The quiet run's packed keys at each ply, kept as the search picks
+    /// from it, and the run in generated order, which a key's place
+    /// indexes. Per ply because the picking spans the node's child
+    /// searches.
     quiet_keys: Box<[[i64; MOVE_LIST_INLINE]; MAX_PLY as usize]>,
     quiet_orig: Box<[[Play; MOVE_LIST_INLINE]; MAX_PLY as usize]>,
 }
@@ -228,17 +219,14 @@ impl MoveOrdering {
             .count()
     }
 
-    /// The killers standing at a ply. A hot path and not only an
-    /// instrument's: the late move decision reads it, since whether the
-    /// move is a killer is a feature of the attention score. The cutoff
-    /// census and the tests read it too.
+    /// The killers standing at a ply. On the hot path: the attention score
+    /// reads it.
     pub(crate) fn killers_at(&self, ply: usize) -> [Option<Play>; 2] {
         self.killers[ply]
     }
 
-    /// The score `order_quiets` would rank one of `color`'s moves by, read
-    /// without teaching anything. A feature of the attention score in the
-    /// late move decision, and a census column.
+    /// The history score of one of `color`'s moves, read without teaching
+    /// anything.
     pub(crate) fn history_score(&self, color: Color, m: &Play) -> i32 {
         self.history[color as usize][m.from as usize][m.to as usize]
     }
@@ -246,28 +234,23 @@ impl MoveOrdering {
     /// The first stage: the table's move, if there is one, then the
     /// winning and even captures, sorted, at the front of the list; the
     /// quiet moves behind them in generated order; the losing captures,
-    /// sorted, at the end. Returns how many moves the front holds, and the
-    /// search keys the quiets when it reaches the first move past them, so
-    /// a node the front cuts off never scores a quiet move. It
-    /// returns where the table's move sorted as well, since the search
-    /// has to pass over a move it played before the list was generated.
+    /// sorted, at the end. The search keys the quiets only when it passes
+    /// the front, so a node the front cuts off never scores a quiet move.
     ///
     /// The table's move keeps its bonus even when the search already
-    /// played it without generating and skips it here: one it declined to
-    /// play early is still in this list and still has to be tried first.
+    /// played it: one it declined to play early is still in this list and
+    /// still has to be tried first. `table_at` is where the loop passes
+    /// over the one it did play.
     ///
     /// `ply` is the node's distance from the root when the quiet memories
     /// are consulted, and none when they are not (quiescence, the root,
-    /// and every node under a configuration with `move_memory` off). The
-    /// count is the same either way, since a quiet move scores zero here.
+    /// and every node under a configuration with `move_memory` off).
     ///
-    /// Quiescence reads the count for its losing capture skip, which needs
-    /// every capture from that index on to be one the swap priced as
-    /// losing. The stack sort's count also has no losing capture before
-    /// it, the table's move aside. A list that spilled the buffer is
-    /// ordered whole, memories included, and its length comes back, which
-    /// the skip reads as nothing to skip; quiescence orders captures and
-    /// evasions, and neither list gets that long.
+    /// Quiescence reads `front` for its losing capture skip, which needs
+    /// every capture from there on to be one the swap priced as losing;
+    /// the front holds no losing capture but the table's move. A list that spilled the buffer is ordered
+    /// whole, memories included, and its whole length comes back as the
+    /// front, which the skip reads as nothing to skip.
     pub(crate) fn order(
         &mut self,
         board: &Board,
@@ -277,11 +260,9 @@ impl MoveOrdering {
     ) -> Ordered {
         let keys = &mut self.keys;
         let sorted = &mut self.sorted;
-        // most lists are short (quiescence lists average under nine
-        // moves), and sort_by_cached_key allocates scratch on every call,
-        // which at that size costs more than the sorting. The allocating
-        // sort is kept only for a list that spilled the buffer, which is
-        // ordered whole with the memories read here
+        // sort_by_cached_key allocates on every call, which costs more than
+        // sorting a short list, so it is kept for a list that spilled the
+        // buffer, ordered whole with the memories read here
         if moves.len() > MOVE_LIST_INLINE {
             let quiet = ply.map(|ply| Quiet {
                 killers: self.killers[ply],
@@ -289,9 +270,8 @@ impl MoveOrdering {
             });
             moves.sort_by_cached_key(|m| ordering_key(board, m, table_move, quiet.as_ref()));
             // the same key orders this path, so the table's move is at
-            // the head here too. Three lists over the bench reach it, so
-            // the comparison is read off the sorted list rather than
-            // carried out of the closure
+            // the head here too. It is rare enough to read the place off
+            // the sorted list rather than carry it out of the closure
             let table_at = table_move
                 .is_some_and(|table_move| moves.first() == Some(&table_move))
                 .then_some(0);
@@ -302,17 +282,12 @@ impl MoveOrdering {
             };
         }
         // a quiet move keys zero, between the front (negative keys) and
-        // the losing captures (positive), and the stable sort keeps the
-        // quiet moves in generated order for the second stage. The front
-        // is counted as the keys are written
+        // the losing captures (positive)
         let mut front = 0;
         let mut scored = 0;
         let mut plain = 0;
         let mut table_at = None;
         for (i, m) in moves.iter().enumerate() {
-            // the comparison the key makes anyway, made once here: it
-            // says where the table's move is as well as what it keys,
-            // which is what spares the search asking it of every move
             let is_table_move = table_move == Some(*m);
             let key = if is_table_move {
                 // nothing else reaches its bonus, so it sorts to the head
@@ -323,8 +298,6 @@ impl MoveOrdering {
             } else {
                 0
             };
-            // a key of zero is handed to the sort as a bit rather than a
-            // key
             if key == 0 {
                 plain |= 1 << i;
             } else {
@@ -351,17 +324,12 @@ impl MoveOrdering {
     }
 
     /// The second stage sorted whole, for a node the reduction ledger
-    /// watches; the search orders every other node's quiets lazily with
+    /// watches; every other node's quiets are ordered lazily with
     /// `key_quiets` and the three beside it. `rest` starts at the first
-    /// move past the front, and the quiet moves run from there to the
-    /// first losing capture. They are scored by the memories as they stand
-    /// now, killers first and the rest by history, and sorted in place; the
-    /// losing captures behind them are already in order. A move the history
-    /// has marked down goes behind the quiets nothing is known about and
-    /// still ahead of every losing capture.
-    ///
-    /// `losing` is how many of those captures `order` counted, so the
-    /// run is the rest of `rest` and nothing here looks for its end.
+    /// move past the front, and `losing` is how many losing captures end
+    /// it. The quiets are keyed killers first and the rest by history, so a
+    /// move the history has marked down goes behind the quiets nothing is
+    /// known about and still ahead of every losing capture.
     pub(crate) fn order_quiets(
         &mut self,
         board: &Board,
@@ -370,16 +338,13 @@ impl MoveOrdering {
         ply: usize,
     ) {
         debug_assert!(ply < MAX_PLY as usize, "no killers past the rail");
-        // `order` hands back the whole length of a list that spilled, so
-        // what reaches here fits the buffer, which the sort below indexes
-        // the key buffer by
+        // `order` hands back the whole length of a list that spilled
         debug_assert!(
             rest.len() <= MOVE_LIST_INLINE,
             "the run has to fit the buffer"
         );
         let run = rest.len() - losing;
-        // the derivation rests on the bands, so the scan it replaces is
-        // kept as the check that they still hold
+        // the subtraction rests on the bands, and this checks they hold
         debug_assert_eq!(
             run,
             rest.iter().take_while(|m| m.capture.is_none()).count(),
@@ -392,8 +357,6 @@ impl MoveOrdering {
         };
         let keys = &mut self.keys;
         let sorted = &mut self.sorted;
-        // a move the memories say nothing about keys zero, handed to the
-        // sort as a place and not as a key
         let mut front = 0;
         let mut scored = 0;
         let mut plain = 0;
@@ -402,10 +365,8 @@ impl MoveOrdering {
             if key == 0 {
                 plain |= 1 << i;
             } else {
-                // a marked down move keys positive, and the count is what
-                // puts it behind the plain quiets. Reading the front off
-                // the sign measured 0.3% faster than handing `scored` over,
-                // when a bonus could only be positive
+                // a marked down move keys positive and goes behind the
+                // plain quiets
                 front += usize::from(key < 0);
                 keys[scored] = pack(key, i);
                 scored += 1;
@@ -416,11 +377,10 @@ impl MoveOrdering {
 }
 
 impl MoveOrdering {
-    /// The second stage, keyed but not sorted: every quiet move of the run
-    /// gets its packed key (a zero key included, so the plain moves keep
-    /// their generated order by place), and the search takes them in order
-    /// with `pick`, `sort_rest` and `keep_unskippable`. Returns the run's
-    /// length.
+    /// The second stage, keyed but not sorted: every quiet of the run gets
+    /// its packed key, a zero key included, and the search takes them in
+    /// order with `pick`, `sort_rest` and `keep_unskippable`. Returns the
+    /// run's length.
     #[inline]
     pub(crate) fn key_quiets(
         &mut self,
@@ -443,7 +403,8 @@ impl MoveOrdering {
         run
     }
 
-    /// Put the best of the run's moves from `t` on at `t`.
+    /// Put the best of the run's moves from `t` on at `t`. The keys are
+    /// distinct, so the pick is the one the full sort would put there.
     #[inline]
     pub(crate) fn pick(&mut self, run: &mut [Play], t: usize, ply: usize) {
         let keys = &mut self.quiet_keys[ply];
@@ -480,7 +441,8 @@ impl MoveOrdering {
 
     /// With the shallow rules on for the rest of the node, only a move that
     /// gives check or promotes will be searched: those go first from `t`
-    /// in key order, and the rest behind them in any order.
+    /// in key order, and the rest behind them in any order. Returns where
+    /// the survivors end.
     #[inline(never)]
     pub(crate) fn keep_unskippable(
         &mut self,
@@ -493,7 +455,7 @@ impl MoveOrdering {
         let info = *check.get_or_insert_with(|| board.check_info());
         let keys = &mut self.quiet_keys[ply];
         let len = run.len();
-        // survivors to the front of [t..), in place, carrying their keys
+        // survivors to the front of [t..), carrying their keys
         let mut kept = t;
         for j in t..len {
             let m = run[j];
@@ -520,9 +482,8 @@ impl MoveOrdering {
     }
 }
 
-/// What the memories say at one node: this ply's killers, and the side to
-/// move's half of the history, settled once for the node since every move
-/// in a list is that side's.
+/// What the memories say at one node: this ply's killers and the side to
+/// move's half of the history.
 struct Quiet<'a> {
     killers: [Option<Play>; 2],
     history: &'a [[i32; 64]; 64],
@@ -533,12 +494,11 @@ impl Quiet<'_> {
     /// about, under zero for one tried more often than it has cut, and
     /// never past the capture bands either side.
     ///
-    /// The squares are masked to six bits to take the two bounds checks
-    /// off the table read, which this stage makes for every quiet move it
-    /// sorts. The mask is measured per site (docs/ROADMAP.md) and pays
-    /// here and at no other read of this table: the write in `cutoff` and
-    /// the census read keep their check, which panics where a mask reads
-    /// a different square.
+    /// The squares are masked to six bits to take the bounds checks off
+    /// this read, which is made for every quiet keyed. The mask was
+    /// measured per site (docs/ROADMAP.md) and pays only here, so the
+    /// other reads and the write keep their check, which panics where a
+    /// mask would read a different square.
     #[inline(always)]
     fn bonus(&self, m: &Play) -> i64 {
         if self.killers[0] == Some(*m) {
@@ -554,12 +514,9 @@ impl Quiet<'_> {
 /// One update of a history entry: `entry += bonus - entry * |bonus| / MAX`.
 /// The step shrinks as the entry nears the bound, so it never passes
 /// `HISTORY_MAX` either way and rests at the bound times the net share of
-/// its updates that were cutoffs (cutoffs less the rest, over the whole):
-/// half and half rests near zero. That share makes the entry a rate
-/// rather than a count, so a move tried a hundred times and cutting ten
-/// settles where one tried ten and cutting one does. The same step ages
-/// the table: an old cutoff is worn away by the updates after it, which is
-/// why nothing halves the table.
+/// its updates that were cutoffs: a rate rather than a count. The same
+/// step ages the table, wearing an old cutoff away, which is why nothing
+/// halves it.
 #[inline]
 fn gravitate(entry: &mut i32, bonus: i32) {
     debug_assert!(
@@ -569,9 +526,8 @@ fn gravitate(entry: &mut i32, bonus: i32) {
     *entry += bonus - *entry * bonus.abs() / HISTORY_MAX;
 }
 
-/// What a move sorts by, smaller first: a capture by the swap, a quiet
-/// move by the memories, and the table's move ahead of everything, negated
-/// so that the best score is the smallest key.
+/// What a move sorts by, smallest first: a capture by the swap, a quiet
+/// move by the memories, and the table's move ahead of everything.
 #[inline(always)]
 fn ordering_key(
     board: &Board,
@@ -583,10 +539,9 @@ fn ordering_key(
 }
 
 /// The same, for a caller that has already compared the move with the
-/// table's and has the answer to hand.
+/// table's.
 #[inline(always)]
 fn keyed(board: &Board, m: &Play, is_table_move: bool, quiet: Option<&Quiet<'_>>) -> i64 {
-    // one look at the capture field rather than two
     let mut score = match m.capture {
         Some(victim) => capture_score(board, m, victim),
         None => match quiet {
@@ -602,8 +557,7 @@ fn keyed(board: &Board, m: &Play, is_table_move: bool, quiet: Option<&Quiet<'_>>
 
 /// Where a capture sorts: the swap's sign picks the band, the SEE value
 /// orders within it, and MVV-LVA breaks ties between captures the swap
-/// prices alike. Only moves with a victim get here, so a quiet move never
-/// pays for a swap.
+/// prices alike.
 #[inline]
 fn capture_score(board: &Board, m: &Play, victim: Piece) -> i64 {
     let see = i64::from(board.see(m));
@@ -637,27 +591,22 @@ fn pack(key: i64, place: usize) -> i64 {
     (key << PLACE_BITS) | place as i64
 }
 
-/// What sort_by_cached_key does, minus its allocation, for a run that fits
-/// the buffer: a stable insertion sort over keys the caller computed once
-/// each. `agrees_with_the_stable_sort_it_replaces` holds it to the library
-/// sort's order, so the node count tests pin the pair. The keys arrive in
-/// a buffer rather than as a closure, which was a call per move rather
-/// than code in this loop.
+/// What sort_by_cached_key does, minus its allocation, for a list that
+/// fits the buffer: a stable insertion sort over keys the caller computed
+/// once each. `agrees_with_the_stable_sort_it_replaces` holds it to the
+/// library sort's order.
 ///
-/// Only the keys that are not zero are sorted. Five moves in six key zero
-/// at either stage, and a stable sort leaves them in generated order
-/// between the negative keys and the positive ones, so the caller marks
-/// their places in `plain` and the sorted keys go either side of them.
-/// Sorting the whole list carried each scored key back past every move
-/// generated before it, which was most of the sort's cost: two keys a
-/// call in the first stage and four in the second, against fifteen moves.
+/// Only the keys that are not zero are sorted. A stable sort leaves the
+/// zero keys in generated order between the negative keys and the
+/// positive ones, so the caller marks their places in `plain` and the
+/// sorted keys go either side of them. In the first stage every quiet
+/// keys zero, which is most of the list.
 ///
-/// `front` is how many of the keys are negative: the band that goes
-/// first, the positive ones being the band that goes last.
+/// `front` is how many of the keys are negative.
 ///
-/// Only the keys are shifted. A move is six bytes and a key eight, and
-/// shifting both cost four times shifting the key alone; the place packed
-/// into each key says which move it belongs to.
+/// Only the keys are shifted, since the place packed into each says which
+/// move it belongs to; shifting the six byte moves as well cost four times
+/// as much.
 #[inline]
 fn sort_on_the_stack(
     moves: &mut [Play],
@@ -675,9 +624,8 @@ fn sort_on_the_stack(
     debug_assert!(front <= keys.len(), "the front is part of the keys");
     // a list with nothing keyed is already in order, and one with a single
     // key is a rotation: the keyed move goes to the head or to the foot
-    // and every other move keeps its place in the run. Between them the
-    // two are two lists in five at the first stage and one in four at the
-    // second, and both cost the whole copy below for nothing
+    // and every other move keeps its place. Both are common and would pay
+    // the whole copy below for nothing
     match keys.len() {
         0 => return,
         1 => {
@@ -704,10 +652,9 @@ fn sort_on_the_stack(
     for (slot, key) in moves[..front].iter_mut().zip(&keys[..front]) {
         *slot = sorted[(key & PLACE_MASK) as usize];
     }
-    // the places the caller passed over, lowest first, in generated
-    // order. They come in runs (under two a list, eight places long on
-    // average, since a generator emits a piece's quiet moves together),
-    // and a run is copied whole rather than a six byte Play at a time
+    // the zero keyed places, in generated order. They come in runs, since
+    // a generator emits a piece's quiet moves together, and a run is
+    // copied whole
     let mut out = front;
     let mut rest = plain;
     while rest != 0 {

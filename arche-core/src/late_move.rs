@@ -3,38 +3,27 @@
 
 //! What a full width node does with a quiet move its ordering put late:
 //! search it whole, scout it some plies shallower first, or not search it
-//! at all.
-//!
-//! `decide` answers with a `Verdict`: how many plies shallower to scout,
-//! zero meaning the full search, or `Skip`. The scout itself is
+//! at all. `decide` answers with a `Verdict`; the scout itself is
 //! `windowed`'s, in `engine.rs`.
 //!
-//! Five rungs stand behind what a node does with a late quiet. The first
-//! two reach the depths the rest do not, and both act at depth one to
-//! three on a quiet move after the node's first. Quiet futility drops it
-//! when the node's evaluation plus a margin a ply cannot reach alpha. The
-//! late move count drops it when the node has already searched
-//! `LATE_MOVE_COUNT` moves a ply, and reads no evaluation at all. They are
-//! `Shallow` and not part of `decide`, because everything in them but one
-//! comparison against alpha is settled by the node rather than by the
-//! move: the loop builds it once and asks it per move. The third is the
-//! late move reduction: a scout for a quiet move searched after the
-//! fourth at a node deep enough to keep a full width ply under it, with
-//! the exemptions `reduces` lists. The fourth is the attention model, a logistic
-//! regression over the reduction ledger's feature columns quantized to
-//! fixed point, whose score is read against two thresholds: under the
-//! first the scout runs a ply deeper than it otherwise would, under the
-//! second the move is dropped from the node. The first threshold is read
-//! only when `deep_index_rule` is off. Under the rule, which the default
-//! carries, the deeper scout is decided by the move's index against a
-//! floor that rises with the node's depth, and the score decides the skip
-//! alone. That ply is relative because the model ranks how dead a move is
-//! and never names a depth. The fifth is `amount`, which reads how many
-//! plies a scout gives up off a table by the node's depth and the move's
-//! index.
+//! At depths one to three `Shallow` holds two pruning rules for a quiet
+//! move after the node's first: quiet futility, when the evaluation plus a
+//! margin a ply cannot reach alpha, and the late move count, when the node
+//! has searched `LATE_MOVE_COUNT` moves a ply. Everything in them but one
+//! comparison against alpha is settled by the node, so the loop builds it
+//! once and asks it per move. They stop a ply under the model's floor, so
+//! a shallow rule and the model never decide at one depth.
 //!
-//! The two shallow rungs stop a ply under the model's floor, so a shallow
-//! rule and the model never decide at one depth.
+//! `decide` covers the rest. The late move reduction scouts a quiet move
+//! searched after the fourth, with the exemptions `reduces` lists. From
+//! `DEEP_REDUCTION_MIN_DEPTH` the attention model (a logistic regression
+//! over the reduction ledger's columns, in fixed point) drops a move whose
+//! score is under one threshold, and gives the scout an extra ply under
+//! another. Under `deep_index_rule`, which the default carries, that extra
+//! ply is decided by the move's index against a floor rising with depth
+//! instead. The ply is added to the amount rather than naming a depth,
+//! because the model ranks how dead a move is and says nothing about
+//! depth. `amount` reads the plies off a table by depth and index.
 //!
 //! `features` derives the ledger's columns once, and the gate and the
 //! ledger both read them, so the score that decided a move and the row
@@ -48,9 +37,9 @@ use crate::ordering::MoveOrdering;
 use crate::play::Play;
 use crate::value::is_mate;
 
-// How many plies shallower a late quiet move is scouted before it is
-// searched at full depth, off the reduction table: one and flat, which is
-// also what the table reads at the corner most reduced scouts sit in.
+// How many plies shallower a late quiet is scouted with the reduction
+// table off. The table reads the same one ply at the corner most reduced
+// scouts sit in.
 pub(crate) const LATE_MOVE_REDUCTION: u8 = 1;
 // Two more than the reduction, so the scout keeps a full width ply under
 // it. Below this the scout is quiescence or a ply above it, and what it
@@ -59,49 +48,38 @@ pub(crate) const LATE_MOVE_MIN_DEPTH: u8 = LATE_MOVE_REDUCTION + 2;
 // How many moves a node searches at full depth before a quiet move after
 // them is scouted shallower. An opening value, not a tuned one.
 pub(crate) const LATE_MOVE_THRESHOLD: usize = 4;
-// How far under alpha a node's static evaluation may stand, per ply still
-// to search, and a quiet move still be searched. A pawn a ply, which is
-// `REVERSE_FUTILITY_MARGIN`'s figure and scale on purpose: both margins bet
-// on how far the static evaluation can be from the full search's answer at
-// the depth left, one from above beta and one from below alpha, and a pawn
-// a ply is the only reading of that error this tree has. A hundred is
-// where the rule starts rather than where a fit put it, and only games
-// can say whether it belongs higher or lower.
+// How far under alpha a node's static evaluation may stand, per ply to
+// search, and a quiet move still be searched. A pawn a ply, the figure and
+// scale of `REVERSE_FUTILITY_MARGIN`: both bet on how far the static
+// evaluation can be from the search's answer at the depth left, from
+// opposite bounds. Where the rule starts rather than where a fit put it;
+// only games can say which way it should move.
 pub(crate) const QUIET_FUTILITY_MARGIN: Score = 100;
-// How many moves a node searches per ply of its depth before a quiet move
-// after them is not searched at all. Four, so the cutoffs at the three
-// depths the rule reaches are 4, 8 and 12. At depth one that is
-// `LATE_MOVE_THRESHOLD`, the module's own definition of a late move: the
-// count prunes at depth one exactly where the reduction would begin
-// scouting if the reduction reached depth one. The top of the line is not
-// pinned to anything: 12 at depth three sits well above the 8 that
-// `DEEP_INDEX_FLOOR` and `DEEP_INDEX_SLOPE` put on the deeper scout at
-// depth four, and above the 7 that rule's line would reach at depth three.
-// That is deliberate and it is the conservative direction, because at
-// depth four the model stands behind the cutoff and at depth three nothing
-// does. An opening value, not a tuned one: what moves it is a match.
+// How many moves a node searches per ply of depth before a later quiet is
+// not searched at all: cutoffs of 4, 8 and 12 at depths one to three. At
+// depth one that is `LATE_MOVE_THRESHOLD`, where the reduction would start
+// scouting if it reached depth one. At depth three it sits above the 7 the
+// deep index rule's line (`DEEP_INDEX_FLOOR`, `DEEP_INDEX_SLOPE`) would
+// reach there. That is the conservative side on purpose: at depth four the
+// model stands behind the cutoff and at depth three nothing does. Untuned;
+// a match is what would move it.
 pub(crate) const LATE_MOVE_COUNT: usize = 4;
 // How many plies shallower the deep reduction scouts a late quiet the gate
-// deepens, off the table: a ply over the flat amount.
+// deepens, with the table off: a ply over the flat amount.
 pub(crate) const DEEP_REDUCTION: u8 = 2;
-// Two more than the reduction, on the late move floor's reasoning: the
-// scout keeps a full width ply, so `depth - 1 - DEEP_REDUCTION` never
-// falls under one.
+// Two more than the reduction, for the late move floor's reason.
 pub(crate) const DEEP_REDUCTION_MIN_DEPTH: u8 = DEEP_REDUCTION + 2;
-// What the gate's word is worth over the flat amount: one ply, the
-// difference between the two constants above. Written as that difference
-// so the table below cannot drift away from the pair it replaced.
+// The gate's extra ply over the flat amount, written as the difference so
+// the table cannot drift from the pair of constants it replaced.
 const DEEP_REDUCTION_BONUS: u8 = DEEP_REDUCTION - LATE_MOVE_REDUCTION;
-// The deepest node either shallow rule decides, written as a ply under the
-// model's own floor rather than as a three. The shallow rules and the model
-// never decide at one depth: from `DEEP_REDUCTION_MIN_DEPTH` the model has
-// the skip and both shallow rules are silent.
+// The deepest node either shallow rule decides: a ply under the model's
+// floor, so the two never decide at one depth.
 pub(crate) const SHALLOW_MAX_DEPTH: u8 = DEEP_REDUCTION_MIN_DEPTH - 1;
 const _: () = assert!(SHALLOW_MAX_DEPTH < DEEP_REDUCTION_MIN_DEPTH);
-// ln(x) at a scale of 1024, for every index the table below has. Held as
-// integers, so the table is built at compile time and two targets cannot
-// disagree about it. Zero at both ends of the bottom, which puts the
-// table's first row and column on its floor of one.
+// ln(x) at a scale of 1024 for each index of the table below, as integers
+// so the table is built at compile time and no two targets disagree. ln 0
+// is taken as zero, which with ln 1 puts the first row and column on the
+// floor of one.
 #[rustfmt::skip]
 const LN: [u16; 64] = [
         0,     0,   710,  1125,  1420,  1648,  1835,  1993,
@@ -113,21 +91,19 @@ const LN: [u16; 64] = [
      3964,  3985,  4006,  4026,  4046,  4066,  4085,  4104,
      4122,  4140,  4158,  4175,  4193,  4210,  4226,  4243,
 ];
-// 2.6 at the scale above squared, which is what sets how fast the
-// reduction grows with the two logs multiplied. The conventional figure,
-// and what moves it is a match rather than the bench. The half is added
-// before the divide so it rounds to nearest rather than toward zero.
+// 2.6 at the squared scale (2.6 × 1024²), which sets how fast the
+// reduction grows with the product of the two logs. The conventional
+// figure; a match moves it, not the bench. Half is added before dividing
+// so the result rounds to nearest.
 const REDUCTION_DIV: u32 = 2_726_298;
 const REDUCTION_HALF: u32 = REDUCTION_DIV / 2;
 
 /// How many plies shallower a late quiet is scouted, by the node's depth
-/// and the move's place in the order, before the gate's word and the floor
-/// are applied.
+/// and the move's index, before the gate's ply and the clamp.
 ///
-/// Built at compile time from `LN` and the divisor, so the formula stays in
-/// the source rather than four thousand numbers and the search pays one
-/// array read. The floor of one is what holds the table's shallow corner at
-/// the flat ply the search applies there already.
+/// Built at compile time so the source holds the formula rather than four
+/// thousand numbers. The floor of one holds the shallow corner at the flat
+/// ply.
 const REDUCTION: [[u8; 64]; 64] = reduction_table();
 
 const fn reduction_table() -> [[u8; 64]; 64] {
@@ -216,12 +192,10 @@ struct AttentionFeatures {
     depth: u8,
     /// The move's place among the searched moves, the ledger's index.
     index: usize,
-    /// The move's history score in thousandths of the node's largest
-    /// quiet history, or zero when no quiet has any.
+    /// The move's history in thousandths of the node's largest quiet
+    /// history, or zero when no quiet has any.
     hist_milli: i64,
-    /// Whether the move stands in one of the node's killer slots.
     killer: bool,
-    /// What the node's table probe had given it.
     tt: census::Table,
     /// The node's static evaluation less its beta.
     eval_beta: i64,
@@ -234,8 +208,8 @@ struct AttentionFeatures {
 /// The model's score for one late quiet: the quantized dot product plus
 /// the intercept. Higher means more likely to deserve attention (a scout
 /// that fails high, or a fail low the replay would call harmful). The
-/// bands and the searched count are computed from the index as the
-/// training table computed them, the collinear searched column included.
+/// searched column is collinear with the index and kept because the
+/// training table had it.
 fn attention_score(f: &AttentionFeatures) -> i64 {
     let index = f.index as i64;
     let band8_15 = i64::from((8..=15).contains(&f.index));
@@ -282,9 +256,8 @@ pub(crate) fn ledger_row_score(e: &crate::reduction::Event) -> i64 {
     attention_score(&f) + ATTENTION_SEARCHED * (e.searched as i64 - (e.index as i64 + 1))
 }
 
-/// What the decision reads of the search. Three references rather than
-/// the engine, so a test can stand one up from a board and an ordering
-/// with no search behind it.
+/// What the decision reads of the search: references rather than the
+/// engine, so a test can build one with no search behind it.
 pub(crate) struct Search<'a> {
     pub(crate) board: &'a Board,
     pub(crate) ordering: &'a MoveOrdering,
@@ -293,87 +266,67 @@ pub(crate) struct Search<'a> {
 
 /// The node one move is being decided at.
 ///
-/// Built by the move loop for each move it asks about rather than once
-/// for the node, because alpha rises as the node searches and the list is
-/// sorted under the loop. What has to outlive an iteration is the two dear
-/// features, which is why they are borrowed rather than held.
+/// Built afresh for each move the loop asks about, because alpha rises as
+/// the node searches and the list is sorted under the loop. The memos that
+/// outlive a move are borrowed from the loop, each filled by the first move
+/// that needs it.
 pub(crate) struct Node<'a> {
     /// The node's depth, the check extension included.
     pub(crate) depth: u8,
-    /// The bounds the node stands in as this move is reached.
+    /// The bounds as this move is reached.
     pub(crate) alpha: Score,
     pub(crate) beta: Score,
-    /// Which of those two the root opened with and no search has claimed.
     pub(crate) root_bounds: RootBounds,
-    /// Whether the side to move is in check here.
     pub(crate) in_check: bool,
     /// The node's distance from the root, or none past the rail, which is
     /// where the killer slots are read.
     pub(crate) ply: Option<usize>,
-    /// What the node's table probe gave it.
     pub(crate) tt: census::Table,
-    /// The moves the node generated.
     pub(crate) moves: &'a [Play],
-    /// The node's static evaluation, computed by the first move the gate
-    /// scores and read back for the rest. The recorders take their own,
-    /// so a node the gate scores nothing at never computes one.
+    /// The node's static evaluation. The recorders take their own, so a
+    /// node the gate scores nothing at never computes one.
     pub(crate) eval: &'a mut Option<i64>,
-    /// The node's history denominator, computed by the first move the gate
-    /// scores or the ledger stages, and read back for the rest. Held
-    /// rather than walked again so that the row a staging records says
-    /// what the gate scored: a child search between two of the node's
-    /// moves can teach the history, and the two readings would part.
+    /// The node's history denominator. Held rather than walked again so
+    /// that the row a staging records says what the gate scored: a child
+    /// search between two of the node's moves can teach the history.
     pub(crate) history_max: &'a mut Option<i32>,
-    /// What the check test reads of the position, taken by the first move
-    /// that asks and read back for the rest.
     pub(crate) check: &'a mut Option<crate::board::CheckInfo>,
 }
 
-/// What the decision settled for one late quiet: how many plies
-/// shallower the node scouts it before searching it, or that the node
-/// does not search it at all.
+/// What the decision settled for one late quiet.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub(crate) enum Verdict {
     /// Scouted this many plies shallower, and searched at the node's
     /// depth only when the scout comes back above alpha. Zero is no
     /// scout: the reduction did not apply.
     Scout(u8),
-    /// The model prices the move in its deadest band: the move is not
-    /// searched at all.
+    /// Not searched at all: the model prices the move in its deadest band.
     Skip,
 }
 
 /// What the node knew about a late quiet at the decision, in the units
-/// the reduction ledger prints: the history signed and its denominator
-/// clamped at zero. The gate scores these and the ledger records them.
-/// `AttentionFeatures` is the row the model sums: the bounds and the
-/// depth beside a fraction read off these.
+/// the reduction ledger prints. The gate scores these and the ledger
+/// records them.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub(crate) struct Features {
-    /// The move's place among the searched moves, the census's count: the
-    /// table's move, when it was searched, is 0.
+    /// The move's place among the searched moves: the table's move, when
+    /// it was searched, is 0.
     pub(crate) index: usize,
-    /// The moves the node generated, as the census records it.
     pub(crate) generated: usize,
-    /// The history table's score for the move at the decision. Signed, as
-    /// the census's column is. Every reduced move is quiet, so there is no
-    /// class to price it by instead.
+    /// The history table's score for the move at the decision, signed.
     pub(crate) history: i32,
     /// The largest history score among the node's generated quiets,
-    /// clamped at zero, the denominator `history` is read against.
+    /// clamped at zero: the denominator `history` is read against.
     pub(crate) history_max: i32,
-    /// Whether the move stood in one of the node's killer slots.
     pub(crate) killer: bool,
-    /// What the node's table probe had given it, the census's three-state.
     pub(crate) tt: census::Table,
 }
 
 impl Features {
     /// The history feature the weights were fitted on, zero to a
-    /// thousand: a marked down move reads as one the history knows nothing
-    /// about rather than pushing the score where the fit never saw. A
-    /// largest at or under zero is a list nothing is known about, or every
-    /// move marked down: the same nothing either way.
+    /// thousand. A marked down move reads as one the history knows nothing
+    /// about, rather than pushing the score where the fit never saw, and a
+    /// denominator at or under zero reads as nothing known.
     fn hist_milli(&self) -> i64 {
         if self.history_max > 0 {
             i64::from(self.history.max(0)) * 1000 / i64::from(self.history_max)
@@ -385,9 +338,8 @@ impl Features {
 
 /// The verdict for one move at a full width node. `searched` is how many
 /// moves the node has searched already, the table's move among them. The
-/// reduction's exemptions are asked first and cost nothing; a move they
-/// turn down is searched whole and never priced, so a node that reduces
-/// nothing pays for no feature.
+/// reduction's exemptions are asked first, so a node that reduces nothing
+/// pays for no feature.
 #[inline]
 pub(crate) fn decide(search: &Search, node: &mut Node, m: &Play, searched: usize) -> Verdict {
     if !reduces(search, node, m, searched) {
@@ -396,53 +348,36 @@ pub(crate) fn decide(search: &Search, node: &mut Node, m: &Play, searched: usize
     gate(search, node, m, searched)
 }
 
-/// The two shallow rules' node half, held across a node's move loop:
-/// whether a quiet move at a node of depth one to three is not searched at
-/// all, less the parts that read the move.
+/// The node's half of the two shallow rules, held across its move loop.
 ///
-/// The rules are quiet futility and the late move count, each behind a
-/// switch of its own. The margin's guess is that the node's evaluation plus
-/// `QUIET_FUTILITY_MARGIN` a ply failing to reach alpha means the move
-/// cannot reach it either. The count's guess is that a node which has
-/// already searched `LATE_MOVE_COUNT` moves a ply has searched the moves
-/// worth searching. They share a node, their exemptions and this struct,
-/// and nothing else: the count reads no evaluation at all.
+/// Quiet futility guesses that a move cannot reach alpha when the node's
+/// evaluation plus `QUIET_FUTILITY_MARGIN` a ply does not. The late move
+/// count guesses that a node which has searched `LATE_MOVE_COUNT` moves a
+/// ply has searched those worth searching, and reads no evaluation. Each
+/// has a switch of its own.
 ///
-/// The exemptions are `reduces`'s, less the reduction's depth and count
-/// floors and plus the material one. The first move searched is exempt, so
-/// a node that pruned every move and answered a mate it is not in cannot
-/// happen: the loop reads no legal move as mate or stalemate. A side with
-/// no piece but pawns is exempt for the reason `shortcuts` refuses it, and
-/// that gate also puts every node the rules reach inside the set the
-/// reverse margin evaluated, so the evaluation the margin reads is one the
-/// node had already.
+/// The exemptions are `reduces`'s without its depth and count floors, plus
+/// the material gate. The first move searched is exempt, because the loop
+/// reads a node with no legal move searched as mate or stalemate. A side
+/// with no piece but pawns is exempt for the reason `shortcuts` refuses it,
+/// which also means the margin reads an evaluation the node already has.
 ///
-/// Only `under` moves as the node searches. Alpha rises and never falls,
-/// so the margin's test is false until it becomes true and then stays
-/// true, which makes it a latch rather than a question per move. A rising
-/// alpha can climb into the mate window, though, and that window is an
-/// exemption, so the mate test is asked in front of the latch rather than
-/// folded into it. The count reads nothing that moves at all.
+/// Alpha only rises, so the margin's test is a latch (`under`). A rising
+/// alpha can reach the mate window, which is an exemption, so the mate test
+/// is asked per move in front of the latch rather than folded into it.
 pub(crate) struct Shallow {
-    /// Whether the node's own facts admit either rule: a switch on, the
-    /// depth band, the check, beta and root exemptions and the material
-    /// gate.
+    /// Whether the node's own facts admit either rule.
     admits: bool,
-    /// `QUIET_FUTILITY_MARGIN` at this node's depth, in the evaluation's
-    /// units, or none where the margin's switch is off.
+    /// `QUIET_FUTILITY_MARGIN` at this node's depth, or none with the
+    /// margin's switch off.
     margin: Option<i64>,
-    /// `LATE_MOVE_COUNT` a ply at this node's depth: the searched count at
-    /// or past which the count drops a quiet. None where the count's switch
-    /// is off.
+    /// The searched count at or past which the count drops a quiet, or none
+    /// with its switch off.
     count: Option<usize>,
-    /// Whether the evaluation plus the margin has already failed to reach
-    /// alpha here.
     under: bool,
 }
 
-/// What the node settles about the two rules before it searches a move. The
-/// board read is here and not in the per move question, which is what the
-/// rest of the loop is left asking, and it is read once for both.
+/// The node's half of the two rules, read once before the loop.
 pub(crate) fn shallow(
     config: &SearchConfig,
     board: &Board,
@@ -469,16 +404,13 @@ pub(crate) fn shallow(
 impl Shallow {
     /// Whether either rule drops this move. `searched` is how many moves the
     /// node has searched already and `alpha` its bound as the move is
-    /// reached; `eval` is the move loop's evaluation memo.
+    /// reached.
     ///
-    /// A capture and a promotion are asked about before either rule, so a
-    /// node deciding nothing but those never evaluates. The count is asked
-    /// before the margin, because it reads integers the node holds and the
-    /// margin reads the board: a move the count drops is dropped without an
-    /// evaluation. The check probe is asked last and only of a move one of
-    /// the rules would otherwise prune: a pruned check is never seen at
-    /// all, where a scouted one is seen shallower, and the slider probes
-    /// cost more than everything before them.
+    /// The order of the tests is the cost order: the count before the
+    /// margin, so a move the count drops needs no evaluation, and the check
+    /// probe last, since the slider probes cost more than everything before
+    /// them. A check is exempt because a pruned check is never seen, where
+    /// a scouted one is seen shallower.
     #[inline]
     pub(crate) fn skips(
         &mut self,
@@ -500,10 +432,11 @@ impl Shallow {
                 .gives_check_with(check.get_or_insert_with(|| search.board.check_info()), m)
     }
 
-    /// Whether either rule would drop every quiet move from here on that
-    /// neither gives check nor promotes: the half of `skips` that does not
-    /// read the move. Both parts are latches while alpha stays short of a
-    /// mate, since `searched` and alpha only rise.
+    /// Whether either rule would drop every later quiet that neither gives
+    /// check nor promotes: the half of `skips` that does not read the move.
+    /// It stays true once true while alpha is short of a mate, since
+    /// `searched` and alpha only rise; the lazy quiet ordering relies on
+    /// that.
     #[inline]
     pub(crate) fn active(
         &mut self,
@@ -518,16 +451,11 @@ impl Shallow {
             && (self.counted(searched) || self.under_alpha(search, eval, alpha))
     }
 
-    /// Whether the node has searched the count's moves a ply already. The
-    /// node's own integers and nothing else: no board read, no evaluation
-    /// and no history.
     #[inline]
     fn counted(&self, searched: usize) -> bool {
         self.count.is_some_and(|count| searched >= count)
     }
 
-    /// Whether the node stands under alpha by more than the margin, read
-    /// off the latch once it is set.
     #[inline]
     fn under_alpha(&mut self, search: &Search, eval: &mut Option<i64>, alpha: Score) -> bool {
         let Some(margin) = self.margin else {
@@ -543,26 +471,20 @@ impl Shallow {
 /// Whether a move at a full width node is scouted shallower before it is
 /// searched at the node's depth: the late move reduction.
 ///
-/// The exemptions are one rule: the reduction guesses that a move the
-/// ordering put late is worth less than alpha, and is refused wherever
-/// that guess has nothing to stand on. The first moves are searched
-/// whole. A capture or a promotion was priced on material, not on its
-/// place in the order; that takes in the losing captures, which sort
-/// behind the quiets, and reducing them is a follow-up. A side in check
-/// has evasions, not late moves. A window at either edge of the mate
-/// scores is the margin family's exemption: a scout a ply short of the
-/// mate it is asked about can only say no.
+/// The reduction guesses that a move the ordering put late is worth less
+/// than alpha, and is refused wherever that guess has nothing to stand on.
+/// The first moves are searched whole. A capture or a promotion was priced
+/// on material, not on its place in the order; that takes in the losing
+/// captures, which sort behind the quiets, and reducing them is a
+/// follow-up. A side in check has evasions, not late moves. A scout a ply
+/// short of a mate at either bound can only say no.
 ///
-/// A beta that is still the root's own bound, which `root_bounds` says,
-/// stands the reduction down as well, and that one is a decision. A node
-/// whose beta is the root's is a node whose answer the root reports
-/// rather than bounds, and the policy is to search it whole: a late move
-/// trusted a ply short there costs the answer and not a bound. That
-/// records what the engine does and does not claim it is right; an arm
-/// that wants to reduce there lifts the flag and plays a match. Alpha's
-/// bit is not read, because a node whose alpha is the root's has every
-/// move failing low already, which is the reduction's guess rather than
-/// something it needs proved.
+/// A beta that is still the root's own bound stands the reduction down as
+/// a policy rather than a proof: that node's answer is what the root
+/// reports, so a late move trusted a ply short there costs the answer and
+/// not a bound. An arm that wants to reduce there lifts the flag and plays
+/// a match. Alpha's bit is not read, because at such a node every move
+/// failing low is the reduction's own guess.
 ///
 /// A quiet move that gives check is reduced like any other: exempting
 /// checks was measured and lost (docs/ROADMAP.md).
@@ -580,15 +502,8 @@ fn reduces(search: &Search, node: &Node, m: &Play, searched: usize) -> bool {
         && m.promote.is_none()
 }
 
-/// Whether the reduction can decide a move at this node: its half of
-/// `reduces` that reads the node and the count rather than the move, on
-/// the node's own facts so that a move loop can ask it before it builds a
-/// `Node`. Where this is false every move is searched whole, and there is
-/// nothing for `decide` to read.
-///
-/// The two shallow rules are not here. They reach depths this does not and
-/// read none of the node facts, so the loop settles them in `Shallow` and
-/// asks them before this.
+/// The half of `reduces` that reads the node and the count rather than
+/// the move, so the loop can ask it before building a `Node`.
 #[inline]
 pub(crate) fn admits(
     config: &SearchConfig,
@@ -605,26 +520,20 @@ pub(crate) fn admits(
         && node_admits(in_check, alpha, beta, root_bounds)
 }
 
-/// The exemptions the reduction and the two shallow rules share: a side in
-/// check has evasions rather than late moves, a mate window on either
-/// bound is the margin family's exemption, and a beta that is still the
-/// root's own bound is the principal variation exemption `reduces` sets
-/// out above. `Shallow` reads the three fixed ones at the node and alpha
-/// per move.
+/// The exemptions the reduction and the two shallow rules share, for the
+/// reasons `reduces` gives. `Shallow` reads the three fixed at the node
+/// once and alpha's per move.
 #[inline]
 fn node_admits(in_check: bool, alpha: Score, beta: Score, root_bounds: RootBounds) -> bool {
     !in_check && !is_mate(alpha) && !is_mate(beta) && !root_bounds.beta
 }
 
-/// Whether a move `reduces` already accepted is scouted a ply shallower
-/// than the amount alone would give it, or not searched at all: the skip is
-/// asked first, off the model's score, and the deeper scout after it, off
-/// whichever rule `deepens` reads. The node must be deep enough for the
-/// deeper scout to keep its full width ply, a floor the skip inherits,
-/// and the move must not give check: the exemption arm measured checks
-/// as the scout's blind spot, so neither the deeper scout nor the skip
-/// is offered one. The check test runs last because the slider probes
-/// cost more than everything before them.
+/// Whether a move `reduces` already accepted is skipped, or scouted a ply
+/// shallower than the amount alone would give it. The skip is asked first,
+/// off the model's score. Both need the depth where the deeper scout keeps
+/// its full width ply, and neither is offered a move that gives check: the
+/// exemption arm measured checks as the scout's blind spot. The check test
+/// runs last because the slider probes cost more than everything before it.
 fn gate(search: &Search, node: &mut Node, m: &Play, searched: usize) -> Verdict {
     if (!search.config.deep_reductions && !search.config.late_move_pruning)
         || node.depth < DEEP_REDUCTION_MIN_DEPTH
@@ -668,14 +577,10 @@ fn gate(search: &Search, node: &mut Node, m: &Play, searched: usize) -> Verdict 
     Verdict::Scout(amount(search.config, node.depth, searched, 0))
 }
 
-/// Whether the gate gives a move it has already accepted the deeper
-/// scout's extra ply.
-///
-/// Under `deep_index_rule` the decision reads the node's depth and the
-/// move's index and nothing else, which is what the arm asks: whether the
-/// model's other features earn their place at this gate. Off the rule the
-/// model's threshold decides, as it did. Neither the amount that extra ply
-/// is worth nor the skip's own threshold moves either way.
+/// Whether the gate gives a move the deeper scout's extra ply: by depth
+/// and index alone under `deep_index_rule`, which asks whether the model's
+/// other features earn their place here, and by the model's threshold off
+/// it.
 fn deepens(config: &SearchConfig, depth: u8, searched: usize, score: i64) -> bool {
     debug_assert!(
         depth >= DEEP_REDUCTION_MIN_DEPTH,
@@ -690,18 +595,13 @@ fn deepens(config: &SearchConfig, depth: u8, searched: usize, score: i64) -> boo
 }
 
 /// How many plies shallower the scout runs. `bonus` is the gate's ply,
-/// which stands over the flat amount rather than naming a depth of its
-/// own, for the reason the module doc gives.
+/// added to the amount for the reason the module doc gives.
 ///
-/// Off the table the two constants are read as they were. On it the amount
-/// grows with the node's depth and the move's index.
-///
-/// The clamp is the floor the two minimum depths used to guarantee on
-/// their own: `depth - 1 - reduction` never falls under one, so the scout
-/// keeps a full width ply. It is applied after the bonus rather than
-/// before, because what has to stay above zero is the depth the scout
-/// actually runs at. Clamping is chosen over raising the minimum depths so
-/// that the eligible population does not move with the amount.
+/// The clamp keeps `depth - 1 - reduction` at one or more, so the scout
+/// keeps a full width ply. It is applied after the bonus because the
+/// depth the scout actually runs at is what has to stay above zero, and
+/// it is a clamp rather than higher minimum depths so that which moves are
+/// eligible does not move with the amount.
 fn amount(config: &SearchConfig, depth: u8, searched: usize, bonus: u8) -> u8 {
     debug_assert!(
         depth >= LATE_MOVE_MIN_DEPTH,
@@ -715,8 +615,6 @@ fn amount(config: &SearchConfig, depth: u8, searched: usize, bonus: u8) -> u8 {
     (base + bonus).min(depth - 2)
 }
 
-/// What the node knew about a move, derived once: the gate scores these
-/// and the ledger records them.
 pub(crate) fn features(search: &Search, node: &mut Node, m: &Play, searched: usize) -> Features {
     let history_max = denominator(search, node);
     let killers = node
@@ -726,30 +624,23 @@ pub(crate) fn features(search: &Search, node: &mut Node, m: &Play, searched: usi
         index: searched,
         generated: node.moves.len(),
         history: search.ordering.history_score(search.board.active_color, m),
-        // clamped where the move's own score is not, as the census's
-        // denominator is: a fraction of a marked down largest would be a
-        // number on no scale
+        // a fraction of a marked down largest would be on no scale
         history_max: history_max.max(0),
         killer: killers.contains(&Some(*m)),
         tt: node.tt,
     }
 }
 
-/// The node's static evaluation, computed once and held on the node.
 fn evaluation(search: &Search, node: &mut Node) -> i64 {
     eval_memo(search.board, node.eval)
 }
 
-/// The board's static evaluation through the move loop's memo, which the
-/// node facts borrow and the quiet futility rule is handed directly.
 fn eval_memo(board: &Board, eval: &mut Option<i64>) -> i64 {
     *eval.get_or_insert_with(|| i64::from(crate::eval::eval(board)))
 }
 
-/// The largest history score among the node's generated quiets, the
-/// denominator a move's own score is read against. Signed and not
-/// clamped: `Features` clamps the printed column, and a list of nothing
-/// but marked down moves is what `hist_milli`'s guard meets.
+/// The largest history score among the node's generated quiets, signed:
+/// `Features` does the clamping.
 fn denominator(search: &Search, node: &mut Node) -> i32 {
     let moves = node.moves;
     *node.history_max.get_or_insert_with(|| {
@@ -781,9 +672,7 @@ mod tests {
     use crate::play::Play;
     use pretty_assertions::assert_eq;
 
-    /// The reference with the late move reductions switched on and
-    /// nothing else touched: whatever moves between this and the
-    /// reference is the reduction.
+    /// The reference with the late move reductions alone on.
     fn reducing() -> SearchConfig {
         SearchConfig {
             late_move_reductions: true,
@@ -791,8 +680,7 @@ mod tests {
         }
     }
 
-    /// The reduction with the deep reduction on top: whatever moves
-    /// between this and `reducing` is the model gated two ply scout.
+    /// `reducing` with the deep reduction on top.
     fn deep_reducing() -> SearchConfig {
         SearchConfig {
             late_move_reductions: true,
@@ -801,8 +689,7 @@ mod tests {
         }
     }
 
-    /// The deep reduction with the pruning on top: whatever moves between
-    /// this and `deep_reducing` is the skip.
+    /// `deep_reducing` with the model's skip on top.
     fn pruning() -> SearchConfig {
         SearchConfig {
             late_move_reductions: true,
@@ -812,8 +699,7 @@ mod tests {
         }
     }
 
-    /// The quiet futility rule alone, with nothing else on: whatever moves
-    /// between this and the reference at depths one to three is the rule.
+    /// The reference with quiet futility alone on.
     fn futility() -> SearchConfig {
         SearchConfig {
             quiet_futility: true,
@@ -821,8 +707,7 @@ mod tests {
         }
     }
 
-    /// The pruning with the quiet futility rule on top: whatever moves
-    /// between this and `pruning` is the margin.
+    /// `pruning` with quiet futility on top.
     fn quiet_futile() -> SearchConfig {
         SearchConfig {
             quiet_futility: true,
@@ -830,9 +715,8 @@ mod tests {
         }
     }
 
-    /// The pruning with the late move count on top, which is this arm's
-    /// candidate shape: whatever moves between this and `pruning` is the
-    /// count. The margin is off, so a skip here read no evaluation.
+    /// `pruning` with the late move count on top and the margin off, so a
+    /// shallow skip here read no evaluation.
     fn counting() -> SearchConfig {
         SearchConfig {
             late_move_count: true,
@@ -840,8 +724,7 @@ mod tests {
         }
     }
 
-    /// Both shallow rules on top of the pruning, which is the shape the
-    /// default carries.
+    /// Both shallow rules on top of `pruning`, as the default has them.
     fn both_shallow() -> SearchConfig {
         SearchConfig {
             quiet_futility: true,
@@ -850,9 +733,7 @@ mod tests {
         }
     }
 
-    /// The searched count that fires the count at every depth it reaches:
-    /// its cutoff at the deepest of them, which is the largest of the
-    /// three. The tests that ask both rules one question use it.
+    /// A searched count past the count's cutoff at every depth it reaches.
     const PAST_THE_COUNT: usize = LATE_MOVE_COUNT * SHALLOW_MAX_DEPTH as usize;
 
     /// Everything a decision reads, owned by the test, with no engine and
@@ -862,8 +743,7 @@ mod tests {
         ordering: MoveOrdering,
         config: SearchConfig,
         moves: MoveList,
-        /// The node's facts besides its depth and bounds. A test that
-        /// wants a killer slot, a table move or a root bound sets them.
+        /// The node's facts besides its depth and bounds.
         in_check: bool,
         root_bounds: RootBounds,
         ply: Option<usize>,
@@ -891,9 +771,8 @@ mod tests {
         }
 
         /// The decision about one move. Each call is a node of its own:
-        /// the held features are cleared first, so a test that teaches
-        /// the memories between two questions gets an answer that read
-        /// them.
+        /// the held features are cleared first, so memories taught between
+        /// two calls are read.
         fn verdict(
             &mut self,
             m: &Play,
@@ -1722,9 +1601,8 @@ mod tests {
     }
 
     /// Off the switch the amount is the two constants the table replaced,
-    /// at every depth and index the gate can reach. This is the identity
-    /// the arm's bench claim rests on: a search with the table off is the
-    /// search that was there before it existed.
+    /// at every depth and index the gate can reach: the identity the table
+    /// switch's bench claim rests on.
     #[test]
     fn the_table_off_reads_the_two_constants_it_replaced() {
         let config = SearchConfig {
@@ -1814,8 +1692,8 @@ mod tests {
     }
 
     /// The gate's word stays worth a ply over the flat amount rather than
-    /// becoming a depth of its own, which is the composition the arm was
-    /// built on. At depth four and index four that is today's two.
+    /// becoming a depth of its own. At depth four and index four that is
+    /// `DEEP_REDUCTION`.
     #[test]
     fn the_model_gate_is_worth_one_ply_over_the_flat_amount() {
         let config = SearchConfig::default();
@@ -1948,11 +1826,9 @@ mod tests {
         assert!(!s.skips(&quiet, 0, 1, -100, 100));
     }
 
-    /// What the count costs a node, as a test, and the one thing that sets
-    /// it apart from the margin: it reads the node's integers and nothing
-    /// else. A node the count decides never evaluates and never walks the
-    /// history denominator, and that holds with the margin beside it,
-    /// because the count is asked first.
+    /// A node the count decides never evaluates and never walks the
+    /// history denominator, with the margin beside it too, because the
+    /// count is asked first.
     #[test]
     fn the_count_decides_without_an_evaluation() {
         for (shape, config) in [("alone", counting()), ("beside the margin", both_shallow())] {
@@ -1997,12 +1873,10 @@ mod tests {
         }
     }
 
-    /// The ceiling: at the model's floor both shallow rules are silent and
-    /// the model's verdict is what it was. The row is solved onto the
-    /// pruning threshold and one over it, and the alpha that solves it
-    /// stands far enough over the evaluation that the margin would fire on
-    /// it, while the searched count stands past what the count's line would
-    /// read at this depth, so a ceiling that leaked a ply would skip the
+    /// At the model's floor both shallow rules are silent and the model's
+    /// verdict stands. The row is solved onto the pruning threshold and one
+    /// over it, with an alpha the margin would fire on and a searched count
+    /// past the count's line, so a ceiling that leaked a ply would skip the
     /// move the model let through.
     #[test]
     fn neither_shallow_rule_decides_at_the_models_floor() {
@@ -2214,10 +2088,9 @@ mod tests {
         );
     }
 
-    /// What the rule costs a node, as a test. The margin reads the
-    /// evaluation the move loop seeded from what the shortcuts had already
-    /// computed, and computes nothing itself. It never walks the history
-    /// denominator, which the rule has no term for.
+    /// The margin reads the evaluation the move loop seeded from the
+    /// shortcuts and computes none itself, and never walks the history
+    /// denominator.
     #[test]
     fn the_rule_reads_the_seeded_evaluation_and_no_history() {
         let mut s = Stand::new(fens::A_CAPTURE_AND_QUIETS, quiet_futile());
@@ -2234,12 +2107,9 @@ mod tests {
         assert!(s.history_max.is_none(), "the rule walked the history");
     }
 
-    /// The margin's test is settled once for the node rather than once for
-    /// the move. Alpha rises through a move loop and never falls, so the
-    /// test is false until it becomes true and then stays true, and the
-    /// rest of the node's moves read the latch. Asked here of one node
-    /// under the margin's reach, then past it, then under it again, which
-    /// a search cannot do and the latch has to survive.
+    /// The margin's test is a latch. Asked here of one node under the
+    /// margin's reach, then past it, then under it again, which a search
+    /// cannot do and the latch has to survive.
     #[test]
     fn the_margin_is_latched_once_alpha_has_reached_it() {
         let mut s = Stand::new(fens::A_CAPTURE_AND_QUIETS, futility());
@@ -2254,9 +2124,8 @@ mod tests {
         );
     }
 
-    /// A rising alpha can climb into the mate window, which is one of the
-    /// node exemptions. The latch must not carry the rule past it, so the
-    /// mate test is asked of every move rather than folded into the latch.
+    /// A rising alpha can climb into the mate window, and the latch must
+    /// not carry the rule past that exemption.
     #[test]
     fn a_mate_window_stands_the_latched_rule_down() {
         let mut s = Stand::new(fens::A_CAPTURE_AND_QUIETS, futility());
