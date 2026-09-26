@@ -838,7 +838,9 @@ mod switches {
 /// A bound the root opened with is one the tree under it has said nothing
 /// about, which is what the shortcuts and the late move reduction are
 /// refused on wherever beta is one: the principal variation exemption,
-/// written here rather than left to the mate window gates beside it.
+/// written here rather than left to the mate window gates beside it. The
+/// shortcuts are refused at every open window as well, which `shortcuts`
+/// reads from the bounds rather than the bits.
 ///
 /// Both bits at the root. Where they go from there is `child` and
 /// `alpha_raised` and nowhere else, so no call site spells the rule out
@@ -1919,8 +1921,14 @@ impl AlphaBeta {
     /// the positive half of that gate is redundant while material bounds
     /// the eval, and stands in case the eval grows terms that reach higher.
     /// A fourth gate stands beside them: a beta that is still the root's
-    /// own bound, which `root_bounds` says. Nothing has claimed that
-    /// bound, so there is nothing here for the node to stand above.
+    /// own bound, which `root_bounds` says, or an open window. Nothing has
+    /// claimed the root's bound, so there is nothing here for the node to
+    /// stand above, and an open window asks for the node's score rather
+    /// than a bound on it. The bit alone leaves the proof after a probe
+    /// fails high open to both shortcuts at every other ply, since it takes
+    /// the window turned round with its beta bit clear. The reductions and
+    /// the shallow rules still read the bit alone: exempting every open
+    /// window from them as well measured a loss.
     ///
     /// A `Some` answers the node. A pass that failed answers nothing but
     /// leaves whatever it read in the node's taint.
@@ -1932,8 +1940,8 @@ impl AlphaBeta {
     /// the memoised door.
     ///
     /// Alpha is read by neither shortcut, and nor is its bit. Alpha is
-    /// here for the sampler, which records the window the node was asked
-    /// under.
+    /// here for the open window and for the sampler, which records the
+    /// window the node was asked under.
     // two arguments past clippy's limit: the root bounds and the evaluation
     // handed back to the loop.
     #[allow(clippy::too_many_arguments)]
@@ -1960,6 +1968,9 @@ impl AlphaBeta {
             || !self.board.has_non_pawn_material()
             || is_mate(beta)
             || root_bounds.beta
+            // the open window, spelt without the subtraction, which
+            // overflows a Score at the full window
+            || alpha + 1 < beta
         {
             return Ok(None);
         }
@@ -6243,9 +6254,10 @@ mod sampling {
     }
 
     /// The beta a row states is the beta the gate cleared, and the window
-    /// beside it is read from the alpha and the beta the node really had.
-    /// Both shortcuts, because they are two call sites and a bound can go
-    /// astray at one of them.
+    /// beside it is read from the alpha and the beta the node really had,
+    /// which is a zero window: an open one is exempt. Both shortcuts,
+    /// because they are two call sites and a bound can go astray at one of
+    /// them.
     ///
     /// The evaluation is read from the engine, so what the columns are held
     /// to is a number the test knows before the shortcut runs: reverse
@@ -6260,17 +6272,12 @@ mod sampling {
         // the live kind and the shadow, so the live row is picked out by
         // its kind rather than its place
         let beta = eval - 200;
-        let taken = shortcut_at(SearchConfig::default(), beta - 500, beta, 1);
+        let taken = shortcut_at(SearchConfig::default(), beta - 1, beta, 1);
         assert_eq!(taken.len(), 2);
         let fired = one_of(&taken, Shortcut::ReverseFutility);
         assert_eq!(fired.beta, beta);
         assert_eq!(fired.eval_beta, 200);
         assert_eq!(fired.claimed, eval - REVERSE_FUTILITY_MARGIN);
-        assert_eq!(fired.window, Window::Open);
-        // and the window follows the bounds rather than the shortcut
-        let narrow = shortcut_at(SearchConfig::default(), beta - 1, beta, 1);
-        let fired = one_of(&narrow, Shortcut::ReverseFutility);
-        assert_eq!(fired.beta, beta);
         assert_eq!(fired.window, Window::Zero);
 
         // the pass, with the margin switched off so that nothing answers the
@@ -6280,53 +6287,68 @@ mod sampling {
             ..SearchConfig::default()
         };
         let beta = eval - 600;
-        let taken = shortcut_at(passing, beta - 500, beta, 3);
+        let taken = shortcut_at(passing, beta - 1, beta, 3);
         assert_eq!(taken.len(), 1);
         assert_eq!(taken[0].kind, Shortcut::NullMove);
         assert_eq!(taken[0].beta, beta);
         assert_eq!(taken[0].eval_beta, 600);
-        assert_eq!(taken[0].window, Window::Open);
-        let narrow = shortcut_at(passing, beta - 1, beta, 3);
-        assert_eq!(narrow[0].beta, beta);
-        assert_eq!(narrow[0].window, Window::Zero);
+        assert_eq!(taken[0].window, Window::Zero);
     }
 
-    /// The exemption at this gate: the same beta answers the node with
-    /// neither bound marked and answers nothing when it is still the
-    /// root's own. The refusal comes before the eval is read, so the node
-    /// spends no search and the sampler is offered no row.
+    /// The exemption at this gate: the same beta answers the node at a zero
+    /// window with neither bound marked, and answers nothing when it is
+    /// still the root's own or when the window is open. The refusal comes
+    /// before the eval is read, so the node spends no search and the
+    /// sampler is offered no row.
     #[test]
-    fn a_beta_that_is_still_the_roots_answers_no_shortcut() {
+    fn an_exempt_node_answers_no_shortcut() {
         let eval = engine(SHARP_MIDDLEGAME).eval();
         // past the margin's depth, so the pass is what answers, and six
         // hundred under the evaluation, so it answers comfortably. The
         // pass's own reduced search is sampled for the shortcuts it takes,
         // so the row looked for here is named rather than counted
         let beta = eval - 600;
-        let taken = shortcut_at(SearchConfig::default(), beta - 500, beta, 5);
+        let taken = shortcut_at(SearchConfig::default(), beta - 1, beta, 5);
         assert!(taken.iter().any(|s| s.kind == Shortcut::NullMove));
 
-        let mut e = engine(SHARP_MIDDLEGAME);
-        e.arm(Sampler::<Sample>::every(1));
-        let mut taint = Taint::default();
-        let Ok(answered) = e.shortcuts(
-            beta - 500,
-            beta,
-            5,
-            false,
-            true,
-            RootBounds {
-                alpha: false,
-                beta: true,
-            },
-            &mut taint,
-            &mut None,
-        ) else {
-            panic!("nothing here searches under a limit, so nothing can abort");
+        // the root's beta at a zero window, then the proof's bits at an
+        // open one (its alpha is the root's and its beta is not), then one
+        // under the open window and the other side of it
+        let roots_beta = RootBounds {
+            alpha: false,
+            beta: true,
         };
-        assert!(answered.is_none(), "a shortcut answered the root's beta");
-        assert_eq!(e.nodes, 0, "the refusal searched something");
-        assert!(collected(&mut e).taken.is_empty());
+        let proof = RootBounds {
+            alpha: true,
+            beta: false,
+        };
+        for (alpha, root_bounds) in [
+            (beta - 1, roots_beta),
+            (beta - 500, proof),
+            (beta - 2, RootBounds::NEITHER),
+        ] {
+            let mut e = engine(SHARP_MIDDLEGAME);
+            e.arm(Sampler::<Sample>::every(1));
+            let mut taint = Taint::default();
+            let Ok(answered) = e.shortcuts(
+                alpha,
+                beta,
+                5,
+                false,
+                true,
+                root_bounds,
+                &mut taint,
+                &mut None,
+            ) else {
+                panic!("nothing here searches under a limit, so nothing can abort");
+            };
+            assert!(
+                answered.is_none(),
+                "a shortcut answered {root_bounds:?} at alpha {alpha}"
+            );
+            assert_eq!(e.nodes, 0, "the refusal searched something");
+            assert!(collected(&mut e).taken.is_empty());
+        }
     }
 
     /// The seam the shadow exists for: a candidate the margin declines is
@@ -6343,7 +6365,7 @@ mod sampling {
         e.arm(Sampler::<Sample>::every(1));
         let mut taint = Taint::default();
         let Ok(answered) = e.shortcuts(
-            beta - 500,
+            beta - 1,
             beta,
             1,
             false,
@@ -6377,7 +6399,7 @@ mod sampling {
         e.arm(Sampler::<Sample>::every(1));
         let mut taint = Taint::default();
         let Ok(answered) = e.shortcuts(
-            beta - 500,
+            beta - 1,
             beta,
             1,
             false,
@@ -6433,7 +6455,7 @@ mod sampling {
     fn a_fired_candidate_is_shadowed_with_the_same_claim() {
         let eval = engine(SHARP_MIDDLEGAME).eval();
         let beta = eval - 200;
-        let taken = shortcut_at(SearchConfig::default(), beta - 500, beta, 1);
+        let taken = shortcut_at(SearchConfig::default(), beta - 1, beta, 1);
         assert_eq!(taken.len(), 2);
         let live = one_of(&taken, Shortcut::ReverseFutility);
         let shadow = one_of(&taken, Shortcut::ShadowFutility);
@@ -6452,7 +6474,7 @@ mod sampling {
     fn the_shadow_keeps_to_the_margins_depths() {
         let eval = engine(SHARP_MIDDLEGAME).eval();
         let beta = eval - 600;
-        let taken = shortcut_at(SearchConfig::default(), beta - 500, beta, 5);
+        let taken = shortcut_at(SearchConfig::default(), beta - 1, beta, 5);
         assert!(
             taken
                 .iter()
@@ -6466,32 +6488,18 @@ mod sampling {
         }
     }
 
-    /// The window a real search hands the hook. Neither shortcut reads the
-    /// width: the margin and the pass both read the eval against beta, so
-    /// an open window node can be answered by either. Almost every node
-    /// they answer carries a zero window all the same, because that is what
-    /// the tree under a scout looks like, and the two counts here are this
-    /// tree's numbers rather than rules.
-    /// `the_recorded_beta_is_the_one_the_gate_cleared` drives the hook
-    /// directly with both windows and pins the open column.
+    /// The window a real search hands the hook. An open window is exempt
+    /// from both shortcuts, so every row a search records carries a zero
+    /// one, the shadow's among them.
     #[test]
-    fn the_windows_a_search_records_are_mostly_the_zero_ones() {
+    fn the_windows_a_search_records_are_the_zero_ones() {
         let mut e = engine(SHARP_MIDDLEGAME);
         e.arm(Sampler::<Sample>::every(1));
         e.search(6);
         let taken = collected(&mut e).taken;
         assert!(!taken.is_empty());
-        let open = |kind| {
-            taken
-                .iter()
-                .filter(|s| s.kind == kind && s.window == Window::Open)
-                .count()
-        };
-        assert_eq!(
-            (open(Shortcut::ReverseFutility), open(Shortcut::NullMove)),
-            (1, 2),
-            "the open windows the two shortcuts answer moved"
-        );
+        let open: Vec<_> = taken.iter().filter(|s| s.window == Window::Open).collect();
+        assert!(open.is_empty(), "an open window was sampled: {open:?}");
     }
 
     /// Every kind reaches the hook, not only whichever fires first. A kind

@@ -65,11 +65,11 @@ Each sample is a row of `kind depth window halfmove beta eval_beta claimed
 reference delta crossed overstated fen`, whitespace separated with the fen
 last so a row parses left to right. The window is `zw` or `open`, read from
 alpha and beta at the node: the fuller pv, cut and all classification needs
-the node's outcome, which a sample taken at a cutoff cannot know. In practice
-principal variation search puts every child after a node's first inside a
-zero width window, so the column reads `zw` on nearly every row, and an
-`open` row is a node still inside its window's first move, or inside the
-re-search a zero width fail high asked for. The halfmove column is the fifty
+the node's outcome, which a sample taken at a cutoff cannot know. Both
+shortcuts are refused at an open window as well as where beta is still the
+root's, so the column reads `zw` on every row the search takes. It is
+kept so that a row states the window it was taken under, and so that a
+change to the exemption shows in it. The halfmove column is the fifty
 move counter, which travels in the fen too and is pulled out so rows filter
 on it without a fen being parsed.
 Nothing is written to a file; redirection is the file mechanism here as
@@ -133,8 +133,8 @@ uniform draw from the whole run
 and is the same draw whichever order the run met the nodes in. That holds
 for the set of keys and not for what sits behind a repeated one: a deepening
 search revisits a position at a depth under a kind, so keys tie, and the
-samples behind a tie differ in their beta and their window because they are
-the node's first answer and its second. Which member of a tied group
+samples behind a tie differ in their beta because they are the node's first
+answer and its second. Which member of a tied group
 survives the cap is whichever the heap surfaces, so a run offering the same
 events in another order can keep the other member.
 

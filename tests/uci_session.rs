@@ -261,13 +261,13 @@ fn the_move_a_swap_answers_with_opens_the_last_line_said() {
     // a node budget rather than a clock, so the iteration is cut short on
     // the same node on every machine. The budget has to land after an
     // iteration finds its better move and before that iteration ends:
-    // depth eleven answers d3b5 and finishes at 638,703 nodes, depth
-    // twelve reports d3b1 from between 1,744,000 and 1,745,000 and
-    // finishes at 2,041,148. The budget moves whenever the tree does, in
-    // the commit that moved it
+    // depth eleven answers d3b5 and finishes at 624,092 nodes, depth
+    // twelve reports d3b1 from 1,584,558 nodes on, then d3e2 from 1,803,089,
+    // and finishes at 1,866,231. The budget moves whenever the tree does, in the commit
+    // that moved it
     let mut s = Session::start(&[]);
     s.say(&format!("position fen {}", SHARP_MIDDLEGAME));
-    s.say("go nodes 1900000");
+    s.say("go nodes 1700000");
     let answer = s.wait_for(|l| l.starts_with("bestmove"));
     let best = answer
         .strip_prefix("bestmove ")
