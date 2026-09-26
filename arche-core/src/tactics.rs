@@ -34,7 +34,7 @@ pub const TABLE_BYTES: usize = 16 * 1024 * 1024;
 /// is the gate. A change that moves it in either direction updates this
 /// number in the same commit, which puts the movement in the diff, and a
 /// change that lowers it says what the positions were spent on.
-pub const EXPECTED_PASSES: usize = 234;
+pub const EXPECTED_PASSES: usize = 235;
 
 /// The count the suite may not go under, whatever a commit says it meant to
 /// spend.
@@ -47,10 +47,10 @@ pub const EXPECTED_PASSES: usize = 234;
 /// Two hundred and ten was fourteen under the count when the floor was set
 /// (224) and is eleven under the lowest the suite has been gated at (221).
 /// Since the suite was first gated the count has been 243, 241, 240, 237,
-/// 236, 229, 221, 226, 227, 228, 231, 224, 237, 240, 238, 237 and 235, and
-/// the largest single step down in that list is eight, so one change
-/// spending fourteen fails here rather than being written down and
-/// rearmed.
+/// 236, 229, 221, 226, 227, 228, 231, 224, 237, 240, 238, 237, 235, 234
+/// and 235, and the largest single step down in that list is eight, so
+/// one change spending fourteen fails here rather than being written down
+/// and rearmed.
 /// Lowering the floor is a commit whose whole subject is lowering the
 /// floor.
 pub const FLOOR: usize = 210;
@@ -86,13 +86,16 @@ pub struct AcceptedLoss {
 /// reaches late, whose continuation is quiet and is now stood further back
 /// than the depth can afford.
 ///
-/// The ten under them are the late move count's. The count is the only
+/// The nine under them are the late move count's. The count is the only
 /// thing between this build and the one before it, and what it does is
 /// refuse a quiet a node of depth one to three has reached past four moves
 /// a ply, so a winning line with such a quiet in it is not searched at all
 /// at those depths. Each entry names what depth six answers with instead
 /// and the depth the suite's move comes back at, read one position at a
-/// time on this build. Eight of the ten come back a single ply deeper.
+/// time on this build. Eight of the nine come back a single ply deeper. A
+/// tenth, WAC.022, has been found again since the shortcuts were refused at
+/// every open window, through the suite's other move c4a2 at depth six
+/// rather than the knight sacrifice, which still comes back at nine.
 ///
 /// The last is mate distance pruning's. The position holds no mate inside
 /// depth six, so what moved it is the reordering of a subtree deeper down
@@ -111,13 +114,6 @@ pub const ACCEPTED_LOSSES: &[AcceptedLoss] = &[
         why: "the three quiet moves of the mate in five behind the queen check \
               are scouted further back, so depth six answers with a centipawn \
               score instead",
-        until: "0.6.0",
-    },
-    AcceptedLoss {
-        id: "WAC.022",
-        why: "depth six answers d1h5 at 31 and the knight sacrifice on f7 \
-              comes back at depth nine, the furthest of the count's losses \
-              but one",
         until: "0.6.0",
     },
     AcceptedLoss {

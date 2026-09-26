@@ -320,6 +320,13 @@ of these again without saying what is different this time.
   and free when nothing calls it, and landed on its own. Re-ask only as a
   narrower guess: a model that exempts the checking quiets whose reduction is
   measured harmful, or an exemption near the leaves alone, each its own arm.
+- Exempting every open window node from the late move reduction and the
+  shallow rules as well as the shortcuts, beside the root's beta. Lost
+  -23 ±13 over 1,400 games at 10+0.1 (sprt [-10, 0] accepted H0 at an LLR of
+  -3.95, branch commit 8ae6023). The bench tree grew 10.6% and the suites
+  gained a tactical position and 3,121 strategic points, which the games did
+  not pay for. The shortcuts alone are refused at an open window instead.
+  Re-ask only as a reduction by one less at open windows rather than none.
 - Ranking the quiet moves by cutoffs per node spent, in place of the history
   table's cutoff score. Lost -53 ±26 over 420 games at 5+0.05 (sprt [0, 10]
   accepted H0, branch research/cost-aware-ordering) with the bench tree 1.8%
