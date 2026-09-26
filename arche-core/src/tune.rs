@@ -31,11 +31,6 @@
 //! functions, and neither can see a count wrong the same way in both. The
 //! hand counts beside each term in `eval/` pin those.
 //!
-//! The pair term is walked here by pairs where the engine squares a sum, and
-//! divides here without the engine's code, so the identity checks both. It
-//! reads the engine's table and feature index; a hand worked test beside
-//! `eval::factors::feature` pins the index.
-//!
 //! Where a term stands in the vector, its weights and its width come off
 //! `eval::TERMS`, so a term added there needs no edit here, and the layout
 //! line states the result for `scripts/tune.py`.
@@ -135,9 +130,7 @@ pub struct Terms {
     pub phase: i32,
     /// Slot and coefficient, ascending by slot, zeroes left out.
     pub coefficients: Vec<(u16, i32)>,
-    /// The pair term, from the side to move. It is not linear in anything a
-    /// slot holds, so a fit reads it as a constant a row; 0 while the term is
-    /// off.
+    /// The pair term, from the side to move.
     pub machine: i32,
 }
 
@@ -413,17 +406,17 @@ pub fn run(positions: &[Position], suite: Option<&str>) -> Report {
 /// psqt.rs, where a stale copy would fit silently against the wrong table.
 ///
 /// While the pair term is on, a `factors` line after the weights gives its
-/// rank and scale, and each row carries its score as a fourth number after `n`.
-///
-/// A row is `id eval phase n slot:coefficient... fen`, whitespace separated,
-/// and both ends of it can hold spaces: a fen is six fields, and an id is
-/// whatever the epd put in the quotes ("ruy lopez", "7th Rank.001", or the
-/// fen itself for a line with no id). So a row is read from its right hand
-/// end: the fen is the last six fields, the coefficients are the run of
-/// `slot:coefficient` in front of it, and what is left before the three
-/// numbers is the id. `n` lets the two ends be held against each other. The
-/// id is printed as the epd gave it rather than quoted, since the epd has no
-/// escape rule and the id is the key a corpus is joined on.
+/// rank and scale, and a row is `id eval phase n machine slot:coefficient...
+/// fen`, `machine` being the term's score; with it off the row has no
+/// `machine`. A row is whitespace separated, and both ends of it can hold
+/// spaces: a fen is six fields, and an id is whatever the epd put in the
+/// quotes ("ruy lopez", "7th Rank.001", or the fen itself for a line with no
+/// id). So a row is read from its right hand end: the fen is the last six
+/// fields, the coefficients are the run of `slot:coefficient` in front of
+/// it, and what is left before the numbers is the id. `n` lets the two ends
+/// be held against each other. The id is printed as the epd gave it rather
+/// than quoted, since the epd has no escape rule and the id is the key a
+/// corpus is joined on.
 impl fmt::Display for Report {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         write!(f, "terms")?;
@@ -1097,7 +1090,7 @@ mod tests {
         let (head, last_six) = words.split_at(words.len() - 6);
         assert_eq!(last_six.join(" "), fen);
         // the coefficients are the run before it, which cannot walk back into
-        // the id because the three numbers in between hold no colon
+        // the id because the numbers in between hold no colon
         let last_number = head
             .iter()
             .rposition(|word| !word.contains(':'))

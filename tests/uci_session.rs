@@ -319,9 +319,7 @@ fn an_iteration_no_root_move_reached_answers_with_the_depth_before_it() {
     // depth five fails low: it is reported as a ceiling (f3g5 at -21) at
     // 9,832 nodes and searched again wider, finishing at 10,951. The budget
     // lands inside that second search, which also reaches nothing above
-    // alpha, so depth four's move still answers. The start position was
-    // this fixture until the evaluation's pair term, under which it fails
-    // low at no depth to twelve
+    // alpha, so depth four's move still answers
     let mut s = Session::start(&[]);
     s.say(&format!("position fen {}", ITALIAN));
     s.say("go nodes 10200");
@@ -398,8 +396,7 @@ fn a_root_move_that_reaches_beta_is_reported_as_a_floor_and_then_answered_with()
     // seven, so a6a7 reaches beta at depth seven, is reported as a floor and
     // is searched again with beta raised. Both lines name the same move,
     // because the wider search tries it first. A fixed depth, so nothing is
-    // aborted and the only bound a line can carry is the root's own. The
-    // start position was this fixture until the evaluation's pair term
+    // aborted and the only bound a line can carry is the root's own
     let mut s = Session::start(&[]);
     s.say(&format!("position fen {}", TARRASCH));
     s.say("go depth 7");
@@ -444,13 +441,7 @@ fn a_floor_answers_until_the_wider_search_replaces_it() {
     // as the window widens, and the search finishes at 97,698. A budget
     // inside that is interrupted before anything beats alpha, so the floor
     // is what is left to answer with; with the floor not held it answers
-    // d2c3, the move the search has just shown worse.
-    //
-    // Kiwipete was this fixture until the joint refit of the linear weights,
-    // after which each floor it reported named the move the depth before
-    // answered with, and the Italian opening until the pair term. The endgame
-    // 8/k1b5/P4p2/1Pp2p1p/K1P2P1P/8/3B4/8 was it before either, until the
-    // late move count made its floor name depth fourteen's move
+    // d2c3, the move the search has just shown worse
     let mut s = Session::start(&[]);
     s.say(&format!("position fen {}", WAC_021));
     s.say("go nodes 85000");

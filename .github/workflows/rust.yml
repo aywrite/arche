@@ -55,8 +55,8 @@ jobs:
     - name: Run tests
       run: cargo test --workspace --locked
 
-  # the evaluation's pair term again, at the seeded rank 8 table the
-  # machine-test feature swaps in, debug, where the state check runs
+  # the tests and clippy again with the pair term on the seeded rank 8 table,
+  # in debug so the state check runs
   test-machine:
     runs-on: ubuntu-latest
     steps:

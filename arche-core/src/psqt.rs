@@ -173,9 +173,9 @@ const KING_END: [i16; 64] = [
 /// the two centre pawns and holds the rest back to shelter a castled king.
 /// With no pieces left to shelter from, only the distance to promotion is
 /// true. This started as a ramp, one number a rank and the same on every
-/// file. The fits kept the climb in each rank's total, but after the joint
-/// refit the files differ by up to thirteen centipawns on a rank, enough that
-/// a pawn on the c, d or e file is worth less on the fourth rank than on the
+/// file. Fitted, it keeps the climb in each rank's total, but the files
+/// differ by up to thirteen centipawns on a rank, enough that a pawn on any
+/// of the four centre files is worth less on the fourth rank than on the
 /// third.
 #[rustfmt::skip]
 const PAWNS_END: [i16; 64] = [
@@ -441,8 +441,9 @@ mod tests {
                     );
                 }
             }
-            // and the centre files of the back rank beat its corners, which is
-            // the open file the rook is put on before there is a seventh to take
+            // and the centre files of the back rank beat its corners, which
+            // is the open file the rook is put on before there is a seventh
+            // to take
             assert!(at(File::D, 1) > at(File::A, 1), "{}", name);
         }
     }
@@ -475,13 +476,9 @@ mod tests {
         for (name, half) in HALVES {
             let at = |file, rank| half(packed_at(Piece::Bishop, Color::White, file, rank));
             let worst = worst_four(Piece::Bishop, half);
-            // the midgame half held this by a centipawn before the joint
-            // refit (a fourth lowest of -20 against a fifth of -19), and now
-            // by nine (-20 against -11), so it is no longer the pin a re-tune
-            // is likeliest to break without the shape having moved
             assert_eq!(worst, CORNERS, "the worst {} squares are {:?}", name, worst);
-            // the fianchetto squares, which are on a long diagonal and next to a
-            // corner that is the table's worst
+            // the fianchetto squares, which are on a long diagonal and next
+            // to a corner that is the table's worst
             for (file, corner) in [(File::B, File::A), (File::G, File::H)] {
                 assert!(
                     at(file, 2) > at(corner, 1),
@@ -529,9 +526,9 @@ mod tests {
         }
     }
 
-    /// Weaker than the tests above, since it holds whether or not the tables are
-    /// the right way up, but it is what keeps one colour from being changed
-    /// without the other.
+    /// Weaker than the tests above, since it holds whether or not the tables
+    /// are the right way up, but it is what keeps one colour from being
+    /// changed without the other.
     #[test]
     fn the_two_colours_are_reflections_of_each_other() {
         for piece in [
@@ -617,12 +614,10 @@ mod tests {
                 rank
             );
         }
-        // the middlegame pays a little for the third rank. Until the joint
-        // refit on 59,049 games it paid nothing: the third rank totalled -12
-        // against the second's 1, where now it is 16 against -12
+        // the middlegame pays a little for the third rank
         assert!(rank_total(mg_value, 3) > rank_total(mg_value, 2));
         // and it is the centre pawns that are worth moving: d2 and e2 are the
-        // lowest of their rank, as they were before the refit
+        // lowest of their rank
         let home = |file| mg_value(packed_at(Piece::Pawn, Color::White, file, 2));
         for file in [File::A, File::B, File::C, File::F, File::G, File::H] {
             assert!(home(File::D) < home(file), "{:?}", file);

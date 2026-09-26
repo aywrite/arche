@@ -96,16 +96,10 @@ static MASKS: Masks = Masks::new();
 /// What one of those seven counts is worth, as the packed pairs the taper is
 /// read from.
 ///
-/// Refitted 2026-09-26 with every weight but material, in the joint refit the tables' comment in `psqt.rs` describes.
-///
-/// First fitted 2026-09-12 by `scripts/tune.py` over the whole archived
-/// strength run, 28,675 games and 1,623,149 quiet rows extracted by `arche terms` at
-/// 4e5bd7d, K held at 1.2071, every other weight held, at a ridge of 1e-8.
-/// The sealed group, opened once after the games had accepted this vector,
-/// scores 0.090914 at zero and 0.090377 at these, a paired difference of
-/// -0.000537 against a standard error of 0.000118 over its 5,772 games at a
-/// design factor of 3.9, which is 0.68 standard errors from the selection
-/// group's -0.000649. Commits d84f36d and 577c2e4 hold the rest.
+/// Refitted 2026-09-26 with every weight but material, in the joint fit
+/// whose figures the tables' comment in `psqt.rs` gives. The fit before this
+/// one, which held every other weight, is d84f36d, and 577c2e4 records what
+/// its sealed games said.
 ///
 /// Not one of the fourteen rounded to nothing, so no count can be left
 /// uncounted at the leaf the way `mobility::SCORED_KINDS` leaves a kind; the
@@ -113,13 +107,12 @@ static MASKS: Masks = Masks::new();
 ///
 /// Two of the storm's three signs are not what the term was named for: an
 /// enemy pawn one rank in front of the king reads 12 and 35 and three ranks
-/// out reads 14, and our own cover reads -15 and -25 in the ending. The corpus is the
-/// first place to look: 66.4% of its appearances have six or fewer pieces
-/// left and 6.0% thirteen or more, so the midgame half is fitted on the
-/// thinnest slice of the games, and the near storm count carries a
-/// coefficient in 4.65% of the rows against 47.83% for the near cover,
-/// because a king usually takes such a pawn and the position is then not
-/// quiet. docs/ROADMAP.md carries this as a known limitation.
+/// out reads 14, and our own cover reads -15 and -25 in the ending. The
+/// corpus is the first place to look. It is mostly endings, so the midgame
+/// half is fitted on the thinnest slice of the games, and the near storm
+/// count is rarely set in a quiet row, because a king usually takes such a
+/// pawn. docs/ROADMAP.md carries this as a known limitation, with the
+/// figures.
 ///
 /// A side's seven counts come to eighteen at most: five are at most three
 /// pawns each, and the two file counts share three files between them.
