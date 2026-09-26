@@ -630,7 +630,6 @@ mod tests {
         let mut event = made_up("7k/8/8/8/8/8/8/1Q5K b - - 0 1", 4, 0, Scout::Skipped);
         event.cost = 0;
         event.reduction = 0;
-        event.searched = event.index;
         let (rows, unplayable) = replay(&[event]);
         assert_eq!(unplayable, 0);
         assert_eq!(rows.len(), 1);
@@ -742,7 +741,7 @@ mod tests {
                 depth: 5,
                 window: Window::Zero,
                 index: 9,
-                searched: 9,
+                searched: 10,
                 generated: 28,
                 history: 0,
                 history_max: 12,
@@ -817,7 +816,7 @@ mod tests {
                 "5",
                 "zw",
                 "9",
-                "9",
+                "10",
                 "28",
                 "0",
                 "12",
@@ -966,7 +965,6 @@ mod tests {
         let mut skip = made_up("4k3/8/8/8/8/8/8/4K3 b - - 0 1", 5, 0, Scout::Skipped);
         skip.cost = 0;
         skip.reduction = 0;
-        skip.searched = skip.index;
         let report = report_of(vec![
             replayed(5, 4, 0, false),
             Row {
