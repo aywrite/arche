@@ -141,6 +141,44 @@ def test_each_side_warms_up_once_and_the_run_is_thrown_away(tmp_path):
     assert len(calls) == 14
 
 
+def test_the_cpus_are_read_as_a_list():
+    assert speed.cpus("4") == {4}
+    assert speed.cpus("2,3") == {2, 3}
+    assert speed.cpus("4-6,9") == {4, 5, 6, 9}
+    for text in ("two", "", "4-"):
+        with pytest.raises(speed.argparse.ArgumentTypeError):
+            speed.cpus(text)
+
+
+def test_a_cpu_the_system_refuses_is_a_usage_error(monkeypatch, capsys):
+    def refuse(pid, cpus):
+        raise OSError(22, "Invalid argument")
+
+    monkeypatch.setattr(speed.os, "sched_setaffinity", refuse, raising=False)
+    with pytest.raises(SystemExit) as left:
+        speed.main(["base", "candidate", "--rounds", "6", "--cpu", "999"])
+    assert left.value.code == 2
+    assert "--cpu [999]" in capsys.readouterr().err
+
+
+def test_the_process_is_pinned_before_any_bench_runs(tmp_path, monkeypatch):
+    pinned = []
+    monkeypatch.setattr(
+        speed.os,
+        "sched_setaffinity",
+        lambda pid, cpus: pinned.append((pid, cpus)),
+        raising=False,
+    )
+
+    def bench(binary, depth):
+        # nothing runs before the pin
+        assert pinned == [(0, {2, 3})]
+        return 100, 100
+
+    monkeypatch.setattr(speed, "bench", bench)
+    assert speed.main(["base", "candidate", "--rounds", "6", "--cpu", "2,3"]) == 0
+
+
 def test_a_loaded_round_is_run_again_at_the_end(tmp_path):
     # the fourth round's base run is a tenth slow, which takes its pair 5%
     # below the others. A seventh round takes its place and goes candidate

@@ -16,13 +16,14 @@ that visits fewer nodes at the same cost each finishes sooner while the
 rate says nothing happened.
 
     speed.py <base binary> <candidate binary> [--rounds N] [--depth D]
-             [--base-ref SHA] [--threshold PCT] [--loaded PCT]
+             [--base-ref SHA] [--threshold PCT] [--loaded PCT] [--cpu LIST]
 
 scripts/speed.sh builds the base commit and calls this.
 """
 
 import argparse
 import math
+import os
 import statistics
 import subprocess
 import sys
@@ -351,6 +352,27 @@ def interval(estimate: Estimate) -> str:
     return f"{estimate.low:+.1f}% to {estimate.high:+.1f}%"
 
 
+def cpus(text: str) -> set[int]:
+    """The cpus `--cpu` names, as `4`, `4,5` or `4-7`, the way taskset reads
+    them.
+
+    Pinning keeps a run on the cpus given rather than wherever the scheduler
+    puts it. Measured under WSL on a desktop that mixes fast and slow cores,
+    with other work running, it halved how far the paired change strayed at
+    fifteen rounds, from 3.2% to 1.6%. Under WSL a cpu is a virtual one that
+    the host can still move, so that is a measurement and not a promise."""
+    try:
+        found: set[int] = set()
+        for part in text.split(","):
+            low, dash, high = part.partition("-")
+            found.update(range(int(low), int(high if dash else low) + 1))
+    except ValueError:
+        raise argparse.ArgumentTypeError(f"not a cpu list: {text}") from None
+    if not found:
+        raise argparse.ArgumentTypeError(f"not a cpu list: {text}")
+    return found
+
+
 def trailer(base: list[int], candidate: list[int], base_ref: str) -> str:
     """The Speed trailer: the paired change and its interval."""
     estimate = paired(base, candidate)
@@ -376,12 +398,26 @@ def main(argv: list[str]) -> int:
         help="percent below the median pair that has a round run again, "
         "or 0 to run none again",
     )
+    parser.add_argument(
+        "--cpu",
+        type=cpus,
+        default=None,
+        help="run every bench on these cpus, as 4, 4,5 or 4-7",
+    )
     args = parser.parse_args(argv)
     if signed_rank_depth(args.rounds) == 0:
         parser.error(
             f"at least six rounds: fewer have no {CONFIDENCE:.0%} interval, "
             "so they are no measurement"
         )
+    if args.cpu is not None:
+        if not hasattr(os, "sched_setaffinity"):
+            parser.error("--cpu needs a system that can pin a process, like linux")
+        # set on this process, so every bench it starts inherits it
+        try:
+            os.sched_setaffinity(0, args.cpu)
+        except (OSError, ValueError) as refused:
+            parser.error(f"--cpu {sorted(args.cpu)}: {refused}")
 
     measured = measure(
         args.base, args.candidate, args.rounds, args.depth, args.loaded / 100
