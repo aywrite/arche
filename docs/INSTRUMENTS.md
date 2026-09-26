@@ -392,9 +392,9 @@ each one's evaluation is made of.
 The evaluation is material plus a tapered piece square score plus the tapered
 leaf terms, which are linear in the numbers they are read from, plus an
 untapered pair term, which is not. So a position's score is a dot product of
-the position against the weights plus that term, and a row is the position's
-half of the dot product and the term's score: for every weight the position
-touches, the integer that weight is multiplied by. The weights are a flat
+the position against the weights, plus that term. A row is the position's half
+of the dot product (for every weight the position touches, the integer that
+weight is multiplied by) and the term's score. The weights are a flat
 vector: the 384 midgame table entries, the 384 endgame ones in the same order,
 the six material values, then each leaf term's midgame weights followed by its
 endgame weights. A slot's table entry is a square as black sees it, because
@@ -427,31 +427,33 @@ slots would be read against the wrong weights, and is refused too.
 The line after that is `weights <n> <w0> <w1> ...`, the vector as the live
 tables hold it, so that nothing reading these rows transcribes psqt.rs.
 
-Each row after that is `id eval phase n slot:coefficient... fen`. While the
-pair term is on, a `factors <rank> <scale>` line follows the weights and each
-row carries the term's score, from the side to move, as a fourth number after
-`n`. Both ends can
-hold spaces: a fen is six fields, and an id is whatever the epd put in the
-quotes ("ruy lopez", "7th Rank.001"), or the fen itself when the epd names none.
-So a row is read from the end whose width is fixed: the fen is the last six
-fields, the coefficients are the run of `slot:coefficient` in front of it, and
-what is left before the numbers is the id. `n` is printed so the two ends
-can be checked against each other. The coefficients are in the side to move's
-frame, so the row's own arithmetic is the evaluation:
+Then `factors <rank> <scale>`, and each row after it is
+`id eval phase n machine slot:coefficient... fen`, where `machine` is the pair
+term's score from the side to move. An engine built with the term off prints
+neither. Both ends of a row can hold spaces: a fen is six fields, and an id is
+whatever the epd put in the quotes ("ruy lopez", "7th Rank.001"), or the fen
+itself when the epd names none. So a row is read from the end whose width is
+fixed: the fen is the last six fields, the coefficients are the run of
+`slot:coefficient` in front of it, and what is left before the numbers is the
+id. `n` is printed so the two ends can be checked against each other. The
+coefficients are in the side to move's frame, so the row's own arithmetic is the
+evaluation:
 
 ```
 eval = mat . w_mat + trunc((psqt . w_psqt + mobility . w_mobility
                             + shelter . w_shelter + pawns . w_pawns
                             + king_attack . w_king_attack) / 24)
+       + machine
 ```
 
 Four things in that line are each a way to be wrong by a centipawn. Every leaf
 term is inside the divide beside the piece square half, so the numerator is
 truncated once. The divide truncates toward zero, where python's `//` floors.
-The material is added outside the divide: `trunc((24 * 1 + -5) / 24)` is 0
-where `1 + trunc(-5 / 24)` is 1. And the phase is capped at 24 before the
-coefficients are written, because promotions can leave more on the board than
-the opening had. Each has a test in `arche-core/src/tune.rs`.
+The material is added outside the divide, as the pair term is:
+`trunc((24 * 1 + -5) / 24)` is 0 where `1 + trunc(-5 / 24)` is 1. And the phase
+is capped at 24 before the coefficients are written, because promotions can
+leave more on the board than the opening had. Each has a test in
+`arche-core/src/tune.rs`.
 
 Nothing outside the engine is told how to evaluate a position, which is why the
 argument exists: a second implementation of the evaluation diverges quietly and
@@ -492,7 +494,9 @@ node count.
 The rows above are the input to `scripts/tune.py`, which scores a weight vector
 against the games the positions came from and fits a new one. Its docstring,
 and those of `scripts/build_corpus.py` and `scripts/groups.py`, carry the
-reasoning behind the rules below.
+reasoning behind the rules below. A fit moves the linear weights around the
+pair term, which each row carries as a constant; nothing here refits the
+factors, and the program that fitted `factors16.rs` is not in the repository.
 
 ```
 python3 scripts/tune.py loss --terms rows.txt --corpus corpus.epd

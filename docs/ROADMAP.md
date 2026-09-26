@@ -18,38 +18,40 @@ worth doing.
   read zero. What remains is a scale factor on the endgame half for the near
   drawn endings that rule does not catch: opposite coloured bishops with pawns,
   and a pawnless minor piece advantage, neither of which the signatures reach
-- the rest of evaluation: the rest of king safety, the rest of pawn structure, and
-  special cases such as the bishop pair and open files. Mobility has been fitted three
-  times. The first fit read 1,812 games and rounded six of the eight weights to zero; the
-  second read twenty four times as many games and left no weight at zero; the third moved
-  it with every other weight but material, on 59,049 games in September 2026. The king shelter
+- the rest of evaluation: the rest of king safety, the rest of pawn structure, and special
+  cases such as the bishop pair and open files. Mobility has been fitted three times. The
+  first fit read 1,812 games and rounded six of the eight weights to zero; the second read
+  twenty four times as many games and left no weight at zero; the third moved it with
+  every other weight but material, on 59,049 games in September 2026. The king shelter
   follows the storm three ranks and no further, and a storm pawn blocked by one of ours
   counts the same as a free one. The king attack zone is priced per square, where an
   attack by several pieces is usually taken as worth more than the sum of its parts, and
-  reads neither safe checks nor the ring's defenders. Its first fit (d3dcc53) trained on 32,516
-  of the archive's 50,677 games with every other term held, and it was refitted with every
-  other weight but material on 59,049 in September 2026; the first fit's sealed group read
-  -0.000143 against a standard error of 0.000059 and the selection group -0.000395
-  against 0.000052, about 3.2 standard errors apart, which by the rule the fit was
-  registered with means the selection group overstated it. On the sealed games the
+  reads neither safe checks nor the ring's defenders. Its first fit (d3dcc53) trained on
+  32,516 of the archive's 50,677 games with every other term held, and it was refitted
+  with every other weight but material on 59,049 in September 2026; the first fit's sealed
+  group read -0.000143 against a standard error of 0.000059 and the selection group
+  -0.000395 against 0.000052, about 3.2 standard errors apart, which by the rule the fit
+  was registered with means the selection group overstated it. On the sealed games the
   boards with thirteen or more pieces left read slightly worse. In the pawn structure the
   seventh rank is the one to distrust: a passed pawn there prices below one on the sixth
-  at both ends of the taper at every ridge on the grid, likely from the quiet filter, since
-  a position with a passer one square from queening is rarely settled unless the pawn is
-  blockaded or falling. Thirteen of the strategic suite's fifteen themes rose when that
-  term was fitted; AKPC fell by 112 and 7th Rank by 217. The term leaves out everything
-  that reads a square rather than a file: whether the square in front of a passer is
-  occupied or attacked, how far each king stands from the promotion square, candidate,
-  connected and backward pawns, pawn islands, and the rule of the square. The first two
-  are the valuable ones, and neither can sit behind a key over the pawns. The tuner is
-  built ([INSTRUMENTS.md](INSTRUMENTS.md)), so a candidate term is one appended column
-  whose held-out loss can be read before there is engine code for it. Fitting on our own
-  games does buy strength: four fits each passed an sprt bounded [0, 10] at 10+0.1, the
-  twelve tables at +54 ±13 over 2,000 games, the first mobility fit at +12 ±8 over 4,000,
-  the mobility refit at +76 ±25 over 500 and the pawn structure weights at +57 ±25 over
-  500, each against the baseline its own `Elo:` trailer names. A held-out loss cannot
-  choose between two fits of one term: it favoured the first mobility fit while covering
-  zero, and the games ranked the two
+  at both ends of the taper at every ridge on the grid, likely from the quiet filter,
+  since a position with a passer one square from queening is rarely settled unless the
+  pawn is blockaded or falling. Thirteen of the strategic suite's fifteen themes rose when
+  that term was fitted; AKPC fell by 112 and 7th Rank by 217. The term leaves out
+  everything that reads a square rather than a file: whether the square in front of a
+  passer is occupied or attacked, how far each king stands from the promotion square,
+  candidate, connected and backward pawns, pawn islands, and the rule of the square. The
+  first two are the valuable ones, and neither can sit behind a key over the pawns. The
+  tuner is built ([INSTRUMENTS.md](INSTRUMENTS.md)), so a candidate term is one appended
+  column whose held-out loss can be read before there is engine code for it. Fitting on
+  our own games does buy strength: four fits each passed an sprt bounded [0, 10] at
+  10+0.1, the twelve tables at +54 ±13 over 2,000 games, the first mobility fit at +12 ±8
+  over 4,000, the mobility refit at +76 ±25 over 500 and the pawn structure weights at
+  +57 ±25 over 500, each against the baseline its own `Elo:` trailer names. The joint
+  refit of every weight but material passed the same test at +36 ±16 over 1,000 games as
+  5d34488 against ec3d213, on a search older than the one it landed on, so 8027c08 carries
+  no trailer. A held-out loss cannot choose between two fits of one term: it favoured the
+  first mobility fit while covering zero, and the games ranked the two
 - the rest of the uci protocol
   - the only options advertised are `Hash`, the `Clear Hash` button, a `Threads` fixed at
     one and `Move Overhead`, so everything else an interface might set, `Ponder` among
@@ -70,13 +72,15 @@ worth doing.
 - the fitted term makes the engine keep the pawns in front of its own king at home, and
   one graded theme says that is wrong. The first fit's midgame cover weights were +10 and
   +21, and they did what they said: over the strategic suite the engine advanced a pawn on
-  its king's file or a neighbour 100 times where it advanced 123 before, and 167 times with
-  the weights negated. The joint refit puts them at +19 and +19, and the counts in this
-  entry were read on the first fit and not again. AKPC grades such a push as the best move in 79 of its 100 positions and the
-  engine now plays one in 22 of them against 31 before. That is the one place the suite
-  and the term disagree about chess rather than about noise, and the games were played
-  with the term as it stands, so what is unresolved is whether declining those pushes is
-  right in positions the games under-sample rather than whether it costs elo overall
+  its king's file or a neighbour 100 times where it advanced 123 before, and 167 times
+  with the weights negated. AKPC grades such a push as the best move in 79 of its 100
+  positions, and the engine played one in 22 of them against 31 before. The joint refit
+  puts the weights at +19 and +19, and none of these counts has been read again since.
+  That is the one place the suite and the term disagree about chess rather than about
+  noise, and the games that judged the term were played on its first fit and again, moved
+  with every other weight, in the joint refit's sprt, so what is unresolved is whether
+  declining those pushes is right in positions the games under-sample rather than whether
+  it costs elo overall
 - the king safety weights are fitted on a corpus that is mostly not the middlegame the
   term is about. 66.4% of the 2026-09-12 corpus's appearances have six or fewer pieces
   left on the board and 6.0% have thirteen or more of the fourteen, so the midgame half
@@ -102,12 +106,13 @@ worth doing.
   `arche bench` at depth 7, the shared walk forced out of line, the walk is 777,417,417 of
   4,600,409,835 instructions, 16.9%, and the same walk without the ring is 576,199,267, so
   the ring is 201,218,150 of them, 4.4%, and 4.8% with its fold. The shipped build costs
-  1,085 instructions a node against 1,040 before the term, 4.3% more
-- a held-out loss on our own games cannot resolve a fit of the piece square tables one way
-  or the other, so an sprt is what decides a re-tune. Measured 2026-09-10 over 1,812
-  archived games, 100,726 quiet positions across 1,807 of them: the shipped weights score
-  0.093561 on the selection games and the fit psqt.rs held until the joint refit beats
-  them by 0.000618
+  1,085 instructions a node against 1,040 before the term, 4.3% more. The pair term costs
+  4.4% of the bench's nodes a second, under the 5%, and 7.6% of the nodes a second in the
+  games that measured it at +95 ±19 (6ce33d3), over it
+- on 1,812 games a held-out loss could not resolve a fit of the piece square tables one
+  way or the other, so an sprt decided the re-tune. Measured 2026-09-10 over those games,
+  100,726 quiet positions across 1,807 of them: the weights then shipped score 0.093561 on
+  the selection games and the fit psqt.rs held until the joint refit beats them by 0.000618
   against a standard error of 0.000627, which is inside its own interval. The sealed third
   of the games, opened once after the vector was frozen, reads the same fit 0.001754 better
   against 0.000674, which is outside it. The two readings differ by 1.23 standard errors,
@@ -157,9 +162,9 @@ worth doing.
   growing four and a half times a ply. At the bench's depth the two were 45,692,972 of
   47,836,191 nodes, 95.5%, so a percentage of "the bench tree" from before is a
   percentage of those two and little else. An entry below that gives a figure over
-  sixteen positions is already clear of them; one that says "the bench tree" is not. The
-  suite is 6,427,725 nodes now, at the depth of eleven the same change bought, and the
-  largest single position is `kiwipete` at 19%
+  sixteen positions is already clear of them; one that says "the bench tree" is not. At
+  the depth of eleven the same change bought, the suite's total is the latest `Bench:`
+  trailer, and no single position is more than about a fifth of it
 - mate distance pruning landed without a strength result that settled. Two runs played
   3,500 games at 10+0.1 against `464d3cc`. The first was an sprt of [0, 10] and failed at
   its third batch at -11 ±12 over 1,500 games, which only says the games did not favour
