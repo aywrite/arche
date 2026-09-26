@@ -17,7 +17,7 @@ jobs:
     strategy:
       fail-fast: false
       matrix:
-        runner: [ a, b ]
+        runner: [ c, d, e, f ]
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
       - name: Machine
@@ -53,7 +53,7 @@ jobs:
           flag=""
           [ "${{ steps.perf.outputs.ok }}" = true ] && flag=--perf
           python3 scripts/spike/run_rounds.py spike-out/variants spike-out/raw-${{ matrix.runner }}.csv \
-            --passes 8 --budget 1680 --seed 7 $flag
+            --passes 18 --budget 1560 --seed 11 $flag
       - name: Analyse
         if: ${{ !cancelled() }}
         run: python3 scripts/spike/analyse.py spike-out/raw-${{ matrix.runner }}.csv | tee spike-out/summary-${{ matrix.runner }}.txt
