@@ -277,7 +277,7 @@ git keeps at the end of a message, and the commit-msg hook checks them:
 | trailer | required on | produced by |
 | --- | --- | --- |
 | `Bench: 4395471` | `feat`, `fix`, `perf`, `refactor` and `revert` to `board`, `eval`, `magic`, `search` or `zobrist` | `scripts/bench_trailer.sh` |
-| `Speed: +3.1% (bench nps, 95% interval +2.4% to +3.9%, 15 interleaved rounds vs a1b2c3d)` | `perf` to one of those scopes | `scripts/speed.sh` |
+| `Speed: +3.1% (bench nps, 95% interval +2.4% to +3.9%, 15 interleaved rounds over shuffled layouts vs a1b2c3d)` | `perf` to one of those scopes | `scripts/speed.sh` |
 | `Elo: +12 ±8 (sprt [0, 10] passed, 1240 games, 10+0.1, vs v0.3.10)` | nothing, checked when present | the Strength workflow's summary |
 
 So an engine commit is made as
@@ -365,18 +365,63 @@ than six rounds have no such interval and are refused. The interval narrows
 with the square root of the rounds, where the range of the rounds that was
 read before it only grew.
 
-A verdict then holds the interval against a threshold, 2% by default and set
-with `--threshold`. The change is called faster or slower only when the whole
-interval is past it, and no change only when the whole interval is inside it.
-Anything else is not resolved. The threshold is not about the runs. It sits
-above how far the rate moves between two builds that differ only in where
-the code lands. Over the pull requests up to #321, those that changed no build input
+A binary's rate also depends on where its code and tables landed: a hot loop
+that straddles a cache line or a branch that shares a predictor slot with
+another costs time, and the addresses that decide it change with almost any
+edit. Over the pull requests up to #321, those that changed no build input
 (so that both sides were one binary) had an interval that excluded zero in 4
 of 53, close to the one in twenty the confidence allows. Release version
-bumps and comment sweeps, which change only the layout, posted offsets near
-1.5% whose intervals excluded zero, so a change that small is not a speed
-change the clock can show. More rounds do not help there, because the offset
-belongs to the binary and not to the run.
+bumps and comment sweeps, which change little beyond where the code lands,
+posted offsets near 1.5% whose intervals excluded zero. That offset belongs to the build and not to
+the run, so no number of rounds on one binary a side removes it, and it
+belongs to the build and not to the change, since the next unrelated commit
+draws a new one.
+
+So each round runs on a layout of its own. `scripts/layouts.sh` builds a side
+once and links the same compiled code again into as many layouts as there are
+rounds: layout i moves the start of `.text` by a multiple of sixteen bytes
+and has lld order the input sections, code and data, by seed i, about thirty
+milliseconds a layout. Shuffling needs lld, which rustc links x86_64 linux
+with by default. Round i runs layout i on both sides. The draw each build
+would have carried into the change is then spread through the rounds, where
+the interval measures it with the rest of the noise, and the estimate is the
+typical change across layouts (a Hodges-Lehmann estimate, so a median of
+sorts rather than a mean). What a change does to layout systematically
+survives that: a hot path that grew past the micro-op cache is slower on
+most layouts. What it loses is the luck of one draw. What it does not cover
+is a change in the code the compiler emits, which an edit can also make. On four
+runners of the layout spike the draw had a standard deviation of about 0.7%
+a build, which is what the interval now takes in.
+
+A verdict then holds the interval against a threshold, set with
+`--threshold`. The change is called faster or slower only when the whole
+interval is past it, and no change only when the whole interval is inside it.
+Anything else is not resolved. Over layouts the threshold is 1% by default.
+It is no longer a floor under a bias the interval cannot see, only the
+smallest change worth calling one, and it has to be one an interval can
+clear. A version bump, which moves the code and nothing else, measured over
+forty shuffled layouts on four runners, gave intervals from ±0.2% to ±1.1%,
+and three of the four were inside ±1%. The same seed on nearly the same code
+gives nearly the same layout, so the pairing takes out most of the draw; a
+larger change pairs less closely and its interval is wider, and fifteen
+rounds locally are wider again. Measured on one binary a side, which
+`LAYOUTS=off` asks for, the threshold is 2%, set above the 1.5% offsets.
+
+`speed.py` then measures the two default links, the builds a release would
+ship, for a third of the rounds and at least six, and prints the change on
+them on a line marked diagnostic under the paired change. The verdict and the
+trailer do not read it. A default layout far from the rest says the change
+moved the draw, which is worth seeing and is not a speed change. The default
+link is not a random draw either: with one codegen unit it keeps the order
+LLVM emitted, which tends to keep callers near callees, so a change can
+matter there and not across shuffles, or the other way.
+
+Shuffling undoes one kind of change: one whose point is where its functions
+sit, such as marking a path cold or ordering functions by hand. For that,
+`LAYOUTS=pad` keeps the order and only moves where the code starts, which on
+the spike moved the rate about as much as shuffling did, and the trailer says
+padded layouts. It also works under a link that is not lld's. `LAYOUTS=off`
+measures one binary a side as before.
 
 One badly loaded round widens the interval rather than moving the estimate,
 because its averages with every other round sit together at one end. So a
@@ -384,7 +429,10 @@ round whose pair ran more than 3% below the median pair, reading a pair by
 the geometric mean of its two rates, is run again at the end. It goes first
 on the same side the round it replaces did, at most a fifth of the rounds
 are replaced, and the report lists them. `--loaded` sets the cut, and
-`--loaded 0` keeps every round.
+`--loaded 0` keeps every round. Over layouts it is off unless asked for: a
+pair's rates then carry both sides' layout as well as the machine's load,
+alike when the two builds barely differ, so the rule would run a round again
+for the layout it drew.
 
 The pair says how fast the machine was that round and, when the two sides
 are as noisy as each other, nothing about their ratio. Reading each run
@@ -428,8 +476,8 @@ still move, so that is a measurement rather than a promise. Measure with
 nothing else building, pinned or not.
 
 The Bench workflow's speed job does the same on every pull request, over
-twenty five rounds rather than the local fifteen and with `--loaded 0`, both
-sides built and run on one runner. It posts the result as a comment, or to
+twenty five rounds rather than the local fifteen and with `--loaded 0`,
+both sides built and run on one runner. It posts the result as a comment, or to
 the job summary alone for a pull request from a fork, with the runner's cpu
 and the compiler each side was built with, since neither is the same from
 run to run. It reports and does not gate: the count is the claim, and the

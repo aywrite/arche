@@ -31,7 +31,8 @@ OPENBENCH = re.compile(r"(?:bench|nodes)[ :=]+([0-9,]+)", re.IGNORECASE)
 PERCENT = r"[+-]\d+(\.\d+)?%"
 SPEED = re.compile(
     rf"^{PERCENT} \(bench nps, 95% interval {PERCENT} to {PERCENT}, "
-    r"([6-9]|\d{2,}) interleaved rounds vs [0-9a-f]{7,40}\)$"
+    r"([6-9]|\d{2,}) interleaved rounds( over (shuffled|padded) layouts)? "
+    r"vs [0-9a-f]{7,40}\)$"
 )
 # an sprt names its verdict, or a passed and a failed test would read alike
 SPRT = r"sprt \[-?\d+(\.\d+)?, -?\d+(\.\d+)?\] (passed|failed|inconclusive), "

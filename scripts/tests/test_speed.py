@@ -424,6 +424,7 @@ def test_the_wrapper_builds_the_base_commit_and_measures_against_it(tmp_path):
         env={
             "PATH": f"{shims}:{Path(sys.executable).parent}:/usr/bin:/bin",
             "ROUNDS": "6",
+            "LAYOUTS": "off",
         },
         check=False,
         capture_output=True,
@@ -436,3 +437,181 @@ def test_the_wrapper_builds_the_base_commit_and_measures_against_it(tmp_path):
     )
     # the base binary is kept for the next measurement
     assert (repo / "target" / "speed" / base / "arche").exists()
+
+
+@pytest.mark.skipif(
+    sys.platform == "win32", reason="runs a shell script, which windows cannot"
+)
+def test_the_wrapper_measures_over_layouts_by_default(tmp_path):
+    # a cargo that "builds" a fake engine and prints a link command, and a
+    # linker that copies the engine to wherever -o says and keeps the rest of
+    # its arguments beside it
+    repo = tmp_path / "repo"
+    repo.mkdir()
+
+    def git(*args):
+        return subprocess.run(
+            ["git", "-c", "user.name=t", "-c", "user.email=t@t", *args],
+            cwd=repo,
+            check=True,
+            capture_output=True,
+            text=True,
+        ).stdout.strip()
+
+    git("init", "-q")
+    (repo / "Cargo.toml").write_text('[package]\nname = "arche"\n')
+    git("add", ".")
+    git("commit", "-qm", "first")
+    base = git("rev-parse", "--short", "HEAD")
+
+    shims = tmp_path / "shims"
+    shims.mkdir()
+    engine = shims / "engine"
+    engine.write_text("#!/usr/bin/env bash\necho 100 nodes 1000 nps\n")
+    engine.chmod(0o755)
+    linker = shims / "fakecc"
+    linker.write_text(
+        "#!/usr/bin/env bash\n"
+        "while [ $# -gt 0 ]; do\n"
+        '  if [ "$1" = -o ]; then out=$2; shift; else rest="$rest $1"; fi\n'
+        "  shift\n"
+        "done\n"
+        f'cp "{engine}" "$out"\n'
+        'echo "$rest" > "$out.args"\n'
+    )
+    linker.chmod(0o755)
+    cargo = shims / "cargo"
+    cargo.write_text(
+        "#!/usr/bin/env bash\n"
+        "dir=${CARGO_TARGET_DIR:-target}\n"
+        'mkdir -p "$dir/release/deps"\n'
+        f'cp "{engine}" "$dir/release/arche"\n'
+        'case "$*" in *link-args*)\n'
+        f'  echo "LC_ALL=\\"C\\" \\"{linker}\\" \\"-fuse-ld=lld\\" \\"-o\\" \\"$dir/release/deps/arche-0\\""\n'
+        "esac\n"
+    )
+    cargo.chmod(0o755)
+
+    result = subprocess.run(
+        [str(SCRIPT)],
+        cwd=repo,
+        env={
+            "PATH": f"{shims}:{Path(sys.executable).parent}:/usr/bin:/bin",
+            "ROUNDS": "6",
+        },
+        check=False,
+        capture_output=True,
+        text=True,
+    )
+    assert result.returncode == 0, result.stderr
+    assert result.stdout.strip().endswith(
+        "Speed: +0.0% (bench nps, 95% interval +0.0% to +0.0%, "
+        f"6 interleaved rounds over shuffled layouts vs {base})"
+    )
+    assert "diagnostic, on the default layout alone +0.0%" in result.stdout
+    # one layout a round, each linked with its seed and
+    # its offset, and the base's kept for the next measurement
+    kept = repo / "target" / "speed" / f"{base}-shuffle"
+    assert (kept / "mode").read_text().strip() == "shuffle"
+    assert (kept / "6").exists() and not (kept / "7").exists()
+    args = (kept / "3.args").read_text()
+    assert "-Wl,--shuffle-sections=*=3" in args
+    assert "-Wl,-T," in args
+
+
+def layouts_dir(directory, name, rates, mode="shuffle", nodes=100):
+    """A directory as layouts.sh leaves it, of fake engines that each print
+    the rates given for them in turn."""
+    side = directory / name
+    side.mkdir()
+    (side / "mode").write_text(mode + "\n")
+    for i, rate in enumerate(rates):
+        fake_engine(side, str(i + 1), [rate], nodes=nodes)
+    fake_engine(side, "default", [rates[0]] * 20, nodes=nodes)
+    return side
+
+
+@pytest.mark.skipif(sys.platform == "win32", reason="a layout has no .cmd name")
+def test_round_n_runs_layout_n_on_both_sides(tmp_path, capsys):
+    base = layouts_dir(tmp_path, "base", [100] * 7)
+    candidate = layouts_dir(tmp_path, "candidate", [100, 102, 104, 106, 108, 110, 0])
+    argv = [str(base), str(candidate), "--rounds", "6", "--base-ref", "abc1234"]
+    assert speed.main(argv) == 0
+    out = capsys.readouterr().out
+    # the candidate's layouts in order, one a round, the seventh never needed
+    for n, rate in enumerate([100, 102, 104, 106, 108, 110], 1):
+        assert f"{n:>5} {100:>12} {rate:>14}" in out
+    assert "6 interleaved rounds over shuffled layouts vs abc1234)" in out
+    # over layouts the threshold is the smaller one
+    assert "±1.0%" in out
+
+
+@pytest.mark.skipif(sys.platform == "win32", reason="a layout has no .cmd name")
+def test_layouts_of_different_kinds_are_not_paired(tmp_path, capsys):
+    base = layouts_dir(tmp_path, "base", [100] * 7, mode="shuffle")
+    candidate = layouts_dir(tmp_path, "candidate", [100] * 7, mode="pad")
+    with pytest.raises(SystemExit) as left:
+        speed.main([str(base), str(candidate), "--rounds", "6"])
+    assert left.value.code == 2
+    assert "shuffle" in capsys.readouterr().err
+
+
+@pytest.mark.skipif(sys.platform == "win32", reason="a layout has no .cmd name")
+def test_too_few_layouts_are_named(tmp_path):
+    # six rounds want six layouts, since over layouts no round is run again
+    # unless asked, and asking for it wants one more to run it on
+    base = layouts_dir(tmp_path, "base", [100] * 5)
+    candidate = layouts_dir(tmp_path, "candidate", [100] * 5)
+    with pytest.raises(SystemExit) as left:
+        speed.main([str(base), str(candidate), "--rounds", "6"])
+    assert "6 layouts needed" in str(left.value)
+    with pytest.raises(SystemExit) as left:
+        speed.main([str(base), str(candidate), "--rounds", "6", "--loaded", "3"])
+    assert "7 layouts needed" in str(left.value)
+
+
+@pytest.mark.skipif(
+    sys.platform == "win32", reason="runs a shell script, which windows cannot"
+)
+def test_layouts_refuse_a_directory_they_did_not_make(tmp_path):
+    # a slip of the argument must not empty a checkout
+    precious = tmp_path / "checkout"
+    precious.mkdir()
+    (precious / "keep").write_text("mine")
+    script = Path(__file__).resolve().parent.parent / "layouts.sh"
+    result = subprocess.run(
+        [str(script), "HEAD", str(precious), "4", "shuffle"],
+        check=False,
+        capture_output=True,
+        text=True,
+    )
+    assert result.returncode == 2
+    assert "not made by layouts.sh" in result.stderr
+    assert (precious / "keep").read_text() == "mine"
+    result = subprocess.run(
+        [str(script), "HEAD", str(tmp_path / "a#b"), "4", "shuffle"],
+        check=False,
+        capture_output=True,
+        text=True,
+    )
+    assert result.returncode == 2
+    assert "cannot carry" in result.stderr
+
+
+def test_a_layout_that_counts_other_nodes_stops_the_measurement(tmp_path):
+    base = [str(fake_engine(tmp_path, f"b{i}", [100], nodes=100)) for i in range(6)]
+    candidate = [
+        str(fake_engine(tmp_path, f"c{i}", [100], nodes=100 if i < 3 else 90))
+        for i in range(6)
+    ]
+    with pytest.raises(SystemExit) as left:
+        speed.measure(base, candidate, rounds=6, depth=1, cut=0)
+    assert "not the same search" in str(left.value)
+
+
+def test_a_binary_and_a_directory_are_not_paired(tmp_path, capsys):
+    engine = fake_engine(tmp_path, "engine", [100])
+    with pytest.raises(SystemExit) as left:
+        speed.main([str(engine), str(tmp_path), "--rounds", "6"])
+    assert left.value.code == 2
+    assert "both sides" in capsys.readouterr().err
