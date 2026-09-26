@@ -407,12 +407,18 @@ away. Over 187 of the speed job's runs, the first run of a job was 1.13%
 below its side's median and the second 0.10%, so without it the first round
 leaned about a percent towards whichever side went second.
 
-The report also compares the two sides at their fastest round each. That is
-a diagnostic, not a second estimate. Runs do not only come out slow: on the
-speed job a side's fastest run sat a median 1.5% above its own median. The
-fastest pair has no interval and does not settle as rounds are added, and
-over the layout-only pull requests it showed more than 2% on three times as
-many as the paired change did.
+The report also compares the mean of each side's faster half of its rounds.
+That is a diagnostic, not a second estimate: it has no interval, and the
+verdict does not read it. Trimming the slow runs suits noise that leans slow,
+which it does here. Over eighty rounds of one binary against itself on four
+runners, the slowest run sat 3.5% to 11.5% below the median and the fastest
+1.7% to 2.8% above. Scored on those rounds as speed jobs of 9, 15 and 25
+rounds whose true change was zero, the faster half had a root mean square
+error of 0.63%, 0.56% and 0.49%. The fastest run alone, which the column
+showed before, had 0.83%, 0.75% and 0.68%, and anything kept from a third
+to two thirds of the rounds did about as well as a half. A fixed count such
+as the best three is a third of nine rounds but an eighth of twenty five,
+where it did worse.
 
 `--cpu 4` pins every bench to cpu 4, and `--cpu 4,5` or `--cpu 4-7` to
 several, the way taskset reads them. Under WSL on a desktop that mixes fast
@@ -431,7 +437,7 @@ rate is the context it is read in.
 
 The report lists each round with its own change, then gives one row a side
 and a change row under it, then the paired change and its interval. The
-median and fastest cells in the change row compare each side's own rounds.
+median and faster half cells in the change row compare each side's own rounds.
 The paired line is the one the trailer and the verdict read. When the two sides
 count the same nodes the change row leaves the nodes and time cells empty,
 because the time is then the rate upside down and says nothing the rate does
@@ -439,7 +445,7 @@ not. When they differ both cells are filled, because the rate on its own is
 then misleading in both directions:
 
 ```
-              nodes    time  median nps  fastest nps
+              nodes    time  median nps  faster half
 base       51236454  7.31 s     7012455      7051903
 candidate  47598112  6.70 s     7101336      7149012
 change        -7.1%   -8.3%       +1.3%        +1.4%

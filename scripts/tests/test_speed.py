@@ -204,17 +204,13 @@ def test_a_round_is_chosen_by_its_pair_and_not_by_one_side(tmp_path):
     assert measured.replaced == []
 
 
-def test_the_fastest_column_counts_the_runs_of_replaced_rounds():
-    # the replaced round's candidate run was that side's quietest
-    measured = speed.Measured(
-        base_nps=[100] * 6,
-        candidate_nps=[101] * 6,
-        base_nodes=100,
-        candidate_nodes=100,
-        rounds=[1, 2, 3, 5, 6, 7],
-        replaced=[(4, 80, 105)],
-    )
-    assert speed.summary(measured)[2].endswith("  105")
+def test_the_faster_half_is_the_mean_of_the_faster_rounds():
+    assert speed.faster_half([90, 100, 80, 110]) == 105
+    # the middle round is kept when the count is odd
+    assert speed.faster_half([90, 100, 80, 110, 70]) == 100
+    # a loaded run moves it not at all, and one fast run by a share of it
+    assert speed.faster_half([100, 100, 100, 100, 50]) == 100
+    assert speed.faster_half([100, 100, 100, 100, 130]) == 110
 
 
 def test_no_more_than_a_fifth_of_the_rounds_are_run_again(tmp_path):
@@ -287,7 +283,7 @@ def test_the_report_breaks_the_change_down_when_the_counts_differ(tmp_path, caps
         == 0
     )
     out = capsys.readouterr().out
-    assert "            nodes    time  median nps  fastest nps" in out
+    assert "            nodes    time  median nps  faster half" in out
     assert "base          100  1.00 s         100          100" in out
     assert "candidate      90  0.90 s         100          100" in out
     assert "change     -10.0%  -10.0%       +0.0%        +0.0%" in out
@@ -314,8 +310,8 @@ def test_the_report_leaves_the_breakdown_out_when_the_counts_match(tmp_path, cap
     assert "faster: the whole interval is above +2.0%" in out
 
 
-def test_the_fastest_rounds_are_compared_beside_the_medians(tmp_path, capsys):
-    # the loaded rounds drag the medians apart while the fastest pair still
+def test_the_faster_halves_are_compared_beside_the_medians(tmp_path, capsys):
+    # the loaded rounds drag the medians apart while the faster halves still
     # says nothing changed
     base = fake_engine(tmp_path, "base", [100, 80] * 3, nodes=100)
     candidate = fake_engine(tmp_path, "candidate", [90, 100] * 3, nodes=100)

@@ -290,25 +290,39 @@ def verdict(estimate: Estimate, threshold: float) -> str:
     )
 
 
+def faster_half(rates: list[int]) -> float:
+    """The mean of a side's faster half of its rounds, the middle one
+    included when there is an odd number.
+
+    Trimming the slow runs and keeping the rest suits noise that leans slow,
+    which it does here: over eighty rounds of one binary against itself on
+    four runners, the slowest run sat 3.5% to 11.5% below the median and the
+    fastest 1.7% to 2.8% above. Trim nothing and the loaded runs drag the
+    mean; trim to the fastest run alone and what is left is the fast side's
+    own noise. Scored on those rounds as speed jobs of 9, 15 and 25 rounds
+    whose true change was zero, the faster half was best or tied best at
+    each, with a root mean square error of 0.63%, 0.56% and 0.49% against
+    0.83%, 0.75% and 0.68% for the fastest run. Anything from a third to two
+    thirds did about as well; a half is the middle of that. On the speed
+    job's history at nine rounds, the best five of nine did best too.
+    """
+    kept = sorted(rates, reverse=True)[: (len(rates) + 1) // 2]
+    return statistics.mean(kept)
+
+
 def summary(measured: Measured) -> list[str]:
     """One row per side and the change under each column.
 
-    The fastest column is a diagnostic, not a second estimate. Runs do not
-    only come out slow: on the speed job a side's fastest run sat a median
-    1.5% above its own median. The fastest pair has no interval, does not settle as rounds are
-    added, and over the layout-only pull requests it showed more than 2% on
-    three times as many as the paired change did. It counts the runs of
-    replaced rounds too. When the counts match, the change row leaves nodes and
-    time empty: the time is then the rate upside down and would say nothing
-    the nps cell does not.
+    The faster half column is a diagnostic, not a second estimate: it has no
+    interval, and the verdict does not read it. When the counts match, the
+    change row leaves nodes and time empty: the time is then the rate upside
+    down and would say nothing the nps cell does not.
     """
     base_seconds, candidate_seconds = time_to_depth(measured)
     base_rate = statistics.median(measured.base_nps)
     candidate_rate = statistics.median(measured.candidate_nps)
-    base_fastest = max(measured.base_nps + [b for _, b, _ in measured.replaced])
-    candidate_fastest = max(
-        measured.candidate_nps + [c for _, _, c in measured.replaced]
-    )
+    base_faster = faster_half(measured.base_nps)
+    candidate_faster = faster_half(measured.candidate_nps)
     differ = measured.base_nodes != measured.candidate_nodes
     columns = [
         (
@@ -332,10 +346,10 @@ def summary(measured: Measured) -> list[str]:
             f"{change(base_rate, candidate_rate):+.1f}%",
         ),
         (
-            "fastest nps",
-            str(base_fastest),
-            str(candidate_fastest),
-            f"{change(base_fastest, candidate_fastest):+.1f}%",
+            "faster half",
+            f"{base_faster:.0f}",
+            f"{candidate_faster:.0f}",
+            f"{change(base_faster, candidate_faster):+.1f}%",
         ),
     ]
     labels = ["", "base", "candidate", "change"]
