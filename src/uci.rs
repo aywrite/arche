@@ -19,12 +19,8 @@ use std::fmt;
 use std::io::{BufRead, Stdout, Write};
 use std::ops::RangeInclusive;
 
-/// The `Hash` option's range, in megabytes, as the handshake advertises it.
-/// A `bench hash` takes the same range.
-///
-/// The top is sixteen gibibytes, held to what a usize can address so that a
-/// narrower target advertises a range that can be asked for rather than one
-/// that would overflow.
+/// The `Hash` option's range in megabytes, which `bench hash` shares. The top
+/// is 16GiB, or less on a target whose usize cannot address that much.
 const HASH_MIN_MB: u64 = 1;
 const HASH_MAX_MB: u64 = {
     let addressable = (usize::MAX / (1024 * 1024)) as u64;
@@ -35,25 +31,23 @@ const HASH_MAX_MB: u64 = {
     }
 };
 
-/// The handshake's default is the engine's own, so an interface that never
-/// sends a `setoption` is told the table it is going to get.
+/// The engine's own default, so the handshake names the table asked for at
+/// startup.
 const HASH_DEFAULT_MB: u64 = (arche_core::DEFAULT_TABLE_BYTES / (1024 * 1024)) as u64;
 
-// a default outside the advertised range is caught here rather than in a game
 const _: () = assert!(HASH_DEFAULT_MB >= HASH_MIN_MB && HASH_DEFAULT_MB <= HASH_MAX_MB);
 
-/// The `Move Overhead` option's range, in milliseconds. Zero, because an
-/// interface on the same machine may cost nothing worth holding back. Five
-/// seconds is more than a network needs, and an interface that asks for it at
-/// 1+0 gets the floor a spent clock gets.
+/// The `Move Overhead` option's range, in milliseconds. Zero suits an
+/// interface on the same machine. Five seconds is more than a network needs,
+/// and asking for it at 1+0 leaves the floor a spent clock gets.
 const OVERHEAD_MIN_MS: u64 = 0;
 const OVERHEAD_MAX_MS: u64 = 5_000;
 
 // only the top: a u64 cannot fall below a minimum of zero
 const _: () = assert!(DEFAULT_MOVE_OVERHEAD_MS <= OVERHEAD_MAX_MS);
 
-/// Where a spin option's value goes. A row names its own, and `set_option`
-/// matches over this, so a variant with no arm fails the build.
+/// Where a spin option's value goes. `set_spin` matches over it, so a
+/// variant with no arm fails the build.
 #[derive(Clone, Copy)]
 enum Setting {
     Hash,
@@ -63,7 +57,6 @@ enum Setting {
 
 /// What kind of thing an option is, as the handshake says it.
 enum OptionKind {
-    /// A number in a range, and what that number is read into.
     Spin {
         default: u64,
         min: u64,
@@ -74,15 +67,13 @@ enum OptionKind {
     Button,
 }
 
-/// One option the engine answers to.
 struct UciOption {
     name: &'static str,
     kind: OptionKind,
 }
 
-/// The options, in the order the handshake says them. The one statement of
-/// what exists: a row carries its name, its kind, and for a spin the range
-/// it advertises and the setting that range is read into.
+/// The options in handshake order. Both the handshake and `setoption` read
+/// them from here.
 const OPTIONS: &[UciOption] = &[
     UciOption {
         name: "Hash",
@@ -97,8 +88,8 @@ const OPTIONS: &[UciOption] = &[
         name: "Clear Hash",
         kind: OptionKind::Button,
     },
-    // a range of one, so an interface configuring a match reads the engine
-    // as single threaded rather than finding out by playing
+    // a range of one, so an interface reads the engine as single threaded
+    // before a match rather than during it
     UciOption {
         name: "Threads",
         kind: OptionKind::Spin {
@@ -120,7 +111,6 @@ const OPTIONS: &[UciOption] = &[
 ];
 
 impl UciOption {
-    /// The handshake line for this option.
     fn advert(&self) -> String {
         match self.kind {
             OptionKind::Spin {
@@ -134,26 +124,21 @@ impl UciOption {
     }
 }
 
-/// A spin value read off a `setoption` line and held to the range its row
-/// advertises: what to apply, and what to say when it had to be held.
+/// A spin value held to its row's range, and what to say if it had to be.
 #[derive(Debug, PartialEq, Eq)]
 struct Held {
     value: u64,
     said: Option<String>,
 }
 
-/// Reads one spin value for the row named, holding it to that row's range.
-/// Parsed rather than counted: a count reads a negative as a spent clock,
-/// which is right for a clock and wrong here, since a negative is outside
-/// every range the handshake advertises and is refused. A value that reads
-/// as a number and falls outside the range is asking for more than we offer
-/// rather than making a mistake worth refusing, so it gets the nearest end
-/// and is told which, in the word it was sent as rather than the number that
-/// was read. A `value` with nothing after it is no different here from no
-/// `value` at all, since either way the interface sent nothing to apply; the
-/// arguments tell those two apart, because a run at a default nobody asked
-/// for costs minutes. The range travels as one argument rather
-/// than as two ends of the same type, which would swap unnoticed.
+/// Reads one spin value and holds it to the row's range.
+///
+/// Parsed rather than counted, since `count` reads a negative as a spent
+/// clock and here a negative is refused. A number outside the range is asking
+/// for more than we offer rather than a mistake, so it gets the nearest end
+/// and a line quoting the word as sent. A bare `value` is refused like a
+/// missing one: either way there is nothing to apply. The range is one
+/// argument so that its two ends cannot be swapped.
 fn read_spin(name: &str, range: RangeInclusive<u64>, params: &Params) -> Result<Held, String> {
     let (word, value) = match (params.value("value"), params.parse::<u64>("value")) {
         (Param::Read(word), Param::Read(value)) => (word, value),
@@ -177,9 +162,8 @@ fn read_spin(name: &str, range: RangeInclusive<u64>, params: &Params) -> Result<
 }
 
 pub struct UCI<T: Engine, W: Write> {
-    /// What the `Move Overhead` option is set to, held back from every budget
-    /// a `go` works out. It outlives a game: it describes the connection, not
-    /// the position.
+    /// The `Move Overhead` option, in milliseconds. It survives `ucinewgame`,
+    /// since it describes the connection rather than the game.
     move_overhead: u64,
 
     engine: T,
@@ -198,15 +182,13 @@ impl<T: Engine> UCI<T, SharedWriter<Stdout>> {
 }
 
 impl<T: Engine, W: Write + Send + 'static> UCI<T, SharedWriter<W>> {
-    /// Install the panic hook speaking through this session's writer, so the
-    /// reason the engine died goes out under the same lock as every other
-    /// line.
+    /// Install the panic hook on this session's writer, so the reason the
+    /// engine died goes out under the same lock as every other line.
     pub fn report_panics(&self) {
         report_panics_to(self.out.clone());
     }
 
-    /// Run this session over the input given. Every line comes back to
-    /// `dispatch` on this thread, so the engine never crosses to the reader.
+    /// Run this session over the input given, dispatching on this thread.
     fn wire<I, F>(&mut self, input: F)
     where
         I: Iterator<Item = std::io::Result<String>>,
@@ -227,10 +209,8 @@ impl<T: Engine, W: Write> UCI<T, W> {
         }
     }
 
-    /// A command is its first word. A `go` is bracketed so the reader thread
-    /// knows a search is running and can stop it.
-    ///
-    /// Returns false once the engine has been asked to quit.
+    /// Handles one line, returning false on `quit`. A `go` is bracketed so
+    /// the reader thread answers `isready` itself while it runs.
     fn dispatch(&mut self, line: &str, control: &SessionControl) -> bool {
         match first_word(line) {
             "quit" => return false,
@@ -240,9 +220,11 @@ impl<T: Engine, W: Write> UCI<T, W> {
                 control.answered();
             }
             "stop" => {
-                // the reader thread already stopped the search; by the time
-                // one reaches here the flag it set is spent. Taken in
-                // silence, since the protocol allows a stop at any moment
+                // taken in silence, since the protocol allows a stop at any
+                // moment. The reader has already set the flag, and clearing
+                // it keeps a spent stop from reaching the next search. It
+                // also clears a later stop the reader read before this line
+                // was dispatched, which that search then never sees
                 control.clear();
             }
             "isready" => self.say(format_args!("readyok")),
@@ -272,9 +254,8 @@ impl<T: Engine, W: Write> UCI<T, W> {
                 self.report(result);
             }
             "display" => {
-                // one info string a row, so an interface reads the dump as
-                // commentary rather than as protocol it has to parse; the
-                // blank separator rows are dropped
+                // as info strings, so an interface passes over the dump
+                // rather than parsing it
                 let board = self.engine.board_display();
                 for row in board.lines().filter(|row| !row.is_empty()) {
                     self.say(format_args!("info string {}", row));
@@ -294,14 +275,13 @@ impl<T: Engine, W: Write> UCI<T, W> {
         true
     }
 
-    /// Writes one line to the interface. A failed write means the interface
-    /// is gone, which leaves no one to tell, so the error is dropped.
+    /// Writes one line. A failed write means the interface has gone, so there
+    /// is no one to tell.
     fn say(&mut self, line: std::fmt::Arguments) {
         let _ = writeln!(self.out, "{}", line);
     }
 
-    /// Says what could not be acted on and carries on reading: a bad line is
-    /// the interface's problem to fix.
+    /// Says what could not be acted on as an info string and carries on.
     fn report(&mut self, result: Result<(), String>) {
         if let Err(error) = result {
             self.say(format_args!("info string {}", error));
@@ -314,9 +294,8 @@ impl<T: Engine, W: Write> UCI<T, W> {
         self.dispatch(line, &SessionControl::unattended())
     }
 
-    /// Dispatches input until it is exhausted or `quit` arrives, through the
-    /// shipped session loop with the channel filled up front and no reader
-    /// thread, so nothing can interrupt a search.
+    /// The shipped session loop with the channel filled up front and no
+    /// reader thread, so nothing can interrupt a search.
     #[cfg(test)]
     fn run<R: BufRead>(&mut self, input: R) {
         let (sender, lines) = std::sync::mpsc::channel();
@@ -342,11 +321,9 @@ impl<T: Engine, W: Write> UCI<T, W> {
         }
     }
 
-    /// `setoption name <option> [value <value>]`. An option not in `OPTIONS`
-    /// is said back rather than acted on, so an interface sending one meant
-    /// for another engine is told. The name is every word between `name` and
-    /// `value`, since `Clear Hash` has two, and is matched ignoring case, as
-    /// the protocol asks.
+    /// `setoption name <option> [value <value>]`. The name is every word
+    /// between `name` and `value` (`Clear Hash` has two), matched ignoring
+    /// case as the protocol asks. An unknown option is said back.
     fn set_option(&mut self, line: &str) -> Result<(), String> {
         let params = Params::of(line);
         let Some(name) = params.phrase("name", "value") else {
@@ -359,11 +336,9 @@ impl<T: Engine, W: Write> UCI<T, W> {
             return Err(format!("unrecognised option: {}", name));
         };
         match option.kind {
-            // a button carries no value. Read off the kind rather than the
-            // name, so every button empties the table; there is one today,
-            // and a second would want an enum of its own beside `Setting`.
-            // Only the table is emptied: the killers and the history start
-            // empty at every `go` anyway
+            // every button empties the table, since `Clear Hash` is the only
+            // one; a second would want an enum beside `Setting`. The killers
+            // and the history already start empty at every `go`
             OptionKind::Button => {
                 self.engine.clear_table();
                 Ok(())
@@ -374,8 +349,6 @@ impl<T: Engine, W: Write> UCI<T, W> {
         }
     }
 
-    /// Reads one spin's value, says what the reader had to say about it, and
-    /// puts it where the row asks.
     fn set_spin(
         &mut self,
         name: &str,
@@ -398,21 +371,20 @@ impl<T: Engine, W: Write> UCI<T, W> {
                     ));
                 }
             }
-            // there is no parallel search, so the count is held to one and
-            // nothing is kept. Held and said rather than refused: declining
-            // to play because a match was configured for four threads would
-            // be worse than playing on one
+            // held to one and said rather than refused: declining a match
+            // configured for four threads is worse than playing it on one
             Setting::Threads => {}
             Setting::MoveOverhead => self.move_overhead = value,
         }
         Ok(())
     }
 
-    /// A move that cannot be played leaves the position at the last one that
-    /// could be, since the interface is expected to send the whole line again
-    /// rather than to carry on from a position we rejected.
+    /// A position that cannot be read keeps the one before it, and a move
+    /// that cannot be played leaves the position at the last one that could
+    /// be. The interface is expected to send the whole line again rather than
+    /// carry on from a position we rejected.
     fn parse_position(&mut self, line: &str) -> Result<(), String> {
-        // trimmed before the strip, so this reads the line the dispatcher did
+        // trimmed first, as the dispatcher reads the line
         let position_string = line
             .trim_start()
             .strip_prefix("position")
@@ -432,7 +404,7 @@ impl<T: Engine, W: Write> UCI<T, W> {
             ),
             None => (position_string, None),
         };
-        // whole words, as the go line reads them: startposx is not startpos
+        // whole words: startposx is not startpos
         if start == "startpos" {
             self.engine.parse_fen(arche_core::STARTING_FEN)?;
         } else if let Some(fen) = start
@@ -454,8 +426,8 @@ impl<T: Engine, W: Write> UCI<T, W> {
         Ok(())
     }
 
-    /// A `go`: the reader thread's stop flag rides into the search, and a go
-    /// that holds its answer waits here for the stop that releases it.
+    /// A `go`. The reader thread's stop flag rides into the search, and a go
+    /// that holds its answer waits here for the stop.
     fn parse_go(&mut self, line: &str, control: &SessionControl) {
         let go = Go::of(
             &Params::of(line),
@@ -487,8 +459,7 @@ impl<T: Engine, W: Write> UCI<T, W> {
                 reported.written = Some(line);
             });
         self.say_the_search_total(&outcome, &reported);
-        // an infinite search does not answer until it is told to, even when
-        // it ran out of depths to search first
+        // even a search that ran out of depths waits to be told
         if go.holds_its_answer() {
             control.wait_for_stop();
         }
@@ -498,45 +469,35 @@ impl<T: Engine, W: Write> UCI<T, W> {
             }
             SearchOutcome::GameOver => {
                 self.say(format_args!("info string no legal moves identified"));
-                // 0000 is the null move, used to report that there is no move
-                // to make
+                // 0000, the protocol's null move
                 self.say(format_args!("bestmove 0000"));
             }
             SearchOutcome::Aborted(None) => self.say(format_args!("bestmove 0000")),
         }
     }
 
-    /// The last info line of a search, said for the search rather than for an
-    /// iteration of it.
+    /// The last info line, said for the whole search rather than an iteration.
     ///
-    /// Every line above it comes from an iteration ending, and a search that
-    /// gives up inside one reports that iteration only where the root swapped
-    /// its move. So a reader taking the last line for a node count takes a
-    /// count that stops at the depth before, with the deepest and largest
-    /// iteration left out of it. A match harness reads the last line, and
-    /// that is the count it writes into the game record.
+    /// Info lines come from finished iterations, and an interrupted one is
+    /// reported only where the root swapped its move. Without this line the
+    /// count a match harness copies from the last line into the game record
+    /// leaves out the deepest iteration.
     ///
-    /// Only the nodes and the elapsed time come from the outcome. The depth,
-    /// the seldepth, the score, the bound and the line are the last ones
-    /// reported, so what a reader records in those columns does not move.
-    /// They can lag the answer by an iteration: an interrupted iteration that
-    /// found the move already answering is not reported, and the engine then
-    /// answers with its score while the line still carries the depth before
-    /// it. Printing that score instead would need a depth to print it at,
-    /// which a `SearchResult` does not carry, and would move a column that
-    /// readings taken before this line existed are read against.
+    /// Only the nodes and the time come from the outcome. The other columns
+    /// are the last answering report's, so they read as before. They can lag
+    /// the answer by an iteration (an interrupted iteration that kept the move
+    /// is not reported), and printing its score would need a depth, which a
+    /// `SearchResult` does not carry.
     ///
-    /// Nothing is said where the line would repeat the one just written,
-    /// which is every search that ended on an iteration it had reported.
+    /// Nothing is said when the line would repeat the one just written.
     fn say_the_search_total(&mut self, outcome: &SearchOutcome, reported: &Reported) {
         let spent = match outcome {
             SearchOutcome::Complete(result, _) | SearchOutcome::Aborted(Some(result)) => result,
             // neither carries a result, and both answer 0000
             SearchOutcome::Aborted(None) | SearchOutcome::GameOver => return,
         };
-        // an answer the deepening never reported has nothing to say it
-        // against. Depth one is searched under no limits, so a real search
-        // always has one
+        // depth one is searched under no limits, so a real search always has
+        // a report here
         let Some(answer) = &reported.answer else {
             return;
         };
@@ -564,20 +525,17 @@ impl<T: Engine, W: Write> UCI<T, W> {
     }
 }
 
-/// What a `go` asked for, read once from the line. Each part read from the
-/// line is absent when the line did not name it.
+/// What a `go` asked for, read once from the line.
 struct Go {
-    /// The depth asked for, held to the ply rail rather than refused: a depth
-    /// past what the engine will search is a request to go deep. The rail is
-    /// also what keeps the root's check extension inside a byte (a depth of
-    /// 255 from a position in check used to overflow).
+    /// Held to `MAX_PLY` rather than refused, since a depth past it is a
+    /// request to go deep. The rail also keeps the root's check extension
+    /// inside a byte (`depth 255` in check used to overflow).
     depth: Option<u8>,
     /// The node budget. An unreadable one is ignored rather than obeyed as
     /// zero, which would stop the search before it had a move to report.
     nodes: Option<u64>,
     time: TimeControl,
-    /// The session's `Move Overhead` when the `go` arrived. Not a word off the
-    /// line, but the budget is worked out from it.
+    /// The session's `Move Overhead` when the `go` arrived.
     overhead: u64,
 }
 
@@ -594,18 +552,15 @@ impl Go {
         }
     }
 
-    /// The bounds the search runs under. The clock starts here, as the command
-    /// arrives, and the search reports its elapsed time against the same
-    /// start.
+    /// The clock starts here, as the command arrives, and the search reports
+    /// its elapsed time from the same start.
     fn limits(&self) -> Limits {
         Limits::starting_now(self.time.budget(self.overhead), self.nodes)
     }
 
-    /// Whether this `go` must sit on its answer until a `stop` arrives.
-    ///
-    /// `go infinite` says so outright. A `go` with nothing to bound it is read
-    /// the same way: it used to mean a search to the depth cap on no clock,
-    /// which nothing sends deliberately.
+    /// Whether this `go` sits on its answer until a `stop`: `go infinite`,
+    /// and a `go` with nothing to bound it, which used to search to the depth
+    /// cap on no clock.
     fn holds_its_answer(&self) -> bool {
         // a node count too large to hold reads as u64::MAX, which is also
         // what no budget is, so it bounds nothing either
@@ -616,10 +571,8 @@ impl Go {
     }
 }
 
-/// What a bench command or argument asked for: `bench [depth] [hash <MB>]
-/// [taint refuse|trust|skip|rule50] [audit]`, each setting the bench's own
-/// when absent. The report states the depth, table and policy in its header
-/// so it can be rerun from it.
+/// What a bench command or argument asked for, each setting the bench's own
+/// when absent.
 pub struct BenchSettings {
     pub depth: u8,
     pub table_bytes: usize,
@@ -629,7 +582,7 @@ pub struct BenchSettings {
     pub audit: bool,
 }
 
-/// What a bench takes: the usage's spelling and the words it refuses.
+/// The bench's words, for the usage and for `claim`.
 pub const BENCH: Command = Command {
     name: "bench",
     depth: true,
@@ -688,13 +641,12 @@ pub fn bench_settings(params: &Params) -> Result<BenchSettings, String> {
 /// figures reads like a run that found nothing.
 pub const NO_AUDIT_MEMORY: &str = "no memory for the audit's keys, which are half the table again";
 
-/// What is said when the host would not give the session the table it
-/// asked for, taking the ask from the engine that made it. None when the
-/// engine got what it asked for. The interface is told because the `Hash`
-/// the handshake advertises is then not the table in use.
+/// What to say when the host would not give the engine the table it asked
+/// for, or None when it did. The interface is told because the `Hash` the
+/// handshake advertises is then not the table in use.
 ///
-/// Bytes rather than megabytes: the ask is halved until it fits, so the
-/// size it settles for need not be a whole megabyte and would read as zero.
+/// Bytes rather than megabytes, since the size settled for need not be a
+/// whole megabyte.
 pub fn table_shortfall(asked: Option<usize>, got: usize) -> Option<String> {
     asked.map(|asked| {
         format!("info string no memory for a {asked} byte transposition table, using {got} bytes")
@@ -703,8 +655,7 @@ pub fn table_shortfall(asked: Option<usize>, got: usize) -> Option<String> {
 
 impl BenchSettings {
     /// Runs the bench, or nothing when the audit's keys could not be
-    /// allocated, which the caller reports with `NO_AUDIT_MEMORY`. The
-    /// command and the argument both come through here.
+    /// allocated, which the caller reports with `NO_AUDIT_MEMORY`.
     pub fn run(&self) -> Option<bench::Report> {
         let positions = bench::positions();
         if self.audit {
@@ -731,17 +682,12 @@ fn perft_depth(params: &Params) -> u8 {
         .unwrap_or(1)
 }
 
-/// What the deepening has reported so far, kept so that the line written
-/// after it can say what the whole search spent.
+/// What the deepening has reported, for the line said after it.
 #[derive(Default)]
 struct Reported {
-    /// The last report that was not a ceiling.
-    ///
-    /// A ceiling names the move that came closest rather than one the search
-    /// would answer with, and the deepening never holds one as its answer, so
-    /// the move a search answers with is always this report's. That is what
-    /// makes one slot enough. The score beside it can be a depth older, for
-    /// the reason `say_the_search_total` gives.
+    /// The last report that was not a ceiling. The deepening never answers
+    /// with a ceiling's move, so the move a search answers with is always
+    /// this report's.
     answer: Option<Answer>,
     /// The last line written, whatever its bound.
     written: Option<String>,
@@ -757,12 +703,8 @@ struct Answer {
     pv: String,
 }
 
-/// One report from the search as a UCI info line. The elapsed time comes from
-/// the result rather than a clock read here, so the rate divides a node count
-/// by the time that same search took.
-///
-/// A score that is a bound rather than the position's worth is qualified
-/// `lowerbound` or `upperbound`, the protocol's words for the two.
+/// One report as a UCI info line. The rate divides the nodes by the result's
+/// own elapsed time rather than a clock read here.
 fn format_info(
     depth: u8,
     result: &SearchResult,
@@ -770,8 +712,7 @@ fn format_info(
     bound: ScoreBound,
 ) -> String {
     let millis = result.elapsed.as_millis();
-    // a search faster than a millisecond is measured as one, so the rate
-    // stays finite
+    // a search faster than a millisecond is measured as one
     let nps = (result.nodes as u128 * 1000 / millis.max(1)) as u64;
     let qualifier = match bound {
         ScoreBound::Exact => "",
@@ -809,12 +750,10 @@ mod tests {
     }
 
     /// An engine that searches nothing and keeps what it was asked for, so a
-    /// test can say what reached the engine rather than timing a real search
-    /// and inferring.
+    /// test reads what reached the engine rather than timing a search.
     struct Recorder {
         asked: Option<SearchParameters>,
         color: Color,
-        /// How many times the table has been asked to empty.
         cleared: usize,
     }
 
@@ -835,7 +774,6 @@ mod tests {
             _on_depth: impl FnMut(u8, &SearchResult, PvLine, ScoreBound),
         ) -> SearchOutcome {
             self.asked = Some(search_options);
-            // nothing was searched, so there is no move to report
             SearchOutcome::GameOver
         }
 
@@ -869,7 +807,6 @@ mod tests {
         asked_of_engine_as(line, Color::White)
     }
 
-    /// The same, for a side to move.
     fn asked_of_engine_as(line: &str, color: Color) -> SearchParameters {
         let mut uci = UCI::with_output(Recorder::to_move(color), Vec::new());
         uci.run(Cursor::new(format!("{}\n", line)));
@@ -878,7 +815,6 @@ mod tests {
             .expect("the go command never reached the engine")
     }
 
-    /// Everything said so far, as one string.
     fn said(uci: &UCI<AlphaBeta, Vec<u8>>) -> String {
         String::from_utf8(uci.out.clone()).unwrap()
     }
@@ -977,7 +913,6 @@ mod tests {
             "not the board: {}",
             spoken
         );
-        // every line must be one an interface can pass over
         for line in spoken.lines() {
             assert!(
                 line.starts_with("info string "),
@@ -993,13 +928,11 @@ mod tests {
         uci.run(Cursor::new(
             "position startpos moves e2e4\nquit\nposition startpos\n",
         ));
-        // the reset after quit must not have been acted on
         assert_eq!(uci.engine.active_color(), Color::Black);
     }
 
     #[test]
     fn the_loop_ends_when_the_input_does() {
-        // the old loop asked a closed stdin for another line for ever, so
         // reaching the end of this call is the assertion
         let mut uci = uci();
         uci.run(Cursor::new("uci\nisready\nposition startpos\ngo depth 1\n"));
@@ -1014,7 +947,6 @@ mod tests {
         assert_eq!(lines.len(), 7);
         assert!(lines[0].starts_with("id name arche "));
         assert!(lines[1].starts_with("id author "));
-        // the default is the engine's own
         assert_eq!(
             lines[2],
             "option name Hash type spin default 256 min 1 max 16384"
@@ -1184,13 +1116,11 @@ mod tests {
         for line in [
             "setoption name Hash value",
             "setoption name Hash value many",
-            // below zero is outside the range advertised rather than a spent
-            // clock, so it is refused instead of being lifted to the floor
+            // refused, where a clock below zero is read as spent
             "setoption name Hash value -5",
         ] {
             let mut uci = uci();
-            // resized first, so what is kept is the size in force rather than
-            // the one the engine was built with
+            // resized first, so what is kept is the size in force
             uci.handle("setoption name Hash value 1");
             assert!(uci.handle(line));
             assert_eq!(uci.engine.table_bytes(), megabytes(1), "{}", line);
@@ -1205,7 +1135,6 @@ mod tests {
 
     #[test]
     fn the_table_can_be_resized_between_two_searches_and_after_a_new_game() {
-        // the moments the protocol allows one
         let mut uci = uci();
         uci.run(Cursor::new(
             "position startpos
@@ -1259,8 +1188,6 @@ go depth 3
 
     #[test]
     fn the_move_overhead_the_option_sets_is_held_back_from_the_budget() {
-        // through a whole session: what a setoption sets is what the go after
-        // it holds back
         for (overhead, budget) in [(0, 500), (50, 450), (200, 300)] {
             let asked = asked_of_engine(&format!(
                 "setoption name Move Overhead value {}\ngo movetime 500",
@@ -1299,13 +1226,11 @@ go depth 3
         for line in [
             "setoption name Move Overhead value",
             "setoption name Move Overhead value soon",
-            // below zero is outside the range advertised rather than a spent
-            // clock, so it is refused instead of being taken as no overhead
+            // refused rather than taken as no overhead
             "setoption name Move Overhead value -100",
         ] {
             let mut uci = uci();
-            // set first, so what is kept is the overhead in force rather than
-            // the default
+            // set first, so what is kept is the overhead in force
             uci.handle("setoption name Move Overhead value 200");
             assert!(uci.handle(line));
             assert_eq!(uci.move_overhead, 200, "{}", line);
@@ -1327,9 +1252,8 @@ go depth 3
 
     #[test]
     fn every_spin_row_is_read_and_held_to_its_own_range() {
-        // asked of the reader rather than of a session, which is what makes
-        // the top of the Hash range assertable: a session would allocate the
-        // sixteen gigabytes it names
+        // asked of the reader, since a session would allocate the top of
+        // the Hash range
         let spins = OPTIONS
             .iter()
             .filter(|option| matches!(option.kind, OptionKind::Spin { .. }))
@@ -1345,7 +1269,6 @@ go depth 3
                 let line = format!("setoption name {} value {}", name, word);
                 read_spin(name, min..=max, &Params::of(&line))
             };
-            // what the reader returns for a word it had to hold to `end`
             let held = |word: &str, end: u64| {
                 Ok(Held {
                     value: end,
@@ -1369,29 +1292,24 @@ go depth 3
                 );
             }
 
-            // one past each end, where there is a past: a u64 cannot fall
-            // below a minimum of zero, and a row whose top is the largest
-            // u64 has nothing above it
+            // one past each end, where a u64 has one
             let mut past = Vec::new();
             if let Some(below) = min.checked_sub(1) {
                 past.push((below.to_string(), min));
             }
             if let Some(above) = max.checked_add(1) {
                 past.push((above.to_string(), max));
-                // the same value spelled with a leading zero, so the
-                // sentence is held to saying the word back rather than the
-                // number it read
+                // a leading zero holds the line to the word as sent
                 past.push((format!("0{}", above), max));
-                // too large to hold is as unreadable as a word to the parse,
-                // where a count read it as everything there is
+                // the largest u64 is held, and one more is refused below
                 past.push((u64::MAX.to_string(), max));
             }
             for (word, end) in past {
                 assert_eq!(read(&word), held(&word, end), "{} {}", name, word);
             }
 
-            // a negative is no more readable than a word: it is outside every
-            // range the handshake advertises
+            // refused rather than held, unlike a count: a negative is outside
+            // every advertised range
             for word in ["many", "-1", "18446744073709551616"] {
                 assert_eq!(
                     read(word),
@@ -1408,8 +1326,7 @@ go depth 3
                 name
             );
         }
-        // the loop passes over a row it does not recognise in silence, so
-        // what it read is counted against what the table holds
+        // the loop skips a row it does not recognise, so count what it read
         assert_eq!(rows, spins, "a spin row went unread");
         assert!(rows > 0, "no spin row was read at all");
     }
@@ -1441,7 +1358,7 @@ go depth 3
         assert_eq!(uci.engine.table_bytes(), megabytes(1));
         assert!(uci.handle("setoption name MOVE OVERHEAD value 200"));
         assert_eq!(uci.move_overhead, 200);
-        // said back under the name the engine advertises
+        // said back under the advertised name
         assert!(uci.handle("setoption name move overhead value 99999"));
         assert_eq!(
             said(&uci),
@@ -1471,7 +1388,6 @@ go depth 3
 
     #[test]
     fn a_new_game_keeps_the_move_overhead_it_was_given() {
-        // it describes the connection rather than the position
         let mut uci = uci();
         uci.handle("setoption name Move Overhead value 200");
         assert!(uci.handle("ucinewgame"));
@@ -1486,11 +1402,9 @@ go depth 3
         assert_eq!(uci.engine.table_bytes(), megabytes(1));
     }
 
-    /// The clock, the increment, the count of moves, the move time and the
-    /// infinite flag, as a tuple so a case fits on one line.
+    /// A `TimeControl`'s fields as a tuple, so a case fits on one line.
     type Clocks = (Option<u64>, Option<u64>, Option<u64>, Option<u64>, bool);
 
-    /// What a line's clock words are read as for a colour.
     fn clock_words(line: &str, color: Color) -> Clocks {
         let control = TimeControl::of(&Params::of(line), color);
         (
@@ -1504,8 +1418,7 @@ go depth 3
 
     #[test]
     fn what_the_clock_words_on_a_go_line_are_read_as() {
-        // every field for each case, so what a line does not say is asserted
-        // as well as what it does
+        // every field, so what a line does not say is asserted too
         const BOTH: &str = "go wtime 111 btime 222 winc 333 binc 444 movestogo 5";
         const NOTHING: Clocks = (None, None, None, None, false);
         for (line, color, want) in [
@@ -1562,9 +1475,7 @@ go depth 3
 
     #[test]
     fn a_clock_that_cannot_be_read_is_a_spent_one_rather_than_no_clock() {
-        // discarding it would read as the keyword being absent, and a go with
-        // no time at all searches without a limit. A word with nothing after
-        // it is a clock that was sent too, so it reads the same way
+        // a word with nothing after it was sent too, so it reads the same way
         for (line, increment) in [
             ("go wtime abc winc x", Some(0)),
             ("go winc x wtime", Some(0)),
@@ -1604,9 +1515,8 @@ go depth 3
 
     #[test]
     fn a_node_limit_is_honoured_end_to_end() {
-        // exactly the budget, not merely under it: the search polls the
-        // limits on the node it names, and the last line is said for the
-        // whole search rather than for the last iteration of it
+        // exactly the budget: the search polls on the node it names, and the
+        // last line is said for the whole search
         let mut uci = uci();
         uci.run(Cursor::new("position startpos\ngo nodes 5000\n"));
         let said = said(&uci);
@@ -1624,8 +1534,7 @@ go depth 3
 
     #[test]
     fn what_a_go_line_asks_of_the_search() {
-        // a move time arrives less the overhead, and arrives fixed, so the
-        // deepening loop spends it rather than answering early
+        // a move time arrives fixed and less the overhead
         let fixed = |millis| Some(Clock::Fixed(Duration::from_millis(millis)));
         for (line, depth, clock, nodes) in [
             ("go movetime 500", None, fixed(450), u64::MAX),
@@ -1649,8 +1558,7 @@ go depth 3
 
     #[test]
     fn a_search_is_given_the_clock_of_the_side_to_move() {
-        // the clocks are far apart, so a search handed the wrong one is
-        // handed twenty times the time it has
+        // far apart, so the wrong clock is twenty times the right one
         let line = "go wtime 60000 btime 4000";
         assert_eq!(
             asked_of_engine_as(line, Color::White).limits.clock(),
@@ -1683,8 +1591,6 @@ go depth 3
 
     #[test]
     fn an_unreadable_bench_setting_is_reported_rather_than_searched() {
-        // each is refused by name; running the default in its place would
-        // take seconds and say nothing about why
         let mut uci = uci();
         uci.run(Cursor::new(
             "bench abc\nbench 300\nbench 1 hash 0\nbench 1 hash 99999\n\
@@ -1707,9 +1613,8 @@ go depth 3
 
     #[test]
     fn a_bench_command_takes_a_table_size_and_a_taint_policy() {
-        // the words may come in either order and the depth may be left out.
-        // The left-out depth is checked on the settings alone, since running
-        // the suite at the bench's own depth would cost seconds
+        // the words may come in either order. The left-out depth is checked
+        // on the settings alone, since the bench's own depth takes seconds
         let mut uci = uci();
         uci.run(Cursor::new(
             "bench 1 hash 1 taint trust\nbench 1 taint refuse hash 2\n",
@@ -1743,8 +1648,7 @@ go depth 3
         assert_eq!(left_out.table_bytes, 1024 * 1024);
         assert_eq!(left_out.config.taint_word(), "trust");
 
-        // a setting left off the line takes its default; one named with
-        // nothing after it is the refusal above rather than the default
+        // a setting left off the line takes its default
         let neither = bench_settings(&Params::of("bench 1")).expect("neither word");
         assert_eq!(neither.table_bytes, bench::TABLE_BYTES);
         assert_eq!(neither.config.taint_word(), "rule50");
@@ -1752,8 +1656,7 @@ go depth 3
 
     #[test]
     fn a_bench_command_takes_the_signature_audit() {
-        // a word, so it may stand where the depth would be; a run without it
-        // says nothing about signatures
+        // a word, so it may stand where the depth would be
         let mut uci = uci();
         uci.run(Cursor::new("bench 1 hash 1 audit\nbench 1 hash 1\n"));
         let said = said(&uci);
@@ -1786,7 +1689,6 @@ go depth 3
         let mut uci = uci();
         uci.parse_position("position startpos").unwrap();
         assert_eq!(uci.engine.perft(2), 400);
-        // counting is make/undo all the way down, the position must survive it
         assert_eq!(uci.engine.active_color(), Color::White);
     }
 
@@ -1803,7 +1705,7 @@ go depth 3
 
     #[test]
     fn a_report_is_said_as_an_info_line() {
-        // the best move is not part of the line, so it stands still
+        // the best move is not part of the line
         let result = |nodes, millis, selective_depth, score| SearchResult {
             nodes,
             elapsed: Duration::from_millis(millis),
@@ -1827,7 +1729,7 @@ go depth 3
                 ScoreBound::Exact,
                 "info depth 4 seldepth 4 nodes 1500 time 20 nps 75000 score mate 2 pv e2e4",
             ),
-            // a search faster than a millisecond is measured as one
+            // under a millisecond
             (
                 1,
                 result(300, 0, 1, 0),
@@ -1835,8 +1737,7 @@ go depth 3
                 ScoreBound::Exact,
                 "info depth 1 seldepth 1 nodes 300 time 0 nps 300000 score cp 0 pv ",
             ),
-            // the qualifier goes after the score and before the line, where
-            // the protocol has it
+            // the qualifier goes after the score, where the protocol has it
             (
                 6,
                 result(2000, 500, 7, 25),
@@ -1844,8 +1745,6 @@ go depth 3
                 ScoreBound::Lower,
                 "info depth 6 seldepth 7 nodes 2000 time 500 nps 4000 score cp 25 lowerbound pv d2d4",
             ),
-            // the other half of the same: an iteration no root move
-            // reached alpha in reports a ceiling
             (
                 6,
                 result(2000, 500, 7, 25),
@@ -1864,7 +1763,7 @@ go depth 3
         }
     }
 
-    /// One report a scripted search makes, in the words `on_depth` takes.
+    /// One report a scripted search makes, as `on_depth` takes it.
     struct Report {
         depth: u8,
         result: SearchResult,
@@ -1872,19 +1771,14 @@ go depth 3
         bound: ScoreBound,
     }
 
-    /// An engine that plays a written script rather than searching: the
-    /// reports to make, then the outcome to answer with.
-    ///
-    /// Scripted, because provoking the three endings below from a real
-    /// search means timing one to the node, and the endings are where the
-    /// protocol's last line is decided.
+    /// An engine that makes the reports it is given and then answers. The
+    /// three endings below would otherwise need a real search timed to the
+    /// node.
     struct Scripted {
         reports: Vec<Report>,
         answer: SearchResult,
     }
 
-    /// A report at `depth`, on a line of the moves named, with the nodes and
-    /// the milliseconds it was taken at.
     fn report(
         depth: u8,
         nodes: u64,
@@ -1946,7 +1840,6 @@ go depth 3
         }
     }
 
-    /// What a scripted search says, line by line.
     fn spoken_by(engine: Scripted) -> Vec<String> {
         let mut uci = UCI::with_output(engine, Vec::new());
         uci.run(Cursor::new("position startpos\ngo movetime 300\n"));
@@ -1959,10 +1852,9 @@ go depth 3
 
     #[test]
     fn the_move_a_swap_answers_with_opens_the_last_line_said() {
-        // a depth completed and reported, then a better move from the
-        // aborted iteration, which the deepening swaps in and reports at
-        // the count it was interrupted on. fastchess warns on a bestmove
-        // the last pv does not open with
+        // the aborted iteration's better move is swapped in and reported at
+        // the count it was interrupted on. fastchess warns on a bestmove the
+        // last pv does not open with
         let swapped = report(4, 2000, 150, 35, &["d2d4"], ScoreBound::Lower);
         let said = spoken_by(Scripted {
             answer: SearchResult { ..swapped.result },
@@ -1984,12 +1876,9 @@ go depth 3
 
     #[test]
     fn an_iteration_that_reported_nothing_is_counted_in_the_last_line() {
-        // the ending most of a timed game's searches reach: the aborted
-        // iteration found the move already answering, so it reports
-        // nothing, and the depth before it is left to carry every node the
-        // search spent. Its own score, 33, is what the engine answers with
-        // and is not what the line says: the score stays where the last
-        // report left it
+        // the usual ending of a timed search: the aborted iteration kept the
+        // move and reports nothing. Its score, 33, is what the engine
+        // answers with, but the line keeps the last report's
         let said = spoken_by(Scripted {
             reports: vec![report(
                 3,
@@ -2019,9 +1908,8 @@ go depth 3
 
     #[test]
     fn a_ceiling_is_not_the_report_the_last_line_is_built_from() {
-        // a ceiling names the move that came closest rather than one the
-        // search would answer with, so the line said for the search is the
-        // exact report above it and not the ceiling between them
+        // the line said for the search repeats the exact report, not the
+        // ceiling after it
         let said = spoken_by(Scripted {
             reports: vec![
                 report(3, 1000, 100, 20, &["e2e4", "g1f3"], ScoreBound::Exact),
@@ -2048,16 +1936,12 @@ go depth 3
 
     // ---- generated sessions -------------------------------------------
 
-    /// Every line the protocol lets an engine say. Anything else is the
-    /// engine muttering where an interface can hear it.
+    /// The words the protocol lets an engine open a line with.
     const SPOKEN: [&str; 6] = ["info", "bestmove", "id", "option", "uciok", "readyok"];
 
-    /// The keywords a generated line opens with: the ones the loop dispatches
-    /// on, and near misses that fall through to the unrecognised branch.
-    ///
-    /// `bench` is absent. It runs a real bench of several million nodes
-    /// whoever is behind the loop, and prints a table rather than protocol,
-    /// so a session containing one cannot be asked the question below.
+    /// The keywords a generated line opens with, near misses included.
+    /// `bench` is absent: it runs a real bench whoever is behind the loop,
+    /// and prints a table rather than protocol.
     const KEYWORDS: [&str; 15] = [
         "uci",
         "isready",
@@ -2076,16 +1960,14 @@ go depth 3
         "  go",
     ];
 
-    /// A word a command line might carry: a protocol keyword, a number of the
-    /// shapes an interface sends, something shaped like a move, and junk.
+    /// A word a command line might carry.
     fn word() -> impl Strategy<Value = String> {
         prop_oneof![
             prop::sample::select(vec![
                 "name",
                 "value",
                 "Hash",
-                // the words of the option names, so a generated setoption
-                // can reach them
+                // so a generated setoption can name an option
                 "Clear",
                 "Move",
                 "Overhead",
@@ -2143,8 +2025,7 @@ go depth 3
         prop::collection::vec(line(), 0..12usize)
     }
 
-    /// How many of these lines the loop will dispatch as a `go`, read the
-    /// way the dispatcher reads a line.
+    /// How many of these lines the loop will dispatch as a `go`.
     fn gos(lines: &[String]) -> usize {
         lines.iter().filter(|line| first_word(line) == "go").count()
     }
@@ -2162,8 +2043,7 @@ go depth 3
     }
 
     proptest! {
-        /// The loop answers whatever arrives and says only things the
-        /// protocol defines.
+        /// Whatever arrives, the loop says only what the protocol defines.
         #[test]
         fn a_session_is_answered_in_the_protocol(lines in session()) {
             for line in run_session(&lines).lines() {
@@ -2196,17 +2076,15 @@ go depth 3
     }
 
     proptest! {
-        // a real search behind the loop, with few cases because every one
-        // of them searches
+        // few cases, because every one of them searches
         #![proptest_config(ProptestConfig::with_cases(16))]
 
         #[test]
         fn a_real_engine_keeps_the_same_promises(lines in prop::collection::vec(line(), 0..5usize)) {
             // a generated perft depth like 300000 would not finish, and a go
             // with no clock searches to the depth cap, so perft is dropped
-            // and every go is given a move time. It goes straight after the
-            // keyword because the reader takes the first of a repeated word;
-            // infinite would beat it whatever it said, so it comes out
+            // and every go is given a move time. It goes first because the
+            // first of a repeated word is read, and infinite would beat it
             let lines: Vec<String> = lines
                 .into_iter()
                 .filter(|line| first_word(line) != "perft")
@@ -2238,8 +2116,8 @@ go depth 3
 
     // ---- the session loop ---------------------------------------------
 
-    /// A session on threads of its own, driven the way an interface drives
-    /// one: lines typed in, and what was said read back while the loop runs.
+    /// A session on the production wiring, with lines typed in and what was
+    /// said read back while it runs.
     struct Driven {
         typed: Sender<String>,
         said: SharedWriter<Vec<u8>>,
@@ -2251,7 +2129,6 @@ go depth 3
             let (typed, script) = channel::<String>();
             let said = SharedWriter::new(Vec::new());
             let out = said.clone();
-            // the production wiring; the only substitution is the input
             let session = thread::spawn(move || {
                 UCI::with_output(engine, out).wire(move || script.into_iter().map(Ok));
             });
@@ -2262,13 +2139,12 @@ go depth 3
             }
         }
 
-        /// A real search behind the loop.
         fn searching() -> Self {
             Self::of(AlphaBeta::with_table_bytes(Board::new(), 8 * 1024))
         }
 
-        /// A session whose engine answers at once, so a held answer can be
-        /// tested without waiting for a search to run out of depths.
+        /// An engine that answers at once, so a held answer can be tested
+        /// without waiting for a search to run out of depths.
         fn instant() -> Self {
             Self::of(Recorder::to_move(Color::White))
         }
@@ -2282,8 +2158,8 @@ go depth 3
         }
 
         /// Everything said once `what` has been, or a failure naming what
-        /// was said instead. The deadline is generous because it bounds a
-        /// real search on whatever machine runs the suite.
+        /// was said instead. The deadline bounds a real search on any
+        /// machine.
         fn wait_for(&self, what: &str) -> String {
             let deadline = Instant::now() + Duration::from_secs(30);
             loop {
@@ -2301,8 +2177,7 @@ go depth 3
             }
         }
 
-        /// Nothing more is said for this long, which is the only way to show
-        /// an answer is held back.
+        /// Nothing more is said for this long.
         fn stays_quiet_for(&self, span: Duration) -> String {
             let said = self.said();
             thread::sleep(span);
@@ -2320,8 +2195,7 @@ go depth 3
 
     #[test]
     fn a_panic_is_said_where_the_interface_can_read_it() {
-        // the hook is process wide, so the test reads back its own buffer
-        // rather than asserting anything about the process's stdout
+        // the hook is process wide, so read back this test's own buffer
         let said = SharedWriter::new(Vec::new());
         report_panics_to(said.clone());
         let panicked = thread::spawn(|| panic!("the search fell over")).join();
@@ -2341,8 +2215,7 @@ go depth 3
 
     #[test]
     fn a_stop_mid_search_answers_with_a_real_move() {
-        // twenty seconds of move time, stopped inside the first second: the
-        // search comes back at once with the move it had
+        // twenty seconds of move time, stopped inside the first
         let driven = Driven::searching();
         driven.type_line("position startpos");
         driven.type_line("go movetime 20000");
@@ -2376,8 +2249,6 @@ go depth 3
 
     #[test]
     fn an_isready_is_answered_while_a_search_runs() {
-        // the protocol requires this one answered at once, whatever the
-        // engine is in the middle of
         let driven = Driven::searching();
         driven.type_line("position startpos");
         driven.type_line("go movetime 20000");

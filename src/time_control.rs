@@ -6,23 +6,21 @@ use arche_core::Clock;
 use arche_core::Color;
 use std::time::Duration;
 
-/// What the `Move Overhead` option starts at, in milliseconds, held back from
-/// every budget. Fifty covers a local interface and a pipe; a network costs
-/// more, which is why the amount is the interface's to set.
+/// The `Move Overhead` option's default in milliseconds, held back from every
+/// budget. Fifty covers a local interface; a network costs more.
 pub const DEFAULT_MOVE_OVERHEAD_MS: u64 = 50;
 
 /// Moves we plan for when the time control does not say how many are left.
 ///
 /// With an increment the clock falls until a move's spend equals the
-/// increment and then holds there, so the horizon decides how much of the
-/// clock is unspent when the game ends rather than how fast it runs out. At a
-/// fortieth, self play at 10+0.1 ended games with about half the clock
-/// banked; a twentieth halves that floor (about 1.9 seconds at 10+0.1). The
-/// measurement is in the commit that moved it, 7913356.
+/// increment and then holds, so the horizon decides how much clock is unspent
+/// at the end rather than how fast it runs out. At a fortieth, two self play
+/// games at 10+0.1 ended with about half the clock banked; a twentieth halves
+/// the floor, to about 1.9 seconds (7913356).
 const ASSUMED_MOVES_TO_GO: u64 = 20;
 
-/// Share of the increment we count on. It is only credited once we have moved,
-/// so banking all of it leaves nothing to cover the overhead.
+/// Share of the increment we count on. It is credited only after the move,
+/// so spending all of it leaves nothing to cover the overhead.
 const INCREMENT_PERCENT: u64 = 75;
 
 /// The most of the remaining clock a single move may take, which keeps a
@@ -32,8 +30,7 @@ const MAX_CLOCK_PERCENT: u64 = 33;
 /// Searched even on a spent clock, so that a legal move comes back.
 const MIN_BUDGET_MS: u64 = 1;
 
-/// The time part of a `go` command, from the point of view of the side to move.
-/// All values are milliseconds.
+/// The time part of a `go` command for the side to move, in milliseconds.
 #[derive(Debug, Default, PartialEq, Eq)]
 pub struct TimeControl {
     pub time: Option<u64>,
@@ -44,13 +41,10 @@ pub struct TimeControl {
 }
 
 impl TimeControl {
-    /// A clock or a move time that was sent but cannot be read stands in as
-    /// spent rather than being discarded: discarded, it would read as absent,
-    /// and a `go` with no time at all searches without a limit. Playing a
-    /// weak move is recoverable and thinking for ever is not. A word sent
-    /// with nothing after it is the same case and reads the same way, since
-    /// the clock was still sent. A count of moves is left alone, since a
-    /// missing one is already a number assumed.
+    /// A clock or a move time that was sent but cannot be read, or has
+    /// nothing after it, reads as spent: read as absent, a `go` with no time
+    /// searches without a limit. A weak move is recoverable and thinking for
+    /// ever is not. A missing count of moves is already a number assumed.
     pub fn of(params: &Params, color: Color) -> Self {
         let (clock, increment) = match color {
             Color::White => ("wtime", "winc"),
@@ -65,13 +59,9 @@ impl TimeControl {
         }
     }
 
-    /// How long to search for, or `None` to search without a time limit. The
-    /// overhead, a session setting rather than a word off the line, is held
-    /// back from whatever the clock words work out to.
-    ///
-    /// A move time is a time the interface named; everything else is a share
-    /// this side worked out from a clock that keeps running, which is a guess
-    /// the search may spend less of. That is what `Clock` says.
+    /// How long to search for, or `None` for no time limit, less the
+    /// overhead. A move time is `Fixed`; a share worked out from the clock is
+    /// a guess the search may spend less of.
     pub fn budget(&self, overhead: u64) -> Option<Clock> {
         if self.infinite {
             return None;
@@ -79,8 +69,7 @@ impl TimeControl {
         let spend = match (self.move_time, self.time, self.increment) {
             (Some(move_time), _, _) => move_time,
             (None, Some(time), increment) => self.clock_share(time, increment.unwrap_or(0)),
-            // some interfaces send an increment with no clock; playing the
-            // move earns it back
+            // some interfaces send an increment with no clock
             (None, None, Some(increment)) => percent(increment, INCREMENT_PERCENT),
             (None, None, None) => return None,
         };
@@ -103,8 +92,7 @@ impl TimeControl {
     }
 }
 
-/// In `u128`, so a clock large enough to overflow the multiplication does not
-/// wrap to a share far smaller than the one asked for.
+/// In `u128`, so a huge clock does not wrap to a tiny share.
 fn percent(value: u64, percent: u64) -> u64 {
     debug_assert!(percent <= 100);
     (value as u128 * percent as u128 / 100) as u64
@@ -131,8 +119,8 @@ mod tests {
         }
     }
 
-    // The expected values below are written out rather than recomputed from the
-    // constants, so that changing a constant fails the test that covers it.
+    // Expected values are written out rather than computed from the
+    // constants, so that changing a constant fails its test.
 
     #[test]
     fn move_time_is_spent_less_the_overhead() {
@@ -156,8 +144,7 @@ mod tests {
 
     #[test]
     fn a_move_time_is_named_and_everything_else_is_a_share() {
-        // what the deepening loop reads to decide whether it may answer
-        // before the budget is spent
+        // the deepening may answer early only on a share
         assert_eq!(
             TimeControl {
                 move_time: Some(500),
@@ -182,7 +169,6 @@ mod tests {
 
     #[test]
     fn the_overhead_is_whatever_the_option_was_set_to() {
-        // every budget moves by the difference rather than by a share of it
         assert_eq!(millis_at(&clock(60_000), 0), Some(3_000));
         assert_eq!(millis_at(&clock(60_000), 500), Some(2_500));
         let move_time = TimeControl {
@@ -190,7 +176,7 @@ mod tests {
             ..Default::default()
         };
         assert_eq!(millis_at(&move_time, 0), Some(500));
-        // and an overhead larger than the budget still leaves a move to play
+        // an overhead larger than the budget still leaves a move to play
         assert_eq!(millis_at(&move_time, 5_000), Some(MIN_BUDGET_MS));
     }
 
@@ -250,7 +236,7 @@ mod tests {
             moves_to_go: Some(1),
             ..clock(60_000)
         };
-        // the whole clock is available, so the cap is what decides: 33% - 50
+        // the cap decides: 33% - 50
         assert_eq!(millis(&control), Some(19_750));
     }
 
@@ -266,7 +252,7 @@ mod tests {
 
     #[test]
     fn an_increment_never_spends_more_than_the_clock() {
-        // the increment dwarfs what is left, as in a 0+1 control
+        // the increment dwarfs what is left
         for time in [50, 100, 500, 1_000, 5_000] {
             let control = TimeControl {
                 increment: Some(10_000),
@@ -275,8 +261,7 @@ mod tests {
             let budget = millis(&control).unwrap();
             assert!(budget < time, "spent {} of {} left", budget, time);
         }
-        // the floor a 10+0.1 game settles on, where a move spends about what
-        // the increment pays back: 1900 / 20 + 75 - 50
+        // near the floor 7913356 measured at 10+0.1: 1900 / 20 + 75 - 50
         let control = TimeControl {
             increment: Some(100),
             ..clock(1_900)
@@ -286,9 +271,8 @@ mod tests {
 
     #[test]
     fn the_cap_decides_only_on_a_nearly_spent_clock() {
-        // a twentieth plus three quarters of the increment passes a third of
-        // the clock at around 265 ms: the cap decides below that and the
-        // share above it
+        // a twentieth plus three quarters of the increment passes 33% of the
+        // clock at about 268 ms: the cap decides below that
         let nearly_spent = TimeControl {
             increment: Some(100),
             ..clock(200)
@@ -309,7 +293,7 @@ mod tests {
             increment: Some(1_000),
             ..Default::default()
         };
-        // 750 of the increment - 50, the same share as when there is a clock
+        // 750 of the increment - 50
         assert_eq!(millis(&control), Some(700));
     }
 
