@@ -3,19 +3,15 @@
 
 //! What a command line argument is called and what words it takes.
 //!
-//! One declaration per argument, because the same list says which words may
-//! stand where the depth would, which words are known at all, and how the
-//! usage spells the line. `--help` used to be a string kept in step by hand,
-//! guarded by a test written out by hand as well, so the two could drift
-//! together and pass.
+//! One declaration per argument, which both parses the line and spells the
+//! usage, so `--help` cannot drift from what is accepted.
 //!
-//! The refusal is for arguments only. A uci interface is entitled to send an
+//! Unknown words are refused for arguments only. A uci interface may send an
 //! option meant for another engine and the protocol says to carry on; a
 //! person typing `hsah 16` at a shell would rather be told. The bench is both
-//! and takes the strict reading: a measurement at settings nobody asked for
-//! is worse than one not taken. A keyword typed with nothing after it is
-//! refused for the same reason. The setting's own reader refuses it, not this
-//! one, because that is what can name the setting rather than only the word.
+//! and takes the strict reading, since a measurement at settings nobody asked
+//! for is worse than none. A keyword typed with nothing after it is refused
+//! by the setting's own reader, which can name the setting.
 
 use crate::params::{Param, Params};
 
@@ -28,11 +24,10 @@ pub struct Keyword {
 /// One argument the binary takes: `<name> [depth] [<keyword> <value>]... [<flag>]...`.
 pub struct Command {
     pub name: &'static str,
-    /// Whether a bare number after the name is a depth. When not, the
-    /// spelling leaves `[depth]` out and a word standing there is refused.
+    /// Whether a bare number after the name is a depth. When not, a word
+    /// standing there is refused.
     pub depth: bool,
-    /// The words that take a value after them, in the order the usage spells
-    /// them.
+    /// The words that take a value, in usage order.
     pub keywords: &'static [Keyword],
     /// The words that stand alone.
     pub flags: &'static [&'static str],
@@ -41,15 +36,13 @@ pub struct Command {
 }
 
 impl Command {
-    /// The depth the line names, or `default` when it names none. The word
-    /// after the command's own is the depth unless it is one of the
-    /// command's keywords or flags, and a word that is neither is refused
+    /// The depth the line names, or `default` when it names none. A word in
+    /// the depth's place that is not one of the command's own is refused
     /// under the depth's name rather than run at the default.
     pub fn depth(&self, params: &Params, default: u8) -> Result<u8, String> {
         match params.parse::<u8>(self.name) {
-            // the command's own word standing last is the line asking for no
-            // depth, which is how the default is asked for, rather than a
-            // setting left half typed
+            // the command's word standing last asks for the default depth,
+            // unlike a setting left without its value
             Param::Absent | Param::Bare => Ok(default),
             Param::Read(depth) => Ok(depth),
             Param::Unreadable(word) if self.takes(word) => Ok(default),
@@ -57,8 +50,8 @@ impl Command {
         }
     }
 
-    /// Whether the argument knows this word. A word it knows may stand where
-    /// the depth would.
+    /// Whether the argument knows this word, which may then stand where the
+    /// depth would.
     pub fn takes(&self, word: &str) -> bool {
         self.keywords.iter().any(|k| k.word == word) || self.flags.contains(&word)
     }
@@ -67,16 +60,12 @@ impl Command {
         self.keywords.iter().any(|k| k.word == word)
     }
 
-    /// `Ok` unless the line names a word this argument does not know, or
-    /// names one of its keywords twice. Walked rather than compared as a set,
-    /// because a keyword claims the value after it: `hash 16` claims the
-    /// `16`, and a `cap` standing where a file name goes is that file name.
+    /// `Ok` unless the line names a word this argument does not know, or one
+    /// of its keywords twice. Walked rather than compared as a set, because a
+    /// keyword claims the word after it: in `epd cap` the `cap` is a file.
     ///
-    /// The first word is whatever invoked us. The second may be the depth,
-    /// which the caller's own parse judges and refuses as `depth: abc`, so
-    /// this runs after that parse. The refusals are shaped `<what>: <word>`
-    /// and `<setting>: <what>` like the others, since the caller prints them
-    /// all the same way.
+    /// The second word may be the depth, which the caller's own parse refuses
+    /// as `depth: abc`, so this runs after that parse.
     pub fn claim(&self, params: &Params) -> Result<(), String> {
         let words = params.words();
         let mut seen: Vec<&str> = Vec::new();
@@ -84,16 +73,13 @@ impl Command {
         while at < words.len() {
             let word = words[at];
             if self.is_keyword(word) {
-                // one keyword cannot mean two things, and the second copy is
-                // read by nobody: the setting's own reader takes the first,
-                // so a repeat standing last would be a word given no value
-                // that nothing refused
+                // the setting's reader takes the first, so a second would be
+                // read by nobody
                 if seen.contains(&word) {
                     return Err(format!("{word}: given twice"));
                 }
                 seen.push(word);
-                // a keyword standing last claims a word that is not there,
-                // which the setting's own reader refuses under its name
+                // one standing last is refused by the setting's own reader
                 at += 2;
             } else if self.flags.contains(&word) || (self.depth && at == 1) {
                 at += 1;
@@ -141,7 +127,7 @@ mod tests {
         summary: &["a command that exists to be parsed"],
     };
 
-    /// The same, with no search to run to a depth.
+    /// The same, with no depth.
     const DEPTHLESS: Command = Command {
         name: "read",
         depth: false,
@@ -153,7 +139,6 @@ mod tests {
         summary: &["a command that takes no depth"],
     };
 
-    /// What the argument refuses the line for, if anything.
     fn refused(line: &str) -> Option<String> {
         TAKES.claim(&Params::of(line)).err()
     }
@@ -194,9 +179,8 @@ mod tests {
         assert_eq!(refused("probe cap 20 every cap"), None);
     }
 
-    /// The setting's own reader takes the first of them, so the second is
-    /// read by nobody, and a second standing last is a keyword given no value
-    /// that no reader is looking at.
+    /// The second would be read by nobody, and standing last it would be a
+    /// keyword given no value that no reader looks at.
     #[test]
     fn a_keyword_given_twice_is_refused_under_its_own_name() {
         for line in ["probe 4 every 50 every 60", "probe 4 every 50 every"] {
@@ -208,17 +192,12 @@ mod tests {
         }
     }
 
-    /// A keyword last on the line claims a word that is not there. It is
-    /// refused, but by the reader of the setting it names, which can say
-    /// which setting was left without a value where this would only say the
-    /// word was unknown.
+    /// Refused by the setting's reader, which can name the setting.
     #[test]
     fn a_keyword_with_no_value_left_is_left_to_its_own_reader() {
         assert_eq!(refused("probe 4 every"), None);
     }
 
-    /// The command's own word is last on every line that names no depth,
-    /// which is the usual spelling rather than a setting given no value.
     #[test]
     fn the_command_word_standing_last_asks_for_the_default_depth() {
         assert_eq!(TAKES.depth(&Params::of("probe"), 9), Ok(9));
@@ -245,8 +224,6 @@ mod tests {
         assert_eq!(DEPTHLESS.spelling(), "read [epd <file>]");
     }
 
-    /// A number where the depth would be is a word the argument does not
-    /// know, and gets the refusal any other unknown word gets.
     #[test]
     fn a_depthless_argument_refuses_a_word_where_the_depth_would_be() {
         assert_eq!(

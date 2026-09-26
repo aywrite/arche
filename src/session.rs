@@ -3,16 +3,13 @@
 
 //! The threads a session runs on, and what they share.
 //!
-//! A session is two threads: a reader that owns the input and answers what
-//! must be answered while a search is running, and the session loop, which
-//! hands lines to the handler in the order they were sent. What a line means
-//! is the handler's business; the reader knows only the three words it must
-//! act on before the loop would get to them. The engine stays on the
-//! caller's side of the handler and never crosses a thread.
+//! A session is two threads: a reader that owns the input and acts on
+//! `stop`, `quit` and `isready` at once, and the session loop, which hands
+//! every line to the handler in the order sent. The engine stays on the
+//! handler's thread.
 //!
-//! `wire` is the one assembly of both threads. The binary enters it with
-//! stdin and the driven tests with a channel. A test that wants no reader
-//! calls `session_loop` on its own, filling the channel up front.
+//! `wire` assembles both. A test that wants no reader calls `session_loop`
+//! with the channel filled up front.
 
 use std::io::Write;
 use std::sync::atomic::{AtomicBool, Ordering};
@@ -20,9 +17,8 @@ use std::sync::mpsc::{Receiver, Sender, channel};
 use std::sync::{Arc, Mutex, PoisonError};
 use std::thread;
 
-/// A writer two threads say things through. The lock is taken for a whole
-/// line at a time, or an `info` line and a `readyok` could meet halfway
-/// through each other.
+/// A writer both threads say things through, locked a whole line at a time
+/// so that an `info` line and a `readyok` cannot interleave.
 pub struct SharedWriter<W: Write>(Arc<Mutex<W>>);
 
 impl<W: Write> SharedWriter<W> {
@@ -48,9 +44,8 @@ impl<W: Write> Clone for SharedWriter<W> {
 }
 
 impl<W: Write> Write for SharedWriter<W> {
-    /// A poisoned lock is a panic on the other thread, already reported where
-    /// it happened; an interface still wants its answer, so the buffer is
-    /// taken as it stands.
+    /// A poisoned lock is a panic already reported on the other thread, and
+    /// the interface still wants its answer, so the buffer is used as it is.
     fn write(&mut self, buf: &[u8]) -> std::io::Result<usize> {
         self.0
             .lock()
@@ -65,8 +60,7 @@ impl<W: Write> Write for SharedWriter<W> {
             .flush()
     }
 
-    /// One lock for a whole line. The default writes each piece of the format
-    /// separately and would let the other thread in between two of them.
+    /// One lock for a whole line, where the default takes one per piece.
     fn write_fmt(&mut self, args: std::fmt::Arguments<'_>) -> std::io::Result<()> {
         self.0
             .lock()
@@ -75,16 +69,13 @@ impl<W: Write> Write for SharedWriter<W> {
     }
 }
 
-/// The word a line opens with, which is all a command is. The dispatcher and
-/// the reader thread both read a line by this, so they cannot disagree about
-/// what counts as a `stop`.
+/// The word a line opens with. The dispatcher and the reader both use it, so
+/// they cannot disagree about what counts as a `stop`.
 pub(crate) fn first_word(line: &str) -> &str {
     line.split_whitespace().next().unwrap_or("")
 }
 
-/// What the reader thread and the session loop share: whether a search is
-/// under way, the flag that stops it, and the thread to wake when that flag
-/// is set.
+/// What the reader thread and the session loop share.
 #[derive(Clone)]
 pub(crate) struct SessionControl {
     searching: Arc<AtomicBool>,
@@ -92,7 +83,7 @@ pub(crate) struct SessionControl {
     /// Whether a reader thread attends the session. A held answer waits on a
     /// stop only a reader can send, so a session without one answers at once.
     attended: bool,
-    /// The session's own thread, to wake from a held answer.
+    /// The session's thread, woken from a held answer.
     session: thread::Thread,
 }
 
@@ -106,7 +97,6 @@ impl SessionControl {
         }
     }
 
-    /// A control for a session no reader attends.
     #[cfg(test)]
     pub(crate) fn unattended() -> Self {
         Self {
@@ -123,18 +113,17 @@ impl SessionControl {
         self.searching.store(true, Ordering::Release);
     }
 
-    /// The search has answered: both flags come down. A `stop` read in this
-    /// gap is not lost, since the reader also passes every `stop` down the
-    /// channel and the dispatch clears the flag again there.
+    /// The search has answered: both flags come down. A `stop` read after
+    /// this still reaches the dispatch, which clears the flag again, so it
+    /// does not stop the next search.
     pub(crate) fn answered(&self) {
         self.searching.store(false, Ordering::Release);
         self.stop.store(false, Ordering::Release);
     }
 
-    /// Ask the search to stop. Set whether or not one is running: a `stop`
-    /// typed the instant after a `go` may be read before the session has
-    /// begun searching, and a flag set early stops the search that follows
-    /// rather than being lost.
+    /// Set whether or not a search is running: a `stop` typed just after a
+    /// `go` may be read before the session begins searching, and must still
+    /// stop that search.
     fn ask_to_stop(&self) {
         self.stop.store(true, Ordering::Release);
         self.session.unpark();
@@ -148,9 +137,8 @@ impl SessionControl {
         Arc::clone(&self.stop)
     }
 
-    /// Sit on a finished search's answer until a `stop` arrives, which is
-    /// what `go infinite` promises. With no reader to send one the answer is
-    /// given at once.
+    /// Sit on a finished search's answer until a `stop` arrives, as `go
+    /// infinite` promises. With no reader the answer is given at once.
     pub(crate) fn wait_for_stop(&self) {
         if !self.attended {
             return;
@@ -161,17 +149,14 @@ impl SessionControl {
     }
 }
 
-/// Says on the interface's own channel why the engine died, before it does.
+/// Says on the interface's own channel why the engine died.
 ///
-/// A panic writes to stderr, which a chess GUI discards, so the process just
-/// disappears mid game. This hook writes one `info string` to the session's
-/// writer so the reason lands in the GUI's log, then hands over to the hook
-/// already installed, which keeps the backtrace on stderr.
+/// A GUI discards stderr, so this writes one `info string` for its log and
+/// then calls the previous hook, which keeps the backtrace on stderr.
 ///
-/// The lock is taken only if it is free: a panic raised by the very write the
-/// lock was taken for would find it held by this thread, and a hook that
-/// blocked there would hang the report and the backtrace both. An engine
-/// dying that way says its piece on stderr alone.
+/// The lock is only tried: a panic raised inside a write finds it held by
+/// this thread, and blocking would hang the report and the backtrace both.
+/// That panic is reported on stderr alone.
 pub(crate) fn report_panics_to<W: Write + Send + 'static>(out: SharedWriter<W>) {
     let previous = std::panic::take_hook();
     std::panic::set_hook(Box::new(move |panic| {
@@ -182,7 +167,7 @@ pub(crate) fn report_panics_to<W: Write + Send + 'static>(out: SharedWriter<W>) 
         } else {
             "no message"
         };
-        // a poisoned lock is some other thread's panic, already reported
+        // poisoned by another thread's panic, already reported
         let held = match out.0.try_lock() {
             Ok(out) => Some(out),
             Err(std::sync::TryLockError::Poisoned(poisoned)) => Some(poisoned.into_inner()),
@@ -202,12 +187,9 @@ pub(crate) fn report_panics_to<W: Write + Send + 'static>(out: SharedWriter<W>) 
     }));
 }
 
-/// The reader thread: every line the interface sends arrives here first.
-///
-/// While a search is running it answers what the protocol says must be
-/// answered at once and passes everything else on to be handled after the
-/// `bestmove`. Nothing is dropped: a `position` thrown away would leave the
-/// interface's idea of the game and the engine's silently apart.
+/// The reader thread. It answers `isready` during a search and passes every
+/// other line on in order. Nothing is dropped: a `position` thrown away would
+/// leave the interface and the engine silently on different games.
 fn read_ahead<I, W>(input: I, mut out: W, control: &SessionControl, lines: Sender<String>)
 where
     I: Iterator<Item = std::io::Result<String>>,
@@ -216,17 +198,15 @@ where
     for line in input {
         let line = match line {
             Ok(line) => line,
-            // leave the way the pipe closing does below
+            // leave as the pipe closing does
             Err(error) => {
                 let _ = writeln!(out, "info string could not read input: {}", error);
                 break;
             }
         };
         match first_word(&line) {
-            // a quit stops the search as a stop does, and is then passed on:
-            // the search still owes a bestmove
+            // passed on as well, since the search still owes a bestmove
             "stop" | "quit" => control.ask_to_stop(),
-            // the one answer the protocol requires mid-search
             "isready" if control.searching() => {
                 let _ = writeln!(out, "readyok");
                 continue;
@@ -234,21 +214,17 @@ where
             _ => {}
         }
         if lines.send(line).is_err() {
-            // the session has gone
             return;
         }
     }
-    // the pipe closing is the interface leaving, and reads as the quit it
-    // did not get to send: a search still running, or an answer held for a
-    // stop that can no longer come, would outlive the only party that
-    // wanted it
+    // the pipe closing is the interface leaving, and reads as a quit: a
+    // search or a held answer would otherwise outlive it
     control.ask_to_stop();
     let _ = lines.send("quit".to_string());
 }
 
-/// The session loop: lines the reader thread did not answer itself, handed
-/// to the handler in order until the input ends or the handler says the
-/// session is over.
+/// Hands lines to the handler in order until the input ends or the handler
+/// returns false.
 pub(crate) fn session_loop<H>(lines: Receiver<String>, control: &SessionControl, mut handle: H)
 where
     H: FnMut(&str, &SessionControl) -> bool,
@@ -260,11 +236,10 @@ where
     }
 }
 
-/// Wire a session up: the input read on a thread of its own, the session
-/// loop run on this one. The handler is called on this thread, so whatever
-/// it closes over never crosses to the reader. The input is built on the
-/// reader's thread too (stdin's lock lives its whole life there), so what
-/// crosses is the recipe for it rather than the thing.
+/// Runs the reader on a thread of its own and the session loop on this one,
+/// which is where the handler is called. The input is built on the reader's
+/// thread (stdin's lock lives there), so what crosses is the function that
+/// makes it.
 pub(crate) fn wire<W, I, F, H>(out: SharedWriter<W>, input: F, handle: H)
 where
     W: Write + Send + 'static,

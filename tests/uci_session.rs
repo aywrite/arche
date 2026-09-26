@@ -1,13 +1,11 @@
 // SPDX-License-Identifier: GPL-3.0-or-later
 // Copyright (C) 2022-2026 Andrew Wright
 
-//! Sessions against the real binary, the way an interface runs it: argument
-//! handling, the stdin loop, the reader thread and exit codes, which the in
-//! process tests cannot see.
+//! Sessions against the real binary: argument handling, the stdin loop, the
+//! reader thread and exit codes, which the in process tests cannot see.
 //!
-//! Every wait has a deadline, so a binary that stops answering fails the
-//! suite rather than hanging it, and the child is killed on drop so a failed
-//! test cannot leave an engine searching behind the runner.
+//! Every wait has a deadline and the child is killed on drop, so a binary
+//! that stops answering fails the suite rather than hanging it.
 
 use std::io::{BufRead, BufReader, Write};
 use std::process::{Child, Command, ExitStatus, Stdio};
@@ -15,8 +13,7 @@ use std::sync::mpsc::{Receiver, channel};
 use std::thread;
 use std::time::{Duration, Instant};
 
-/// Generous, because it bounds a real search on whatever machine runs the
-/// suite.
+/// Generous, because it bounds a real search on any machine.
 const DEADLINE: Duration = Duration::from_secs(30);
 
 struct Session {
@@ -55,8 +52,8 @@ impl Session {
         writeln!(stdin, "{}", line).expect("the engine is still reading");
     }
 
-    /// Reads until a line satisfies the test, and returns it. Everything read
-    /// on the way is kept in `said`.
+    /// Reads until a line satisfies the test and returns it, keeping every
+    /// line read in `said`.
     fn wait_for(&mut self, what: impl Fn(&str) -> bool) -> String {
         let deadline = Instant::now() + DEADLINE;
         loop {
@@ -88,7 +85,6 @@ impl Session {
         drop(self.child.stdin.take());
     }
 
-    /// The exit status, or a failure if the process outlives the deadline.
     fn finished(&mut self) -> ExitStatus {
         let deadline = Instant::now() + DEADLINE;
         loop {
@@ -195,7 +191,6 @@ fn a_stop_with_nothing_running_is_taken_in_silence() {
     assert!(s.finished().success());
 }
 
-/// The node count an info line reports.
 fn nodes_of(info: &str) -> u64 {
     info.split_whitespace()
         .skip_while(|word| *word != "nodes")
@@ -204,8 +199,7 @@ fn nodes_of(info: &str) -> u64 {
         .unwrap_or_else(|| panic!("no node count in {}", info))
 }
 
-/// The nodes the deepest info line of one search reports, read from the
-/// lines that search said.
+/// The nodes the last info line of one search reports.
 fn nodes_of_a_search(s: &mut Session, depth: u8) -> u64 {
     let from = s.said.len();
     s.say("position startpos");
@@ -220,8 +214,7 @@ fn nodes_of_a_search(s: &mut Session, depth: u8) -> u64 {
 
 #[test]
 fn the_clear_hash_button_empties_the_table() {
-    // the same search three times: cold, warm on what the first left
-    // behind, then after the button, which costs what the cold one did
+    // cold, warm, then after the button, which costs what the cold one did
     let mut s = Session::start(&[]);
     s.say("setoption name Hash value 1");
     let cold = nodes_of_a_search(&mut s, 6);
@@ -258,13 +251,12 @@ const KIWIPETE: &str = "r3k2r/p1ppqpb1/bn2pnp1/3PN3/1p2P3/2N2Q1p/PPPBBPPP/R3K2R 
 
 #[test]
 fn the_move_a_swap_answers_with_opens_the_last_line_said() {
-    // a node budget rather than a clock, so the iteration is cut short on
-    // the same node on every machine. The budget has to land after an
-    // iteration finds its better move and before that iteration ends:
-    // depth eleven answers d3b5 and finishes at 624,092 nodes, depth
-    // twelve reports d3b1 from 1,584,558 nodes on, then d3e2 from 1,803,089,
-    // and finishes at 1,866,231. The budget moves whenever the tree does, in the commit
-    // that moved it
+    // a node budget, so the cut falls on the same node on every machine.
+    // It has to land after an iteration finds its better move and before
+    // that iteration ends: depth eleven answers d3b5 and finishes at 624,092
+    // nodes, and depth twelve reports d3b1 from 1,584,558 nodes on, then d3e2
+    // from 1,803,089, and finishes at 1,866,231. The budget moves with the
+    // tree, in the commit that moved it
     let mut s = Session::start(&[]);
     s.say(&format!("position fen {}", SHARP_MIDDLEGAME));
     s.say("go nodes 1700000");
@@ -293,7 +285,6 @@ fn the_move_a_swap_answers_with_opens_the_last_line_said() {
     assert!(s.finished().success());
 }
 
-/// The centipawn score an info line reported.
 fn score_of(info: &str) -> i32 {
     info.split_whitespace()
         .skip_while(|word| *word != "cp")
@@ -302,7 +293,6 @@ fn score_of(info: &str) -> i32 {
         .unwrap_or_else(|| panic!("no centipawn score in {}", info))
 }
 
-/// The first move of the line an info line reported.
 fn line_opens_with(info: &str) -> &str {
     info.split(" pv ")
         .nth(1)
@@ -312,14 +302,11 @@ fn line_opens_with(info: &str) -> &str {
 
 #[test]
 fn an_iteration_no_root_move_reached_answers_with_the_depth_before_it() {
-    // the opening is worth 54 to white at depth five and 0 at depth six, so
-    // depth six opens above what the position turns out to be and nothing
-    // inside the window answers it: the depth is reported as the ceiling it
-    // is and searched again wider. The budget lands inside that second
-    // search, which reaches nothing above its own alpha either, so what
-    // answers is still depth five's and not the ceiling just reported. The
-    // first search reports at 5,769 nodes and the second finishes at
-    // 11,258
+    // the opening is worth 54 at depth five and 0 at depth six, so depth six
+    // fails low, is reported as a ceiling at 5,769 nodes and is searched
+    // again wider, finishing at 11,258. The budget lands inside that second
+    // search, which also reaches nothing above alpha, so depth five's move
+    // still answers
     let mut s = Session::start(&[]);
     s.say("position startpos");
     s.say("go nodes 8000");
@@ -344,9 +331,7 @@ fn an_iteration_no_root_move_reached_answers_with_the_depth_before_it() {
         "the ceiling was not reported as one: {}",
         ceiling
     );
-    // the ceiling's line opens with the move that came closest, which is
-    // not the move answered with: a move nothing was shown to beat is not
-    // an answer
+    // the ceiling names the move that came closest, which is not an answer
     assert_ne!(line_opens_with(ceiling), best, "the closest move answered");
     let completed = iterations
         .iter()
@@ -358,19 +343,16 @@ fn an_iteration_no_root_move_reached_answers_with_the_depth_before_it() {
         "the answer is not the last completed depth's: {}",
         completed
     );
-    // and the ceiling really was one: the position is worth less than the
-    // depth answering said, which is what a search finds when it fails low
+    // and it really was a fail low
     assert!(
         score_of(ceiling) < score_of(completed),
         "the ceiling did not fall short of the answer: {} against {}",
         ceiling,
         completed
     );
-    // the search then says the answering depth again with every node it
-    // spent on it. That line is the one a match harness copies into the
-    // game record, and the line it used to copy is the ceiling above.
-    // Neither the completed depth's count nor the ceiling's covers the
-    // iteration the budget stopped
+    // the last line says the answering depth again with every node spent,
+    // which is what a match harness copies into the game record. It used to
+    // copy the ceiling, whose count leaves out the stopped iteration
     assert_eq!(
         line_opens_with(total),
         best,
@@ -393,13 +375,11 @@ fn an_iteration_no_root_move_reached_answers_with_the_depth_before_it() {
 
 #[test]
 fn a_root_move_that_reaches_beta_is_reported_as_a_floor_and_then_answered_with() {
-    // the opening is worth 0 to white at depth six and 49 at depth seven, so
-    // depth seven's window is left behind on the other side: a move reaches
-    // beta, the depth reports the floor that move is, and the search runs
-    // again with beta raised. Both of depth seven's lines name the same
-    // move, which is the point of storing it: the wider search tries it
-    // first. A fixed depth rather than a budget, so nothing here is aborted
-    // and the only bound a line can carry is the root's own
+    // the opening is worth 0 at depth six and 37 at depth seven, so a move
+    // reaches beta at depth seven, is reported as a floor and is searched
+    // again with beta raised. Both lines name the same move, because the
+    // wider search tries it first. A fixed depth, so nothing is aborted and
+    // the only bound a line can carry is the root's own
     let mut s = Session::start(&[]);
     s.say("position startpos");
     s.say("go depth 7");
@@ -434,21 +414,17 @@ fn a_root_move_that_reaches_beta_is_reported_as_a_floor_and_then_answered_with()
 
 #[test]
 fn a_floor_answers_until_the_wider_search_replaces_it() {
-    // the other half of the floor: what the engine plays when the wider
-    // search never finishes. Kiwipete is worth -50 to white at depth
-    // seven, answered with e2a6; depth eight opens below that, d5e6
-    // reaches beta and the floor is reported at 138,001 nodes and again at
-    // 153,663 once the window has been widened, and the search finishes at
-    // 237,702. A budget inside it is interrupted before anything beats its
-    // alpha, so the root hands back no move at all and the floor is what is
-    // left to answer with. Any budget from 138,002 to 237,701 does it; with
-    // the floor not held the same budget answers e2a6, which is the move
-    // the search has just shown worse.
+    // what the engine plays when the wider search never finishes. Kiwipete
+    // is worth -50 at depth seven, answered with e2a6. At depth eight d5e6
+    // reaches beta and is reported as a floor at 137,999 nodes and again at
+    // 153,661 once the window is widened, and the search finishes at
+    // 237,700. A budget inside that is interrupted before anything beats
+    // alpha, so the floor is what is left to answer with. Any budget from
+    // 138,000 to 237,699 does it; with the floor not held it answers e2a6,
+    // the move the search has just shown worse.
     //
-    // The endgame 8/k1b5/P4p2/1Pp2p1p/K1P2P1P/8/3B4/8 was this fixture
-    // until the late move count landed. It still reports a floor, at depth
-    // fifteen, but the floor now names the move depth fourteen answered
-    // with, so the position can no longer say which of the two was held
+    // The endgame 8/k1b5/P4p2/1Pp2p1p/K1P2P1P/8/3B4/8 was this fixture until
+    // the late move count made its floor name depth fourteen's move
     let mut s = Session::start(&[]);
     s.say(&format!("position fen {}", KIWIPETE));
     s.say("go nodes 180000");
@@ -517,9 +493,8 @@ fn the_bench_argument_prints_the_line_the_match_tools_read() {
     assert!(s.finished().success());
 }
 
-/// Runs the binary with the arguments given and waits for it, keeping stdout
-/// and stderr apart. No deadline: stdin is closed, so a binary that fell
-/// through to the uci loop reads nothing and exits.
+/// Runs the binary to the end, keeping stdout and stderr apart. No deadline:
+/// stdin is closed, so a binary that fell through to the uci loop exits.
 fn run_to_end(args: &[&str]) -> std::process::Output {
     Command::new(env!("CARGO_BIN_EXE_arche"))
         .args(args)
@@ -530,8 +505,8 @@ fn run_to_end(args: &[&str]) -> std::process::Output {
 
 #[test]
 fn a_setting_that_cannot_be_read_is_refused_on_stderr() {
-    // the reason goes to stderr with exit code 2 and stdout stays empty, so
-    // no measuring tool mistakes the refusal for a report
+    // stdout stays empty, so no measuring tool mistakes a refusal for a
+    // report
     for (arguments, reason) in [
         (["bench", "abc"].as_slice(), "unrecognised bench depth: abc"),
         (
