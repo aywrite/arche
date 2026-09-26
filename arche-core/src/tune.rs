@@ -35,6 +35,11 @@
 //! term in `eval/`; a second count here would be a second chance to be wrong
 //! about a term read at every leaf rather than a check on the first.
 //!
+//! The pair term is walked here by pairs where the engine squares a sum, and
+//! divides here without the engine's code, so the identity checks both. It
+//! reads the engine's table and feature index, and a hand worked test beside
+//! `eval::factors::feature` is what pins the index.
+//!
 //! Where a term stands in the vector, its weights and its width all come off
 //! `eval::TERMS`, so a term added there is laid out, priced and walked here
 //! without an edit, and the layout line states the result for
@@ -52,7 +57,7 @@
 use crate::bench::Position;
 use crate::board::Board;
 use crate::engine::{AlphaBeta, SearchConfig};
-use crate::eval::{self, TOTAL_PHASE};
+use crate::eval::{self, TOTAL_PHASE, factors};
 use crate::misc::{Color, Piece, Score};
 use crate::psqt::{PieceSquareTables, eg_value, mg_value};
 use std::fmt;
@@ -154,6 +159,10 @@ pub struct Terms {
     pub phase: i32,
     /// Slot and coefficient, ascending by slot, zeroes left out.
     pub coefficients: Vec<(u16, i32)>,
+    /// The pair term, from the side to move. It is not linear in anything a
+    /// slot holds, so a fit reads it as a constant a row; 0 while the term is
+    /// off.
+    pub machine: i32,
 }
 
 impl Terms {
@@ -210,6 +219,7 @@ impl Terms {
         }
         Self {
             phase,
+            machine: mover * machine_of(board),
             coefficients: coefficients
                 .into_iter()
                 .enumerate()
@@ -218,6 +228,55 @@ impl Terms {
                 .collect(),
         }
     }
+}
+
+/// The pair term, white relative, as a sum over the pairs themselves.
+///
+/// A third statement of the term beside `factors::Machine`'s incremental
+/// sums and its recompute, and a different one: those square a sum, this
+/// walks every pair, so a fault in the collapse or the divide shows here as a
+/// row that does not reconstruct. It shares the table and the feature index
+/// with them; the index is pinned by hand beside it.
+fn machine_of(board: &Board) -> i32 {
+    if factors::RANK == 0 {
+        return 0;
+    }
+    let mut pieces = Vec::new();
+    let mut occupied = board.occupied();
+    while occupied != 0 {
+        let index = occupied.trailing_zeros() as u8;
+        occupied &= occupied - 1;
+        if let Some((piece, color)) = board.get_piece_and_color_index(index) {
+            pieces.push((index, piece, color));
+        }
+    }
+    let doubled = |perspective: Color| {
+        let mut total = 0_i64;
+        for (at, &(index, piece, color)) in pieces.iter().enumerate() {
+            let own = factors::row(factors::feature(perspective, index, piece, color));
+            for &(other_index, other_piece, other_color) in &pieces[at + 1..] {
+                let other = factors::row(factors::feature(
+                    perspective,
+                    other_index,
+                    other_piece,
+                    other_color,
+                ));
+                let product: i64 = own
+                    .iter()
+                    .zip(other)
+                    .map(|(&a, &b)| i64::from(a) * i64::from(b))
+                    .sum();
+                total += 2 * product;
+            }
+        }
+        total
+    };
+    let difference = doubled(Color::White) - doubled(Color::Black);
+    let scale = 2 * factors::Q * factors::Q;
+    // toward zero, the way rust's `/` rounds, written out so this does not
+    // lean on the engine's divide
+    let quotient = difference.abs() / scale;
+    (if difference < 0 { -quotient } else { quotient }) as i32
 }
 
 /// What is left on the board, on the scale the taper is read at.
@@ -261,7 +320,7 @@ pub fn reconstruct(terms: &Terms) -> Score {
             numerator += product;
         }
     }
-    (material + numerator / TOTAL_PHASE) as Score
+    (material + numerator / TOTAL_PHASE + terms.machine) as Score
 }
 
 /// The table the quiet test searches with: small, and cleared before every
@@ -409,6 +468,9 @@ pub fn run(positions: &[Position], suite: Option<&str>) -> Report {
 /// psqt.rs: a table copied out and left behind fits weights against a
 /// position it scores differently from the engine, and nothing says so.
 ///
+/// While the pair term is on, a `factors` line after the weights gives its
+/// rank and scale, and each row carries its score as a fourth number after `n`.
+///
 /// A row is `id eval phase n slot:coefficient... fen`, whitespace separated,
 /// and both ends of it can hold spaces: a fen is six fields, and an id is
 /// whatever the epd put in the quotes ("ruy lopez", "7th Rank.001", or the
@@ -449,6 +511,10 @@ impl fmt::Display for Report {
             write!(f, " {}", weight(slot))?;
         }
         writeln!(f)?;
+        let machine = factors::RANK != 0;
+        if machine {
+            writeln!(f, "factors {} {}", factors::RANK, factors::Q)?;
+        }
         for row in &self.rows {
             write!(
                 f,
@@ -458,6 +524,9 @@ impl fmt::Display for Report {
                 row.terms.phase,
                 row.terms.coefficients.len()
             )?;
+            if machine {
+                write!(f, " {}", row.terms.machine)?;
+            }
             for (slot, coefficient) in &row.terms.coefficients {
                 write!(f, " {}:{}", slot, coefficient)?;
             }
