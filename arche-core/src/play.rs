@@ -5,10 +5,10 @@ use crate::misc::index_to_coordinate;
 use crate::misc::{Piece, PromotePiece};
 use std::fmt;
 
-/// A move. Six bytes, which is what the fields come to and what the search is
-/// tuned around: a move is copied several times per node, into and out of a
-/// move list, the history and the transposition table. Widening it has been
-/// measured twice and was slower both times.
+/// A move. Six bytes, which the search is tuned around: a move is copied
+/// several times per node, into and out of a move list and the
+/// transposition table. Widening it has been measured twice and was slower
+/// both times. The table's entry size assertion fails if it grows.
 ///
 /// The fields stay in the crate so that a move handed to the board is one
 /// this crate generated.

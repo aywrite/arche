@@ -4,13 +4,12 @@
 //! The reduction ledger: what each sampled reduced scout decided, and
 //! whether a fail low it was trusted on threw a move away.
 //!
-//! The late move reduction trusts a scout: a quiet move searched late is
-//! asked a zero width question a ply shallower, and a scout that fails
-//! low answers for the move at the node's full depth. This ledger records
-//! what trusting the scout decided, one event per sampled reduced scout,
-//! taken in `windowed` where the scout's answer comes back. The features
-//! on a row are the ones the decision could have read cheaply, which is
-//! what a reduction policy would be fit on.
+//! The late move reduction asks a late quiet a zero width question some
+//! plies shallower, and a scout that fails low answers for the move at the
+//! node's full depth. One event is taken per sampled reduced scout, in
+//! `windowed` where its answer comes back. The features on a row are the
+//! ones the decision could read cheaply, which is what a reduction policy
+//! would be fit on.
 //!
 //! The label comes from a replay of the counterfactual the trust skipped:
 //! the reference search on the position the move left, to the full depth
@@ -47,9 +46,8 @@ pub fn sample_key(position_key: u64, depth: u8) -> u64 {
 }
 
 /// About one record in every this many events, unless the command says
-/// otherwise. Every fail low kept is a reference search in the replay;
-/// this rate keeps a run at the bench's depth to minutes, and a run that
-/// wants a stratum whole lowers it.
+/// otherwise. Every fail low kept is a reference search in the replay, and
+/// this rate keeps a run at the bench's depth to minutes.
 pub const DEFAULT_EVERY: u32 = 1_000;
 
 /// Under this many replayed rows a cell prints its counts and no rate: a
@@ -82,18 +80,14 @@ impl Scout {
     }
 }
 
-/// The move loop's half of an event: the reduced move and what the node
-/// knew about it when it decided to scout it. Built while the ledger is
-/// armed and handed to `windowed`, which finishes the event when the scout
-/// answers. The features are `late_move::features`'s, the derivation the
-/// gate scored, so a row cannot say something the score did not.
+/// The move loop's half of an event, handed to `windowed`, which finishes
+/// it when the scout answers. The features are the ones the gate scored,
+/// so a row cannot say something the score did not.
 #[derive(Clone, Copy, Debug)]
 pub(crate) struct Staged {
-    /// The move, kept so the recorder can step it back for the node's own
-    /// evaluation and replay it.
+    /// Kept so the recorder can step it back for the node's own evaluation
+    /// and replay it.
     pub(crate) play: Play,
-    /// What the node knew about the move, in the units the columns below
-    /// are printed in.
     pub(crate) features: late_move::Features,
 }
 
@@ -133,9 +127,8 @@ pub struct Event {
     /// What the node's table probe had given it.
     pub tt: census::Table,
     /// The reducing node's static evaluation less its beta, taken at
-    /// record time for kept events alone by stepping the move back;
-    /// computing it for every scout to fill a column is what the census's
-    /// precedent refuses.
+    /// record time for kept events alone by stepping the move back, rather
+    /// than for every scout.
     pub eval_beta: i32,
     /// The node's alpha less the same evaluation: how far the eval stood
     /// from the bound the scout was asked about.
@@ -1051,18 +1044,12 @@ mod tests {
     /// outcomes a run of this size holds appear.
     #[test]
     fn a_run_records_rows_that_hold_together() {
-        // depth six rather than five, because a fail high is the rare
-        // outcome and depth five leaves none at any rate. Since the
-        // aspiration window it is rarer than this run can hold. Measured
-        // with the window on: 0 of the 2,049 rows one event in five gives
-        // at depth six, and 0 to 3 of the 10,000 a reservoir takes when
-        // every event is offered, over depths six to ten. That is about
-        // one gate event in ten thousand, and a sample large enough to
-        // hold one costs more than this test is worth. So the outcome is
-        // not asserted here. What pins it is
-        // `a_scout_that_fails_high_is_recorded_as_high` in `engine.rs`,
-        // which builds the scout by hand, and the shape assertion in the
-        // loop below, which holds wherever one does turn up
+        // a fail high is not asserted: with the aspiration window on it is
+        // about one gate event in ten thousand (0 of the 2,049 rows one in
+        // five gives at depth six, 0 to 3 of 10,000 over depths six to ten
+        // with every event offered). `a_scout_that_fails_high_is_recorded_as_high`
+        // in `engine.rs` builds one by hand, and the shape assertions below
+        // hold wherever one turns up
         let report = run(&suite(), None, 6, 5, DEFAULT_CAP);
         assert_eq!(report.positions, 2);
         assert!(!report.rows.is_empty(), "nothing was recorded");
@@ -1078,12 +1065,9 @@ mod tests {
             assert!(e.history <= e.history_max, "{:?}", row);
             assert!(e.depth >= 1, "{:?}", row);
             if e.scout == Scout::Skipped {
-                // no scout ran and the move is not among the searched.
-                // Three rules skip, and the model's never meets the other
-                // two at a depth: it stands on the reduction's floors,
-                // while quiet futility and the late move count take a move
-                // after the node's first at a depth under the model's. The
-                // row does not say which of those two took it
+                // three rules skip, and the model's never shares a depth
+                // with the two shallow ones. The row does not say which
+                // shallow rule took it
                 assert_eq!(e.cost, 0, "{:?}", row);
                 assert_eq!(e.reduction, 0, "{:?}", row);
                 if e.depth >= DEEP_REDUCTION_MIN_DEPTH {

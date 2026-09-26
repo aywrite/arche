@@ -11,19 +11,19 @@
 //! the score, through every negation, from the node that found it to the
 //! node that stores it.
 //!
-//! Mate scores live here too. A mate is scored a fixed distance from
-//! `CHECKMATE_SCORE`, further for a longer line, so a faster mate wins the
-//! comparison. Everything within a thousand of it is a mate and nothing else
-//! can be. The search asks `is_mate` before it prunes against a bound,
-//! because a cutoff there would leave a faster mate unsearched, and caps what
-//! a pass proved with `below_the_mate_window`, because a pass is not a move
-//! and cannot force anything.
+//! Mate scores live here too. A mate is scored its line's length in plies
+//! away from `CHECKMATE_SCORE`, so a faster mate wins the comparison.
+//! Everything within a thousand of it is a mate and nothing else can be.
+//! The search asks `is_mate` before it prunes against a bound, because a
+//! cutoff there would leave a faster mate unsearched, and caps what a pass
+//! proved with `below_the_mate_window`, because a pass is not a move and
+//! cannot force anything.
 
 use crate::misc::Score;
 
 const CHECKMATE_SCORE: Score = 30_000;
-// Any score this close to CHECKMATE_SCORE is a forced mate. Regular evals are
-// bounded by the material on the board, which cannot come near it.
+// Any score beyond this is a forced mate. Evaluations are bounded by the
+// material on the board, which cannot come near it.
 pub(crate) const CHECKMATE_THRESHOLD: Score = CHECKMATE_SCORE - 1000;
 
 /// Whether a score is a forced mate, for either side.
@@ -77,17 +77,14 @@ impl Value {
         }
     }
 
-    /// The same score with the taint given rather than the one it carries,
-    /// for a score whose taint was established elsewhere: a stored entry
-    /// read back, or a pass's answer clamped under the mate window.
+    /// A score whose taint was established elsewhere: a stored entry read
+    /// back, or a pass's answer clamped under the mate window.
     pub fn with_taint(score: Score, tainted: bool) -> Self {
         Self { score, tainted }
     }
 
     /// The side to move is mated, this many plies into the line. Clean, since
-    /// a mate is a property of the position. The shorter the line the further
-    /// the score sits below zero, so once a parent negates it the faster mate
-    /// is the better one.
+    /// a mate is a property of the position.
     pub(crate) fn mated(line_ply: usize) -> Self {
         Self::clean(-CHECKMATE_SCORE + line_ply as Score)
     }
@@ -106,24 +103,16 @@ pub(crate) enum MateDistanceWindow {
 /// stands at, and cannot mate sooner than the ply after it, so the window is
 /// bounded by those two whatever the caller asked for. Where the bounds
 /// cross, the caller already holds a line at least as good as the fastest
-/// mate available here, and nothing below can improve on it, so the node
-/// answers the narrowed alpha. The window handed in is never empty: alpha
-/// is below beta, as it is at every node the search makes, and a debug
-/// build asserts it in `can_narrow`.
+/// mate available here, so the node answers the narrowed alpha. This is
+/// what stops a proven mate being proved again a ply deeper on each
+/// iteration. The window handed in must not be empty, which `can_narrow`
+/// asserts in a debug build.
 ///
-/// Both bounds are mate scores themselves, so a window with no mate at
-/// either end is left exactly as it arrived and cannot cross. That is
-/// asked first, one bound a side (`can_narrow`), and it is what every other
-/// node pays. Measured under callgrind at bench depth five when the guard
-/// changed to the one-sided question: the question takes 8 instructions a
-/// node, 0.257% of the total, where asking `is_mate` of both bounds took 12
-/// and 0.380%. The two clamps and the cross test after it take 11, on the
-/// nodes that pass it, about one in twenty there. The tree is the same
-/// either way.
-///
-/// Where a mate is in the window, this ends every line longer than the mate
-/// already found, which is what stops a proven mate being proved again a
-/// ply deeper on each iteration.
+/// The two clamps are themselves mate scores, so a window with no mate at
+/// either end is left as it arrived. That is asked first, one bound a side,
+/// and it is all most nodes pay: under callgrind at bench depth five it
+/// took 8 instructions a node (0.257% of the total) where asking `is_mate`
+/// of both bounds took 12 (0.380%), with the same tree.
 pub(crate) fn mate_distance_window(
     mut alpha: Score,
     mut beta: Score,
@@ -141,17 +130,16 @@ pub(crate) fn mate_distance_window(
 
 /// Whether mate distance pruning can move either bound: only a score of
 /// being mated at alpha, or of mating at beta, can be narrowed. With alpha
-/// below beta this answers as `is_mate(alpha) || is_mate(beta)` does. A
-/// mate at alpha's top end puts one at beta's too, and one at beta's bottom
-/// end puts one at alpha's, so the two one-sided tests are the only ones
-/// that can decide.
+/// below beta this answers as `is_mate(alpha) || is_mate(beta)` does,
+/// since a mating alpha makes beta a mating score too, and a mated beta
+/// makes alpha mated.
 fn can_narrow(alpha: Score, beta: Score) -> bool {
     debug_assert!(alpha < beta, "an empty window ({alpha}, {beta})");
     alpha < -CHECKMATE_THRESHOLD || beta > CHECKMATE_THRESHOLD
 }
 
-/// From the other side of the board. The score changes sign; where it came
-/// from does not.
+/// From the other side of the board: the score changes sign and the taint
+/// does not.
 impl std::ops::Neg for Value {
     type Output = Self;
 

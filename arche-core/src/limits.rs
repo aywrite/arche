@@ -7,8 +7,8 @@
 //! One value answers every question the search asks about stopping, so
 //! that the node count and the time a search reports are read from the
 //! same place. A limit reached is what `SearchOutcome::Aborted` means; the
-//! depth asked for is not one, since reaching it is how a search finishes
-//! rather than how it is cut short.
+//! depth asked for is not a limit, since reaching it is how a search
+//! finishes.
 
 use std::time::{Duration, Instant};
 
@@ -19,16 +19,15 @@ const POLL_INTERVAL: u64 = 3000;
 /// The share of a budget past which another iteration is not begun, as a
 /// percentage.
 ///
-/// An iteration costs three or four times the whole deepening before it:
-/// over nine positions searched from cold, the elapsed time through depth
-/// d divided by the time through d+1 had a median of 0.29 and quartiles of
-/// 0.21 and 0.33 (measured before any pruning beyond the transposition
-/// table; a modern engine manages about a half). An iteration cut short
-/// still answers with the root moves it got through, and at the median
-/// ratio an iteration begun at share f gets (1-f)·0.29 / (f·0.71) of
-/// itself done: three quarters at 0.35, half at 0.45, two fifths at 0.5.
-/// The line goes where the iteration given up would have searched less
-/// than half of itself.
+/// Over nine positions searched from cold, the time through depth d over
+/// the time through d+1 had a median of 0.29 and quartiles of 0.21 and
+/// 0.33, measured before any pruning beyond the transposition table. So an
+/// iteration cost about two and a half times the deepening before it. An
+/// iteration cut short still answers with the root moves it got through,
+/// and at the median an iteration begun at share f gets (1-f)·0.29 /
+/// (f·0.71) of itself done: three quarters at 0.35, half at 0.45, two
+/// fifths at 0.5. The line goes where the iteration given up would have
+/// searched less than half of itself.
 const SOFT_LIMIT_PERCENT: u128 = 45;
 
 /// The clock a search runs under, and what the caller meant by it. A share
@@ -82,9 +81,8 @@ impl Limits {
     }
 
     /// No clock and no node budget: the search runs to the depth asked of
-    /// it. Not the protocol's `go infinite`, which means search until
-    /// `stop`: a stop comes from another thread rather than a number, so it
-    /// rides on `SearchParameters` beside these and is read at the same
+    /// it. Not the protocol's `go infinite`, whose `stop` comes from
+    /// another thread and rides on `SearchParameters`, read at the same
     /// poll.
     pub fn unlimited() -> Self {
         Self::starting_at(Instant::now(), None, u64::MAX)
@@ -98,16 +96,11 @@ impl Limits {
                 .is_some_and(|clock| self.started.elapsed() >= clock.deadline())
     }
 
-    /// Whether another iteration of a deepening search is worth beginning:
-    /// the deepening loop asking beforehand, where `expired` is the
-    /// backstop. What "enough" is, and the measurement behind it, is
-    /// `SOFT_LIMIT_PERCENT`.
-    ///
-    /// Only a share of a game clock is given up early, since only that
-    /// leaves the rest for the moves after this one; a named move time
-    /// asked for that much thinking, and a node budget, a depth and an
-    /// unlimited search are not clocks. Nothing is given up before a depth
-    /// has been answered, since until then there is nothing to answer with.
+    /// Whether another iteration of a deepening search is worth beginning,
+    /// with `expired` as the backstop. Only a share of a game clock is
+    /// given up early (at `SOFT_LIMIT_PERCENT`), since only that leaves the
+    /// rest for the moves after this one. Nothing is given up before a
+    /// depth has been answered.
     pub fn worth_another_iteration(&self, answered: bool) -> bool {
         if !answered {
             return true;
@@ -123,9 +116,8 @@ impl Limits {
     }
 
     /// The node count at which to look at the limits again: every
-    /// POLL_INTERVAL nodes for the clock, and the node budget itself
-    /// exactly, so a fixed node search stops on the node it names rather
-    /// than at the next poll after it.
+    /// `POLL_INTERVAL` nodes, or the node budget itself if that comes
+    /// first, so a fixed node search stops on the node it names.
     pub fn next_check_after(&self, nodes: u64) -> u64 {
         nodes.saturating_add(POLL_INTERVAL).min(self.nodes)
     }
@@ -146,10 +138,9 @@ impl Limits {
     }
 
     /// The limits one iteration of a deepening search runs under. Until a
-    /// depth has completed there is no move to answer with, so neither the
-    /// clock nor the budget is armed and depth one runs to its end. After
-    /// that the clock applies as it stands, and the budget is what the
-    /// iterations before this one left.
+    /// depth has completed there is no move to answer with, so nothing is
+    /// armed. After that the clock applies as it stands, and the budget is
+    /// what the iterations before this one left.
     pub fn for_iteration(&self, answered: bool, spent: u64) -> Self {
         if !answered {
             return Self::starting_at(self.started, None, u64::MAX);
