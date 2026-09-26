@@ -4,33 +4,22 @@
 //! The effort instrument: what a rule frees, and where the freed effort
 //! goes.
 //!
-//! The other four instruments each describe one tree. A saving is a
-//! difference between two, so no row any of them writes can carry one.
-//! Here one command searches the suite twice, once under the default and
-//! once under the default with a named switch off, and joins the two runs
-//! by the node.
+//! A saving is a difference between two trees, so no row of an instrument
+//! that describes one tree can carry it. This one searches the suite twice,
+//! under the default and under the default with one switch or two off, and
+//! joins the two runs by the node.
 //!
-//! The join is possible because the sampling key is a function of the node
-//! and nothing about the run. Both sides record under one lane, so wherever
+//! The join works because the sampling key is a function of the node and
+//! nothing about the run. Both sides record under one lane, so wherever
 //! both reached a position at a depth they kept it or dropped it alike, and
 //! a key one side holds and the other does not is a fact about the trees.
-//! A counter over the stream would take two unrelated sets and the join
-//! would be empty.
 //!
-//! A joined key reads one of three ways. `both` is a node in both trees,
-//! so the difference in what sat under it is effort the rule moved.
-//! `only_off` is a node the baseline reached and the candidate never did,
-//! so what sat under it is effort the rule removed. `only_on` is that the
-//! other way round, and what sits under it is effort the rule created.
-//! Nothing else in the engine reads that last population.
+//! A joined key reads one of three ways (see `Outcome`). `only_on`, effort
+//! the rule created, is a population nothing else in the engine reads.
 //!
-//! The rows are sampled. The per depth node counts beside them are not:
-//! every offered event is tallied by depth on each side, so those counts do
-//! not move with `every`. The rows attribute and the counts measure.
-//!
-//! Recording changes nothing, on the reservoir's terms, and here under
-//! either of the two configurations, since this is the only instrument that
-//! searches under a configuration its caller chose.
+//! The rows are sampled. The per depth node counts beside them are exact,
+//! so they do not move with `every`: the rows attribute and the counts
+//! measure.
 
 use crate::bench::{self, Position};
 use crate::board::Board;
@@ -44,28 +33,22 @@ use crate::recorder::{self, Sampled, Sampler};
 use std::fmt;
 
 /// About one record in every this many events, unless the command says
-/// otherwise. The census's figure for the census's reason: this instrument
-/// offers an event where the census does, so the stream has the same
-/// density and the same rate fills a good share of the default cap at the
-/// bench's depth. Declared here rather than shared, since a rate is a fact
-/// about what an instrument is asking.
+/// otherwise. The census's figure, since this instrument offers an event
+/// where the census does. Declared here rather than shared, since a rate is
+/// a fact about what an instrument is asking.
 pub const DEFAULT_EVERY: u32 = 1_000;
 
-/// The key a node's answer is sampled by, on either side. One lane, used by
-/// both: a lane a side would be one instrument sampling two unrelated sets,
-/// and the invariant the lanes exist for is about recorders armed at once,
-/// which the two sides never are.
+/// The key a node's answer is sampled by, on either side. One lane for
+/// both, since lanes keep apart recorders armed at once and the two sides
+/// never are.
 pub fn sample_key(position_key: u64, depth: u8) -> u64 {
     recorder::sample_key(position_key, recorder::EFFORT_LANE, depth)
 }
 
 /// Every event offered, by depth, on one side.
 ///
-/// Exact rather than estimated. Counting a node costs an array bump inside
-/// a body that is already cold, where dividing the records by the rate
-/// would carry sampling error into the headline and make it depend on
-/// `every`. A slot for every `u8` so no bound has to be argued: two
-/// kilobytes an engine, against a table of sixteen megabytes.
+/// Exact, where dividing the records by the rate would carry sampling error
+/// into the headline. A slot for every `u8` so no bound has to be argued.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct Depths([u64; 256]);
 
@@ -76,53 +59,42 @@ impl Default for Depths {
 }
 
 impl Depths {
-    /// One more event at this depth.
     pub(crate) fn count(&mut self, depth: u8) {
         self.0[usize::from(depth)] += 1;
     }
 
-    /// What stands at one depth.
     pub fn at(&self, depth: u8) -> u64 {
         self.0[usize::from(depth)]
     }
 
-    /// Add one engine's tally in, which is how a run totals its positions.
     fn absorb(&mut self, other: &Depths) {
         for (total, one) in self.0.iter_mut().zip(other.0) {
             *total += one;
         }
     }
 
-    /// Every depth anything stands at, shallowest first.
+    /// Shallowest first.
     fn reached(&self) -> Vec<u8> {
         (0..=u8::MAX).filter(|depth| self.at(*depth) > 0).collect()
     }
 }
 
-/// One node's move loop answering, on one side of the run. Everything is
-/// owned: an event outlives the search that took it.
+/// One node's move loop answering, on one side of the run.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct Event {
-    /// The key it was drawn by, kept because the join is by the key and the
-    /// reservoir hands its records back without them.
+    /// Kept because the join is by the key and the reservoir hands its
+    /// records back without them.
     pub key: u64,
-    /// The position, as the board prints one.
     pub fen: String,
-    /// The node's depth with its check extension, the other half of the
-    /// key.
+    /// The check extension included.
     pub depth: u8,
-    /// Whether the node cut, rather than its move loop running out.
     pub cut: bool,
-    /// Nodes spent under this node: the counter at its answer less the
-    /// counter at its entry. Quiescence is in it, because the node counter
-    /// counts quiescence.
+    /// Nodes spent under this node, quiescence included.
     pub cost: u64,
 }
 
-/// The part of a fen the sampling key covers: the placement, the side to
-/// move, the castling rights and the en passant file. The fifty move
-/// counter and the move number are the two fields after, and the key covers
-/// neither, so two visits at one key may differ there without being two
+/// The first four fields of a fen, which the sampling key covers. Two
+/// visits at one key may differ in the counters without being two
 /// positions.
 fn signature(fen: &str) -> &str {
     match fen.match_indices(' ').nth(3) {
@@ -131,13 +103,10 @@ fn signature(fen: &str) -> &str {
     }
 }
 
-/// One side's visits to one node at one depth, folded.
-///
-/// A deepening search revisits a position at a depth, so a run keys many
-/// events alike. They are folded rather than printed one a visit: a row a
-/// visit would need the iteration in the key, which would stop a node
-/// joining at all wherever the rule changed how many iterations reached it,
-/// and that is one of the things being measured.
+/// One side's visits to one node at one depth, folded. A row a visit would
+/// need the iteration in the key, which would stop a node joining wherever
+/// the rule changed how many iterations reached it, and that is one of the
+/// things being measured.
 #[derive(Clone, Debug, PartialEq, Eq)]
 struct Folded {
     key: u64,
@@ -146,13 +115,12 @@ struct Folded {
     visits: usize,
     cuts: usize,
     cost: u64,
-    /// Whether the visits folded here disagreed about the node, which means
-    /// two positions took one key.
+    /// Whether the visits disagreed about the node: two positions on one
+    /// key.
     collided: bool,
 }
 
-/// One side's records folded by key. They arrive in key order, so the
-/// visits of one node stand together.
+/// One side's records folded by key. They arrive in key order.
 fn fold(taken: Vec<Event>) -> Vec<Folded> {
     let mut folded: Vec<Folded> = Vec::new();
     for event in taken {
@@ -181,8 +149,7 @@ fn fold(taken: Vec<Event>) -> Vec<Folded> {
 /// Which of the two sides reached a joined node.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum Outcome {
-    /// Both sides reached it. The difference in what sat under it is effort
-    /// the rule moved inside a node both trees hold.
+    /// The difference in what sat under it is effort the rule moved.
     Both,
     /// The candidate reached it and the baseline never did: effort the rule
     /// created.
@@ -193,7 +160,6 @@ pub enum Outcome {
 }
 
 impl Outcome {
-    /// The word a row prints.
     pub fn word(self) -> &'static str {
         match self {
             Outcome::Both => "both",
@@ -208,58 +174,41 @@ impl Outcome {
 pub struct Row {
     pub depth: u8,
     pub outcome: Outcome,
-    /// How many times that side's move loop answered this position at this
-    /// depth over the whole deepening. A rule that changes how often a node
-    /// is re-reached changes these, and that change is itself reallocation.
+    /// How many times that side's move loop answered this node at this depth
+    /// over the whole deepening.
     pub visits_on: usize,
     pub visits_off: usize,
-    /// How many of those visits ended in a cutoff rather than in the loop
-    /// running out, so a rule that turns held nodes into cut ones is
-    /// readable without a second run of the census.
     pub cuts_on: usize,
     pub cuts_off: usize,
-    /// Nodes spent under the node, summed over that side's visits. The
-    /// absent side of an `only_` row is 0 rather than the `-` the census
-    /// prints for a column with no value: that side really spent nothing
-    /// there, and 0 is what lets the column be summed.
+    /// Summed over that side's visits. The absent side of an `only_` row is
+    /// 0, not `-`: it spent nothing there, and 0 lets the column be summed.
     pub cost_on: u64,
     pub cost_off: u64,
-    /// The candidate side's where the row has one and the baseline's
-    /// otherwise. The key covers neither the fifty move counter nor the
-    /// move number, so two sides at one key can carry different ones and
-    /// the row's is one side's.
+    /// The candidate side's where the row has one; its counters may differ
+    /// from the other side's.
     pub fen: String,
 }
 
 impl Row {
-    /// `cost_on - cost_off`, signed. Derivable and printed anyway, for the
-    /// reason `census.rs` prints `index`: a row is read without re-deriving
-    /// it.
+    /// Derivable, and printed so a row is read without re-deriving it.
     pub fn delta(&self) -> i64 {
         self.cost_on as i64 - self.cost_off as i64
     }
 }
 
-/// One position of the suite, read exactly on both sides. Not sampled: the
-/// two node counts are each side's whole search, so at the same depth and
-/// configuration the candidate's is the bench's, position by position.
+/// One position of the suite, exact on both sides. The node counts are each
+/// side's whole search, so the candidate's is the bench's at the same depth.
 #[derive(Clone, Debug)]
 pub struct Reached {
     pub id: String,
-    /// The deepest iteration that landed inside its window. Under a budget
-    /// the two sides can differ, which is the whole of that mode's reading.
+    /// The deepest iteration that landed inside its window.
     pub depth_on: u8,
     pub depth_off: u8,
-    /// The move the search would play and what it made of it.
-    ///
-    /// Under a budget these can come from an iteration deeper than
-    /// `depth`: an iteration cut short answers with a move that beat its
-    /// alpha, and the search answers with that rather than with the
-    /// completed depth's. So the move is what the side would play and the
-    /// depth is the deepest it finished, and the two are not always the
-    /// same iteration's. The score is then a floor rather than a value.
-    /// At equal depth, which is the default, no iteration is cut short and
-    /// the question does not arise.
+    /// Under a budget these can come from an iteration cut short, which
+    /// answers with a move that beat its alpha. The move is then what the
+    /// side would play, the depth the deepest it finished, and the score a
+    /// floor rather than a value. Without a budget no iteration is cut
+    /// short.
     pub best_on: Play,
     pub best_off: Play,
     pub score_on: Score,
@@ -268,25 +217,19 @@ pub struct Reached {
     pub nodes_off: u64,
 }
 
-/// A whole run: what it was asked for, what each side counted, and a row a
-/// joined key.
 #[derive(Clone, Debug)]
 pub struct Report {
     pub depth: u8,
     pub every: u32,
-    /// The most events either side would keep. Stated in the header only
-    /// when it is not the default.
     pub cap: usize,
     /// The file the suite was read from, or none for the bench's own.
     pub suite: Option<String>,
     /// The switch the baseline side turned off, or the two joined by a comma,
     /// or none for the null run.
     pub off: Option<String>,
-    /// The node budget both sides searched under, or none for equal depth.
     pub budget: Option<u64>,
     pub positions: Vec<Reached>,
-    /// Every event offered on each side, kept or not: the denominator the
-    /// rows are read against.
+    /// Every event offered on each side, kept or not: the denominator.
     pub events_on: u64,
     pub events_off: u64,
     pub overflowed_on: u64,
@@ -294,25 +237,20 @@ pub struct Report {
     /// The exact per depth event counts, which are the measurement.
     pub nodes_on: Depths,
     pub nodes_off: Depths,
-    /// The key the trim dropped from, or none where neither side
-    /// overflowed and there was nothing to trim to.
+    /// The key the trim dropped from, or none where neither side overflowed.
     pub bound: Option<u64>,
-    /// Joined keys the trim dropped.
     pub trimmed: usize,
     /// Joined keys two positions took, dropped.
     pub collisions: usize,
     pub rows: Vec<Row>,
 }
 
-/// One side's whole run: what its reservoir kept, its exact per depth
-/// tally, and what each position's search answered.
 struct Side {
     sampled: Sampled<Event>,
     depths: Depths,
     positions: Vec<Answered>,
 }
 
-/// One position's search on one side.
 struct Answered {
     depth: u8,
     best: Play,
@@ -320,13 +258,9 @@ struct Answered {
     nodes: u64,
 }
 
-/// Search the suite once with the effort reservoir armed, under the
-/// configuration given.
-///
-/// The engine, the table and the deepening are `bench::run_suite`'s, which
-/// is what makes a position's node count the bench's at the same depth and
-/// configuration. One reservoir for the whole suite, carried from each
-/// position's engine to the next, as the other three recorders do.
+/// Search the suite once with the effort reservoir armed. The engine, the
+/// table and the deepening are `bench::run_suite`'s, which is what makes a
+/// position's node count the bench's.
 fn side(
     positions: &[Position],
     depth: u8,
@@ -343,9 +277,6 @@ fn side(
             .unwrap_or_else(|e| panic!("effort position {} does not parse: {}", position.id, e));
         let mut engine = AlphaBeta::with_config(board, bench::TABLE_BYTES, config);
         engine.arm(sampler);
-        // the deepest iteration that landed inside its window. A budget can
-        // stop one partway, and the depth that reports is a floor under the
-        // position rather than an answer to it
         let mut reached = 0;
         let outcome = engine.iterative_deepening_search(
             SearchParameters::new(
@@ -367,8 +298,8 @@ fn side(
         depths.absorb(engine.effort_tally());
         let result = match outcome {
             SearchOutcome::Complete(result, _) | SearchOutcome::Aborted(Some(result)) => result,
-            // a budget too small to finish depth one, or a root with no
-            // move. Neither is a reading, and both say so on their own row
+            // depth one runs whatever the budget says, so this is a root
+            // with no move to make, which is no reading
             other => panic!("effort position {} answered {:?}", position.id, other),
         };
         answered.push(Answered {
@@ -386,19 +317,11 @@ fn side(
 }
 
 /// The largest key a side's retained set reaches to, or none where it
-/// reaches as far as the rate allows.
+/// reaches as far as the rate allows (it did not overflow).
 ///
-/// A side that overflowed gave up its largest keys, so it holds every key
-/// it was offered at or below the largest it kept and nothing above. A side
-/// that did not overflow kept every key the rate wanted, so it bounds
-/// nothing and the trim below has nothing to do.
-///
-/// A side that overflowed and kept nothing reaches no key at all, so it
-/// bounds at zero and the join keeps none. That is a cap of nothing, where
-/// both sides are empty and there is nothing to mis-attribute either way,
-/// but the answer is written down rather than left to the caller: read as
-/// unbounded it would pass every row of the other side through as an
-/// `only_` one.
+/// A side that overflowed and kept nothing (a cap of zero) bounds at zero:
+/// read as unbounded it would pass every row of the other side through as
+/// an `only_` one.
 fn retained_to(sampled: &Sampled<Event>) -> Option<u64> {
     if sampled.overflowed == 0 {
         return None;
@@ -406,18 +329,14 @@ fn retained_to(sampled: &Sampled<Event>) -> Option<u64> {
     Some(sampled.taken.last().map_or(0, |event| event.key))
 }
 
-/// Walk the two sides' folded rows together and say what each key reads as.
+/// Merge the two sides' folded rows, both in key order.
 ///
-/// Both lists are in key order, so this is a merge. A key at or above the
-/// trim bound is dropped from both sides before it is read: a key kept on
-/// one side and dropped on the other by the buffer alone would read as
-/// `only_on` or `only_off`, which is the instrument's own finding
-/// manufactured. A key two positions took is dropped after that, since a
-/// row that is two positions is not a reading and a run of minutes is not
-/// worth aborting over one.
+/// A key at or above the trim bound is dropped from both sides: kept on one
+/// and dropped on the other by the buffer alone, it would read as `only_on`
+/// or `only_off`, the instrument's own finding manufactured. A key two
+/// positions took is dropped and counted rather than aborting the run.
 fn join(on: Vec<Folded>, off: Vec<Folded>, bound: Option<u64>) -> (Vec<Row>, usize, usize) {
-    /// Whichever side reached the key, the candidate first. One of the two
-    /// is always there, since a key is here because a side held it.
+    /// Whichever side reached the key, the candidate first.
     fn seen<'a>(candidate: &'a Option<Folded>, baseline: &'a Option<Folded>) -> &'a Folded {
         candidate
             .as_ref()
@@ -470,8 +389,8 @@ fn join(on: Vec<Folded>, off: Vec<Folded>, bound: Option<u64>) -> (Vec<Row>, usi
             cuts_off: baseline.as_ref().map_or(0, |f| f.cuts),
             cost_on: candidate.as_ref().map_or(0, |f| f.cost),
             cost_off: baseline.as_ref().map_or(0, |f| f.cost),
-            // moved rather than copied: the fold's row is dropped here, and
-            // a whole population run joins millions of keys
+            // moved rather than copied: a whole population run joins
+            // millions of keys
             fen: match candidate {
                 Some(f) => f.fen,
                 None => {
@@ -488,11 +407,10 @@ fn join(on: Vec<Folded>, off: Vec<Folded>, bound: Option<u64>) -> (Vec<Row>, usi
 
 /// Search the suite twice and join the two runs by the node.
 ///
-/// The candidate side is the default. The baseline is the ablation's
-/// configuration, which is the default with one switch off or two, or the
-/// default again when nothing is named, which is the null run: every joined
-/// key must then read `both` with a delta of zero, and an instrument that
-/// fails that is measuring its own buffer.
+/// The candidate side is the default and the baseline the ablation's
+/// configuration, or the default again for the null run: every joined key
+/// must then read `both` with a delta of zero, and an instrument that fails
+/// that is measuring its own buffer.
 #[allow(clippy::too_many_arguments)]
 pub fn run(
     positions: &[Position],
@@ -504,8 +422,7 @@ pub fn run(
     budget: Option<u64>,
 ) -> Report {
     let depth = depth.max(1);
-    // the rate the reservoirs will really keep to, so the header states the
-    // run that happened
+    // what the reservoirs keep to, so the header states the run that happened
     let every = every.max(1);
     let baseline = off.map_or_else(SearchConfig::default, Ablation::config);
     let on = side(
@@ -559,13 +476,11 @@ pub fn run(
     }
 }
 
-/// One depth's line. By depth and not pooled, as the census's is: the
-/// depths are reached in wildly different numbers, so a pooled figure is
-/// the shallowest depth's wearing every depth's name.
+/// One depth's line. Not pooled, for `residual::Summary`'s reason.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub struct Summary {
     pub depth: u8,
-    /// Exact, from the tallies rather than from the rows.
+    /// Exact, from the tallies.
     pub nodes_on: u64,
     pub nodes_off: u64,
     /// Sampled, from the rows.
@@ -578,8 +493,6 @@ pub struct Summary {
 }
 
 impl Report {
-    /// One depth's summary, or none where neither side offered an event at
-    /// it and no row stands there.
     pub fn summary(&self, depth: u8) -> Option<Summary> {
         let rows = self.rows.iter().filter(|row| row.depth == depth);
         let mut counted = Summary {
@@ -609,9 +522,8 @@ impl Report {
         Some(counted)
     }
 
-    /// Every summary the run has, shallowest depth first. The tallies are
-    /// exact, so a depth either side reached has a line even where the
-    /// sampling kept no row of it.
+    /// Shallowest depth first. A depth either side reached has a line even
+    /// where the sampling kept no row of it.
     pub fn summaries(&self) -> Vec<Summary> {
         let mut depths = self.nodes_on.reached();
         depths.extend(self.nodes_off.reached());
@@ -625,8 +537,8 @@ impl Report {
     }
 }
 
-/// A signed change as a share of what the baseline spent, under the same
-/// rule as `recorder::share`: a figure with no denominator is not a zero.
+/// A signed change as a share of what the baseline spent, `-` with no
+/// denominator as in `recorder::share`.
 fn signed_share(delta: i64, of: u64) -> String {
     if of == 0 {
         "-".to_string()
@@ -635,18 +547,15 @@ fn signed_share(delta: i64, of: u64) -> String {
     }
 }
 
-/// The report as the command prints it: a header, a row a joined key, a
-/// summary line a depth and a line a position.
+/// A header, a row a joined key, a summary line a depth and a line a
+/// position.
 ///
 /// A row is `depth outcome visits_on visits_off cuts_on cuts_off cost_on
-/// cost_off delta fen`, whitespace separated with the fen last, so a row
-/// parses left to right. No column prints `-`: the absent side of an
-/// `only_` row spent nothing rather than having no value.
+/// cost_off delta fen`, whitespace separated with the fen last.
 ///
-/// The header extends the three searching instruments' rather than
-/// matching it. It names the switch, states an events count a side, and
-/// says what the trim and the collision guard dropped, none of which the
-/// other three have anything to say about.
+/// The header extends the other searching instruments': it names the
+/// switch, states an events count a side, and says what the trim and the
+/// collision guard dropped.
 impl fmt::Display for Report {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         write!(f, "effort depth {} every {}", self.depth, self.every)?;
@@ -656,8 +565,7 @@ impl fmt::Display for Report {
         if let Some(suite) = &self.suite {
             write!(f, " epd {}", suite)?;
         }
-        // stated either way, because `off none` is the null run and the
-        // null run is a reading rather than an accident of the parser
+        // stated either way, since the null run is a reading
         write!(f, " off {}", self.off.as_deref().unwrap_or("none"))?;
         if let Some(budget) = self.budget {
             write!(f, " budget {}", budget)?;
@@ -705,15 +613,13 @@ impl fmt::Display for Report {
         writeln!(f)?;
         writeln!(f, "summary")?;
         let summaries = self.summaries();
-        // said rather than left out: a run that reached nothing is a fact
         if summaries.is_empty() {
             writeln!(f, "records 0")?;
         }
         for s in summaries {
             let nodes = s.nodes_on as i64 - s.nodes_off as i64;
-            // the node counts add down the depths and the costs do not: a
-            // depth three node's cost holds its depth one descendants'. So
-            // the counts are the headline and the costs stand beside them
+            // the node counts add down the depths and the costs do not (a
+            // node's cost holds its descendants'), so the counts lead
             writeln!(
                 f,
                 "depth {} nodes on {} off {} delta {} {} records {} both {} only_on {} \
@@ -732,8 +638,7 @@ impl fmt::Display for Report {
                 s.cost_on as i64 - s.cost_off as i64,
             )?;
         }
-        // the id last for the fen's reason: an epd id is whatever stood in
-        // the quotes, and one of the bench's is six fields long
+        // the id last, since an epd id can hold spaces
         for p in &self.positions {
             writeln!(
                 f,
@@ -762,8 +667,6 @@ mod tests {
     use crate::recorder::fixtures::{recording_leaves_the_search_where_it_was, suite};
     use pretty_assertions::assert_eq;
 
-    /// The key decides on the node alone, and the same node keys
-    /// differently here from under every other lane.
     #[test]
     fn a_key_is_the_node_and_nothing_about_the_run() {
         let position = 0x0123_4567_89ab_cdef;
@@ -778,8 +681,6 @@ mod tests {
         }
     }
 
-    /// The four fields the key covers, and the two after it that it does
-    /// not.
     #[test]
     fn a_signature_is_the_fen_the_key_covers_and_no_more() {
         let one = "r3k2r/8/8/8/8/8/8/R3K2R w KQkq e3 0 1";
@@ -794,8 +695,6 @@ mod tests {
         assert_eq!(signature("8/8/8/8"), "8/8/8/8");
     }
 
-    /// The baseline side of a real arm, as a run takes it. A name the table
-    /// does not carry fails here rather than running as the null.
     fn ablation(switch: &str) -> Option<Ablation> {
         Some(SearchConfig::without(switch).expect("a switch of the table"))
     }
@@ -813,8 +712,6 @@ mod tests {
     const ONE: &str = "4k3/8/8/8/8/8/8/4K3 w - - 0 1";
     const TWO: &str = "4k3/8/8/8/8/8/8/4K3 b - - 0 1";
 
-    /// A deepening search revisits a node, so the visits of one key fold
-    /// into one row with the cost summed and the cuts counted.
     #[test]
     fn a_keys_visits_fold_into_one_row() {
         let folded = fold(vec![
@@ -834,8 +731,8 @@ mod tests {
         );
     }
 
-    /// Two positions on one key inside a side fold together, which is the
-    /// same defect as two sides disagreeing and gets the same answer.
+    /// Two positions folded under one key inside a side are a collision, as
+    /// two disagreeing sides are.
     #[test]
     fn two_positions_folded_under_one_key_are_a_collision() {
         let folded = fold(vec![
@@ -849,8 +746,6 @@ mod tests {
         assert_eq!((trimmed, collisions), (0, 1));
     }
 
-    /// The three outcomes, off a merge of two sides that part company in
-    /// both directions.
     #[test]
     fn a_joined_key_reads_as_one_of_three_outcomes() {
         let on = fold(vec![
@@ -875,12 +770,9 @@ mod tests {
                 (Outcome::OnlyOn, 5, 0, 5),
             ]
         );
-        // the absent side prints a nothing it really spent
         assert_eq!((rows[1].visits_on, rows[1].cuts_on), (0, 0));
     }
 
-    /// Two sides at one key that are two positions are dropped rather than
-    /// read, and counted where a reader can see them.
     #[test]
     fn a_key_two_positions_took_is_dropped() {
         let on = fold(vec![event(10, 3, true, 40, ONE)]);
@@ -890,8 +782,6 @@ mod tests {
         assert_eq!(collisions, 1);
     }
 
-    /// The trim drops from the bound up on both sides, so a key one side's
-    /// buffer gave up cannot read as a rule removing a node.
     #[test]
     fn the_trim_drops_every_key_at_or_above_the_bound() {
         let on = fold(vec![
@@ -905,8 +795,6 @@ mod tests {
         assert_eq!(trimmed, 1);
     }
 
-    /// A side that did not overflow kept everything the rate wanted, so it
-    /// bounds nothing and a run where neither did trims nothing.
     #[test]
     fn only_an_overflowing_side_bounds_the_trim() {
         let full = Sampled {
@@ -967,8 +855,6 @@ mod tests {
         }
     }
 
-    /// The row's fields in the order the `Display` doc names them, with the
-    /// fen last and the delta printed rather than left to the reader.
     #[test]
     fn a_row_reads_left_to_right_with_the_fen_last() {
         let report = report_of(vec![row(3, Outcome::OnlyOn, 214, 0)]);
@@ -985,8 +871,6 @@ mod tests {
         );
     }
 
-    /// The header names the switch, states an events count a side, and says
-    /// what the two guards dropped.
     #[test]
     fn the_header_states_the_switch_and_both_sides_events() {
         let mut report = report_of(Vec::new());
@@ -998,7 +882,6 @@ mod tests {
             "{}",
             report
         );
-        // the null run says so rather than leaving the word out
         report.off = None;
         report.cap = 25;
         report.budget = Some(4_000_000);
@@ -1017,8 +900,6 @@ mod tests {
         );
     }
 
-    /// The depth line's node counts come from the exact tallies and its
-    /// records from the sampled rows, and the two are printed apart.
     #[test]
     fn a_depth_line_prints_the_exact_counts_beside_the_sampled_rows() {
         let report = report_of(vec![
@@ -1046,8 +927,6 @@ mod tests {
         );
     }
 
-    /// A depth either side offered an event at has a line even where the
-    /// rate kept no row of it, since the tallies are the measurement.
     #[test]
     fn a_depth_with_no_rows_is_still_counted() {
         let report = report_of(Vec::new());
@@ -1063,8 +942,6 @@ mod tests {
         );
     }
 
-    /// A depth the baseline never reached has no denominator, so the share
-    /// is a dash rather than an invented figure.
     #[test]
     fn a_share_with_no_baseline_under_it_is_a_dash() {
         assert_eq!(signed_share(0, 0), "-");
@@ -1073,10 +950,6 @@ mod tests {
         assert_eq!(signed_share(52, 1040), "+5.00%");
     }
 
-    /// The null run: two identical configurations reach the same nodes and
-    /// spend the same effort under them, so every joined key reads `both`
-    /// with a zero delta and the per depth counts are equal. An instrument
-    /// that fails this is reading the reservoir rather than the tree.
     #[test]
     fn the_null_run_reads_both_at_every_key_with_no_delta() {
         let report = run(&suite(), None, 4, 1, DEFAULT_CAP, None, None);
@@ -1102,9 +975,6 @@ mod tests {
         }
     }
 
-    /// The per depth counts are exact counters rather than a share of the
-    /// records, so they do not move with the rate where the record count
-    /// does.
     #[test]
     fn the_node_counts_do_not_move_with_the_rate() {
         let dense = run(&suite(), None, 4, 1, DEFAULT_CAP, None, None);
@@ -1120,10 +990,9 @@ mod tests {
         assert!(sparse.rows.len() < dense.rows.len());
     }
 
-    /// What makes a depth line exact: the per depth tallies are a partition
-    /// of the events the header states, so they add to it. A fifth offer
-    /// site added without a matching tally, or a tally bumped twice, breaks
-    /// this and nothing else would say so.
+    /// The per depth tallies partition the events the header states. An
+    /// offer site added without a matching tally, or a tally bumped twice,
+    /// breaks this and nothing else would say so.
     #[test]
     fn the_depth_tallies_add_to_the_events_offered() {
         let report = run(
@@ -1141,9 +1010,8 @@ mod tests {
         assert!(report.events_on > 0);
     }
 
-    /// The rows are the census's population. The two instruments offer an
-    /// event at the same three places, so armed at the same depth over the
-    /// same suite they count the same events, and the docs say as much.
+    /// The two instruments offer an event at the same places, so they count
+    /// the same events.
     #[test]
     fn the_events_are_the_censuss_own_population() {
         let census = crate::census::run(&suite(), 5, 1000, DEFAULT_CAP);
@@ -1152,8 +1020,6 @@ mod tests {
         assert_eq!(report.events_off, census.events);
     }
 
-    /// Two runs of the same command print the same rows: the key is the
-    /// node's and the reservoir is order independent.
     #[test]
     fn two_runs_of_one_command_print_the_same_rows() {
         let once = run(&suite(), None, 4, 10, DEFAULT_CAP, None, None);
@@ -1162,9 +1028,8 @@ mod tests {
         assert_eq!(once.events_on, again.events_on);
     }
 
-    /// A switch off moves the tree, which is what the instrument is for.
-    /// Reverse futility is the switch here because it answers whole nodes,
-    /// so the two sides hold different ones at a depth a test can afford.
+    /// Reverse futility because it answers whole nodes, so the two sides
+    /// hold different ones at a depth a test can afford.
     #[test]
     fn a_switch_off_parts_the_two_sides() {
         let report = run(
@@ -1196,18 +1061,12 @@ mod tests {
         assert!(report.rows.iter().any(|row| row.delta() != 0));
     }
 
-    /// The other half of a reading, and the reason the cost columns are not
-    /// derivable from the outcome. The quiet futility margin decides at
-    /// `SHALLOW_MAX_DEPTH` and under, so it parts the two sides there: a
-    /// quiet child the rule cut is a node the candidate never reached, and
-    /// that row reads `only_off`. Above that depth the two sides hold the
-    /// same nodes and the tree the rule removed sits under them, so those
-    /// rows read `both` and the effort still moved. A run that read
-    /// outcomes alone would call that no change.
-    ///
-    /// The rows are read at the depths the rule leaves alone for that
-    /// reason. Read over every depth the assertion is about the shallow
-    /// rows as well, where a parted side is the instrument working.
+    /// Why the cost columns are not derivable from the outcome. Quiet
+    /// futility decides at `SHALLOW_MAX_DEPTH` and under, so above that the
+    /// two sides hold the same nodes and the tree the rule removed sits
+    /// under them: those rows read `both` and the effort still moved. Only
+    /// those depths are read, since below them a parted side is the
+    /// instrument working.
     #[test]
     fn a_rule_can_move_effort_without_moving_a_node() {
         let report = run(
@@ -1237,9 +1096,6 @@ mod tests {
         assert!(report.positions.iter().any(|p| p.nodes_on < p.nodes_off));
     }
 
-    /// The per position node counts are each side's whole search, so the
-    /// candidate's are `bench::run_suite`'s at the same depth and
-    /// configuration. That is what the bench delta is read against.
     #[test]
     fn a_positions_node_count_is_the_benchs_own() {
         let positions = bench::positions();
@@ -1258,14 +1114,10 @@ mod tests {
         assert_eq!(counted, expected);
     }
 
-    /// A budget holds both sides to the same nodes, so what is left to read
-    /// is the depth each reached and the move each chose.
     #[test]
     fn a_budget_stops_both_sides_at_the_same_spending() {
         const BUDGET: u64 = 20_000;
-        // a real switch, so the two sides are configurations that differ and
-        // the assertions below are about both of them rather than about one
-        // run read twice
+        // a real switch, so the assertions are not about one run read twice
         let report = run(
             &suite(),
             None,
@@ -1276,8 +1128,8 @@ mod tests {
             Some(BUDGET),
         );
         for p in &report.positions {
-            // exact, not approximate: the budget is checked on the node, and
-            // an iteration given up part way counts towards it
+            // exact: the budget is checked on the node, and an iteration
+            // given up part way counts towards it
             assert_eq!(p.nodes_on, BUDGET, "{}", p.id);
             assert_eq!(p.nodes_off, BUDGET, "{}", p.id);
             assert!(p.depth_on >= 1 && p.depth_off >= 1, "{}", p.id);
@@ -1289,9 +1141,6 @@ mod tests {
         }
     }
 
-    /// The recorders' shared contract, asked of this instrument under each
-    /// of its two configurations, since it is the only one that searches
-    /// under a configuration its caller chose.
     #[test]
     fn recording_leaves_the_measured_search_where_it_was() {
         recording_leaves_the_search_where_it_was(
@@ -1308,11 +1157,9 @@ mod tests {
         );
     }
 
-    /// The same, under the baseline side of a real arm. There is no pinned
-    /// count for a configuration with a switch off and there must not be
-    /// one: an instrument that pinned a count for every switch would be
-    /// edited by every arm. What is asserted is armed equals disarmed under
-    /// whatever configuration it is handed.
+    /// The same, under a baseline configuration: this is the one instrument
+    /// that searches under a configuration its caller chose. No count is
+    /// pinned for a switch off, or every arm would edit it.
     #[test]
     fn recording_changes_nothing_under_the_baseline_configuration_either() {
         let config = SearchConfig::without("quiet_futility")
@@ -1342,8 +1189,6 @@ mod tests {
         assert!(kept > 0, "the armed runs recorded nothing");
     }
 
-    /// A rate of zero and a depth of zero are held to one, and the header
-    /// states the run that happened.
     #[test]
     fn a_rate_of_zero_is_reported_as_the_rate_that_ran() {
         let report = run(&suite(), None, 0, 0, 50, None, None);

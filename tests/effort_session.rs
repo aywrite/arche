@@ -37,7 +37,6 @@ fn the_effort_argument_prints_a_header_rows_and_two_summaries() {
         for at in [0, 2, 3, 4, 5, 6, 7] {
             assert!(words[at].parse::<u64>().is_ok(), "field {} of {}", at, row);
         }
-        // the delta is signed and is printed rather than left to the reader
         let (cost_on, cost_off) = (
             words[6].parse::<i64>().unwrap(),
             words[7].parse::<i64>().unwrap(),
@@ -47,8 +46,7 @@ fn the_effort_argument_prints_a_header_rows_and_two_summaries() {
             cost_on - cost_off,
             "{row}"
         );
-        // a side that did not reach the node spent nothing there, which is a
-        // zero and not a dash: the column has to be summable
+        // a side that did not reach the node prints a zero, not a dash
         let (visits_on, visits_off) = (
             words[2].parse::<u64>().unwrap(),
             words[3].parse::<u64>().unwrap(),
@@ -68,7 +66,6 @@ fn the_effort_argument_prints_a_header_rows_and_two_summaries() {
             }
             other => panic!("outcome {} in: {}", other, row),
         }
-        // cuts never outrun the visits they are a share of
         for at in [(4, 2), (5, 3)] {
             assert!(
                 words[at.0].parse::<u64>().unwrap() <= words[at.1].parse::<u64>().unwrap(),
@@ -78,8 +75,7 @@ fn the_effort_argument_prints_a_header_rows_and_two_summaries() {
         }
     }
     assert!(outcomes.0 > 0, "no joined rows in:\n{}", printed.all);
-    // a run that kept only the joined population has measured nothing this
-    // instrument exists for: the two outright populations are the reading
+    // the two outright populations are the reading
     assert!(
         outcomes.1 > 0 || outcomes.2 > 0,
         "no key parted the two sides in:\n{}",
@@ -128,8 +124,7 @@ fn the_effort_argument_prints_a_header_rows_and_two_summaries() {
 }
 
 /// The null run is what says the instrument is reading the tree and not its
-/// own buffer, so it is asserted here as well as in the module's own tests:
-/// two identical configurations part company nowhere.
+/// own buffer, so it is asserted against the binary too.
 #[test]
 fn the_null_run_parts_the_two_sides_nowhere() {
     let printed = report_command::run(&["effort", "4", "every", "50"]);
@@ -160,14 +155,9 @@ fn the_null_run_parts_the_two_sides_nowhere() {
     }
 }
 
-/// A switch the engine does not have is named rather than run as the null,
-/// which would spend the minutes saying nothing. The refusal says what a
-/// switch may be, since the usage line prints `<switch>` and the reader who
-/// misspelled one is the reader who needs the names.
-///
-/// The line is read as a user reads it: the wording, the echoed misspelling
-/// and the separator are literals here, and the count is fourteen. Which
-/// names they are is the engine crate's own test, beside the table.
+/// The line is read as a user reads it: the wording, the echoed
+/// misspelling, the separator and the count are literals here. Which names
+/// they are is the engine crate's own test.
 #[test]
 fn a_switch_the_engine_does_not_have_is_refused() {
     let output = std::process::Command::new(env!("CARGO_BIN_EXE_arche"))

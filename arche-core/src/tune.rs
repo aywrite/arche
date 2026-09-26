@@ -3,51 +3,40 @@
 
 //! What a position's evaluation is made of, weight by weight.
 //!
-//! The evaluation is material plus five tapered terms (piece square, mobility,
-//! king shelter, pawn structure, king attack), and it is linear in the weights
-//! those are read from. A position's score is a dot product of one coefficient
-//! per weight it touches against the weights themselves. This module writes
-//! the coefficients down and a fit run outside the engine, `scripts/tune.py`,
-//! reads them.
+//! The evaluation is material plus tapered terms, linear in the weights, so a
+//! position's score is a dot product of one coefficient per weight it touches
+//! against the weights. This module writes the coefficients down and
+//! `scripts/tune.py` fits them.
 //!
 //! The one place the evaluation is not linear is material that cannot mate,
-//! which `eval` answers with a hard zero. Every weight vector scores such a
-//! position the same, so a fit learns nothing from it. `run` turns those
-//! positions away and counts them in the header, and `scripts/tune.py`
-//! refuses a header without the count, since an extraction printed before the
-//! rule holds rows the rule would have dropped.
+//! which `eval` answers with a hard zero. `run` turns those positions away
+//! and counts them in the header, and `scripts/tune.py` refuses a header
+//! without the count, since an extraction printed before the rule holds rows
+//! the rule would have dropped.
 //!
 //! The engine states the coefficients and never the arithmetic, so the tuner
-//! carries no second implementation of the evaluation that could diverge
-//! quietly. [`reconstruct`] states that the two are the same thing, and `run`
-//! asserts it on every row it prints, not only in a test.
+//! carries no second implementation of the evaluation. [`reconstruct`] states
+//! that the two agree, and `run` asserts it on every row it prints.
 //!
 //! The walk is a third pass over the board beside `Accumulator::count` and
 //! `Accumulator::recomputed`, and shares no helper with them on purpose: two
-//! implementations that agree are a check, and a helper shared between them
-//! is not. The leaf terms are the exception. The walk asks each term in
-//! `eval::TERMS` for its counts through the descriptor. For shelter and pawn
-//! structure that is the function `eval` reads, so the identity cannot see a
-//! wrong count. For mobility and the king attack zone `eval` reads a shared
-//! walk that `the_shared_walk_counts_what_each_term_counts_alone` holds to
-//! these functions, and neither that test nor the identity can see a count
-//! wrong the same way in both. What pins those is the hand counts beside each
-//! term in `eval/`; a second count here would be a second chance to be wrong
-//! about a term read at every leaf rather than a check on the first.
+//! implementations that agree are a check, and a shared helper is not. The
+//! leaf terms are the exception: the walk asks each term in `eval::TERMS` for
+//! its counts, which for shelter and pawn structure is the function `eval`
+//! reads, so the identity cannot see a wrong count there. For mobility and
+//! the king attack zone `eval` reads a shared walk that
+//! `the_shared_walk_counts_what_each_term_counts_alone` holds to these
+//! functions, and neither can see a count wrong the same way in both. The
+//! hand counts beside each term in `eval/` pin those.
 //!
-//! Where a term stands in the vector, its weights and its width all come off
-//! `eval::TERMS`, so a term added there is laid out, priced and walked here
-//! without an edit, and the layout line states the result for
-//! `scripts/tune.py`.
+//! Where a term stands in the vector, its weights and its width come off
+//! `eval::TERMS`, so a term added there needs no edit here, and the layout
+//! line states the result for `scripts/tune.py`.
 //!
-//! On mobility the tuner's walk asks for all four kinds, so a later fit can
-//! price a kind worth nothing today, while `eval` asks only for the kinds
-//! whose weight is not zero. The refit priced all four, so the two agree
-//! today. While some weight rounds to nothing the tuner's row is the wider,
-//! and the identity still holds because the difference is exactly the kinds
-//! that score nothing, which
-//! `eval_counts_a_kind_exactly_when_its_weight_is_not_zero` pins. The other
-//! three terms have every weight priced, so nothing in them is left out.
+//! On mobility the walk counts all four kinds, so a fit can price a kind
+//! worth nothing today, while `eval` counts only kinds with a weight. The
+//! identity still holds where a weight is zero, which
+//! `eval_counts_a_kind_exactly_when_its_weight_is_not_zero` pins.
 
 use crate::bench::Position;
 use crate::board::Board;
@@ -61,30 +50,21 @@ use std::fmt;
 /// the six pieces, in `Piece` order.
 pub const MIDGAME_SLOTS: usize = 6 * 64;
 
-/// The endgame half, laid out the way the midgame half is, so a square's two
-/// weights are [`MIDGAME_SLOTS`] apart. Rows printed before d17622f, and
-/// vectors fitted against them, are 518 wide and must not be read into this
-/// layout; the layout line is what refuses them.
+/// Laid out as the midgame half, so a square's two weights are
+/// [`MIDGAME_SLOTS`] apart. Rows printed before d17622f, and vectors fitted
+/// against them, are 518 wide; the layout line is what refuses them.
 pub const ENDGAME_SLOTS: usize = 6 * 64;
 
-/// Where the six material values stand in the vector, after both halves of
-/// the tables.
 pub const MATERIAL_SLOT: usize = MIDGAME_SLOTS + ENDGAME_SLOTS;
 
-/// How many material values there are, one per piece.
 const MATERIAL_SLOTS: usize = 6;
 
-/// Where the leaf terms start, after the material block.
-///
-/// Each term takes twice its width from here on, its midgame half first, in
-/// `eval::TERMS` order. A term is appended rather than inserted so that no
-/// slot a fit was written against moves. Growing a term in place is not
-/// that: it moves the term's own endgame half and every term after it, as
-/// the storm did when it took the shelter from eight weights to fourteen.
+/// Where the leaf terms start. Each takes twice its width, midgame half
+/// first, in `eval::TERMS` order. A term is appended so that no slot a fit
+/// was written against moves; growing a term in place moves its own endgame
+/// half and every term after it.
 pub const TERM_SLOT: usize = MATERIAL_SLOT + MATERIAL_SLOTS;
 
-/// Where the term at `index` in `eval::TERMS` starts, which is the sum of the
-/// widths before it, doubled.
 const fn term_slot(index: usize) -> usize {
     let mut slot = TERM_SLOT;
     let mut before = 0;
@@ -95,9 +75,6 @@ const fn term_slot(index: usize) -> usize {
     slot
 }
 
-/// The whole weight vector: both halves of the tables, the six material
-/// values, then each leaf term's width twice over. Everything after the
-/// material follows from the term list.
 pub const SLOTS: usize = term_slot(eval::TERMS.len());
 
 /// The weight a slot names, read out of the live tables rather than a copy,
@@ -133,33 +110,27 @@ pub fn weight(slot: usize) -> i32 {
     panic!("slot {} is past the {} the vector holds", slot, SLOTS)
 }
 
-/// Whether a slot is one of the material values, the only weights added
-/// outside the taper's divide.
+/// The material values are the only weights added outside the taper's
+/// divide.
 fn is_material(slot: usize) -> bool {
     (MATERIAL_SLOT..TERM_SLOT).contains(&slot)
 }
 
 /// One position's evaluation, decomposed over the weight vector.
 ///
-/// The coefficients are in the side to move's frame, so a row's own
-/// arithmetic is the evaluation with no further step. They are sparse and
-/// sorted by slot (forty eight at the median over the strategic suite's quiet
-/// positions, measured when the vector was 812 wide), and a column's non-zero
-/// count is how much of the corpus a weight is fitted on.
+/// The coefficients are in the side to move's frame, so a row's arithmetic
+/// is the evaluation with no further step. A column's non-zero count is how
+/// much of the corpus a weight is fitted on.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct Terms {
-    /// What is left on the board, capped the way the evaluation caps it. A
-    /// property of the position rather than of the weights, which is what
-    /// keeps the decomposition linear.
+    /// Capped as the evaluation caps it. A property of the position rather
+    /// than of the weights, which keeps the decomposition linear.
     pub phase: i32,
     /// Slot and coefficient, ascending by slot, zeroes left out.
     pub coefficients: Vec<(u16, i32)>,
 }
 
 impl Terms {
-    /// The decomposition of the position on the board. The phase decides
-    /// every piece square coefficient, so it is counted in a pass of its own
-    /// first.
     pub fn of(board: &Board) -> Self {
         let phase = phase_of(board).min(TOTAL_PHASE);
         // the sign the evaluation applies at the end is folded into every
@@ -220,8 +191,6 @@ impl Terms {
     }
 }
 
-/// What is left on the board, on the scale the taper is read at.
-///
 /// Uncapped: the cap belongs where the evaluation puts it, and a promotion
 /// can leave more on the board than the opening had.
 fn phase_of(board: &Board) -> i32 {
@@ -264,28 +233,23 @@ pub fn reconstruct(terms: &Terms) -> Score {
     (material + numerator / TOTAL_PHASE) as Score
 }
 
-/// The table the quiet test searches with: small, and cleared before every
-/// position, so a position's answer does not depend on which positions were
-/// asked about before it.
+/// Small, and cleared before every position, so no answer depends on the
+/// positions asked about before it.
 const FILTER_TABLE_BYTES: usize = 64 * 1024;
 
-/// The engine the quiet test asks its question of: the reference, not the
-/// default. The default's quiescence skips captures its delta margin and
-/// losing capture rule price as hopeless, and those skips are guesses. A
-/// corpus whose quietness was decided by a guess would carry the guess into
-/// every weight fitted on it.
+/// The reference, not the default: the default's quiescence skips captures
+/// on guesses, and a corpus whose quietness was decided by a guess would
+/// carry it into every weight fitted on it.
 fn filter_engine() -> AlphaBeta {
     AlphaBeta::with_config(Board::new(), FILTER_TABLE_BYTES, SearchConfig::reference())
 }
 
-/// Whether neither side has anything to win by capturing.
+/// Whether neither side has anything to win by capturing. A one sided test
+/// would keep a position where the side to move is about to lose a hanging
+/// queen.
 ///
-/// Two sided. A one sided test keeps the position where the side to move is
-/// about to lose a hanging queen, and labels an evaluation that misses it
-/// with the result of a game that did not.
-///
-/// The caller has already refused a position whose side to move is in check,
-/// so the position after a pass is well formed.
+/// The caller has already refused a position in check, so the position
+/// after a pass is well formed.
 fn settled(engine: &mut AlphaBeta, board: &Board) -> bool {
     if !nothing_to_capture(engine, board.clone()) {
         return false;
@@ -307,45 +271,30 @@ fn nothing_to_capture(engine: &mut AlphaBeta, board: Board) -> bool {
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct Row {
     pub id: String,
-    /// What `eval::eval` returns for the position, which the row's own
-    /// arithmetic has to come to.
     pub eval: Score,
     pub terms: Terms,
     pub fen: String,
 }
 
-/// A whole run: the suite it read, what the filter turned away, and a row a
-/// position.
 #[derive(Clone, Debug)]
 pub struct Report {
     /// The file the positions were read from, or none for the bench's own.
     pub suite: Option<String>,
-    /// Positions the run was given, the denominator the counts below are
-    /// shares of.
     pub positions: usize,
-    /// Positions refused because the side to move was in check: a checked
-    /// position's static evaluation is not a thing to fit.
+    /// A checked position's static evaluation is not a thing to fit.
     pub in_check: usize,
-    /// Positions refused because a capture search moved the evaluation for
-    /// one side or the other.
+    /// A capture search moved the evaluation for one side or the other.
     pub unsettled: usize,
-    /// Positions refused because the material on them cannot mate, which the
-    /// evaluation answers with a hard zero. Every weight vector scores such
-    /// a row the same, so a fit learns nothing from it. Turned away rather
-    /// than emitted with a flag, because a row kept for the record is a row
-    /// a later fit reads by accident.
+    /// The material cannot mate. Turned away rather than emitted with a
+    /// flag, because a row kept for the record is a row a later fit reads by
+    /// accident.
     pub drawn: usize,
     pub rows: Vec<Row>,
 }
 
-/// Extract the terms of every quiet position in the suite.
-///
-/// The identity is asserted on every row rather than only in a test, so it
-/// is known to hold on every row that was actually fitted. It panics rather
-/// than dropping the row, the way the recorders panic on a fen that will not
-/// parse.
-///
-/// `suite` names the file the positions came from, for the header alone.
+/// Extract the terms of every quiet position in the suite, panicking on a
+/// row whose identity fails rather than dropping it. `suite` is for the
+/// header alone.
 pub fn run(positions: &[Position], suite: Option<&str>) -> Report {
     let mut engine = filter_engine();
     let mut report = Report {
@@ -367,8 +316,7 @@ pub fn run(positions: &[Position], suite: Option<&str>) -> Report {
             report.unsettled += 1;
             continue;
         }
-        // the one position the identity below does not hold on: `eval`
-        // answers a hard zero while the coefficients still state the pieces
+        // `eval` answers a hard zero while the coefficients state the pieces
         if board.drawn_by_material() {
             report.drawn += 1;
             continue;
@@ -391,12 +339,7 @@ pub fn run(positions: &[Position], suite: Option<&str>) -> Report {
     report
 }
 
-/// The report as the command prints it: a header, the layout line, the
-/// weight vector, then a row a position.
-///
-/// The header states what the run turned away beside what it kept, since a
-/// corpus is a share of a suite and the share cannot be read without its
-/// denominator.
+/// A header, the layout line, the weight vector, then a row a position.
 ///
 /// The layout line is `layout midgame 384 endgame 384 material 6` and then a
 /// term and its width for each of `eval::TERMS`, a width being the counts a
@@ -406,8 +349,7 @@ pub fn run(positions: &[Position], suite: Option<&str>) -> Report {
 /// refuses a run naming a term it has no bounds for.
 ///
 /// The weights are printed so that nothing reading these rows transcribes
-/// psqt.rs: a table copied out and left behind fits weights against a
-/// position it scores differently from the engine, and nothing says so.
+/// psqt.rs, where a stale copy would fit silently against the wrong table.
 ///
 /// A row is `id eval phase n slot:coefficient... fen`, whitespace separated,
 /// and both ends of it can hold spaces: a fen is six fields, and an id is
@@ -421,8 +363,6 @@ pub fn run(positions: &[Position], suite: Option<&str>) -> Report {
 impl fmt::Display for Report {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         write!(f, "terms")?;
-        // the bench's own suite reads as absent, the way the other
-        // instruments' headers leave it out
         if let Some(suite) = &self.suite {
             write!(f, " epd {}", suite)?;
         }
@@ -477,8 +417,7 @@ mod tests {
     use crate::{bench, strategy};
     use pretty_assertions::assert_eq;
 
-    /// Where a named term's block starts and how wide it is, so a test names
-    /// a term rather than a slot number.
+    /// Where a named term's block starts and how wide it is.
     fn term(name: &str) -> (usize, usize) {
         let mut slot = TERM_SLOT;
         for term in eval::TERMS {
@@ -490,8 +429,6 @@ mod tests {
         panic!("no term is called {}", name)
     }
 
-    /// Every position of three suites of different shapes: the shared fens,
-    /// the bench's and the strategic suite's.
     fn every_shape() -> Vec<String> {
         let mut fens: Vec<String> = fens::CORE.iter().map(|f| f.to_string()).collect();
         fens.extend(bench::positions().into_iter().map(|p| p.fen));
@@ -499,8 +436,6 @@ mod tests {
         fens
     }
 
-    /// The pin the whole arm rests on: a row's own arithmetic against the
-    /// live tables is the evaluation, exactly.
     #[test]
     fn a_positions_terms_reconstruct_its_evaluation() {
         let fens = every_shape();
@@ -516,8 +451,6 @@ mod tests {
         }
     }
 
-    /// The coefficients carry the sign, so the same position read from the
-    /// other side is its exact negative through the row.
     #[test]
     fn a_row_reconstructs_from_the_side_to_move() {
         for fen in every_shape() {
@@ -728,12 +661,9 @@ mod tests {
 
     /// A position whose piece square numerator is negative and does not
     /// divide by twenty four evenly, which the two tests below need to tell
-    /// two readings of the arithmetic apart. A knight a side would leave the
-    /// phase at nothing and the numerator a multiple of the taper.
+    /// two readings of the arithmetic apart.
     const UNEVEN: &str = "4k3/8/8/8/8/8/4P3/1N2K3 w - - 0 1";
 
-    /// The divide truncates toward zero, where a floor takes a negative
-    /// numerator the other way, so the two differ by a centipawn here.
     #[test]
     fn the_psqt_divide_truncates_toward_zero() {
         let fen = UNEVEN;
@@ -760,9 +690,6 @@ mod tests {
         assert_eq!(reconstruct(&terms), eval::eval(&board), "{}", fen);
     }
 
-    /// Material is added after the divide rather than scaled into it, which
-    /// gives a different integer whenever the piece square numerator is
-    /// negative and does not divide evenly.
     #[test]
     fn material_is_added_outside_the_divide() {
         let fen = UNEVEN;
@@ -792,10 +719,8 @@ mod tests {
         );
     }
 
-    /// The phase is capped before the coefficients are written. Two extra
-    /// queens a side leave more on the board than the opening had, and a row
-    /// built from the uncapped count would give the endgame half a negative
-    /// share of the taper.
+    /// An uncapped phase would give the endgame half a negative share of the
+    /// taper.
     #[test]
     fn the_phase_is_capped_before_the_coefficients_are_written() {
         let fen = "rnbqkbnr/pppppppp/8/3QQ3/3qq3/8/PPPPPPPP/RNBQKBNR w KQkq - 0 1";
@@ -811,10 +736,8 @@ mod tests {
         assert_eq!(reconstruct(&terms), eval::eval(&board), "{}", fen);
     }
 
-    /// A slot names the same weight the tables hold, so a fit that moves slot
-    /// n moves the entry a reader of psqt.rs would go looking for. Named
-    /// squares rather than a walk, since a walk would only restate `weight`.
-    /// A slot's entry is a square as black sees it.
+    /// Named squares rather than a walk, since a walk would only restate
+    /// `weight`. A slot's entry is a square as black sees it.
     #[test]
     fn a_slot_names_the_table_entry_it_stands_for() {
         let entry = |file: File, rank: u8| usize::from(coordinate_to_index(rank, file));
@@ -930,9 +853,8 @@ mod tests {
         );
     }
 
-    /// A quiet position keeps its row and one with a capture to make does
-    /// not, whichever side has the capture. In the third fen white is to
-    /// move and has nothing to take, so a one sided test would keep it.
+    /// In the third fen white is to move and has nothing to take, so a one
+    /// sided test would keep it.
     #[test]
     fn a_position_with_a_capture_to_make_is_not_quiet() {
         let quiet = "4k3/8/8/8/8/8/4P3/4K3 w - - 0 1";
@@ -947,8 +869,6 @@ mod tests {
         }
     }
 
-    /// The filter's engine is the reference and not the default, which the
-    /// corpus rests on.
     #[test]
     fn the_filter_searches_the_reference_and_not_the_default() {
         assert_eq!(filter_engine().config(), SearchConfig::reference());
@@ -984,7 +904,6 @@ mod tests {
         assert_ne!(reconstruct(&Terms::of(&board)), 0);
     }
 
-    /// The header counts what the run turned away beside what it kept.
     #[test]
     fn a_run_states_what_it_kept_and_what_it_turned_away() {
         let positions = bench::positions();
@@ -1012,9 +931,8 @@ mod tests {
         assert_eq!(text.lines().count(), report.rows.len() + 3);
     }
 
-    /// The layout line states where every block of the vector stands, off
-    /// the same table the slots are laid out from. What reads the rows has
-    /// no copy of the layout, so this is the whole of what it is told.
+    /// What reads the rows has no copy of the layout, so this line is the
+    /// whole of what it is told.
     #[test]
     fn a_run_prints_the_layout_the_slots_are_laid_out_from() {
         let text = run(&bench::positions()[..1], None).to_string();
@@ -1043,8 +961,6 @@ mod tests {
         assert_eq!(counted, SLOTS);
     }
 
-    /// The weights line is what `weight` reads out of the live tables, slot
-    /// by slot.
     #[test]
     fn a_run_prints_the_weights_the_coefficients_are_read_against() {
         let report = run(&bench::positions()[..1], None);
@@ -1057,7 +973,6 @@ mod tests {
         assert_eq!(printed, (0..SLOTS).map(weight).collect::<Vec<i32>>());
     }
 
-    /// A run over a suite of its own names it in the header.
     #[test]
     fn the_header_names_a_suite_that_is_not_the_benchs() {
         let report = run(&bench::positions()[..1], Some("corpus.epd"));
@@ -1070,10 +985,8 @@ mod tests {
         );
     }
 
-    /// The fields of a row are found from the fen back, which is what lets
-    /// an id hold spaces. The id is taken from the bench's own suite rather
-    /// than invented, so the test cannot go on claiming something the suite
-    /// has stopped doing.
+    /// The id is taken from the bench's own suite rather than invented, so
+    /// the test cannot go on claiming something the suite has stopped doing.
     #[test]
     fn a_row_reads_from_the_right_and_its_id_can_hold_spaces() {
         let spaced = bench::positions()

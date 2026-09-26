@@ -6,20 +6,15 @@
 //!
 //! A cutoff censors: every move ordered after the one that cut is never
 //! searched, so a raw history count says how often a move cut among the
-//! moves it was allowed to be tried on, not how good it is. The census is
-//! the data that censoring is quantified from. One event per sampled node of
-//! the default search, taken at the two places a node returns out of
-//! `alpha_beta`'s move loop, the cutoff and the loop's natural end. The held
-//! nodes are recorded at the same rate as the cut ones, since the reading is
-//! the contrast between the two and a cut-only stream reproduces the
-//! censoring the census exists to measure. Quiescence and the root are out
-//! of scope: quiescence cuts on capture order, and the root searches every
-//! move.
+//! moves it was tried on, not how good it is. The census is the data that
+//! censoring is quantified from. One event per sampled node of the default
+//! search, taken where a node returns out of `alpha_beta`'s move loop, at
+//! the cutoff and at the loop's end. Held nodes are recorded at the same
+//! rate as cut ones, since a cut-only stream reproduces the censoring being
+//! measured. Quiescence and the root are out of scope: quiescence cuts on
+//! capture order, and the root searches every move.
 //!
-//! An event is a portrait and not a comparison: there is no reference and no
-//! replay. The recorder hangs off an engine on the reservoir's terms, and an
-//! engine without one searches exactly the tree it searched before there was
-//! a census, which the pinned bench counts say.
+//! There is no reference and no replay.
 
 use crate::bench::Position;
 use crate::engine::SearchConfig;
@@ -27,17 +22,14 @@ use crate::play::Play;
 use crate::recorder::{self, Window, share};
 use std::fmt;
 
-/// The key a node's answer is sampled by: the position, the depth, and
-/// nothing about the run, as `residual::sample_key` builds one, so two runs
-/// of the same search record the same nodes.
+/// The key a node's answer is sampled by.
 pub fn sample_key(position_key: u64, depth: u8) -> u64 {
     recorder::sample_key(position_key, recorder::CENSUS_LANE, depth)
 }
 
 /// About one record in every this many events, unless the command says
 /// otherwise. Every full width node past its table probe and its shortcuts
-/// offers an event, so the stream is denser than the residual sampler's and
-/// the same rate fills a good share of the default cap at the bench's depth.
+/// offers an event, so the stream is denser than the residual sampler's.
 pub const DEFAULT_EVERY: u32 = 1_000;
 
 /// What kind of move cut a node off, in the ordering's own precedence:
@@ -57,7 +49,7 @@ pub enum Class {
 }
 
 impl Class {
-    /// The classes, in the order the summary reports them.
+    /// In the order the summary reports them.
     pub const KINDS: [Class; 5] = [
         Class::Table,
         Class::Capture,
@@ -66,7 +58,6 @@ impl Class {
         Class::Quiet,
     ];
 
-    /// The word a row prints.
     pub fn word(self) -> &'static str {
         match self {
             Class::Table => "table",
@@ -77,9 +68,8 @@ impl Class {
         }
     }
 
-    /// The class of a cutting move, from the move and the killer slots as
-    /// they stood at the cutoff. `table` is the caller's to say, being a
-    /// fact about where the move came from and not about the move.
+    /// From the move and the killer slots as they stood at the cutoff.
+    /// `table` is the caller's to say, being where the move came from.
     pub fn of(m: &Play, table: bool, killers: [Option<Play>; 2]) -> Class {
         if table {
             return Class::Table;
@@ -97,9 +87,8 @@ impl Class {
     }
 }
 
-/// What the node's table probe had given it by the time it answered. A probe
-/// that cut answered the node before the move loop, so no event carries it.
-/// Read from what the node already learned, never probed again.
+/// What the node's table probe had given it. A probe that cut answered the
+/// node before the move loop, so no event carries it. Never probed again.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum Table {
     Miss,
@@ -111,7 +100,6 @@ pub enum Table {
 }
 
 impl Table {
-    /// The word a row prints.
     pub fn word(self) -> &'static str {
         match self {
             Table::Miss => "miss",
@@ -120,8 +108,6 @@ impl Table {
         }
     }
 
-    /// What the node learned: whether the probe hit, and whether the move
-    /// it handed back was usable here.
     pub fn of(hit: bool, usable: bool) -> Table {
         match (hit, usable) {
             (false, _) => Table::Miss,
@@ -131,9 +117,7 @@ impl Table {
     }
 }
 
-/// What the engine hands the recorder about a cutting move: the move,
-/// whether its answer came through the reduced scout, and whether it was
-/// the table's move searched before generation.
+/// What the engine hands the recorder about a cutting move.
 #[derive(Clone, Copy, Debug)]
 pub struct Cutting<'a> {
     pub play: &'a Play,
@@ -141,88 +125,69 @@ pub struct Cutting<'a> {
     pub table: bool,
 }
 
-/// The cutting move's half of an event, only there when the node cut.
+/// The cutting move's half of an event.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct Cut {
-    /// The cutting move's place among the searched moves, so 0 is the
-    /// table's move when it was searched first. Always `searched - 1`,
-    /// recorded so a row is read without re-deriving it.
+    /// Always `searched - 1`, printed so a row is read without re-deriving
+    /// it.
     pub index: usize,
     pub class: Class,
-    /// The history table's score for the cutting move at the moment of the
-    /// cutoff, quiets only and 0 otherwise. Signed: an entry is a rate, and
-    /// a move tried more often than it cuts sits below zero. Read as a
-    /// fraction of `history_max` rather than raw, since the raw number moves
-    /// with what the search has learned since.
+    /// The history score at the cutoff, quiets only and 0 otherwise.
+    /// Signed: a move tried more often than it cuts sits below zero. Read as
+    /// a fraction of `history_max`, since the raw number moves with what the
+    /// search has learned.
     pub history: i32,
-    /// Whether the cutting move's answer came through the reduced scout.
     pub reduced: bool,
 }
 
-/// One node of the move loop answering. Everything is owned: an event
-/// outlives the search that took it.
+/// One node of the move loop answering.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct Event {
-    /// The position, as the board prints one, last on the row.
     pub fen: String,
-    /// The depth the node searched with, the check extension included.
+    /// The check extension included.
     pub depth: u8,
-    /// The window the node was entered with, read from its bounds.
     pub window: Window,
     pub in_check: bool,
-    /// The moves the node generated. Legal counts are unknowable without
-    /// making the moves, so the row holds what the list held; a node its
-    /// table move cut before generating says 0.
+    /// What the move list held, since legality is unknown until a move is
+    /// made; 0 where the table move cut before generation.
     pub generated: usize,
-    /// The moves actually made and searched, the cutting move among them.
-    /// What the cutoff censored is `generated - searched` less the illegal
-    /// ones, which is the reader's subtraction and not the row's.
+    /// The moves made and searched, the cutting move among them. What the
+    /// cutoff censored is `generated - searched` less the illegal ones.
     pub searched: usize,
-    /// The cutting move's half, or none when the loop ran out.
+    /// None when the loop ran out.
     pub cut: Option<Cut>,
-    /// The largest history score among the node's generated quiets, clamped
-    /// at zero: the denominator `Cut::history` is read against. 0 when
-    /// nothing was generated or the table has marked every quiet down.
+    /// The largest history score among the generated quiets, clamped at
+    /// zero: what `Cut::history` is read against.
     pub history_max: i32,
-    /// Whether the staged ordering ever scored the quiet band here, or the
-    /// front answered before the quiets were keyed. A list too long for the
-    /// stack is sorted whole, memories included, and still reads unscored;
-    /// such a node is rare and shows itself by its generated count.
+    /// Whether the staged ordering scored the quiet band before the node
+    /// answered. A list too long for the stack is sorted whole and still
+    /// reads unscored; such a node shows itself by its generated count.
     pub quiets_scored: bool,
     pub tt: Table,
-    /// The static evaluation less beta, computed for kept events alone and
-    /// exact rather than a cache read. Evaluating only the sampled nodes is
-    /// what keeps the census off the measured path.
+    /// The static evaluation less beta, computed for kept events alone,
+    /// which keeps it off the measured path.
     pub eval_beta: i32,
-    /// Nodes spent under this node: the node counter at its answer less the
-    /// counter at its entry.
+    /// Nodes spent under this node.
     pub cost: u64,
 }
 
-/// A whole run: what it was asked for and what it recorded, a row an event.
 #[derive(Clone, Debug)]
 pub struct Report {
     pub depth: u8,
     pub every: u32,
-    /// The most events the run would keep. Stated in the header only when
-    /// it is not the default.
     pub cap: usize,
-    /// Positions of the suite the run searched.
     pub positions: usize,
-    /// Every node offered, kept or not: the denominator the rows are read
-    /// against.
+    /// Every node offered, kept or not: the denominator.
     pub events: u64,
-    /// Events the buffer had no room for.
     pub overflowed: u64,
     pub rows: Vec<Event>,
 }
 
-/// Search the suite with the census armed, under the default configuration,
-/// since the ordering under census is the ordering the engine plays with.
+/// Search the suite with the census armed, under the default configuration
+/// the engine plays with.
 pub fn run(positions: &[Position], depth: u8, every: u32, cap: usize) -> Report {
     let depth = depth.max(1);
-    // the rate the sampler will really keep to, so the header states the
-    // run that happened
+    // what the sampler keeps to, so the header states the run that happened
     let every = every.max(1);
     let sampled = recorder::record(positions, depth, every, cap, SearchConfig::default());
     Report {
@@ -236,32 +201,26 @@ pub fn run(positions: &[Position], depth: u8, every: u32, cap: usize) -> Report 
     }
 }
 
-/// The events of one depth, counted the way the summary line prints them.
-/// By depth and not pooled, since the depths are reached in wildly different
-/// numbers and a pooled rate is the shallowest depth's rate wearing every
-/// depth's name.
+/// The events of one depth. Not pooled, for `residual::Summary`'s reason.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub struct Summary {
     pub depth: u8,
-    /// Every row at this depth, which the cut rate is a share of.
     pub records: usize,
     pub cuts: usize,
     /// Cuts at index 0, at indices 1 to 3, and at 4 and past.
     pub at_first: usize,
     pub early: usize,
     pub late: usize,
-    /// Moves searched over the cut rows and over the held rows, summed; the
-    /// line prints each as a mean over its own rows.
+    /// Summed; the line prints each as a mean over its own rows.
     pub searched_at_cuts: usize,
     pub searched_at_held: usize,
-    /// Cuts by the cutting move's class, in `Class::KINDS` order.
+    /// In `Class::KINDS` order.
     pub classes: [usize; 5],
     /// Cut rows whose quiet band was never scored.
     pub unscored_cuts: usize,
 }
 
 impl Report {
-    /// One depth's summary, or none when the run kept no row of it.
     pub fn summary(&self, depth: u8) -> Option<Summary> {
         let rows: Vec<&Event> = self.rows.iter().filter(|row| row.depth == depth).collect();
         if rows.is_empty() {
@@ -300,7 +259,7 @@ impl Report {
         Some(counted)
     }
 
-    /// Every summary the run has, shallowest depth first.
+    /// Shallowest depth first.
     pub fn summaries(&self) -> Vec<Summary> {
         let mut depths: Vec<u8> = self.rows.iter().map(|row| row.depth).collect();
         depths.sort_unstable();
@@ -321,19 +280,12 @@ fn mean(total: usize, over: usize) -> String {
     }
 }
 
-/// The report as the command prints it: a header, a row an event, and a
-/// summary line a depth.
+/// A header, a row an event, and a summary line a depth.
 ///
 /// A row is `depth window check outcome generated searched index class
 /// history history_max scored tt eval_beta cost reduced fen`, whitespace
-/// separated with the fen last, so it parses left to right and the field
-/// that can hold spaces holds the rest of the line. The four fields a held
-/// row has no value for, `index`, `class`, `history` and `reduced`, print
-/// `-` rather than moving the columns.
-///
-/// The header always states the events beside the records, since the rows
-/// are a share of the events and a share cannot be read without its
-/// denominator.
+/// separated with the fen last. The fields a held row has no value for
+/// print `-` rather than moving the columns.
 impl fmt::Display for Report {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         write!(f, "cutoffs depth {} every {}", self.depth, self.every)?;
@@ -391,7 +343,6 @@ impl fmt::Display for Report {
         writeln!(f)?;
         writeln!(f, "summary")?;
         let summaries = self.summaries();
-        // said rather than left out: a run that kept nothing is a fact
         if summaries.is_empty() {
             writeln!(f, "records 0")?;
         }
@@ -435,8 +386,6 @@ mod tests {
         Play::new(from, to, None, None, false, false)
     }
 
-    /// The key decides on the node alone, and the same node keys differently
-    /// under every residual kind.
     #[test]
     fn a_key_is_the_node_and_nothing_about_the_run() {
         let position = 0x0123_4567_89ab_cdef;
@@ -449,8 +398,6 @@ mod tests {
         }
     }
 
-    /// The ordering's own precedence, material first: a capture or a
-    /// promotion that is also a killer is not a killer.
     #[test]
     fn a_cutting_move_is_classed_material_first() {
         let m = quiet(8, 16);
@@ -489,7 +436,6 @@ mod tests {
         assert_eq!(Table::ScoreOnly.word(), "score_only");
     }
 
-    /// An event made up, for the tests that pin what the report prints.
     fn made_up(depth: u8, cut: Option<Cut>) -> Event {
         Event {
             fen: "4k3/8/8/8/8/8/8/4K3 w - - 0 1".to_string(),
@@ -531,8 +477,6 @@ mod tests {
         }
     }
 
-    /// The row's fields in the order the `Display` doc names them, and a
-    /// held row printing `-` where a cut row has values.
     #[test]
     fn a_row_reads_left_to_right_with_the_fen_last() {
         let report = report_of(vec![
@@ -624,8 +568,6 @@ mod tests {
         );
     }
 
-    /// The summary's counts, against rows made up to land one in each
-    /// bucket.
     #[test]
     fn the_summary_counts_the_cuts_and_where_they_fell() {
         let mut unscored = made_up(3, cut_at(0, Class::Table));
@@ -657,7 +599,6 @@ mod tests {
         );
     }
 
-    /// A line a depth, and the depth with no rows is not invented.
     #[test]
     fn each_depth_is_summarised_on_its_own() {
         let report = report_of(vec![
@@ -681,8 +622,6 @@ mod tests {
         );
     }
 
-    /// A depth of nothing but held rows has no cut to take a share of, so
-    /// the cut figures print `-`.
     #[test]
     fn a_depth_with_no_cuts_prints_no_cut_shares() {
         let report = report_of(vec![made_up(2, None)]);
@@ -698,8 +637,6 @@ mod tests {
         );
     }
 
-    /// The header states a cap off the default and an overflow, and neither
-    /// on an ordinary run.
     #[test]
     fn the_header_says_when_the_run_was_capped_or_dropped_something() {
         let mut report = report_of(Vec::new());
@@ -722,10 +659,6 @@ mod tests {
         );
     }
 
-    /// Every recorded row holds together with the position it names: the
-    /// generated count is the list the fen regenerates, the searched count
-    /// fits inside it, a cut's index is the last searched move, and the cost
-    /// covers at least one node per move searched.
     #[test]
     fn a_run_records_rows_that_match_their_positions() {
         let report = run(&suite(), 4, 1, DEFAULT_CAP);
@@ -759,7 +692,6 @@ mod tests {
             }
             assert!(row.cost >= row.searched as u64, "{:?}", row);
         }
-        // both outcomes are in the stream
         assert!(report.rows.iter().any(|row| row.cut.is_some()));
         assert!(report.rows.iter().any(|row| row.cut.is_none()));
         // and a full record of two positions holds a table move cutting
@@ -773,8 +705,6 @@ mod tests {
         );
     }
 
-    /// A killer cutting past the front is what the census is for, and a
-    /// full record of the suite holds one.
     #[test]
     fn a_full_record_holds_a_killer_cutting_late() {
         let report = run(&suite(), 4, 1, DEFAULT_CAP);
@@ -788,7 +718,6 @@ mod tests {
         assert!(killer.1.history <= killer.0.history_max);
     }
 
-    /// The recorders' shared contract, asked of the census.
     #[test]
     fn recording_leaves_the_measured_search_where_it_was() {
         recording_leaves_the_search_where_it_was(
@@ -805,8 +734,6 @@ mod tests {
         );
     }
 
-    /// A rate of zero and a depth of zero are held to one, and the header
-    /// states the run that happened.
     #[test]
     fn a_rate_of_zero_is_reported_as_the_rate_that_ran() {
         let report = run(&suite(), 0, 0, 50);

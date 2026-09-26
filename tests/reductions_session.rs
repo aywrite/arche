@@ -73,7 +73,6 @@ fn the_reductions_argument_prints_a_header_rows_and_a_summary() {
     assert!(low > 0, "no fail low rows in:\n{}", printed.all);
     assert!(replayed > low, "no skipped rows in:\n{}", printed.all);
 
-    // a line a depth
     for line in &printed.summary {
         assert!(line.starts_with("depth "), "summary line: {}", line);
         for word in [

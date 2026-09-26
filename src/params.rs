@@ -1,59 +1,46 @@
 // SPDX-License-Identifier: GPL-3.0-or-later
 // Copyright (C) 2022-2026 Andrew Wright
 
-//! Reading the parameters off a UCI command.
+//! Reading the parameters off a UCI command: a keyword followed by its
+//! value, `go wtime 300000 winc 2000`. A keyword counts only as a whole word,
+//! so `movetime 500` is not a value for `time`.
 //!
-//! A command is a line of whitespace separated words, and a parameter is a
-//! keyword followed by its value: `go wtime 300000 winc 2000 movestogo 40`.
-//!
-//! Whole words throughout: a keyword only counts where it stands as a word of
-//! its own, so `movetime 500` cannot be read as a value for `time`.
-//!
-//! A keyword with nothing after it is a reading of its own rather than the
-//! keyword being absent. Which of the two a caller wants differs by side. The
-//! binary's arguments refuse it, because a measurement run at a default
-//! nobody asked for takes as long as the one that was asked for and answers a
-//! different question. The protocol carries on either way: a `setoption` with
-//! nothing to apply says so, and a clock or a move time with nothing after it
-//! reads as spent rather than as never sent.
+//! A keyword with nothing after it is `Bare`, not absent. The binary's
+//! arguments refuse it, since a measurement at a default nobody asked for
+//! takes as long and answers a different question. The protocol carries on:
+//! a bare clock or move time reads as spent.
 
 use std::num::IntErrorKind;
 use std::str::FromStr;
 
 /// The words of one command line.
-// pub so a caller outside the crate can build one and hand it to a settings
-// reader; the readers stay pub(crate) until something outside needs one
+// pub so a caller outside the crate can build one; the readers stay pub(crate)
 pub struct Params<'a> {
     words: Vec<&'a str>,
 }
 
-/// What reading one parameter found. Says what happened rather than deciding,
-/// because the right reading differs by parameter: an unreadable clock is
-/// safest read as spent, while an unreadable depth is better ignored than
-/// obeyed as zero.
+/// What reading one parameter found, left to the caller to judge: an
+/// unreadable clock is safest read as spent, an unreadable depth better
+/// ignored than obeyed as zero.
 #[derive(Debug, PartialEq, Eq)]
 pub(crate) enum Param<'a, T> {
     /// The keyword is not among the words.
     Absent,
-    /// The keyword is the last of the words, so the value it takes is not
-    /// there to read. Apart from absent because the two were meant
-    /// differently: a setting left off the line asks for its default, and one
-    /// typed with nothing after it asks for a value that is missing.
+    /// The keyword is the last word, so its value is missing. Kept apart
+    /// from `Absent`: a setting left off asks for its default, and one typed
+    /// bare asks for a value that is not there.
     Bare,
-    /// The keyword is there and what follows it is not a value. Carries the
-    /// word, for a caller that wants to say which it was.
+    /// What follows the keyword is not a value.
     Unreadable(&'a str),
     Read(T),
 }
 
-/// What stands where the word would in a refusal naming a keyword that was
-/// typed with nothing after it. The refusals read `<setting>: <word>`, and
-/// here there is no word to name.
+/// What a refusal of a bare keyword prints where `<setting>: <word>` has
+/// its word.
 pub(crate) const NO_VALUE: &str = "no value";
 
 impl<'a> Params<'a> {
-    /// The words of the line, in order, for the one caller that cares where
-    /// a word stands (`Command::claim`).
+    /// The words in order, for a caller that cares where a word stands.
     pub(crate) fn words(&self) -> &[&'a str] {
         &self.words
     }
@@ -69,9 +56,8 @@ impl<'a> Params<'a> {
         self.words.contains(&keyword)
     }
 
-    /// The word following `keyword`, or which of the two ways there is none.
-    /// `Absent` or `Bare`, never `Unreadable`: any word at all is a word, so
-    /// a setting whose value is one cannot fail to read it.
+    /// The word following `keyword`. Never `Unreadable`, since any word is a
+    /// word.
     pub(crate) fn value(&self, keyword: &str) -> Param<'a, &'a str> {
         match self.following(keyword) {
             Ok(word) => Param::Read(word),
@@ -79,8 +65,7 @@ impl<'a> Params<'a> {
         }
     }
 
-    /// The word following `keyword`, or the reading that stands for there
-    /// being none, for the readers that go on to judge the word themselves.
+    /// The word following `keyword`, or the reading for there being none.
     fn following<T>(&self, keyword: &str) -> Result<&'a str, Param<'a, T>> {
         let Some(at) = self.words.iter().position(|word| *word == keyword) else {
             return Err(Param::Absent);
@@ -88,10 +73,9 @@ impl<'a> Params<'a> {
         self.words.get(at + 1).copied().ok_or(Param::Bare)
     }
 
-    /// The words between `keyword` and `until`, joined by a single space, or
-    /// everything after `keyword` when `until` is not there. None when the
-    /// keyword is absent or nothing stands between the two. An option name
-    /// may run to several words (`Clear Hash`).
+    /// The words between `keyword` and `until` (or the end), joined by a
+    /// space, for an option name of several words (`Clear Hash`). None when
+    /// the keyword is absent or nothing stands between.
     pub(crate) fn phrase(&self, keyword: &str, until: &str) -> Option<String> {
         let at = self.words.iter().position(|word| *word == keyword)?;
         let rest = &self.words[at + 1..];
@@ -157,12 +141,10 @@ impl<'a, T> Param<'a, T> {
         }
     }
 
-    /// The value read, with a keyword carrying no value standing in as
-    /// `instead`. Only a keyword that is not on the line at all is absent: a
-    /// word typed with nothing after it was still typed, and every caller
-    /// here reads a clock or a move time, where one that was sent and cannot
-    /// be had is safer read as spent than as no time at all, since a `go`
-    /// with no time searches without a limit.
+    /// The value read, or `instead` for a keyword sent without a readable
+    /// value; none only when the keyword is absent. Every caller reads a
+    /// clock or a move time, and a clock that was sent is safer read as spent
+    /// than as missing: a `go` with no time searches without a limit.
     pub(crate) fn read_or(self, instead: T) -> Option<T> {
         match self {
             Param::Read(value) => Some(value),
@@ -171,11 +153,10 @@ impl<'a, T> Param<'a, T> {
         }
     }
 
-    /// The value read, with both ways of naming a setting and giving it no
-    /// value refused under the setting's own name. For the binary's
-    /// arguments, where running the default in place of a value nobody typed
-    /// takes minutes and explains nothing. An absent keyword is no refusal,
-    /// since leaving one off the line is how its default is asked for.
+    /// The value read, or a refusal under the setting's own name for a
+    /// keyword that is bare or unreadable. For the binary's arguments. An
+    /// absent keyword is `Ok(None)`, since leaving it off asks for the
+    /// default.
     pub(crate) fn or_refuse(self, keyword: &str) -> Result<Option<T>, String> {
         match self {
             Param::Read(value) => Ok(Some(value)),
@@ -240,8 +221,6 @@ mod tests {
         );
     }
 
-    /// Apart from the keyword not being there at all, so that a setting given
-    /// no value is refused rather than run at a default nobody asked for.
     #[test]
     fn a_keyword_with_nothing_after_it_is_bare_rather_than_absent() {
         let params = Params::of("go depth");
@@ -295,8 +274,6 @@ mod tests {
         assert_eq!(Params::of("go wtime 5").count("wtime").read(), Some(5));
     }
 
-    /// A keyword that was typed stands in, whether the word after it was no
-    /// value or was not there: either way a clock was sent.
     #[test]
     fn read_or_stands_in_for_a_keyword_that_was_sent_but_not_for_an_absent_one() {
         assert_eq!(Params::of("go").count("wtime").read_or(0), None);
@@ -367,31 +344,24 @@ mod properties {
             let _ = params.parse::<usize>(&keyword);
         }
 
-        /// Any count the protocol could send reads back as itself.
         #[test]
         fn a_count_reads_back_as_itself(keyword in keyword(), value in any::<u64>()) {
             let line = format!("{} {}", keyword, value);
             prop_assert_eq!(Params::of(&line).count(&keyword), Param::Read(value));
         }
 
-        /// However far below zero, a clock reads as spent rather than as
-        /// unreadable.
         #[test]
         fn any_negative_count_is_a_spent_one(keyword in keyword(), digits in "[0-9]{1,40}") {
             let line = format!("{} -{}", keyword, digits);
             prop_assert_eq!(Params::of(&line).count(&keyword), Param::Read(0));
         }
 
-        /// However far above what a word holds, a count reads as the largest
-        /// one rather than as unreadable.
         #[test]
         fn any_count_too_large_is_the_largest_one(keyword in keyword(), digits in "[1-9][0-9]{20,40}") {
             let line = format!("{} {}", keyword, digits);
             prop_assert_eq!(Params::of(&line).count(&keyword), Param::Read(u64::MAX));
         }
 
-        /// Every keyword of a line reads its own value and none of its
-        /// neighbours'.
         #[test]
         fn every_keyword_reads_its_own_value(
             pairs in prop::collection::vec((keyword(), any::<u32>()), 1..8),
@@ -413,7 +383,6 @@ mod properties {
             }
         }
 
-        /// Spacing does not change which word is the value of which.
         #[test]
         fn spacing_does_not_change_what_is_read(
             keyword in keyword(),
@@ -439,8 +408,8 @@ mod properties {
             prop_assert!(!Params::of(&line).flag(&keyword));
         }
 
-        /// The strict read is the standard library's, and differs from it only
-        /// in saying which word would not parse.
+        /// The strict read differs from the standard library's only in naming
+        /// the word that would not parse.
         #[test]
         fn the_strict_read_agrees_with_the_standard_library(
             keyword in keyword(),
@@ -454,8 +423,8 @@ mod properties {
             }
         }
 
-        /// A parameter is absent exactly when its keyword is not a word of
-        /// the line, and bare exactly when it is the last of them.
+        /// Absent exactly when the keyword is not a word of the line, and bare
+        /// exactly when its first appearance is the last word.
         #[test]
         fn absent_and_bare_are_the_two_ways_there_is_no_word_to_read(
             line in ".*",
