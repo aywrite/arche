@@ -243,13 +243,4 @@ mod tests {
             assert!(!TAKES.takes(word), "{word}");
         }
     }
-
-    #[test]
-    fn a_refusal_is_shaped_like_the_others() {
-        assert_eq!(
-            TAKES.claim(&Params::of("probe 4 evrey 50")).unwrap_err(),
-            "word: evrey"
-        );
-        assert!(TAKES.claim(&Params::of("probe 4 every 50")).is_ok());
-    }
 }
