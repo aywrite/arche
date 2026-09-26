@@ -107,10 +107,16 @@ term over every pair of pieces.
   searched before, keyed by zobrist hash, holding the score and best move
   found last time. Entries are 16 bytes, four to a cache line, replaced by
   age and depth. A hit can answer a node outright or just say which move
-  to try first. Tainted scores are counted and by default trusted anyway,
-  except close to the fifty move horizon where every cutoff is refused;
-  ROADMAP.md has the match that chose that, and the reference search keeps
-  the refusal.
+  to try first. Tainted scores are by default trusted anyway, except close
+  to the fifty move horizon where every cutoff is refused; ROADMAP.md has
+  the match that chose that, and the reference search keeps the refusal. A
+  probe says whether it cut, refused or only ordered, and a store whether
+  it landed. Outside its signature audit the table counts none of it.
+- **ghi.rs**: What the search counts of its use of the table: the cutoffs
+  and stores, how many of each carried a draw taint, and the cutoffs and
+  stores the taint policy turned away. The searcher owns the counts, so
+  they run over the engine's life and survive a new table. The bench
+  prints them.
 - **eval/**: What a position scores: a file per leaf term, the pair term and
   its table, and two files for what they share.
   - **mod.rs**: The material values, the phase weights the taper is read at,

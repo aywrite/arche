@@ -8,6 +8,7 @@ pub mod census;
 pub mod effort;
 mod engine;
 mod eval;
+mod ghi;
 mod late_move;
 mod limits;
 mod magic;

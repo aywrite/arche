@@ -49,37 +49,6 @@ fn score_from_tt(score: Score, line_ply: usize) -> Score {
     }
 }
 
-/// How often the table hands back a score that depended on the path taken
-/// rather than on the position: the graph history interaction error. The
-/// figures cover the whole search, quiescence included, since quiescence
-/// stores real bounds and takes real cutoffs.
-#[derive(Copy, Clone, Debug, Default)]
-pub struct GhiCounters {
-    /// Entries which landed carrying a draw tainted score.
-    pub tainted_stores: u64,
-    /// Entries which landed and whose score a probe could later cut on. A
-    /// store that loses the replacement contest is not one.
-    pub stores: u64,
-    /// Probes that returned a score, cutting the search off.
-    pub score_cutoffs: u64,
-    /// Probes that returned a tainted score, which is the error itself: the
-    /// stored draw was reachable by the path that stored it and may not be
-    /// reachable by this one. Zero while the search refuses them.
-    pub tainted_score_cutoffs: u64,
-    /// Tainted results the search declined to offer the table under a
-    /// policy that keeps only clean scores, counted before the replacement
-    /// contest: some would have lost it anyway, so this is the policy's
-    /// reach rather than exactly what the table went without.
-    pub skipped_stores: u64,
-    /// Probes that found a tainted score deep enough to cut and refused it,
-    /// handing back the move alone. Counted in the branch where a trusting
-    /// search takes its cutoff, so the two are the same event under each
-    /// policy, though not the same count: the refusing search is the larger
-    /// tree. Zero while the search trusts them; under the rule50 policy
-    /// this counts its horizon refusals instead, tainted or not.
-    pub refused_cutoffs: u64,
-}
-
 /// What the entry's thirty two bit key slice costs. A probe accepts an
 /// entry when the slice matches, so two positions sharing a slice and an
 /// index make the search read a stranger's entry as its own, about one
@@ -267,6 +236,9 @@ pub enum Probe {
     Miss,
     /// A move worth trying first, and no score worth trusting.
     Order(Play),
+    /// A cutoff the taint policy turned away: the entry was deep enough and
+    /// its bound would have cut, and the move is handed back for ordering.
+    Refused(Play),
     /// A score the caller may return without searching, carrying where it
     /// came from, because that travels on up.
     Cut(Value),
@@ -536,7 +508,6 @@ mod huge_pages {
 #[derive(Debug)]
 pub struct TranspositionTable {
     table: Vec<Bucket>,
-    ghi: GhiCounters,
     /// The search under way, as the entries it stores are marked.
     generation: u8,
     /// The full keys of the entries, or none, which is what every table an
@@ -584,7 +555,6 @@ impl TranspositionTable {
         table.resize(buckets, Bucket::EMPTY);
         Some(Self {
             table,
-            ghi: GhiCounters::default(),
             generation: 1,
             audit: None,
         })
@@ -817,64 +787,59 @@ impl TranspositionTable {
 
     /// A move the search failed high on: the score is a floor under the
     /// position's worth, fail soft, so at least as tight as the beta it
-    /// crossed.
-    pub fn record_cutoff(&mut self, board: &Board, play: Play, floor: Value, depth: u8) {
-        if self.set(board.key, entry(board, play, floor, depth, Bound::Lower)) {
-            self.count_store(floor.tainted);
-        }
+    /// crossed. Each `record_` method reports whether the entry landed.
+    #[must_use]
+    pub fn record_cutoff(&mut self, board: &Board, play: Play, floor: Value, depth: u8) -> bool {
+        self.set(board.key, entry(board, play, floor, depth, Bound::Lower))
     }
 
     /// Every move here fell short of the window: the score is a ceiling,
     /// and the move is the one that came closest, worth trying first next
     /// time though it proved nothing.
-    pub fn record_ceiling(&mut self, board: &Board, play: Play, ceiling: Value, depth: u8) {
-        if self.set(board.key, entry(board, play, ceiling, depth, Bound::Upper)) {
-            self.count_store(ceiling.tainted);
-        }
+    #[must_use]
+    pub fn record_ceiling(&mut self, board: &Board, play: Play, ceiling: Value, depth: u8) -> bool {
+        self.set(board.key, entry(board, play, ceiling, depth, Bound::Upper))
     }
 
     /// The best move found by searching all of them here, with its exact
     /// score.
-    pub fn record_best(&mut self, board: &Board, play: Play, score: Value, depth: u8) {
-        if self.set(board.key, entry(board, play, score, depth, Bound::Exact)) {
-            self.count_store(score.tainted);
-        }
+    #[must_use]
+    pub fn record_best(&mut self, board: &Board, play: Play, score: Value, depth: u8) -> bool {
+        self.set(board.key, entry(board, play, score, depth, Bound::Exact))
     }
 
     /// The move the engine is about to answer with, stored past the depth
-    /// contest for the reason `set_always` gives.
-    pub fn record_answer(&mut self, board: &Board, play: Play, score: Value, depth: u8) {
+    /// contest for the reason `set_always` gives, so it always lands.
+    #[must_use]
+    pub fn record_answer(&mut self, board: &Board, play: Play, score: Value, depth: u8) -> bool {
         self.set_always(board.key, entry(board, play, score, depth, Bound::Exact));
-        self.count_store(score.tainted);
+        true
     }
 
     /// The move a root iteration failed high on, stored past the depth
     /// contest as the floor it is, so the wider re-search orders it first.
-    pub fn record_floor_answer(&mut self, board: &Board, play: Play, floor: Value, depth: u8) {
+    /// It always lands.
+    #[must_use]
+    pub fn record_floor_answer(
+        &mut self,
+        board: &Board,
+        play: Play,
+        floor: Value,
+        depth: u8,
+    ) -> bool {
         self.set_always(board.key, entry(board, play, floor, depth, Bound::Lower));
-        self.count_store(floor.tainted);
-    }
-
-    /// The search declined a store under its taint policy; see
-    /// `GhiCounters::skipped_stores`.
-    #[inline]
-    pub fn count_skipped_store(&mut self) {
-        self.ghi.skipped_stores += 1;
-    }
-
-    #[inline]
-    fn count_store(&mut self, tainted: bool) {
-        self.ghi.stores += 1;
-        self.ghi.tainted_stores += u64::from(tainted);
+        true
     }
 
     /// What the table knows about this position, given the window and
     /// depth the caller is searching to. A score is handed back only when
     /// the entry is deep enough, its bound allows a cutoff at the window,
-    /// and the policy (`refuse_tainted`, `guard_rule50`) trusts it.
+    /// and the policy (`refuse_tainted`, `guard_rule50`) trusts it. A
+    /// cutoff the policy turns away comes back as `Refused`, so the caller
+    /// can count it.
     #[inline(always)]
     pub fn probe(
-        &mut self,
+        &self,
         board: &Board,
         alpha: Score,
         beta: Score,
@@ -897,17 +862,13 @@ impl TranspositionTable {
             if cuts && guard_rule50 && board.fifty_move_near_expiry() {
                 // near the horizon every stored score is suspect, tainted
                 // or not
-                self.ghi.refused_cutoffs += 1;
-                return Probe::Order(pv.play);
+                return Probe::Refused(pv.play);
             }
             if cuts && refuse_tainted && pv.tainted {
                 // the stored draw may not be reachable by this path
-                self.ghi.refused_cutoffs += 1;
-                return Probe::Order(pv.play);
+                return Probe::Refused(pv.play);
             }
             if cuts {
-                self.ghi.score_cutoffs += 1;
-                self.ghi.tainted_score_cutoffs += u64::from(pv.tainted);
                 self.count_false_accept_cutoff(foreign);
                 return Probe::Cut(Value::with_taint(score, pv.tainted));
             }
@@ -928,11 +889,6 @@ impl TranspositionTable {
     pub fn intended_play(&self, board: &Board) -> Option<Play> {
         let pv = self.get(board.key)?;
         (pv.depth > 0 && !matches!(pv.bound, Bound::Ordering)).then_some(pv.play)
-    }
-
-    /// How much of what the table handed back depended on the path taken.
-    pub fn ghi(&self) -> GhiCounters {
-        self.ghi
     }
 }
 
@@ -1159,7 +1115,7 @@ mod tests {
         let mut table = TranspositionTable::with_capacity(4).expect("a table of a few buckets");
         let board = crate::board::Board::new();
         let play = Play::new(0, 1, None, None, false, false);
-        table.record_ceiling(&board, play, Value::clean(-50), 5);
+        assert!(table.record_ceiling(&board, play, Value::clean(-50), 5));
         match table.probe(&board, -10, 10, 5, true, false) {
             Probe::Cut(value) => assert_eq!(value, Value::clean(-50)),
             other => panic!("a ceiling under alpha did not cut: {other:?}"),
@@ -1205,7 +1161,7 @@ mod tests {
             let mut board = crate::board::Board::new();
 
             board.line_ply = STORED_AT;
-            table.record_best(&board, play, stored, 5);
+            assert!(table.record_best(&board, play, stored, 5));
 
             board.line_ply = PROBED_AT;
             match table.probe(&board, Score::MIN + 1, Score::MAX - 1, 5, false, false) {
@@ -1218,23 +1174,60 @@ mod tests {
     #[test]
     fn the_rule50_guard_refuses_any_cutoff_at_the_horizon() {
         // a deep clean entry cuts from a fresh position and is refused
-        // move-only once the counter stands at the guard, with the refusal
-        // counted
+        // move-only once the counter stands at the guard, as a refusal the
+        // search can count
         use super::Probe;
         let mut table = TranspositionTable::with_capacity(4).expect("a table of a few buckets");
         let fresh = crate::board::Board::from_fen("4k3/8/8/8/8/8/8/4K3 w - - 0 1").unwrap();
         let near = crate::board::Board::from_fen("4k3/8/8/8/8/8/8/4K3 w - - 96 112").unwrap();
         let play = Play::new(0, 1, None, None, false, false);
-        table.record_best(&fresh, play, Value::clean(0), 5);
+        assert!(table.record_best(&fresh, play, Value::clean(0), 5));
         assert!(matches!(
             table.probe(&fresh, -10, 10, 5, false, true),
-            Probe::Cut { .. }
+            Probe::Cut(_)
         ));
+        match table.probe(&near, -10, 10, 5, false, true) {
+            Probe::Refused(refused) => assert_eq!(refused, play),
+            other => panic!("the horizon did not refuse the cutoff: {other:?}"),
+        }
+    }
+
+    #[test]
+    fn a_tainted_cutoff_is_refused_only_when_the_policy_refuses_it() {
+        // the same tainted entry cuts for a trusting probe and comes back
+        // as a refusal, move attached, for a refusing one
+        use super::Probe;
+        let mut table = TranspositionTable::with_capacity(4).expect("a table of a few buckets");
+        let board = crate::board::Board::new();
+        let play = Play::new(0, 1, None, None, false, false);
+        assert!(table.record_best(&board, play, Value::tainted(0), 5));
+        match table.probe(&board, -10, 10, 5, false, false) {
+            Probe::Cut(value) => assert_eq!(value, Value::tainted(0)),
+            other => panic!("a trusting probe did not cut: {other:?}"),
+        }
+        match table.probe(&board, -10, 10, 5, true, false) {
+            Probe::Refused(refused) => assert_eq!(refused, play),
+            other => panic!("a refusing probe did not refuse: {other:?}"),
+        }
+        // too shallow to cut is a move alone, not a refusal
         assert!(matches!(
-            table.probe(&near, -10, 10, 5, false, true),
+            table.probe(&board, -10, 10, 6, true, false),
             Probe::Order(_)
         ));
-        assert_eq!(table.ghi().refused_cutoffs, 1);
+    }
+
+    #[test]
+    fn a_probe_reads_the_table_through_a_shared_reference() {
+        use super::Probe;
+        let mut table = TranspositionTable::with_capacity(4).expect("a table of a few buckets");
+        let board = crate::board::Board::new();
+        let play = Play::new(0, 1, None, None, false, false);
+        assert!(table.record_best(&board, play, Value::clean(20), 5));
+        let shared = &table;
+        assert!(matches!(
+            shared.probe(&board, -10, 10, 5, true, false),
+            Probe::Cut(_)
+        ));
     }
 
     #[test]
@@ -1247,18 +1240,21 @@ mod tests {
     }
 
     #[test]
-    fn a_turned_away_store_is_not_counted() {
-        // the shallow cutoff is turned away and must leave the figures
-        // alone; deeper, it lands and counts
+    fn a_recorded_store_says_whether_it_landed() {
+        // the shallow cutoff is turned away and says so, which is what
+        // keeps it out of the search's figures; deeper, it lands
         let mut table = full_bucket(8);
         let board = crate::board::Board::new();
         let play = Play::new(0, 1, None, None, false, false);
-        table.record_cutoff(&board, play, Value::tainted(0), 1);
-        assert_eq!(table.ghi().stores, 0, "a turned away store was counted");
-        assert_eq!(table.ghi().tainted_stores, 0);
-        table.record_cutoff(&board, play, Value::tainted(0), 9);
-        assert_eq!(table.ghi().stores, 1);
-        assert_eq!(table.ghi().tainted_stores, 1);
+        assert!(
+            !table.record_cutoff(&board, play, Value::tainted(0), 1),
+            "a turned away store said it landed"
+        );
+        assert!(table.record_cutoff(&board, play, Value::tainted(0), 9));
+        // the root's stores go past the contest, so they always land
+        let mut table = full_bucket(20);
+        assert!(table.record_answer(&board, play, Value::clean(0), 1));
+        assert!(table.record_floor_answer(&board, play, Value::clean(0), 1));
     }
 
     #[test]
@@ -1499,7 +1495,7 @@ mod tests {
         assert!(table.audit_signatures());
         let board = crate::board::Board::new();
         let play = Play::new(0, 1, None, None, false, false);
-        table.record_best(&board, play, Value::clean(20), 5);
+        assert!(table.record_best(&board, play, Value::clean(20), 5));
         // a key differing above the slice, sharing the one bucket's index
         let mut twin = board.clone();
         twin.key ^= 1 << 63;

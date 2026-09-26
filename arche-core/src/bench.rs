@@ -516,6 +516,44 @@ mod tests {
     }
 
     #[test]
+    #[cfg_attr(
+        feature = "machine-test",
+        ignore = "pins a search made with the shipped factor table, which the test rank replaces"
+    )]
+    fn the_table_figures_have_not_moved() {
+        // the figures the search counts at each probe and store, pinned
+        // exactly on one small position, so a site that stops counting, or
+        // counts what did not land, fails here as the bench's tree would
+        let suite = parse_epd("8/2p5/3p4/KP5r/1R3p1k/8/4P1P1/8 w - - id \"rook and pawns\";");
+        let figures = |config: SearchConfig| {
+            let p = &run_suite(&suite, 7, 1 << 16, config).positions[0];
+            [
+                p.nodes,
+                p.tt_cutoffs,
+                p.tt_stores,
+                p.tainted_stores,
+                p.tainted_cutoffs,
+                p.refused_cutoffs,
+                p.skipped_stores,
+            ]
+        };
+        let skipping = SearchConfig::with_taint("skip").expect("skip is a policy");
+        assert_eq!(
+            [
+                figures(SearchConfig::reference()),
+                figures(SearchConfig::default()),
+                figures(skipping),
+            ],
+            [
+                [188_166, 7_009, 23_849, 400, 0, 192, 0],
+                [18_218, 1_401, 4_905, 90, 25, 0, 0],
+                [16_173, 1_178, 4_261, 5, 0, 0, 57],
+            ],
+            "nodes, cutoffs, stores, tainted, tcuts, refused, skipped"
+        );
+    }
+
+    #[test]
     fn the_report_counts_every_position() {
         let suite = parse_epd(
             "4k3/8/8/8/8/8/8/4K3 w - - id \"bare kings\";\n\
