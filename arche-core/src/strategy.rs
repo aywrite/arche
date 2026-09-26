@@ -5,15 +5,11 @@
 //! fixed depth with a fixed table, and how many of the points on offer the
 //! moves it chose were worth.
 //!
-//! The tactical suite says whether the search still finds the move, and a
-//! change that makes the engine worse at quiet play can leave its count
-//! where it was. This says whether the evaluation still prefers the same
-//! kind of position. It grades rather than passes or fails: each position
-//! carries up to ten moves with a score out of a hundred, so a second best
-//! move is worth most of the points and the total moves by a little where a
-//! count of solved positions would not move at all. A fixed depth and a
-//! fixed table make the total exact and the same on any machine, which is
-//! what lets it gate rather than only report.
+//! This says whether the evaluation still prefers the same kind of position,
+//! which the tactical count can miss. Each position carries up to ten moves
+//! scored out of a hundred, so a second best move is worth most of the
+//! points. A fixed depth and a fixed table make the total exact and the same
+//! on any machine, which is what lets it gate rather than only report.
 
 use crate::bench::{Position, parse_epd};
 use crate::engine::SearchConfig;
@@ -23,12 +19,10 @@ use std::fmt;
 /// The depth every position is searched to, the tactical suite's six, and
 /// part of what the total below means.
 ///
-/// The suite takes 57.4, 60.3, 61.9 and 63.3 percent of its points at depths
-/// four to seven, so it discriminates at any of them; what decides is the
-/// clock. Six takes about thirteen seconds here, where seven takes thirty
-/// five for another one and a half points. Five times the tactical suite's
-/// positions for not much more than its time, since a quiet middlegame cuts
-/// off far sooner than a tactic does.
+/// When the suite was added (10a6945) it took 57.4, 60.3, 61.9 and 63.3
+/// percent of its points at depths four to seven, so it discriminates at any
+/// of them; what decided was the clock. Six took about thirteen seconds
+/// locally, and seven thirty five for another one and a half points.
 pub const DEPTH: u8 = 6;
 
 /// The table every position is searched with, part of the total for the same
@@ -37,7 +31,7 @@ pub const TABLE_BYTES: usize = 16 * 1024 * 1024;
 
 /// How many of the suite's points the search takes at that depth with that
 /// table. Exact, not a floor: a change that moves it updates this number in
-/// the same commit, which puts the movement in the diff.
+/// the same commit.
 pub const EXPECTED_POINTS: u32 = 97951;
 
 const SUITE: &str = include_str!("../strategy.epd");
@@ -189,11 +183,9 @@ impl fmt::Display for Report {
     }
 }
 
-/// Runs the suite under the settings given. The search is the tactical
-/// suite's runner; with `bm` holding the top scoring moves its `passed` says
-/// the search played one of them, and the move it played is looked up in
-/// the position's points, which is nothing for a move the source did not
-/// grade.
+/// Runs the suite under the settings given, on the tactical suite's runner.
+/// With `bm` holding the top scoring moves, its `passed` says the search
+/// played one of them. A move the source did not grade scores nothing.
 pub fn run_suite(
     positions: &[Position],
     depth: u8,
@@ -334,9 +326,8 @@ mod tests {
         assert_eq!(available, AVAILABLE, "the points on offer moved");
     }
 
-    /// Ignored because it searches all fifteen hundred positions. A job of
-    /// its own runs it in ci, and `cargo test --workspace --release --
-    /// --ignored` runs it by hand.
+    /// Ignored because it searches the whole suite. A job of its own runs it
+    /// in ci; see docs/DEVELOPMENT.md for running it by hand.
     #[test]
     #[ignore]
     fn the_strategy_suite_scores_what_it_scored_before() {

@@ -47,8 +47,7 @@ const fn king_files(square: u8) -> u8 {
 /// files [`king_files`] names, and empty where that rank is off the board.
 /// `forward` is the direction the side's pawns push. A king that has walked
 /// far enough up is left with nothing in front of it, which is the answer
-/// rather than a case to rule out: what a king with no shelter is worth is
-/// for the weights to say.
+/// rather than a case to rule out.
 const fn shelter_rank(square: u8, forward: i8, ahead: i8) -> u64 {
     let rank = (square / 8) as i8 + forward * ahead;
     if rank < 0 || rank > 7 {
@@ -70,7 +69,6 @@ struct Masks {
 }
 
 impl Masks {
-    /// Built at compile time.
     const fn new() -> Self {
         let mut masks = Masks {
             ahead: [[[0; 64]; 2]; RANKS_AHEAD],
@@ -107,10 +105,9 @@ static MASKS: Masks = Masks::new();
 /// design factor of 3.9, which is 0.68 standard errors from the selection
 /// group's -0.000649. Commits d84f36d and 577c2e4 hold the rest.
 ///
-/// Not one of the fourteen rounded to nothing, so every count is priced and
-/// none can be left uncounted at the leaf the way `mobility::SCORED_KINDS`
-/// leaves a mobility kind. The memo in [`super::Caches`] is what pays for the
-/// seven instead.
+/// Not one of the fourteen rounded to nothing, so no count can be left
+/// uncounted at the leaf the way `mobility::SCORED_KINDS` leaves a kind; the
+/// memo in [`super::Caches`] pays for the seven instead.
 ///
 /// Two of the storm's three signs are not what the term was named for: an
 /// enemy pawn one rank in front of the king reads 11 and 35 and three ranks
@@ -174,14 +171,11 @@ pub(crate) fn key(board: &Board) -> u64 {
 /// both leave the near count short, and only the first opens the file to a
 /// rook.
 ///
-/// Nothing is gated on the king standing at home. A king that has walked up
-/// the board has no rank in front of it inside the masks and counts nothing,
-/// so the term fades rather than falling off a cliff the search could step
-/// over.
+/// Nothing is gated on the king standing at home, so the term fades as the
+/// king walks up rather than falling off a cliff the search could step over.
 ///
-/// The evaluation and the tuner's walk both read this, so the identity
-/// between them cannot see a wrong count here; the hand counts in the tests
-/// below are what pin it.
+/// The evaluation and the tuner's walk both read this, so the hand counts in
+/// the tests below are what pin it.
 #[inline]
 pub(crate) fn counts_of(board: &Board, color: Color) -> [i32; COUNTS] {
     let masks = &MASKS;
@@ -236,20 +230,15 @@ fn fold_with(board: &Board, weights: &[i32; COUNTS]) -> i32 {
     )
 }
 
-/// How wide a table the shelter is remembered in, which is what
-/// [`super::Caches`] builds its own with. Most moves in a search are piece
-/// moves, which leave the pawns and the two kings alone, so the score
-/// computed at one leaf answers a great many of the leaves after it.
+/// How wide a table the shelter is remembered in. Most moves in a search
+/// leave the pawns and the two kings alone, so one leaf's score answers many
+/// of the leaves after it.
 ///
-/// Eight thousand entries at sixteen bytes is a hundred and twenty eight
-/// kilobytes, past the first level cache and inside the second. Measured with
-/// callgrind over the bench, cache simulated, at eleven, twelve, thirteen and
-/// fourteen bits (066784c): 3,968,905,639, 3,958,897,319, 3,950,063,019 and
-/// 3,943,552,801 instructions against last level misses of 284,996, 285,117,
-/// 286,191 and 292,291. Thirteen is the last size the memory does not
-/// notice, and the whole range is within two thirds of a percent of
-/// instructions, so the constant is not load bearing and a later working set
-/// can move it.
+/// Callgrind over the bench at 066784c, cache simulated, at eleven to
+/// fourteen bits: last level misses of 284,996, 285,117, 286,191 and 292,291,
+/// with instructions within two thirds of a percent across the range.
+/// Thirteen is the last size the memory does not notice; the constant is not
+/// load bearing and a later working set can move it.
 pub(super) const CACHE_BITS: usize = 13;
 
 #[cfg(test)]

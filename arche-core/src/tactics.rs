@@ -5,11 +5,10 @@
 //! depth with a fixed table, and how many of them the search found the move
 //! in.
 //!
-//! The bench says how much of the tree the search looked at and nothing about
-//! whether the change was good. This says whether the search still finds the
-//! move, which a change to the tree alone should leave where it was. A fixed
-//! depth and a fixed table make the count exact and the same on any machine,
-//! which is what lets it gate rather than only report.
+//! The bench says how much of the tree the search looked at; this says
+//! whether it still finds the move. A fixed depth and a fixed table make the
+//! count exact and the same on any machine, which is what lets it gate rather
+//! than only report.
 
 use crate::bench::{Position, parse_epd};
 use crate::board::Board;
@@ -18,10 +17,11 @@ use crate::engine::{AlphaBeta, Engine, SearchConfig, SearchOutcome, SearchParame
 /// The depth every position is searched to, chosen from a measurement and
 /// then frozen, since it is part of what the count below means.
 ///
-/// The suite solves 193, 232, 243, 258 and 276 of its three hundred at
-/// depths four to eight, so it discriminates at any of them; what decides is
-/// the clock. Six takes about eleven seconds here and a minute and a half on
-/// a runner, where seven takes three times that for fifteen more positions.
+/// When the suite was first gated (6f11ca4) it solved 193, 232, 243, 258
+/// and 276 of its three hundred at depths four to eight, so it discriminates
+/// at any of them; what decided was the clock. Six took about eleven seconds
+/// locally and a minute and a half on a runner, and seven three times that
+/// for fifteen more positions.
 pub const DEPTH: u8 = 6;
 
 /// The table every position is searched with, part of the count for the same
@@ -32,42 +32,37 @@ pub const TABLE_BYTES: usize = 16 * 1024 * 1024;
 ///
 /// Exact, not a floor: a tripwire that says the suite moved, where `FLOOR`
 /// is the gate. A change that moves it in either direction updates this
-/// number in the same commit, which puts the movement in the diff, and a
-/// change that lowers it says what the positions were spent on.
+/// number in the same commit, and a change that lowers it says what the
+/// positions were spent on.
 pub const EXPECTED_PASSES: usize = 235;
 
 /// The count the suite may not go under, whatever a commit says it meant to
 /// spend.
 ///
-/// Held apart from `EXPECTED_PASSES` and moved only on its own account. A
-/// change that means to move the exact count updates it and the tripwire is
-/// rearmed one notch lower, and nothing in that stops the number walking
-/// down a few positions at a time until the suite says nothing at all.
+/// Held apart from `EXPECTED_PASSES` and moved only on its own account:
+/// otherwise each change rearms the tripwire a notch lower and nothing stops
+/// the count walking down until the suite says nothing at all.
 ///
 /// Two hundred and ten was fourteen under the count when the floor was set
 /// (224) and is eleven under the lowest the suite has been gated at (221).
-/// Since the suite was first gated the count has been 243, 241, 240, 237,
-/// 236, 229, 221, 226, 227, 228, 231, 224, 237, 240, 238, 237, 235, 234
-/// and 235, and the largest single step down in that list is eight, so
-/// one change spending fourteen fails here rather than being written down
-/// and rearmed.
-/// Lowering the floor is a commit whose whole subject is lowering the
-/// floor.
+/// The largest single step down since the suite was first gated is eight
+/// (634083f), so one change spending fourteen fails here rather than being
+/// written down and rearmed. Lowering the floor is a commit whose whole
+/// subject is lowering the floor.
 pub const FLOOR: usize = 210;
 
-// Checked by the build rather than the suite run, which is an ignored job of
-// its own. Strictly under: a floor standing on the snapshot would fail on
-// the next change that spends one position, and whoever raised it would
-// raise both, which is the ratchet the floor is there to refuse.
+// Checked by the build rather than the ignored suite run. Strictly under: a
+// floor standing on the snapshot would fail on the next change that spends
+// one position, and whoever raised it would raise both, which is the ratchet
+// the floor is there to refuse.
 const _: () = assert!(EXPECTED_PASSES > FLOOR);
 
 /// A position the engine has knowingly given up, with what bought it and the
 /// version its acceptance runs out at.
 ///
 /// Not a second floor, and not part of the count: the suite still has to
-/// match `EXPECTED_PASSES` exactly and clear `FLOOR`. What the list adds is
-/// that a loss taken on purpose is named, and that naming it does not
-/// settle the matter for ever.
+/// match `EXPECTED_PASSES` exactly and clear `FLOOR`. The list names a loss
+/// taken on purpose, and the expiry stops that naming settling it for ever.
 #[derive(Debug, Clone, Copy)]
 pub struct AcceptedLoss {
     /// The suite id, as `tactics.epd` writes it.
@@ -82,25 +77,22 @@ pub struct AcceptedLoss {
 
 /// The losses accepted so far.
 ///
-/// The first two are the reduction table's: a move it never touches or
-/// reaches late, whose continuation is quiet and is now stood further back
-/// than the depth can afford.
+/// WAC.082 and WAC.260 are the reduction table's (1f805b2): a move it never
+/// touches or reaches late, whose continuation is quiet and is now scouted
+/// further back than the depth can afford.
 ///
-/// The nine under them are the late move count's. The count is the only
-/// thing between this build and the one before it, and what it does is
-/// refuse a quiet a node of depth one to three has reached past four moves
-/// a ply, so a winning line with such a quiet in it is not searched at all
-/// at those depths. Each entry names what depth six answers with instead
-/// and the depth the suite's move comes back at, read one position at a
-/// time on this build. Eight of the nine come back a single ply deeper. A
-/// tenth, WAC.022, has been found again since the shortcuts were refused at
-/// every open window, through the suite's other move c4a2 at depth six
-/// rather than the knight sacrifice, which still comes back at nine.
+/// WAC.023 to WAC.280 are the late move count's (5bc4e91), which refuses a
+/// quiet a node of depth one to three has reached past four moves a ply, so
+/// a winning line with such a quiet in it is not searched at those depths.
+/// Each names what depth six answers with instead and the depth the suite's
+/// move comes back at, read one position at a time on that commit. WAC.022
+/// was one of them until 188f2f6 found it again through the suite's other
+/// move c4a2.
 ///
-/// The last is mate distance pruning's. The position holds no mate inside
-/// depth six, so what moved it is the reordering of a subtree deeper down
-/// that does, and it is borderline either way: this build answers d6e5 at
-/// six and at seven, and the suite's d6a3 at eight.
+/// WAC.150 is mate distance pruning's (c7730f1). The position holds no mate
+/// inside depth six, so what moved it is the reordering of a subtree deeper
+/// down that does, and it is borderline either way: that commit answers
+/// d6e5 at six and at seven, and the suite's d6a3 at eight.
 pub const ACCEPTED_LOSSES: &[AcceptedLoss] = &[
     AcceptedLoss {
         id: "WAC.082",
@@ -226,9 +218,7 @@ pub fn accepted_loss_faults(
     faults
 }
 
-/// Accepted losses the run found passing. An acceptance nothing is spending
-/// any more comes off the list, since a list that keeps entries it no longer
-/// needs stops being read.
+/// Accepted losses the run found passing, which come off the list.
 pub fn stale_acceptances<'a>(
     accepted: &'a [AcceptedLoss],
     report: &Report,
@@ -368,9 +358,8 @@ mod tests {
         }
     }
 
-    /// Ignored because it searches all three hundred positions. A job of its
-    /// own runs it in ci, and `cargo test --workspace --release -- --ignored`
-    /// runs it by hand.
+    /// Ignored because it searches the whole suite. A job of its own runs it
+    /// in ci; see docs/DEVELOPMENT.md for running it by hand.
     #[test]
     #[ignore]
     fn the_suite_finds_what_it_found_before() {

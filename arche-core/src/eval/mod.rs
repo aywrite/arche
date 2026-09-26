@@ -7,12 +7,9 @@
 //! term cheap enough to keep incrementally belongs in the accumulator; one
 //! computed at the leaf belongs in a module of its own beside this one.
 //!
-//! This file holds what the terms share: the material values, the phase
-//! weights, the accumulator, the sum and [`TERMS`], the list the tuner reads
-//! the leaf terms through. The cache type a remembered term is kept in is
-//! beside it in `cache.rs`. Each leaf term owns its counts, its masks, its
-//! weights, its fold, and the key and the table width its memo is read under
-//! where it has one.
+//! This file holds what the terms share, including [`TERMS`], the list the
+//! tuner reads the leaf terms through. Each leaf term owns its counts, its
+//! weights, its fold, and its memo's key and table width where it has one.
 
 mod cache;
 mod king_attack;
@@ -38,10 +35,8 @@ static PHASE_WEIGHTS: [i32; 6] = [0, 1, 1, 2, 4, 0];
 /// What the opening's pieces add up to under `PHASE_WEIGHTS`.
 pub(crate) const TOTAL_PHASE: i32 = 24;
 
-/// A table rather than a match: the match compiled to a jump table whose
-/// target, a piece loaded from the square array, the predictor could not see
-/// through, and most of the search's indirect mispredicts were this dispatch.
-/// Indexed by `Piece`'s discriminant, which the assertion in `misc` pins.
+/// A table rather than a match: the match compiled to a jump table, and most
+/// of the search's indirect mispredicts were this dispatch.
 const MATERIAL: [u32; 6] = [100, 310, 320, 500, 900, 10000];
 
 /// The material weight of one piece, for the board's own seeding walk.
@@ -50,8 +45,7 @@ pub(crate) fn material(piece: Piece) -> u32 {
 }
 
 /// What one piece leaves on the board, on the scale the taper is read at, for
-/// the tuner's walk, which reads it here rather than keeping a copy of the
-/// table.
+/// the tuner's walk.
 pub(crate) fn phase_weight(piece: Piece) -> i32 {
     PHASE_WEIGHTS[piece as usize]
 }
@@ -195,16 +189,13 @@ impl Memo for Caches {
 /// The score of the position from the side to move's point of view, with the
 /// two remembered terms taken from `memo`.
 ///
-/// Everything incremental is read off the board's accumulator. The leaf terms
-/// are summed here, from the board itself, before the call: exact, since all
-/// four are packed pairs on one scale, and one divide however many such terms
-/// there are. Mobility and the king attack zone come off one walk over each
-/// side's pieces, [`attack_counts`].
+/// The leaf terms are packed pairs on the accumulator's scale, summed before
+/// the one divide in `Accumulator::score`. Mobility and the king attack zone
+/// come off one walk over each side's pieces, [`attack_counts`].
 ///
-/// The king attack zone is behind [`king_attack::SCORED`]. A count multiplied
-/// by a zero weight scores nothing, but llvm does not take the walk out on
-/// that ground, so at a constant false the summand is not compiled and the
-/// walk takes no ring counts.
+/// The king attack zone is behind [`king_attack::SCORED`]. llvm does not take
+/// the walk out for a zero weight, so at a constant false the summand is not
+/// compiled and the walk takes no ring counts.
 ///
 /// Material that cannot mate reads zero before any of it. That is the one
 /// place the evaluation is not a dot product against the weights, which is
@@ -234,19 +225,14 @@ fn sum(board: &Board, memo: &mut impl Memo) -> Score {
 /// One side's mobility counts and its king attack counts, from one walk over
 /// its knights, bishops, rooks and queens.
 ///
-/// Each piece's attack set is taken once and read twice, against mobility's
-/// scope and against the enemy king's ring. `KINDS` says which kinds mobility
-/// counts, as [`mobility::counted`] reads it, and `RING` whether the ring is
-/// counted at all. Both are compile time, so a count not asked for is not
-/// compiled, down to the loop over a kind neither term wants, and answers
-/// zero.
+/// `KINDS` says which kinds mobility counts, as [`mobility::counted`] reads
+/// it, and `RING` whether the ring is counted at all. A count not asked for
+/// is not compiled and answers zero.
 ///
 /// A second statement of the two terms' counts, on purpose. Each term keeps
-/// its own `counts_of`, which the tuner reads through [`TERMS`] and the hand
-/// counts pin, and `the_shared_walk_counts_what_each_term_counts_alone` holds
-/// this walk to them over the bench, tactical and strategic suites. It lives
-/// here because it is the sum's arrangement of the two and has no other
-/// caller.
+/// its own `counts_of`, which the tuner reads, and
+/// `the_shared_walk_counts_what_each_term_counts_alone` holds this walk to
+/// them.
 ///
 /// Inlined by force, for the reason `mobility::counts_of` gives.
 #[inline(always)]
@@ -352,8 +338,7 @@ impl Accumulator {
         phase: 0,
     };
 
-    /// Count a piece on to or off of a square. `SET` is settled at compile
-    /// time, so no branch on it survives into the search.
+    /// Count a piece on to or off of a square.
     #[inline(always)]
     pub(crate) fn count<const SET: bool>(&mut self, index: u8, piece: Piece, color: Color) {
         // a packed pair, negated whole for black: negating the sum negates
@@ -389,11 +374,10 @@ impl Accumulator {
         }
     }
 
-    /// The accumulator the position deserves, computed from the board. The
-    /// hosted one is meant to equal this at all times, which
-    /// `Board::debug_assert_state_in_step` asks on every move made. A second
-    /// implementation on purpose: code shared with `count` would leave both
-    /// sides wrong together and the check passing.
+    /// The accumulator the position deserves, computed from the board, for
+    /// `Board::debug_assert_state_in_step`. A second implementation on
+    /// purpose: code shared with `count` would be wrong on both sides at once
+    /// and the check would still pass.
     pub(crate) fn recomputed(board: &Board) -> Self {
         let mut recomputed = Self::EMPTY;
         let mut occupied = board.occupied();
@@ -435,12 +419,11 @@ impl Accumulator {
     /// a constant added to that piece's endgame table, and the tables are the
     /// place to say it.
     ///
-    /// `leaf` is the four leaf terms summed, as a packed pair on the same
-    /// scale. It joins the piece square pair before the interpolation rather
-    /// than being tapered beside it, so the two share one divide. A second
-    /// divide would answer a centipawn away wherever a numerator is negative
-    /// and does not divide evenly, and `tune::reconstruct` folds a whole row
-    /// with one.
+    /// `leaf` is the leaf terms summed, as a packed pair on the same scale.
+    /// It joins the piece square pair before the interpolation, so the two
+    /// share one divide. A second divide would answer a centipawn away
+    /// wherever a numerator is negative and does not divide evenly, and
+    /// `tune::reconstruct` folds a whole row with one.
     #[inline]
     fn score(&self, side: Color, leaf: i32) -> Score {
         // promotions can leave more on the board than the opening had, so the
@@ -939,11 +922,9 @@ mod evaluate {
     }
 
     /// Holds [`super::attack_counts`] to [`mobility::counts_of`] and
-    /// [`king_attack::counts_of`] on one position, for both colours, at five
-    /// instantiations: nothing skipped, the live constants, two that each
-    /// leave out a different half of the kinds (one with the ring and one
-    /// without), and nothing counted at all. The term tests call this on
-    /// their hand count positions, which is why it is not a test of its own.
+    /// [`king_attack::counts_of`] on one position, for both colours, with and
+    /// without each skip. The term tests call this on their hand count
+    /// positions.
     pub(super) fn the_shared_walk_agrees(board: &Board, why: &str) {
         fn held<const KINDS: u8, const RING: bool>(board: &Board, color: Color, why: &str) {
             let scope = mobility::counts_of::<{ mobility::ALL_KINDS }>(board, color);

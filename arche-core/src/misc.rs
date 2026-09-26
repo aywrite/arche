@@ -6,11 +6,9 @@ use std::ops::Not;
 
 /// An evaluation, in centipawns.
 ///
-/// Sixteen bits for the transposition table's sake: a narrower score makes a
-/// smaller entry, so a table of a given size holds more positions and more of
-/// it fits in cache. The range is ample. Mate is thirty thousand, and an
-/// evaluation is bounded by the material on the board, a little over ten
-/// thousand even with every pawn promoted to a queen.
+/// Sixteen bits so a transposition entry is smaller. The range is ample:
+/// mate is thirty thousand, and the material on the board is a little over
+/// ten thousand even with every pawn promoted to a queen.
 pub type Score = i16;
 
 /// One step of splitmix64. Small enough to run at compile time, which the
@@ -104,9 +102,8 @@ mod coordinate {
 }
 
 /// Who may still castle where, one bit a right. A right is given up for
-/// good, by the king or the rook moving or the rook being taken, so a bit
-/// only ever goes from set to clear, and `make_move` takes rights away by
-/// masking the word.
+/// good, so a bit only ever goes from set to clear, and `make_move` takes
+/// rights away by masking the word.
 #[derive(Debug, Copy, Clone, PartialEq, Eq)]
 pub struct CastlePermissions(u8);
 
@@ -291,9 +288,8 @@ impl Piece {
     ];
 }
 
-// the material, phase, piece square, zobrist and mvv-lva tables all index by
-// the discriminants and nothing else pins them, so reordering the enum fails
-// here rather than by scoring a queen as a pawn
+// every table indexed by piece relies on these discriminants, so reordering
+// the enum fails here rather than by scoring a queen as a pawn
 const _: () = assert!(
     Piece::Pawn as usize == 0
         && Piece::Knight as usize == 1

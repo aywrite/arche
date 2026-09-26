@@ -44,14 +44,12 @@ bench_board_fen!(perft_3, b, {
     b.perft(3);
 });
 
-// The engine defaults to a 256MB transposition table, which is still far more than a
-// depth 5 search needs and makes clearing it between iterations cost more than
-// the search itself.
+// The default table is far more than a depth 5 search needs, and clearing it
+// between iterations would cost more than the search itself.
 const BENCH_TABLE_BYTES: usize = 16 * 1024 * 1024;
 
-// The cache has to be cleared between iterations or each one searches a tree
-// the last one already filled in, but clearing it is comparable to the search
-// itself, so only the search is timed.
+// The table is cleared between iterations, or each would search a tree the
+// last one filled in. Only the search is timed.
 macro_rules! bench_engine_fen {
     ($func:ident, $e:ident, $setup:block, $routine:block) => {
         pub fn $func(c: &mut Criterion) {

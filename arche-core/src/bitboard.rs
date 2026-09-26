@@ -10,10 +10,9 @@ pub trait BitBoard {
 
     /// Print the board as a rank and file grid.
     ///
-    /// One of three printers nothing calls (this, `Board::attacked_print` and
-    /// the `Display` on `BaseConversions`). They are kept for when a bitboard,
-    /// an attack map or the mailbox comes out wrong, which is the only time
-    /// anyone wants to look at one raw.
+    /// Nothing calls this, `Board::attacked_print` or the `Display` on
+    /// `BaseConversions`. They are kept for when a bitboard, an attack map or
+    /// the mailbox comes out wrong.
     #[allow(dead_code)]
     fn debug_print(&self);
 }

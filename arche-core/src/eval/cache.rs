@@ -3,16 +3,12 @@
 
 //! The table a remembered leaf term is kept in.
 //!
-//! One cache type, not one table. A term names its key, its fold and how many
-//! bits of table it was measured to want, and [`super::Caches`] holds an
-//! instance of this per term. So there is one probe in the crate to read and
-//! each term still has a table of its own.
+//! One cache type, not one table: a term names its key, its fold and its
+//! width, and [`super::Caches`] holds an instance of this per term.
 
-/// One remembered score, under the whole key rather than the bits the index
-/// does not use, so a hit is a hit on what the term reads and not on a tag
-/// that happens to agree. A wrong hit would be a silently wrong evaluation,
-/// and the whole key costs eight bytes an entry over a thirty two bit tag,
-/// sixteen against eight once the alignment is paid.
+/// One remembered score, under the whole key rather than a tag, since a
+/// wrong hit would be a silently wrong evaluation. The whole key costs sixteen
+/// bytes an entry against eight once the alignment is paid.
 #[derive(Copy, Clone)]
 struct Entry {
     key: u64,
@@ -22,22 +18,21 @@ struct Entry {
 /// What one term has already worked out, `1 << BITS` scores of it.
 ///
 /// Direct mapped and never cleared. An entry is only ever read against the
-/// key that wrote it, so a stale one is a miss rather than a wrong answer,
-/// and a search begins with the last search's entries warm. The cache changes
-/// how a score is arrived at and not what it is, so the node counts are the
-/// ones the weights alone produce.
+/// key that wrote it, so a stale one is a miss rather than a wrong answer.
+/// The cache changes how a score is arrived at and not what it is, so the
+/// node counts are the ones the weights alone produce.
 ///
 /// Owned by the searcher rather than by the board, because it is scratch and
-/// not position: a board compares equal to another holding the same position,
-/// and one thread's cache is its own.
+/// not position.
 pub(super) struct Cache<const BITS: usize> {
     entries: Box<[Entry]>,
 }
 
 impl<const BITS: usize> Default for Cache<BITS> {
     fn default() -> Self {
-        // an empty entry is key zero holding zero, so a position whose key
-        // xors to nothing would read it as its own: the same sixty four bit
+        // an empty entry is key zero holding zero. A pawnless board's pawn
+        // key is zero and its pawn structure scores zero, so it reads the
+        // entry correctly; any other key of zero is the same sixty four bit
         // coincidence a wrong hit needs anywhere else in the table
         Cache {
             entries: vec![Entry { key: 0, packed: 0 }; Self::SLOTS].into_boxed_slice(),

@@ -5,8 +5,7 @@ use crate::misc::Color;
 use crate::misc::Piece;
 
 /// Flip a table top to bottom, so that a table written with the eighth rank
-/// first reads correctly for a board that indexes a1 as zero. A `while` so
-/// that it runs at compile time.
+/// first reads correctly for a board that indexes a1 as zero.
 const fn mirror(array: &[i16; 64]) -> [i16; 64] {
     let mut mirrored: [i16; 64] = [0; 64];
     let mut rank = 0;
@@ -28,9 +27,8 @@ const fn mirror(array: &[i16; 64]) -> [i16; 64] {
 /// shifts. Negating the sum negates both halves, so the accumulator subtracts
 /// a black piece packed.
 ///
-/// The halves are only independent while each stays inside an `i16`. A
-/// boardful of these tables reaches about sixteen hundred either way, so there
-/// is an order of magnitude in hand.
+/// The halves are only independent while each stays inside an `i16`, which
+/// `a_boardful_stays_inside_the_packed_halves` in `tune` holds a boardful to.
 pub const fn pack(mg: i16, eg: i16) -> i32 {
     ((eg as i32) << 16) + mg as i32
 }
@@ -71,15 +69,14 @@ const fn packed(mg: [i16; 64], eg: [i16; 64]) -> [i32; 64] {
 // games at 10+0.1, 100,726 quiet rows extracted by `arche terms` at d17622f,
 // K held at 1.3902, at a ridge of 3e-7. The sealed group scores 0.084551 at
 // the weights these replace and 0.082797 at these, a paired difference of
-// -0.001754 against a standard error of 0.000674, and rounding the fit to
-// integers cost nothing (0.082778 with the engine's own arithmetic). Commit
-// 96bad35 is the report. Material was held at its shipped values because
-// `eval::material` is read by the delta margin in quiescence, and moving it
-// would change the search tree for a reason that is not the evaluation's
-// accuracy.
+// -0.001754 against a standard error of 0.000674 over 371 games, and
+// 0.082778 read with the engine's own arithmetic. Each reading is of the
+// rounded weights; the float fit was not saved. Commit 96bad35 is the
+// report. Material was held at its shipped values because the delta margin
+// in quiescence reads it, and moving it would change the search tree for a
+// reason that is not the evaluation's accuracy.
 //
-// The tests below pin what each table is for, the shapes rather than the
-// entries.
+// The tests below pin the shapes rather than the entries.
 
 #[rustfmt::skip]
 const PAWNS: [i16; 64] = [
@@ -143,9 +140,7 @@ const QUEENS: [i16; 64] = [
 
 // The king is the piece the two phases disagree about most, and the page gives
 // a table for each: hidden behind its own pawns while there are pieces to
-// hide from, in the middle of the board once there are not. One table cannot
-// say both, which is why the king carried a table of zeroes until the score
-// was tapered.
+// hide from, in the middle of the board once there are not.
 
 #[rustfmt::skip]
 const KING: [i16; 64] = [
@@ -193,13 +188,11 @@ const PAWNS_END: [i16; 64] = [
 // The fit moved each about two centipawns rms from its midgame twin, against
 // nineteen for the pawn and forty three for the king, and the difference sits
 // on the first three ranks rather than near the enemy king or on the seventh,
-// where endgame piece placement is supposed to diverge. On this corpus the
-// two ends have almost nothing different to say about a knight, a bishop, a
-// rook or a queen: the games are the engine's own, and an engine that could
-// not tell the two ends apart did not play the positions that would say so.
+// where endgame piece placement is supposed to diverge. The games are the
+// engine's own, and an engine that could not tell the two ends apart did not
+// play the positions that would say so.
 //
-// Written out and not aliased. `const KNIGHTS_END: [i16; 64] = KNIGHTS;`
-// would hold nearly these numbers and move both tables when one is edited.
+// Written out and not aliased, so editing one table does not move both.
 
 #[rustfmt::skip]
 const KNIGHTS_END: [i16; 64] = [
@@ -249,17 +242,13 @@ const QUEENS_END: [i16; 64] = [
     -20, -10, -10,  -5,  -5, -10, -10, -20,
 ];
 
-/// The entries are `i32` rather than a machine word because every piece set
-/// or cleared reads one, several times per move made or unmade, and the
-/// twelve tables are then 3072 bytes and stay in L1. Each entry is a packed
-/// pair, so the width buys both phases rather than range: see `pack`.
+/// The entries are `i32` rather than a machine word so the tables stay small
+/// in L1; each is a packed pair (see `pack`).
 ///
 /// One array picked by arithmetic rather than a table per colour and piece
 /// picked by a match. The match compiled to a jump table and was the largest
 /// single source of mispredicted indirect branches in the search, missed
-/// about half the time, since the piece being placed is whatever the position
-/// holds. The kings take a row of their own so the pick has nothing to branch
-/// on.
+/// about half the time.
 pub struct PieceSquareTables {
     tables: [[i32; 64]; 12],
 }

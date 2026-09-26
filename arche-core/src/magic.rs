@@ -7,8 +7,7 @@
 //! magic is a multiplier that scatters those bits into the top of the word so
 //! that a shift leaves each configuration on its own index, and the attack set
 //! is read straight out of a table at that index. The multipliers are searched
-//! for rather than derived, which is what the ignored test at the bottom of
-//! this file does.
+//! for rather than derived, by `regenerate_magics`.
 
 use crate::misc::{File, coordinate_to_index, coordinate_to_large_index};
 use std::fmt;
@@ -18,8 +17,7 @@ use std::fmt;
 /// one instead of wrapping onto the far file.
 ///
 /// One row of border is enough because every walk tests a square before
-/// stepping again, so an index can never be more than one step out and always
-/// stays inside the array.
+/// stepping again.
 struct BaseConversions {
     base_64_to_100: [u8; 64],
     base_100_to_64: [u8; 100],
@@ -32,8 +30,6 @@ impl BaseConversions {
     const STRAIGHT_STEPS: [isize; 4] = [10, -10, 1, -1]; // rooks and queens
     const DIAGONAL_STEPS: [isize; 4] = [9, -9, 11, -11]; // bishops and queens
 
-    /// Built at compile time. A `const fn` has no `for`, hence the `while`
-    /// walks.
     const fn new() -> Self {
         let mut base = BaseConversions {
             base_100_to_64: [Self::OFF_BOARD; 100],
@@ -90,11 +86,10 @@ impl fmt::Display for BaseConversions {
 // a const rather than a static, so that what is built from it can be built at
 // compile time too: a const initialiser may not read a static
 const BASE_CONVERSIONS: BaseConversions = BaseConversions::new();
-// the lint is a guard against a const that loops forever; this one is only
-// long, a hundred thousand ray walks filling the two attack tables. Each call
-// in them is interpreted, so the loops make none they can do without (`d < 4`
-// rather than `directions.len()`), which keeps the build short of rustc's
-// warning that it is taking a long time.
+// the lint guards against a const that loops forever; this one is only long.
+// Past twice the lint's length rustc prints a warning no `allow` silences, so
+// the loops that build the tables make no call they can do without (`d < 4`
+// rather than `directions.len()`): the interpreter runs each on every pass.
 #[allow(long_running_const_eval)]
 pub(crate) static MAGIC: Magic = Magic::new();
 
@@ -102,8 +97,7 @@ pub(crate) static MAGIC: Magic = Magic::new();
 /// square of each, since a piece there blocks nothing behind it, and less the
 /// square the slider stands on.
 ///
-/// Dropping the ends is what keeps the mask, and so the table, small: every
-/// bit dropped halves what the square's block needs.
+/// Every bit dropped halves the square's block of the table.
 const fn blocker_mask(mailbox: &BaseConversions, from: u8, directions: [isize; 4]) -> u64 {
     let mut mask = 0u64;
     let mut d = 0;
@@ -121,10 +115,8 @@ const fn blocker_mask(mailbox: &BaseConversions, from: u8, directions: [isize; 4
 }
 
 /// Where a slider on `from` can move with `blockers` occupied, found by walking
-/// the rays outwards. Each ray runs until it meets a blocker, which it stops on
-/// because it may capture there.
-///
-/// What the tables are built from, and what the test holds a lookup to.
+/// the rays outwards, each ray including the blocker it stops on. What the
+/// tables are built from, and what the test holds a lookup to.
 ///
 /// The mailbox is a parameter rather than a read of `BASE_CONVERSIONS` so that
 /// the const build walks one copy instead of materialising the const at every
@@ -192,8 +184,7 @@ const STRAIGHT_LEN: usize = 131_072;
 const DIAGONAL_LEN: usize = 8_192;
 
 /// One slider kind's lookup tables. Every square's attack sets sit end to end
-/// in a single array, with `offsets` saying where each square's block starts,
-/// so a probe is one indirection rather than two.
+/// in a single array, with `offsets` saying where each square's block starts.
 struct SliderTables<const ATTACKS: usize, const LEN: usize> {
     blocker_masks: [u64; 64],
     magics: [u64; 64],
@@ -403,9 +394,7 @@ mod tests {
     /// The assert in `SliderTables::new` already fails the build on a magic
     /// that collides, so what is left to check is that the table was filled
     /// in and read back the same way round: every square, every blocker
-    /// configuration its mask admits, lookup against ray walk. Exhaustive
-    /// rather than sampled because a mask has at most twelve bits, a hundred
-    /// thousand or so lookups in all.
+    /// configuration its mask admits, lookup against ray walk.
     #[test]
     fn the_tables_answer_what_a_ray_walk_would() {
         let magic = &MAGIC;
@@ -436,9 +425,7 @@ mod tests {
     }
 
     /// Prints a fresh set of constants to paste into this file. Ignored because
-    /// it is only needed if the blocker masks or the table layout change, and
-    /// because unoptimised the search takes about fourteen seconds as invoked
-    /// below (under a second with `--release`).
+    /// it is only needed if the blocker masks or the table layout change.
     ///
     ///     cargo test -p arche-core regenerate_magics -- --ignored --nocapture
     #[test]
