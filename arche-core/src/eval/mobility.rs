@@ -3,10 +3,10 @@
 
 //! How many squares each side's pieces cover, and what a square is worth.
 //!
-//! The term owns its counts, its weights and its fold. Nothing here is
-//! remembered between positions: a piece that moves changes what every slider
-//! looking through its square sees, so there is no key a score could sit
-//! behind and nothing for `Accumulator::count` to add and take away.
+//! Nothing here is remembered between positions: a piece that moves changes
+//! what every slider looking through its square sees, so there is no key a
+//! score could sit behind and nothing for `Accumulator::count` to add and
+//! take away.
 
 use super::weigh;
 use crate::board::{Board, knight_attacks, pawn_attacks, pop_lsb};
@@ -18,8 +18,6 @@ use crate::psqt::{eg_value, mg_value, pack};
 /// [`counts`] are indexed by. The pawn and the king carry none.
 pub(crate) const PIECES: [Piece; 4] = [Piece::Knight, Piece::Bishop, Piece::Rook, Piece::Queen];
 
-/// How many counts the term is measured in, which is one per piece that
-/// carries a weight.
 pub(crate) const COUNTS: usize = PIECES.len();
 
 /// What one square of scope is worth to each of [`PIECES`], as the packed
@@ -35,12 +33,9 @@ pub(crate) const COUNTS: usize = PIECES.len();
 /// -0.000798 against 0.000113, 1.85 standard errors away, so it overstates
 /// the fit by about a third. Commit 7e6ddd7 holds the rest.
 ///
-/// The first fit read 1,812 games and priced one piece; this one reads twenty
-/// four times as many and prices all four, so [`SCORED_KINDS`] skips nothing
-/// and every kind is counted at every leaf again. The ridge of zero is not
-/// the trap it was for the pawn structure fit: the vector quantizes
-/// identically at zero, 1e-8 and 1e-7, the largest weight is 7, and every
-/// slot carries a coefficient in 37% to 70% of the training rows.
+/// The ridge of zero is not the trap it was for the pawn structure fit: the
+/// vector quantizes identically at zero, 1e-8 and 1e-7, the largest weight is
+/// 7, and every slot carries a coefficient in 37% to 70% of the training rows.
 ///
 /// By phase the sealed reading is -0.000160 at six pieces or fewer,
 /// -0.001725 from seven to twelve, and +0.000703 at thirteen or more, so the
@@ -49,8 +44,7 @@ pub(crate) const COUNTS: usize = PIECES.len();
 /// ran.
 ///
 /// A count is at most twenty seven for a queen and a boardful comes to a few
-/// hundred, so a weight in single figures leaves the order of magnitude in
-/// hand that `pack` asks for.
+/// hundred, so a weight in single figures stays well inside a packed half.
 const MOBILITY: [i32; COUNTS] = [pack(4, 1), pack(6, 3), pack(4, 4), pack(1, 7)];
 
 /// The weight of one piece's count, as the packed pair, read through
@@ -59,19 +53,15 @@ pub(crate) const fn weight(index: usize) -> i32 {
     MOBILITY[index]
 }
 
-/// A set of [`PIECES`], a bit per index, which is what [`counts_of`] takes. A
-/// kind left out of the set is not counted and answers zero. This is all
-/// four, which the tuner's walk asks for whatever the weights hold, since a
-/// coefficient for a kind worth nothing today is what lets a later fit price
-/// it.
+/// A set of [`PIECES`], a bit per index, which is what [`counts_of`] takes.
+/// This is all four, which the tuner's walk asks for whatever the weights
+/// hold, since a coefficient for a kind worth nothing today is what lets a
+/// later fit price it.
 pub(crate) const ALL_KINDS: u8 = (1 << COUNTS) - 1;
 
 /// The kinds [`super::eval`] counts: the ones whose [`MOBILITY`] weight is not
 /// zero at one end of the taper or the other, derived from the weights so a
-/// refit changes the set with nothing else edited. The 2026-09-13 refit
-/// priced all eight halves, so this is all four kinds.
-/// `eval_counts_a_kind_exactly_when_its_weight_is_not_zero` holds the two
-/// together.
+/// refit changes the set with nothing else edited.
 pub(crate) const SCORED_KINDS: u8 = scored_kinds();
 
 /// Whether `kinds` names the piece at `index` in [`PIECES`].
@@ -109,16 +99,10 @@ const fn scored_kinds() -> u8 {
 /// and the pawn have no count of their own: a king's is a danger signal
 /// rather than a scope one, and a pawn's is move generation.
 ///
-/// The tuner's walk reads this, always for all four kinds, because it is
-/// offline and its coefficients are what lets a later fit price a kind. The
-/// evaluation reads the shared walk in `eval/mod.rs` over [`SCORED_KINDS`],
-/// which `the_shared_walk_counts_what_each_term_counts_alone` holds to this
-/// function kind by kind and
-/// `eval_counts_a_kind_exactly_when_its_weight_is_not_zero` holds to the
-/// weights. A count wrong the same way in both would pass both and the
-/// tuner's identity, so the hand counts below are what pin the counts
-/// themselves; `tune.rs` names this as the exception to the rule its header
-/// states.
+/// The tuner's walk reads this and the evaluation reads the shared walk in
+/// `eval/mod.rs`, which is held to this function. A count wrong the same way
+/// in both would pass that and the tuner's identity, so the hand counts below
+/// are what pin the counts themselves.
 ///
 /// Inlined by force. Left to itself llvm keeps this out of line even under
 /// link time optimisation, and the evaluation asked for it twice at every
@@ -173,10 +157,9 @@ pub(crate) fn counts(board: &Board, color: Color, into: &mut [i32]) {
 
 /// What white's mobility stands ahead by, as a packed pair on the scale the
 /// piece square pair is on, given each side's counts from the walk in
-/// `eval/mod.rs`, which counts only [`SCORED_KINDS`]: a kind whose weight is
-/// zero contributes nothing however many squares it covers. When the first
-/// fit left six of the eight weights at zero, leaving three kinds out took a
-/// bit over a third off what the term cost (7b0f38b).
+/// `eval/mod.rs`, which counts only [`SCORED_KINDS`]. When the first fit left
+/// six of the eight weights at zero, leaving three kinds out took a bit over
+/// a third off what the term cost (7b0f38b).
 #[inline]
 pub(crate) fn fold_counts(white: [i32; COUNTS], black: [i32; COUNTS]) -> i32 {
     weigh(&MOBILITY, white, black)

@@ -52,9 +52,8 @@ const fn span_ahead(square: u8, forward: i8, files: u8) -> u64 {
 /// beside it on every rank ahead of it: a pawn of ours is passed when no pawn
 /// of theirs stands anywhere in it. `file_ahead` is the same span on the
 /// pawn's own file alone, and answers whether a pawn of ours is already in
-/// front of this one. Its own table rather than masked out of the first at
-/// the leaf, because a leaf term pays for every instruction and a table costs
-/// half a kilobyte.
+/// front of this one. A table of its own costs half a kilobyte and saves the
+/// leaf a mask.
 ///
 /// Indexed by `Color`'s discriminant and then the square: a white pawn is read
 /// up the board and a black one down it.
@@ -64,7 +63,6 @@ struct Masks {
 }
 
 impl Masks {
-    /// Built at compile time.
     const fn new() -> Self {
         let mut masks = Masks {
             front_span: [[0; 64]; 2],
@@ -162,7 +160,7 @@ pub(super) const fn files_of(pawns: u64) -> u8 {
 /// at most 776 to the midgame half and 440 to the ending half, both sides
 /// counted, against the 32,767 a half has to stay inside. `bounds_hold`
 /// charges eight of every count, which is the looser screen: 3,024 of a
-/// boardful of 8,622.
+/// boardful that came to 8,622 at this fit.
 static PAWN_STRUCTURE: [i32; COUNTS] = [
     pack(-18, 18),
     pack(-25, 15),
@@ -199,11 +197,10 @@ pub(crate) fn weight(index: usize) -> i32 {
 /// less for a black pawn. The relative second is a real bucket: a pawn still
 /// at home is passed the moment the enemy pawns on its three files are gone.
 ///
-/// Pawns and nothing else is read, neither king, no piece and not the side to
-/// move, so two positions whose pawns agree agree on all eight counts and
-/// `Board::pawn_key` stands for that agreement. The evaluation and the
-/// tuner's walk both read this, so the identity between them cannot see a
-/// wrong count here; the hand counts in the tests below are what pin it.
+/// Pawns and nothing else is read, so two positions whose pawns agree agree
+/// on all eight counts and `Board::pawn_key` stands for that agreement. The
+/// evaluation and the tuner's walk both read this, so the hand counts in the
+/// tests below are what pin it.
 #[inline]
 pub(crate) fn counts_of(board: &Board, color: Color) -> [i32; COUNTS] {
     let masks = &MASKS;
@@ -266,25 +263,19 @@ fn fold_with(board: &Board, weights: &[i32; COUNTS]) -> i32 {
     )
 }
 
-/// How wide a table the pawn structure is remembered in, which is what
-/// [`super::Caches`] builds its own with. The key is `Board::pawn_key` with
-/// nothing folded in: this term reads neither king, so a king move does not
-/// miss, and what misses is a pawn move or the capture of a pawn. An empty
-/// entry is key zero holding zero, and here that is exact: a board with no
-/// pawns has a pawn key of zero, which `a_board_with_no_pawns_has_no_key`
+/// How wide a table the pawn structure is remembered in, under
+/// `Board::pawn_key` with nothing folded in, so a king move does not miss. An
+/// empty entry is key zero holding zero, and here that is exact: a board with
+/// no pawns has a pawn key of zero, which `a_board_with_no_pawns_has_no_key`
 /// pins, and the structure of no pawns is eight zero counts.
 ///
-/// Four thousand entries at sixteen bytes is sixty four kilobytes, half the
-/// shelter's table, which is what this key predicted: the same pawns under
-/// two pairs of king squares are two entries there and one here. Measured
-/// with callgrind over the bench on the fitted tree, cache simulated, at
-/// eleven, twelve, thirteen and fourteen bits: 4,098,418,313, 4,092,752,759,
-/// 4,089,023,904 and 4,086,576,985 instructions against last level misses of
-/// 287,010, 287,113, 290,125 and 294,220. Twelve is the last size the memory
-/// does not notice, and the whole range is inside three tenths of a percent
-/// of instructions, so the constant is not load bearing and a later working
-/// set can move it. The bench counts the same 4,066,438 nodes at all four
-/// sizes: the cache changes how a score is arrived at and not what it is.
+/// Half the shelter's table, which is what this key predicted: the same pawns
+/// under two pairs of king squares are two entries there and one here.
+/// Callgrind over the bench at 5c3175b, cache simulated, at eleven to
+/// fourteen bits: last level misses of 287,010, 287,113, 290,125 and 294,220,
+/// with instructions inside three tenths of a percent across the range.
+/// Twelve is the last size the memory does not notice; the constant is not
+/// load bearing and a later working set can move it.
 pub(super) const CACHE_BITS: usize = 12;
 
 #[cfg(test)]

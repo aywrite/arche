@@ -16,7 +16,7 @@ use std::mem::MaybeUninit;
 
 // A list's inline capacity, and the size of the ordering module's key
 // buffer, so every list short of a spill sorts on the stack. The value is
-// measured and settled: see the roadmap before moving it.
+// measured and settled: docs/ROADMAP.md lists the sizes already rejected.
 pub(crate) const MOVE_LIST_INLINE: usize = 64;
 pub type MoveList = SmallVec<[Play; MOVE_LIST_INLINE]>;
 
@@ -39,9 +39,8 @@ pub(crate) struct CheckInfo {
 /// A move list while it is being generated: a plain array and a length.
 ///
 /// A `SmallVec` push asks whether the list has spilled and whether it is
-/// full before it stores anything, and both answers are the same for every
-/// one of the million and a half pushes a search makes. Here a push is a
-/// store and an increment, and the list is built once at the end.
+/// full on every push. Here a push is a store and an increment, and the list
+/// is built once at the end.
 struct Building {
     moves: [MaybeUninit<Play>; MAX_GENERATED],
     len: usize,
@@ -153,8 +152,8 @@ const F8: u8 = 61;
 const G8: u8 = 62;
 const H8: u8 = 63;
 
-/// The light squares, indexed from a1 at zero: a square is light when its
-/// file and rank sum to an odd number. Read by `drawn_by_material` alone.
+/// The light squares: a square is light when its file and rank sum to an
+/// odd number.
 const LIGHT_SQUARES: u64 = 0x55AA_55AA_55AA_55AA;
 
 pub(crate) static ZOBRIST: Zobrist = Zobrist::TABLE;
@@ -334,8 +333,6 @@ const STRAIGHT_STEPS: [(i8, i8); 4] = [(1, 0), (-1, 0), (0, 1), (0, -1)];
 const DIAGONAL_STEPS: [(i8, i8); 4] = [(1, 1), (1, -1), (-1, 1), (-1, -1)];
 
 impl AttackMasks {
-    /// Built at compile time, which is why the walks above are in
-    /// coordinates rather than through the mailbox.
     const fn new() -> Self {
         let mut masks = AttackMasks {
             black_pawns: [0; 64],
@@ -427,30 +424,24 @@ impl fmt::Display for Unplayable {
 /// a move back.
 #[derive(Debug, PartialEq, Clone, Eq)]
 pub struct Board {
-    // One board per piece, indexed by `Piece`, rather than a field each: as
-    // fields the pick in `move_accumulators` was a six way jump table the
-    // branch predictor missed a quarter of the time. Indexing costs no
-    // branch, and the accessors below compile to the same loads the fields
-    // did.
+    // Indexed by `Piece` rather than a field each: as fields, the pick in
+    // `move_accumulators` was a six way jump table the branch predictor
+    // missed a quarter of the time.
     pieces: [u64; 6],
 
     white: u64,
     black: u64,
 
-    // what stands on each square, so asking costs a load rather than a walk
-    // down the six boards. Written by `move_accumulators`, the one place a
-    // piece is put down or picked up, and read by `get_piece_index`. Not
-    // called a mailbox because this crate already calls the sentinel grid in
-    // `magic` that.
+    // what stands on each square, written only by `move_accumulators`. Not
+    // called a mailbox because `magic` already calls its sentinel grid that.
     squares: [Option<Piece>; 64],
 
     pub(crate) active_color: Color,
     castle: CastlePermissions,
     en_passant: Option<Coordinate>,
-    // the pieces giving check to the side to move, maintained by make_move
-    // from the move rather than probed at every node. Holding the checkers
-    // rather than the fact of check is what lets the generator drop moves
-    // that cannot answer one without playing them
+    // the pieces giving check to the side to move, maintained by make_move.
+    // Holding the checkers rather than the fact of check lets the generator
+    // drop moves that cannot answer one
     checkers: u64,
 
     ply: usize,
@@ -473,8 +464,8 @@ pub struct Board {
     pub(crate) pawn_key: u64,
 }
 
-/// Nothing calls this: it is here because clippy asks for a `Default`
-/// wherever there is a `new` taking no arguments, and the lints are denied.
+/// Nothing calls this. Clippy asks for a `Default` beside a `new` taking no
+/// arguments.
 impl Default for Board {
     fn default() -> Self {
         Board::new()
@@ -507,13 +498,11 @@ impl Board {
         self.line_ply = 0;
     }
 
-    /// The move of this name here, or none. The name is the coordinate
-    /// notation a `Play` prints as, which is what the protocol sends.
+    /// The move of this name (coordinate notation) here, or none.
     ///
-    /// Read from `generate_moves`, the whole pseudo legal list, so a move
-    /// that leaves the king in check is still found. Not from `evasions`,
-    /// which would drop a move that ignores a check and so report it as no
-    /// move at all.
+    /// Read from the whole pseudo legal list, so a move that leaves the king
+    /// in check is still found and can be refused for that reason. `evasions`
+    /// would report it as no move at all.
     pub(crate) fn move_named(&self, name: &str) -> Option<Play> {
         self.generate_moves()
             .iter()
@@ -548,10 +537,10 @@ impl Board {
     /// capture, promotion and castling fields as a description of this board
     /// and a foreign move corrupts the position.
     ///
-    /// Answering no when the truth is yes is free, the caller generates as
-    /// it would have anyway, so castling, en passant and promotion are
-    /// refused rather than checked. This is also `make_move`'s precondition
-    /// written down: keep it stated over the move and the position alone.
+    /// A false no costs nothing (the caller generates anyway), so castling,
+    /// en passant and promotion are refused rather than checked. This is also
+    /// `make_move`'s precondition: keep it stated over the move and the
+    /// position alone.
     pub fn is_pseudo_legal(&self, m: &Play) -> bool {
         if m.castle || m.en_passant || m.promote.is_some() {
             return false;
@@ -629,12 +618,8 @@ impl Board {
     }
 
     /// Every pseudo legal move, less those that cannot answer a check when
-    /// there is one; out of check it is `generate_moves`. Most of the full
-    /// list in check would only be refused by `make_move`, so leaving it
-    /// ungenerated spares the push, the sort and the make.
-    ///
-    /// The list is the one `retain_evasions` returns, move for move, which
-    /// `the_masked_generator_keeps_what_the_filter_kept` holds it to.
+    /// there is one; out of check it is `generate_moves`. In check it is the
+    /// list `retain_evasions` returns, move for move.
     #[inline]
     pub fn evasions(&self) -> MoveList {
         if self.in_check() {
@@ -662,9 +647,7 @@ impl Board {
         self.checkers | BETWEEN[king][checker]
     }
 
-    /// The one generator behind the three lists. The const parameters are
-    /// settled at compile time, so each wrapper monomorphises with nothing
-    /// tested per move.
+    /// The one generator behind the three lists.
     fn generate<const CAPTURES_ONLY: bool, const EVASIONS: bool>(&self) -> MoveList {
         let mut moves = Building::new();
         let (color_mask, capture_mask) = self.sides(self.active_color);
@@ -725,9 +708,6 @@ impl Board {
             if CAPTURES_ONLY {
                 continue;
             }
-            // castling: the right is held, the king is not in check, the
-            // squares between are empty, and the king does not pass through
-            // an attacked square
             let (king_square, opponent, held, castles) = match self.active_color {
                 Color::White => (
                     E1,
@@ -928,11 +908,9 @@ impl Board {
     /// entry left behind on a square since emptied is the drift worth
     /// catching, and a walk of the occupied squares would never look at it.
     fn recompute_squares(&self) -> [Option<Piece>; 64] {
-        // popping the pieces off their boards rather than asking each square
-        // what stands on it: this runs on every move of every debug test,
-        // and the per-square walk took the debug half of ci from under five
-        // minutes to fourteen. The empty squares stay None by never being
-        // written
+        // popped off the piece boards rather than asked of each square: this
+        // runs on every move of every debug test, and the per-square walk
+        // took the debug half of ci from under five minutes to fourteen
         let mut squares = [None; 64];
         for (index, board) in self.pieces.iter().enumerate() {
             let piece = Piece::PIECES[index];
@@ -1000,19 +978,16 @@ impl Board {
     }
 
     /// Every piece of either colour bearing on `index` through `occupied`.
-    /// The swap asks for the two halves separately; this is the whole
-    /// statement of an attacker, which `recompute_checkers` reads and the
-    /// exhaustive model `see` is checked against. `square_attacked` keeps
-    /// its own reading, which stops at the first attacker it finds:
-    /// written over this it measured 0.36% more instructions.
+    /// `square_attacked` keeps its own reading, which stops at the first
+    /// attacker it finds: written over this it measured 0.36% more
+    /// instructions (cdffd6d).
     #[inline]
     fn attackers_to(&self, index: u8, occupied: u64) -> u64 {
         (self.steppers_onto(index) | self.sliders_onto(index, occupied)) & occupied
     }
 
     /// The pawns, knights and kings bearing on `index`: the half of
-    /// `attackers_to` that does not depend on the occupancy, so a swap works
-    /// it out once rather than at every capture it prices.
+    /// `attackers_to` that does not depend on the occupancy.
     #[inline]
     fn steppers_onto(&self, index: u8) -> u64 {
         let attack_masks = &ATTACK_MASKS;
@@ -1058,11 +1033,7 @@ impl Board {
     }
 
     /// Static exchange evaluation: what this capture wins, in centipawns,
-    /// once every profitable recapture on its square has been traded
-    /// through. The least valuable attacker captures on each side in turn,
-    /// sliders behind a capturer joining as the line opens, and a negamax
-    /// fold over the recorded gains lets either side stop where continuing
-    /// stands worse.
+    /// once every profitable recapture on its square has been traded through.
     ///
     /// En passant is played exactly: the pawn taken is lifted from its own
     /// square, so a slider it was blocking joins the swap. A promotion is
@@ -1092,9 +1063,7 @@ impl Board {
             .expect("a capture moves a piece of ours");
         let mut side = !self.active_color;
         let mut d = 0;
-        // the steppers do not change as the swap empties the square, so they
-        // are found once; masking by `occupied` drops the ones that have
-        // already captured
+        // masking by `occupied` drops the steppers that have already captured
         let steppers = self.steppers_onto(m.to);
         loop {
             let side_mask = match side {
@@ -1204,10 +1173,9 @@ impl Board {
     /// which is why the entry a pass writes is salted. A pass is not a move
     /// either side has, and an unsalted entry would let a later real
     /// position count the passed-from position as an occurrence and take a
-    /// draw no rule grants. The window is a range of plies rather than a
-    /// walk back from here, so the real entries either side of a pass still
-    /// compare as they always did. Engines that let a repetition be claimed
-    /// through a pass differ here.
+    /// draw no rule grants. The real entries either side of a pass still
+    /// compare, since the window is a range of plies. Engines that let a
+    /// repetition be claimed through a pass differ here.
     pub fn has_repeated(&self) -> bool {
         self.prior_occurrences(1) >= 1
     }
@@ -1249,9 +1217,7 @@ impl Board {
         let bits = old_castle.bits()
             & CASTLE_LEAVING[play.from as usize]
             & CASTLE_LANDING[play.to as usize];
-        // the rights change on a handful of moves in a game; on every other
-        // one the old and new castle keys would cancel, so one comparison
-        // spares folding both
+        // on most moves the old and new castle keys would cancel
         if bits != old_castle.bits() {
             self.castle = CastlePermissions::from_bits(bits);
             self.key ^= ZOBRIST.castle_key(old_castle) ^ ZOBRIST.castle_key(self.castle);
@@ -1439,11 +1405,9 @@ impl Board {
     /// side that does nothing.
     ///
     /// The fifty move counter runs on, so near the horizon passing does not
-    /// buy the side to move its way out of a draw. The en passant square
-    /// goes, as on any move. The checkers come out empty, because the side
-    /// not to move is never in check. The history entry's key is salted to
-    /// keep the pass out of the repetition arithmetic; `has_repeated` has
-    /// the reasoning.
+    /// buy the side to move its way out of a draw. The history entry's key is
+    /// salted to keep the pass out of the repetition arithmetic;
+    /// `has_repeated` has the reasoning.
     pub(crate) fn make_null_move(&mut self) {
         debug_assert!(!self.in_check(), "a side in check cannot pass");
         self.history[history_index(self.ply)] = Some(PlayState {
@@ -1594,7 +1558,6 @@ impl Board {
         from & self.pawns() & pawns != 0
     }
 
-    /// The six piece boards by name, each a constant index into `pieces`.
     #[inline]
     pub(crate) fn pawns(&self) -> u64 {
         self.pieces[Piece::Pawn as usize]
@@ -1675,15 +1638,12 @@ impl Board {
         }
         let knights = self.knights();
         let bishops = self.bishops();
-        // two bare kings, or a lone minor against a bare king
         if (knights | bishops).count_ones() < 2 {
             return true;
         }
-        // every bishop on one colour, whichever side owns which
         if knights == 0 && (bishops & LIGHT_SQUARES == 0 || bishops & !LIGHT_SQUARES == 0) {
             return true;
         }
-        // both knights on one side, and nothing else
         bishops == 0
             && knights.count_ones() == 2
             && (knights & self.white == 0 || knights & self.black == 0)
@@ -1756,6 +1716,11 @@ impl Board {
     /// as long as the position is: for each piece kind, the squares a piece
     /// of ours of that kind would check it from, and our pieces that alone
     /// stand between one of our sliders and it.
+    ///
+    /// Reading the occupancy before the move is exact for a move that is not
+    /// a castle, en passant or promotion: the square vacated could change
+    /// the answer only if the moving piece already attacked the king, which
+    /// is illegal with us to move.
     pub(crate) fn check_info(&self) -> CheckInfo {
         let king = self.king_index(!self.active_color);
         let attack_masks = &ATTACK_MASKS;
@@ -1917,13 +1882,12 @@ impl Board {
 
     /// Drop the moves that cannot answer the check the side to move stands
     /// in: everything but a king move, a capture of the sole checker or a
-    /// block of its line. En passant is kept unexamined, since the captured
-    /// pawn does not stand on the to square and the masks would misread it.
+    /// block of its line. En passant is kept unexamined, since the pawn it
+    /// takes is not on the to square and the masks would misread it.
     ///
-    /// The generator masks its targets instead, so this is off the search's
-    /// path. It is kept as the second statement of the rule that
-    /// `the_masked_generator_keeps_what_the_filter_kept` holds the generator
-    /// to: do not fold it into the generator.
+    /// The second statement of the rule the generator's evasion mask
+    /// implements, which `the_masked_generator_keeps_what_the_filter_kept`
+    /// holds it to: do not fold it into the generator.
     #[cfg(test)]
     fn retain_evasions(&self, moves: &mut MoveList) {
         debug_assert!(self.checkers != 0, "asked of a position not in check");
@@ -1983,9 +1947,8 @@ impl Board {
         self.set_piece_index(index, piece, color);
     }
 
-    /// Move a piece between two squares. A clear and a set say the same
-    /// thing in halves that cancel: the piece never leaves the board, so the
-    /// material and the phase are untouched and only the two squares differ.
+    /// Move a piece between two squares. A clear and a set would change the
+    /// material and the phase and change them back, so this leaves both alone.
     #[inline(always)]
     fn relocate_piece_index(&mut self, from: u8, to: u8, piece: Piece, color: Color) {
         debug_assert!(from != to);
@@ -2016,9 +1979,7 @@ impl Board {
         self.move_accumulators::<false>(index, piece, color);
     }
 
-    /// Put down or pick up a piece, the two directions written once. `SET`
-    /// is settled at compile time, so no branch on it survives into the
-    /// search.
+    /// Put down or pick up a piece, the two directions written once.
     #[inline(always)]
     fn move_accumulators<const SET: bool>(&mut self, index: u8, piece: Piece, color: Color) {
         let piece_key = ZOBRIST.get_piece_key(index, piece, color);
@@ -2128,10 +2089,8 @@ impl Board {
     }
 
     /// The same count, walked over `evasions` rather than the whole pseudo
-    /// legal list. The legal moves sit inside what `evasions` returns and
-    /// `make_move` refuses the rest, so the count must not move: this holds
-    /// the evasion mask to the perft suites over every position they reach.
-    /// The checkers are maintained, since the mask is read off them.
+    /// legal list, which holds the evasion mask to the perft suites. The
+    /// checkers are maintained, since the mask is read off them.
     #[cfg(test)]
     pub(crate) fn perft_through_evasions(&mut self, depth: u8) -> u64 {
         self.perft_impl::<true, true>(depth)
@@ -2140,9 +2099,7 @@ impl Board {
     /// The same count, walked the way the engine plays: checkers maintained
     /// and the legality probe skipped where they allow. Plain `perft`
     /// compiles `checkers_given` and the skip out, so this is what holds
-    /// them to the suites' counts: a skip that wrongly cleared a move, or a
-    /// `checkers_given` that wrongly said no check, would let an illegal
-    /// move stand and the count rise.
+    /// them to the suites' counts.
     #[cfg(test)]
     pub(crate) fn perft_as_played(&mut self, depth: u8) -> u64 {
         self.perft_impl::<true, false>(depth)
@@ -2315,12 +2272,10 @@ impl Board {
     }
 
     /// The position as a fen, all six fields, which `from_fen` reads back.
-    /// The clocks travel with the position; the path does not, so a board
-    /// parsed back has no history to find a repetition in. The rights and
-    /// the en passant square are printed as the board holds them, after
-    /// `from_fen` has cut them back, so a fen parsed and printed again may
-    /// differ from the one that arrived, and printing that one twice does
-    /// not.
+    /// The path does not travel, so a board parsed back has no history to
+    /// find a repetition in. The rights and the en passant square are
+    /// printed as `from_fen` cut them back, so a fen parsed and printed may
+    /// differ from the one that arrived, and printing it again does not.
     pub fn to_fen(&self) -> String {
         let mut fen = String::new();
         for rank in (1..=8).rev() {
@@ -2519,8 +2474,7 @@ mod make_move {
         }
     }
 
-    /// The shuffle position at ply 1023, one short of the end of the history
-    /// ring, which the two tests below play across.
+    /// The shuffle position one ply short of the end of the history ring.
     const NEAR_THE_WRAP: &str =
         "r4rk1/1pp1qppp/p1np1n2/2b1p1B1/2B1P1b1/P1NP1N2/1PP1QPPP/R4RK1 b - - 3 511";
 
@@ -3591,8 +3545,8 @@ mod perft_edge_cases {
     use pretty_assertions::assert_eq;
 
     /// Shapes the six standard perft positions do not reach. Each count was
-    /// checked against python-chess rather than transcribed. The last four
-    /// put the shapes the evasion mask has a rule for at the root: a double
+    /// checked against python-chess rather than transcribed. The cases at the
+    /// end put the shapes the evasion mask has a rule for at the root: a double
     /// check with pieces able to take a checker, an en passant capture
     /// answering a check, and a promotion that does.
     const CASES: [(&str, u8, u64, &str); 28] = [
@@ -3978,10 +3932,8 @@ mod random_games {
 
     proptest! {
         /// Play a random line, checking every ply against a recompute, then
-        /// unmake the whole line. The fixed tests do this one ply deep from
-        /// positions somebody chose; this walks lines nobody did, and a
-        /// failure arrives already shrunk. The same walk sweeps
-        /// is_pseudo_legal and the evasion filter.
+        /// unmake the whole line. The same walk sweeps is_pseudo_legal and
+        /// the evasion filter.
         #[test]
         fn a_random_line_stays_in_step_and_unmakes_exactly(
             start in prop::sample::select(&STARTS[..]),

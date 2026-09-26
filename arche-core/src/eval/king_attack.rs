@@ -5,9 +5,8 @@
 //! that is worth.
 //!
 //! Nothing here is remembered between positions. The counts read the whole
-//! occupancy and every piece of one side, which is the position itself, so
-//! the only key a score could sit behind is the position key, which the
-//! mobility cache was measured on and turned down.
+//! position, so the only key a score could sit behind is the position key,
+//! which the mobility cache was measured on and turned down.
 
 use super::mobility;
 use super::weigh;
@@ -16,10 +15,9 @@ use crate::magic::MAGIC;
 use crate::misc::Color;
 use crate::psqt::{eg_value, mg_value, pack};
 
-/// How many counts the term is measured in, which is one per piece that
-/// carries a weight. The same four as mobility, in the order
-/// [`mobility::PIECES`] names them, so the walk in `eval/mod.rs` that takes
-/// both readings at once writes each into the slot the other uses.
+/// One count per piece kind, in the order [`mobility::PIECES`] names them,
+/// so the shared walk in `eval/mod.rs` writes each reading into the slot the
+/// other term uses.
 pub(crate) const COUNTS: usize = mobility::PIECES.len();
 
 /// What one attacked square of the enemy king's ring is worth to each of
@@ -47,8 +45,8 @@ pub(crate) const COUNTS: usize = mobility::PIECES.len();
 /// The ridge of zero was not overruled: the largest weight is the rook's 27,
 /// and the rook column is the best supported of the four.
 ///
-/// [`SCORED`] is true at these weights, so the leaf counts the ring at every
-/// evaluation; what that costs is in docs/ROADMAP.md and 7991f40.
+/// What counting the ring at every evaluation costs is in docs/ROADMAP.md
+/// and 7991f40.
 ///
 /// `bounds_hold` charges one piece of each kind two squares of the ring for a
 /// knight, three for a bishop, four for a rook and six for a queen, both sides
@@ -62,16 +60,12 @@ pub(crate) const fn weight(index: usize) -> i32 {
     KING_ATTACK[index]
 }
 
-/// Whether [`super::sum`] takes this term at the leaf: true when one of the
-/// four [`KING_ATTACK`] weights is not zero at either end of the taper.
-/// Derived from the weights the way [`mobility::SCORED_KINDS`] is, so weights
+/// Whether [`super::sum`] takes this term at the leaf: true when a
+/// [`KING_ATTACK`] weight is not zero at either end of the taper, so weights
 /// put back to zero turn the term off with nothing else edited.
 ///
 /// A count at a zero weight is not folded away: llvm leaves the walk over
-/// the pieces standing, and the commit that added this term at zero weight
-/// (188297f) measured what that cost over the bench.
-/// `the_term_is_counted_exactly_when_a_weight_is_not_zero` holds the constant
-/// and the weights together.
+/// the pieces standing, and 188297f measured what that cost over the bench.
 pub(crate) const SCORED: bool = scored(&KING_ATTACK);
 
 /// Whether `weights` prices anything, read at compile time. Both halves are
@@ -92,13 +86,10 @@ const fn scored(weights: &[i32; COUNTS]) -> bool {
 /// rooks and queens attack, a count per piece kind in the order
 /// [`mobility::PIECES`] names them.
 ///
-/// The ring is the eight squares a king attacks from where it stands, five on
-/// the edge and three in a corner. The king's own square is not in it: no
-/// quiet position carries an attack on it, since the side to move out of
-/// check is one of the three conditions a tuned row meets and the other side
-/// cannot be in check at all, so a column counting it is one no fit could
-/// price. The rank beyond the ring is not in it either; the shelter already
-/// counts the pawns standing there.
+/// The ring is the squares a king attacks from where it stands. The king's
+/// own square is not in it: a tuned row is never in check, so a column
+/// counting it is one no fit could price. The rank beyond the ring is not in
+/// it either; the shelter already counts the pawns standing there.
 ///
 /// A piece's count is its attack set over the real occupancy with nothing
 /// taken out, which is where this parts company with
@@ -108,9 +99,8 @@ const fn scored(weights: &[i32; COUNTS]) -> bool {
 /// of either colour, counts that square if the ring holds it, and sees
 /// nothing past it. Pins are ignored, as mobility ignores them.
 ///
-/// A ring square two pieces attack is counted twice, once in each piece's
-/// popcount. How many attackers bear on the king is the signal, and a union
-/// per kind would lose it.
+/// A ring square two pieces attack is counted twice: how many attackers bear
+/// on the king is the signal, and a union per kind would lose it.
 ///
 /// Pawns and kings are left out. The storm already reads the enemy pawns on
 /// the three ranks in front of the king, and a king bearing on the other
@@ -161,9 +151,7 @@ pub(crate) fn counts(board: &Board, color: Color, into: &mut [i32]) {
 }
 
 /// What white's bearing on the black king stands ahead by, as a packed pair on
-/// the scale the piece square pair is on, given each side's counts. The sum
-/// calls it only while [`SCORED`] is true, with counts from the walk in
-/// `eval/mod.rs` that probes each attack set once for both terms.
+/// the scale the piece square pair is on, given each side's counts.
 #[inline]
 pub(crate) fn fold_counts(white: [i32; COUNTS], black: [i32; COUNTS]) -> i32 {
     weigh(&KING_ATTACK, white, black)
