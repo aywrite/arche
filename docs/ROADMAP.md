@@ -6,10 +6,9 @@ See [DEVELOPMENT.md](DEVELOPMENT.md) for how to measure whether one of these hel
 
 ## Not implemented yet
 
-The measurement spine (the bench, the commit trailers, a reference search to
-compare against) is in place, so each of these arrives with its numbers: a
-`Bench:` trailer always, and an `Elo:` trailer from an SPRT when it changes how
-the engine plays. Roughly in the order they look worth doing.
+Each of these arrives with a `Bench:` trailer, and with an `Elo:` trailer from
+an SPRT when it changes how the engine plays. Roughly in the order they look
+worth doing.
 
 - the rest of the late move reductions. How far a late quiet is scouted back is read
   off a table by the node's depth and the move's index, which took +19 ±11 over 2,000
@@ -20,50 +19,35 @@ the engine plays. Roughly in the order they look worth doing.
   drawn endings that rule does not catch: opposite coloured bishops with pawns,
   and a pawnless minor piece advantage, neither of which the signatures reach
 - the rest of evaluation: the rest of king safety, the rest of pawn structure, and
-  special cases such as the bishop pair and open files. Mobility is counted for the
-  knight, the bishop, the rook and the queen and has been fitted twice. The first fit
-  read 1,812 games and rounded six of the eight weights to zero, which left the term a
-  rook count; the refit read twenty four times as many games, priced all four kinds and
-  left no weight at zero, so nothing is skipped at the leaf now. King safety counts the
-  pawns on the two ranks in front of the king, the open and half open files beside it,
-  and the enemy pawns on the three ranks in front of it, and all fourteen of its weights
-  are fitted. The storm is followed three ranks and no further, so a pawn four ranks out
-  is not counted, and a storm pawn blocked by one of ours counts the same as a free one.
-  The squares the enemy pieces attack around the king are counted too: for each side,
-  how many squares of the other king's ring its knights, bishops, rooks and queens bear
-  on, off the attack sets the mobility count already walks, with a square two pieces
-  attack counted twice. All eight of its weights are fitted, trained on 32,516 of the
-  archive's 50,677 games with every other term held. The fit's figure is the sealed
-  group's -0.000143 against a standard error of 0.000059. The selection group read
-  -0.000395 against 0.000052, about 3.2 standard errors away, and by the rule the fit
-  was registered with that disagreement means the selection group overstated it. On the
-  sealed games the boards with thirteen or more pieces left read slightly worse. What it
-  leaves out is how the attack adds up: the count is priced per square, where an attack
-  by several pieces is usually taken as worth more than the sum of its parts, and neither
-  safe checks nor the ring's defenders are read. Pawn structure counts a side's
-  passed pawns by the rank they have reached, its isolated pawns and its doubled ones,
-  read off the two pawn boards alone and remembered under the pawn key, and all sixteen
-  of its weights are fitted. The seventh rank is the one to distrust: a passed pawn there
-  prices below one on the sixth at both ends of the taper, which survives every ridge on
-  the grid, and the quiet filter is the likely cause since a position with a passer one
-  square from queening is rarely settled unless the pawn is blockaded or falling. Thirteen
-  of the strategic suite's fifteen themes rose when the term was fitted; the two that fell
-  are AKPC by 112 and 7th Rank by 217, and the second of those is the same seventh rank.
-  What it leaves out is everything that reads a square rather than a file: whether
-  the square in front of a passer is occupied or attacked, how far each king stands
-  from the promotion square, candidate pawns, connected and backward pawns, pawn
-  islands, and the rule of the square. The first two are the valuable ones and
-  neither can sit behind a key over the pawns. The tuner those want is built: `arche terms`
-  states what each position's evaluation is made of and `scripts/tune.py` fits and scores a
-  weight vector against the games, so a candidate term is one appended column whose
-  held-out loss can be read before there is engine code for it. Whether a fit on our own
-  games buys strength is settled, and the answer is yes: four fits have each passed an
-  sprt bounded [0, 10] at 10+0.1, the twelve tables at +54 ±13 over 2,000 games, the
-  first mobility fit at +12 ±8 over 4,000, the mobility refit at +76 ±25 over 500 and the
-  pawn structure weights at +57 ±25 over 500, each against the baseline its own `Elo:`
-  trailer names, none of which is the commit it landed on. What a held-out loss still
-  cannot do is choose between two fits of one term: it favoured the first mobility fit
-  while covering zero, and the games are what ranked the two
+  special cases such as the bishop pair and open files. Mobility has been fitted twice.
+  The first fit read 1,812 games and rounded six of the eight weights to zero; the refit
+  read twenty four times as many games and left no weight at zero. The king shelter
+  follows the storm three ranks and no further, and a storm pawn blocked by one of ours
+  counts the same as a free one. The king attack zone is priced per square, where an
+  attack by several pieces is usually taken as worth more than the sum of its parts, and
+  reads neither safe checks nor the ring's defenders. Its fit (d3dcc53) trained on 32,516
+  of the archive's 50,677 games with every other term held; the sealed group read
+  -0.000143 against a standard error of 0.000059 and the selection group -0.000395
+  against 0.000052, about 3.2 standard errors apart, which by the rule the fit was
+  registered with means the selection group overstated it. On the sealed games the
+  boards with thirteen or more pieces left read slightly worse. In the pawn structure the
+  seventh rank is the one to distrust: a passed pawn there prices below one on the sixth
+  at both ends of the taper at every ridge on the grid, likely from the quiet filter, since
+  a position with a passer one square from queening is rarely settled unless the pawn is
+  blockaded or falling. Thirteen of the strategic suite's fifteen themes rose when that
+  term was fitted; AKPC fell by 112 and 7th Rank by 217. The term leaves out everything
+  that reads a square rather than a file: whether the square in front of a passer is
+  occupied or attacked, how far each king stands from the promotion square, candidate,
+  connected and backward pawns, pawn islands, and the rule of the square. The first two
+  are the valuable ones, and neither can sit behind a key over the pawns. The tuner is
+  built ([INSTRUMENTS.md](INSTRUMENTS.md)), so a candidate term is one appended column
+  whose held-out loss can be read before there is engine code for it. Fitting on our own
+  games does buy strength: four fits each passed an sprt bounded [0, 10] at 10+0.1, the
+  twelve tables at +54 ±13 over 2,000 games, the first mobility fit at +12 ±8 over 4,000,
+  the mobility refit at +76 ±25 over 500 and the pawn structure weights at +57 ±25 over
+  500, each against the baseline its own `Elo:` trailer names. A held-out loss cannot
+  choose between two fits of one term: it favoured the first mobility fit while covering
+  zero, and the games ranked the two
 - the rest of the uci protocol
   - the only options advertised are `Hash`, the `Clear Hash` button, a `Threads` fixed at
     one and `Move Overhead`, so everything else an interface might set, `Ponder` among
@@ -76,12 +60,9 @@ the engine plays. Roughly in the order they look worth doing.
 
 ## Known limitations
 
-- the strategic suite's total cannot be read against zero. One of the fourteen king
-  safety weights changed by a centipawn moves it +242 or -170, twenty eight such nudges
-  have a standard deviation of 447, and single themes move up to 510, while the fit that
-  took +44 elo moved it -121. It discriminates between vectors of the same size and not
-  between a term and its absence, which is how it should be used and what
-  `docs/DEVELOPMENT.md` now says. Three themes lose under any shelter term at all:
+- the strategic suite's total cannot be read against zero. It discriminates between
+  vectors of the same size and not between a term and its absence; the figures are in
+  [DEVELOPMENT.md](DEVELOPMENT.md). Three themes lose under any shelter term at all:
   Recapturing takes 90.7% of its points already and can only regress, and Square Vacancy
   and Advancement of a/b/c pawns lose under every arbitrary vector tried
 - the fitted term makes the engine keep the pawns in front of its own king at home, and
@@ -107,24 +88,18 @@ the engine plays. Roughly in the order they look worth doing.
 - the sealed fifth of the 2026-09-12 corpus is spent. It was opened once, on 2026-09-12
   after the games had accepted the king safety vector, and read -0.000537 against a
   standard error of 0.000118 over its 5,772 games, which is 0.68 standard errors from the
-  selection group's -0.000649. A vector revised after that reading needs sealed games this
-  corpus does not hold, so the next fit wanting an honest held-out interval wants games
-  this corpus never saw. The access log is not in this repository; it is kept with the
-  run's record in the planning repository
-- an evaluation term is allowed 5% of the search, and mobility is over it. The figure had
-  no home in the repository but the king safety bullet this list used to carry, so it is
-  written here instead of being lost with it. The 8.48% this bullet used to quote predates
-  the refit that priced all four kinds; measured again at `378c148` the term is 13.5% of
-  the bench. The 5% is a rule of thumb and nothing enforces it, which the games have now
-  said outright: the term was made 6% cheaper across the whole search and 6,000 of them
-  could not see it. So the ceiling is the thing under question rather than the term. The
-  reasoning and the numbers are in the planning repository. The king attack zone costs
-  less than the 5%. It was 11.5% of the run as a walk of its own at its fit, and it now
-  takes its counts in mobility's walk. Measured with callgrind over `arche bench` at
-  depth 7, the shared walk forced out of line, the walk is 777,417,417 of 4,600,409,835
-  instructions, 16.9%, and the same walk without the ring is 576,199,267, so the ring is
-  201,218,150 of them, 4.4%, and 4.8% with its fold. The shipped build costs 1,085
-  instructions a node against 1,040 before the term, 4.3% more
+  selection group's -0.000649. The next fit wanting an honest held-out interval wants
+  games this corpus never saw. The access log is not in this repository
+- an evaluation term is allowed 5% of the search, and mobility is over it: 13.5% of the
+  bench at `378c148`. The 5% is a rule of thumb and nothing enforces it, and the games say
+  so: the term was made 6% cheaper across the whole search and 6,000 of them could not see
+  it (1a5e362). So the ceiling is under question rather than the term. The king attack
+  zone costs less than the 5%. It was 11.5% of the run as a walk of its own at its fit,
+  and it now takes its counts in mobility's walk. Measured with callgrind over
+  `arche bench` at depth 7, the shared walk forced out of line, the walk is 777,417,417 of
+  4,600,409,835 instructions, 16.9%, and the same walk without the ring is 576,199,267, so
+  the ring is 201,218,150 of them, 4.4%, and 4.8% with its fold. The shipped build costs
+  1,085 instructions a node against 1,040 before the term, 4.3% more
 - a held-out loss on our own games cannot resolve a fit of the piece square tables one way
   or the other, so an sprt is what decides a re-tune. Measured 2026-09-10 over 1,812
   archived games, 100,726 quiet positions across 1,807 of them: the shipped weights score
@@ -195,10 +170,11 @@ the engine plays. Roughly in the order they look worth doing.
   The nodes the pruning removes run at 6,841,289 nps against 2,723,277 for the other
   sixteen bench positions, 2.51 times cheaper, and pricing the missing 7.7% of nodes at
   that discount predicts the observed time and rate ratios to within 0.003. The cost a
-  node really carries is 0.642% of its instructions under callgrind, or 0.457% behind the
-  `is_mate` guard the commit ships, which is worth well under an elo. A reader who takes
-  that rate column for a slowdown will go looking for five percent that is not there,
-  which has happened once already
+  node really carries was 0.642% of its instructions under callgrind, or 0.457% behind the
+  `is_mate` guard c7730f1 shipped, which is worth well under an elo; 488dae0 replaced that
+  guard with a one sided test, and the rule is now 667,863 of 242,410,349 instructions
+  (0.28%) at depth five. A reader who takes that rate column for a slowdown will go
+  looking for five percent that is not there, which has happened once already
 
 ## Measured and rejected
 
@@ -237,22 +213,19 @@ of these again without saying what is different this time.
   structure, nudging the evaluation the two shortcut gates read. Two SPRT runs
   at 5+0.05 against master both ended inconclusive at their caps (sprt [0, 10],
   branch search/correction-history): +12 ±11 over 1,980 games, then +1 ±12 over
-  another 1,980. Two stopped runs do not pool into one interval, so there is no
-  combined number; a re-run of the same arm carries the pairs of the earlier
-  ones in and is read as one test over all of them, which is how repeated runs
-  are read from now on. Neither of these two recorded its pairs, so a re-run of
-  this arm starts the test again. The mechanism was live and the tree 2.2%
+  another 1,980. Two stopped runs do not pool into one interval, and neither
+  recorded its pairs, so a re-run of this arm starts the test again. The
+  mechanism was live and the tree 2.2%
   smaller with the tactical suite unmoved, so the games say the corrections
   were nearly free rather than nearly right. One suspect is on record: the
   correction's ±31 centipawn clamp is twice the fifteen the reverse futility
   margin was sized to keep clear of a mate it can miss, so the table may spend
-  its gains inside the margin's own headroom. That is one arm of the re-ask,
-  not the fix. The re-ask starts from the shadow sampler's records: the raw
-  evaluation's clearance of beta, the correction offset, the depth, and the
-  reference outcome, from which a corrected margin is chosen on held-out
-  positions before any games are played. Correcting the leaf and correcting the
-  gates are then measured separately, and only then together. The pawn key the
-  arm was built on landed on its own and stays.
+  its gains inside the margin's own headroom. A re-ask starts from the shadow
+  sampler's records (the raw evaluation's clearance of beta, the correction
+  offset, the depth and the reference outcome), chooses a corrected margin on
+  held-out positions before any games, and measures correcting the leaf and
+  correcting the gates separately before together. The pawn key the arm was
+  built on landed on its own.
 - Correcting the evaluation reverse futility reads by a table entry's score and
   bound (a stored floor above the evaluation raised it before the margin was
   measured). Inconclusive at the game cap, +6 ±11 over 1,980 games at 5+0.05
@@ -264,42 +237,38 @@ of these again without saying what is different this time.
   the gate is asked about. Worth re-asking once the reverse futility margin is
   recalibrated against corrected estimates rather than the raw evaluation's
   error, which the residual harness exists to do. Refining the null move gate
-  the same way was measured separately and rejected inside the same arm: it
-  grew the tree and changed nothing the tactical suite could see.
-- Tightening the reverse futility margin under a hundred centipawns a ply.
-  The shadow lane prices a margin with no game played. A candidate row
-  carries the evaluation's clearance of beta and the reference's answer at
-  the node's own depth; a rule with margin `m` fires on that row exactly when
-  the clearance is at least `m` times the depth, and whether the reference
-  came back under beta does not depend on `m` at all. One run therefore
-  scores every margin over the same rows. `residuals 7 every 1 cap 400000`
-  keeps all 347,946 events of the bench's tree, and at the shipped margin the
-  shadow rows reproduce the live gate depth by depth, 143,917 firings and 29
-  crossings; that agreement is what says the offline reading is the live one.
-  The margin turns out not to be spare. Its pooled crossing rate of 0.02%
-  belongs to the three quarters of the candidates that clear beta by more
-  than five pawns a ply and would fire at any margin at all. What a
-  tightening buys is the band beside the boundary, and that band is the dear
-  one. Over the three hundred held-out positions of `tactics.epd`, which
-  `epd <file>` on the residuals argument exists to reach, the band from a
-  hundred down to ninety five crosses at 0.47% and the band from a hundred
-  down to ninety nine at 1.39%, against 0.04% over everything already firing.
-  Two of the ten crossings those five points buy are forced mates against the
-  side that would have cut off, one at depth four with the evaluation
-  standing 399 above beta, which is a centipawn of margin between the
-  shortcut and a lost position. The bench's own eighteen positions put the
-  same band at 0.10% and its halves cannot resolve it at all, so the size of
-  this number is read off the corpus and not off the bench. Downstream the
-  two gates say the same. Nine margins from ninety one to ninety nine move
-  the bench between 0.6% and 1.9% smaller with no order to the sizes, and the
-  tactical count over the same nine runs 227 to 229, unordered as well: 227
-  at ninety nine and 229 at ninety five. A count at any one of them is the
-  tree being reshuffled rather than the search answering better. Under ninety
-  one the depth four mate in two goes. Nothing here was played, and nothing
-  here needs to be: there is no margin in the range to put in front of an
-  sprt. Re-ask this with the correction the correction history arm is about,
-  which is what would move the clearance the rows are read by; the margin
-  against a raw evaluation is where it should be.
+  the same way was rejected inside the same arm: it grew the tree and changed
+  nothing the tactical suite could see.
+- Tightening the reverse futility margin under a hundred centipawns a ply. The
+  shadow lane prices a margin with no game played: a rule with margin `m` fires
+  on a candidate row exactly when the evaluation's clearance of beta is at least
+  `m` times the depth, and whether the reference came back under beta does not
+  depend on `m`, so one run scores every margin over the same rows.
+  `residuals 7 every 1 cap 400000` keeps all 347,946 events of the bench's tree,
+  and at the shipped margin the shadow rows reproduce the live gate depth by
+  depth, 143,917 firings and 29 crossings; that agreement is what says the
+  offline reading is the live one. The margin turns out not to be spare. Its
+  pooled crossing rate of 0.02% belongs to the three quarters of the candidates
+  that clear beta by more than five pawns a ply and would fire at any margin at
+  all. What a tightening buys is the band beside the boundary, and that band is
+  the dear one. Over the three hundred held-out positions of `tactics.epd`, the
+  band from a hundred down to ninety five crosses at 0.47% and the band from a
+  hundred down to ninety nine at 1.39%, against 0.04% over everything already
+  firing. Two of the ten crossings those five points buy are forced mates
+  against the side that would have cut off, one at depth four with the
+  evaluation standing 399 above beta, which is a centipawn of margin between the
+  shortcut and a lost position. The bench's own eighteen positions put the same
+  band at 0.10% and its halves cannot resolve it at all, so the size of this
+  number is read off the corpus and not off the bench. The two suites agree.
+  Nine margins from ninety one to ninety nine move the bench between 0.6% and
+  1.9% smaller with no order to the sizes, and the tactical count over the same
+  nine runs 227 to 229, unordered as well: 227 at ninety nine and 229 at ninety
+  five. A count at any one of them is the tree being reshuffled rather than the
+  search answering better. Under ninety one the depth four mate in two goes.
+  Nothing was played, since there is no margin in the range to put in front of
+  an sprt. Re-ask this with the correction history, which is what would move the
+  clearance the rows are read by; against a raw evaluation the margin is where
+  it should be.
 - The delta margin in quiescence, measured on its own. It landed in one pair
   with principal variation search, and the pair's +50 ±24 over 530 games at
   10+0.1 (sprt [0, 10] passed, PR #171) sits on the margin's commit. Turning
@@ -307,9 +276,8 @@ of these again without saying what is different this time.
   (sprt [-10, 0] inconclusive at the time cap, final LLR 1.47, branch
   ablate/delta-off): the games could not see the margin at all, and the pair's
   gain is principal variation search's. The margin stays on its switch because
-  it costs nothing measurable and the quiescence SEE prune is the form it
-  converges on. One guess per run from here, unless two parts cannot be
-  measured apart.
+  it costs nothing measurable. The lesson is one guess per run, unless two
+  parts cannot be measured apart.
 - Exempting quiet moves that give check from the late move reduction. Lost
   -18 ±18 over 860 games at 10+0.1 (sprt [0, 10] stopped at the time cap with
   the likelihood ratio at -2.72, a fraction from accepting H0, PR #185). The
@@ -347,11 +315,9 @@ of these again without saying what is different this time.
   scout is a depth one search, and against a warm table it is mostly one node
   answered from it: all 50,394 of them together cost 88,259 nodes of a
   4,162,584 node tree, 2.1%, a mean of 1.8 nodes each. Counting scouts is the
-  wrong denominator. What prices a reduction is the nodes it removes, and
-  reading a population share as a cost is the reverse futility entry's error
-  in another shape. Measured against master at `ce8b662`, with the two
-  halves of the floor asked apart. The deeper
-  scout at depth three is quiescence, and it grows the bench tree by 0.17%
+  wrong denominator: what prices a reduction is the nodes it removes. Measured
+  against master at `ce8b662`, with the two halves of the floor asked apart,
+  the deeper scout at depth three is quiescence, and it grows the bench tree by 0.17%
   while the strategic suite falls 813 points (92502 to 91689) and the
   tactical count rises two (221 to 223). The skip at depth three leaves the
   suites where they were (221, and 8 points down) and saves 0.70% at depth
@@ -382,18 +348,14 @@ of these again without saying what is different this time.
   sits inside its own interval and the second contradicted it, so the number
   to read is the 1,500 games together, which are centred near zero. The
   batches ran from different seeds and neither carried the other's pairs in,
-  so their ratios were added by hand rather than read as one continued test.
-  That is weaker than a run that carries them, and -1.65 against a -2.94
-  bound falls short of accepting H0 either way. The suites dissented from
-  the start and were right to. The tactical count went 221 to 220 and the
-  strategic total 92502 to 92456, both small enough to read as the tree
-  being reshuffled, and neither suite is given the depth the smaller tree
-  buys. The band reading was sound about what the skip costs in accuracy. It
-  says nothing about what the nodes the skip saves are worth, and at this
-  control they are worth nothing a game can see. Re-ask only at a control
-  long enough for 1.7% of the tree to show, or with the skip moved to where
-  it takes more than that. The `epd <file>` word on the reductions argument
-  the band was read with landed on its own and stays.
+  so their ratios were added by hand, which is weaker than a run that carries
+  them, and -1.65 against a -2.94 bound falls short of accepting H0. The
+  tactical count went 221 to 220 and the strategic total 92502 to 92456, both
+  small enough to be the tree reshuffled. The band reading was sound about
+  what the skip costs in accuracy and says nothing about what the nodes it
+  saves are worth, which at this control is nothing a game can see. Re-ask
+  only at a control long enough for 1.7% of the tree to show, or with the
+  skip moved to where it takes more than that.
 - Fitting the attention model against the two points the gates read, rather
   than by log loss over every row of the reduction ledger. The thirteen
   integers come from a logistic regression over the whole ledger, while the
@@ -441,7 +403,10 @@ of these again without saying what is different this time.
   computed at nodes that cut off before a quiet move was tried); what lost was
   paying a selection per move tried, and scoring the quiets in one pass when
   the search reaches them took the saving instead, 2.7% fewer instructions per
-  node.
+  node. A narrower form landed later in 280ee93: the quiet run picks up to four
+  moves by selection and sorts the rest, and at depths one to three sorts only
+  the moves the shallow rules leave, 3.9% fewer instructions in the search over
+  the full bench and 1.2% more at depth five.
 - Masking a `u8` square down to six bits where it indexes a table of sixty
   four, so that the bounds check comes off the load. The answer is per site
   and measured rather than a rule. It pays on the board's square array and
@@ -493,13 +458,10 @@ of these again without saying what is different this time.
   only the run copies that land where they stood is exact and worth
   0.05%, too little to carry.
 - `#[inline(always)]` on the shelter count, `eval::shelter::counts_of`, which
-  moved 127 instructions of 3.4 billion over the bench and is not carried. It is
-  worth recording
-  because the case for it is good and the measurement still says no: the
-  function is read twice at every leaf and every quiescence node, which is
-  where the attribute has paid elsewhere. It is small enough that llvm inlines
-  it unasked. A larger counting helper read from the same place is a different
-  question and is measured on its own.
+  moved 127 instructions of 3.4 billion over the bench and is not carried,
+  although the function is read twice at every leaf and quiescence node, where
+  the attribute has paid elsewhere. It is small enough that llvm inlines it
+  unasked.
 - `#[inline(always)]` on `square_attacked`, 3.7% more instructions, and on
   `Quiet::bonus`, 3.1% more. Both are called from inside a loop the register
   allocator then runs short in, and forcing them in is what tips it. The
@@ -533,20 +495,15 @@ of these again without saying what is different this time.
   full width shortcuts, 32,807 stood at a node whose probe had hit, so the stored value
   could spare at most 1.5% of the evaluations, about 0.3% of the run, before the layout
   change every pinned count is counted against. The same count found the late move gate
-  scoring the position through `eval::eval` rather than the searcher's cached door at 990
-  nodes over the bench, 884 of them already scored by the shortcuts. Those 884 are gone:
-  `shortcuts` hands back the evaluation it read and the move loop seeds the decision's memo
-  with it, so a node the shortcuts scored is not scored a second time. The uncached door is
-  still there for the nodes they never reached. Read on the bench at `54d85b9`, the commit
-  this was first built on, the gate is asked for an evaluation at 2,515,532 decisions and
-  opens that door 671 times, against 23,717,724 evaluations over the run; the tree has
-  moved since and those three have not been taken again. The 990 and the 884 were read on
-  an earlier tree still and are kept here as what prompted the seeding.
+  scoring 884 nodes the shortcuts had already scored, through the uncached `eval::eval`;
+  `shortcuts` now hands back the evaluation it read and the move loop seeds the decision's
+  memo with it. On the bench at `54d85b9` the gate then asked for an evaluation at
+  2,515,532 decisions and used the uncached door 671 times, against 23,717,724
+  evaluations over the run; the tree has moved since and these have not been taken again.
 - Lazy mobility, leaving the term out at the quiescence stand pat when the rest of the
   score already clears beta by a margin. Built and played at three margins, 6,000 games at
   10+0.1 under sprt [0, 10]: +1 ±8 over 4,000 games at a margin of a hundred, and nothing
   the other two could see either. The mechanism does work, skipping the term at 71% of
   evaluations for 6.05% off the run to a fixed depth, and no game can tell. Branches
-  `eval/lazy-mobility`, `eval/lazy-mobility-200` and `eval/lazy-mobility-50` hold the code
-  and the entry in the planning repository holds the pairs, so any of the three tests
-  resumes rather than restarts.
+  `eval/lazy-mobility`, `eval/lazy-mobility-200` and `eval/lazy-mobility-50` hold the code,
+  and the pairs were recorded, so any of the three tests resumes rather than restarts.

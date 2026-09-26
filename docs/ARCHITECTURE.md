@@ -18,13 +18,11 @@ The split means the engine can be tested without spawning a process and the
 protocol can be tested without running a search.
 
 The board is represented using bitboards: one 64 bit integer per piece type
-and one per colour, with one bit per square. Most operations on them compile
-down to one or two instructions. The search is alpha beta with iterative
-deepening, quiescence search and a transposition table. Evaluation is
-material plus piece square tables, tapered between middlegame and endgame,
+and one per colour, with one bit per square. The search is alpha beta with
+iterative deepening, quiescence search and a transposition table. Evaluation
+is material plus piece square tables, tapered between middlegame and endgame,
 plus four terms counted at the leaf: piece mobility, king safety, pawn
-structure and the king attack zone. All four are fitted to the engine's own
-archived games, and the code map below says what each one counts.
+structure and the king attack zone.
 
 ## Code map: arche-core
 
@@ -72,27 +70,17 @@ archived games, and the code map below says what each one counts.
   pruning (answer it from a reduced search of the position left by passing
   the move) and the check extension.
 - **late_move.rs**: What a node does with a quiet move its ordering put
-  late. The late move reduction scouts such a move shallower and trusts
-  the answer when it comes back low, at nodes deep enough to keep a full
-  width ply under the scout. That scout runs a ply deeper still once the
-  move's place in the order passes a floor that rises with the node's
-  depth. Behind it stands the attention model, a logistic regression over
-  what the node knows about the move, fitted offline and carried as
-  integers: under its deadest band the node does not search the move at
-  all. Off the index rule the model's own threshold decides the deeper
-  scout instead. How many plies a scout gives up is read off a table by the
-  node's depth and the move's index. Under all of that, at the depths the
-  reduction does not reach, two rules drop a quiet move after the node's
-  first: quiet futility where the node's static evaluation plus a pawn a
-  ply cannot reach alpha, and a count where the node has already searched
-  four moves a ply. They share their exemptions and the count is asked
-  first, since it reads no evaluation. Their ceiling is a ply under the
-  deep reduction's floor, so no depth is decided by both a shallow rule
-  and the model. The reduction, the index rule and the model
-  answer one call for one move, and the features they score are the ones
-  the reduction ledger records. The futility rule is settled once for the
-  node instead, since alpha is the only part of it that moves as the node
-  searches, and asked per move about the move alone.
+  late. The late move reduction scouts such a move shallower, by plies read
+  off a table by the node's depth and the move's index, and trusts the
+  answer when it comes back low. The scout runs a ply deeper still once the
+  move's index passes a floor that rises with the node's depth. The
+  attention model, a logistic regression over what the node knows about the
+  move, fitted offline and carried as integers, decides which moves are not
+  searched at all. At depths one to three, below the model's floor, two
+  rules drop a quiet move after the node's first: quiet futility, where the
+  static evaluation plus a pawn a ply cannot reach alpha, and a count, once
+  the node has searched four moves a ply. The features the model scores are
+  the ones the reduction ledger records.
 - **ordering.rs**: The order moves are tried in. The transposition table's
   move first, then the captures the swap prices as winning or even, by
   what each wins with most valuable victim / least valuable attacker
@@ -101,7 +89,8 @@ archived games, and the code map below says what each one counts.
   distance from the root, and a history table of how often each quiet move
   has cut off anywhere against how often it was tried and did not. A move
   the table has marked down sorts behind the quiet moves nothing is known
-  about. The losing captures close the list. Alpha beta prunes more the
+  about. The losing captures close the list. The quiet moves are put in
+  order only as far as the move loop reads them. Alpha beta prunes more the
   sooner a good move is found, so ordering has an outsized effect on tree
   size.
 - **limits.rs**: When to stop searching. A clock, a node budget, a soft
@@ -119,36 +108,25 @@ archived games, and the code map below says what each one counts.
   found last time. Entries are 16 bytes, four to a cache line, replaced by
   age and depth. A hit can answer a node outright or just say which move
   to try first. Tainted scores are counted and by default trusted anyway,
-  except close to the fifty move horizon where every cutoff is refused.
-  The policies were played against each other and trusting won, at +48 ±23
-  over 308 games at 5+0.05, so the error is carried knowingly and the bench
-  prints the taint counters on every run. A `reference` configuration keeps
-  the cautious search as a baseline for classifying future changes.
+  except close to the fifty move horizon where every cutoff is refused;
+  ROADMAP.md has the match that chose that, and the reference search keeps
+  the refusal.
 - **eval/**: What a position scores, a file per leaf term and two for what
   they share.
   - **mod.rs**: The material values, the phase weights the taper is read at,
-    the accumulator, and the sum the search asks for. The board hosts the
-    accumulator and tells it about every piece placed, removed and moved, so
-    material and the piece square score are carried rather than counted;
-    anything too dear to keep in step is computed at the leaf instead.
-    Material that cannot mate is answered with a hard zero before any of
-    that, which is the one place the score is not a sum over the weights.
-    Also here is `TERMS`, a descriptor per leaf term (its name, how many
-    counts it is measured in, its weights and its counts), which is what the
-    tuner lays its slot vector out from. And the one walk over each side's
-    knights, bishops, rooks and queens that mobility and the king attack zone
-    both read at the leaf: each piece's attack set is probed once and read
-    against both terms' masks.
-  - **cache.rs**: The one cache type a remembered term is kept in: direct
-    mapped, as wide as the term measured it wants, holding a score under the
-    whole of its key. A term that remembers itself names its key and its fold,
-    and the searcher holds an instance of this per term, so there is one probe
-    in the crate to read and a table for each term.
-  - **mobility.rs**: How many squares each side's pieces cover. Read off the
-    board at every leaf, through the walk it shares with the king attack
-    zone, and not remembered: a piece that moves changes what every slider
-    looking through its square sees. The term keeps its own count of the same
-    squares, which the tuner reads and a test holds the shared walk to.
+    the accumulator, and the sum the search asks for. The board tells the
+    accumulator about every piece placed, removed and moved, so material and
+    the piece square score are carried rather than counted; the leaf terms are
+    computed at the leaf. Material that cannot mate is answered with a hard
+    zero, the one place the score is not a sum over the weights. `TERMS`, a
+    descriptor per leaf term, is what the tuner lays its slot vector out from.
+    One walk over each side's pieces probes each attack set once for both
+    mobility and the king attack zone.
+  - **cache.rs**: The direct mapped cache a remembered term is kept in, one
+    per term, holding a score under the whole of its key.
+  - **mobility.rs**: How many squares each side's pieces cover. Read at every
+    leaf and not remembered, since a piece that moves changes what every
+    slider looking through its square sees.
   - **shelter.rs**: What stands between each king and the board, its own
     pawns and the enemy pawns coming for it. Computed at the leaf and then
     remembered under the pawns and the two king squares it is a function of,
@@ -161,13 +139,8 @@ archived games, and the code map below says what each one counts.
     king move as well.
   - **king_attack.rs**: How many squares of the enemy king's ring each side's
     knights, bishops, rooks and queens attack, off the same attack sets
-    mobility walks but with nothing taken out of them. Read at every leaf off
-    the walk it shares with mobility, and skipped only if its weights are all
-    zero. The term keeps its own count as well, for the tuner's rows, and the
-    shared walk has to agree with it. Not remembered: what it depends on is
-    the whole occupancy and a side's pieces, which is the position, and a
-    table under that key was measured for mobility and turned down on the
-    memory it cost.
+    mobility walks but with nothing taken out of them. Read at every leaf and
+    not remembered, for mobility's reason.
 - **psqt.rs**: The piece square tables. Every piece has a second table
   for the endgame; both phases are packed into one integer so the taper
   costs one multiply.
@@ -175,12 +148,10 @@ archived games, and the code map below says what each one counts.
 - **bench.rs**: A fixed suite of positions searched to a fixed depth,
   printing exact node counts. This is what a commit's `Bench:` trailer
   states and what CI verifies.
-- **recorder.rs**: What the four recorders below share. The reservoir
-  that hangs off an engine and keeps one node in every n, the loop that
-  searches a suite with one armed, the spread they key by, the six lanes
-  that keep their kept sets apart, and the window a sample reads off the
-  node. An engine with nothing armed searches the tree it searched before
-  there was a reservoir at all.
+- **recorder.rs**: What the four recorders below share: the reservoir that
+  hangs off an engine and keeps one node in every n, the loop that searches
+  a suite with one armed, and the lanes that keep their samples apart. An
+  engine with nothing armed searches the tree it would without them.
 - **residual.rs**: What the shortcuts cost in accuracy. It samples the
   nodes reverse futility and the null move pass answered, and the nodes
   reverse futility could have answered and did not, then replays each one
@@ -199,18 +170,11 @@ archived games, and the code map below says what each one counts.
   once with a named switch off, and joins the two runs by the node, so a
   row says whether each side reached it and what each spent under it.
   Driven by the `effort` argument.
-- **tune.rs**: What a position's evaluation is made of. The evaluation is
-  linear in the tables and the material values everywhere it is not a drawn
-  signature, so a position's score is a dot product, and this writes down the
-  coefficients: one per weight the
-  position touches, in the side to move's frame. `reconstruct` folds a row
-  back against the live tables and has to give the evaluation exactly,
-  which is asserted on every row printed as well as over three suites in a
-  test. A position drawn by material is turned away and counted in the header
-  rather than fitted, because its score does not read the weights at all.
-  Where the leaf terms stand in the vector comes from `eval::TERMS` rather
-  than from constants here, and the run prints that layout on a line of its
-  own so that what reads the rows keeps no copy of it. Driven by the `terms`
+- **tune.rs**: What a position's evaluation is made of. The evaluation is linear
+  in its weights except where material cannot mate, so a position's score is a
+  dot product, and this writes down the position's side of it, one coefficient
+  per weight the position touches. `reconstruct` folds a row back against the
+  live tables and has to give the evaluation exactly. Driven by the `terms`
   argument, and read by `scripts/tune.py`.
 - **tactics.rs**: 300 tactical positions with a pinned pass count, gated
   in CI.
@@ -219,16 +183,14 @@ archived games, and the code map below says what each one counts.
 
 ## Code map: src
 
-- **main.rs**: Argument handling. `bench` runs the suite and exits, and so
-  do the five research commands, `residuals`, `cutoffs`, `reductions`,
-  `effort` and `terms`. No argument starts the UCI loop.
+- **main.rs**: Argument handling. `bench` and the research commands run
+  and exit; no argument starts the UCI loop.
 - **uci.rs**: The protocol: what each command means, the options the
   handshake advertises, and what a `go` may spend. Every line reaches it
   through the session loop, on the thread the engine was built on.
-- **instruments.rs**: What the five research commands take, and what each
-  one runs. Not the protocol (an interface cannot ask for any of them, and
-  would not wait for the answer), which is why they are here rather than
-  beside the commands they are spelled like.
+- **instruments.rs**: What the research commands take and run. They are
+  not the protocol (an interface cannot ask for any of them), which is why
+  they are here rather than in uci.rs.
 - **session.rs**: The threads a session runs on. A reader owns stdin and
   acts on the commands that cannot wait for a search to end (`stop`,
   `quit`, `isready`); everything else is queued for the session loop,
@@ -238,9 +200,8 @@ archived games, and the code map below says what each one counts.
 - **params.rs**: Reads the word/value pairs UCI commands are made of, and
   the phrases where a name runs to more than one word, as `Clear Hash` does.
 - **command.rs**: What a command line argument is called and what words it
-  takes, declared once. The same list says which words may stand where the
-  depth would, which words are known at all, and how the usage spells the
-  line, so `--help` cannot describe a line the parser does not take.
+  takes, declared once, so `--help` cannot describe a line the parser does
+  not take.
 - **time_control.rs**: Reads the time part of a `go` line, and turns a clock
   into a time budget for one move.
 
@@ -248,48 +209,18 @@ archived games, and the code map below says what each one counts.
 
 Most of `scripts/` is measurement plumbing, described in DEVELOPMENT.md
 where each measurement is, or in the script's own header where it is not.
-`fit_attention.py` is the second kind: it fits the thirteen `ATTENTION_*`
-integers `late_move.rs` carries, from a `reductions` ledger. The four
-below are the offline half of the evaluation tuner, and they have tests
-under `scripts/tests` gated by the Scripts workflow:
+`fit_attention.py` fits the `ATTENTION_*` integers `late_move.rs` carries,
+from a `reductions` ledger. The four below are the offline half of the
+evaluation tuner, described in [INSTRUMENTS.md](INSTRUMENTS.md), and each
+carries its reasoning in its docstring:
 
-- **groups.py**: Which of the three groups a pair of games falls in. The unit
-  is the pair, because a run plays every opening twice with the colours
-  reversed and a split that separated the two would hold half an opening out.
-  A pair falls where the first byte of its key puts it, unless a sealed set is
-  named in a file, which is how a second seal is drawn over games no reading
-  has seen. The two scripts below both need it, and a second copy of the
-  mapping would be a corpus built to one split and fitted against another,
-  which neither run would say a word about.
-- **harvest_games.py**: The strength runs' game artifacts down into an
-  archive, then the corpus rebuilt from the whole of it. What keeps the
-  games from expiring unharvested.
+- **groups.py**: Which of the three groups (train, selection, sealed) a pair
+  of games falls in. Both scripts below import it, so a corpus cannot be built
+  to one split and fitted against another.
+- **harvest_games.py**: Downloads the strength runs' game artifacts into an
+  archive before they expire, then rebuilds the corpus from the whole of it.
 - **build_corpus.py**: Archived strength-run pgns in, an epd of unique
-  post-book positions out, each carrying the game it belongs to, the result
-  from the side to move's point of view, and how many times it was reached.
-  A game is named by the sha256 of its movetext and a pair by its two games,
-  and the pair key is what the split reads and what every row carries.
-  A position two games reached belongs to the group of the lower key
-  and is labelled and weighted by that group's games alone, and the
-  appearances in other groups are dropped rather than merged.
+  post-book positions out, each labelled from its own group's games.
 - **tune.py**: The loss harness and the fit. Reads an `arche terms` run and
-  the corpus above, rebuilds every row against the weights the run printed,
-  and either scores weight vectors on the selection games, cross validates one
-  way of fitting against another, or fits new weights. The unit throughout is
-  the game and not the position, because the label is the game's, and the
-  objective weights a position by how often the corpus reached it. There are
-  three groups: train, selection, and the sealed one, `calibration`. Drawn
-  from the key they are three fifths, a fifth and a fifth; where a file names
-  the sealed set instead, three quarters of the rest train and a quarter ranks
-  the ridge. The sealed rows are not in the matrices anything here
-  scores, so no command can read a sealed row, and the duplicate rule above
-  keeps a sealed game's result out of every label a fit sees. Nothing here
-  knows how to evaluate a position: the engine states the coefficients and
-  states the weights, and a row this cannot rebuild stops the run.
-
-## Measurement
-
-The engine measures itself, and most of the project's conventions hang off
-that. DEVELOPMENT.md covers the bench and the matches, and
-[INSTRUMENTS.md](INSTRUMENTS.md) covers the measurements of the search itself
-and of the evaluation.
+  the corpus, rebuilds every row against the weights the run printed, and
+  scores, cross validates or fits weight vectors.

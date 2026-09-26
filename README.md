@@ -49,27 +49,12 @@ The engine is something to experiment on rather than an example to copy.
 The engine does not ship with any GUI. It currently implements a subset of the UCI protocol,
 so an open source GUI such as [Arena](http://www.playwitharena.de/) can drive it.
 
-The program starts in UCI mode immediately. Eight arguments do anything else, six of them
-measurements.
-`bench [depth] [hash <MB>] [taint refuse|trust|skip|rule50] [audit]` searches a fixed set of
-positions and prints what each search counted, for measuring a change to the search or the
-speed of a machine, and is a UCI command as well as an argument.
-`residuals [depth] [every <n>] [cap <n>] [epd <file>] [taint refuse|trust|skip|rule50]` searches the same
-positions, or the ones an epd file names, and then asks a search with the shortcuts off what the
-nodes they answered were really worth.
-`cutoffs [depth] [every <n>] [cap <n>]` searches them again and prints which move cut each
-sampled node off, or that none did, for reading what the move ordering earns.
-`reductions [depth] [every <n>] [cap <n>] [epd <file>]` samples the scouts the late move
-reduction trusts over the same positions, or the ones an epd file names, along with the moves
-the pruning skipped, and asks a full depth search whether each fail low or skip threw a move
-away.
-`effort [depth] [every <n>] [cap <n>] [epd <file>] [off <switch>[,<switch>]] [budget <n>]`
-searches them twice, the second time with one search switch off or two, and joins the two runs
-by the node, so that a row says what the rule removed outright, what it created, and where the
-effort it freed went.
-`terms [epd <file>]` prints what each quiet position's evaluation is made of, one coefficient
-per weight the position touches, which is what an offline fit of those weights reads.
-`--version` and `--help` are answered too.
+The program starts in UCI mode immediately. `arche --help` lists the arguments that do
+anything else. `bench` searches a fixed set of positions and prints what each search counted,
+for measuring a change to the search or the speed of a machine, and is a UCI command as well;
+[docs/DEVELOPMENT.md](docs/DEVELOPMENT.md) describes it. `residuals`, `cutoffs`, `reductions`,
+`effort` and `terms` measure the search and the evaluation, and
+[docs/INSTRUMENTS.md](docs/INSTRUMENTS.md) describes them.
 
 Binaries for linux, macos and windows are attached to each
 [release](https://github.com/aywrite/arche/releases), each with a sha256 checksum and a build
@@ -79,9 +64,8 @@ Take the first your cpu supports. Most machines run `-v3`, which has been standa
 2013. The plain build's floor arrived with Intel's Nehalem in 2008 and AMD's Bulldozer in 2011,
 so a chip older than those, or a Core 2 or early Atom sold alongside them, wants `-baseline`.
 All three search the same tree and reach the same answer, the newer ones faster. The checksum
-says a download arrived intact.
-The attestation says where it came from, and is answered for by github rather than by the page
-the download sits on:
+says a download arrived intact, and the attestation, which github answers for, says where it
+came from:
 
 ```
 gh attestation verify arche-v<version>-<target>.tar.gz --repo aywrite/arche
@@ -105,16 +89,14 @@ across a network.
 
 ## Strength
 
-Each release plays a short match against its predecessor, and a gauntlet against engines of
-several lineages which are ranked on the [ccrl](https://computerchess.org.uk/) blitz list.
-A second, smaller gauntlet at a slower control places it on the ccrl 40/15 list as well.
-All three results are added to the release notes.
-The estimate is only as good as the number of games behind it, which is why the error bar is
-published alongside it.
+Each release plays a match against its predecessor, a gauntlet against engines of several
+lineages ranked on the [ccrl](https://computerchess.org.uk/) blitz list, and a smaller gauntlet
+at a slower control against the ccrl 40/15 list. The release notes carry each result with its
+error bar.
 
-The engine has not been entered into any rating list itself, and the gauntlet is played faster
-and on different hardware than the list it borrows its opponents from, so read the figure it
-implies as a placement to within about a hundred points rather than a rating.
+The engine has not been entered into any rating list itself, and the gauntlets are played faster
+and on different hardware than the lists they borrow their opponents from, so read the figure
+as a placement to within about a hundred points rather than a rating.
 [docs/DEVELOPMENT.md](docs/DEVELOPMENT.md) has the method, and what a match of a given size can
 and cannot settle.
 
