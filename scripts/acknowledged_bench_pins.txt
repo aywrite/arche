@@ -7,7 +7,7 @@
 # so a commit whose figures are not these two is not acknowledged. An entry is
 # added when the lapse is understood, not to get a release out.
 #
-# All six below were rebased before they landed, so the commit built by the
+# Each of these was rebased before it landed, so the commit built by the
 # bench workflow was not the commit that arrived.
 
 # 2026-08-25, the pair the check was written from

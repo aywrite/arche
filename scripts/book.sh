@@ -12,11 +12,9 @@
 #     book.sh fetch <book> <dir>    download it at the pin, unzip it, check it
 #     book.sh verify <book> <dir>   check one already there against the table
 #
-# One book is one block below: the file it arrives as, the format fastchess
-# reads it in, how many openings it holds and the sha256 of the unzipped file.
-# The names the blocks declare are what the workflows check their book input
-# against. A pgn holds a game per opening and an epd a position a line, so
-# counting belongs beside the format rather than in the workflow.
+# One book is one block below. The match actions call these commands from
+# the checkout, so their output is an interface. A pgn holds a game per
+# opening and an epd a position a line, so counting belongs beside the format.
 set -euo pipefail
 
 # Every book is fetched at this commit of official-stockfish/books. A branch
@@ -25,8 +23,6 @@ set -euo pipefail
 # built from the `pin` command, so this is the one place the pin is written.
 PIN=65815ccdbc7727cd4f6aee252ba8f67fb740e92f
 
-# A name is in the list the workflows check against only when it has all
-# four fields.
 declare -A FILE FORMAT OPENINGS SHA256
 
 # The book every Strength and Calibrate figure so far was played on, and the
@@ -45,8 +41,8 @@ FORMAT[UHO_4060_v2]=epd
 OPENINGS[UHO_4060_v2]=242201
 SHA256[UHO_4060_v2]=36f2ec751ab78def6be1307430cbe2cd2ba65ade8d2aaae8f10e3df7d0ea83e1
 
-# A book missing one of its four fields is not listed, so the workflows refuse
-# it before a match rather than at the count.
+# A book missing a field is not listed, so a match refuses it before it
+# starts rather than at the count.
 list() {
     local book
     for book in "${!FILE[@]}"; do
@@ -57,7 +53,6 @@ list() {
     done | sort
 }
 
-# What the action that fetches the books builds its cache key from.
 pin() {
     echo "$PIN"
 }
@@ -110,9 +105,9 @@ count() {
     echo "$held"
 }
 
-# Of the unzipped file, which is what is played. A step of its own as well as
-# part of a fetch, because a cache hit skips the fetch and a restored file is
-# what most runs play.
+# Of the unzipped file, which is what is played. A command of its own as well
+# as part of a fetch, because a cache hit skips the fetch and a restored file
+# is what most runs play.
 checked() {
     local book=$1 path=$2 arrived
     arrived=$(sha256sum "$path" | cut -d' ' -f1)

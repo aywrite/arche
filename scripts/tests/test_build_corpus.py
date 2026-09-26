@@ -143,7 +143,7 @@ def test_a_game_key_is_its_movetext_and_nothing_else():
     other = next(games(moves_pgn("1. e4 e5 2. Nf3 Nf6")))
     assert build_corpus.game_key(first) == build_corpus.game_key(same)
     assert build_corpus.game_key(first) != build_corpus.game_key(other)
-    # and it is the sha256 the split reads sixty-four hex characters of
+    # and it is the sha256 of the uci movetext
     assert (
         build_corpus.game_key(first)
         == hashlib.sha256(b"e2e4 e7e5 g1f3 b8c6").hexdigest()
@@ -354,8 +354,7 @@ def test_two_batches_of_one_run_are_two_sources(tmp_path):
         )
         names.append(build_corpus.run_of(shard / "games.pgn"))
     assert names == ["34468958876-0-0", "34468958876-1-0"]
-    # `batches` is in the manifest for a reader, not for the name: two of the
-    # four lines name the source and the rest are not read here
+    # `batches` is in the manifest for a reader, not for the name
     assert len(set(names)) == 2
 
 

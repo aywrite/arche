@@ -27,8 +27,8 @@ TRAILER = re.compile(r"^(Bench|Speed|Elo): (.*)$")
 # openbench reads the expected bench from the last of these anywhere in the
 # message, so the trailer has to be it
 OPENBENCH = re.compile(r"(?:bench|nodes)[ :=]+([0-9,]+)", re.IGNORECASE)
-# fewer than six rounds have no 95% interval, so they are no measurement
 PERCENT = r"[+-]\d+(\.\d+)?%"
+# fewer than six rounds have no 95% interval, so they are no measurement
 SPEED = re.compile(
     rf"^{PERCENT} \(bench nps, 95% interval {PERCENT} to {PERCENT}, "
     r"([6-9]|\d{2,}) interleaved rounds( over (shuffled|padded) layouts)? "

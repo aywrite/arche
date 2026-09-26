@@ -37,25 +37,24 @@ import sys
 import textwrap
 from dataclasses import dataclass, field
 
-# The confidence of the interval. Two sided, so each tail gets half.
+# two sided, so each tail gets half
 CONFIDENCE = 0.95
 
-# How far the rate moves between two builds that differ only in where the
-# code lands, as a percentage. Read off the Bench workflow's speed job over
-# the pull requests up to #321. Of the 53 that changed no build input, so
-# that both sides were one binary, 4 had an interval that excluded zero.
-# Release version bumps and comment sweeps, which change nothing but layout,
-# posted offsets near 1.5% with intervals that excluded zero. More rounds do
-# not average that away, since it belongs to the binary and not to the run.
+# A percentage, set above how far the rate moves between two builds that
+# differ only in where the code lands. Over the speed job's comments on the
+# pull requests up to #321, 4 of the 53 that changed no build input had an
+# interval that excluded zero, and release bumps and comment sweeps posted
+# offsets near 1.5%. More rounds do not average that away, since it belongs
+# to the binary and not to the run.
 THRESHOLD = 2.0
 
 # How far below the median pair a round's pair can run before the round is
 # run again, as a fraction. Simulated with a tenth of the runs slowed by 3%
 # to 15%, it took the interval at nine rounds from 7.0% wide to 4.1% and at
 # twenty five from 2.0% to 1.4%, and the intervals went on holding the true
-# change 94% to 97% of the time. The runner's noise is mostly small and even,
-# so over the same pull requests it marked 41 of 1,791 rounds and changed
-# little; it is for a machine whose load comes in bursts.
+# change 94% to 97% of the time. It is for a machine whose load comes in
+# bursts: on the Bench workflow's runners it marked 41 of 1,791 rounds up to
+# #321 and changed little, and that job turns it off.
 LOADED = 0.03
 
 # The threshold when every round runs on a layout of its own. The layout's
@@ -159,11 +158,8 @@ def loaded(measured: Measured, cut: float) -> list[int]:
     A pair is read by the geometric mean of its two rates, which says how
     fast the machine was that round and, when the two sides are as noisy as
     each other, nothing about their ratio. Reading each run against its own
-    side instead looks like the same thing and is not: it trims the low tail
-    of whichever side is noisier, which is the ratio's tail. In simulation
-    with one side five times as noisy, that moved a +1.0% change to +1.5% and
-    missed it with a quarter of its intervals. The geometric mean still leans
-    that way when the noise differs, by +0.06 at worst in the same runs."""
+    side instead trims the low tail of whichever side is noisier, which is
+    the ratio's tail and biases the change."""
     pairs = [
         math.sqrt(b * c) for b, c in zip(measured.base_nps, measured.candidate_nps)
     ]
@@ -191,10 +187,10 @@ def measure(
     n runs layout n on both sides. Every run of a side has to count the same
     nodes, since a layout moves the code and never the search.
 
-    The warmup runs are thrown away. Over 187 of the speed job's runs the
+    The warmup runs are thrown away: over 187 of the speed job's runs the
     first run of a job was 1.13% below its side's median (standard error
-    0.21), and the second 0.10%, so without them the first round leaned
-    towards whichever side went second.
+    0.21) and the second 0.10%, which leaned the first round towards the
+    side that went second.
 
     A loaded round is replaced by a new one at the end, on a layout of its
     own, rather than dropped, so the count stays what was asked for. At most
@@ -203,7 +199,6 @@ def measure(
     measured = Measured()
     for side in (base, candidate):
         bench(binary_for(side, 1), depth)
-    # which side each kept round ran first
     base_first: list[bool] = []
     counted: dict[bool, int] = {}
 
@@ -366,17 +361,14 @@ def faster_half(rates: list[int]) -> float:
     """The mean of a side's faster half of its rounds, the middle one
     included when there is an odd number.
 
-    Trimming the slow runs and keeping the rest suits noise that leans slow,
-    which it does here: over eighty rounds of one binary against itself on
-    four runners, the slowest run sat 3.5% to 11.5% below the median and the
-    fastest 1.7% to 2.8% above. Trim nothing and the loaded runs drag the
-    mean; trim to the fastest run alone and what is left is the fast side's
-    own noise. Scored on those rounds as speed jobs of 9, 15 and 25 rounds
-    whose true change was zero, the faster half was best or tied best at
-    each, with a root mean square error of 0.63%, 0.56% and 0.49% against
-    0.83%, 0.75% and 0.68% for the fastest run. Anything from a third to two
-    thirds did about as well; a half is the middle of that. On the speed
-    job's history at nine rounds, the best five of nine did best too.
+    Trimming the slow runs suits noise that leans slow, which it does on the
+    runners. Trim nothing and the loaded runs drag the mean; keep only the
+    fastest run and what is left is the fast side's own noise. Over eighty
+    rounds of one binary against itself on four runners, scored as speed
+    jobs of 9, 15 and 25 rounds whose true change was zero, the faster half
+    had a root mean square error of 0.63%, 0.56% and 0.49% against 0.83%,
+    0.75% and 0.68% for the fastest run. Anything from a third to two thirds
+    did about as well; a half is the middle of that.
     """
     kept = sorted(rates, reverse=True)[: (len(rates) + 1) // 2]
     return statistics.mean(kept)

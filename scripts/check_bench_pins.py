@@ -36,7 +36,6 @@ from pathlib import Path
 
 PINNED_TEST = "fn node_counts_have_not_moved"
 
-# the lapses already on master
 ACKNOWLEDGED = Path(__file__).resolve().parent / "acknowledged_bench_pins.txt"
 
 # ("some position", 1_234_567), as the pinned list writes them

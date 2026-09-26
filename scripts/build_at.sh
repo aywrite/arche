@@ -19,20 +19,19 @@
 # the build runs, so the default ../release/arche names the export's parent.
 #
 # The export has a target directory of its own, and its files are stamped
-# with the time they were extracted rather than the commit's. Both keep cargo
-# honest: cargo tells a crate fresh by its sources being older than its last
-# build, and names a workspace crate's build by the crate, so an export
-# stamped with the commit's time is handed the last build back, and an export
-# sharing the tree's target directory is taken for the tree. What the target
-# directory keeps across calls is the dependencies.
+# with the time they were extracted rather than the commit's. Cargo tells a
+# crate fresh by its sources being older than its last build, and names a
+# workspace crate's build by the crate, so an export stamped with the
+# commit's time, or sharing the tree's target directory, is handed an old
+# build back. What the target directory keeps across calls is the
+# dependencies.
 #
-# Where the export lands decides which .cargo/config.toml it is built under,
-# because cargo finds a config by walking up from where it builds. Inside the
-# tree, which is where the default target directory puts it, the export is
-# built the way the tree is; under a CARGO_TARGET_DIR outside the tree it is
-# built the way its commit was. A comparison spanning a change to
-# .cargo/config.toml reads about zero from inside the tree and reads the
-# change from outside it.
+# Cargo merges every .cargo/config.toml from where it builds up to the root.
+# Inside the tree, which is where the default target directory puts the
+# export, the tree's config applies as well as the commit's; under a
+# CARGO_TARGET_DIR outside the tree only the commit's does. A comparison
+# spanning a change to .cargo/config.toml reads about zero from inside the
+# tree and reads the change from outside it.
 #
 # No --locked in the default command: a baseline old enough that its lock
 # file predates a registry change would refuse to build, and the pull
@@ -50,8 +49,7 @@ sha=$(git rev-parse --verify "${ref}^{commit}") \
 target=$(realpath -m "${CARGO_TARGET_DIR:-target}")/at
 src="${target}/src"
 
-# defaulted here because it names the target directory. An empty argument is
-# an argument nobody gave
+# an empty argument is an argument nobody gave
 if [ "${#build[@]}" -eq 0 ]; then
     build=(cargo build --release --quiet --target-dir "$target")
 fi

@@ -6,11 +6,8 @@
 #
 #     verify_bench.sh <base> <head>
 #
-# Each commit in base..head with a Bench trailer is built by build_at.sh from
-# an export, its bench run and the count compared with the one stated. The
-# trailer is read the way git reads it. Every commit is reported; a build or
-# a bench that fails counts as a mismatch and the walk goes on. The count is
-# exact on any machine, which is what lets this gate where a timing could not.
+# Every commit is reported; a build or a bench that fails counts as a
+# mismatch and the walk goes on.
 set -euo pipefail
 
 base=${1:?usage: verify_bench.sh <base> <head>}

@@ -29,10 +29,8 @@ jobs:
       - uses: Swatinem/rust-cache@6323deb102c322ba6fcbdcafc7e3dddab59af2b6 # v2.9.2
       - name: Run tests
         run: cargo test --workspace --locked --release
-      # The changelog publishes each commit's stated bench, so the stated
-      # benches are read against the pins over the range the changelog covers.
-      # Lapses already on master are in scripts/acknowledged_bench_pins.txt
-      # and are reported rather than failed on.
+      # the changelog publishes each commit's stated bench, so the benches
+      # over its range are read against the pins
       - name: Check the stated benches against the pins
         run: |
           # the last full release, found the way scripts/changelog.sh finds
@@ -54,9 +52,7 @@ jobs:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
       - uses: taiki-e/create-gh-release-action@eba8ea96c86cca8a37f1b56e94b4d13301fba651 # v1.11.0
         with:
-          # (optional) Path to changelog.
           changelog: CHANGELOG.md
-          # (required) GitHub token for creating GitHub Releases.
           token: ${{ secrets.GITHUB_TOKEN }}
 
   upload-assets:
@@ -67,11 +63,8 @@ jobs:
           - ubuntu-latest
           - macos-latest
           - windows-latest
-        # Three x86-64 builds: the baseline, and the v2 and v3 levels, where
-        # popcnt and then avx2/bmi2 live. Without popcnt the baseline spells
-        # out count_ones and trailing_zeros by hand; v2 is 4.54% fewer
-        # instructions over the bench for the same tree, measured at a889930
-        # and written out in .cargo/config.toml. The flags change
+        # Three x86-64 builds: the baseline, v2 (popcnt) and v3 (avx2, bmi2).
+        # .cargo/config.toml has what v2 is worth. The flags change
         # instructions, not the search, so the node counts cannot move. The
         # mac runner is arm and needs no variants.
         cpu: ["", x86-64-v2, x86-64-v3]
@@ -94,9 +87,7 @@ jobs:
       # string as false, so `cond && '' || other` takes the other branch.
       VARIANT: ${{ matrix.cpu == 'x86-64-v3' && '-v3' || (matrix.cpu == '' && matrix.os != 'macos-latest') && '-baseline' || '' }}
     # a job that declares permissions gets these and no others, so contents:
-    # write is restated. The other two let the job ask github for a short
-    # lived signing certificate with its own oidc token and file the
-    # attestation against this repository.
+    # write is restated; the other two are for the attestation
     permissions:
       contents: write
       id-token: write
@@ -117,15 +108,12 @@ jobs:
           archive: $bin-$tag-$target${{ env.VARIANT }}
           # the readme's relative links to the changelog and docs/
           include: LICENSE,README.md,CHANGELOG.md,docs
-          # (required) GitHub token for uploading assets to GitHub Releases.
           token: ${{ secrets.GITHUB_TOKEN }}
 
-      # The checksum says a download arrived intact and nothing about where it
-      # came from, and it is published beside the file it describes. The
-      # attestation is a signed statement that these bytes came out of this
-      # workflow at this commit, which `gh attestation verify` checks with
-      # github rather than with the release page. How to run it is in the
-      # readme.
+      # The checksum is published beside the file it describes, so it says
+      # nothing about where the file came from. The attestation says these
+      # bytes came out of this workflow at this commit, and `gh attestation
+      # verify` checks it with github rather than with the release page.
       #
       # The subject is the checksum file, which the action names in its sha256
       # output and which lists every archive this runner built; a path would
@@ -172,18 +160,16 @@ jobs:
       time_control: 30+0.3
       publish: true
 
-  # Places the release on the ccrl scale by playing rated opponents.
+  # Places the release on the ccrl blitz list.
   #
   # After strength rather than alongside it, so the two do not race to build
   # the same fastchess cache from cold and no more than two jobs are ever
   # queued to edit the release notes, which is the most that queue holds
   # without dropping one.
   #
-  # The condition makes that sequencing rather than dependency: this needs
-  # nothing strength produces, so a strength match that failed or had no
-  # previous release must not take the estimate down with it. Cancelled is
-  # excluded so that calling off a release does not still spend an hour of
-  # runner.
+  # The condition makes that sequencing rather than dependency: a strength
+  # match that failed or had no previous release must not take the estimate
+  # down with it, and a cancelled release should not spend an hour more.
   calibrate:
     needs: [create-release, strength]
     if: ${{ !cancelled() && needs.create-release.result == 'success' }}
@@ -193,13 +179,9 @@ jobs:
     with:
       publish: true
 
-  # The same placement against the ccrl 40/15 list. Its ladder, the 40/150
-  # it plays at and the sixteen games a rung are that list's block in
-  # scripts/ladders.sh. It takes at most about an hour and a half of wall
-  # clock, and the figure is a rough one, near sixty elo either side.
-  #
-  # After calibrate for the reasons calibrate is after strength, and on the
-  # same condition.
+  # The same placement against the ccrl 40/15 list, after calibrate for the
+  # reasons calibrate is after strength. Its figure is rough, near sixty elo
+  # either side.
   calibrate-40-15:
     needs: [create-release, calibrate]
     if: ${{ !cancelled() && needs.create-release.result == 'success' }}

@@ -8,24 +8,19 @@
 #     opponent.sh repository <engine>           where it is cloned from
 #     opponent.sh build <engine> <pin> <binary> clone it, build it, put it there
 #
-# A pin is a tag or a whole commit sha: a name that is not forty hex digits is
-# fetched as refs/tags/<pin>, so a branch cannot be pinned by name. A rating
-# on the ccrl list belongs to the exact version it names, and a branch would
-# move under it. A tag can still be moved by whoever owns the repository,
-# which nothing here can see. Everything is fetched at a depth of one.
+# A pin is a tag or a whole commit sha, since a rating on the ccrl list
+# belongs to the exact version it names and a branch would move under it. A
+# tag can still be moved by whoever owns the repository, which nothing here
+# can see.
 #
-# One engine is one block below: where it comes from, how it is built from the
-# root of that clone, and where the build leaves its binary. The names the
-# blocks declare are what the workflow checks a ladder against.
-#
-# The blocks follow each project's own instructions where a runner can. Where
-# they cannot, the comment says why: an old source a current compiler will not
+# One engine is one block below: where it comes from, and a build function run
+# from the root of its clone that prints where it left the binary. The blocks
+# follow each project's own instructions where a runner can. Where they
+# cannot, the comment says why: an old source a current compiler will not
 # take is given a flag rather than an edit, so what plays is the release at
 # its pin.
 set -euo pipefail
 
-# A name is in the list a ladder is checked against only when it has both a
-# repository here and a build function below.
 declare -A REPOSITORY
 
 # Stash. Its makefile moved into src/ after v12, so the directory is looked
@@ -186,9 +181,8 @@ build() {
     # after this function has returned
     WORK=$(mktemp -d)
     trap 'rm -rf "$WORK"' EXIT
-    # anything but a whole sha is asked for as a tag: a bare name would fetch
-    # a branch of that name just as happily, and a branch moves under the
-    # rating. An abbreviated sha is refused by the protocol
+    # a bare name would fetch a branch just as happily, and the protocol
+    # refuses an abbreviated sha
     local ref=refs/tags/$pin
     if [ "${#pin}" = 40 ] && [ -z "${pin//[0-9a-f]/}" ]; then
         ref=$pin

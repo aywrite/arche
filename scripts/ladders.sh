@@ -8,24 +8,19 @@
 #     ladders.sh preset <list>     what a gauntlet against it plays, as
 #                                  name=value lines for GITHUB_OUTPUT
 #
-# One list is one block below: the ladder of rungs read off it, the control
-# the gauntlet plays at, the games against each rung, the wall clock cap on a
-# rung's play, the control the list itself rates at and the prefix of the
-# run's artifacts. The workflow asks for a list and takes everything else from
-# its block unless a box is filled in, so a ladder cannot be paired with the
-# ratings of another list by leaving a default in place.
+# One list is one block below. The workflow takes everything from the block
+# unless a box is filled in, so a ladder cannot be paired with the ratings of
+# another list by leaving a default in place.
 #
 # A rung is engine:pin:rating. The engines are the ones scripts/opponent.sh
 # can build, and the rating is the one the list gives the version the pin
 # points at.
 set -euo pipefail
 
-# A name is in the list the workflow checks against only when it has all six
-# fields.
 declare -A LADDER TIME_CONTROL GAMES MINUTES RATED_AT ARTIFACT
 
-# The ccrl blitz list of 5 September 2026. Eight rungs of six lineages
-# bracketing 2800, at 20+0.2, which is roughly a sixth of 2+1. Fifty games
+# The ccrl blitz list of 5 September 2026, bracketing 2800 with no lineage
+# holding more than two rungs, at 20+0.2, roughly a sixth of 2+1. Fifty games
 # against a rung take about half an hour.
 LADDER[blitz]=tantabus:v2.0.0:2555,blunder:v8.5.5:2663,stash:v21.0:2713,inanis:v1.1.0:2763,zahak:6.2:2825,weiss:v0.10:2846,weiss:v1.0:2896,stash:v25.0:2932
 TIME_CONTROL[blitz]=20+0.2
@@ -34,10 +29,9 @@ MINUTES[blitz]=90
 RATED_AT[blitz]=2m+1s
 ARTIFACT[blitz]=calibrate
 
-# The ccrl 40/15 list of 18 September 2026. Six rungs from 2558 to 2845,
-# four of them the blitz panel's own, at 40/150, one sixth of 40/15. The
-# clock allows a game about twelve minutes, so sixteen games against a rung
-# take at most about an hour and a half.
+# The ccrl 40/15 list of 18 September 2026, at 40/150, one sixth of 40/15.
+# The clock allows a game about twelve minutes, so sixteen games against a
+# rung take at most about an hour and a half.
 LADDER[40/15]=tantabus:v2.0.0:2558,weiss:v0.9:2651,blunder:v8.5.5:2692,inanis:v1.1.0:2746,stash:v21.2:2785,weiss:v1.0:2845
 TIME_CONTROL[40/15]=40/150
 GAMES[40/15]=16
@@ -45,8 +39,8 @@ MINUTES[40/15]=240
 RATED_AT[40/15]="40 moves in 15 minutes"
 ARTIFACT[40/15]=calibrate-ccrl-40-15
 
-# A list missing one of its six fields is not listed, so the workflow refuses
-# it before a match rather than playing part of a preset.
+# A list missing a field is not listed, so the workflow refuses it before a
+# match rather than playing part of a preset.
 list() {
     local name
     for name in "${!LADDER[@]}"; do
