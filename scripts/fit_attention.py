@@ -20,9 +20,12 @@ chosen on the training half and read off the holdout half, which is the table
 index and the history fraction beside it, since a model is only worth carrying
 if it beats the obvious rule.
 
-The weights in the engine were fitted on 193,143 rows recorded at commit
-5217271, before the deep reduction and the late move pruning existed, so the
-command above now records a different tree and cannot reproduce them.
+The weights in the engine were fitted with `fit_logistic` below on rows this
+command line does not select: a ledger at 4e8ab28 over 75,024 positions from
+our own strength games, kept to the rows the skip decides (depth four and up,
+the move not giving check) with the skipped rows beside the scouted ones, and
+`searched` taken as one past the index on every row. The script drops skipped
+rows and fits every depth, so running it on a ledger makes a different fit.
 
 The row format is the one `arche-core/src/reduction.rs` prints today: eighteen
 whitespace separated fields with the fen last,

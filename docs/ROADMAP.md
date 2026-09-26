@@ -338,7 +338,9 @@ of these again without saying what is different this time.
   search costs rather than a change to the reduction.
 - Widening the late move pruning band, so that a late quiet the attention
   model prices at or under -6000 is skipped where the threshold stood at
-  -7954. The offline reading was favourable and the games could not see it.
+  -7954. These scores are on the weights fitted on 2026-09-06, which the
+  refit below replaced; the refit's own threshold, -5932, is not a point on
+  this scale. The offline reading was favourable and the games could not see it.
   What prices the move is the rate in the band the wider threshold newly
   reaches, since the moves already skipped are skipped either way and the
   moves the reduced scout writes off are written off either way. Over the
@@ -388,7 +390,14 @@ of these again without saying what is different this time.
   because that is where the rows are. Two grouped refits and this search
   have now produced no vector worth a match. Re-ask with a feature the model
   does not have, or with the label split into the two costs, not with
-  another fit.
+  another fit. A fit was asked again on 2026-09-26 for a different reason:
+  every earlier fit dropped the rows the model skips, and none was fitted
+  on the skip's own rows or on the tree the skip now runs in. Over the
+  skip's rows of 75,024 game positions, skipped ones included, the refit
+  skips 1.230 times fewer attention rows at the same coverage on the pairs
+  it did not see, and plays even with the old weights over 4,500 games
+  (+0 ±7, sprt [-10, 0] passed). It ships as a model fitted to its own gate
+  at no measured cost, not as a gain.
 - Prefetching a child's transposition slot straight after `make_move`, 6.7%
   slower over six interleaved rounds. The prefetch sits immediately before the
   recursive call and the child probes the table almost first, so there is no

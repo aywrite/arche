@@ -128,45 +128,39 @@ const fn reduction_table() -> [[u8; 64]; 64] {
 // where `deep_index_rule` is off: a logistic regression over the reduction
 // ledger's feature columns, quantized to fixed point at a scale of 1024,
 // so the gate is an integer dot product and a compare. Fitted by
-// `scripts/fit_attention.py` on 2026-09-06 over the ledger `arche
-// reductions 8 every 1 cap 2000000` printed on the bench suite at commit
-// 5217271: 193,143 rows labelled by the replay, split by fen-hash parity,
-// holdout AUC 0.927. The same command on this tree records a different
-// ledger (the deep reduction and the pruning did not exist at 5217271), so
-// rerunning it makes a new fit rather than this one. The labels are R=1
-// labels gating an R=2 decision: the label (dead at full depth) is
-// R-independent, the weaker scout's noise is what is approximated, and the
-// SPRT priced the difference.
-const ATTENTION_DEPTH: i64 = 198;
-const ATTENTION_INDEX: i64 = -43;
-const ATTENTION_BAND8_15: i64 = -475;
-const ATTENTION_BAND16P: i64 = -25;
+// `fit_logistic` in `scripts/fit_attention.py` over the ledger `arche
+// reductions 8 every 32` printed at commit 4e8ab28 on 75,024 positions from
+// 43,123 opening pairs of our own strength games, on the rows the skip
+// decides: depth four and up, the move not giving check, the skipped rows
+// beside the scouted ones, since the replay labels both. A row deserves
+// attention when its scout failed high or the replay called the denial
+// harmful, and a skipped move that would have failed high is a move lost.
+// Fitted on the pairs of one key parity (5,473,351 rows) and read on the
+// other (5,448,365) once.
+const ATTENTION_DEPTH: i64 = 76;
+const ATTENTION_INDEX: i64 = -3;
+const ATTENTION_BAND8_15: i64 = -284;
+const ATTENTION_BAND16P: i64 = -362;
 const ATTENTION_HIST_MILLI: i64 = 1;
-const ATTENTION_KILLER: i64 = 1186;
-const ATTENTION_TT_MOVE: i64 = 6;
-const ATTENTION_TT_SCORE_ONLY: i64 = -75;
-const ATTENTION_EVAL_BETA: i64 = 4;
-const ATTENTION_ALPHA_GAP: i64 = -7;
-const ATTENTION_GENERATED: i64 = -50;
-const ATTENTION_SEARCHED: i64 = -43;
-const ATTENTION_INTERCEPT: i64 = -2503;
-// The model's 90% coverage operating point: at or under it the holdout's
-// dead region held 89.6% of the sampled reductions at an attention rate of
-// 0.077%. The training script read the region as strictly under the
-// threshold; at or under admits the fourteen training rows sitting on it
-// and moves neither holdout figure at that precision.
+const ATTENTION_KILLER: i64 = 265;
+const ATTENTION_TT_MOVE: i64 = -137;
+const ATTENTION_TT_SCORE_ONLY: i64 = 192;
+const ATTENTION_EVAL_BETA: i64 = -5;
+const ATTENTION_ALPHA_GAP: i64 = -13;
+const ATTENTION_GENERATED: i64 = -6;
+const ATTENTION_SEARCHED: i64 = -3;
+const ATTENTION_INTERCEPT: i64 = -3540;
+// The deep reduction's threshold where `deep_index_rule` is off, which no
+// default reaches. Chosen on the weights these replaced, as their 90%
+// coverage operating point, and not chosen again for these.
 const DEEP_REDUCTION_THRESHOLD: i64 = -4637;
 // The score at or under which a late quiet is not searched at all: the
-// deadest quartile of a census of our own games (17,057,552 scouts from
-// 1,428 positions out of 1,814 games at 10+0.1, recorded on master at
-// c13a6ed), but of a model refitted to the census rather than of the
-// weights above. Under these weights, over the rows this gate can reach
-// (depth four and up, the move not giving check), it skips 39% of them at
-// 0.031% attention, and the quartile would be -9513. The +18 over 2,000
-// games is the gate at 39%, so moving it to the quartile is an arm of its
-// own. The corpus rather than the bench because a skip spends the model's
-// word where the games go.
-pub(crate) const LATE_MOVE_PRUNING_THRESHOLD: i64 = -7954;
+// largest whose region covers no more of the fitting half's rows than the
+// weights these replaced covered at their own threshold, -7954 (41.47%).
+// On the other half it skips 41.32% of the rows at 0.0303% attention,
+// against 41.29% at 0.0373% for the weights it replaced, a ratio of 1.230
+// (95% 1.157 to 1.308 over resampled pairs).
+pub(crate) const LATE_MOVE_PRUNING_THRESHOLD: i64 = -5932;
 // The index the deep reduction's rule wants a move to have reached, and
 // how much further along the order per ply of depth over the floor the
 // deeper scout starts at. Chosen offline on the training half of a ledger
@@ -658,11 +652,12 @@ fn denominator(search: &Search, node: &mut Node) -> i32 {
 #[cfg(test)]
 mod tests {
     use super::{
-        ATTENTION_KILLER, AttentionFeatures, DEEP_INDEX_FLOOR, DEEP_INDEX_SLOPE, DEEP_REDUCTION,
-        DEEP_REDUCTION_BONUS, DEEP_REDUCTION_MIN_DEPTH, DEEP_REDUCTION_THRESHOLD, Features,
-        LATE_MOVE_COUNT, LATE_MOVE_MIN_DEPTH, LATE_MOVE_PRUNING_THRESHOLD, LATE_MOVE_REDUCTION,
-        LATE_MOVE_THRESHOLD, Node, QUIET_FUTILITY_MARGIN, REDUCTION, SHALLOW_MAX_DEPTH, Search,
-        Shallow, Verdict, amount, attention_score, decide, features,
+        ATTENTION_ALPHA_GAP, ATTENTION_EVAL_BETA, ATTENTION_KILLER, AttentionFeatures,
+        DEEP_INDEX_FLOOR, DEEP_INDEX_SLOPE, DEEP_REDUCTION, DEEP_REDUCTION_BONUS,
+        DEEP_REDUCTION_MIN_DEPTH, DEEP_REDUCTION_THRESHOLD, Features, LATE_MOVE_COUNT,
+        LATE_MOVE_MIN_DEPTH, LATE_MOVE_PRUNING_THRESHOLD, LATE_MOVE_REDUCTION, LATE_MOVE_THRESHOLD,
+        Node, QUIET_FUTILITY_MARGIN, REDUCTION, SHALLOW_MAX_DEPTH, Search, Shallow, Verdict,
+        amount, attention_score, decide, features,
     };
     use crate::board::{Board, MoveList, fens, play_named};
     use crate::census::Table;
@@ -892,18 +887,34 @@ mod tests {
         }
     }
 
-    /// Bounds that land a score exactly on a threshold. Alpha moves the
-    /// score by seven a point and beta by four, so seven betas cover
-    /// every residue of seven and one of them leaves alpha a whole number
-    /// to close the rest.
+    /// Bounds that land a score exactly on a threshold. A point of alpha
+    /// moves the score by the alpha gap's weight and a point of beta by
+    /// the eval gap's, negated. The two are coprime, so as many betas as
+    /// the alpha weight's size cover every residue of it, and one of them
+    /// leaves alpha a whole number to close the rest.
     fn solved(score_at: impl Fn(Score, Score) -> i64, threshold: i64) -> (Score, Score) {
-        for beta in 100..107 {
+        let per_alpha = -ATTENTION_ALPHA_GAP;
+        for beta in 100..100 + per_alpha as Score {
             let over = score_at(0, beta) - threshold;
-            if over % 7 == 0 {
-                return ((over / 7) as Score, beta);
+            if over % per_alpha == 0 {
+                return ((over / per_alpha) as Score, beta);
             }
         }
-        panic!("seven betas cover every residue of seven");
+        panic!("the betas tried cover every residue of the alpha weight");
+    }
+
+    /// The smallest move of the bounds that raises the score by exactly
+    /// one, as a change to alpha and a change to beta, so a threshold test
+    /// can stand one over the line it solved onto.
+    fn one_over(alpha: Score, beta: Score) -> (Score, Score) {
+        let (per_alpha, per_beta) = (ATTENTION_ALPHA_GAP, -ATTENTION_EVAL_BETA);
+        (0..=16i64)
+            .flat_map(|reach| {
+                (-reach..=reach).flat_map(move |a| [(a, reach - a.abs()), (a, a.abs() - reach)])
+            })
+            .find(|&(a, b)| per_alpha * a + per_beta * b == 1)
+            .map(|(a, b)| (alpha + a as Score, beta + b as Score))
+            .expect("the two weights are coprime and small")
     }
 
     /// What the model scores a plain late quiet at: no history, no killer
@@ -1120,32 +1131,28 @@ mod tests {
                 generated,
             })
         };
-        // a killer deep in a lost window: dead despite its slot
-        assert_eq!(
-            row(4, 7, 146, true, Table::ScoreOnly, -1755, 1754, 34),
-            -22097
-        );
-        // the row the threshold's percentile landed on exactly
-        assert_eq!(row(6, 13, 0, false, Table::Move, -9, 8, 32), -4637);
-        // the deadest row of the training half
-        assert_eq!(
-            row(3, 30, 0, false, Table::ScoreOnly, -1983, 1982, 33),
-            -28088
-        );
+        // a killer with the whole of the node's history, deep in a lost
+        // window: dead despite both
+        assert_eq!(row(4, 4, 1000, true, Table::Miss, -1883, 1882, 32), -17241);
+        // one of the 171 fitting rows at depth four and up that sit on the
+        // skip's threshold exactly
+        assert_eq!(row(6, 5, 107, false, Table::Move, -325, 324, 33), -5932);
+        // the deadest row of the fitting half
+        assert_eq!(row(4, 4, 0, false, Table::Move, -3744, 3743, 25), -33489);
         // the most alive attention row: an eval standing over beta
-        assert_eq!(row(4, 6, 10, false, Table::Miss, 303, -304, 16), 280);
-        // a dead row of the depths the gate fires at
-        assert_eq!(row(5, 29, 0, false, Table::ScoreOnly, -223, 222, 43), -8746);
+        assert_eq!(row(4, 7, 0, false, Table::Move, 368, -1343, 24), 12057);
+        // a row the gate skipped at depth five
+        assert_eq!(row(5, 8, 0, false, Table::Move, -338, 337, 40), -6563);
         // the killer weight raises a row by exactly its coefficient, and
         // on the threshold row that is the whole distance out of the dead
         // region. It is a weight and not an exemption: the first row
-        // above is a killer and dead all the same, so the model may deepen
-        // the reduction of a killer whose bounds bury it
-        let on_edge = row(6, 13, 0, false, Table::Move, -9, 8, 32);
-        let as_killer = row(6, 13, 0, true, Table::Move, -9, 8, 32);
+        // above is a killer and dead all the same, so the model may skip
+        // a killer whose bounds bury it
+        let on_edge = row(6, 5, 107, false, Table::Move, -325, 324, 33);
+        let as_killer = row(6, 5, 107, true, Table::Move, -325, 324, 33);
         assert_eq!(as_killer - on_edge, ATTENTION_KILLER);
-        assert!(on_edge <= DEEP_REDUCTION_THRESHOLD);
-        assert!(as_killer > DEEP_REDUCTION_THRESHOLD);
+        assert!(on_edge <= LATE_MOVE_PRUNING_THRESHOLD);
+        assert!(as_killer > LATE_MOVE_PRUNING_THRESHOLD);
     }
 
     /// The gate driven with the bounds solved to land the score exactly
@@ -1177,10 +1184,13 @@ mod tests {
             s.verdict(&quiet, SEARCHED, DEPTH, alpha, beta),
             Verdict::Scout(DEEP_REDUCTION)
         );
-        // a point of alpha up and two of beta down move the score one over
-        assert_eq!(score_at(alpha + 1, beta - 2), DEEP_REDUCTION_THRESHOLD + 1);
+        let (over_alpha, over_beta) = one_over(alpha, beta);
         assert_eq!(
-            s.verdict(&quiet, SEARCHED, DEPTH, alpha + 1, beta - 2),
+            score_at(over_alpha, over_beta),
+            DEEP_REDUCTION_THRESHOLD + 1
+        );
+        assert_eq!(
+            s.verdict(&quiet, SEARCHED, DEPTH, over_alpha, over_beta),
             Verdict::Scout(LATE_MOVE_REDUCTION)
         );
     }
@@ -1245,7 +1255,7 @@ mod tests {
         // thousandth either way moves the verdict at one of them, so the
         // two together say the feature is zero exactly rather than merely
         // small
-        let (over_alpha, over_beta) = (alpha + 1, beta - 2);
+        let (over_alpha, over_beta) = one_over(alpha, beta);
         assert_eq!(
             score_at(over_alpha, over_beta, 0),
             DEEP_REDUCTION_THRESHOLD + 1
@@ -1462,8 +1472,7 @@ mod tests {
         let score_at = |alpha, beta| model_score(eval, generated, DEPTH, SEARCHED, alpha, beta);
         let (alpha, beta) = solved(score_at, DEEP_REDUCTION_THRESHOLD);
         assert_eq!(score_at(alpha, beta), DEEP_REDUCTION_THRESHOLD);
-        // a point of alpha up and two of beta down move the score one over
-        let (over_alpha, over_beta) = (alpha + 1, beta - 2);
+        let (over_alpha, over_beta) = one_over(alpha, beta);
         assert_eq!(
             score_at(over_alpha, over_beta),
             DEEP_REDUCTION_THRESHOLD + 1
@@ -1494,10 +1503,13 @@ mod tests {
         let generated = s.moves.len();
         let score_at = |alpha, beta| model_score(eval, generated, DEPTH, searched, alpha, beta);
         let (on_threshold, beta) = solved(score_at, DEEP_REDUCTION_THRESHOLD);
-        // two hundred points of alpha past it puts the score fourteen hundred
+        // fifty points of alpha past it puts the score fifty alpha weights
         // under the model's threshold and still well over the skip's
-        let alpha = on_threshold + 200;
-        assert_eq!(score_at(alpha, beta), DEEP_REDUCTION_THRESHOLD - 1400);
+        let alpha = on_threshold + 50;
+        assert_eq!(
+            score_at(alpha, beta),
+            DEEP_REDUCTION_THRESHOLD + 50 * ATTENTION_ALPHA_GAP
+        );
         assert!(score_at(alpha, beta) > LATE_MOVE_PRUNING_THRESHOLD);
         let flat = amount(&config, DEPTH, searched, 0);
         let deeper = amount(&config, DEPTH, searched, DEEP_REDUCTION_BONUS);
@@ -1546,13 +1558,13 @@ mod tests {
             s.verdict(&quiet, SEARCHED, DEPTH, alpha, beta),
             Verdict::Skip
         );
-        // a point of alpha up and two of beta down move the score one over
+        let (over_alpha, over_beta) = one_over(alpha, beta);
         assert_eq!(
-            score_at(alpha + 1, beta - 2),
+            score_at(over_alpha, over_beta),
             LATE_MOVE_PRUNING_THRESHOLD + 1
         );
         assert_eq!(
-            s.verdict(&quiet, SEARCHED, DEPTH, alpha + 1, beta - 2),
+            s.verdict(&quiet, SEARCHED, DEPTH, over_alpha, over_beta),
             Verdict::Scout(DEEP_REDUCTION)
         );
     }
@@ -1781,8 +1793,9 @@ mod tests {
             s.verdict(&quiet, SEARCHED, DEPTH, alpha, beta),
             Verdict::Scout(DEEP_REDUCTION)
         );
+        let (over_alpha, over_beta) = one_over(alpha, beta);
         assert_eq!(
-            s.verdict(&quiet, SEARCHED, DEPTH, alpha + 1, beta - 2),
+            s.verdict(&quiet, SEARCHED, DEPTH, over_alpha, over_beta),
             Verdict::Scout(LATE_MOVE_REDUCTION)
         );
     }
@@ -1935,16 +1948,17 @@ mod tests {
         );
         // one over the threshold the model deepens the scout instead, and
         // the rule must not turn that back into a skip
+        let (over_alpha, over_beta) = one_over(alpha, beta);
         assert_eq!(
-            score_at(alpha + 1, beta - 2),
+            score_at(over_alpha, over_beta),
             LATE_MOVE_PRUNING_THRESHOLD + 1
         );
         assert_eq!(
-            without.verdict(&quiet, SEARCHED, DEPTH, alpha + 1, beta - 2),
+            without.verdict(&quiet, SEARCHED, DEPTH, over_alpha, over_beta),
             Verdict::Scout(DEEP_REDUCTION)
         );
         assert_eq!(
-            with.verdict(&quiet, SEARCHED, DEPTH, alpha + 1, beta - 2),
+            with.verdict(&quiet, SEARCHED, DEPTH, over_alpha, over_beta),
             Verdict::Scout(DEEP_REDUCTION)
         );
     }
