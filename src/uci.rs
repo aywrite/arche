@@ -219,14 +219,9 @@ impl<T: Engine, W: Write> UCI<T, W> {
                 self.parse_go(line, control);
                 control.answered();
             }
-            "stop" => {
-                // taken in silence, since the protocol allows a stop at any
-                // moment. The reader has already set the flag, and clearing
-                // it keeps a spent stop from reaching the next search. It
-                // also clears a later stop the reader read before this line
-                // was dispatched, which that search then never sees
-                control.clear();
-            }
+            // taken in silence, since the protocol allows a stop at any
+            // moment. The reader has already raised the flag
+            "stop" => control.stop_dispatched(),
             "isready" => self.say(format_args!("readyok")),
             "ucinewgame" => {
                 self.engine.new_game();
@@ -2234,6 +2229,48 @@ go depth 3
             "a stopped search answered with no move: {}",
             said
         );
+        driven.finish();
+    }
+
+    /// A perft holds the loop while the reader takes the rest in, so the
+    /// stops are read before the search they are meant for begins.
+    #[test]
+    fn a_stop_read_before_its_search_begins_still_stops_it() {
+        let driven = Driven::searching();
+        driven.type_line("position startpos");
+        driven.type_line("perft 4");
+        driven.type_line("go movetime 20000");
+        let typed = Instant::now();
+        driven.type_line("stop");
+        driven.wait_for("bestmove");
+        assert!(
+            typed.elapsed() < Duration::from_secs(10),
+            "the stop was lost: {}",
+            driven.said()
+        );
+        driven.finish();
+    }
+
+    /// Both stops are read while the perft holds the loop. The first stop's
+    /// dispatch used to take the second's flag down with it, and the second
+    /// search held its answer until the interface left.
+    #[test]
+    fn each_of_two_quick_searches_is_stopped_by_its_own_stop() {
+        let driven = Driven::searching();
+        driven.type_line("position startpos");
+        driven.type_line("perft 4");
+        for line in ["go infinite", "stop", "go infinite", "stop"] {
+            driven.type_line(line);
+        }
+        let deadline = Instant::now() + Duration::from_secs(10);
+        while driven.said().matches("bestmove").count() < 2 {
+            assert!(
+                Instant::now() < deadline,
+                "the second search was never stopped: {}",
+                driven.said()
+            );
+            thread::sleep(Duration::from_millis(1));
+        }
         driven.finish();
     }
 
