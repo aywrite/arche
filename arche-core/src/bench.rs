@@ -37,13 +37,10 @@ const SUITE: &str = include_str!("../bench.epd");
 pub struct Position {
     pub id: String,
     pub fen: String,
-    /// The operations the line carried, by opcode, for whichever reader
-    /// knows what they mean: the bench reads none, the tactical suite reads
-    /// `bm` and the strategic suite `points`.
+    /// The operations the line carried, by opcode. The bench reads none.
     pub operations: HashMap<String, String>,
 }
 
-/// The suite's positions, in the order the file lists them.
 pub fn positions() -> Vec<Position> {
     parse_epd(SUITE)
 }
@@ -92,17 +89,14 @@ pub fn parse_epd(text: &str) -> Vec<Position> {
 #[derive(Debug, Clone)]
 pub struct PositionReport {
     pub id: String,
-    /// The move the search chose and the score it gave it, from the side to
-    /// move: a change that moves either has changed the answer and not only
-    /// the tree that found it.
+    /// The move the search chose and its score, from the side to move: a
+    /// change that moves either changed the answer and not only the tree.
     pub play: Play,
     pub score: Score,
     pub nodes: u64,
     /// The nodes quiescence visited, a part of nodes.
     pub quiescence_nodes: u64,
-    /// Probes that cut the search off with a stored score.
     pub tt_cutoffs: u64,
-    /// Entries stored in total.
     pub tt_stores: u64,
     /// Entries stored with a draw tainted score, a part of the stores.
     pub tainted_stores: u64,
@@ -124,7 +118,6 @@ pub struct PositionReport {
     pub elapsed: Duration,
 }
 
-/// The whole bench: the settings it ran with and what each position counted.
 #[derive(Debug, Clone)]
 pub struct Report {
     pub depth: u8,
@@ -142,7 +135,6 @@ impl Report {
         self.positions.iter().map(|p| p.elapsed).sum()
     }
 
-    /// Nodes a second over the whole bench.
     pub fn nps(&self) -> u64 {
         nps(self.nodes(), self.elapsed())
     }
@@ -160,9 +152,8 @@ impl Report {
     }
 }
 
-/// Counted in microseconds, so a position searched in well under a
-/// millisecond still gets a rate, and over at least one so the rate stays
-/// finite.
+/// In microseconds, so a sub-millisecond position still gets a rate, and
+/// over at least one so the rate stays finite.
 fn nps(nodes: u64, elapsed: Duration) -> u64 {
     (nodes as u128 * 1_000_000 / elapsed.as_micros().max(1)) as u64
 }
@@ -223,8 +214,7 @@ fn run(
                     position.id, other
                 ),
             };
-            // measured by the search over the same interval as the nodes it
-            // counted
+            // the search's own interval, the one its nodes were counted over
             let elapsed = result.elapsed;
             Some(PositionReport {
                 id: position.id.clone(),
@@ -273,8 +263,7 @@ impl fmt::Display for Report {
             self.positions.len(),
             self.config.taint_word()
         )?;
-        // the name column is as wide as the widest name, so a suite of
-        // fen-named positions still lines up
+        // as wide as the widest name, so fen-named positions line up
         let width = self
             .positions
             .iter()
@@ -299,7 +288,7 @@ impl fmt::Display for Report {
             "ms",
             "nps"
         )?;
-        // the total row has no move or score, so those two arrive as text
+        // text, because the total row has no move or score
         let row = |f: &mut fmt::Formatter<'_>,
                    name: &str,
                    play: &str,
@@ -364,8 +353,7 @@ impl fmt::Display for Report {
             sum(|p| p.skipped_stores),
             self.elapsed(),
         )?;
-        // only when the run was audited, and above the last line because the
-        // last line is the one the match tools read
+        // above the last line, which is the one the match tools read
         if let Some(counted) = self.signatures() {
             // the thirty two bit observation is a zero at this scale whether
             // or not the instrument works, so the narrow widths are what say
@@ -411,8 +399,7 @@ mod tests {
 
     #[test]
     fn an_epd_line_yields_its_fen_and_id() {
-        // the fields may be separated by any whitespace and the id need not
-        // be the first operation
+        // any whitespace, and the id need not be the first operation
         for line in [
             "4k3/8/8/8/8/8/8/4K3 w - - id \"bare kings\";",
             "4k3/8/8/8/8/8/8/4K3\tw  - -  c0 \"a note\"; id \"bare kings\";",
@@ -487,16 +474,13 @@ mod tests {
 
     #[test]
     fn the_report_says_what_each_search_chose_and_refused() {
-        // two bench outputs diffed say whether the root moved, not only the
-        // tree, and the same suite searched trusting tainted scores states
-        // that policy in its header and refuses nothing
+        // a trusting run states its policy in the header and refuses nothing
         let suite = parse_epd("8/2p5/3p4/KP5r/1R3p1k/8/4P1P1/8 w - - id \"rook and pawns\";");
         let refusing = run_suite(&suite, 7, 1 << 20, SearchConfig::reference());
         let text = refusing.to_string();
         let position = &refusing.positions[0];
         assert!(position.refused_cutoffs > 0, "{}", text);
-        // the columns are read by position, so a value printed in the wrong
-        // column fails rather than being found elsewhere on the line
+        // read by position, so a value in the wrong column fails
         let columns = |line: &str| {
             line.split_whitespace()
                 .map(str::to_string)
@@ -555,8 +539,6 @@ mod tests {
         assert!(report.positions[0].nodes > 0);
     }
 
-    /// Two positions: enough for an audited run to count something, few
-    /// enough to search twice inside a test.
     fn small_suite() -> Vec<Position> {
         parse_epd(
             "r1b2rk1/ppp1qppp/4pn2/6N1/Qn1P4/2NBP3/PP3PPP/R3K2R w KQ - id \"sharp\";\n\
@@ -564,8 +546,6 @@ mod tests {
         )
     }
 
-    /// The shadow keys are allocated only when the bench asks for them, so
-    /// an ordinary run prints what it always printed.
     #[test]
     fn a_run_that_was_not_audited_keeps_no_keys() {
         for config in [SearchConfig::default(), SearchConfig::reference()] {
@@ -576,8 +556,6 @@ mod tests {
         }
     }
 
-    /// The audit counts and does nothing else, so the tree is the tree the
-    /// unaudited run searched.
     #[test]
     fn an_audited_run_searches_the_same_tree() {
         let suite = small_suite();
@@ -595,9 +573,6 @@ mod tests {
         assert_eq!(played(&plain), played(&audited));
     }
 
-    /// The summary block, with each counter inside the one it is a part of,
-    /// above the last line the match tools read.
-    ///
     /// The false accepts are pinned at zero rather than bounded. The
     /// expectation at this scale is about a ten thousandth of one, so a
     /// count above zero is the instrument reading its own keys wrongly, not
@@ -663,8 +638,6 @@ mod tests {
         assert!(lines[lines.len() - 1].ends_with(" nps"));
     }
 
-    /// The expectations are the comparisons over two to the width, which is
-    /// arithmetic rather than a measurement and is pinned as such.
     #[test]
     fn an_expectation_is_the_comparisons_over_two_to_the_width() {
         let counted = SignatureCounters {
@@ -690,7 +663,6 @@ mod tests {
         assert!(none.narrow().all(|(_, _, expected)| expected == 0.0));
     }
 
-    /// The instrument is as deterministic as the search it watches.
     #[test]
     fn two_audited_runs_count_the_same() {
         let suite = small_suite();
@@ -699,12 +671,9 @@ mod tests {
         assert_eq!(first.signatures(), second.signatures());
     }
 
-    /// The node count is exact and the same on any machine, and it moves
-    /// whenever move ordering, quiescence, the transposition table or any
-    /// pruning changes, including the changes that leave the move played
-    /// untouched. A deliberate change to the search is expected to move
-    /// these: update them in the same commit, from `arche bench`, so the
-    /// diff states how much of each tree the engine now looks at.
+    /// A deliberate change to the search is expected to move these: update
+    /// them in the same commit, from `arche bench`, so the diff states how
+    /// much of each tree the engine now looks at.
     #[test]
     fn node_counts_have_not_moved() {
         let report = run_suite(&positions(), DEPTH, TABLE_BYTES, SearchConfig::default());
@@ -741,10 +710,9 @@ mod tests {
     /// The reference search's counts, pinned apart from the default's: a
     /// change that moves both touched the search the two share, and one that
     /// moves the default's alone is a shortcut. Pinned shallower than the
-    /// bench, which is cheaper and coarser (a twentieth of the time, with a
-    /// table under half full, so a change to what the table keeps shows here
-    /// less). The pin stayed at this depth when the bench's was raised from
-    /// seven to nine.
+    /// bench, so cheaper and coarser (the table is less full, so a change to
+    /// what it keeps shows here less). It stays at five when the bench's
+    /// depth is raised.
     #[test]
     fn reference_node_counts_have_not_moved() {
         const REFERENCE_DEPTH: u8 = 5;

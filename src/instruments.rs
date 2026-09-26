@@ -1,19 +1,11 @@
 // SPDX-License-Identifier: GPL-3.0-or-later
 // Copyright (C) 2022-2026 Andrew Wright
 
-//! The measurement instruments, as a command line asks for them.
+//! How a command line asks for the measurement instruments. What each one
+//! measures is on its module in `arche-core`.
 //!
-//! Five of them: the residual sampler, the cutoff census, the reduction
-//! ledger, the effort instrument and the term extraction. The first four
-//! search the bench's positions, record a sample of what the search did,
-//! and print a report; the fifth searches nothing and writes down what each
-//! position's evaluation is made of. What each one measures is on its
-//! module in `arche-core`; what is here is only how a command line spells
-//! it.
-//!
-//! Not in `uci`, because none of them is the protocol: they take minutes and
-//! answer a research question, which is why they are arguments rather than
-//! commands. `bench` stays in `uci` because the engine answers it as both.
+//! Arguments rather than uci commands, since none of them is the protocol.
+//! `bench` stays in `uci` because the engine answers it as both.
 
 use crate::command::{Command, Keyword};
 use crate::params::{NO_VALUE, Param, Params};
@@ -35,7 +27,7 @@ struct Sampling {
     cap: usize,
 }
 
-/// What each instrument takes: the usage's spelling and the words it refuses.
+/// What each instrument takes, for the usage and for refusing other words.
 pub const RESIDUALS: Command = Command {
     name: "residuals",
     depth: true,
@@ -159,16 +151,11 @@ pub const TERMS: Command = Command {
     ],
 };
 
-/// How many rows a run keeps when it was not told. The recorder's, because
-/// all four record through the reservoir that module defines.
+/// The recorder's, since every searching instrument records through it.
 const DEFAULT_CAP: usize = recorder::DEFAULT_CAP;
 
 /// Reads the settings the instruments share, or names the setting and what
-/// stood where its value would. Running the default in place of a word
-/// nobody typed would take minutes and explain nothing.
-///
-/// `default_every` is the rate the instrument samples at when the line names
-/// none, the one setting they do not share.
+/// stood where its value would. `default_every` is the instrument's own rate.
 fn sampling(params: &Params, command: &Command, default_every: u32) -> Result<Sampling, String> {
     let depth = command.depth(params, bench::DEPTH)?;
     // zero records every event up to the cap, which is a thing to ask for
@@ -180,16 +167,13 @@ fn sampling(params: &Params, command: &Command, default_every: u32) -> Result<Sa
         .parse::<usize>("cap")
         .or_refuse("cap")?
         .unwrap_or(DEFAULT_CAP);
-    // last, so a word that was going to be read as the depth has already
-    // been refused under the better name
+    // last, so a bad depth is refused as `depth:` rather than as `word:`
     command.claim(params)?;
     Ok(Sampling { depth, every, cap })
 }
 
-/// What a residuals argument asked for: `residuals [depth] [every <n>]
-/// [cap <n>] [epd <file>] [taint refuse|trust|skip|rule50]`. The depth, the
-/// suite and the policy are the bench's own when absent; the rate is how
-/// much of the tree is sampled, and the cap the most of it the run keeps.
+/// What a residuals argument asked for. The depth, the suite and the policy
+/// are the bench's own when absent.
 ///
 /// The suite is a setting so that a margin fitted on one file can be checked
 /// on another: a rule fitted on the bench's positions and read back on the
@@ -201,8 +185,8 @@ pub struct ResidualSettings {
     pub config: SearchConfig,
     /// The file the suite was read from, or none for the bench's own.
     pub epd: Option<String>,
-    /// Read while the settings are, so a file that is no suite is refused
-    /// before the minutes are spent.
+    /// Read with the settings, so a file that is no suite is refused before
+    /// the run.
     pub positions: Vec<bench::Position>,
 }
 
@@ -220,9 +204,8 @@ pub fn residual_settings(params: &Params) -> Result<ResidualSettings, String> {
     })
 }
 
-/// The suite an instrument was asked for: the file the line named, and the
-/// positions read from it or the bench's own. The path is kept because the
-/// report's header states it.
+/// The file the line named, kept for the report's header, and the positions
+/// read from it or the bench's own.
 fn suite(params: &Params) -> Result<(Option<String>, Vec<bench::Position>), String> {
     let epd = params.value("epd").or_refuse("epd")?.map(str::to_string);
     let positions = match &epd {
@@ -232,10 +215,9 @@ fn suite(params: &Params) -> Result<(Option<String>, Vec<bench::Position>), Stri
     Ok((epd, positions))
 }
 
-/// The positions of an epd file, or the path that could not be read as a
-/// suite: a file that will not open, one that holds no position, and one
-/// that holds a position the board will not take. The third is refused here
-/// rather than left to the run, which would panic on it minutes in.
+/// The positions of an epd file, or the path refused: a file that will not
+/// open, holds no position, or holds one the board will not take (which the
+/// run would otherwise panic on minutes in).
 fn read_epd(path: &str) -> Result<Vec<bench::Position>, String> {
     let refused = || format!("epd: {path}");
     let text = std::fs::read_to_string(path).map_err(|_| refused())?;
@@ -265,9 +247,8 @@ impl ResidualSettings {
     }
 }
 
-/// What a cutoffs argument asked for: `cutoffs [depth] [every <n>]
-/// [cap <n>]`. The census records the search the engine plays with, so
-/// there is no policy to choose.
+/// What a cutoffs argument asked for. The census records the search the
+/// engine plays with, so there is no policy to choose.
 pub struct CutoffSettings {
     pub depth: u8,
     pub every: u32,
@@ -285,18 +266,14 @@ impl CutoffSettings {
     }
 }
 
-/// What a reductions argument asked for: `reductions [depth] [every <n>]
-/// [cap <n>] [epd <file>]`. The ledger records the search the engine plays
-/// with and replays it with the reference, so there is no policy to choose.
-/// The suite is a setting for the residual sampler's reason.
+/// What a reductions argument asked for. The ledger records the search the
+/// engine plays with, so there is no policy to choose. The suite is a
+/// setting for the residual sampler's reason.
 pub struct ReductionSettings {
     pub depth: u8,
     pub every: u32,
     pub cap: usize,
-    /// The file the suite was read from, or none for the bench's own.
     pub epd: Option<String>,
-    /// Read while the settings are, so a file that is no suite is refused
-    /// before the minutes are spent.
     pub positions: Vec<bench::Position>,
 }
 
@@ -324,49 +301,35 @@ impl ReductionSettings {
     }
 }
 
-/// What an effort argument asked for: `effort [depth] [every <n>]
-/// [cap <n>] [epd <file>] [off <switch>[,<switch>]] [budget <n>]`.
+/// What an effort argument asked for.
 ///
-/// `off` names the `SearchConfig` field the baseline side turns off, or two
-/// joined by a comma, and is absent for the null run, where both sides are
-/// the default. A pair is one word rather than `off` twice because a keyword
-/// sent twice reads the first, which is why `off` twice is refused rather
-/// than read. `budget` holds both sides to a node count instead of to the
-/// depth alone, which takes the speed channel out of the reading by
-/// construction.
+/// `off` names the switch the baseline side turns off, or two joined by a
+/// comma, and is absent for the null run. A pair is one word because a
+/// keyword sent twice reads the first. `budget` holds both sides to a node
+/// count as well as the depth, which takes speed out of the reading.
 ///
-/// The suite is a setting for the residual sampler's reason, and against
-/// the census's precedent: the readings here will be quoted against game
-/// results, and the bench's eighteen positions are recorded as not standing
-/// for a game.
+/// The suite is a setting, unlike the census's, because these readings are
+/// quoted against game results and the bench's positions do not stand for
+/// a game.
 pub struct EffortSettings {
     pub depth: u8,
     pub every: u32,
     pub cap: usize,
     pub off: Option<Ablation>,
     pub budget: Option<u64>,
-    /// The file the suite was read from, or none for the bench's own.
     pub epd: Option<String>,
-    /// Read while the settings are, so a file that is no suite is refused
-    /// before the minutes are spent.
     pub positions: Vec<bench::Position>,
 }
 
-/// What is said when `off` names something that is no switch, or names
-/// nothing at all: what stood where a switch would, and then the names the
-/// table carries. In the refusal rather than in the usage line, which says
-/// `<switch>`: a fourteen name list there is long and the join awkward for
-/// what it buys, and the reader who needs the names is the one who did not
-/// name a switch. That reader is likelier to type `off` and stop than to
-/// misspell a name, so the word with nothing after it is answered with the
-/// list too.
+/// The refusal for an `off` that names no switch, bare `off` included. It
+/// lists the switches, which the usage line leaves as `<switch>`: the reader
+/// who needs the names is the one who did not give one.
 fn no_such_switch(word: &str) -> String {
     let switches = SearchConfig::SWITCHES.map(|(name, _)| name).join(", ");
     format!("off: {word} (a switch is one of {switches})")
 }
 
-/// The switch or the pair `off` names. Every refusal echoes the whole word,
-/// since that is what was typed.
+/// The switch or the pair `off` names. A refusal echoes the whole word.
 fn ablation(word: &str) -> Result<Ablation, String> {
     let named = |name: &str| SearchConfig::without(name).ok_or_else(|| no_such_switch(word));
     let mut names = word.split(',');
@@ -385,9 +348,7 @@ fn ablation(word: &str) -> Result<Ablation, String> {
 
 pub fn effort_settings(params: &Params) -> Result<EffortSettings, String> {
     let Sampling { depth, every, cap } = sampling(params, &EFFORT, effort::DEFAULT_EVERY)?;
-    // refused against the field names, the way `tune.py --hold TERM` is
-    // refused against the layout the extraction prints: a misspelling read as
-    // the null would spend the minutes saying nothing
+    // a misspelling read as the null would spend the run saying nothing
     let off = match params.value("off") {
         Param::Absent => None,
         Param::Read(word) => Some(ablation(word)?),
@@ -421,15 +382,11 @@ impl EffortSettings {
     }
 }
 
-/// What a terms argument asked for: `terms [epd <file>]`. The suite is the
-/// bench's own when absent. No depth, rate or cap: a run states every quiet
-/// position of the suite, because a corpus is the thing being built and a
-/// share of one would only be a smaller corpus.
+/// What a terms argument asked for. No depth, rate or cap: a run states
+/// every quiet position of the suite, because the corpus is what is being
+/// built.
 pub struct TermSettings {
-    /// The file the suite was read from, or none for the bench's own.
     pub epd: Option<String>,
-    /// Read while the settings are, so a file that is no suite is refused
-    /// before the run.
     pub positions: Vec<bench::Position>,
 }
 
@@ -449,15 +406,13 @@ impl TermSettings {
 mod tests {
     use super::*;
 
-    /// The positions of a checked-in suite, for a test to hold what the
-    /// argument read against.
     fn from_file(path: &str) -> Vec<bench::Position> {
         bench::parse_epd(&std::fs::read_to_string(path).expect(path))
     }
 
-    /// A file that opens and holds no position. Nothing checked in is one,
-    /// so it is written for the test that asks and removed after. The name
-    /// carries the test's so two tests running at once do not share a file.
+    /// A file that opens and holds no position, written for one test and
+    /// removed after. The name carries the test's so parallel tests do not
+    /// share a file.
     struct Unpositioned {
         path: String,
     }
@@ -524,7 +479,6 @@ mod tests {
             read("residuals 2 every 0"),
             (2, 0, CAP, "rule50".to_string())
         );
-        // a calibration run raises the cap rather than patching the source
         assert_eq!(
             read("residuals 4 every 50 cap 200000"),
             (4, 50, 200_000, "rule50".to_string())
@@ -542,14 +496,14 @@ mod tests {
         let named = residual_settings(&Params::of(&line)).expect(&line);
         assert_eq!(named.depth, 4);
         assert_eq!(named.epd.as_deref(), Some(path));
-        // a file other than the bench's, so a reader that checked the file
-        // and then handed back the bench's own positions is caught
+        // a file other than the bench's, so handing back the bench's own
+        // positions is caught
         assert_eq!(named.positions, from_file(path));
         assert_ne!(named.positions, bench::positions());
     }
 
-    /// The file that is not epd at all is the case worth pinning: it opens
-    /// and parses into positions whose fens no board will take.
+    /// The manifest is the case worth pinning: it opens and parses into
+    /// positions whose fens no board will take.
     #[test]
     fn a_residuals_suite_that_is_no_suite_is_named_rather_than_run() {
         let manifest = concat!(env!("CARGO_MANIFEST_DIR"), "/Cargo.toml");
@@ -759,9 +713,6 @@ mod tests {
         assert_ne!(named.positions, bench::positions());
     }
 
-    /// A switch that is not one is named before the minutes are spent, the
-    /// way a suite that is no suite is. Read as the null it would run for as
-    /// long and answer a question nobody asked.
     #[test]
     fn an_unreadable_effort_setting_is_named_rather_than_run() {
         let empty = Unpositioned::written("effort");
@@ -814,10 +765,8 @@ mod tests {
         }
     }
 
-    /// A keyword typed with nothing after it is refused under its own name
-    /// rather than read as the keyword being absent. Read as absent, `effort
-    /// 4 off` would search the suite twice as the null for as long as the run
-    /// asked for takes and answer a question nobody asked.
+    /// Read as absent, `effort 4 off` would run the null for as long as the
+    /// run asked for.
     #[test]
     fn a_setting_given_no_value_is_named_rather_than_run() {
         for (line, what) in [
@@ -849,9 +798,7 @@ mod tests {
         );
     }
 
-    /// The first of them is what the setting reads, so the second is read by
-    /// nobody and a second standing last would be a word given no value that
-    /// nothing looked at.
+    /// The setting reads the first, so the second would be read by nobody.
     #[test]
     fn a_setting_given_twice_is_named_rather_than_run() {
         for line in ["residuals 4 cap 10 cap 20", "residuals 4 cap 10 cap"] {
@@ -922,8 +869,8 @@ mod tests {
     }
 
     /// The four rate defaults are the same number today, so the assertions
-    /// on them cannot tell which one a caller passed. The loop below can, by
-    /// handing the four commands four rates that differ.
+    /// on them cannot tell which one a reader passed. The loop only shows
+    /// that `sampling` uses the rate it is handed.
     #[test]
     fn every_instrument_defaults_to_the_benchs_depth_and_its_own_rate() {
         let residuals = residual_settings(&Params::of("residuals")).unwrap();

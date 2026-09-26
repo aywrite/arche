@@ -1,21 +1,16 @@
 // SPDX-License-Identifier: GPL-3.0-or-later
 // Copyright (C) 2022-2026 Andrew Wright
 
-//! Running one of the report commands against the real binary. Cutoffs,
-//! reductions, residuals and effort all print a header naming what the run
-//! was asked for, a row a sample and a summary, so the spawning and the
-//! splitting live here and each file beside this one says what its own rows
-//! mean.
+//! Running one of the report commands against the real binary and splitting
+//! what it printed into a header, rows and a summary. Each file beside this
+//! one says what its own rows mean.
 //!
-//! Effort extends the shared header rather than matching it, because it
-//! searches two configurations and has an events count a side. Its two are
-//! read by `paired_events` and the single one by `events`, so a header that
-//! lost its second count fails here rather than being read as the first.
+//! Effort states an events count a side, read by `paired_events`, so a header
+//! that lost its second count fails rather than being read as the first.
 
 use std::io::Read;
 use std::process::{Command, Stdio};
 
-/// What one run printed, in the three parts a reader parses.
 pub struct Printed {
     /// Everything it said, for a failure message to quote.
     pub all: String,
@@ -24,8 +19,7 @@ pub struct Printed {
     pub summary: Vec<String>,
 }
 
-/// Runs the binary with the arguments given and splits what it printed. A
-/// missing part fails here rather than in the caller.
+/// A missing part fails here rather than in the caller.
 pub fn run(arguments: &[&str]) -> Printed {
     let mut child = Command::new(env!("CARGO_BIN_EXE_arche"))
         .args(arguments)
@@ -50,9 +44,8 @@ pub fn run(arguments: &[&str]) -> Printed {
             .iter()
             .position(|line| *line == "summary")
             .unwrap_or_else(|| panic!("no summary in:\n{}", all));
-        // the blank line before the summary is asserted rather than assumed:
-        // a printer that stopped writing it would otherwise drop the last
-        // row here in silence
+        // asserted, since a printer that stopped writing the blank line
+        // would otherwise drop the last row here in silence
         assert!(
             summary_at >= 2 && lines[summary_at - 1].is_empty(),
             "no blank line before the summary in:\n{}",
@@ -82,18 +75,14 @@ pub fn run(arguments: &[&str]) -> Printed {
     printed
 }
 
-// Each test binary beside this one compiles the module afresh and reads
-// the header its own instrument prints, so no one of them calls all three
-// of these and every one of them would otherwise warn about the rest.
+// each test binary compiles this module afresh and calls only some of these
 #[allow(dead_code)]
 impl Printed {
-    /// The events the header states, the denominator of every rate.
     pub fn events(&self) -> u64 {
         self.number_after("events")
     }
 
-    /// The two a paired run states, as `events on <a> off <b>`: the
-    /// candidate side's and the baseline side's.
+    /// `events on <a> off <b>`: the candidate side's and the baseline's.
     pub fn paired_events(&self) -> (u64, u64) {
         let words: Vec<&str> = self.header.split(' ').collect();
         let at = words
@@ -115,8 +104,6 @@ impl Printed {
         (read(at + 2), read(at + 4))
     }
 
-    /// The number the header states after `word`, for a caller that knows
-    /// one stands there.
     pub fn number_after(&self, word: &str) -> u64 {
         self.header
             .split(' ')

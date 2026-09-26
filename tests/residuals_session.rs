@@ -2,14 +2,12 @@
 // Copyright (C) 2022-2026 Andrew Wright
 
 //! What the residuals argument prints, run against the real binary. The
-//! spawning and the splitting are in `report_command`. The slowest of the
-//! three, since every sample is searched again under the reference.
+//! spawning and the splitting are in `report_command`.
 
 mod report_command;
 
-/// A shallow run at a rate that still records plenty without spending the
-/// reference search on thousands of rows. About one node in fifty, since
-/// the rate is a key rather than a count.
+/// A shallow run at a rate that records plenty without spending the
+/// reference search on thousands of rows.
 const ARGUMENTS: [&str; 4] = ["residuals", "4", "every", "50"];
 
 #[test]
@@ -39,8 +37,8 @@ fn the_residuals_argument_prints_a_header_rows_and_a_summary() {
         for at in [1, 3, 4, 5, 6, 7, 8] {
             assert!(words[at].parse::<i32>().is_ok(), "field {} of {}", at, row);
         }
-        // the three derived columns against the columns they are derived
-        // from, which checks the printer and not the measurement
+        // the derived columns, which checks the printer and not the
+        // measurement
         let beta: i32 = words[4].parse().unwrap();
         let claimed: i32 = words[6].parse().unwrap();
         let reference: i32 = words[7].parse().unwrap();
@@ -59,7 +57,6 @@ fn the_residuals_argument_prints_a_header_rows_and_a_summary() {
         assert_eq!(words[10], overstated, "{row}");
     }
 
-    // a line a kind at a depth, the kinds in order and each of them together
     let summary = &printed.summary;
     assert!(summary.len() >= 3, "summary: {:?}", summary);
     let kind_at = |line: &str| {

@@ -45,10 +45,9 @@ fn the_cutoffs_argument_prints_a_header_rows_and_a_summary() {
             "row: {}",
             row
         );
-        // a cut row names the cutting move's place, class, history and
-        // search; a held row has dashes there so the columns stand still.
-        // The index column is defined as the last move searched, so this
-        // checks the printer, not the loop
+        // a held row has dashes where a cut row names the move. The index
+        // is defined as the last move searched, so this checks the printer,
+        // not the loop
         let searched: usize = words[5].parse().unwrap();
         match words[3] {
             "cut" => {
@@ -59,8 +58,7 @@ fn the_cutoffs_argument_prints_a_header_rows_and_a_summary() {
                     "row: {}",
                     row
                 );
-                // the history column is signed: a move tried more often
-                // than it has cut prints under zero
+                // signed: a move tried more often than it cut is below zero
                 assert!(words[8].parse::<i32>().is_ok(), "row: {}", row);
                 assert!(
                     words[14] == "reduced" || words[14] == "full",
@@ -81,7 +79,6 @@ fn the_cutoffs_argument_prints_a_header_rows_and_a_summary() {
     assert!(cut > 0, "no cut rows in:\n{}", printed.all);
     assert!(held > 0, "no held rows in:\n{}", printed.all);
 
-    // a line a depth
     for line in &printed.summary {
         assert!(line.starts_with("depth "), "summary line: {}", line);
         for word in [

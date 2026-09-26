@@ -1,15 +1,9 @@
 // SPDX-License-Identifier: GPL-3.0-or-later
 // Copyright (C) 2022-2026 Andrew Wright
 
-//! The reservoir the four recorders share.
-//!
-//! The residual sampler, the cutoff census, the reduction ledger and the
-//! effort instrument each hang a reservoir off an engine, search a suite
-//! with it armed, and take back what it kept. Each has a module of its own
-//! for its event and its report; what is here is the loop that searches a
-//! suite with a reservoir armed, the reservoir itself, the spread they key
-//! by, the lanes that keep their kept sets apart, and the window a sample
-//! reads off the node.
+//! The reservoir the recorders share: each hangs one off an engine, searches
+//! a suite with it armed, and takes back what it kept. Each recorder's event
+//! and report are in its own module.
 //!
 //! An engine with no reservoir armed searches the tree it searched before
 //! there was a reservoir at all, which the pinned bench counts stand behind.
@@ -20,24 +14,20 @@ use crate::engine::{AlphaBeta, Engine, Recorded, SearchConfig, SearchParameters}
 use crate::misc::Score;
 use std::collections::BinaryHeap;
 
-/// The window a node was searched with, read from alpha and beta at the
-/// sample and nothing else.
+/// The window a node was searched with, read from alpha and beta alone.
 ///
-/// A zero width window asks whether the position beats one score; a wider
-/// one asks what it is worth. A shortcut answering the two wrongly costs
-/// different things, so the rows are filtered by this. The fuller pv, cut
-/// and all classification needs the node's outcome, which a sample taken at
-/// a cutoff cannot know.
+/// A shortcut answering a zero width window wrongly costs something
+/// different from one answering an open window wrongly, so rows are filtered
+/// by this. The fuller pv, cut and all classification needs the node's
+/// outcome, which a sample taken at a cutoff cannot know.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum Window {
-    /// Beta is one above alpha: the node was asked a yes or no question.
+    /// Beta is at most one above alpha.
     Zero,
-    /// Anything wider.
     Open,
 }
 
 impl Window {
-    /// The window a node with these bounds was searched with.
     pub fn of(alpha: Score, beta: Score) -> Self {
         if i32::from(beta) - i32::from(alpha) <= 1 {
             Window::Zero
@@ -46,7 +36,6 @@ impl Window {
         }
     }
 
-    /// The word a row prints.
     pub fn word(self) -> &'static str {
         match self {
             Window::Zero => "zw",
@@ -60,24 +49,19 @@ impl Window {
 /// ratio, which shares no structure with the position key.
 const DEPTH_SPREAD: u64 = 0x9e37_79b9_7f4a_7c15;
 
-/// The lane each recorder keys under. Arbitrary constants, declared here
-/// together because what matters about them is a property of the six, and
-/// an assertion on that property needs the six in one place. Nothing here
-/// is a secret: a lane only keeps the recorders' choices of node apart, so
-/// it is not called a salt, which a scanner reads as a key.
+/// The lane each recorder keys under. Arbitrary constants, declared together
+/// so the assertion below can see them all. Not called a salt, which a
+/// scanner reads as a secret.
 ///
 /// They differ within their top three bits, so at any rate coarser than one
-/// in eight a node kept under one lane is not one another lane keeps. Six of
-/// the eight patterns are in use, and the two free ones are what a seventh
-/// recorder would take.
+/// in eight a node kept under one lane is not one another lane keeps. A new
+/// lane takes a top three bit pattern none of these uses.
 pub(crate) const REVERSE_FUTILITY_LANE: u64 = 0x51ed_2701_c3f8_4d95;
 pub(crate) const NULL_MOVE_LANE: u64 = 0xa24b_af09_7d16_e8c3;
 pub(crate) const SHADOW_FUTILITY_LANE: u64 = 0x38c6_54da_0b9e_7f12;
 pub(crate) const CENSUS_LANE: u64 = 0xc5b9_128e_66d0_3a47;
 pub(crate) const LEDGER_LANE: u64 = 0x6d84_3b2f_51c9_07ea;
-/// The effort instrument's, used on both of its sides: the two runs join on
-/// the key, so a lane a side would sample two unrelated sets. They never run
-/// at once, which is what the invariant above is about.
+/// Used on both of the effort instrument's sides, which join on the key.
 pub(crate) const EFFORT_LANE: u64 = 0xf3b7_0c95_a41e_d682;
 
 pub(crate) const LANES: [u64; 6] = [
@@ -89,9 +73,8 @@ pub(crate) const LANES: [u64; 6] = [
     EFFORT_LANE,
 ];
 
-/// The invariant, checked by the compiler. It had been a comment in three
-/// modules and asserted nowhere, so a sixth lane copied from a fifth would
-/// have compiled and quietly halved what either recorder saw.
+/// The invariant, checked by the compiler: a lane copied from another would
+/// otherwise compile and quietly halve what either recorder saw.
 const _: () = {
     let mut lane = 0;
     while lane < LANES.len() {
@@ -108,9 +91,8 @@ const _: () = {
 };
 
 /// The key an event is sampled by: the position, the depth and the
-/// recorder's own lane, and nothing about the run, so two runs of the same
-/// search record the same nodes and the recorders' kept sets stay apart.
-/// Each recorder wraps this with its lane.
+/// recorder's lane, and nothing about the run, so two runs of the same
+/// search record the same nodes.
 pub(crate) fn sample_key(position_key: u64, lane: u64, depth: u8) -> u64 {
     position_key ^ lane ^ u64::from(depth).wrapping_mul(DEPTH_SPREAD)
 }
@@ -166,52 +148,40 @@ pub(crate) struct Sampled<T> {
     pub overflowed: u64,
 }
 
-/// Records about one node in every n it is offered, picked by the key of
-/// the node rather than by its place in the stream. The reservoir holds any
-/// record type without reading one.
-///
-/// Deterministic twice over: two runs of the same search record the same
-/// nodes, and the nodes recorded do not depend on the order the search
-/// reached them in, so a change that reorders the tree without changing
-/// which nodes are in it samples the same nodes.
+/// Records about one node in every n it is offered, picked by the node's key
+/// rather than its place in the stream, so a change that reorders the tree
+/// without changing which nodes are in it samples the same nodes.
 #[derive(Clone, Debug)]
 pub(crate) struct Sampler<T> {
-    /// The largest key kept. A key is spread over the whole range, so a
-    /// share of one in `every` of them sits at or below this.
+    /// The largest key kept: keys spread over the whole range, so one in
+    /// `every` sits at or below this.
     threshold: u64,
-    /// The most samples the buffer will hold. A cap rather than a growing
-    /// vector: a run at a low rate over a deep search would otherwise ask
-    /// for gigabytes of fens.
+    /// A cap rather than a growing vector: a low rate over a deep search
+    /// would otherwise ask for gigabytes of fens.
     cap: usize,
-    /// What is held, as a heap on the key so the largest is at hand to give
-    /// up (see `event`).
+    /// A heap on the key, so the largest is at hand to give up.
     kept: BinaryHeap<Kept<T>>,
-    /// Every node offered, whatever became of it.
     events: u64,
     overflowed: u64,
 }
 
-/// What a sampler holds when nothing says otherwise. Ten thousand fens is a
-/// megabyte or so; a run that wants more of the tree asks its command for a
-/// larger cap.
+/// What a sampler holds when nothing says otherwise, a megabyte or so of
+/// fens.
 pub const DEFAULT_CAP: usize = 10_000;
 
 impl<T> Sampler<T> {
-    /// Records about one node in every `every`, holding the default cap.
     #[cfg(test)]
     pub(crate) fn every(every: u32) -> Self {
         Self::with_cap(every, DEFAULT_CAP)
     }
 
-    /// The same, holding at most `cap` samples. One sampler is carried
-    /// across a whole run of searches, so the cap bounds the run and not any
-    /// one search in it.
+    /// One sampler is carried across a whole run of searches, so the cap
+    /// bounds the run and not any one search in it.
     pub(crate) fn with_cap(every: u32, cap: usize) -> Self {
         Self {
-            // held at one or more, so a rate of zero records everything
-            // rather than dividing by nothing. Kept at or below the
-            // threshold rather than below it, so a rate of one keeps every
-            // event rather than every event but the one key
+            // a rate of zero records everything rather than dividing by
+            // zero, and `event` keeps a key equal to the threshold, so a
+            // rate of one keeps u64::MAX too
             threshold: u64::MAX / u64::from(every.max(1)),
             cap,
             kept: BinaryHeap::new(),
@@ -220,27 +190,20 @@ impl<T> Sampler<T> {
         }
     }
 
-    /// Offer one node, keyed. The key decides whether it is wanted at all,
-    /// and then whether it beats what the cap is already holding.
+    /// Offer one node, keyed.
     ///
     /// At the cap the record with the largest key is given up, so what is
-    /// left at the end is the `cap` smallest keys of the run. The key says
-    /// nothing about when the node was reached, so those are a uniform draw
-    /// from the whole run, the same whichever order the events arrived in.
-    /// Keeping the first arrivals instead would describe the first position
-    /// of a suite and call it the suite.
+    /// left is the `cap` smallest keys of the run: a uniform draw from the
+    /// whole run whatever order the events arrived in. Keeping the first
+    /// arrivals instead would describe the first position of a suite and
+    /// call it the suite.
     ///
     /// That holds up to ties, which are not rare: a deepening search
-    /// revisits the same position, kind and depth, so a run keys many events
-    /// alike, and the samples behind them differ (the beta and the window at
-    /// a revisit are the node's second answer). Which member of a tied group
-    /// survives the cap is whichever the heap surfaces, and a run that
-    /// offers the same events in another order can keep a different member.
-    /// The set of keys is order-independent; the samples behind a tied key
-    /// are not.
+    /// revisits a node, and the samples behind one key differ (a revisit has
+    /// its own beta and window). Which member of a tied group survives the
+    /// cap depends on arrival order. The set of keys does not.
     ///
-    /// The record arrives as a closure because building one prints a fen,
-    /// which is not worth doing for an event that is not kept.
+    /// The record is a closure because building one prints a fen.
     pub(crate) fn event(&mut self, key: u64, describe: impl FnOnce() -> T) {
         self.events += 1;
         if key > self.threshold {
@@ -253,17 +216,15 @@ impl<T> Sampler<T> {
             });
             return;
         }
-        // past the cap every wanted event costs one of them, the new one or
-        // the one it displaces, so this counts the wanted events the report
-        // is not describing
+        // past the cap every wanted event costs one record, the new one or
+        // the one it displaces
         self.overflowed += 1;
         let largest = match self.kept.peek() {
             Some(held) => held.key,
             // a cap of zero holds nothing and displaces nothing
             None => return,
         };
-        // an equal key does not displace, which keeps the set of keys right;
-        // which of a tied group is held is the heap's business either way
+        // an equal key does not displace, which keeps the set of keys right
         if key >= largest {
             return;
         }
@@ -284,10 +245,8 @@ impl<T> Sampler<T> {
         self.kept.is_empty()
     }
 
-    /// Everything collected, in key order, leaving the sampler empty and
-    /// counting afresh. Key order is a hash order, so a reader gets the rows
-    /// shuffled, and two records that key alike come out in no order worth
-    /// relying on.
+    /// Everything collected, in key order (a hash order, and unordered
+    /// within a tied key), leaving the sampler empty.
     pub(crate) fn drain(&mut self) -> Sampled<T> {
         Sampled {
             taken: std::mem::take(&mut self.kept)
@@ -302,14 +261,9 @@ impl<T> Sampler<T> {
 }
 
 /// Search the positions with a reservoir of this kind armed, and hand back
-/// what it kept.
-///
-/// One reservoir for the whole suite, carried from each position's engine
-/// to the next, so that the cap describes a share of the whole run rather
-/// than the first events of every position.
-///
-/// The table is the bench's size and the search runs to a fixed depth with
-/// no clock, so what a run records does not depend on the machine.
+/// what it kept. One reservoir for the whole suite, so the cap describes a
+/// share of the whole run. The table is the bench's and there is no clock,
+/// so what a run records does not depend on the machine.
 pub(crate) fn record<T: Recorded>(
     positions: &[Position],
     depth: u8,
@@ -332,8 +286,7 @@ pub(crate) fn record<T: Recorded>(
     sampler.drain()
 }
 
-/// What the recorders' tests share: the positions they record over, and
-/// the contract each of them is held to.
+/// What the recorders' tests share.
 #[cfg(test)]
 pub(crate) mod fixtures {
     use crate::bench::{self, Position};
@@ -349,13 +302,9 @@ pub(crate) mod fixtures {
         )
     }
 
-    /// Every recorder's contract: an engine with one searches the tree an
-    /// engine without one searches, asked of the armed engine itself
-    /// position by position.
-    ///
-    /// `arm` turns the recorder on and `take` takes it back and says how
-    /// many events it kept, which is what says the armed runs recorded at
-    /// all rather than agreeing with the plain ones by doing nothing.
+    /// Every recorder's contract: an armed engine searches the tree an
+    /// unarmed one does, position by position. `take` says how many events
+    /// were kept, so an armed run that recorded nothing fails.
     pub(crate) fn recording_leaves_the_search_where_it_was(
         depth: u8,
         arm: impl Fn(&mut AlphaBeta),
@@ -391,13 +340,10 @@ mod tests {
     use super::*;
     use pretty_assertions::assert_eq;
 
-    /// What a reservoir is holding. A record here is a name and nothing
-    /// else, since the reservoir never reads what it holds.
     fn held(sampled: &Sampled<String>) -> Vec<&str> {
         sampled.taken.iter().map(String::as_str).collect()
     }
 
-    /// A key a share of the way up the range.
     fn key_at(share: f64) -> u64 {
         (u64::MAX as f64 * share) as u64
     }
@@ -405,21 +351,15 @@ mod tests {
     #[test]
     fn only_the_keys_under_the_rate_are_kept() {
         let mut sampler = Sampler::every(10);
-        // a tenth of the range is kept, so the first two of these are in and
-        // the rest are out
         for share in [0.0, 0.09, 0.11, 0.5, 0.99] {
             sampler.event(key_at(share), || share.to_string());
         }
         let sampled = sampler.drain();
         assert_eq!(held(&sampled), vec!["0", "0.09"]);
         assert_eq!(sampled.overflowed, 0);
-        // every event offered is counted, kept or not
         assert_eq!(sampled.events, 5);
     }
 
-    /// The event count is the denominator, so it counts what was offered
-    /// and not what survived the rate or the cap, and it goes with the
-    /// samples when they are drained.
     #[test]
     fn every_event_offered_is_counted_whatever_became_of_it() {
         let mut sampler = Sampler::with_cap(4, 1);
@@ -444,8 +384,6 @@ mod tests {
         assert_eq!(sampler.len(), 3);
     }
 
-    /// Past the cap the largest keys are given up, so what survives is the
-    /// smallest keys of everything offered.
     #[test]
     fn the_cap_keeps_the_smallest_keys_and_counts_the_rest() {
         let mut sampler = Sampler::with_cap(1, 3);
@@ -453,16 +391,12 @@ mod tests {
             sampler.event(key, || key.to_string());
         }
         let sampled = sampler.drain();
-        // in key order, which is the order drain hands them over in
         assert_eq!(held(&sampled), vec!["10", "20", "30"]);
         assert_eq!(sampled.overflowed, 4);
     }
 
-    /// A tie is where the order-independence stops. This pins what the cap
-    /// does with one for a fixed order, which is all that is promised: an
-    /// equal key does not displace, so the record already held survives,
-    /// and a run that offered these three in another order could keep the
-    /// other.
+    /// A tie is where the order independence stops, so only a fixed order is
+    /// pinned: an equal key does not displace the record already held.
     #[test]
     fn a_tie_at_the_cap_is_settled_the_same_way_every_run() {
         let run = || {
@@ -478,8 +412,6 @@ mod tests {
         assert_eq!(sampled, run());
     }
 
-    /// The retained set is a property of the events and not of when they
-    /// arrived.
     #[test]
     fn two_orderings_of_the_same_events_keep_the_same_set() {
         let keys = [50u64, 10, 90, 20, 70, 30, 60];
