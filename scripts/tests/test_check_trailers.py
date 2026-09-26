@@ -79,6 +79,13 @@ def test_the_speed_format_is_fixed():
         "15 interleaved rounds vs a1b2c3d)\n"
     )
     assert problems(good) == []
+    for over in ("shuffled", "padded"):
+        good = (
+            "perf(search): Sort less\n\nBench: 42847751\n"
+            "Speed: +3.1% (bench nps, 95% interval +1.8% to +4.4%, "
+            f"15 interleaved rounds over {over} layouts vs a1b2c3d)\n"
+        )
+        assert problems(good) == [], over
     bad = "perf(search): Sort less\n\nBench: 42847751\nSpeed: faster\n"
     assert problems(bad) == [
         "Speed: is not in the shape scripts/speed.sh prints, got faster"

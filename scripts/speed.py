@@ -15,8 +15,15 @@ change must not, and nps normalises for the size of the tree, so a search
 that visits fewer nodes at the same cost each finishes sooner while the
 rate says nothing happened.
 
-    speed.py <base binary> <candidate binary> [--rounds N] [--depth D]
-             [--base-ref SHA] [--threshold PCT] [--loaded PCT] [--cpu LIST]
+A binary's rate also depends on where its code landed, which any edit
+redraws: comment sweeps and version bumps have moved it by 1.5%. Given two
+directories that scripts/layouts.sh made instead of two binaries, round n
+runs both sides on layout n, so the interval carries that draw instead of one
+build's worth of it sitting inside the change. The default link, the one a
+release ships, is then measured after as a diagnostic.
+
+    speed.py <base> <candidate> [--rounds N] [--depth D] [--base-ref SHA]
+             [--threshold PCT] [--loaded PCT] [--cpu LIST]
 
 scripts/speed.sh builds the base commit and calls this.
 """
@@ -50,6 +57,50 @@ THRESHOLD = 2.0
 # so over the same pull requests it marked 41 of 1,791 rounds and changed
 # little; it is for a machine whose load comes in bursts.
 LOADED = 0.03
+
+# The threshold when every round runs on a layout of its own. The layout's
+# share of the rate is then inside the interval instead of beside it, so this
+# is not a floor under a bias but the smallest change worth calling one, and
+# it has to be one an interval can clear. A version bump, which moves the code
+# and nothing else, measured over forty shuffled layouts on four runners gave
+# intervals from ±0.2% to ±1.1%, and three of the four were inside ±1%. Same
+# seeds on nearly the same code are nearly the same layouts, so a larger
+# change pairs less closely and its interval is wider.
+LAYOUT_THRESHOLD = 1.0
+
+# One binary, or the layouts of one build in the order the rounds use them.
+Side = str | list[str]
+
+
+def binary_for(side: Side, number: int) -> str:
+    """The binary round `number` runs for a side, counting from one."""
+    return side if isinstance(side, str) else side[number - 1]
+
+
+@dataclass
+class Layouts:
+    """What scripts/layouts.sh left in a directory."""
+
+    default: str
+    mode: str
+    numbered: list[str]
+
+
+def layouts_in(directory: str, needed: int) -> Layouts:
+    """The layouts in a directory scripts/layouts.sh made, the first
+    `needed` of them, or a usage error naming what is missing."""
+    try:
+        with open(os.path.join(directory, "mode")) as file:
+            mode = file.read().strip()
+    except OSError:
+        raise SystemExit(f"{directory}: no mode file, so not made by layouts.sh")
+    numbered = [os.path.join(directory, str(i)) for i in range(1, needed + 1)]
+    missing = [path for path in numbered if not os.path.isfile(path)]
+    if missing:
+        raise SystemExit(
+            f"{directory}: {needed} layouts needed and {missing[0]} is not there"
+        )
+    return Layouts(os.path.join(directory, "default"), mode, numbered)
 
 
 @dataclass
@@ -121,26 +172,40 @@ def loaded(measured: Measured, cut: float) -> list[int]:
     return [i for shortfall, i in sorted(shortfalls, reverse=True) if shortfall > cut]
 
 
+def budget(rounds: int, cut: float) -> int:
+    """How many rounds may be run again: a fifth, or none with no cut."""
+    return rounds // 5 if cut > 0 else 0
+
+
 def measure(
-    base: str, candidate: str, rounds: int, depth: int | None, cut: float = LOADED
+    base: Side,
+    candidate: Side,
+    rounds: int,
+    depth: int | None,
+    cut: float = LOADED,
 ) -> Measured:
     """Run each side once to warm up, run the rounds, then run again any the
     machine was loaded for.
+
+    A side is one binary, or a list of layouts of one build, and then round
+    n runs layout n on both sides. Every run of a side has to count the same
+    nodes, since a layout moves the code and never the search.
 
     The warmup runs are thrown away. Over 187 of the speed job's runs the
     first run of a job was 1.13% below its side's median (standard error
     0.21), and the second 0.10%, so without them the first round leaned
     towards whichever side went second.
 
-    A loaded round is replaced by a new one at the end, rather than dropped,
-    so the count stays what was asked for. At most a fifth of the rounds are
-    replaced, so load that keeps coming back ends in a wide interval rather
-    than a loop. A `cut` of zero replaces nothing."""
+    A loaded round is replaced by a new one at the end, on a layout of its
+    own, rather than dropped, so the count stays what was asked for. At most
+    a fifth of the rounds are replaced, so load that keeps coming back ends
+    in a wide interval rather than a loop. A `cut` of zero replaces nothing."""
     measured = Measured()
-    for binary in (base, candidate):
-        bench(binary, depth)
+    for side in (base, candidate):
+        bench(binary_for(side, 1), depth)
     # which side each kept round ran first
     base_first: list[bool] = []
+    counted: dict[bool, int] = {}
 
     def one_round(first: bool) -> None:
         number = len(measured.rounds) + len(measured.replaced) + 1
@@ -149,8 +214,15 @@ def measure(
         order = [(True, base), (False, candidate)]
         if not first:
             order.reverse()
-        for is_base, binary in order:
+        for is_base, side in order:
+            binary = binary_for(side, number)
             nodes, nps = bench(binary, depth)
+            if counted.setdefault(is_base, nodes) != nodes:
+                raise SystemExit(
+                    f"{binary} counted {nodes} nodes where the rest of its "
+                    f"side counted {counted[is_base]}, so it is not the same "
+                    "search"
+                )
             if is_base:
                 measured.base_nps.append(nps)
                 measured.base_nodes = nodes
@@ -164,8 +236,8 @@ def measure(
     # side
     for round_ in range(rounds):
         one_round(round_ % 2 == 0)
-    budget = rounds // 5 if cut > 0 else 0
-    while budget and (worst := loaded(measured, cut)[:budget]):
+    left = budget(rounds, cut)
+    while left and (worst := loaded(measured, cut)[:left]):
         firsts = []
         for i in sorted(worst, reverse=True):
             measured.replaced.append(
@@ -180,7 +252,7 @@ def measure(
         # rounds stay as balanced as the alternation made them
         for first in firsts:
             one_round(first)
-        budget -= len(worst)
+        left -= len(worst)
     measured.replaced.sort()
     return measured
 
@@ -387,30 +459,43 @@ def cpus(text: str) -> set[int]:
     return found
 
 
-def trailer(base: list[int], candidate: list[int], base_ref: str) -> str:
-    """The Speed trailer: the paired change and its interval."""
+# How a trailer names the layouts its rounds ran on, by layouts.sh's mode
+OVER = {"shuffle": "shuffled", "pad": "padded"}
+
+
+def trailer(
+    base: list[int], candidate: list[int], base_ref: str, mode: str | None = None
+) -> str:
+    """The Speed trailer: the paired change and its interval, and the kind
+    of layout the rounds ran on when they ran on layouts."""
     estimate = paired(base, candidate)
+    over = f" over {OVER[mode]} layouts" if mode else ""
     return (
         f"Speed: {estimate.change:+.1f}% (bench nps, "
         f"{CONFIDENCE:.0%} interval {interval(estimate)}, "
-        f"{len(base)} interleaved rounds vs {base_ref})"
+        f"{len(base)} interleaved rounds{over} vs {base_ref})"
     )
 
 
 def main(argv: list[str]) -> int:
     parser = argparse.ArgumentParser(description=__doc__.splitlines()[0])
-    parser.add_argument("base")
-    parser.add_argument("candidate")
+    parser.add_argument("base", help="a binary, or a directory of layouts")
+    parser.add_argument("candidate", help="a binary, or a directory of layouts")
     parser.add_argument("--rounds", type=int, default=15)
     parser.add_argument("--depth", type=int, default=None)
     parser.add_argument("--base-ref", default="base")
-    parser.add_argument("--threshold", type=float, default=THRESHOLD)
+    parser.add_argument(
+        "--threshold",
+        type=float,
+        default=None,
+        help=f"{THRESHOLD:g} by default, {LAYOUT_THRESHOLD:g} over layouts",
+    )
     parser.add_argument(
         "--loaded",
         type=float,
-        default=100 * LOADED,
-        help="percent below the median pair that has a round run again, "
-        "or 0 to run none again",
+        default=None,
+        help="percent below the median pair that has a round run again, or 0 "
+        f"to run none again; {100 * LOADED:g} by default, 0 over layouts",
     )
     parser.add_argument(
         "--cpu",
@@ -433,15 +518,42 @@ def main(argv: list[str]) -> int:
         except (OSError, ValueError) as refused:
             parser.error(f"--cpu {sorted(args.cpu)}: {refused}")
 
-    measured = measure(
-        args.base, args.candidate, args.rounds, args.depth, args.loaded / 100
-    )
+    over_layouts = os.path.isdir(args.base)
+    if over_layouts != os.path.isdir(args.candidate):
+        parser.error("both sides are binaries or both are directories of layouts")
+    # a pair's rates carry both sides' layout as well as the machine's load,
+    # and alike when the two builds barely differ, so over layouts the rule
+    # would run a round again for the layout it drew. Off unless asked for
+    loaded = args.loaded
+    if loaded is None:
+        loaded = 0.0 if over_layouts else 100 * LOADED
+    cut = loaded / 100
+    mode = None
+    base: Side = args.base
+    candidate: Side = args.candidate
+    if over_layouts:
+        # a replaced round runs on a layout of its own
+        needed = args.rounds + budget(args.rounds, cut)
+        base_layouts = layouts_in(args.base, needed)
+        candidate_layouts = layouts_in(args.candidate, needed)
+        if base_layouts.mode != candidate_layouts.mode:
+            parser.error(
+                f"the base's layouts are {base_layouts.mode} and the "
+                f"candidate's {candidate_layouts.mode}"
+            )
+        mode = base_layouts.mode
+        base, candidate = base_layouts.numbered, candidate_layouts.numbered
+    threshold = args.threshold
+    if threshold is None:
+        threshold = LAYOUT_THRESHOLD if mode else THRESHOLD
+
+    measured = measure(base, candidate, args.rounds, args.depth, cut)
     print(f"{'round':>5} {'base nps':>12} {'candidate nps':>14} {'change':>7}")
     for n, b, c in zip(measured.rounds, measured.base_nps, measured.candidate_nps):
         print(f"{n:>5} {b:>12} {c:>14} {change(b, c):>+6.1f}%")
     if measured.replaced:
         print()
-        print(f"run again, each pair more than {args.loaded:g}% below the median pair:")
+        print(f"run again, each pair more than {loaded:g}% below the median pair:")
         for n, b, c in measured.replaced:
             print(f"{n:>5} {b:>12} {c:>14} {change(b, c):>+6.1f}%")
     print()
@@ -453,16 +565,29 @@ def main(argv: list[str]) -> int:
         f"paired change {estimate.change:+.1f}%, "
         f"{CONFIDENCE:.0%} interval {interval(estimate)}"
     )
+    if mode:
+        # the layout each side ships with, for seeing how far this build's
+        # own draw sits from the rest. A diagnostic: the verdict and the
+        # trailer read the layouts
+        rounds = max(6, args.rounds // 3)
+        default = measure(
+            base_layouts.default, candidate_layouts.default, rounds, args.depth, cut
+        )
+        on_default = paired(default.base_nps, default.candidate_nps)
+        print(
+            f"diagnostic, on the default layout alone {on_default.change:+.1f}%, "
+            f"{CONFIDENCE:.0%} interval {interval(on_default)}, {rounds} rounds"
+        )
     print()
     if measured.base_nodes != measured.candidate_nodes:
         # the rates are then over different trees, and a verdict would read
         # them as if they were not
         print(COUNTS_DIFFER)
     else:
-        print(textwrap.fill(verdict(estimate, args.threshold), width=72))
+        print(textwrap.fill(verdict(estimate, threshold), width=72))
     # the trailer stays the last line, which is what speed.sh reads
     print()
-    print(trailer(measured.base_nps, measured.candidate_nps, args.base_ref))
+    print(trailer(measured.base_nps, measured.candidate_nps, args.base_ref, mode))
     return 0
 
 
