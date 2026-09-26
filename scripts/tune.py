@@ -202,7 +202,6 @@ HEADERS = ("terms positions ", "terms epd ")
 # without a second copy of the rule, so it refuses the extraction.
 HEADER_COUNTS = ("positions", "in_check", "unsettled", "drawn", "kept")
 
-# What the layout line opens with.
 LAYOUT = "layout "
 
 

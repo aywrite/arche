@@ -1,9 +1,7 @@
 /target
 /arche-core/target
-# a cargo home installed into the tree, which shell.nix does. Git does not
-# look inside an excluded directory, so the build configuration that lives
-# in the same place is named back in rather than the directory being left
-# out whole.
+# the cargo home shell.nix puts in the tree. Its contents rather than the
+# directory, since git cannot name a file back in under an excluded one
 .cargo/*
 !.cargo/config.toml
 .rustup
@@ -20,8 +18,7 @@ flamegraph.svg*
 /AGENTS.local.md
 /CLAUDE.local.md
 
-# the harvested games and the corpus built from them. Hundreds of megabytes,
-# and the documented harvest writes both into the working tree by default. They
-# are inputs rather than sources and the artifacts are where they come from.
+# the harvested games and the corpus built from them: hundreds of megabytes,
+# which the documented harvest writes into the working tree
 /runs/
 /corpus.epd

@@ -1,27 +1,19 @@
 name: Bench
 
-# Checks on what commits say about themselves, and one measurement of what
-# they do.
-#
 # The pins job reads each commit's stated bench against the counts its own
 # tree pins. It is cheap, so it runs on a push to master as well: a commit
-# rebased before it lands is not the commit the bench job built, and its
-# message can be stale by the time it arrives.
+# rebased before it lands is not the commit the bench job built.
 #
 # The trailers job runs the pre-commit hooks over the tree and the commit-msg
-# hooks over every commit, so a bad scope or a missing bench fails here rather
-# than slipping past a clone that never installed the hooks.
+# hooks over every commit, for a clone that never installed the hooks.
 #
 # The bench job builds each commit that states a bench and counts it. The
-# count is exact and the same on any machine, so it gates. Pull requests only:
-# on master the Rust workflow's tests prove the pins and the pins job holds
-# the messages to them.
+# count is exact on any machine, so it gates. Pull requests only: on master
+# the Rust workflow's tests prove the pins and the pins job holds the
+# messages to them.
 #
 # The speed job measures the pull request against the commit it would land
-# on, the way scripts/speed.sh measures a perf commit, and reports without
-# gating: a runner's rate is context, not a claim. It counts the instructions
-# each side executes as well, which repeat exactly enough to show a change
-# the rate cannot, and says nothing about what the hardware does with them.
+# on and reports without gating: a runner's rate is context, not a claim.
 
 on:
   pull_request:
@@ -147,17 +139,15 @@ jobs:
           # forty rounds rather than the local fifteen: a round of two runs is
           # under four seconds here, and the interval, which now carries the
           # layout as well as the run, narrows with the root of the count. No
-          # round is run again: the runner's noise is small and even, and over
-          # the pull requests up to #321 the rule would have marked 41 of 1,791
-          # rounds, too few to be worth a step that chooses rounds by what
-          # they measured
+          # round is run again: the runner's noise is small and even (LOADED in
+          # scripts/speed.py)
           python3 scripts/speed.py ./base-layouts ./pr-layouts \
             --base-ref "${BASE_SHA:0:8}" --rounds 40 --loaded 0 | tee speed.txt
       - name: Count instructions
         id: count
-        # after the timing rather than beside it, so cachegrind never shares
-        # the runner with a timed run. It reports and does not gate, and a
-        # hang ends the step rather than the job, so the comment still posts
+        # after the timing, so cachegrind never shares the runner with a timed
+        # run. A failure or a hang ends the step rather than the job, so the
+        # comment still posts
         if: ${{ !cancelled() }}
         continue-on-error: true
         timeout-minutes: 10
@@ -226,8 +216,8 @@ jobs:
           } > speed-summary.md
           cat speed-summary.md >> "$GITHUB_STEP_SUMMARY"
 
-      # Put where the change is being read. The api rather than an action, so
-      # there is one less thing to keep off a deprecated node.
+      # the api rather than an action, so there is one less thing to keep off
+      # a deprecated node
       - name: Post the summary to the pull request
         # a fork's pull request gets a read only token, so there is nothing
         # to post with

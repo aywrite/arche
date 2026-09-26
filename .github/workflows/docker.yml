@@ -31,9 +31,7 @@ jobs:
     runs-on: ubuntu-latest
     # the arm64 half of the published image is built under emulation
     timeout-minutes: 90
-    # the last two let the job ask github for a short lived signing
-    # certificate with its own oidc token and file the attestation against
-    # this repository
+    # the last two are for the attestation
     permissions:
       contents: read
       packages: write

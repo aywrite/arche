@@ -163,7 +163,6 @@ def test_a_typed_input_is_never_handed_a_dispatch_input_raw():
     it arrives as the type it declares.
     """
     strength = workflow(STRENGTH)
-    # yaml reads a bare on: as a boolean, so the triggers are under True
     triggers = strength[True]
     dispatch = set((triggers["workflow_dispatch"] or {}).get("inputs") or {})
     takes = workflow(BATCH)[True]["workflow_call"]["inputs"]

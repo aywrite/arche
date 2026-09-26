@@ -2,20 +2,13 @@ name: Strength batch
 
 # One batch of a sharded strength match: the shards play their slices, and the
 # summary pools them and says what the test came to. strength.yml calls it once
-# a batch and nothing else calls it.
-#
-# It is a workflow rather than a job in strength.yml because a batch ladder is
-# the same job graph written out several times. Actions has no loop and `uses:`
-# is not an expression, so the stages cannot be generated; what they can do is
-# share one definition.
+# a stage, so the stages share one definition.
 #
 # mache publishes a batch workflow of its own, and this is not it. A reusable
-# workflow cannot be handed an action, so the cache a general one offers is a
-# plain path and key rather than the cache that understands this toolchain and
-# prunes what it keeps. The manifest lines it takes from a caller are echoed
-# rather than run, so the compiler that built the two sides cannot go through
-# them. What is left is the build, which is scripts/build_at.sh and this
-# repository's to name. Keeping the job here keeps all three.
+# workflow cannot be handed an action, so its cache is a plain path and key
+# rather than rust-cache. Its manifest lines are echoed rather than run, so they
+# cannot record the compiler that built the two sides, and the build here is
+# scripts/build_at.sh, which is this repository's to name.
 
 on:
   workflow_call:
@@ -128,10 +121,9 @@ permissions:
   contents: read
 
 env:
-  # Every batch of one test shares a run id and an attempt, so the batch goes
-  # in the artifact name too. Left out where there is only one, so an unbatched
-  # run keeps the names it has always had and scripts/harvest_games.py keeps
-  # reading the archive it already holds.
+  # The batches of one test share a run id and an attempt, so the batch goes
+  # in the name. Left out where there is only one, so an unbatched run keeps
+  # the names the archive already holds.
   ARTIFACTS: strength-${{ github.run_id }}-${{ github.run_attempt }}${{ inputs.batches > 1 && format('-batch-{0}', inputs.batch) || '' }}
 
 jobs:
@@ -178,9 +170,6 @@ jobs:
       # its commit
       - uses: Swatinem/rust-cache@6323deb102c322ba6fcbdcafc7e3dddab59af2b6 # v2.9.2
 
-      # Ours rather than the action's. What builds this engine is this
-      # repository's to say, and the same script builds the bench and the
-      # speed comparison, neither of which has a match tool anywhere near it.
       - name: Build both versions
         run: |
           # a pull request head is not fetched by default, and the resolve
@@ -213,11 +202,8 @@ jobs:
           startup_ms: ${{ inputs.startup_ms }}
           max_match_minutes: ${{ inputs.max_match_minutes }}
 
-      # What it would take to play this shard again. Written whether or not it
-      # finished, since a shard that ended badly is the one looked into. Ours
-      # rather than the action's: this is this repository's record of its own
-      # run, scripts/build_corpus.py reads the run and the shard back out of
-      # it, and what built the engine is only sayable here.
+      # What it would take to play this shard again, written whether or not it
+      # finished. scripts/build_corpus.py reads the run, batch and shard lines.
       - name: Write the manifest
         if: always()
         env:
@@ -238,18 +224,13 @@ jobs:
             echo "baseline_sha: ${BASELINE_SHA}"
             echo "build: scripts/build_at.sh, cargo build --release on an export of the commit"
             echo "fastchess: ${FASTCHESS}"
-            # the tooling that reads the games, so a figure can be read back
-            # against the version that produced it
             echo "mache: ${MACHE}"
             echo "book: ${book_file}"
             echo "book_sha256: ${book_sha}"
             echo "book_openings: ${OPENINGS:-not counted, the shard did not get that far}"
             echo "seed: ${SEED}"
-            # Only where there is more than one, so an unbatched run's manifest
-            # is what it has always been. build_corpus.py names a pgn's source
-            # from these lines, and batches of one run share a run id and
-            # repeat each other's shard numbers, so without this two game sets
-            # would carry one name.
+            # batches of one run repeat each other's shard numbers, so without
+            # these two game sets would carry one name in the corpus
             if [ "$BATCHES" -gt 1 ]; then
               echo "batch: ${BATCH}"
               echo "batches: ${BATCHES}"
@@ -268,7 +249,6 @@ jobs:
               echo "sprt: off"
             fi
             echo "wall_clock_cap_minutes: ${MAX_MATCH_MINUTES}"
-            # unset when the play action never reached its end
             echo "stopped_by: ${STOPPED_BY:-not recorded, the shard did not finish}"
             echo "runner: $(uname -a)"
             echo "cores: $(nproc)"
@@ -278,9 +258,8 @@ jobs:
           } > tools/manifest.txt
           cat tools/manifest.txt
 
-      # The summary job reads the games from here. The attempt is in the name
-      # because an artifact cannot be uploaded twice under one name and a
-      # rerun keeps the run id.
+      # The attempt is in the name because a rerun keeps the run id and an
+      # artifact name cannot be uploaded twice.
       - name: Keep the games
         if: always()
         uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
@@ -292,10 +271,9 @@ jobs:
             tools/config.json
             tools/manifest.txt
           if-no-files-found: warn
-          # The maximum a public repository allows, written down because it is
-          # the tuning corpus's shelf life: an expired games artifact cannot be
-          # played again, and an implicit default can be lowered for the
-          # repository by someone thinking about disk.
+          # the most a public repository allows, and the tuning corpus's shelf
+          # life: an expired artifact's games are gone. Written out because the
+          # repository default can be lowered
           retention-days: 90
 
   summarise:
@@ -315,16 +293,15 @@ jobs:
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
 
-      # no harness to build and no book to fetch: this job only reads games
       - uses: aywrite/mache/actions/setup@a429bcecb0b5718c0ef9fe8c02f0b360d986635b # v0.5.0
         with:
           estimator_only: true
 
-      # one directory per artifact under shards/, except that a single
+      # One directory per artifact under shards/, except that a single
       # artifact is extracted straight into shards/; the action takes either.
       # The attempt is in the pattern so a rerun does not count an earlier
-      # attempt's games as well, and the batch so a later one does not count
-      # the batch before it twice.
+      # attempt's games as well, and the batch so a later batch does not count
+      # the one before it twice, its pairs already arriving as prior_pairs.
       - uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v8.0.1
         with:
           pattern: ${{ env.ARTIFACTS }}-shard-*
@@ -344,8 +321,6 @@ jobs:
           elo0: ${{ inputs.elo0 }}
           elo1: ${{ inputs.elo1 }}
           prior_pairs: ${{ inputs.prior_pairs }}
-          # artifact names belong to this workflow, so the sentence naming
-          # them is written here rather than by the action
           provenance: >-
             The games, the results and a manifest of what each shard played
             are kept as the `${{ env.ARTIFACTS }}-shard-<i>` artifacts. The

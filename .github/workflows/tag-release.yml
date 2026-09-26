@@ -50,9 +50,8 @@ jobs:
           git tag -a "$TAG" -m "chore: Release $TAG"
           git push origin "$TAG"
 
-      # a tag pushed with GITHUB_TOKEN does not trigger the release workflow's
-      # tag filter, so that workflows cannot set each other off.
-      # workflow_dispatch is the documented exception.
+      # a tag pushed with GITHUB_TOKEN does not set off the release
+      # workflow's tag trigger; workflow_dispatch is the documented exception
       - name: Start the release workflow
         if: steps.version.outputs.needed == 'true'
         env:

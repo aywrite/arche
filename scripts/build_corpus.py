@@ -88,9 +88,7 @@ RESULTS = {"1-0": 1.0, "0-1": 0.0, "1/2-1/2": 0.5}
 UNKNOWN = "-"
 
 # The file a strength run keeps beside its games, and the lines of it that
-# name the run: `run_id: 34468958876`, `batch: 1` and `shard: 0`. A run that
-# chained batches writes the batch, since its batches share a run id and
-# repeat each other's shard numbers.
+# name the run: `run_id: 34468958876`, `batch: 1` and `shard: 0`.
 MANIFEST = "manifest.txt"
 MANIFEST_LINE = re.compile(r"^(run_id|batch|shard):\s*(\S+)\s*$")
 

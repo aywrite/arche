@@ -1,39 +1,24 @@
 name: Strength
 
 # Plays one version of the engine against another and reports the elo
-# difference. By default it is the ref this was run against versus the last
-# full release, which is what the release workflow wants. Both sides can be
-# named instead, as a branch, a tag, a commit or a pull request number.
+# difference, by default the ref this was run against versus the last full
+# release, which is what the release workflow wants.
 #
 # A runner plays about three and a third games a minute at 10+0.1 and about
-# one and a tenth at 30+0.3, and play is capped at 150 minutes, so a match
-# worth reading is split across shards that play at once and are pooled
-# afterwards. Each shard plays its own slice of the book, chosen from the seed,
-# so no two shards play the same opening and the schedule can be replayed from
-# the manifest.
+# one and a tenth at 30+0.3, and play is capped at 150 minutes, so a match is
+# split across shards that play at once and are pooled afterwards. Each shard
+# plays its own slice of the book, chosen from the seed, so the schedule can be
+# replayed from the manifest. The estimate is read off the pooled pairs rather
+# than taken from fastchess, which only sees its own shard.
 #
-# The estimate over the pooled games is worked out here rather than taken from
-# fastchess, which only sees its own shard. The figure and its interval are
-# read off pairs, since the two games of an opening are one draw and not two;
-# a game the pairing left over is in the score and in nothing else.
-#
-# sprt reads the same pooled games as a sequential test of whether the
-# candidate is stronger. The shards play their slices with nothing watching;
-# the summary adds their pairs to the pairs the earlier batches played and
-# judges the log likelihood ratio over all of them. A batch that settles it
-# says passed or failed; one that does not says inconclusive and the pairs to
-# launch the next batch with. Looking only at batch boundaries is what lets the
-# shards play at once and leaves the bounds meaning what they say.
-#
-# `batches` chains that inside one run: up to four batches, each played only
-# where the one before settled nothing. A test that decides early stops
-# playing, and one that does not hands back the pairs for a second run to carry
-# on from. The batches share a seed and reserve the book between them, so no
-# two play the same opening.
+# sprt is judged over the pooled pairs at batch boundaries only, which is what
+# lets the shards play at once and leaves the bounds meaning what they say. A
+# batch that settles nothing hands its pairs to the next stage of this run
+# (`batches`) or, past the last, to a second run's prior_pairs.
 #
 # Every shard keeps its games, the result block, the fastchess config and a
-# manifest as strength-<run id>-<attempt>-shard-<i>, with -batch-<n> before the
-# shard where the run played more than one.
+# manifest as strength-<run id>-<attempt>[-batch-<n>]-shard-<i>, the batch
+# named only where the run played more than one.
 
 on:
   workflow_dispatch:
@@ -124,8 +109,8 @@ on:
         description: Append the result to the release notes for this tag
         type: boolean
         default: false
-      # What the match is played on rather than what it plays, so not boxes
-      # on the actions tab. A workflow calling this can name them.
+      # what the match is played on rather than what it plays, so not boxes
+      # on the actions tab
       hash_mb:
         description: The table both sides are given, in MB. 256 is what the engine defaults to, and naming it holds both sides to the same table whatever a future default is.
         type: number
@@ -142,9 +127,6 @@ on:
         description: How long fastchess waits for an engine to answer uci. The engine allocates its table before it answers, which four copies starting at once can take longer over than the ten second default.
         type: number
         default: 20000
-      # Marks this workflow's line in the release notes, so a rerun replaces
-      # its own line. The job below repeats the default, as the expressions
-      # that read the other call inputs do.
       marker:
         description: Identifies this workflow's line in the release notes
         type: string
@@ -154,9 +136,7 @@ permissions:
   contents: read
 
 jobs:
-  # Split out so the match can be skipped in one place when there is nothing
-  # to compare against. A matrix is a list, not a number, so the shard list is
-  # made here and read back with fromJSON.
+  # One place to skip the match when there is nothing to compare against.
   resolve:
     runs-on: ubuntu-latest
     timeout-minutes: 10
@@ -186,8 +166,8 @@ jobs:
         with:
           fetch-depth: 0
 
-      # Before a runner builds anything, and here rather than in plan-shards
-      # because it is this file's ladder that sets the ceiling, not the plan.
+      # here rather than in plan-shards: the ceiling is the number of stages
+      # this file writes out
       - name: Check the test fits the ladder
         env:
           BATCHES: ${{ inputs.batches }}
@@ -239,18 +219,16 @@ jobs:
           max_match_minutes: ${{ inputs.max_match_minutes || 150 }}
 
   # The batch ladder. Actions has no loop and `uses:` is not an expression, so
-  # the stages are written out, and how many there are is the ceiling the job
-  # above checks against. Each waits on the one before and plays only where it
-  # settled nothing, which is the early stop: a decided test stops playing.
+  # the stages are written out. Each plays only where the one before came back
+  # inconclusive, which is the early stop.
   #
-  # Each guard says three things. The verdict is the early stop. `batches` is
-  # the cap the caller asked for, and without it a test still running at its
-  # last batch would start one more, which the book reserved no room for and
-  # every shard of which would fail. `!cancelled()` is there because a shard
-  # that fell over concludes the batch it was in as a failure, which would
-  # otherwise skip the stage after it before its verdict was read. A shard
-  # that fell over is a smaller sample, and the summary it fed still speaks
-  # for the whole test; what stops the ladder is an empty verdict.
+  # `inputs.batches > n` is the cap the caller asked for: without it a test
+  # still running at its last batch would start one more, which the book
+  # reserved no room for. `!cancelled()` is there because a shard that fell
+  # over concludes its batch as a failure, which would otherwise skip the next
+  # stage before its verdict was read. So a shard that fell over does not stop
+  # the ladder, since the summary it fed still speaks for the test; an empty
+  # verdict does.
   #
   # A workflow_call default is not applied to a run started from the actions
   # tab, and the env context is not available to a job that calls a workflow,
@@ -272,10 +250,9 @@ jobs:
       pairs: ${{ fromJSON(needs.resolve.outputs.pairs) }}
       play_timeout: ${{ fromJSON(needs.resolve.outputs.play_timeout) }}
       book: ${{ needs.resolve.outputs.book }}
-      # the seed picks the region of the book each shard plays, not a shuffle.
-      # The run id is one no two runs share; a seed given by hand replays an
-      # earlier run. Every stage is handed the same one, and the batch index
-      # is what keeps them off each other's openings
+      # the region of the book, not a shuffle. A seed given by hand replays a
+      # run. Every stage gets the same one, and the batch index keeps them off
+      # each other's openings
       seed: ${{ inputs.seed || github.run_id }}
       time_control: ${{ inputs.time_control }}
       sprt: ${{ fromJSON(needs.resolve.outputs.sprt) }}
@@ -376,15 +353,14 @@ jobs:
       max_match_minutes: ${{ inputs.max_match_minutes || 150 }}
       startup_ms: ${{ inputs.startup_ms || 20000 }}
 
-  # The line is the last batch that played, since its summary read every pair
-  # the test played and not just its own.
+  # The line is the last batch that played, whose summary read every pair of
+  # the test.
   release-notes:
     needs: [batch1, batch2, batch3, batch4]
-    # A batch that played reports a line whether or not every shard of it
-    # came back, so the line rather than the result is what says a stage
-    # reported. A stage that played and reported nothing is the case to catch:
-    # the coalescing below would fall back to the stage before it, and publish
-    # a figure over part of the test under the whole test's name.
+    # A stage's line rather than its result says it reported, since a batch
+    # with a failed shard still reports. A stage that played and reported
+    # nothing would let the coalescing below fall back to the stage before it
+    # and publish a figure over part of the test.
     if: >-
       !cancelled() && inputs.publish
       && needs.batch1.outputs.line != ''

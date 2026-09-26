@@ -12,8 +12,7 @@ engine:
   dir: "./engines/"
   name: "arche"
   protocol: "uci"
-  # Arche answers "stop" during a search now, but not "ponderhit", so it still
-  # cannot ponder.
+  # Arche does not answer "ponderhit", so it cannot ponder.
   ponder: false
 
   # Arche advertises Hash, in megabytes, a Clear Hash button, a Threads fixed

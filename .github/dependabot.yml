@@ -23,9 +23,8 @@ updates:
     # can write to the repository and the package registry. Dependabot
     # rewrites the sha and the comment together.
     ignore:
-      # The only exception: this action's ref names the rust toolchain to
-      # install, not a version of the action, so a bump would raise the
-      # version the msrv job checks against.
+      # its ref is the toolchain the msrv job checks, not a version of the
+      # action
       - dependency-name: "dtolnay/rust-toolchain"
   - package-ecosystem: "docker"
     directory: "/docker"
