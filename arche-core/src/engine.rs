@@ -423,8 +423,8 @@ impl Ablation {
 
 impl SearchConfig {
     /// The switches a run may name, each beside the function that turns it
-    /// off, in field order. A new switch is a row here and a name in
-    /// `_every_switch_is_named`.
+    /// off, in field order. A switch the table leaves out fails
+    /// `turning_every_switch_off_gives_the_reference`.
     ///
     /// `taint` is not among them: it is a policy with four values rather
     /// than a switch, and `residuals` already takes it.
@@ -542,34 +542,6 @@ impl Default for SearchConfig {
             aspiration: true,
         }
     }
-}
-
-/// A compile error when `SearchConfig` gains a field this does not name.
-/// The tests walk `SWITCHES`, which says nothing about a field the table
-/// never named.
-///
-/// Rustc offers to silence a new field with a `_`, which defeats the
-/// check: decide whether the field is a switch, give it a row in `SWITCHES`
-/// if it is, and name it here either way.
-#[cfg(test)]
-const fn _every_switch_is_named(config: &SearchConfig) {
-    let SearchConfig {
-        taint: _,
-        reverse_futility: _,
-        null_move: _,
-        adaptive_null_move: _,
-        delta_margin: _,
-        see_pruning: _,
-        late_move_reductions: _,
-        deep_reductions: _,
-        late_move_pruning: _,
-        quiet_futility: _,
-        late_move_count: _,
-        reduction_table: _,
-        deep_index_rule: _,
-        move_memory: _,
-        aspiration: _,
-    } = config;
 }
 
 #[cfg(test)]
@@ -3158,12 +3130,12 @@ mod search {
         // at other plies, and the distance reported must not move. Whether
         // a given depth finds this mate under the shortcuts is not monotone
         // in the depth (the late move count loses it at three to five), so
-        // the test asks that no depth disagree and that some depth find it.
+        // the test asks that no depth disagree and that several find it.
         let game =
             Board::from_fen("2rr3k/pp3pp1/1nnqbN1p/3pN3/2pP4/2P3Q1/PPB4P/R4RK1 w - - 0 0").unwrap();
         let mut e = engine(game);
         let mut found = 0;
-        for depth in 3..=6 {
+        for depth in 3..=8 {
             let result = completed(e.search(depth));
             let Some(mate) = result.checkmate_in() else {
                 continue;
@@ -3177,7 +3149,7 @@ mod search {
                 depth
             );
         }
-        assert!(found > 0, "no depth of the four saw the mate");
+        assert!(found > 1, "{found} of the depths saw the mate");
     }
 
     /// What holds `REVERSE_FUTILITY_MARGIN` above the boundary its comment
@@ -3912,7 +3884,6 @@ mod search {
     /// the count itself, since the two arrive in the same shape.
     #[test]
     fn a_search_stopped_by_its_budget_counts_the_iteration_it_gave_up() {
-        let mut bound = 0;
         for limit in [1_000u64, 2_500, 5_000, 7_500, 10_000, 25_000, 50_000] {
             let mut e = engine(Board::new());
             let outcome = e.iterative_deepening_search(
@@ -3922,13 +3893,11 @@ mod search {
             let SearchOutcome::Aborted(Some(result)) = outcome else {
                 panic!("budget {limit}: an unlimited depth under a budget aborts with an answer");
             };
-            bound += 1;
             assert_eq!(
                 result.nodes, limit,
                 "budget {limit}: the search says it spent other than its budget"
             );
         }
-        assert!(bound > 0, "no budget in the sweep bound the search");
     }
 
     #[test]
@@ -5782,12 +5751,42 @@ mod sampling {
     }
 }
 
+/// Moves for teaching the move memories by hand, shared by the census and
+/// ledger tests.
+#[cfg(test)]
+mod taught {
+    use super::AlphaBeta;
+    use crate::play::Play;
+
+    /// A from and to square pair no move in the list uses, for teaching
+    /// the (butterfly indexed) history an entry the list cannot read.
+    pub(super) fn unmade_journey(moves: &[Play]) -> Play {
+        (0u8..64)
+            .flat_map(|from| (0u8..64).map(move |to| (from, to)))
+            .find(|(from, to)| from != to && !moves.iter().any(|m| m.from == *from && m.to == *to))
+            .map(|(from, to)| Play::new(from, to, None, None, false, false))
+            .expect("a list cannot hold every journey")
+    }
+
+    /// Two quiet moves of the position, for teaching the memories.
+    pub(super) fn quiets(e: &AlphaBeta) -> (Play, Play) {
+        let moves = e.board.generate_moves();
+        let mut quiets = moves
+            .iter()
+            .filter(|m| m.capture.is_none() && m.promote.is_none());
+        let first = *quiets.next().expect("a quiet move");
+        let second = *quiets.next().expect("another quiet move");
+        (first, second)
+    }
+}
+
 /// The cutoff census seen from the search: off unless asked for, and a row
 /// reads the node as it stood when it answered. The recorder is driven
 /// directly, with the memories taught by hand, so a row's history column
 /// can be held to a history the test chose.
 #[cfg(test)]
 mod cutoffs {
+    use super::taught::{quiets, unmade_journey};
     use super::{AlphaBeta, Board, Score, SearchConfig};
     use crate::board::fens::SHARP_MIDDLEGAME;
     use crate::census::{self, Class, Cutting, Table};
@@ -5801,27 +5800,6 @@ mod cutoffs {
         let mut e = AlphaBeta::with_table_bytes(Board::from_fen(fen).unwrap(), TABLE_BYTES);
         e.arm(Sampler::<census::Event>::every(1));
         e
-    }
-
-    /// A from and to square pair no move in the list uses, for teaching
-    /// the (butterfly indexed) history an entry the list cannot read.
-    fn unmade_journey(moves: &[Play]) -> Play {
-        (0u8..64)
-            .flat_map(|from| (0u8..64).map(move |to| (from, to)))
-            .find(|(from, to)| from != to && !moves.iter().any(|m| m.from == *from && m.to == *to))
-            .map(|(from, to)| Play::new(from, to, None, None, false, false))
-            .expect("a list cannot hold every journey")
-    }
-
-    /// Two quiet moves of the position, for teaching the memories.
-    fn quiets(e: &AlphaBeta) -> (Play, Play) {
-        let moves = e.board.generate_moves();
-        let mut quiets = moves
-            .iter()
-            .filter(|m| m.capture.is_none() && m.promote.is_none());
-        let first = *quiets.next().expect("a quiet move");
-        let second = *quiets.next().expect("another quiet move");
-        (first, second)
     }
 
     /// An engine nobody asked a census of holds none.
@@ -6028,6 +6006,7 @@ mod cutoffs {
 /// taught by hand.
 #[cfg(test)]
 mod reductions {
+    use super::taught::{quiets, unmade_journey};
     use super::{AlphaBeta, Board, RootBounds, Score};
     use crate::board::fens::SHARP_MIDDLEGAME;
     use crate::census::Table;
@@ -6065,27 +6044,6 @@ mod reductions {
             check: &mut None,
         };
         e.staged_reduction(m, searched, &mut node)
-    }
-
-    /// A from and to square pair no move in the list uses, for teaching
-    /// the history an entry the list cannot read.
-    fn unmade_journey(moves: &[Play]) -> Play {
-        (0u8..64)
-            .flat_map(|from| (0u8..64).map(move |to| (from, to)))
-            .find(|(from, to)| from != to && !moves.iter().any(|m| m.from == *from && m.to == *to))
-            .map(|(from, to)| Play::new(from, to, None, None, false, false))
-            .expect("a list cannot hold every journey")
-    }
-
-    /// Two quiet moves of the position, for teaching the memories.
-    fn quiets(e: &AlphaBeta) -> (Play, Play) {
-        let moves = e.board.generate_moves();
-        let mut quiets = moves
-            .iter()
-            .filter(|m| m.capture.is_none() && m.promote.is_none());
-        let first = *quiets.next().expect("a quiet move");
-        let second = *quiets.next().expect("another quiet move");
-        (first, second)
     }
 
     /// An engine nobody asked a ledger of holds none.
