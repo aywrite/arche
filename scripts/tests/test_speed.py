@@ -21,10 +21,13 @@ SCRIPT = Path(__file__).resolve().parent.parent / "speed.sh"
 
 def fake_engine(directory, name, nps_by_call, nodes=100):
     """An engine that prints a bench whose rate is the next of nps_by_call on
-    every run, and appends its name to a log beside it."""
+    every run, and appends its name to a log beside it. The first rate is
+    listed twice, once for the warmup, so for an engine on one side
+    nps_by_call is the measured runs. An engine on both sides warms up
+    twice and reads one of them."""
     log = directory / "calls.log"
     rates = directory / f"{name}.rates"
-    rates.write_text("\n".join(str(n) for n in nps_by_call) + "\n")
+    rates.write_text("\n".join(str(n) for n in nps_by_call[:1] + nps_by_call) + "\n")
     body = (
         "import pathlib, sys\n"
         f"log = pathlib.Path({str(log)!r})\n"
@@ -119,7 +122,23 @@ def test_the_rounds_alternate_which_side_runs_first(tmp_path):
     assert measured.candidate_nps == [110, 110, 110]
     assert (measured.base_nodes, measured.candidate_nodes) == (100, 100)
     calls = (tmp_path / "calls.log").read_text().split()
-    assert calls == ["base", "candidate", "candidate", "base", "base", "candidate"]
+    # the first two are the warmup
+    assert calls[2:] == ["base", "candidate", "candidate", "base", "base", "candidate"]
+
+
+def test_each_side_warms_up_once_and_the_run_is_thrown_away(tmp_path):
+    # a slow first run on each side, which no round sees
+    base = fake_engine(tmp_path, "base", [100] * 6)
+    candidate = fake_engine(tmp_path, "candidate", [101] * 6)
+    (tmp_path / "base.rates").write_text("50\n" + "100\n" * 6)
+    (tmp_path / "candidate.rates").write_text("50\n" + "101\n" * 6)
+    measured = speed.measure(str(base), str(candidate), rounds=6, depth=1)
+    assert measured.base_nps == [100] * 6
+    assert measured.candidate_nps == [101] * 6
+    assert measured.replaced == []
+    calls = (tmp_path / "calls.log").read_text().split()
+    assert calls[:2] == ["base", "candidate"]
+    assert len(calls) == 14
 
 
 def test_a_loaded_round_is_run_again_at_the_end(tmp_path):
@@ -167,7 +186,7 @@ def test_no_more_than_a_fifth_of_the_rounds_are_run_again(tmp_path):
     measured = speed.measure(str(base), str(candidate), rounds=6, depth=1)
     assert measured.replaced == [(6, 88, 101)]
     assert measured.base_nps == [90, 100, 100, 100, 100, 100]
-    assert len((tmp_path / "calls.log").read_text().split()) == 14
+    assert len((tmp_path / "calls.log").read_text().split()) == 16
 
 
 def test_a_real_change_is_not_a_loaded_round(tmp_path):
@@ -199,7 +218,7 @@ def test_the_report_lists_the_rounds_run_again(tmp_path, capsys):
 
 def test_the_sides_are_told_apart_even_when_they_are_one_binary(tmp_path):
     # an engine measured against itself is the first thing anyone tries
-    engine = fake_engine(tmp_path, "engine", [100] * 4, nodes=100)
+    engine = fake_engine(tmp_path, "engine", [100] * 6, nodes=100)
     measured = speed.measure(str(engine), str(engine), rounds=2, depth=1)
     assert (measured.base_nodes, measured.candidate_nodes) == (100, 100)
 

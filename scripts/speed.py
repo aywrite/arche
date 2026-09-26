@@ -16,7 +16,7 @@ that visits fewer nodes at the same cost each finishes sooner while the
 rate says nothing happened.
 
     speed.py <base binary> <candidate binary> [--rounds N] [--depth D]
-             [--base-ref SHA] [--threshold PCT]
+             [--base-ref SHA] [--threshold PCT] [--loaded PCT]
 
 scripts/speed.sh builds the base commit and calls this.
 """
@@ -123,13 +123,21 @@ def loaded(measured: Measured, cut: float) -> list[int]:
 def measure(
     base: str, candidate: str, rounds: int, depth: int | None, cut: float = LOADED
 ) -> Measured:
-    """Run the rounds, then run again any the machine was loaded for.
+    """Run each side once to warm up, run the rounds, then run again any the
+    machine was loaded for.
+
+    The warmup runs are thrown away. Over 187 of the speed job's runs the
+    first run of a job was 1.13% below its side's median (standard error
+    0.21), and the second 0.10%, so without them the first round leaned
+    towards whichever side went second.
 
     A loaded round is replaced by a new one at the end, rather than dropped,
     so the count stays what was asked for. At most a fifth of the rounds are
     replaced, so load that keeps coming back ends in a wide interval rather
     than a loop. A `cut` of zero replaces nothing."""
     measured = Measured()
+    for binary in (base, candidate):
+        bench(binary, depth)
     # which side each kept round ran first
     base_first: list[bool] = []
 
@@ -284,11 +292,12 @@ def verdict(estimate: Estimate, threshold: float) -> str:
 def summary(measured: Measured) -> list[str]:
     """One row per side and the change under each column.
 
-    The fastest column is there because nothing sharing the machine ever
-    makes a run faster, so each side's best round is its least interfered
-    one. It is a second reading and has no interval, and it counts the runs
-    of replaced rounds too, since the other run of a loaded round can be its
-    side's quietest. When the counts match, the change row leaves nodes and
+    The fastest column is a diagnostic, not a second estimate. Runs do not
+    only come out slow: on the speed job a side's fastest run sat a median
+    1.5% above its own median. The fastest pair has no interval, does not settle as rounds are
+    added, and over the layout-only pull requests it showed more than 2% on
+    three times as many as the paired change did. It counts the runs of
+    replaced rounds too. When the counts match, the change row leaves nodes and
     time empty: the time is then the rate upside down and would say nothing
     the nps cell does not.
     """
