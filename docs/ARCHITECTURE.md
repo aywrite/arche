@@ -112,7 +112,8 @@ archived games, and the code map below says what each one counts.
   a repetition or fifty move draw somewhere down its line. Such a score is
   only true of the path that produced it, which the table needs to know.
   The mate arithmetic lives here too: what scores count as a forced mate,
-  and how one is read back as moves to mate.
+  how one is read back as moves to mate, and the window mate distance
+  pruning leaves a node.
 - **transposition.rs**: The transposition table: a cache of positions
   searched before, keyed by zobrist hash, holding the score and best move
   found last time. Entries are 16 bytes, four to a cache line, replaced by
