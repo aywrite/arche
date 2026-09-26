@@ -248,6 +248,38 @@ def test_a_row_whose_id_opens_with_the_layout_word_is_kept():
     assert [parsed.id for parsed in rows] == ["layouts of the endgame"]
 
 
+def test_a_row_carries_the_pair_term_once_the_run_says_it_is_on():
+    """With a `factors` line the fourth number after the id is the pair term's
+    score, which the row adds outside the divide and the corpus adds to every
+    score as a constant no weight moves."""
+    vector = weights({0: 30})
+    coefficients = [(0, 24), (LAYOUT.start["material"], 1)]
+    fen = "4k3/8/8/8/8/8/8/4K3 w - - 0 1"
+    base = tune.reconstruct(coefficients, vector, LAYOUT)
+    terms = " ".join(f"{slot}:{coefficient}" for slot, coefficient in coefficients)
+    line = f"factors of the pair {base + 7} 24 {len(coefficients)} 7 {terms} {fen}"
+    header, layout, weights_line = extraction([], vector)
+    _, _, rows = tune.parse_terms([header, layout, weights_line, "factors 8 64", line])
+    assert [(parsed.id, parsed.eval, parsed.machine) for parsed in rows] == [
+        ("factors of the pair", base + 7, 7)
+    ]
+    # the same row in a run without the line has a number too many, and the
+    # count it then reads does not match the coefficients it prints
+    with pytest.raises(ValueError, match="says 7 coefficients and prints 2"):
+        tune.parse_terms([header, layout, weights_line, line])
+
+
+def test_a_run_without_the_pair_term_reads_as_before():
+    """Rows extracted while the term was off carry no fourth number and score
+    no pair term."""
+    vector = weights({0: 30})
+    lines = extraction(
+        [row("a", [(0, 24), (LAYOUT.start["material"], 1)], vector)], vector
+    )
+    _, _, rows = tune.parse_terms(lines)
+    assert [parsed.machine for parsed in rows] == [0]
+
+
 def test_a_corpus_line_is_read_the_way_the_engine_reads_epd():
     """Four fields and then operations, so the id is not looked for among the
     words of the position."""

@@ -204,6 +204,11 @@ HEADER_COUNTS = ("positions", "in_check", "unsettled", "drawn", "kept")
 
 LAYOUT = "layout "
 
+# What the line opens with that says the pair term is on, at what rank and
+# scale: `factors 8 64`. Its rows carry the term's score as a fourth number
+# after the count.
+FACTORS = "factors "
+
 
 def check_header(line):
     """Refuse a header this engine did not print, and say what it counted."""
@@ -238,12 +243,13 @@ def trunc_div(numerator, denominator):
     return quotient if numerator >= 0 else -quotient
 
 
-def reconstruct(coefficients, weights, layout):
+def reconstruct(coefficients, weights, layout, machine=0):
     """The evaluation a row states, folded back against the weights.
 
     The material is added outside the divide and not scaled into it. Folding it
     in gives a different integer: `trunc((24 * 1 + -5) / 24)` is 0 where
-    `1 + trunc(-5 / 24)` is 1.
+    `1 + trunc(-5 / 24)` is 1. The pair term is added outside it too, since it
+    is not tapered, and it is the engine's own integer.
     """
     material = 0
     numerator = 0
@@ -253,7 +259,7 @@ def reconstruct(coefficients, weights, layout):
             material += product
         else:
             numerator += product
-    return material + trunc_div(numerator, TOTAL_PHASE)
+    return material + trunc_div(numerator, TOTAL_PHASE) + machine
 
 
 def fold_of(key, folds=FOLDS):
@@ -277,27 +283,32 @@ def phase_bucket(fen):
     return BUCKETS[2]
 
 
-def split_row(words):
+def split_row(words, machine=False):
     """The fields of one `arche terms` row, read from its right hand end.
 
-    A row is `id eval phase n slot:coefficient... fen`. An id can hold spaces
-    (the bench names positions "ruy lopez", and a line with no id is called by
-    its own fen), so the fields are found from the end whose width is fixed:
-    the fen is the last six, the coefficients the run of `slot:coefficient` in
-    front of them, and what is left before the three numbers is the id. The
-    walk back cannot reach into the id because the three numbers carry no
-    colon, and `n` is held against the run so the two ends have to agree.
+    A row is `id eval phase n slot:coefficient... fen`, and `id eval phase n
+    machine slot:coefficient... fen` when the run has a `factors` line. An id
+    can hold spaces (the bench names positions "ruy lopez", and a line with no
+    id is called by its own fen), so the fields are found from the end whose
+    width is fixed: the fen is the last six, the coefficients the run of
+    `slot:coefficient` in front of them, and what is left before the numbers
+    is the id. The walk back cannot reach into the id because the numbers
+    carry no colon, and `n` is held against the run so the two ends have to
+    agree.
     """
-    if len(words) < FEN_FIELDS + 4:
+    numbers = 4 if machine else 3
+    if len(words) < FEN_FIELDS + numbers + 1:
         raise ValueError(f"a row of {len(words)} fields: {' '.join(words)!r}")
     head, fen = words[:-FEN_FIELDS], " ".join(words[-FEN_FIELDS:])
     start = len(head)
     while start > 0 and ":" in head[start - 1]:
         start -= 1
-    if start < 4:
+    if start < numbers + 1:
         raise ValueError(f"a row whose fields do not line up: {' '.join(words)!r}")
-    identifier = " ".join(head[: start - 3])
-    evaluation, phase, count = (int(word) for word in head[start - 3 : start])
+    identifier = " ".join(head[: start - numbers])
+    read = [int(word) for word in head[start - numbers : start]]
+    evaluation, phase, count = read[:3]
+    score = read[3] if machine else 0
     coefficients = []
     for word in head[start:]:
         slot, coefficient = word.split(":")
@@ -306,19 +317,21 @@ def split_row(words):
         raise ValueError(
             f"{identifier} says {count} coefficients and prints {len(coefficients)}"
         )
-    return identifier, evaluation, phase, coefficients, fen
+    return identifier, evaluation, phase, coefficients, fen, score
 
 
 class Row:
     """One position: what the engine said it scored, and what of. Which game
     it belongs to is the corpus's to say, not the extraction's."""
 
-    def __init__(self, identifier, evaluation, phase, coefficients, fen):
+    def __init__(self, identifier, evaluation, phase, coefficients, fen, machine=0):
         self.id = identifier
         self.eval = evaluation
         self.phase = phase
         self.coefficients = coefficients
         self.fen = fen
+        # the pair term's score, which no weight here moves
+        self.machine = machine
 
 
 def parse_terms(lines):
@@ -330,6 +343,7 @@ def parse_terms(lines):
     """
     layout = None
     weights = None
+    machine = False
     rows = []
     for line in lines:
         line = line.strip()
@@ -342,6 +356,14 @@ def parse_terms(lines):
             layout = Layout.of(line)
             continue
         words = line.split()
+        # the line is three words and a row is at least ten, so an id that
+        # opens with the word is still a row
+        if line.startswith(FACTORS) and len(words) == 3:
+            if rows:
+                raise ValueError("a factors line after the rows it is about")
+            int(words[1]), int(words[2])
+            machine = True
+            continue
         if words[0] == "weights":
             if layout is None:
                 raise ValueError(no_layout("the weights line comes first"))
@@ -355,13 +377,15 @@ def parse_terms(lines):
             continue
         if weights is None:
             raise ValueError("a row arrived before the weights line")
-        identifier, evaluation, phase, coefficients, fen = split_row(words)
-        rebuilt = reconstruct(coefficients, weights, layout)
+        identifier, evaluation, phase, coefficients, fen, score = split_row(
+            words, machine
+        )
+        rebuilt = reconstruct(coefficients, weights, layout, score)
         if rebuilt != evaluation:
             raise ValueError(
                 f"{identifier} rebuilds to {rebuilt} and the engine says {evaluation}"
             )
-        rows.append(Row(identifier, evaluation, phase, coefficients, fen))
+        rows.append(Row(identifier, evaluation, phase, coefficients, fen, score))
     if layout is None:
         raise ValueError(no_layout("there is none"))
     if weights is None:
@@ -531,6 +555,7 @@ class Corpus:
         self.rows = kept
         self.weights = np.array(weights, dtype=np.float64)
         self.evals = np.array([row.eval for row in kept], dtype=np.float64)
+        self.machine = np.array([row.machine for row in kept], dtype=np.float64)
         self.results = np.array(
             [labels[row.id].result for row in kept], dtype=np.float64
         )
@@ -576,7 +601,7 @@ class Corpus:
         numerator = np.bincount(rows, values * weights[slots], minlength=len(self))
         rows, slots, values = self.material
         material = np.bincount(rows, values * weights[slots], minlength=len(self))
-        return material + numerator / TOTAL_PHASE
+        return material + numerator / TOTAL_PHASE + self.machine
 
     def integer_scores(self, weights):
         """The same at integer weights with the truncation put back, which is
@@ -592,7 +617,11 @@ class Corpus:
                 ).astype(np.int64)
             )
         numerator, material = totals
-        return material + np.sign(numerator) * (np.abs(numerator) // TOTAL_PHASE)
+        return (
+            material
+            + np.sign(numerator) * (np.abs(numerator) // TOTAL_PHASE)
+            + self.machine.astype(np.int64)
+        )
 
     def scatter(self, per_row):
         """A per-row quantity spread back over the slots: the gradient of
@@ -809,6 +838,7 @@ def objective_for(corpus, mask, k, start, penalty, frozen):
         material_values[material_picked],
     )
     size = int(np.sum(mask))
+    machine = corpus.machine[mask]
 
     def scores_of(weights):
         numerator = np.bincount(
@@ -819,7 +849,7 @@ def objective_for(corpus, mask, k, start, penalty, frozen):
             material_part[2] * weights[material_part[1]],
             minlength=size,
         )
-        return material + numerator / TOTAL_PHASE
+        return material + numerator / TOTAL_PHASE + machine
 
     def objective(weights):
         scores = scores_of(weights)
