@@ -1,189 +1,142 @@
 # Instruments
 
-Six measurements ask what the engine gave up rather than how large a tree it
-walked. Five are of the search: four are arguments of their own, `residuals`,
-`cutoffs`, `reductions` and `effort`, and the fifth is the bench's `audit`
-word. The sixth, `terms`, is of the evaluation. Each has a section here saying
-what it answers and how to read what it prints, and the last section is the
-offline harness under `scripts/` that fits and scores the weights `terms`
-states.
+These measurements ask what the engine gave up rather than how large a tree it
+walked. `residuals`, `cutoffs`, `reductions` and `effort` are arguments of their
+own and measure the search, as does the bench's `audit` word. `terms` measures
+the evaluation, and the last section is the offline harness under `scripts/`
+that fits and scores the weights `terms` states.
 
-[DEVELOPMENT.md](DEVELOPMENT.md) has the bench itself, along with the build,
-the tests and everything else a change needs before it is committed. Nothing
-in this file is needed for that.
+[DEVELOPMENT.md](DEVELOPMENT.md) has the bench itself and everything else a
+change needs before it is committed. Nothing in this file is needed for that.
 
-Three of the five answer by asking the reference, `SearchConfig::reference()`,
-which is alpha-beta with every shortcut off. DEVELOPMENT.md's bench section
-says where the default parts company with it.
+`residuals` and `reductions` label what they sample by asking the reference,
+`SearchConfig::reference()`, which is alpha-beta with every shortcut off, and
+`terms` uses the reference's quiescence. DEVELOPMENT.md says where the default
+parts company with it.
 
 Every setting below is optional and takes its default when the line leaves it
-out. A setting named with nothing after it is refused by name instead, as
-`effort 4 cap` is refused with `cap: no value`, and so is one named twice. A
-run takes minutes, and one started at a default nobody typed would spend them
-answering a question that was not asked.
+out. A setting named with nothing after it is refused by name, as `effort 4
+cap` is refused with `cap: no value`, and so is one named twice: a run takes
+minutes, and one started at a default nobody typed answers a question that was
+not asked.
+
+All of these print to standard output; redirect it to keep a run. The four
+arguments and `terms` print a row per sample, whitespace separated with the fen
+last so a row parses left to right, under a header that states what the run
+used, so it can be rerun from what it printed.
 
 ## What the shortcuts cost in accuracy
 
-The bench says how much of the tree a shortcut removes. It cannot say how
-often the shortcut was wrong to remove it, and that is the question
-`arche residuals` answers:
+The bench says how much of the tree a shortcut removes. It cannot say how often
+the shortcut was wrong to remove it, and that is what `arche residuals`
+answers:
 
 ```
 target/release/arche residuals [depth] [every <n>] [cap <n>] [epd <file>] [taint refuse|trust|skip|rule50]
 ```
 
-It searches the same suite the bench does unless `epd` names another file,
-samples the nodes reverse
-futility and the null move pass answered, and then asks
-`SearchConfig::reference()` what each of those positions is really worth.
-Those are the two of the default's shortcuts that answer a whole
-node, which is what leaves a reference something to be asked about. The
-delta margin and the losing capture skip pass over a move in quiescence
-rather than answering a node, and what trusting the late move reduction's
-scout costs, like what late move pruning's skip writes off, is the
-reduction ledger's question further down.
+It searches the bench's suite, or the one `epd` names, samples the nodes
+reverse futility and the null move pass answered, and then asks the reference
+what each of those positions is really worth. Those are the two shortcuts that
+answer a whole node, which is what leaves the reference something to be asked.
+The quiescence skips pass over a move rather than answering a node, and what
+the late move reduction and pruning write off is the reduction ledger's
+question further down.
 
-What the run is read for is the crossing. A shortcut returns a lower bound
-and claims it clears beta, so a claim well above what the position is worth
-is still a sound fail high as long as the reference agrees the node fails
-high; what is unsound is a reference answer below the beta that was cleared,
-because the node was cut off and should not have been. The crossing is
-`reference < beta`, strictly, since an answer equal to beta is a fail high
-the shortcut was entitled to. Beside it the residual, the reference's answer
-less the claim, says how large the errors the crossings come from run.
+The run is read for the crossing. A shortcut returns a lower bound and claims
+it clears beta, so a claim well above what the position is worth is still a
+sound fail high as long as the reference agrees the node fails high. What is
+unsound is a reference answer below the beta that was cleared. The crossing is
+`reference < beta`, strictly, since an answer equal to beta is a fail high the
+shortcut was entitled to. The residual beside it, the reference's answer less
+the claim, says how large the errors run.
 
 The second label is the overstatement, `claimed > reference`, strictly: the
-value the shortcut handed up was more than the position is worth. It is
-distinct from the crossing. A shortcut can clear beta rightly and still
-overstate, and the cost then falls on the parent rather than at the node: a
-child's claim arrives at or below the parent's alpha and never raises it,
-but it becomes the parent's fail-soft best when no move does better, and the
-ceiling the parent stores is then one too low. The two labels are counted
-independently and a row can carry either without the other.
+value handed up was more than the position is worth. A shortcut can clear beta
+rightly and still overstate, and the cost then falls on the parent: the child's
+claim never raises the parent's alpha, but it becomes the parent's fail-soft
+best when no move does better, and the ceiling the parent stores is then too
+low. The two labels are counted independently.
 
-Each sample is a row of `kind depth window halfmove beta eval_beta claimed
-reference delta crossed overstated fen`, whitespace separated with the fen
-last so a row parses left to right. The window is `zw` or `open`, read from
-alpha and beta at the node: the fuller pv, cut and all classification needs
-the node's outcome, which a sample taken at a cutoff cannot know. Both
-shortcuts are refused at an open window as well as where beta is still the
-root's, so the column reads `zw` on every row the search takes. It is
-kept so that a row states the window it was taken under, and so that a
-change to the exemption shows in it. The halfmove column is the fifty
-move counter, which travels in the fen too and is pulled out so rows filter
-on it without a fen being parsed.
-Nothing is written to a file; redirection is the file mechanism here as
-everywhere else in the tooling.
+Each row is `kind depth window halfmove beta eval_beta claimed reference delta
+crossed overstated fen`. The window is `zw` or `open`, read from alpha and beta
+at the node (the pv, cut and all classification needs the node's outcome, which
+a sample taken at a cutoff cannot know). Both shortcuts are refused at an open
+window, so every row reads `zw`; the column stays so that a change to the
+exemption shows in it. The halfmove column is the fifty move counter, pulled
+out of the fen so rows filter on it without parsing one.
 
 One kind is not a shortcut. A `shadow_futility` row is a reverse futility
 candidate: a node where every gate but the margin test passed and the
-evaluation stood at or above beta, recorded whether or not the test fired.
-The fired rows alone cannot price a tighter margin, because every one of
-them stood a whole margin above beta, so the region a tighter margin would
-newly fire on is empty in them. A shadow row claims the same
-`eval - 100 * depth` the live kind records, and the two therefore agree on
-a node that fired (a pair only a run at `every 1` can show: the salts keep
-the kinds' kept sets apart at coarser rates). On a candidate the margin
-declined, the claim sits below the beta beside it, and the crossing then
-says whether a margin firing there would have been wrong. Nothing was
-handed up on a shadow row, so its overstatement reads the same way: what a
-margin firing there would have claimed too much. The candidates
-are the ones the margin test reads: a node answered from the table never
-reaches it, so the population is conditioned on a table miss, for the
-shadow exactly as for the live kind.
+evaluation stood at or above beta, recorded whether or not the test fired. The
+fired rows alone cannot price a tighter margin, because every one of them stood
+a whole margin above beta. A shadow row claims the same `eval - 100 * depth`
+the live kind does, so on a candidate the margin declined the claim sits below
+beta, and the crossing says whether a margin firing there would have been
+wrong. A node answered from the table never reaches the margin test, so the
+population is conditioned on a table miss, for the shadow as for the live kind.
 
-The run ends with a line for each kind at each depth: the count, the
-crossings and their rate, the overstatements, the mate references, then the
-minimum, median, ninetieth, ninety-ninth and maximum of the deltas. By depth
-and not pooled over the depths, because the margin a shortcut risks grows
-with the depth left and the depths are reached in wildly different numbers,
-so a pooled rate is the shallowest depth's rate wearing every depth's name.
+The run ends with a line for each kind at each depth: the count, the crossings
+and their rate, the overstatements, the mate references, then the minimum,
+median, ninetieth, ninety-ninth and maximum of the deltas. It is not pooled
+over depths, because the margin a shortcut risks grows with the depth left and
+the depths are reached in wildly different numbers, so a pooled rate is the
+shallowest depth's.
 
 A mate reference is counted in the `mates` column and left out of the
-percentiles. Its delta is not a number of pawns, and the mate distance the
-replay reports counts from the replay's own root while the claim's counts
-from the root of the recorded search, so the two are not measured from the
-same place. The two labels survive all of that and are what such a row is
-read for: a mate score is above every eval or below every eval, which is
-all that comparing it with beta, or with the claim, asks. So a claim above
-a mated reference counts as an overstatement and a claim below a mating one
-does not.
+percentiles: its delta is not a number of pawns, and the replay counts mate
+distance from its own root. The labels still hold, since a mate score is above
+or below every eval, which is all comparing it with beta or the claim asks.
 
 The rate is a hash and not a counter. A node is sampled when
 `position_key ^ salt(kind) ^ depth * odd` falls in the first `1/n` of the
-range, so `every 200` takes about one node in two hundred and takes the same
-nodes whatever order the search reached them in. A counter over the stream
-picks nodes by when they were visited, and a change to the tree then moves
-the membership in ways that read as a shift in the distribution. Nothing is
-drawn: two runs of the same command still print the same rows.
+range, so `every 200` takes about one node in two hundred, and takes the same
+nodes whatever order the search reached them in. A counter would pick nodes by
+when they were visited, and a change to the tree would then move the
+membership in ways that read as a shift in the distribution. Two runs of the
+same command print the same rows. Rows from before hash sampling landed sample
+different nodes and are not a baseline for rows from after it.
 
 The header states `events`, every node the shortcuts answered, beside
-`records`, the ones the run kept. That is the denominator, and a crossing
-rate cannot be read without it: a zero over four hundred records is not the
-same statement as a zero over four hundred thousand events, and at a rate
-low enough to finish in minutes the two counts run three orders apart. A
-rate of zero at a low sampling rate is not a rate of zero. Raise the rate,
-or read the events count and say how small a rate the run could have seen.
+`records`, the ones kept. A crossing rate cannot be read without that
+denominator: a zero over four hundred records is not a zero over four hundred
+thousand events. Raise the rate, or say from the events how small a rate the
+run could have seen.
 
-The buffer holds ten thousand samples unless `cap <n>` asks for another,
-and the header says when it had to drop some. A cap off the default is
-stated there too, so a run can be rerun from what it printed. Past the cap
-it keeps the smallest keys rather than the first arrivals, which is a
-uniform draw from the whole run
-and is the same draw whichever order the run met the nodes in. That holds
-for the set of keys and not for what sits behind a repeated one: a deepening
-search revisits a position at a depth under a kind, so keys tie, and the
-samples behind a tie differ in their beta because they are the node's first
-answer and its second. Which member of a tied group
-survives the cap is whichever the heap surfaces, so a run offering the same
-events in another order can keep the other member.
+The buffer holds ten thousand samples unless `cap <n>` asks for another, and
+the header says when it had to drop some. Past the cap it keeps the smallest
+keys rather than the first arrivals, which is a uniform draw from the whole run
+and the same draw in any order. That holds for the set of keys and not for
+what sits behind a repeated one: a deepening search revisits a position at a
+depth, so keys tie, and which member of a tied group survives the cap depends
+on the order. The kinds share the buffer, so past the cap each keeps a share in
+proportion to its volume, and the shadow kind's is the largest; a run that
+wants the live kinds whole raises the cap. The events count counts offers, so a
+fired reverse futility node counts twice, once live and once shadow.
 
-`epd <file>` searches a suite of its own instead of the bench's, in the
-format `bench.epd` is written in, and the header names the file the way it
-names a cap off the default. That is what lets a threshold be chosen on one
-set of positions and read back on another: a margin fitted on the bench's
-eighteen and then reported as an improvement to the bench is circular, and
-a held-out file is the answer. `arche-core/tactics.epd` is three hundred
-positions the bench does not hold. A file that will not open, holds no
-position, or holds one the board will not take is refused rather than
-searched. The reduction ledger takes the same word, for the same reason;
-the cutoff census does not, because a census describes a tree rather than
-choosing a number off it.
+`epd <file>` searches a suite of its own instead of the bench's, in the format
+`bench.epd` is written in, and the header names it. That is what lets a
+threshold be chosen on one set of positions and read back on another: a margin
+fitted on the bench's eighteen and reported as an improvement to the bench is
+circular. `arche-core/tactics.epd` and `arche-core/strategy.epd` are positions
+the bench does not hold. A file that will not open, holds no position, or holds
+one the board will not take is refused. The reduction ledger, `effort` and
+`terms` take the same word on the same terms.
 
-The kinds share the one buffer. Keys are uniform whatever the kind, so past
-the cap each kind keeps a share in proportion to its volume, and the shadow
-kind's volume is the largest by construction; a calibration run that wants
-its live strata whole raises the cap rather than reasoning from a crowded
-one. The events count in the header counts offers, so a fired reverse
-futility node contributes twice, once live and once shadow.
+The replay waits until the suite is finished and runs on an engine and a table
+of its own, cleared before every sample, because a reference search inside the
+measured one would store entries in the table the measured search reads.
 
-The recording and the replay never overlap. A reference search run inside the
-measured one would store reference entries in the table the measured search
-is reading and change the play being measured, so the replay waits until the
-suite is finished and runs on an engine and a table of its own. That table is
-cleared before every sample, so no sample's reference answer is read from
-another sample's entries.
+The fen carries the fifty move counter and not the path, so the replay cannot
+see a repetition that needs moves made before the node: the reference value is
+the answer to the position as a diagram, and a residual from deep in a shuffle
+is read with care. The taint policy differs between the phases too: the
+recording runs whatever it was given, `rule50` by default, while the reference
+refuses every tainted cutoff, so a crossing on a row with a high halfmove count
+can be the two policies disagreeing about a draw.
 
-The known limitation is in the fen. It carries the fifty move counter and not
-the path, so the replay cannot see a repetition that needs moves made before
-the node, and the reference value is the reference's answer to the position
-as a diagram. That is the simplification every epd suite makes, and it means
-a residual from a position deep in a shuffle is read with more care than one
-from a middlegame. The taint policy differs across the two phases as well:
-the recording runs whatever the command was given, `rule50` by default,
-while the reference refuses every tainted cutoff, so a crossing on a row with
-a high halfmove count can be the two policies disagreeing about a draw rather
-than the shortcut being wrong.
-
-Rows from before the hash sampling landed do not compare with rows from
-after it. The two runs sample different nodes, so a distribution from one is
-not a baseline for the other; rerun the command rather than reading an old
-report next to a new one.
-
-The command is an argument and not a uci command. Like the bench it is a
-measurement rather than a move, and unlike the bench nothing about a live
-session wants it: it searches the suite twice over and takes minutes at the
-depths worth running it at.
+The command is an argument and not a uci command: nothing about a live session
+wants it, and it takes minutes at the depths worth running it at.
 
 ## Which move cuts a node off
 
@@ -194,70 +147,51 @@ which moves are doing the saving, and that is what `arche cutoffs` records:
 target/release/arche cutoffs [depth] [every <n>] [cap <n>]
 ```
 
-It searches the same suite the bench does, under the default configuration,
-and samples the full width nodes as they answer: one event per node, taken
-at the two places a node returns out of the move loop, the cutoff and the
-loop running out. Both outcomes are recorded at the same rate on purpose.
-A cutoff censors every move ordered after it, which is what makes a raw
-history count biased (a move ordered early gets chances a move ordered late
-never does), and a stream of cut nodes alone would reproduce exactly the
-censoring the census exists to measure. Quiescence and the root are out of
-scope: quiescence cuts on capture order, and the root searches every move.
+It searches the bench's suite under the default configuration and samples the
+full width nodes as they answer: one event per node, at the cutoff or at the
+loop running out. Both outcomes are recorded at the same rate on purpose. A
+cutoff censors every move ordered after it, which is what biases a raw history
+count, and a stream of cut nodes alone would reproduce that censoring.
+Quiescence and the root are out of scope: quiescence cuts on capture order, and
+the root searches every move.
 
-Each event is a row of `depth window check outcome generated searched index
-class history history_max scored tt eval_beta cost reduced fen`, whitespace
-separated with the fen last so a row parses left to right. A `cut` row
-names the cutting move's place among the searched moves (`index`, 0 for a
-table move searched first), its `class` (`table`, `capture`, `promotion`,
-`killer` or `quiet`, material first, so a capture that is also a killer is
-a capture), the history table's score for it (`history`, quiet moves only
-and signed, since an entry is a rate and a move tried more often than it
-cuts sits under zero), and whether its answer came through the reduced
-scout (`reduced`); a `held` row prints `-` in those four columns rather
-than moving the others.
-`generated` and `searched` are what the list held and what the loop made:
-the legal count is unknowable without making every move, so the censored
-count is the reader's subtraction, and a node its table move cut before
-anything was generated says `generated 0`. `history_max` is the largest
-history score among the generated quiets, clamped at zero, the denominator
-`history` is read against, since the raw number moves with what the search
-has learned since. It is 0 when the table has marked every one of them
-down, and a row whose `history` is negative is read against nothing.
-`scored` says whether the staged ordering ever scored the quiet band at
-this node, or the front answered first. `tt` is what the probe gave the
-node: `miss`, `move`, or `score_only` for a hit whose move was not
-playable here. `eval_beta` is the
-static evaluation less beta, computed at record time for kept events alone;
-the column is exact rather than a cache read, and evaluating only the
-sampled nodes is what keeps an eval away from the nodes the measured search
-never evaluated. `cost` is the nodes spent under the node, the counter at
-its answer less the counter at its entry.
+Each row is `depth window check outcome generated searched index class history
+history_max scored tt eval_beta cost reduced fen`. A `cut` row names the
+cutting move's place among the searched moves (`index`, 0 for a table move
+searched first), its `class` (`table`, `capture`, `promotion`, `killer` or
+`quiet`, material first, so a capture that is also a killer is a capture), the
+history table's score for it (`history`, quiet moves only and signed, since a
+move tried more often than it cuts sits under zero), and whether its answer came
+through the reduced scout (`reduced`). A `held` row prints `-` in those four
+columns.
 
-The sampling is the residuals command's mechanism with a salt of its own: a
-hash gate over the position key and the depth at an `every <n>` rate, in
-front of a capped reservoir that keeps the smallest keys of the whole run.
-Two runs print the same rows, and a change that reorders the tree without
-changing what is in it samples the same nodes. The header states `events`
-beside `records` for the residuals header's reason: the rows are a share of
-the events, and a share cannot be read without its denominator. Every full
-width node the move loop answers is an event, so the stream runs far denser
-than the shortcut sampler's, and the deepest nodes are the rarest in it; a
-run that wants them well sampled lowers `every` or raises `cap` rather than
-reasoning from a handful of rows.
+`generated` and `searched` are what the list held and what the loop made; the
+censored count is the reader's subtraction, and a node its table move cut
+before anything was generated says `generated 0`. `history_max` is the largest
+history score among the generated quiets, clamped at zero, which is what
+`history` is read against; it is 0 when every one of them is marked down.
+`scored` says whether the staged ordering ever scored the quiet band at this
+node. `tt` is what the probe gave: `miss`, `move`, or `score_only` for a hit
+whose move was not playable here. `eval_beta` is the static evaluation less
+beta, computed at record time for kept events alone, so the measured search
+never evaluates a node it would not have. `cost` is the nodes spent under the
+node.
+
+The sampling is the residuals mechanism with a salt of its own, and the header
+states `events` beside `records` for the same reason. Every full width node the
+move loop answers is an event, so the stream is far denser than the shortcut
+sampler's and the deepest nodes are the rarest in it; a run that wants them
+lowers `every` or raises `cap`.
 
 The run ends with a line per depth: the records, the cut rate, the share of
-cuts at index 0, at 1 to 3 and past 3, the mean moves searched at cut nodes
-and at held nodes, the class shares, and the share of cut nodes whose quiet
-band was never scored. The rows are the product; the summary is a sanity
-read.
+cuts at index 0, at 1 to 3 and past 3, the mean moves searched at cut and at
+held nodes, the class shares, and the share of cut nodes whose quiet band was
+never scored. The rows are the product; the summary is a sanity read.
 
-Recording changes nothing. The census is armed only by the command, an
-engine without one searches exactly the tree it searched before there was
-a census at all, and an armed engine's node counts equal a disarmed one's
-position by position, which
-`recording_leaves_the_measured_search_where_it_was` in
-`arche-core/src/census.rs` asserts of the armed engines themselves. The
-pinned node counts cover the disarmed default and the reference.
+Recording changes nothing: an armed engine's node counts equal a disarmed one's
+position by position, which `recording_leaves_the_measured_search_where_it_was`
+in `arche-core/src/census.rs` asserts. The residuals, reductions and effort
+recorders carry a test of the same name.
 
 ## What trusting a reduced scout costs
 
@@ -268,286 +202,183 @@ buried, and that is what `arche reductions` measures:
 target/release/arche reductions [depth] [every <n>] [cap <n>] [epd <file>]
 ```
 
-It searches the same suite the bench does, under the default configuration,
-and samples the reduced scouts as they answer: one event per sampled scout,
-taken where the scout's answer comes back. A scout that fails low is
-trusted, and the move it answered for is never searched at the depth the
-node has. A scout that fails high has earned the full depth, so its cost is
-the scout it wasted rather than a wrong answer, and it is never replayed;
-the fail highs stay in the stream at the same rate all the same, because
-they are the denominator a reduction policy's propensities are read
-against.
+It searches the suite under the default configuration and samples the reduced
+scouts as they answer. A scout that fails low is trusted, and its move is never
+searched at the node's depth. A scout that fails high has earned the full
+depth, so its cost is the wasted scout rather than a wrong answer, and it is
+never replayed; the fail highs stay in the stream at the same rate because they
+are the denominator a reduction policy is read against.
 
-The label on a fail low comes from a replay, run after the suite on the
-residuals replay's terms exactly: the reference, with a table of its own
-cleared before every sample and no clock. The fen on a row is the position
-the reduced move left, so its side to move is the side the move was played
-against. The replay searches it to the node's depth less one, which is the
-depth the move was denied, over the full window, and the answer is negated
-to the reducing node's side before it is read. Strictly above the alpha
+A fail low is labelled by a replay under the reference, on the residuals
+replay's terms. The fen on a row is the position the reduced move left, so its
+side to move is the side the move was played against. The replay searches it to
+the node's depth less one (the depth the move was denied) over the full window,
+and negates the answer to the reducing node's side. Strictly above the alpha
 the scout was read against is `harmful`: the full search would have raised
-alpha on a move the scout wrote off. Anything else is `harmless`. The fen
-carries the fifty move counter and not the path, with everything the
-residuals section says that costs.
+alpha on a move the scout wrote off. Anything else is `harmless`.
 
-Each event is a row of `depth window index searched generated history
-history_max killer tt eval_beta alpha_gap alpha scout cost reference label
-reduction fen`, whitespace separated with the fen last so a row parses left
-to right. `depth` is the reducing node's, its check extension included.
-`index`, `searched`, `generated`, `history` and `history_max` are the
-census's columns, read at the decision, `history` signed and `history_max`
-clamped at zero as they are there. `history_max` is the one of them the
-node holds rather than reads afresh: it is walked at the node's first
-gated or staged move and read back for the rest, exactly as the gate
-reads it, so a row says the largest the score was read against and not
-the largest by the time the staging ran. `killer` says whether the move
-stood in a killer slot, and `tt` is the census's three-state. Every
-reduced move is quiet, so `history` is never priced by a class instead.
-`eval_beta` and `alpha_gap` are the node's own static evaluation against
-its two bounds, computed at record time for kept events alone by stepping
-the move back and replaying it, for the census's reason: an eval forced at
-every scout to fill a column is not the engine being measured. `alpha` is
-the bound the scout was asked about, `scout` is `low`, `high` or
-`skipped`, and `cost` is the nodes the scout spent. A fail high prints
-`-` in the `reference` and `label` columns rather than moving the others.
+Each row is `depth window index searched generated history history_max killer
+tt eval_beta alpha_gap alpha scout cost reference label reduction fen`. `depth`
+is the reducing node's, its check extension included. `index`, `searched`,
+`generated`, `history`, `history_max` and `tt` are the census's columns, read
+at the decision; `history_max` is read once at the node's first gated or staged
+move and held, as the gate holds it. `killer` says whether the move stood in a
+killer slot. `eval_beta` and `alpha_gap` are the node's static evaluation
+against its two bounds, computed at record time for kept events alone. `alpha`
+is the bound the scout was asked about, `scout` is `low`, `high` or `skipped`,
+and `cost` is the nodes the scout spent. A fail high prints `-` in the
+`reference` and `label` columns.
 
-The third outcome word is the skipping rules'. A move the model prices in
-its deadest band at depth four and up, and a quiet move at depth one to
-three that either shallow rule declines, are never scouted at all, so a
-sampled skip is recorded where the loop passes it over: the same features,
-a cost of zero and a reduction of zero. Its `searched` count stands one past
-the index, as a scouted row's does, although the move was never searched:
-the column is the attention model's searched feature. The model's own skips
-read that value; a shallow rule's skip reads the index, which the row
-carries beside it. A ledger printed before 25 September 2026 has the index
-there instead. The replay treats a skipped row as it treats a fail
-low, since what was denied is the same full depth search. The search never
-makes a skipped move, so its legality is unknown at the decision; the
-recorder makes and unmakes it around the record alone, and a move that
-turns out illegal is not recorded, because the skip denied it nothing.
+`skipped` is the pruning rules'. A move the attention model prices in its
+deadest band at depth four and up, and a quiet at depth one to three that
+either shallow rule drops, are never scouted, so a sampled skip is recorded
+where the loop passes it over, with a cost and a reduction of zero, and
+replayed as a fail low would be. Its `searched` count stands one past the
+index, as a scouted row's does, because that is the model's feature (ledgers
+printed before 25 September 2026 have the index there instead). The recorder
+makes and unmakes the skipped move around the record, and a move that turns
+out illegal is not recorded, because the skip denied it nothing.
 
-Which family a skipped row came from is its depth. The model decides from
-four and both shallow rules stop at three, so a skipped row at depth one,
-two or three is a shallow rule's and one at four or more is the model's,
-and a row at one or two carries no scout beside it at its depth because
-nothing scouts there. The index says the same thing a second way: the
-model's skips are never under the late move threshold of four, and a
-shallow rule's are never under one, since the node's first searched move
-is exempt. Which of the two shallow rules took a row the ledger does not
-say, and the two overlap on the same moves, so an ablation is what
-separates them.
+A skipped row at depth one to three is a shallow rule's and one at four or more
+is the model's, since the model decides from four and both shallow rules stop at
+three. The ledger does not say which shallow rule took a row, and the two
+overlap on the same moves, so an ablation (`effort`) is what separates them.
 
-A depth one row is the one place the replay's counterfactual is not
-exact. `Event::replay_depth` in `arche-core/src/reduction.rs` is
-`depth - 1` floored at one, so a skip at depth one asks the replay for a
-search at depth one rather than for quiescence. The floor is forced
-rather than chosen: `residual::reference_answer` deepens to the depth it
-is given and has no depth zero form, so quiescence is not an answer it
-can be asked for. What that costs is comparability. A depth one row is
-labelled against a deeper search than the skip denied, where a depth two
-and a depth three row are labelled against the search the skip actually
-denied, so the harmful rate printed at depth one is not the same
-measurement as the ones beside it. Read the three rates one at a time and
-do not pool them into a rate for the rule. Which way the depth one rate
-is biased by the extra ply has not been measured.
+A depth one row is labelled against a deeper search than the skip denied.
+`Event::replay_depth` in `arche-core/src/reduction.rs` floors `depth - 1` at
+one, because `residual::reference_answer` has no depth zero form, so quiescence
+is not an answer it can give. Rows at depths two and three are labelled against
+the search actually denied. So read the three shallow rates one at a time and
+do not pool them. Which way the extra ply biases the depth one rate has not
+been measured.
 
-The sampling is the census's, salt and header and all. What differs is
-the density. Only a late quiet move at a node deep enough to reduce
-offers a scout, so the stream runs sparser than the census's rather than
-denser, and every fail low kept costs a reference search in the replay.
-A run that wants one stratum whole lowers `every` and pays for it in
-replays.
+The sampling is the census's. Only a late quiet at a node deep enough to reduce
+offers a scout, so the stream is sparser than the census's, and every fail low
+kept costs a reference search in the replay. The attention model was fitted on
+a bench run, so a threshold chosen off these rows is read back on
+`arche-core/tactics.epd` or `arche-core/strategy.epd` rather than on the bench.
 
-`epd <file>` searches a suite of its own instead of the bench's, on the
-residuals argument's terms exactly, and the header names the file the way
-it names a cap off the default. A threshold chosen off these rows and then
-reported as an improvement to the same positions has checked nothing, and
-the ledger's own thresholds are the case in point: the attention model was
-fitted on a bench run, so a candidate for either of its operating points is
-read on `arche-core/tactics.epd` or `arche-core/strategy.epd` rather than
-on the eighteen. A file that will not open, holds no position, or holds one
-the board will not take is refused rather than searched.
-
-The run ends with a line per depth: the scouts (the skipped rows are
-counted apart, so the fail low share keeps its denominator), the skipped
-count, the fail low share, the replayed count, the harmful count and
-rate, and the harmful rate split by
-index band (4 to 7, 8 to 15, 16 and past) and by history fraction (zero,
-under a tenth, under half, half and up, and a fifth cell for a move the
-table has marked down), which are the cells a reduction policy would be
-fit on. The marked down cell is printed after the four rather than at the
-foot of them, so a line printed before the history went signed reads the
-same in its first four cells as one printed after. A cell under thirty
-replayed rows prints its counts in place of a rate, and the line's own
-rate holds to the same rule: a percentage over a handful of rows reads as
-a finding and is noise.
-
-Recording changes nothing, on the census's terms and held to them the
-same way: `recording_leaves_the_measured_search_where_it_was` in
-`arche-core/src/reduction.rs` searches each of its positions twice, once
-with the ledger armed and once without, and holds the two counts equal.
+The run ends with a line per depth: the scouts (skipped rows are counted apart,
+so the fail low share keeps its denominator), the skipped count, the fail low
+share, the replayed count, the harmful count and rate, and the harmful rate
+split by index band (4 to 7, 8 to 15, 16 and past) and by history fraction
+(zero, under a tenth, under half, half and up, then a fifth cell for a move the
+table has marked down, printed last so older lines read the same in their first
+four). A cell under thirty replayed rows prints its counts instead of a rate,
+and the line's own rate prints `-`: a percentage over a handful of rows reads
+as a finding and is noise.
 
 ## What a rule frees, and where the freed effort goes
 
-The three above each describe one tree. A saving is a difference between
-two, so no row any of them writes can carry one: `residuals` prices a
-shortcut's error and carries no effort column, and the `cost` columns
-`cutoffs` and `reductions` do carry, say what one configuration spent. That
-is the gap `arche effort` fills:
+The three above each describe one tree. A saving is a difference between two,
+so none of their rows can carry one, and that is what `arche effort` does:
 
 ```
 target/release/arche effort [depth] [every <n>] [cap <n>] [epd <file>] [off <switch>[,<switch>]] [budget <n>]
 ```
 
-It searches the suite twice. The candidate side is `SearchConfig::default()`
-and the baseline is the default with the switch `off` names set false, and
-then the two runs are joined by the node.
+It searches the suite twice, once under `SearchConfig::default()` (the
+candidate, `on`) and once with the switches `off` names turned off (the
+baseline), and joins the two runs by the node. The join works because the
+sampling key is a function of the node and nothing about the run: both sides
+record under one lane, so a key one side holds and the other does not is a
+fact about the trees rather than the buffers.
 
-The join works because the sampling key is a function of the node and
-nothing about the run. Both sides record under one lane, so wherever both
-reached a position at a depth they kept it or dropped it alike, and a key
-one side holds and the other does not is a fact about the trees rather than
-about the buffers. A counter over the stream would take two unrelated sets
-and the join would be empty.
+`off` names a switch from `SearchConfig::SWITCHES` in `engine.rs`, and a run
+naming anything else is refused and told what a switch may be. A field the
+table leaves out fails `turning_every_switch_off_gives_the_reference`.
+`taint` is not among them: it is a policy with four values, and `residuals` takes it.
 
-`off` names a `SearchConfig` field and is refused against a table of them
-rather than being given a flag each. The table sits beside the fields in
-`engine.rs` and costs an edit at every new rule. A compile error is what makes
-that edit happen: beside the table is a destructuring that names every field,
-and a field it does not name fails there. The names are the fields, and a run
-that names anything else is refused and told what a switch may be. `taint` is
-not among them: it is a policy with four values rather than a switch, and
-`residuals` takes it already.
-
-`off` may name two switches joined by a comma, `off late_move_count,quiet_futility`,
-and the baseline then has both off. Read against the two singles and the
-null, a pair says whether two rules' savings multiply, as rules acting on
-unrelated parts of the tree would, or whether the pair frees more or less
-than that. A pair is one word because a keyword sent twice reads the first,
-so `off` twice is refused rather than read as a pair. The same switch twice
-is refused as well, since it would be the single run under a pair's name, and
-so is a third. Where one switch of a pair is only ever
-asked under the other (`adaptive_null_move` under `null_move`;
-`deep_reductions`, `late_move_pruning`, `reduction_table` and
+`off` may name two switches joined by a comma, `off
+late_move_count,quiet_futility`, and the baseline then has both off. Read
+against the two singles and the null, a pair says whether two rules' savings
+multiply, as rules on unrelated parts of the tree would, or whether the pair
+frees more or less than that. A keyword given twice is refused, so a pair is
+one word; the same switch twice and a third switch are refused too. Where one
+switch of a pair is only ever asked under the other (`adaptive_null_move` under
+`null_move`; `deep_reductions`, `late_move_pruning`, `reduction_table` and
 `deep_index_rule` under `late_move_reductions`; `deep_index_rule` under
 `deep_reductions`), the pair searches as many nodes as the outer single,
-position by position.
+position by position, which a test holds.
 
-**`off` absent means both sides are the default**, which the header says
-as `off none`. That run is the null, and it is the one to take first: see
-the end of this section.
+**`off` absent means both sides are the default**, which the header says as
+`off none`. That run is the null, and it is the one to take first (see the end
+of this section).
 
-Each joined key is one of three outcomes, and the three are the whole of
-the reading. `both` is a node in both trees, so the difference in what sat
-under it is effort the rule moved. `only_off` is a node the baseline
-reached and the candidate never did, so what sat under it is effort the
-rule removed outright. `only_on` is a node the candidate reached and the
-baseline never did, so what sits under it is effort the rule created. The
-last is the population nothing else here reads, and the one a question
-about where a saving went turns on.
+Each joined key is one of three outcomes. `both` is a node in both trees, so
+the difference in what sat under it is effort the rule moved. `only_off` is a
+node only the baseline reached, so what sat under it is effort the rule removed
+outright. `only_on` is a node only the candidate reached, so what sits under it
+is effort the rule created, which is the population nothing else here reads.
 
 Each row is `depth outcome visits_on visits_off cuts_on cuts_off cost_on
-cost_off delta fen`, whitespace separated with the fen last so a row parses
-left to right. `visits` is how many times that side's move loop answered
-this position at this depth over the whole deepening, which a deepening
-search makes larger than one; a rule that changes how often a node is
-re-reached changes that column, and the change is itself reallocation.
-`cuts` is how many of those visits ended in a cutoff rather than in the
-loop running out, so a rule that turns held nodes into cut ones reads here
-without a second run of the census. `cost` is the nodes spent under the
-node summed over that side's visits, the census's `cost` read the same way,
-with quiescence in it because the node counter counts quiescence. `delta`
-is `cost_on - cost_off`, signed, derivable and printed anyway so a row is
-read without re-deriving it. No column prints `-`: the absent side of an
-`only_` row spent nothing rather than having no value, and a 0 is what lets
-the column be summed. The fen is the candidate's where the row has one and
-the baseline's otherwise, and the key covers neither the fifty move counter
-nor the move number, so the two sides at one key can carry different ones.
+cost_off delta fen`. `visits` is how many times that side's move loop answered
+this position at this depth over the whole deepening; a rule that changes how
+often a node is re-reached changes it, and that change is itself reallocation.
+`cuts` is how many of those visits ended in a cutoff. `cost` is the nodes spent
+under the node over that side's visits, quiescence included. `delta` is
+`cost_on - cost_off`. No column prints `-`: the absent side of an `only_` row
+spent nothing, and a 0 lets the column be summed. The fen is the candidate's
+where it has one, and the key covers neither the fifty move counter nor the move
+number, so the two sides at one key can carry different ones. The events are
+offered where the census offers them, so quiescence and the root are out of
+scope here too.
 
-The events are offered where the census offers them, at the two places
-`alpha_beta`'s move loop answers, so quiescence and the root are out of
-scope as they are there, and the rows are the same full width population.
-
-The run ends with a line per depth and a line per position. **The depth
-line's `nodes on` and `nodes off` are exact and not sampled**: every
-offered event is counted into a per depth tally on each side, so those
-counts read the same at `every 1` and at `every 1000`, and the sampled rows
-beside them are for attribution. The cost columns on that line do not add
-down the depths, because a depth three node's cost holds its depth one
-descendants'; the node columns do, since every node has one depth. That
-asymmetry is why the node counts are the headline and the costs stand
-beside them.
-
-The position line is exact too, and its two node counts are each side's
-whole search, quiescence included. At the same depth and configuration the
-candidate's is the bench's number position by position, which is what makes
-that line the check against the bench and the place a switch's whole tree
-delta is read. The per depth tallies count full width nodes alone and are
-about a tenth of it, so they are checked against each other and never
-against the bench.
+The run ends with a line per depth and a line per position. **The depth line's
+`nodes on` and `nodes off` are exact and not sampled**: every offered event is
+counted on each side, so they read the same at any `every`, and the sampled rows
+are for attribution. The cost columns on that line do not add down the depths,
+because a depth three node's cost holds its depth one descendants'; the node
+columns do. The position line is exact too, and its node counts are each side's
+whole search, quiescence included, so at the bench's depth and configuration
+the candidate's equals the bench position by position; that line is where a
+switch's whole tree delta is read. The per depth tallies count full width nodes
+alone, about a fifth of the whole at the bench's depth, so they are checked
+against each other and never against the bench.
 
 `budget <n>` holds both sides to a node count as well as to the depth, and
-they stop at whichever comes first. The speed channel is then held out by
-construction, since a side the budget binds spends exactly it, and what is
-left on the position line is the depth each reached and the move each
-chose. That is the offline half of a reading this engine has otherwise only
-ever taken in games, and it costs two searches rather than a thousand of
-them. Read the depth and the move as answering different questions there:
-an iteration cut short by the budget still answers with a move that beat
-its alpha, so `best` is what the side would play while `reached` is the
-deepest depth it finished, and the score beside them is a floor rather than
-a value. At equal depth no iteration is cut short and the two agree.
+they stop at whichever comes first. A side the budget binds spends exactly it
+(except below the cost of depth one, which always runs to its end), so the
+speed channel is held out and the position line reports the depth each
+side finished (`reached`) and the move each chose (`best`). An iteration the
+budget cut short still answers with a move that beat its alpha, so `best` is
+what that side would play while its score is a floor rather than a value. That
+is an offline reading of what a node budget buys, at the cost of two searches
+rather than a match.
 
-The sampling is the census's mechanism under a lane of its own, shared by
-the two sides. Two guards sit on the join. **The trim**: a reservoir keeps
-the smallest keys it is offered and gives up the rest, so if one side
-overflows and the other does not, a key kept on one and dropped on the
-other reads as `only_on` or `only_off` and the buffer manufactures the
-instrument's own finding. After both runs the smaller of the two sides'
-retained bounds is taken and every row at or above it is dropped from both,
-which the header states as `bound` and `trimmed`; a side that did not
-overflow kept everything the rate wanted and bounds nothing, so a run where
-neither overflowed says `trimmed 0`. **The collision guard**: two positions
-can agree on a 64 bit key, and a key whose visits disagree about the node,
-within one side or across the two, is counted as `collisions` and dropped.
-A row that is two positions is not a reading, and a run of minutes is not
-worth aborting over one.
+Two guards sit on the join. **The trim**: a reservoir keeps the smallest keys
+it is offered, so if one side overflows and the other does not, a key kept on
+one and dropped on the other would read as `only_on` or `only_off` and the
+buffer would manufacture the finding. After both runs the smaller of the two
+sides' retained bounds is taken and every row at or above it is dropped from
+both, which the header states as `bound` and `trimmed`; a run where neither side
+overflowed says `trimmed 0`. **The collision guard**: two positions can agree on
+a 64 bit key, and a key whose visits disagree about the node is counted as
+`collisions` and dropped.
 
-What it cannot see is worth saying. A change that moves no node reads as
-`both` with a zero delta everywhere, correctly, and is priced by
-instructions and the clock instead. A rule with no switch has to be given
-one first. A rule that moves effort inside quiescence moves the cost
-columns without producing rows of its own, which is the census's hole as
-well. And a node count is not a time: the quiet futility margin is 0.50% of
-the bench by count at `b9325ae` and less than that by work, and this
-instrument counts.
+What it cannot see: a change that moves no node reads as `both` with a zero
+delta everywhere, and is priced by instructions and the clock instead. A rule
+with no switch has to be given one first. A rule that moves effort inside
+quiescence moves the cost columns without rows of its own. And a node count is
+not a time: the quiet futility margin was 0.50% of the bench by count at
+`b9325ae` and less than that by work.
 
 **Take the null run first.** `effort 9` with no `off` searches the same
-configuration twice, so every joined key must read `both`, every `delta`
-must be 0, `only_on` and `only_off` must be empty, and the two sides' per
-depth node counts must be equal at every depth. Anything else is the
-instrument and not the tree, and no reading is worth quoting until that run
-is clean.
+configuration twice, so every row must read `both` with a `delta` of 0, and the
+two sides' node counts must be equal at every depth. Anything else is the
+instrument and not the tree, and no reading is worth quoting until that run is
+clean.
 
-Recording changes nothing. The reservoir is armed only by the command, an
-engine without one searches exactly the tree it searched before there was
-an effort instrument, and an armed engine's node counts equal a disarmed
-one's position by position, which
-`recording_leaves_the_measured_search_where_it_was` in
-`arche-core/src/effort.rs` asserts. This is the one instrument that
-searches under a configuration its caller chose, so
-`recording_changes_nothing_under_the_baseline_configuration_either` asks
-the same of a baseline side. There is no pinned count for a configuration
-with a switch off and there must not be one, since a pinned count a switch
-would leave the instrument rewritten whenever the search gained a rule;
-what is
-asserted is armed equals disarmed under whatever configuration it is
-handed.
+`effort.rs` holds its recording to the census's test, and
+`recording_changes_nothing_under_the_baseline_configuration_either` asks the
+same of a side with switches off, since this is the one instrument that
+searches under a configuration its caller chose. There is no pinned count for
+a configuration with a switch off, and there should not be one, since it would
+need rewriting whenever the search gained a rule.
 
 ## What a position's evaluation is made of
 
-The four instruments above measure the search. This one measures the
-evaluation, and it is the engine's half of the tuner:
+This one measures the evaluation, and it is the engine's half of the tuner:
 
 ```
 target/release/arche terms [epd <file>]
@@ -557,106 +388,51 @@ It searches nothing to a depth, so it takes no depth. It reads the bench's
 suite, or the one named, keeps the positions that are quiet, and prints what
 each one's evaluation is made of.
 
-The evaluation is material plus a tapered piece square score plus a tapered
-mobility score plus a tapered king shelter score plus a tapered pawn structure
-score plus a tapered king attack score, and it is linear in the numbers those
-are read from. So a position's score is a dot product of the position against
-the weights, and a row is the position's half of it: for every weight the
-position touches, the integer that weight is multiplied by. The weights are a
-flat vector of 820, in this order: the 384 midgame table entries, the 384
-endgame ones in the same order, then the six material values, then four
-midgame mobility weights and the same four at the endgame end, then the seven
-shelter weights the same way, then the eight pawn structure weights the same
-way again, then the four king attack weights the same way after those. So a
-square's two weights are 384 apart, a piece kind's two mobility weights are 4
-apart, a shelter count's two are 7 apart, a pawn count's two are 8 apart and a
-piece kind's two king attack weights are 4 apart. A slot's entry is a square
-as black sees it, because black is the colour that reads the tables as they
-are written.
+The evaluation is material plus a tapered piece square score plus the tapered
+leaf terms, and it is linear in the numbers those are read from. So a
+position's score is a dot product of the position against the weights, and a
+row is the position's half of it: for every weight the position touches, the
+integer that weight is multiplied by. The weights are a flat vector: the 384
+midgame table entries, the 384 endgame ones in the same order, the six material
+values, then each leaf term's midgame weights followed by its endgame weights.
+A slot's table entry is a square as black sees it, because black reads the
+tables as they are written.
 
-The seven shelter counts are what stands between a side's king and the board,
-in this order: its own pawns one rank in front of the king, its own pawns two
-ranks in front, how many of the king's three files hold no pawn of either
-colour, how many hold an enemy pawn and none of its own, and then the enemy
-pawns one, two and three ranks in front of the king. The three files are the
-king's own and its neighbours, stepped in at the a and h files so that every
-king square names three. The last three counts are the pawn storm, read off the
-same masks as the first two: a rank of storm is counted apart from the next
-because how far it has come is most of what it is worth. A row carries white's
-counts less black's, in the side to move's frame, the way every other
-coefficient is carried.
+What each leaf term counts is in its own file under `arche-core/src/eval/`.
+Every count is carried as white's less black's, in the side to move's frame.
+Two details matter to a reader of the rows. The king attack count is taken
+over the real occupancy with nothing subtracted, so a square two pieces attack
+counts twice. And the rows carry every term's coefficients whatever its
+weights hold, which is how a fit prices a term before any of its weights is
+worth anything.
 
-The eight pawn counts are read off the two pawn boards and nothing else, in
-this order: a side's passed pawns on the relative second rank through the
-relative seventh, then its isolated pawns, then its doubled ones. A pawn is
-passed when no enemy pawn stands on its file or either file beside it on any
-rank ahead of it and no pawn of its own stands ahead of it on its file, which
-leaves the rear of a doubled pair out. Isolated and doubled are counted per
-pawn rather than per file, so an isolated pair on one file pays twice and a
-tripled file is doubled two. What stands on the square in front of a passer is
-not read, so a blockaded passer counts as a passer.
-
-The four king attack counts are how many squares of the enemy king's ring a
-side's knights, bishops, rooks and queens attack, one count per kind in that
-order, summed over the pieces of each kind. The ring is the eight squares a
-king attacks from where it stands, which is five on an edge and three in a
-corner, and never the square it stands on. A piece's attack set is taken over
-the real occupancy and nothing is subtracted from it, which is where the count
-parts company with mobility's: a slider stops at the first piece of either
-colour and counts that square if the ring holds it, and a square this side
-already stands on or an enemy pawn covers is still attacked. A ring square two
-pieces attack is counted twice, once per attacker, and two rooks on the
-seventh rank of a king on e8 read six between them rather than the three
-squares they share. Pawns and kings carry no column. The rows carry the
-coefficients whatever the weights hold, which is how the fit that priced the
-eight weights read them before any of them was worth anything.
-
-The vector was 518 until a knight, a bishop, a rook and a queen were given an
-endgame table of their own, since each of the four had handed one array to
-both ends of the taper, 774 until the eight mobility weights were added after
-the material block, 782 until the king's shelter was measured after those,
-790 until the pawn storm joined it, 796 until the pawn structure was measured
-after that, and 812 until the king attack zone was counted after that. Rows
-printed by an engine from before any of those changes, and any vector fitted
-against them, are refused rather than read: every slot they name exists in the
-layout that replaced them, so reading them would put the numbers on the wrong
-weights.
-
-The line after the header states that layout, so that what reads these rows
+The line after the header states the layout, so that what reads these rows
 holds no copy of it:
 
 ```
 layout midgame 384 endgame 384 material 6 mobility 4 shelter 7 pawn_structure 8 king_attack 4
 ```
 
-The first three are runs of slots. The names after them are the leaf terms, in
-the order the vector holds them, and a term's number is the counts it is
-measured in per side and per half of the taper, so it takes twice that in
-slots, its midgame half first. The line is spelled off the same term list the
-engine lays its slots out from, so a term added there is named here without a
-second edit. `scripts/tune.py` reads its slots from this line and refuses a run
-naming a term it has no bounds for, since a term nobody has priced cannot be
-screened against the sixteen bits each half of a packed pair has to stay
-inside. A run that prints no layout line at all was printed by an engine older
-than the line, and is refused too.
+The first three are runs of slots. The names after them are the leaf terms in
+vector order, each with the counts it is measured in per side and per half of
+the taper, so it takes twice that in slots, midgame half first. The line is
+spelled off `eval::TERMS`, the list the engine lays its slots out from, so a
+term added there is named here without a second edit. `scripts/tune.py` reads
+its slots from this line and refuses a run naming a term it has no bounds for.
+A run with no layout line was printed by an engine older than the line, whose
+slots would be read against the wrong weights, and is refused too.
 
-The line after that is `weights 820 <w0> <w1> ...`, the vector itself as
-the live tables hold it, so that nothing reading these rows transcribes
-psqt.rs. A transcription is the same failure as a reimplemented evaluation and
-quieter: a table copied out and left behind fits weights against a position it
-scores differently from the engine, and nothing says so.
+The line after that is `weights <n> <w0> <w1> ...`, the vector as the live
+tables hold it, so that nothing reading these rows transcribes psqt.rs.
 
-Each row after that is `id eval phase n slot:coefficient... fen`, whitespace
-separated. Both ends of it can hold spaces: a fen is six fields, and an id is
-whatever the epd put in the quotes, which in the bench's own suite is "ruy
-lopez" and in the strategic suite "7th Rank.001". An epd line that names no id
-is called by its own fen, so an id can be six fields itself. So a row is read
-from the end whose width is fixed. The fen is the last six fields, the
-coefficients are the run of `slot:coefficient` in front of it, and what is left
-before the three numbers is the id. `n` is printed so the two ends can be held
-against each other rather than one of them trusted. The coefficients are in
-the side to move's frame, so the row's own arithmetic is the evaluation with
-nothing further to do:
+Each row after that is `id eval phase n slot:coefficient... fen`. Both ends can
+hold spaces: a fen is six fields, and an id is whatever the epd put in the
+quotes ("ruy lopez", "7th Rank.001"), or the fen itself when the epd names none.
+So a row is read from the end whose width is fixed: the fen is the last six
+fields, the coefficients are the run of `slot:coefficient` in front of it, and
+what is left before the three numbers is the id. `n` is printed so the two ends
+can be checked against each other. The coefficients are in the side to move's
+frame, so the row's own arithmetic is the evaluation:
 
 ```
 eval = mat . w_mat + trunc((psqt . w_psqt + mobility . w_mobility
@@ -664,42 +440,31 @@ eval = mat . w_mat + trunc((psqt . w_psqt + mobility . w_mobility
                             + king_attack . w_king_attack) / 24)
 ```
 
-Four things in that line are load bearing, and each is a way to be wrong by a
-centipawn. Every leaf term is inside the divide beside the piece square half
-rather than tapered on its own, so the whole numerator is truncated once. The
-divide truncates toward zero, where python's `//` floors, and on a negative
-numerator that does not divide evenly the two differ. The
-material is added outside the divide rather than scaled into it:
-`trunc((24 * 1 + -5) / 24)` is 0 where `1 + trunc(-5 / 24)` is 1. And the
-phase is capped at 24 before the coefficients are written, because promotions
-can leave more on the board than the opening had. Each has a test of its own
-in `arche-core/src/tune.rs`.
+Four things in that line are each a way to be wrong by a centipawn. Every leaf
+term is inside the divide beside the piece square half, so the numerator is
+truncated once. The divide truncates toward zero, where python's `//` floors.
+The material is added outside the divide: `trunc((24 * 1 + -5) / 24)` is 0
+where `1 + trunc(-5 / 24)` is 1. And the phase is capped at 24 before the
+coefficients are written, because promotions can leave more on the board than
+the opening had. Each has a test in `arche-core/src/tune.rs`.
 
-Nothing outside the engine is told how to evaluate a position, which is why
-the argument exists at all. A second implementation of the evaluation in
-another language diverges quietly: one wrong by a little still produces
-plausible weights, and nothing says when. So `reconstruct` folds a row back
-against the live tables and has to give what `eval` gives, exactly.
-`a_positions_terms_reconstruct_its_evaluation` asks that over the shared fens,
-the bench's suite and the strategic suite, which is 1522 positions of three
-different shapes; the run asserts it on every row it prints and panics rather
-than dropping one, so a corpus cannot hold a row the engine disagrees with.
+Nothing outside the engine is told how to evaluate a position, which is why the
+argument exists: a second implementation of the evaluation diverges quietly and
+still produces plausible weights. So `reconstruct` folds a row back against the
+live tables and has to give what `eval` gives, exactly.
+`a_positions_terms_reconstruct_its_evaluation` asks that over the shared test
+positions, the bench's suite and the strategic suite, and the run asserts it on
+every row it prints and panics rather than dropping one.
 
-A position is kept when three things hold. The side to move is not in check,
-since a checked position's static evaluation is not a thing to fit and
-quiescence treats it differently anyway. A capture search comes back at the
-static evaluation, so the side to move has nothing to win by capturing. And
-the same holds after a pass, so the opponent has nothing to win either. The
-pass is what makes the test two sided: a one sided test keeps the position
-where the side to move is about to lose a hanging queen, and labels an
-evaluation that misses it with the result of a game that did not.
-
-The capture search is the reference's, with every shortcut off, for the reason
-the residual replay uses the reference. The default's quiescence has the delta
-margin and the losing capture skip on, so it passes over captures it prices as
-hopeless, and those skips are guesses. A corpus whose quietness was decided by
-a guess would carry the guess into every weight fitted on it, and would move
-when the guess moved.
+A position is kept when three things hold. The side to move is not in check. A
+capture search comes back at the static evaluation, so the side to move has
+nothing to win by capturing. And the same holds after a pass, so the opponent
+has nothing to win either. The pass makes the test two sided: a one sided test
+keeps a position where the side to move is about to lose a hanging queen, and
+labels an evaluation that misses it with the result of a game that did not.
+The capture search is the reference's, because the default's quiescence skips
+captures it prices as hopeless, and a corpus whose quietness was decided by a
+guess would carry the guess into every weight fitted on it.
 
 The header states what the run turned away beside what it kept:
 
@@ -707,150 +472,88 @@ The header states what the run turned away beside what it kept:
 terms positions 18 in_check 1 unsettled 8 drawn 0 kept 9
 ```
 
-which is the recorders' rule that a share cannot be read without its
-denominator. `drawn` counts the positions whose material cannot mate, which
-the evaluation answers with a hard zero rather than a sum over the weights.
-A row like that is not a thing a fit can read, since every weight vector
-scores it the same, so it is turned away rather than emitted. `tune.py`
-refuses a header that does not carry the count, because an extraction printed
-by an older engine holds those rows and would parse. If the yield ever leaves
-too few positions to fit 820 weights, dropping the pass is the fallback, and
-the header is what makes that a decision rather than a discovery.
+`drawn` counts the positions whose material cannot mate, which the evaluation
+answers with a hard zero rather than a sum over the weights, so every weight
+vector scores them the same and they are turned away. `tune.py` refuses a
+header without that count, because an extraction by an older engine holds those
+rows. If the yield ever leaves too few positions to fit the weights, dropping
+the pass is the fallback, and the header is what makes that a decision.
 
-`epd <file>` reads a suite of its own instead of the bench's, on the residuals
-argument's terms, and the header names the file. A file that will not open,
-holds no position, or holds one the board will not take is refused rather than
-read.
-
-The argument arms no reservoir and searches no suite, so there is no
-recording-neutrality claim to make: it cannot move a node count, because
-nothing about it runs inside a measured search.
+The argument arms no reservoir and runs no measured search, so it cannot move a
+node count.
 
 ## The loss of a weight vector
 
-The rows above are the input to `scripts/tune.py`, which scores a weight
-vector against the games the positions came from and fits a new one:
+The rows above are the input to `scripts/tune.py`, which scores a weight vector
+against the games the positions came from and fits a new one. Its docstring,
+and those of `scripts/build_corpus.py` and `scripts/groups.py`, carry the
+reasoning behind the rules below.
 
 ```
 python3 scripts/tune.py loss --terms rows.txt --corpus corpus.epd
 python3 scripts/tune.py fit --terms rows.txt --corpus corpus.epd --out fit.json
 ```
 
-`scripts/build_corpus.py` builds the corpus from archived strength-run pgns,
-carrying each position's game, the run and the round that game was played in,
-the result from the side to move's point of view, and how many times the games
-reached it:
+`scripts/build_corpus.py` builds the corpus from archived strength-run pgns: one
+row per unique post-book position, carrying its game, the run and round the game
+was played in, the result from the side to move's point of view, and how many
+times the games reached it. `scripts/harvest_games.py` downloads the strength
+runs' game artifacts into an archive and rebuilds the corpus from the whole of
+it:
 
 ```
 python3 scripts/build_corpus.py runs/*/games.pgn --out corpus.epd
-```
-
-Getting that pile of pgns is `scripts/harvest_games.py`, which downloads the
-strength runs' game artifacts into an archive and then rebuilds the corpus from
-the whole of it:
-
-```
 python3 scripts/harvest_games.py --archive runs --out corpus.epd
 ```
 
-Run it after every arm. A games artifact lives ninety days, which is what
-`retention-days` on the strength workflow's upload says, and an arm whose
-artifact expires before anybody harvests it takes its games with it. They cannot
-be played again. The run prints when the next artifact expires, so the deadline
-is on the page rather than in somebody's head.
+Run the harvest after every arm. A games artifact lives ninety days (the
+`retention-days` on the strength runs' upload), and one that expires before it
+is harvested takes games that cannot be played again. The run prints when the
+next artifact expires. Running it twice downloads nothing the second time: an
+artifact is held once its directory carries a `.harvested` marker, written
+after the download, so an interrupted fetch is taken again. It takes the
+strength runs and nothing else. A calibrate game is against another engine, and
+a corpus of two sources could not attribute a loss change to either. The
+archive and the corpus are gitignored, since at a release's scale they are
+hundreds of megabytes.
 
-Running it twice downloads nothing the second time. An artifact is held once its
-directory carries a `.harvested` marker, which is written after the download
-rather than before, so an interrupted fetch is taken again instead of being
-counted as held.
+The rebuild reads the whole archive every time rather than appending, because
+which group a repeated position belongs to depends on every game in it. So the
+archive is what must not be lost; the epd is minutes of arithmetic away.
 
-It takes the strength runs and nothing else. A strength game is arche against
-arche and a calibrate game is arche against another engine, so harvesting
-calibrate would give the corpus a second source and cost it the caveat below:
-that caveat is only stateable while the corpus has one. The same prefix also
-excludes the `gauntlet-<run>` artifacts still in the listing, which were the
-calibrate rungs' games concatenated until the rungs began playing at the same
-time and that upload went away.
+The book's plies are dropped from every game and a game that ended in anything
+but play is dropped whole. The known caveat is that these are the engine's own
+games: positions it never reaches are unlabelled and its mistakes are labelled
+as normal play.
 
-The archive and the corpus are both gitignored, because the command above writes
-them into the working tree and at the scale of a release's games that is hundreds
-of megabytes.
-
-The rebuild reads the whole archive every time rather than appending to an epd.
-Which group a repeated position belongs to is decided by every game in the
-archive, so adding games moves labels on positions that were already there, and
-an appended corpus would carry the old ones. The archive is therefore the thing
-that must not be lost, not the epd, which is a few minutes of arithmetic away
-from it.
-
-The book is dropped off the front of every game, so the corpus starts where the
-book stops, and a game that ended in anything but play is dropped whole. The
-known caveat is that these are the engine's own games, so the positions it
-never reaches are unlabelled and its mistakes are labelled as if they were
-normal play. Mixing in positions from stronger engines' games would answer a
-different question, and a loss change measured on a corpus of two sources
-cannot be attributed to either.
-
-The objective is occurrence weighted. A unique position carries the weight of
-how many times the corpus reached it, so the loss is over the distribution the
-engine runs on rather than the one deduplication leaves behind. Every loss,
-interval and share the run prints reads the count, and the header names a phase
-bucket's positions and its appearances separately, so which of the two a figure
-was taken over is on the page rather than assumed.
+The objective is occurrence weighted: a unique position carries the weight of
+how many times the corpus reached it. Every loss, interval and share reads the
+count, and the header names a phase bucket's positions and its appearances
+separately.
 
 The split is by game, in three groups, and the two games that played one
-opening with the colours reversed go together. A game is named by the sha256
-of its movetext and a pair by the sha256 of its two games' keys sorted and
-joined, and the first byte of the pair's key modulo five says where the pair
-goes: nought, one and two train, three is the selection group and four is
-calibration. A game with no partner is a pair of one and its pair key is its
-own. Both keys are the movetext's and nothing else's, so a re-extraction of the
-same archive puts every game back where it was and nothing has to be written
-down outside the pgn. Split by the game alone, the two halves of an opening
-land in one group eleven times in twenty five, which is the chance two keys
-agree under shares of three fifths, a fifth and a fifth.
-
-The game is the unit because the label is: every position of a game carries
-that game's result, and consecutive positions are one move apart, so a row held
-out while its neighbours are trained on is a row whose answer the fit has
-already been shown. Splitting on the position instead hides that rather than
-preventing it.
-
-Grouping by the game loses one property a split keyed on the position has for
-free, which is that rows sharing a position land together, so
-`build_corpus.py` gives it back: a position two games reached belongs to the
-group of the lower key, and its result and its count are taken from that
-group's games alone. The appearances in other groups are dropped rather than
-merged. A corpus that repeats a position across games anyway is refused rather
-than fitted around.
+opening with the colours reversed go together. A game is keyed by the sha256 of
+its movetext and a pair by the sha256 of its two games' keys, and the first byte
+of the pair key modulo five places it: three fifths train, a fifth is the
+selection group, and a fifth is sealed for calibration. Both keys depend on the
+movetext alone, so a re-extraction puts every game back where it was. A split
+on the position would put a row's neighbours, a move away and carrying the same
+label, in the training set. A position two games reached belongs to the group
+of the lower key and is labelled from that group's games alone; its
+appearances in other groups are dropped rather than merged.
 
 The ridge is chosen on the selection group and the loss is reported there. The
-calibration group is not read at all. What it is for is a coverage claim made
-on it once the weights are final, and a group that has already been read cannot
-carry one, so it is assigned from the first run rather than carved out when it
-is wanted. That is not a convention a reader has to keep in mind: the
-calibration rows are not in the matrices `loss`, `cv` and `fit` score, so none
-of the three can reach a calibration row. Deleting them from the corpus file
-changes nothing any of the three prints, and
-`the_calibration_group_is_not_read_by_a_fit` says so by running the same fit
-twice.
+sealed rows are not in the matrices `loss`, `cv`, `fit` and `curve` score, so
+none of them can reach one, and `the_calibration_group_is_not_read_by_a_fit`
+says so by running the same fit twice. What that costs is the appearances
+dropped from the other groups, so a position reached in two groups carries
+fewer appearances than the corpus gave it.
 
-The seal holds on the rows and on the labels. No command reads a sealed row,
-and no sealed game's result reaches a label a fit sees, because a position is
-labelled by its own group and by nothing else. What that costs is the
-appearances in the other groups: they are dropped, so a position common enough
-to be reached by games in two groups carries fewer appearances than the corpus
-gave it. No position loses every appearance, since the group that owns it is
-the group of a game that reached it.
-
-The run is read off the `manifest.txt` a strength run keeps beside its
-`games.pgn`, as the run id and the shard, with the batch between them where
-the run chained batches, and off the directory's name where there is no
-manifest; the round is the pgn's own `Round` header. Neither is
-part of the key, because neither is a property of the play. They are on the
-row so that a source can be excluded or weighted after extraction, and so that
-the two games that played one opening with the colours reversed can be told
-apart from two openings.
+The run is read off the `manifest.txt` beside a strength run's `games.pgn`, as
+the run id and shard (with the batch between them where the run chained
+batches), or off the directory's name; the round is the pgn's `Round` header.
+Neither is part of the key. They are on the row so a source can be excluded or
+weighted after extraction.
 
 The one door into the sealed group is `final`:
 
@@ -858,21 +561,25 @@ The one door into the sealed group is `final`:
 python3 scripts/tune.py final --terms rows.txt --corpus corpus.epd --weights fit.json --log final.log
 ```
 
-It takes a vector already quantized to the integers that would ship, refuses
-one that is not, and before it reads a sealed row it appends a line to the log
-naming the corpus, the sealed games, the extraction and the vector by checksum,
-the scaling constant and the group's size. A corpus the log names is refused,
-and so is one whose sealed games the log names under another corpus: the
-checksums are over the file and over the sealed pair keys, so neither a new
-filename nor a re-extraction with a run appended reopens the same games. What
-it prints is the frozen vector against the shipped one on the sealed rows, both
-losses at real and at integer weights, the paired difference with its interval
-clustered on the game, the loss by phase bucket, and the residual quantiles,
-signed and absolute, weighted by appearances. The quantiles are an empirical
-diagnostic and the line says so. A coverage claim needs its sampling unit,
-score, exchangeability, quantile rule and target named before the group is
-opened, which no command can do for the person making it. A vector revised
-after the reading needs a sealed group of games the corpus did not hold.
+It takes a vector already quantized to the integers that would ship, and
+before it reads a sealed row it appends a line to the log naming the corpus,
+the sealed games, the extraction and the vector by checksum. A corpus the log
+names is refused, and so is one whose sealed games the log names under another
+corpus, so neither a new filename nor a re-extraction reopens the same games.
+It prints the frozen vector against the shipped one on the sealed rows (both
+losses at real and integer weights, the paired difference with its interval
+clustered on the game, the loss by phase bucket) and the residual quantiles,
+which are an empirical diagnostic and say so. A coverage claim needs its
+sampling unit, score, exchangeability, quantile rule and target named before
+the group is opened. A vector revised after the reading needs sealed games the
+corpus did not hold.
+
+`--sealed <file>` names the sealed group by pair key, one to a line, instead of
+drawing it from the keys, which seal the same fifth every time. That is how a
+run says the games that settle a revised vector are ones played since. Both
+halves of the tuner take it and both must be given the same file, or the
+corpus is labelled by one group and fitted holding out another. `final` still
+refuses a second reading of the same sealed games.
 
 Whether the corpus is big enough is `curve`:
 
@@ -881,74 +588,44 @@ python3 scripts/tune.py curve --terms rows.txt --corpus corpus.epd --out curve.j
 ```
 
 It refits at an eighth, a quarter, a half, three quarters and the whole of the
-training pairs, five independent draws at each size below the whole, and reads
-every fit on the same selection group. The draw is by pair, because the pair
-is the independent unit. The ridge, the weighting and the scaling constant are
-the fit's, and the constant is one number for every fit. Each fit prints its
-size, its penalty, its selection loss at real weights and at the integers that
-would ship, and the paired difference against the shipped weights with the
-interval clustered on the game. The summary prints, per size, the draws that
-fitted and the draws refused, the mean loss, the least and the most, and the
-mean interval. The spread between draws says whether the curve has a shape.
-A curve flat between a half and the whole says more games will not lower the
-held-out loss at this parameter count. One still climbing says they would, and
-a number read past the corpus's size is an extrapolation. The json keeps every
-fit with the pairs it drew, so a run can be replayed. The reasoning is in
-`learning_curve`'s docstring in `scripts/tune.py`.
+training pairs, five draws by pair at each size below the whole, and reads
+every fit on the same selection group with the fit's own ridge, weighting and
+scaling constant. The summary gives, per size, the draws fitted and refused,
+the mean, least and most loss, and the mean interval. A curve flat between a
+half and the whole says more games will not lower the held-out loss at this
+parameter count; one still climbing says they would. The json keeps every fit
+with the pairs it drew, so a run can be replayed, and `learning_curve`'s
+docstring has the reasoning.
 
-`build_corpus.py`'s counters open with `runs`, the archives the games came
-from, carry `pairs` and `unpaired`, the rounds that made a pair of more than
-one game and the games that stood alone, and end with `repeated`, the
-positions more than one game reached, `straddled` and `dropped_appearances`, which are how many of
-those were reached from more than one group and how many appearances that cost,
-and `same_key`, the games whose movetext another game already had. The last is
-the only place a game the archive holds twice shows up: it is one game's
-evidence counted twice, and every other number in the run reads it as two.
-
-It is not expected to be zero, and the two causes it covers are told apart by
-what the number tracks. A game archived twice climbs with the artifacts; two
-games that were played move for move the same climb with the games. At the time
-of writing a full harvest of the strength archive read `same_key 10` over 23,175
-games, and no run in that archive was present at more than one attempt or under
-more than one artifact name, so those ten are not a re-archived run. What they
-are was not established.
+`build_corpus.py`'s counters open with `runs`, carry `pairs` and `unpaired`,
+and end with `repeated` (positions more than one game reached), `straddled` and
+`dropped_appearances` (how many of those were reached from more than one group
+and what that cost) and `same_key`, the games whose movetext another game
+already had. `same_key` is the only place a game archived twice shows up, and
+every other number reads it as two games. It is not expected to be zero, since
+two games can be played move for move the same; a game archived twice climbs
+with the artifacts and a repeated game climbs with the games. A full harvest
+read `same_key 10` over 23,175 games (53a66dc) with no run archived twice, and
+what those ten are was not established.
 
 The loss is Texel's, the mean squared error between the game result and a
-logistic of the evaluation, with log loss printed beside it. The two are
-different scoring rules and if they disagree about a candidate that is worth
-seeing, which is the only reason both are printed. The scaling constant K is
-fitted once on the training games at the shipped weights and held there,
-because K and the overall scale of the weights are one degree of freedom and
-the scale is not free: `REVERSE_FUTILITY_MARGIN` at 100 a ply, `DELTA_MARGIN`
-at 200 and the ledger's `eval_beta` column all read the evaluation on the
-assumption that a pawn is about a hundred.
+logistic of the evaluation, with log loss printed beside it; if the two
+scoring rules disagree about a candidate that is worth seeing. The scaling
+constant K is fitted once on the training games at the shipped weights and held
+there, because K and the scale of the weights are one degree of freedom and
+the scale is not free: `REVERSE_FUTILITY_MARGIN`, `DELTA_MARGIN` and the
+ledger's `eval_beta` column all assume a pawn is about a hundred.
 
-Nothing in the script knows how to evaluate a position. It folds each row's
-coefficients back against the weights the run printed and has to get the
-integer the row says the engine got, which it checks on every row read, so a
-file it cannot rebuild stops the run rather than being fitted around.
-
-What makes the number worth having is that scoring a weight vector over
-hundreds of thousands of positions is one matrix-vector product. A hundred
-thousand rows are read, joined and scored in a couple of seconds, and a
-candidate evaluation term would be one appended column whose held-out loss can
-be read before a line of engine code exists for it. That is a triage instrument
-and not a verdict.
-
-A meaningful move in the number is one larger than its own interval. Two weight
-vectors are scored on the same selection positions, so the difference in
-per-position squared error is a paired sample; the run prints its mean with a
-standard error and marks a difference that sits inside its own interval. There
-is no loss-to-elo mapping here and the run does not print one. Its job is to
-rank candidates and to reject the ones that cannot help. The sprt says elo.
-
-The interval is taken over the games and not over the positions. A game's
-hundred odd rows share a result and differ by a move, so they move together,
-and counting them as a hundred independent draws counts one game's evidence a
-hundred times. Both figures are printed: the standard error over the games, the
-naive one over the positions, and the design factor between them, so what
-treating the positions as independent would have claimed is on the page rather
-than described.
+Scoring a vector over the corpus is one matrix-vector product, so a candidate
+evaluation term is one appended column whose held-out loss can be read before
+there is engine code for it. That is triage and not a verdict. A difference
+that matters is one larger than its own interval: two vectors are scored on the
+same selection positions, so the difference in per-position error is paired,
+and the run prints its mean with a standard error and marks one that sits inside
+its interval. The interval is taken over games rather than positions, since a
+game's rows share a result and move together; the run prints both standard
+errors and the design factor between them. There is no loss-to-elo mapping. The
+sprt says elo.
 
 Comparing two ways of fitting is `cv`:
 
@@ -956,179 +633,115 @@ Comparing two ways of fitting is `cv`:
 python3 scripts/tune.py cv --terms rows.txt --corpus corpus.epd
 ```
 
-Five folds assigned by the second byte of the game key, each refitting on four
-fifths of the games and scored on the fifth, so every row is scored once and by
-a fit that never read its game. K is fitted per fold on that fold's training
-games. The second byte and not the first, because the first is what put the
-game in its group and folding on it would leave two folds empty. What it folds
-is the training and selection games, and the sealed group is not among them
-because it is not in the corpus `cv` is handed. `fit` does not choose its ridge
-here: the selection group is what a fifth of the games was set aside for, and
-the wider question this answers is whether a way of fitting is worth anything
-at all over the games the run may read. The line naming the best penalty says
-which of the two it is best over, so a reader of a `cv` log cannot paste it
-into `fit --penalties` as the ridge the fit would have picked.
+Five folds by the second byte of the game key (the first placed the game in its
+group, so folding on it would leave two folds empty), each refitting on four
+fifths of the training and selection games with its own K and scored on the
+fifth. The sealed group is not in what `cv` reads. It answers whether a way of
+fitting is worth anything, not which ridge `fit` should use: the line naming
+the best penalty says which games it is best over, so it is not pasted into
+`fit --penalties` as the ridge the fit would have chosen.
 
-Three more figures are printed because a loss on its own hides what a fit
-did. The loss is stratified by the three phase buckets, so a fit that improves
-the endings by hurting the middlegame is visible rather than averaged away. The
-per-slot support counts say how many rows each weight is fitted on, so a weight
-the corpus barely constrains says so before it ships. And each vector's table
-scale is printed beside a K refitted for that vector alone, which is the
-diagnostic for the one thing the fit can do that is not an improvement: with K
-held, a fit given enough licence spends the loss on growing the tables rather
-than on their shape, and a vector whose loss only falls at its own K bought
-scale.
+Three more figures are printed, because a loss alone hides what a fit did. The
+loss by phase bucket shows a fit that improves the endings by hurting the
+middlegame. The per-slot support counts say how many rows each weight is fitted
+on. And each vector's table scale is printed beside a K refitted for that vector
+alone: with K held, a fit given enough licence can spend the loss on growing
+the tables rather than their shape, and a vector whose loss only falls at its
+own K bought scale. The scale is a ratio of root mean squares over the table
+half of the vector, so it means one thing inside a layout and nothing across
+two; figures from fits at different layouts are quoted with the layout beside
+them or not together.
 
-The scale is a ratio of root mean squares over the table half of the vector,
-so it means one thing inside a layout and nothing across two. That half held
-512 entries before a knight, a bishop, a rook and a queen were given an
-endgame table and holds 768 after, and 256 of the 768 were exact copies of
-their midgame twins until the fit that made them differ. A scale of 1.0 at
-820 slots and a scale of 1.0 at 518 are not the same statement, and the same
-goes for the boardful the bound is checked against. Figures from fits at
-different layouts are quoted with the layout beside them or not quoted
-together.
+The fit is ridge toward the shipped weights rather than toward zero. So a
+re-tune leaves alone the one direction the corpus cannot see (a constant added
+to both king tables, which cancels between the colours) and holds the slots
+with no support, the pawn tables' back ranks, at their zeroes. The ridge is
+chosen from a grid on the selection games, each penalty fitted on the training
+games alone, and a fit whose tables have grown past what the packed halves can
+carry is refused whatever it scores. The selection loss beside the chosen vector
+is therefore the fit's own best case; the sealed group is where an honest
+interval comes from.
 
-The fit itself is ridge toward the shipped weights rather than toward zero.
-That makes a re-tune literally what it does; it leaves alone the one direction
-the corpus cannot see, which is a constant added to both king tables and
-cancelling between the colours; and it holds the slots with no support at all,
-the two back ranks of the pawn tables, at exactly the zeroes they already are.
-The ridge strength is chosen from a grid on the selection games, each penalty
-fitted on the training games alone, and a fit whose tables have grown past what
-the packed halves can carry is refused whatever it scores. What that costs is
-that the selection loss printed beside the chosen vector is the fit's own best
-case, since it is the number the grid was ranked on. The sealed group is where
-an honest interval on a final vector comes from, which is what it is being kept
-for. `MATERIAL` is held for a first fit, because
-`eval::material` is read by the delta margin in quiescence, so moving it
-changes which captures quiescence skips, which changes the tree for a reason
-that has nothing to do with the evaluation's accuracy. `--free-material` lets
-it move, for the run that reports what holding it cost. `--hold tables` holds
-the table entries in the same way, which is what a fit for a term added after
-them does: the tables were fitted on these games already, so a refit of them
-beside a new term would leave a match unable to say which of the two it
-measured. `--hold` also takes any of the leaf terms the layout line names after
-material, given once for each term held, and a name that line does not carry is
-refused before the rows are read. How many weights a hold freezes is twice that
-term's number on the layout line, one half of the taper each, as the evaluation
-section above spells out.
+`MATERIAL` is held by default, because the delta margin in quiescence reads it,
+so moving it changes the tree for a reason unrelated to the evaluation's
+accuracy; `--free-material` lets it move. `--hold tables` holds the table
+entries, and `--hold <term>` any leaf term the layout line names, given once
+for each term held; a name the line does not carry is refused before the rows
+are read. A hold freezes both halves of the term's taper.
 
-Each term earns a hold of its own as it is fitted, and a fit of the newest term
-names every hold below it. The shelter was fitted under `--hold tables --hold
-mobility`, the pawn structure under those two and `--hold shelter`, and the
-king attack zone under those three and `--hold pawn_structure`.
-
-A term already in the tree can be worth fitting again on a corpus grown since,
-and then the holds are not a ladder downward. Every other term is older than
-the fit rather than newer, so a mobility refit is `--hold tables --hold shelter
---hold pawn_structure --hold king_attack` and the mobility weights are the only
-thing that moves. Which holds a run passes follows from the one term it means
-to move, not from where that term sits in the vector.
-
-`--sealed` names the sealed group in a file rather than drawing it from the
-keys, one pair key to a line. The key rule seals the same fifth of the archive
-every time it is asked, because which fifth that is depends on the pairs and
-not on when they were played; so a vector revised after the group has been
-opened has no unread group left to be read against. The games that settle that
-are the ones played since, and naming them is how a run says so. Both halves
-of the tuner take the flag and both must be given the same file: a corpus
-built with one seal and fitted against another labels its rows by one group
-and holds out a different one. `tune.py final` still refuses a second reading
-of the same sealed games, by checksum over whichever group it is handed.
+A fit of a new term holds everything older: the shelter was fitted under
+`--hold tables --hold mobility`, the pawn structure under those and `--hold
+shelter`, and the king attack zone under those and `--hold pawn_structure`. A
+refit of an older term on a grown corpus holds every other term instead, so a
+mobility refit is `--hold tables --hold shelter --hold pawn_structure --hold
+king_attack`. The holds follow from the one term the run means to move.
 
 ## What the table's key signature costs
 
-An entry keeps thirty two bits of the position key rather than all sixty
-four, so two positions can agree on the bits the table compares and the
-search reads one of them as the other. The entry's comment puts that at about
-one probe in a thousand million. `audit` replaces the guess with a count:
+An entry keeps thirty two bits of the position key rather than all sixty four,
+so two positions can agree on the bits the table compares and the search reads
+one as the other. The entry's comment puts that at about one probe in a
+thousand million. `audit` counts it:
 
 ```
-target/release/arche bench 7 hash 1 audit
+target/release/arche bench hash 1 audit
 ```
 
-It keeps the full key of every entry beside the entries and prints two lines
-of whole-suite totals after the table:
+It keeps the full key of every entry beside the entries and prints two lines of
+whole-suite totals after the table. At e67d711, at the bench's depth on a one
+megabyte table:
 
 ```
-signature audit: probes 1090384, hits 241618, comparisons 1919443, false accepts 0 (0.000 expected), false accept cutoffs 0, aliased evictions 0
-narrow signature: 16 bit accepts 20 (29.288 expected), 24 bit accepts 0 (0.114 expected), 28 bit accepts 0 (0.007 expected)
+signature audit: probes 4446265, hits 921512, comparisons 11416161, false accepts 0 (0.003 expected), false accept cutoffs 0, aliased evictions 0
+narrow signature: 16 bit accepts 162 (174.194 expected), 24 bit accepts 3 (0.678 expected), 28 bit accepts 0 (0.040 expected)
 ```
 
-Those counts are one run of one build. They move with any change to the tree
-or to what the table keeps, so read the shape and not the digits.
+The counts move with any change to the tree or to what the table keeps, so read
+the shape and not the digits.
 
-The word turns the shadow keys on for the tables the bench builds and for
-nothing else, so a session that plays games never allocates them. Detection
-changes nothing: a probe that was a false accept hands back what it would
-have handed back unaudited. An audited table starts empty, because an entry
-stored before the audit began has no key on the side and every probe would
-read it as a stranger's.
+The word turns the shadow keys on for the tables the bench builds and nothing
+else, so a session that plays games never allocates them. A false accept hands
+back what it would have handed back unaudited. An audited table starts empty,
+because an entry stored before the audit has no key beside it.
 
-The two lines have two denominators. Probes, hits, comparisons and false
-accepts count keyed lookups; aliased evictions count stores. A comparison is
-one live entry a probe compared its slice against, whose full key turned out
-to belong to another position. Only the entries that probe really looked at
-are counted, so each comparison is one chance in two to the signature's width
-and every expectation on either line is drawn from the total.
+Probes, hits, comparisons and false accepts count keyed lookups; aliased
+evictions count stores. A comparison is one live entry a probe really compared
+its signature against whose full key belonged to another position, so each is
+one chance in two to the signature's width, and every expectation is drawn from
+that total. An aliased eviction is a store that landed in a slot the signature
+said was its own and replaced another position's entry. A store the depth
+contest turned away after comparing itself with a foreign entry is a related
+cost but evicted nothing, so it is not counted.
 
-An aliased eviction is a store that landed in a slot the slice said was its
-own and replaced another position's entry there. Landed stores only. A store
-the depth contest turns away after comparing itself against a foreign entry's
-depth is a related cost, since it compared against the wrong position and its
-own result went unstored, but nothing was evicted and it is not in the
-figure.
+The thirty two bit count cannot say anything on its own: a run of this size
+expects a few thousandths of a false accept, so a zero is what a working
+instrument and a dead one both print. The narrow line is the check. It counts
+the comparisons a narrower signature would have accepted and this one refused,
+at sixteen, twenty four and twenty eight bits. Sixteen is the same rate scaled
+by sixty five thousand, so a count near its expectation says the rate really
+does scale by two to the minus the width on this workload, and the thirty two
+bit expectation can then be believed where its observation cannot.
 
-The thirty two bit observation cannot say anything on its own. A run of this
-size expects half a thousandth of a false accept, so a zero is what a
-working instrument and a dead one both print. That is what the narrow line is
-for. It counts the comparisons a narrower signature would have accepted and
-this one refused, at sixteen bits, twenty four and twenty eight. Sixteen is
-the same rate scaled by sixty five thousand, so the figure is a couple of
-dozen instead of about zero, and a count near its expectation says the rate
-really does scale by two to the minus the width on this workload. The thirty
-two bit expectation beside it can then be believed where its observation
-cannot.
-
-Twenty four and twenty eight are the widths the signature would be left with
-if four or eight of its bits went to some other piece of metadata, which is
-the question they answer: what reclaiming those bits would cost the table.
-Neither is measurable at the sizes the command runs at. At the bench's depth
-and table twenty four expects under two accepts and twenty eight a tenth of
-one, and the depth seven example above, on a megabyte, expected an eighth and
-a hundred and fiftieth. A zero or a two on either is the run being too short
-to have an opinion rather than a bit budget with room in it, so what the
-reader takes from those two is the expectation and not the count. The count
-bounds it, and nothing at these sizes can do more.
-
-The widths are cumulative by construction. An entry whose low twenty four
-bits agree agrees on sixteen as well, and is counted under both, so each
-figure is read against its own expectation and the three are never added
-together. The counts therefore fall as the width rises, which
-`the_counts_fall_as_the_width_rises` in `arche-core/src/transposition.rs`
-checks on a probe sequence built to make them fall.
-
-The narrow figures are counted and never acted on: a search really running
-one of these widths would have stopped its scan at the first entry it
-accepted, which is a different tree.
+Twenty four and twenty eight are the widths left if four or eight bits went to
+other metadata, which is what they answer. Neither is measurable at the sizes
+the command runs at: their expectations are under one accept, so a zero or a
+three is the run being too short to have an opinion, and what the reader takes
+from them is the expectation. The widths are cumulative (an entry agreeing on
+twenty four bits agrees on sixteen and counts under both), so each count is read
+against its own expectation and the three are never added.
+`the_counts_fall_as_the_width_rises` in `arche-core/src/transposition.rs` checks
+the counts fall as the width rises. The narrow figures are counted and never
+acted on: a search running one of these widths would have stopped its scan at
+the first entry it accepted, which is a different tree.
 
 Read the narrow line off a small table. An entry is sixteen bytes, so a
-megabyte holds sixty five thousand and the default sixteen a million. The
-bigger positions store more entries than a small table has slots, so it is
-full by the end of them, its buckets hold four live entries and its
-comparisons run to tens of millions.
-
-The default table is not filled by any position now. The two tactical ones
-filled it, and that was enough for the sixteen bit count to reach a few
-hundred, but both are forced mates and mate distance pruning ended the
-search of them. The largest store is kiwipete's 402,233 against the million
-the table holds, and an audited bench reads 30 sixteen bit accepts against
-18.367 expected. At depth seven no position stored more than a third of its
-slots and the count was zero. The command does not sweep sizes itself.
+megabyte holds sixty five thousand, and the bench's default sixteen megabytes a
+million. The larger positions store more entries than a one megabyte table has
+slots, so it fills and its comparisons run past ten million. The default table
+fills on no position: the largest store is kiwipete's 402,233, and the audited
+default bench reads 30 sixteen bit accepts against 18.367 expected. The command
+does not sweep sizes itself.
 
 The audit costs eight bytes an entry, half the table's own size again, and
-refuses to run rather than run unaudited if there is not the memory for them.
-An audited run and a plain one search the same tree, which the node counts
-say.
+refuses to run rather than run unaudited if the memory is not there. An audited
+run and a plain one search the same tree, which the node counts show.

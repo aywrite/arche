@@ -6,28 +6,20 @@
 cargo build --release
 ```
 
-The binary is written to `target/release/arche` (`arche.exe` on windows). It starts
-in uci mode immediately. Eight arguments do anything else, six of them
-measurements. `bench`, with the depth, table and policy words described below,
-prints the bench and exits; `residuals`, `cutoffs`, `reductions` and `effort`
-measure the search and `terms` measures the evaluation, each with a section of
-its own in [INSTRUMENTS.md](INSTRUMENTS.md). `--version` and `--help` are answered too.
+The binary is written to `target/release/arche` (`arche.exe` on windows).
+`arche --help` lists its arguments. `bench` is described below, and the
+measurements of the search and the evaluation are in
+[INSTRUMENTS.md](INSTRUMENTS.md).
 
 The release profile uses link time optimisation and a single codegen unit, so a
-release build is noticeably slower to compile than a debug one but is several
-times faster to search. Always measure with a release build.
+release build is slower to compile than a debug one and several times faster to
+search. Always measure with a release build.
 
-On x86-64 that build targets `x86-64-v2`, which `.cargo/config.toml` sets and
-which the comment there explains: the unqualified target predates popcnt, and
-the mobility count and the bit popping in the generator pay for that at every
-leaf and every move. It is 4.54% of the bench's instructions with the node
-count unchanged.
-
-The level asks for sse4.2 and popcnt, which arrived with Intel's Nehalem in
-2008 and AMD's Bulldozer in 2011. A chip sold later is not the same as a chip
-that has it, since Core 2 ran to 2011 and the first Atoms to 2013. A machine
-without it builds the baseline, which is also how to reproduce a figure taken
-before the default moved:
+On x86-64 the build targets `x86-64-v2` (sse4.2 and popcnt), set in
+`.cargo/config.toml`, whose comment has the measurement behind it and how a
+personal cargo configuration combines with it. A machine without the level
+builds the baseline, which is also how to reproduce a figure taken before the
+default moved:
 
 ```
 RUSTFLAGS= cargo build --release
@@ -35,176 +27,127 @@ set RUSTFLAGS=&& cargo build --release        rem cmd
 $env:RUSTFLAGS=''; cargo build --release      # powershell
 ```
 
-A `RUSTFLAGS` that is set at all replaces the file rather than adding to it,
-and so does a `target.<cfg>.rustflags` of your own. The release workflow names
-a level for each of the three variants it builds, so its archives are built at
-the level their names claim; `shell.nix` restates the level for the same
-reason. A personal `build.rustflags` is dropped here rather than merged.
+A `RUSTFLAGS` that is set at all, even empty, replaces the file's flags, which
+is why the release workflow names a level for each variant it builds and
+`shell.nix` restates the level.
 
 ## Tests
 
 ```
 cargo test --workspace --release
-```
-
-The release run is the quicker of the two and the usual choice for a pass
-while working. The debug run is the one that checks the most, so run it before
-landing a change: the debug profile keeps the overflow checks and the board's
-state-in-step assertions, which verify the position key, the pawn key, the
-eval accumulators, the square array and the en passant rule against a
-recompute on every move made. Release compiles all of that out, so a green
-release run alone says nothing about them.
-
-```
 cargo test --workspace
 ```
 
-That run is compiled optimised, `opt-level = 2` on the test profile in the
-root manifest. Cargo leaves `debug-assertions` and `overflow-checks` on
-whatever the optimisation level is, so nothing the run checks is given up
-for the speed. Unoptimised it took a minute, most of that the two perft
-suites walking a hundred and twenty million checked moves; optimised it takes
-about twenty five seconds and costs six seconds more to compile. The two
-pinned bench searches were the longest single tests in either run for as long
-as a proven mate was searched again on every iteration deeper, forty nine
-million nodes between them. Mate distance pruning left under four million,
-and raising the depth to eleven brought them to 8,494,469. The perft suites
-are the longer ones again.
+The release run is the quicker and the usual choice while working. Run the
+second before landing a change. It keeps the overflow checks and the board's
+state-in-step assertions, which check the position key, the pawn key, the eval
+accumulators, the square array and the en passant rule against a recompute on
+every move made. Release compiles all of that out, so a green release run says
+nothing about them. The second run is still compiled optimised (`opt-level =
+2` on the test profile in the root manifest), which leaves those checks on.
+The perft suites are its longest tests.
 
-Neither of the two suites is in either run. The tactical one searches three
-hundred positions and takes ten seconds or so, and the strategic one searches
-fifteen hundred and takes about thirteen, so both are marked ignored and asked
-for by name, in a job of their own in ci with a step each. Locally they are
-asked for the same way, since `--ignored` alone also runs `regenerate_magics`,
-which prints replacement constants rather than checking anything:
+The tactical and strategic suites are in neither run. They are marked ignored
+and asked for by name, locally as in ci, since `--ignored` alone also runs
+`regenerate_magics`, which prints replacement constants rather than checking
+anything:
 
 ```
 cargo test --workspace --release -- --ignored the_suite_finds_what_it_found_before
 cargo test --workspace --release -- --ignored the_strategy_suite_scores_what_it_scored_before
 ```
 
-The tactical suite counts how many of its positions the search finds the move
-in, at a fixed depth with a fixed table, which makes the count exact and the
-same on any machine the way the bench's node count is. So it gates: the
-expected count lives beside the suite in `arche-core/src/tactics.rs` and the
-test fails if the suite finds a different number, whether fewer or more. A
-change that finds more updates the number in the commit that earned it, which
-is the point. The bench says how much of the tree moved and this says whether
-the answers got better, and a change that moves one and not the other is worth
-seeing.
+The tactical suite counts how many of its three hundred positions the search
+finds the move in, at a fixed depth with a fixed table, so the count is exact
+and the same on any machine. `EXPECTED_PASSES` in `arche-core/src/tactics.rs`
+pins it and the test fails on any other count, fewer or more. A change that
+moves it updates the number in the same commit, and the count may never fall
+under `FLOOR` in the same file. The bench says how much of the tree moved and
+this says whether the answers got better.
+
+The strategic suite is the Strategic Test Suite, fifteen themes of a hundred
+quiet positions each, taken from the copy fsmosca/STS-Rating publishes under
+the MIT licence, pinned at a commit and a checksum because that repository
+revises positions on its default branch. Version five of the file is the one
+taken: it scores ten moves a position where version three scores four, so the
+engine's move is usually somewhere on the scale. The scores are out of a
+hundred from a Stockfish 15 analysis of sixty seconds a position, so the suite
+grades rather than passes or fails: a second best move earns most of the
+points. `EXPECTED_POINTS` in `arche-core/src/strategy.rs` pins the total (out
+of 149703) and the test fails on any other. A failure prints the fifteen
+themes' points side by side, so it says which of them moved.
+
+The tactical suite says whether the search still finds the move. The strategic
+one says whether the evaluation still prefers the same kind of position, which
+the tactical count can miss and the games only show after thousands of them.
+
+The strategic total cannot say which way the evaluation moved, and its noise
+is large. Changing one of the fourteen king shelter weights by one centipawn,
+far too small to be a strength change, moved the total by +242 one way and
+-170 the other. Over twenty eight such nudges it had a standard deviation of
+447, and single themes moved by as much as 510. The shelter fit took +44 elo
+and moved the total by -121. So a total read against zero, or a theme delta of
+a few hundred, is not a finding. Against another vector of the same size the
+suite discriminates well: the same fit scored about 2,300 points above a
+permutation of its own fourteen numbers and about 3,500 above random vectors
+of the same magnitude. So grade a term against permutations of its own weights
+rather than against its absence. (Measured on the shelter fit; recorded in
+acf076d, 12 September 2026.)
 
 `arche-core/tactics.epd` is generated by `scripts/build_tactics.py` from a
-published suite whose best moves are named in san, which the engine does not
-read; the script converts them once with python-chess so ci needs neither the
-network nor a san parser. Adding a position changes every count the suite has
-ever printed, so add to the end rather than edit, the same rule `bench.epd`
-carries.
+published suite whose best moves are in san, which the engine does not read;
+the script converts them once with python-chess so ci needs neither the network
+nor a san parser. `arche-core/strategy.epd` is generated by
+`scripts/build_strategy.py` from a source that also gives the moves in
+coordinate notation, so it needs no san parser. Adding a position to either
+file, or to `bench.epd`, changes every number it has ever printed, so add to
+the end rather than edit.
 
-The strategic suite beside it is the Strategic Test Suite, fifteen themes of a
-hundred positions each, taken from the copy fsmosca/STS-Rating publishes under
-the MIT licence and pinned there at a commit and a checksum, because that
-repository revises positions on its default branch. Version five of the file
-is the one taken: it scores ten moves where version three scores four, so the
-engine's move is usually somewhere on the scale rather than off it, and
-grading already handles the position with two nearly equal moves that version
-six's filter exists to remove.
-
-Its positions are quiet, and each carries up to ten moves scored out of a
-hundred by a Stockfish 15 analysis of sixty seconds a position. So it grades
-rather than passes or fails: a second best move is worth most of the points,
-and the total moves by a few where a count of solved positions would not move
-at all. That is what makes a suite of quiet positions worth having, since a
-quiet position rarely has the one answer a tactic has.
-
-It gates the same way, on an exact total. `EXPECTED_POINTS` in
-`arche-core/src/strategy.rs` pins it, out of the 149703 on offer, and the test
-fails on any other total. The number is read there rather than quoted here,
-because it moves with every change to the evaluation and a copy of it in this
-file had already gone stale. A failure prints the fifteen themes with their
-points beside each other, so it says which of them moved rather than only that
-the total did.
-
-What the two are for is the difference between them. The tactical suite says
-whether the search still finds the move; the strategic one says whether the
-evaluation still prefers the same kind of position, which is a change the
-tactical count can miss entirely and the games only show after thousands of
-them.
-
-What the strategic total cannot do is say which way the evaluation moved, and
-the size of that is worth knowing before a total is read. Changing one of the
-fourteen king safety weights by one centipawn, which is far too small to be a
-strength change, moves the total by +242 one way and -170 the other. Over
-twenty eight such nudges it has a standard deviation of 447, and single themes
-move by as much as 510. The king safety fit itself took +44 elo and moved the
-total by -121, which is a tenth of the spread its own churn implies. A total
-read against zero is a reading inside that noise, and a theme delta of a few
-hundred is not a finding about the theme.
-
-Against another vector of its own size the suite discriminates well. The same
-fit scores about 2,300 points above a permutation of its own fourteen numbers
-and about 3,500 above random vectors of the same magnitude, both far outside
-the noise, and it ranks a grossly overweighted version of itself below all of
-them. So a term is graded here against permutations of its own weights rather
-than against those weights being absent.
-
-`arche-core/strategy.epd` is generated by `scripts/build_strategy.py`. The
-source names its moves twice, in san and in the coordinate notation the engine
-already speaks, so that script keeps a column and needs no san parser and no
-python-chess. Adding a position changes every total the suite has ever
-printed, so add to the end rather than edit, the same rule the other two suite
-files carry.
-
-Coverage has a workflow of its own and no trigger but the actions tab. It is
-not measured on a push or on a pull request, because instrumented the suite
-takes eighteen minutes or so, most of it the perft tests and the bench pin,
-whose depths are the whole point of them; that is a real bill and nothing
-gates on the number. The eighteen was measured before the bench depth went
-to nine and has not been taken again. Run it when the question is what the
-tests have never reached.
-Locally that wants the component the instrumented build needs, which is
-deliberately not in `rust-toolchain.toml` so that cloning does not install it
-for somebody who will never use it:
+Coverage has a workflow of its own, run from the actions tab only, because
+instrumented the suite took about eighteen minutes when last measured (at the
+bench depth of seven), most of it the perft tests, and nothing gates on the
+number. Run it when the question is what the tests have never reached. Locally
+it wants a component that `rust-toolchain.toml` leaves out on purpose, so that
+cloning does not install it:
 
 ```
 rustup component add llvm-tools-preview
 cargo llvm-cov --workspace
 ```
 
-The helper scripts have tests of their own, run with pytest and gated in ci by
-the Scripts workflow. They pin the output formats the scripts parse (a
-fastchess result, the bench's last line, a pgn), so an upstream that changes
-shape fails a test instead of quietly publishing the wrong number:
+The helper scripts have tests of their own, gated in ci by the Scripts
+workflow. They pin the output formats the scripts parse (a fastchess result,
+the bench's last line, a pgn), so an upstream that changes shape fails a test
+instead of publishing the wrong number:
 
 ```
 python3 -m pip install -r scripts/requirements.txt
 python3 -m pytest scripts/tests
 ```
 
-The tests that run a shell script are skipped on windows, which cannot run
-one through its shebang; from a windows clone run them under wsl. The scripts
-are checked out with unix line endings whatever `core.autocrlf` says, so that
-works on the same checkout.
+The tests that run a shell script are skipped on windows, which cannot run one
+through its shebang; run them under wsl from the same checkout, since the
+scripts are checked out with unix line endings whatever `core.autocrlf` says.
 
 ## Lints
 
-Both of these are gated in ci:
+Both are gated in ci, and a clean tree prints no warnings:
 
 ```
 cargo fmt --all --check
 cargo clippy --workspace --all-targets -- -D warnings
 ```
 
-A clean tree prints no warnings. The const evaluation behind `MAGIC` runs
-long enough to trip the `long_running_const_eval` lint, and the `allow` beside
-it covers that; taking it off fails the build, so it is not spare. Past twice
-that length rustc also prints that the evaluation is taking a long time, which
-no `allow` silences, so the loops that build the tables make no call they can
-do without, since the interpreter runs each one on every pass.
+The `allow(long_running_const_eval)` beside `MAGIC` in `arche-core/src/magic.rs`
+is needed: the lint is deny by default and the const evaluation that builds the
+tables trips it. Past about twice that length rustc also prints a warning no
+`allow` silences, so the loops that build the tables make no call they can do
+without.
 
-The pre-commit configuration runs the formatter, and `cargo check` in place of
-clippy, along with a check that the commit message is a conventional commit,
-which is what the changelog is generated from, and carries the trailers its
-kind requires, which are described below:
+The pre-commit configuration runs the formatter and `cargo check`, and on the
+commit message checks that it is a conventional commit with a known scope
+(what the changelog is generated from) and that it carries the trailers its
+kind requires:
 
 ```
 pip install pre-commit
@@ -214,7 +157,7 @@ pre-commit install --install-hooks
 ## Commit messages
 
 The changelog separates changes to the engine from changes to everything around
-it, which it works out from the type and the scope:
+it, and works that out from the type and the scope:
 
 ```
 perf(search): Index the hash table without dividing
@@ -222,11 +165,9 @@ perf(bench): Stop the search benchmark timing a 500MB memset
 ```
 
 The first is the engine getting faster and belongs under **Performance**. The
-second is a benchmark getting faster, which says nothing about how the engine
-plays, and belongs under **Development**. Only the scope tells them apart.
-
-So the scope is required, and has to be one of these. The build ones put a
-commit under **Development** whatever its type is:
+second is a benchmark getting faster and belongs under **Development**. Only
+the scope tells them apart, so the scope is required and has to be one of
+these. The build ones put a commit under **Development** whatever its type:
 
 | scope | covers |
 | --- | --- |
@@ -255,14 +196,14 @@ The engine ones are grouped by type instead:
 `feat`, `fix`, `perf`, `refactor` and `docs` get a section each, and `build`,
 `chore`, `ci`, `style` and `test` all go to **Development**.
 
-The commit-msg hook rejects a scope that is not on the list, which is the point:
-a mistyped `perf(benchmark)` would otherwise be published as if the engine had
-got faster. Adding a scope means adding it to the hook arguments in
-`.pre-commit-config.yaml`, to the table above it belongs in, and to
-`cliff.toml` if it is a build one or to `scripts/check_trailers.py` if it is
-an engine one that states a bench; `scripts/tests/test_scopes.py` fails until
-the four agree. One grouped by type but stating no bench, as `uci` is, goes in
-that test's `NEITHER` instead of the trailer check. Merge commits are exempt.
+The commit-msg hook rejects a scope that is not on the list, so a mistyped
+`perf(benchmark)` is not published as if the engine had got faster. Adding a
+scope means adding it to the hook arguments in `.pre-commit-config.yaml`, to
+the table above, and to `cliff.toml` if it is a build one or to
+`scripts/check_trailers.py` if it is an engine one that states a bench;
+`scripts/tests/test_scopes.py` fails until the four agree. An engine scope
+that states no bench, as `uci` is, goes in that test's `NEITHER` instead of
+the trailer check. Merge commits are exempt.
 
 `git-cliff --unreleased` prints what the next release would say, which is the
 quickest way to check a scope landed where it should.
@@ -270,49 +211,46 @@ quickest way to check a scope landed where it should.
 ## Commit trailers
 
 A commit that changes the engine carries the bench after it, so the history
-says how much of the tree each change looks at, and a commit that claims
-speed carries how much it measured. Both are trailers, the `Key: value` lines
-git keeps at the end of a message, and the commit-msg hook checks them:
+says how much of the tree each change looks at, and a commit that claims speed
+carries how much it measured. Both are trailers (the `Key: value` lines git
+keeps at the end of a message), and the commit-msg hook checks them:
 
 | trailer | required on | produced by |
 | --- | --- | --- |
-| `Bench: 4395471` | `feat`, `fix`, `perf`, `refactor` and `revert` to `board`, `eval`, `magic`, `search` or `zobrist` | `scripts/bench_trailer.sh` |
+| `Bench: 6810240` | `feat`, `fix`, `perf`, `refactor` and `revert` to `board`, `eval`, `magic`, `search` or `zobrist` | `scripts/bench_trailer.sh` |
 | `Speed: +3.1% (bench nps, 95% interval +2.4% to +3.9%, 15 interleaved rounds over shuffled layouts vs a1b2c3d)` | `perf` to one of those scopes | `scripts/speed.sh` |
 | `Elo: +12 ±8 (sprt [0, 10] passed, 1240 games, 10+0.1, vs v0.3.10)` | nothing, checked when present | the Strength workflow's summary |
 
-So an engine commit is made as
+An engine commit is made as
 
 ```
 git commit --trailer "$(scripts/bench_trailer.sh)"
 ```
 
-and a perf commit adds `--trailer "$(scripts/speed.sh | tail -n 1)"`, which
-keeps its build under `target/speed/`. The interval it prints beside the
-change is what the change has to be read against: a plus three whose interval
-reaches down to plus one is not a claim. What it does and how to read the
-rest of its report are under The bench and speed below. Trailers written
-before September 2026 carry the range of the rounds as a spread instead of
-an interval, and the hook now refuses that shape, so a perf commit measured
-before then is measured again.
-Both scripts build the tree as it stands rather than as it is staged, so
-stage everything first. A refactor that moves nothing still states the bench,
-since unchanged is a claim worth making, and the Bench workflow builds every
-commit that states one and counts it, so a wrong number fails the pull
-request. A commit rebased before it lands is not the commit that was built,
-though, so the same workflow reads every commit pushed to master against the
-counts its own tree pins, which is the same number without the build: the
-message that passed on one base has to still be true on the one it arrives
-on. The trailers are the final paragraph of the message and nothing
-else, which is how git reads them, and the bench has to be the last bench
-number anywhere in the message, because that is the one openbench reads, so
-a sentence that names one goes above them.
+and a perf commit adds `--trailer "$(scripts/speed.sh | tail -n 1)"`. Both
+scripts build the tree as it stands rather than as it is staged, so stage
+everything first. The interval in the `Speed:` trailer is what the change is
+read against: a plus three whose interval reaches down to plus one is not a
+claim. Trailers written before 9c0369c (26 September 2026) carry the range of
+the rounds as a spread instead, and the hook refuses that shape, so a perf
+commit measured before then is measured again.
 
-The Elo line is pasted from the Strength workflow's summary, which prints it
-ready to use, and `Elo: not measured` is the honest alternative on a change
-that was not played. What it says it was measured against has to be a commit
-or a release tag: a branch moves, so `vs master` names what master is on the
-day the trailer is read rather than what played the games, and the run's own
-artifacts are kept for ninety days. The changelog prints all three after the
+A refactor that moves nothing still states the bench, since unchanged is a
+claim worth making. The Bench workflow builds every commit that states one and
+counts it, so a wrong number fails the pull request. A commit rebased before it
+lands is not the commit that was built, so the same workflow also reads every
+commit pushed to master against the counts its own tree pins.
+
+The trailers are the final paragraph of the message and nothing else, which is
+how git reads them. The bench has to be the last bench number anywhere in the
+message, because that is the one openbench reads, so a sentence that names one
+goes above the trailers.
+
+The `Elo:` line is pasted from the Strength workflow's summary, and `Elo: not
+measured` is the honest alternative on a change that was not played. What it
+was measured against has to be a commit or a release tag: `vs master` names
+whatever master is when the trailer is read, and the run's own artifacts are
+gone after ninety days. The changelog prints all three trailers after the
 entry.
 
 ## The bench and speed
@@ -324,196 +262,123 @@ target/release/arche bench
 ```
 
 It searches the positions in `arche-core/bench.epd` to a fixed depth with a
-fixed table and prints what each search counted: the move chosen and its
-score, nodes, the share of them quiescence visited, transposition cutoffs and
-stores, the draw tainted stores among them, the tainted cutoffs taken, the
-ones refused, the tainted results the policy declined to store, and the speed.
-The number of nodes a search visits is exact rather than timed, so it says the
-same thing on any machine, and `node_counts_have_not_moved` in
-`arche-core/src/bench.rs` pins it position by position. A deliberate change
-to the search is expected to move it, and the numbers are updated in the same
-commit so the diff shows how much more, or less, of each tree is being looked
-at. The last line, `<nodes> nodes <nps> nps`, is the one the match tools read,
-and `bench` is also a uci command. Both take a depth after the word, as in
-`arche bench 3`, for trying the command cheaply; the number that means
-anything is the one at the default. Both also take `hash <MB>` and
-`taint refuse|trust|skip|rule50`, as in `arche bench 7 hash 256 taint trust`, which are
-for measuring what the table and the draw taint policy do to a search rather
-than for pinning anything: the header states what a report ran with, so one
-can be rerun from it. A fourth word, `audit`, adds what the table's key
-signature costs and is described in [INSTRUMENTS.md](INSTRUMENTS.md). The
-suite, depth and table are chosen once, because changing any of them changes
-every number the bench has ever printed. The depth has been raised twice,
-each time after the search learned to prune. Seven to nine in September
-2026: the last bench at seven was 4,102,609 nodes and the first at nine
-52,404,553. Nine to eleven when mate distance pruning left the suite a
-twentieth of the size: the last bench at nine was 2,153,533 and the first at
-eleven 6,900,228. So a `Bench:` trailer or a note says the bench's depth at
-whichever of the three was current when it was written. It is not adjusted
-as it goes.
+fixed table and prints, for each, the move and score, the nodes, the
+transposition table and draw taint counters, and the speed. The node count is
+exact, so it says the same thing on any machine, and
+`node_counts_have_not_moved` in `arche-core/src/bench.rs` pins it position by
+position. A deliberate change to the search is expected to move it, and the
+numbers are updated in the same commit so the diff shows how much of each tree
+is being looked at. The last line, `<nodes> nodes <nps> nps`, is the one the
+match tools and the trailer read.
 
-Speed is measured against another build, never on its own: a rate says
-nothing across machines, and a single pair of runs says little on one.
-`scripts/speed.sh` builds the commit the tree stands on, from an export rather
-than a checkout so the tree is left as it is, and runs the bench for each side
-in turn with the side that goes first alternating. Each round's two runs give
-one ratio, which cancels whatever the machine was doing during that round.
-The change is the Hodges-Lehmann estimate over the ratios (the median of the
-averages of every pair of them), with the 95% interval the signed rank test
-gives, and that pair is the `Speed:` trailer a perf commit carries. Fewer
-than six rounds have no such interval and are refused. The interval narrows
-with the square root of the rounds, where the range of the rounds that was
-read before it only grew.
+`bench` is also a uci command. Both take a depth after the word, as in `arche
+bench 3`, for trying the command cheaply; the number that means anything is the
+one at the default. Both also take `hash <MB>` and `taint
+refuse|trust|skip|rule50`, as in `arche bench 7 hash 256 taint trust`, for
+measuring what the table and the draw taint policy do rather than for pinning
+anything; the header states what a run used, so it can be rerun from it. A
+fourth word, `audit`, adds what the table's key signature costs and is
+described in [INSTRUMENTS.md](INSTRUMENTS.md).
 
-A binary's rate also depends on where its code and tables landed: a hot loop
-that straddles a cache line or a branch that shares a predictor slot with
-another costs time, and the addresses that decide it change with almost any
-edit. Over the pull requests up to #321, those that changed no build input
-(so that both sides were one binary) had an interval that excluded zero in 4
-of 53, close to the one in twenty the confidence allows. Release version
-bumps and comment sweeps, which change little beyond where the code lands,
-posted offsets near 1.5% whose intervals excluded zero. That offset belongs to the build and not to
-the run, so no number of rounds on one binary a side removes it, and it
-belongs to the build and not to the change, since the next unrelated commit
-draws a new one.
+The suite, depth and table are fixed because changing any of them changes every
+number the bench has ever printed. The depth has been raised twice, each time
+after the search learned to prune: seven to nine in 2d51671 (the last bench at
+seven was 4,102,609 nodes and the first at nine 52,404,553), and nine to eleven
+in f18492d, after mate distance pruning shrank the suite to a twentieth (the
+last at nine was 2,153,533 and the first at eleven 6,900,228). A `Bench:`
+trailer or a note states the depth current when it was written and is not
+adjusted.
 
-So each round runs on a layout of its own. `scripts/layouts.sh` builds a side
-once and links the same compiled code again into as many layouts as there are
-rounds: layout i moves the start of `.text` by a multiple of sixteen bytes
-and has lld order the input sections, code and data, by seed i, about thirty
-milliseconds a layout. Shuffling needs lld, which rustc links x86_64 linux
-with by default. Round i runs layout i on both sides. The draw each build
-would have carried into the change is then spread through the rounds, where
-the interval measures it with the rest of the noise, and the estimate is the
-typical change across layouts (a Hodges-Lehmann estimate, so a median of
-sorts rather than a mean). What a change does to layout systematically
-survives that: a hot path that grew past the micro-op cache is slower on
-most layouts. What it loses is the luck of one draw. What it does not cover
-is a change in the code the compiler emits, which an edit can also make. On four
-runners of the layout spike the draw had a standard deviation of about 0.7%
-a build, which is what the interval now takes in.
+### Measuring speed
 
-A verdict then holds the interval against a threshold, set with
-`--threshold`. The change is called faster or slower only when the whole
-interval is past it, and no change only when the whole interval is inside it.
-Anything else is not resolved. Over layouts the threshold is 1% by default.
-It is no longer a floor under a bias the interval cannot see, only the
-smallest change worth calling one, and it has to be one an interval can
-clear. A version bump, which moves the code and nothing else, measured over
-forty shuffled layouts on four runners, gave intervals from ±0.2% to ±1.1%,
-and three of the four were inside ±1%. The same seed on nearly the same code
-gives nearly the same layout, so the pairing takes out most of the draw; a
-larger change pairs less closely and its interval is wider, and fifteen
-rounds locally are wider again. Measured on one binary a side, which
-`LAYOUTS=off` asks for, the threshold is 2%, set above the 1.5% offsets.
+Speed is measured against another build, never on its own: a rate says nothing
+across machines, and a single pair of runs says little on one.
+`scripts/speed.sh [base]` builds the base commit (head by default) from an
+export, so the working tree is left alone, and hands both sides to
+`scripts/speed.py`, which runs the bench for each side in turn with the side
+that goes first alternating. Each round's two runs give one ratio, which
+cancels whatever the machine was doing during that round. The change is the
+Hodges-Lehmann estimate over the ratios (the median of the averages of every
+pair of them), with the 95% interval the signed rank test gives, and that is
+the `Speed:` trailer. Fewer than six rounds have no such interval and are
+refused. The interval narrows with the square root of the rounds.
 
-`speed.py` then measures the two default links, the builds a release would
-ship, for a third of the rounds and at least six, and prints the change on
-them on a line marked diagnostic under the paired change. The verdict and the
-trailer do not read it. A default layout far from the rest says the change
-moved the draw, which is worth seeing and is not a speed change. The default
-link is not a random draw either: with one codegen unit it keeps the order
-LLVM emitted, which tends to keep callers near callees, so a change can
-matter there and not across shuffles, or the other way.
+A binary's rate also depends on where its code landed: a hot loop that
+straddles a cache line or a branch that shares a predictor slot costs time,
+and almost any edit moves the addresses that decide it. That offset belongs to
+the build, so no number of rounds on one binary a side removes it, and the
+next unrelated commit draws a new one. So each round runs on a layout of its
+own. `scripts/layouts.sh` links a side's compiled code again into as many
+layouts as there are rounds: layout i moves the start of `.text` by a multiple
+of sixteen bytes and has lld order the input sections by seed i (lld is what
+rustc links x86_64 linux with by default). Round i runs layout i on both
+sides, so the draw each build would have carried is spread through the rounds
+and the interval measures it. A systematic effect survives, such as a hot path
+grown past the micro-op cache; the luck of one draw does not. A change in the
+code the compiler emits is not covered.
 
-Shuffling undoes one kind of change: one whose point is where its functions
-sit, such as marking a path cold or ordering functions by hand. For that,
-`LAYOUTS=pad` keeps the order and only moves where the code starts, which on
-the spike moved the rate about as much as shuffling did, and the trailer says
-padded layouts. It also works under a link that is not lld's. `LAYOUTS=off`
-measures one binary a side as before.
+`speed.py` also measures the two default links, the builds a release ships,
+for a third of the rounds and at least six, and prints their change on a line
+marked diagnostic that the verdict and the trailer do not read. Shuffling
+undoes a change whose point is where its functions sit (a path marked cold,
+functions ordered by hand). `LAYOUTS=pad` keeps the order and moves only where
+the code starts, and works under a linker that is not lld. `LAYOUTS=off`
+measures one binary a side.
 
-One badly loaded round widens the interval rather than moving the estimate,
-because its averages with every other round sit together at one end. So a
-round whose pair ran more than 3% below the median pair, reading a pair by
-the geometric mean of its two rates, is run again at the end. It goes first
-on the same side the round it replaces did, at most a fifth of the rounds
-are replaced, and the report lists them. `--loaded` sets the cut, and
-`--loaded 0` keeps every round. Over layouts it is off unless asked for: a
-pair's rates then carry both sides' layout as well as the machine's load,
-alike when the two builds barely differ, so the rule would run a round again
-for the layout it drew.
+`speed.sh` runs fifteen rounds, or `ROUNDS`, over shuffled layouts unless
+`LAYOUTS` says `pad` or `off`. The other settings are `speed.py`'s own options,
+so to change one call it directly with the two sides:
 
-The pair says how fast the machine was that round and, when the two sides
-are as noisy as each other, nothing about their ratio. Reading each run
-against its own side's median looks like the same test and is not: it trims
-the low tail of whichever side is noisier, which is a tail of the ratio. In
-simulation with the candidate five times as noisy as the base, that moved a
-+1.0% change to +1.5% and a quarter of the intervals missed it. The pair
-leans the same way when the noise differs, by +0.06 at worst in those runs.
-With a tenth of the runs slowed by 3% to 15%, the pair rule took the
-interval at nine rounds from 7.0% wide to 4.1%, and at twenty five from
-2.0% to 1.4%, while the intervals held the true change 94% to 97% of the
-time. The runner's noise is mostly small and even, so over the pull
-requests up to #321 the rule marked 41 of 1,791 rounds and changed little.
-It is for a machine whose load comes in bursts. Load that keeps coming back
-uses up the replacements and ends in a wide interval, which the verdict
-calls not resolved.
+- `--threshold` is what the verdict holds the interval against. The change is
+  called faster or slower only when the whole interval is past it, no change
+  only when the whole interval is inside it, and not resolved otherwise. Over
+  layouts it is 1%, the smallest change worth calling one. On one binary a side
+  it is 2%, set above the offsets a build's layout alone gave.
+- `--loaded` (3% by default) runs a round again at the end when its pair ran
+  that far below the median pair, reading a pair by the geometric mean of its
+  two rates. At most a fifth of the rounds are replaced, and the report lists
+  them. `--loaded 0` keeps every round. It is for a machine whose load comes in
+  bursts, and is off over layouts unless asked for, since a pair's rates then
+  carry both sides' layout and the rule would rerun a round for the layout it
+  drew.
+- `--cpu 4`, `--cpu 4,5` or `--cpu 4-7` pins every bench to those cpus, the way
+  taskset reads them.
 
-Before the first round each side runs the bench once and the run is thrown
-away. Over 187 of the speed job's runs, the first run of a job was 1.13%
-below its side's median and the second 0.10%, so without it the first round
-leaned about a percent towards whichever side went second.
+The measurement behind each default is beside its constant or function in
+`scripts/speed.py`. Before the first round each side runs the bench once and
+the run is thrown away, since the first run of a job was measured running about
+a percent slow. Measure with nothing else building, pinned or not.
 
-The report also compares the mean of each side's faster half of its rounds.
-That is a diagnostic, not a second estimate: it has no interval, and the
-verdict does not read it. Trimming the slow runs suits noise that leans slow,
-which it does here. Over eighty rounds of one binary against itself on four
-runners, the slowest run sat 3.5% to 11.5% below the median and the fastest
-1.7% to 2.8% above. Scored on those rounds as speed jobs of 9, 15 and 25
-rounds whose true change was zero, the faster half had a root mean square
-error of 0.63%, 0.56% and 0.49%. The fastest run alone, which the column
-showed before, had 0.83%, 0.75% and 0.68%, and anything kept from a third
-to two thirds of the rounds did about as well as a half. A fixed count such
-as the best three is a third of nine rounds but an eighth of twenty five,
-where it did worse.
+The Bench workflow's speed job does the same on every pull request, over forty
+rounds of shuffled layouts with `--loaded 0`, both sides built and run on one
+runner. It posts the result as a comment (or to the job summary alone for a
+pull request from a fork) with the runner's cpu and each side's compiler. It
+reports and does not gate: the count is the claim, and the rate is the context
+it is read in.
 
-`--cpu 4` pins every bench to cpu 4, and `--cpu 4,5` or `--cpu 4-7` to
-several, the way taskset reads them. Under WSL on a desktop that mixes fast
-and slow cores, with other work running, pinning halved how far the paired
-change strayed at fifteen rounds. A WSL cpu is a virtual one the host can
-still move, so that is a measurement rather than a promise. Measure with
-nothing else building, pinned or not.
-
-The Bench workflow's speed job does the same on every pull request, with
-forty rounds over shuffled layouts rather than the local fifteen, both sides
-built and run on one runner. It posts the result as a comment, or to the job
-summary alone for a pull request from a fork, with the runner's cpu
-and the compiler each side was built with, since neither is the same from
-run to run. It reports and does not gate: the count is the claim, and the
-rate is the context it is read in.
-
-The report lists each round with its own change, then gives one row a side
-and a change row under it, then the paired change and its interval. The
-median and faster half cells in the change row compare each side's own rounds.
-The paired line is the one the trailer and the verdict read. When the two sides
-count the same nodes the change row leaves the nodes and time cells empty,
-because the time is then the rate upside down and says nothing the rate does
-not. When they differ both cells are filled, because the rate on its own is
-then misleading in both directions:
+The report lists each round, then a row a side with a change row under it,
+then the paired change and its interval, which is what the trailer and the
+verdict read. The faster half column is the mean of each side's faster half of
+its rounds: a diagnostic with no interval, which the verdict does not read.
+When the two sides count the same nodes the change row leaves the nodes and
+time cells empty, since the time is then the rate upside down. When they
+differ both are filled:
 
 ```
-              nodes    time  median nps  faster half
+           nodes    time  median nps  faster half
 base       51236454  7.31 s     7012455      7051903
 candidate  47598112  6.70 s     7101336      7149012
 change        -7.1%   -8.3%       +1.3%        +1.4%
 ```
 
-`nps` is nodes over time, so it already divides out the size of the tree: it
-answers what a node costs, and a search that visits a tenth fewer nodes at the
-same cost each shows +0.0% while finishing a tenth sooner. The time column is
-that missing number, and it is exact rather than a second measurement, since
-the count and the rate give it directly.
-
-Read neither as a claim when the counts differ. The two sides are averaging
-over different nodes, and a change that prunes can post a better rate purely
-because the nodes it stopped visiting were the dear ones, so the rate is no
-longer a like for like comparison of what a node costs either. The time column
-says what the change is worth at this depth; whether the smaller tree is the
-right tree is a question only games answer, which is what `Elo:` is for. The
-`Speed:` trailer keeps its one meaning, the change in rate against a named
-commit, so that a trailer written today and one written two years ago say the
-same kind of thing.
+`nps` divides out the size of the tree: a search that visits a tenth fewer
+nodes at the same cost each shows +0.0% while finishing a tenth sooner. The
+time column is that missing number. When the counts differ read neither rate
+as a claim, since a change that prunes can post a better rate because the
+nodes it stopped visiting were the dear ones. The time says what the change is
+worth at this depth, and whether the smaller tree is the right one is for games
+to say. The `Speed:` trailer keeps its one meaning, the change in rate against
+a named commit.
 
 Below what the rate can resolve, count instructions instead:
 
@@ -521,28 +386,22 @@ Below what the rate can resolve, count instructions instead:
 python3 scripts/instructions.py <base binary> <candidate binary>
 ```
 
-It runs each side's bench once under cachegrind with the cache simulation
-off and prints the instructions executed, the nodes, and the instructions a
-node. The count repeats to within a few hundred instructions (the clock reads
-differ), so one run a side is enough, and a change in the total far smaller
-than the rate can see is a real one. The count covers the whole process,
-startup and the tables' allocation included, so the per node column moves a
-little even when only the size of the tree changed. Cachegrind runs the bench
-about twenty five times slower than it runs natively. The speed job counts
-both sides after timing them and puts the count under the speed in its
-comment.
+It runs each side's bench once under cachegrind with the cache simulation off
+and prints the instructions, the nodes and the instructions a node. The count
+repeats to within a few hundred instructions (e9afc4d), so one run a side is
+enough and a change far smaller than the rate can see is a real one. It covers
+the whole process, startup included, so the per node column moves a little
+even when only the tree changed. The speed job counts both sides after timing
+them and adds the count to its comment.
 
-What it measures is narrower than speed. Cache misses, mispredicted branches
-and the code's alignment all cost time and no instructions, so a change that
-trades an instruction for a miss reads as a win here and a loss in the rate.
-It is also not free of the compiler: a change that should do nothing can
-move the count by a few tenths of a percent through different register
-allocation. Read the two together. A change the count shows and the rate
-cannot resolve is one in instructions only, and whether it is faster is
-still the rate's question.
+Cache misses, mispredicted branches and code alignment cost time and no
+instructions, so a change that trades an instruction for a miss reads as a win
+here and a loss in the rate. Register allocation alone can move the count by a
+few tenths of a percent. Read the two together: a change the count shows and
+the rate cannot resolve is one in instructions only.
 
 There are criterion microbenchmarks too, of move generation, perft and the
-search at a fixed depth, for profiling a change by hand:
+search at a fixed depth, for profiling by hand:
 
 ```
 cargo bench -p arche-core --bench benchmark
@@ -550,53 +409,39 @@ cargo bench -p arche-core --bench benchmark
 
 Criterion keeps its previous results under `target/criterion`, so benchmark
 master, apply the change, and benchmark again, and treat anything under about
-ten percent as noise. They do not run in ci: on a shared runner their single
-digit changes were noise with a confidence interval, and the bench's rate over
-a real search says more in a tenth of the time.
+ten percent as noise. They do not run in ci, where their single digit changes
+were noise.
 
-The search runs under a `SearchConfig`, and two configurations are named.
-The reference, `SearchConfig::reference()`, is alpha-beta with every shortcut
-off: its table only speeds it up, so a position searched warm answers as it
-does cold, and the tests in `arche-core/src/engine.rs` that say so build
-the reference and hold it to that for good. They are the soundness check: a
-change that claims to be sound keeps them green whatever else it moves. The
-default is what the engine plays with and what the bench prints. It parts
-company with the reference in fifteen places today: the fifty move guard,
-reverse futility, the null move pass, the plies that pass is searched
-shallower by growing with the node's depth, the delta margin and the losing
-capture skip in quiescence, the late move reduction that scouts a late
-quiet move shallower, the deep reduction that scouts a late quiet a ply
-shallower still, the index rule that decides that extra ply by the move's
-place in the order rather than by the model's threshold, the late move
-pruning that drops a late quiet the model puts in its deadest band without
-searching it at all, the quiet futility rule that
-drops a quiet after the node's first at depths one to three when the
-evaluation plus a pawn a ply cannot reach alpha, the late move count that
-drops a quiet at those same depths once the node has searched four moves a
-ply, the reduction table those two amounts are read off, the killers and
-history table the quiet moves are ordered by, and the aspiration window
-the deepening loop opens each
-iteration at.
+### The reference search
+
+The search runs under a `SearchConfig`, and two configurations are named. The
+reference, `SearchConfig::reference()`, is alpha-beta with every shortcut off:
+its table only speeds it up, so a position searched warm answers as it does
+cold, and the tests in `arche-core/src/engine.rs` that say so build the
+reference. They are the soundness check: a change that claims to be sound
+keeps them green whatever else it moves.
+
+The default is what the engine plays with and what the bench prints. Every
+field of `SearchConfig` except the taint policy is a switch the reference has
+off and the default on; the field comments say what each does. The taint
+policy is `rule50` in the default and `refuse` in the reference.
 `reference_node_counts_have_not_moved` pins the reference's tree beside the
-default's, so a commit's diff says which kind of change it carries. One that
-moves both counts touched the search the two share, the table, say; one that
-moves the default's alone is a shortcut or an ordering the reference does
+default's, so a commit's diff says which kind of change it carries: one that
+moves both counts touched the search the two share (the table, say), and one
+that moves the default's alone is a shortcut or an ordering the reference does
 not use.
 
 ## The instruments
 
-[INSTRUMENTS.md](INSTRUMENTS.md) has the five measurements of the search:
-`residuals`, `cutoffs`, `reductions`, `effort` and the bench's `audit` word.
-It also has
-`terms`, which measures the evaluation instead, and the loss harness under
-`scripts/` that reads what `terms` prints. None of them is needed to build,
-test or commit a change.
+[INSTRUMENTS.md](INSTRUMENTS.md) has the measurements the engine makes of its
+own search and of its evaluation, and the loss harness under `scripts/` that
+reads the evaluation's. None of them is needed to build, test or commit a
+change.
 
 ## Playing a match against a previous version
 
-Benchmarks measure speed, they do not measure whether the engine plays better.
-A change can search twice as fast and still lose games. For that, play the two
-versions against each other with
+A change can search twice as fast and still lose games. To see whether it
+plays better, play the two versions against each other with
 [fastchess](https://github.com/Disservin/fastchess) and an opening book such as
 [8moves_v3](https://github.com/official-stockfish/books).
 
@@ -612,37 +457,25 @@ fastchess \
   -rounds 200 -repeat -concurrency 2 -recover
 ```
 
-Notes on the flags:
-
-- `-startup-ms 20000` is needed because the engine allocates its 256MB
+- `-startup-ms 20000` gives each engine time to allocate its 256MB
   transposition table before it answers `uci`, which four copies starting at
-  once can take longer over than the ten second default allows. Generating the
-  magic bitboards used to dominate this and no longer does, they are constants
-  now, and the table is half what it once was, so the allowance is far more
-  generous than it still needs to be.
-- `-repeat` plays each opening twice with the colours reversed, which removes most
-  of the advantage of drawing a good opening. It takes no argument, it is a spelling
-  of `-games 2`.
-- `-recover` keeps the match going if an engine crashes rather than aborting.
-  Watch for `disconnect` in the output, a crashing engine scores zero for that
-  game and the result is no longer a fair estimate of strength.
+  once can take longer over than the ten second default allows. The allowance
+  is generous.
+- `-repeat` plays each opening twice with the colours reversed, which removes
+  most of the advantage of drawing a good opening.
+- `-recover` keeps the match going if an engine crashes. Watch for `disconnect`
+  in the output: a crashed game scores zero and the result is no longer a fair
+  estimate.
 
-A match can be played by node count instead of by the clock, with `nodes=N`
-in place of `tc=` in the `-each` arguments, which fastchess passes on as
-`go nodes N`. The search is deterministic, so a game played that way is
-reproducible move for move on any machine, which a clock on a shared runner
-cannot offer. The count does not see how long a node takes, though: a change
-that makes nodes faster or slower is invisible to it. Use nodes to compare
-what a search does and the clock to compare what it costs. The tree also
-moves with the size of the transposition table, so a replay needs the same
-table on both sides; the default is the same for every build, so the command
-as written is reproducible.
+A match can be played by node count instead of by the clock, with `nodes=N` in
+place of `tc=` in the `-each` arguments. The search is deterministic, so such a
+game is reproducible move for move on any machine at the same table size. The
+count does not see how long a node takes, so a change that makes nodes faster
+or slower is invisible to it. Use nodes to compare what a search does and the
+clock to compare what it costs.
 
-The error bar shrinks with the square root of the number of games, so roughly
-`800 / sqrt(games)` elo is the smallest difference a match can tell from none.
-Fifty games settles nothing below about a hundred elo. A change worth ten needs
-thousands of games, which is worth knowing before spending an afternoon on one
-that cannot be measured:
+Roughly `800 / sqrt(games)` elo is the smallest difference a match can tell
+from none, assuming every game is decisive:
 
 | games | smallest difference worth believing |
 | --- | --- |
@@ -650,14 +483,9 @@ that cannot be measured:
 | 500 | ~35 elo |
 | 5000 | ~11 elo |
 
-The **Strength** workflow does the same thing on a runner. Run it from the
-actions tab and it plays one version against another, reporting to the run
-summary. Every shard keeps its games as an artifact, with a manifest beside them
-saying what was played and on what, down to the opening each shard started at.
-The summary counts how the games ended as well, so a result that leant on
-forfeits or crashes says so; those games stay in the estimate either way.
-
-Both sides can be named, as a branch, a tag, a commit or a pull request number:
+The **Strength** workflow does the same on a runner, from the actions tab, and
+reports to the run summary. Both sides can be named as a branch, a tag, a
+commit or a pull request number:
 
 - `candidate` is what is being tested, and defaults to the ref the workflow was
   run against
@@ -666,290 +494,199 @@ Both sides can be named, as a branch, a tag, a commit or a pull request number:
 - `games` and `time_control` are the size and the speed of the match
 - `shards` is how many jobs it is split across
 
-So a change can be measured before it is merged by running the workflow with
-`candidate` set to the pull request number and leaving the rest alone, or two
-arbitrary commits compared by naming both.
+So a change can be measured before it merges by setting `candidate` to its pull
+request number and leaving the rest alone.
 
-A runner plays about three and a third games a minute at 10+0.1 and about one
-and a tenth at 30+0.3, and play is capped at 150 minutes, so a match worth
-reading is more games than one job can hold. `shards` jobs play it at once
-instead. Each takes a slice of the book of its own: the openings are read in
-book order from an offset, the first shard's offset is a remainder of the seed
-and each shard after it starts a slice further along, so no two shards play the
-same opening. The `book-slice` tool works the offsets out and the manifests
-record them, which is what makes a run replayable without depending on how
-fastchess draws its own openings. `match-estimate` pools the estimate over
-every shard and reads it off pairs, and mache's readme says why neither can be
-left to fastchess. A shard the clock stopped can leave a game with no partner,
-and such a game is in the score the shard table prints and in nothing else, so
-that the figure and the interval describe the same games.
+A runner plays about three and a third games a minute at 10+0.1 and one and a
+tenth at 30+0.3, and play is capped at 150 minutes, so a match worth reading is
+split into `shards` jobs that play at once. Each plays its own slice of the
+book, cut from the seed by `book-slice`, so no two shards play the same opening
+and the manifests make a run replayable. `match-estimate` pools the estimate
+over every shard and reads it off pairs. A game the clock left without a
+partner is in the shard table's score and in nothing else. Every shard keeps
+its games and a manifest as an artifact, and the summary counts how the games
+ended, so a result that leant on forfeits or crashes says so; those games stay
+in the estimate.
 
-The four tools a match is read with are the
+The tools a match is read with (`match-estimate`, `rating-estimate`,
+`match-terminations` and `book-slice`) are the
 [`mache`](https://github.com/aywrite/mache) package, which has a repository of
-its own and is not in this tree: `match-estimate` pools the shards,
-`rating-estimate` fits the placement below, `match-terminations` counts how the
-games ended and `book-slice` cuts the openings. Both workflows get them
-from its composite action, which builds fastchess and fetches the books in the
-same step, so a match job installs nothing. What each tool computes, and what
-its figures do and do not describe, is written there.
+its own. Both match workflows get them from its composite action, which also
+builds fastchess and fetches the books. What each tool computes, and why the
+pooling cannot be left to fastchess, is written there.
 
-The release workflow calls the same workflow with five hundred games at 30+0.3
-across five shards, which is about ninety minutes of wall clock, and that run is
-the only one that appends its result to the release notes. The slower control is
-the point of it: a release is a batch of changes screened at 10+0.1, and a change
-that prunes or reduces can look better there than it is, because the tree it cut
-is worth more when both sides search deeper. Five hundred games at that control
-settle about twenty five elo either side. The table above puts five hundred games
-nearer thirty five, because it assumes every game is decisive; the interval
-here is measured from the spread the games actually had, which draws and paired
-openings both narrow. Twenty five is enough to see a batch that has given back
-most of what it claimed. It is not enough to settle a difference of five, so the
-release match is a check on the batch rather than a measurement of any change in
-it.
+The release workflow calls Strength with five hundred games at 30+0.3 across
+five shards, about ninety minutes of wall clock, and that run is the only one
+that appends its result to the release notes. The slower control is the point:
+a release is a batch of changes screened at 10+0.1, and a change that prunes or
+reduces can look better there than it is. Five hundred games at that control
+settle about twenty five elo either side (narrower than the table above,
+because the interval is measured from the games' real spread, which draws and
+paired openings both narrow). That is enough to see a batch that has given back
+most of what it claimed, and not enough to settle a difference of five.
 
 ### The triggers a match can run under
 
 A match input can be a pull request number, so the job fetches
-`refs/pull/<n>/head`, builds that commit and plays it. That is code somebody
-without write access wrote, running on a runner.
+`refs/pull/<n>/head`, builds that commit and plays it: code somebody without
+write access wrote, running on a runner.
 
 `actions/resolve-ref` refuses unless the trigger is one where the ref was
 chosen by somebody who can already push: `workflow_dispatch`, `push`,
-`schedule` or `release`. Its readme says what that covers and what it does not,
-and the short version is that the trigger is the only part of this a step can
-read.
-
-The part that is this repository's to get right is the two lines the refusal
-cannot check. Both match workflows declare `permissions: contents: read` at the
-top and neither is given a secret, and those two facts are what make a pull
-request number safe to offer here. A workflow that granted `contents: write`
-and passed a secret would pass the refusal and be unsafe. Anyone adding a third
-match workflow writes those lines themselves.
+`schedule` or `release`. Its readme says what that covers. What it cannot
+check is this repository's to get right: both match workflows declare
+`permissions: contents: read` and neither is given a secret, which is what
+makes a pull request number safe to offer. A workflow that granted `contents:
+write` or passed a secret would pass the refusal and be unsafe. A third match
+workflow has to keep both.
 
 ### Which openings are played
 
-Strength and Calibrate both take a `book` input, and the books it can name are
-the blocks in `scripts/book.sh`, which is where a new one is added. A block is
-the file the book plays as, the format fastchess reads that file in, how many
+Strength and Calibrate both take a `book` input naming one of the blocks in
+`scripts/book.sh`: the file, the format fastchess reads it in, how many
 openings it holds and the sha256 of the unzipped file. A name with no block
-behind it stops the run in the resolve job rather than at the count:
+stops the run in the resolve job.
 
 | book | openings | |
 | --- | --- | --- |
 | `8moves_v3` | 34,700 | eight moves of a real game apiece, balanced |
 | `UHO_4060_v2` | 242,201 | one position a line, unbalanced on purpose |
 
-The default is `8moves_v3` in both workflows and stays there. Every figure in
-the ledger and in the release notes was played on it, so a figure on the other
-book is not comparable with any of them and a default changed by accident
-would make new numbers quietly incomparable with old ones. The second book is
-asked for.
-
-What the second book is for is telling an opening-set effect from a strength
-effect. Every figure either workflow has produced comes from the one opening
-set, so the two cannot be told apart at all, and the panel of opponents shows
-how large an offset of that kind can be: those rungs disagree with the fit by
-about ninety elo more than their game counts explain. Play the same match on
-both books and the difference between the two results is the openings.
-`UHO_4060_v2` is unbalanced by construction where `8moves_v3` is balanced, and
-under `-repeat` both engines play both colours of an opening, so that does not
-bias who wins. It raises how often a game is decided, which is what makes the
-pair a contrast.
-
-Counting openings is not one question. A pgn holds a game per opening and an
-epd holds a position a line, which is why the workflows ask `book.sh count` for
-the figure their slices are cut from rather than grepping for a tag pair.
+The default is `8moves_v3` in both workflows and stays there, because every
+recorded figure was played on it and a figure on the other book is not
+comparable. The second book exists to tell an opening-set effect from a
+strength effect: play the same match on both and the difference is the
+openings. The rungs of the first calibration panel disagreed with the fit by
+about ninety elo more than their game counts explained, which is the size an
+offset of that kind can reach. Under `-repeat` both engines play both colours
+of an unbalanced opening, so it does not bias who wins; it makes decisive games
+more common.
 
 Both books are fetched at a pinned commit of `official-stockfish/books` and
-checked against the sha256 the block names, and a file that arrives as anything
-else fails the run rather than being played. The action fetched from the
-repository's default branch, which is a branch, and a branch moves under the
-run that names it: the manifest's `book_sha256` would record the change with
-nothing failing. It is the reason `scripts/opponent.sh` refuses a branch for an
-engine. The action that fetches them builds its cache key from
-`scripts/book.sh pin`, so moving the pin cannot leave a cache handing back the
-old file under the new one's name. Both books are fetched whether or not a run
-plays them, since four and a half megabytes between them is less than an input
-to choose would be worth.
+checked against the block's sha256, so a file that changed upstream fails the
+run rather than being played. The fetching action keys its cache on
+`scripts/book.sh pin`, so moving the pin cannot hand back the old file.
 
 ### Asking whether instead of how much
 
-A fixed count answers "how big is the difference", and the table above says how
-badly. The question a change usually poses is the narrower "is there one", and
-that is what the `sprt` input asks. It runs a
+A fixed count answers "how big is the difference". The narrower question "is
+there one" is what the `sprt` input asks. It runs a
 [sequential probability ratio test](https://en.wikipedia.org/wiki/Sequential_probability_ratio_test):
 the games are weighed as evidence between two hypotheses, and the test ends at
-the first batch whose evidence accepts one of them. The verdicts are wrong at
-the accepted error rates, five percent each way.
+the first batch whose evidence accepts one of them, with five percent error
+each way.
 
-The unit of the test is a batch. One run plays a batch, or chains up to
-four. The shards
-play their slices with nothing watching, and the summary reads all of their
-games at once: `match-estimate` adds the pairs they played to the pairs the
-earlier batches of the same test played and works out the log likelihood ratio
-over all of them, under the same logistic model fastchess uses and against the
-same bounds. fastchess is not asked to run the test in ci, for the reason
-mache's readme gives under "The part that is not obvious".
+The unit of the test is a batch. The shards play their slices with nothing
+watching, and the summary reads all of their games at once: `match-estimate`
+adds their pairs to the pairs the earlier batches of the same test played and
+works out the log likelihood ratio over all of them, under fastchess's logistic
+model and bounds. mache's readme says why fastchess is not asked to run the
+test in ci, and why looking only between batches keeps the error rates.
 
-- `elo0` and `elo1` are the hypotheses, in the same elo the summary reports.
-  The defaults ask "is this worth ten elo, or nothing", about the size of
-  change worth an afternoon at this engine's strength. Bounds closer together
-  resolve smaller differences and pay for it in games.
-- `games` is the size of one batch rather than a cap. Five hundred across five
-  shards at 10+0.1 is about half an hour of wall clock, which is the default.
-  Play is capped at 150 minutes as it is for any match, so a shard the clock
-  stopped leaves a smaller batch rather than a lost one.
+- `elo0` and `elo1` are the hypotheses. The defaults, `[0, 10]`, ask "is this
+  worth ten elo, or nothing". Bounds closer together resolve smaller
+  differences and cost more games.
+- `games` is the size of one batch rather than a cap. The default, five hundred
+  across five shards at 10+0.1, is about half an hour of wall clock.
 - `batches` is how many batches one run may chain, one to four. Each is played
-  only where the one before settled nothing, so it caps the run rather than
-  planning it. It needs `sprt`: a run with no verdict has nothing for the next
-  stage to wait on, and is refused rather than quietly playing one batch.
+  only where the one before settled nothing, so a test that settles early costs
+  one batch. It needs `sprt`, and a run without it is refused.
 - `prior_pairs` is the pairs the earlier batches played, by what the candidate
-  scored in them, which the summary of the last one prints. Left empty the
-  batch is the first of its test.
+  scored in them, as the last summary printed them. Left empty the run opens
+  the test.
 
 A batch that settles the question says `passed` (stronger by about `elo1` or
 more) or `failed` (not) beside its estimate. One that does not says
-`inconclusive`, and its summary gives the five counts the batch after it takes
-as `prior_pairs`.
+`inconclusive` and prints the five counts the next batch takes as
+`prior_pairs`. The chained batches share a seed and reserve the book between
+them, so no two play the same opening. Past four batches, run the workflow
+again with the same `elo0`, `elo1`, candidate and baseline, and `prior_pairs`
+set to the last summary's counts; the seed is new, so the run plays fresh
+openings.
 
-`batches` plays that next batch in the same run. The stages wait on each other
-and each runs only where the one before settled nothing, so a test that settles
-after one batch plays one and the run costs what the test needed rather than
-what it was budgeted. They share a seed and reserve the book between them, so
-no two play the same opening. A shard that fell over leaves a smaller batch and
-the ladder carries on from the summary it fed.
+A change well outside the bounds settles in a batch or two. One at either bound,
+or between them, takes several thousand games.
 
-Past four batches the test is carried on by hand. Run the workflow again with
-the same `elo0`, `elo1`, candidate and baseline, and `prior_pairs` set to the
-counts the last summary printed. The seed is new each time, so the second run
-plays openings of its own rather than the ones already spent.
+The estimate a batch reports is its own, but the `Elo:` trailer it prints is
+the whole test: its figure, interval and game count are read from the pairs the
+verdict rests on. A test is carried forward as its pair counts and not as its
+ratio, because the ratio is a generalized one fitted to the pairs it is read
+against, so ratios added batch by batch are a different statistic; simulated
+over `[0, 10]`, eight batches of five hundred reached a different verdict the
+two ways in about one test in twenty.
 
-A change well outside the bounds on either side settles in a batch or two. One
-at either bound, or between them, takes several thousand games, which is why
-the roadmap's two null results ended inconclusive at their caps, and why that
-ledger reads repeated runs of the same arm as one test over the pairs of both.
-
-The estimate a batch reports is its own, since the batch is the match that was
-just played, but the `Elo:` trailer it prints is the whole test: its figure,
-its interval and its game count are all read from the pairs the verdict rests
-on, so a test settled on its third batch says what all three batches measured
-rather than what the third did. Those are the paired games, so a game a shard
-left without a partner is not among them, and the summary states both figures
-when they differ.
-
-What a batch carries forward is its pairs and not its ratio. The ratio is a
-generalized one: the distribution over the five pair scores is fitted to the
-pairs it is read against, under each hypothesis in turn, so a ratio worked out
-batch by batch fits a distribution per batch and adding those up is a different
-statistic from the ratio the pairs together give. Simulated over the default
-`[0, 10]` with a true difference between the two, eight batches of five hundred
-games reach different verdicts the two ways about one test in twenty. The
-counts add exactly, so the counts are what is carried.
-
-Looking only between batches is what keeps the error rates, and the same
-section of mache's readme says why. The price is that a change decisive enough
-to settle part way through a batch still plays the batch out.
-
-The same test can be run locally on one machine by adding
-`-sprt elo0=0 elo1=10 alpha=0.05 beta=0.05 model=logistic` to the fastchess
-command above, with `-rounds` raised to serve as a cap. There fastchess sees
-every game in order, so it can stop itself, and it prints the same ratio the
-summary would.
+The same test runs locally by adding `-sprt elo0=0 elo1=10 alpha=0.05
+beta=0.05 model=logistic` to the fastchess command above, with `-rounds` raised
+to serve as a cap. There fastchess sees every game in order and can stop itself.
 
 ## Placing the engine on the ccrl scale
 
-A match against the previous version says which of the two is better. It cannot
-say where either of them sits, because both sides of it are this engine. For a
-number that means something next to other engines, the opponents have to be
-engines that already have a rating.
+A match against the previous version says which of the two is better, not
+where either sits. For a number that means something next to other engines,
+the opponents have to be engines that already have a rating.
 
-The **Calibrate** workflow plays a gauntlet against engines that are ranked on
-the [ccrl](https://computerchess.org.uk/) blitz or 40/15 list. It holds each opponent at
-its published rating and fits the one number that is unknown, which is ours:
+The **Calibrate** workflow plays a gauntlet against engines ranked on the
+[ccrl](https://computerchess.org.uk/) blitz or 40/15 list, holds each opponent
+at its published rating and fits the one unknown number, ours:
 
 ```
 pip install mache
 rating-estimate gauntlet.pgn arche stash-v21.0:2713,zahak-6.2:2825
 ```
 
-Each opponent there is named as the pgn names it, `<engine>-<pin>`, with the
-rating after a colon. That is not the `ladder` input's spelling, which puts
-the engine and the pin in fields of their own and is described under Choosing
-the opponents below.
+There each opponent is named as the pgn names it, `<engine>-<pin>`, with the
+rating after a colon, which is not the `ladder` input's spelling (below).
+Locally the gauntlet is the fastchess command above with more `-engine`
+arguments and `-tournament gauntlet`.
 
-Locally the same thing is the fastchess command from the previous section with
-more `-engine` arguments and `-tournament gauntlet`, which plays the first
-engine against all the others.
-
-On a runner a rung is a job. The pairings share nothing but the book, so they
-play at the same time rather than one after another, each against the one
-opponent and on a slice of the book of its own so that no two of them open the
-same way. A rung keeps its games, its result block, the fastchess config and a
-manifest as `calibrate-<run id>-<attempt>-<engine>-<pin>`, and a job at the end
-puts the games back together, fits the rating to all of them and counts how
-they ended. The attempt is in the artifact name because an artifact cannot be
-uploaded twice under one name: a rerun of the whole run keeps the earlier
-attempt's games rather than failing when it tries to upload its own. Rerun all
-of the jobs rather than the failed ones alone, though, since the rungs that
-succeeded the first time uploaded under the attempt they ran in and the fit only
-reads its own.
-
-The games are the expensive part and the fit is cheap, so a ladder corrected
-afterwards can be applied to the artifacts without playing the matches again.
+On a runner each rung is a job, playing its own slice of the book at the same
+time as the others. A rung keeps its games, its result block, the fastchess
+config and a manifest as `calibrate-<run id>-<attempt>-<engine>-<pin>`, and a
+final job fits the rating to all of them and counts how they ended. The games
+are the expensive part and the fit is cheap, so a ladder corrected afterwards
+can be refitted from the artifacts. The attempt is in the name because an
+artifact cannot be uploaded twice under one name. Rerun all of the jobs rather
+than the failed ones alone, since the fit reads only its own attempt's
+artifacts.
 
 ### Choosing the opponents
 
 A run is against one ccrl list, chosen by the `list` input. Each list has a
-block in `scripts/ladders.sh` holding its ladder, the time control it is played
-at, the games against each rung and the wall clock cap on a rung. The `ladder`,
-`time_control` and `games` inputs have no defaults, and one left empty takes
-the list's value. So a run from the actions tab that picks 40/15 plays the
-40/15 ladder, and a blitz ladder can only reach the 40/15 scale by being typed
-into the box. `scripts/tests/test_ladders.py` fails if one of those inputs
-gains a default or the release passes one of them itself.
+block in `scripts/ladders.sh` holding its ladder, time control, games a rung
+and the wall clock cap on a rung. The `ladder`, `time_control` and `games`
+inputs have no defaults, and one left empty takes the list's value, so a list
+cannot be played with another list's ladder unless it is typed in.
+`scripts/tests/test_ladders.py` fails if one of those inputs gains a default or
+the release passes one itself.
 
-A ladder is a list of rungs, and a rung is an engine, a pin of that engine and
-the rating it holds on the chosen list: `stash:v17.0:2297,goldfish:v2.1.1:2252`.
-The engine is a name from the table in `scripts/opponent.sh`, which holds where each one is
-cloned from, how it is built and what the build leaves its binary called. A rung
-naming an engine the table does not know, or one that is not those three fields,
-or one whose pin holds anything but letters, digits, dots, dashes and
-underscores, stops the run in the resolve job before a match is played. The pin
-is held to those characters because it is part of a file name and of an artifact
-name as well as of the fetch.
+A rung is an engine, a pin of it and the rating it holds on the chosen list:
+`stash:v17.0:2297,goldfish:v2.1.1:2252`. The engine is a name from the table in
+`scripts/opponent.sh`, which says where each is cloned from, how it is built
+and what its binary is called. A rung naming an unknown engine, not of those
+three fields, or with a pin holding anything but letters, digits, dots, dashes
+and underscores, stops the run before a match is played. The pin is a tag or a
+whole commit sha: forty hex digits are fetched as they are and anything else as
+`refs/tags/<pin>`, so `bbc:master:2018` is refused by the fetch, since a branch
+would move under a rating that belongs to a release. A tag can still be moved
+by whoever owns the repository, and nothing here would see that.
 
-The pin is a tag or a whole commit sha. A pin of forty hex digits is fetched as
-it is and anything else as `refs/tags/<pin>`, so a branch cannot be pinned by
-name: `bbc:master:2018` is refused by the fetch rather than built, because a
-branch would move under a rating that belongs to a release. That check is in
-`scripts/opponent.sh` and not in the ladder, which cannot tell a tag from a
-branch without asking the remote, so a pin that is neither fails the rung's
-build rather than the run's resolve. A tag can still be moved by whoever owns
-the repository, and nothing here would see that.
+Adding an opponent is adding a block to that table and naming it in a ladder
+with its rating. The block is proved by building and playing it. The rating
+cannot be: it has to be read off the ccrl list for the exact version the pin
+names, since a rating paired with a later build is wrong in a way nothing
+downstream catches.
 
-Adding an opponent is adding a block to that table and then naming it in a
-ladder with its rating. The block is proved here by building it and playing it.
-The rating cannot be: it has to be read off the ccrl list, and a rung carrying a
-number from anywhere else moves the estimate by whatever that number is out by,
-with nothing to say it has.
+The rungs worth playing are the ones close enough to trade games with: a
+pairing that ends 25-0 puts no upper bound on the winner. A ladder lives in
+`scripts/ladders.sh` so it can be moved up as the engine improves without
+touching either workflow.
 
-A rating belongs to the exact version the list names, so the pin is part of the
-figure. BBC 1.1 is rated and the commit after it is not, and pairing a rating
-with a later build is a mistake nothing downstream can catch: the games would be
-played, the fit would converge and the number would be wrong. Pin at the version
-the list names or leave the engine out.
-
-The rungs that are worth playing are the ones close enough to trade games with:
-a pairing that ends 25-0 puts no upper bound on the winner, so it contributes
-almost nothing however many games it is given. A ladder is kept in
-`scripts/ladders.sh` rather than in the workflow so it can be moved up as the
-engine improves without touching either workflow.
-
-The blitz ladder has eight of them, and they sit either side of where the engine
-is expected to be rather than under it. v0.4.6 placed at 2760 ±30 (95%) over
-400 games on the panel before this one, and the release after it is planned at
-about fifty more, so the panel brackets 2800, four rungs below it and four
-above, from 2555 to 2932:
+The blitz ladder has eight rungs of six lineages, none holding more than two,
+four below 2800 and four above. v0.4.6 placed at 2760 ±30 (95%) over 400 games
+(fifty a rung at 20+0.2, on the previous panel of 2511 to 2846, in the release
+run of 23 September 2026), and the next release is planned at about fifty more.
+At 2810 the expected score runs from 81% against the bottom rung to 33% against
+the top (19084fd).
 
 | rung | ccrl blitz | |
 | --- | --- | --- |
@@ -962,79 +699,47 @@ above, from 2555 to 2932:
 | weiss:v1.0 | 2896 | Weiss 1.0 64-bit |
 | stash:v25.0 | 2932 | Stash 25.0 64-bit |
 
-The 2760 is the Calibrate job of the v0.4.6 release run on 23 September 2026,
-fifty games a rung at 20+0.2 on the previous panel of 2511 to 2846. It sat
-above six of those eight rungs and scored 44% against the top one. Stash
-20.0.1 at 2511 and Weiss 0.9 at 2650 came off the bottom, and Weiss 1.0 and
-Stash 25.0 went on the top. Dropping Weiss 0.9 rather than Tantabus keeps
-Weiss at two rungs. At 2810 the expected score against the eight above runs
-from 81% at the bottom to 33% at the top; on the old panel it would have run
-from 85% to 45%.
+The ladder started as Stash alone, and a ladder of one lineage measures partly
+how this engine does against that lineage: a shared blind spot, or an opening a
+family handles the same way, moves the number without the strength having
+changed. The rungs of that first panel disagreed by about ninety elo more than
+their game counts explained, and the scatter did not shrink as games were
+added, so it is an offset per opponent rather than noise. More lineages dilute
+it.
 
-Six lineages, none holding more than two rungs. This started as a ladder of
-Stash alone, and a ladder of one lineage measures partly how this engine does
-against that lineage: a blind spot the two share, or an opening a family
-handles the same way, moves the number without anything about the strength
-behind it having changed, and rungs that are related to each other agree with
-each other for reasons the fit cannot see. The rungs of the first panel
-disagreed by about ninety elo more than their game counts explained, and that
-scatter did not shrink as games were added, so it is an offset per opponent
-rather than noise. More lineages dilute it.
-
-The figures are from the complete ccrl blitz list of 5 September 2026, computed
-with Bayeselo over 2,106,571 games at a control equivalent to 2'+1". The name
-beside each is the version the list rates, which is the version its pin points
-at; Stash does not spell its tags the way the list names its releases, which is
-why both are given. A list is redone as games arrive, so a figure here can
-drift from the published one; the date is what says how old these are.
+The figures are from the complete ccrl blitz list of 5 September 2026 (Bayeselo
+over 2,106,571 games at a control equivalent to 2'+1"). The name beside each is
+the version the list rates, which is what its pin points at; Stash does not
+spell its tags the way the list names its releases, so both are given. A list
+is recomputed as games arrive, so a figure here can drift from the published
+one, and the date says how old these are.
 
 Every rung was cloned at its pin, built and played against this engine before
-it was named. Six of the eight have played fifty games apiece in at least one
-release gauntlet. Blunder 8.5.5, Inanis 1.1.0, Zahak 6.2 and Weiss 0.10 were
-proved by Calibrate run 35347904642 on 18 September 2026, twenty games each at
-20+0.2 against master at `b0c353d`, with Weiss 1.0 beside them, and scored
-35%, 17.5%, 17.5%, 25% and 10%. Weiss 1.0 and Stash 25.0 were proved again for
-this panel by Calibrate run 36119521634 on 25 September 2026, twenty games each
-at 20+0.2 against the v0.4.6 tag (`5f7d358`). The engine scored 35% against
-Stash 25.0 and 37.5% against Weiss 1.0, which the fit reads as 2816 ±94 (95%)
-over the forty games, inside the 2760 ±30 the release placed it at. All forty
-ended normally, with no illegal move, no loss on time and nothing dropping the
-connection. Stash 25.0 twice played a move that was not the start of its last
-principal variation, which fastchess warns about.
-Inanis prints principal variations that walk on past a threefold repetition,
-as Tantabus does, so those two rungs fill their logs with warnings about moves
-nobody played. All eight take the 256MB both sides are asked for.
+it was named. Blunder 8.5.5, Inanis 1.1.0, Zahak 6.2 and Weiss 0.10 were proved
+by Calibrate run 35347904642 on 18 September 2026 (twenty games each at 20+0.2
+against `b0c353d`), and Weiss 1.0 and Stash 25.0 by run 36119521634 on 25
+September 2026 (twenty games each against the v0.4.6 tag, 2816 ±94 over the
+forty, all ending normally). Inanis and Tantabus print principal variations
+that run past a threefold repetition, so their logs fill with fastchess
+warnings about moves nobody played. All eight take the 256MB both sides are
+asked for. fastchess will not send a size an engine declares it cannot take,
+and such an engine plays on its own default instead; BBC, which still has a
+block, declares a maximum of 128MB. The refusal is in the rung's result block,
+which is why the manifest calls the figure `hash_mb_asked`.
 
-fastchess will not send a size an engine declares itself unable to take, and
-such an engine plays on its own default instead. None of the eight is one, but
-BBC, which still has a block, declares a maximum of 128MB against the 256MB
-asked. A refusal like that is in the rung's result block, and the manifest
-calls the figure `hash_mb_asked` because that is what it is.
+Rungs far below the engine were dropped, because more games against them
+narrow nothing (BadChessEngine 0.4.4 at 1926 took 11.7% of sixty games). The
+blocks of every dropped rung stay in `scripts/opponent.sh`, so a ladder can name
+them again: BadChessEngine 0.4.4, Stash 13, 15.3, 17.0, 19.0 and 20.0.1, BBC
+1.1, Zagreus 5.0, Goldfish 2.1.1, SoFCheck 0.9 beta and Weiss 0.9. Cinnamon
+2.4 (2326) and FoxSEE 8.2 (2471) have blocks, were built at their pins and played twenty games, and
+are on no ladder; Cinnamon prints an illegal move at the end of a principal
+variation. Halogen 8 does not compile under a current g++ and Zahak 5.0 crashes
+in its hash under a current Go, so neither has a block.
 
-Rungs far below the engine were dropped rather than kept for the range they
-cover. BadChessEngine 0.4.4 at 1926 took 11.7% of sixty games, and more games
-of that would have narrowed nothing; Stash 13 at 1966 and BBC 1.1 at 2018 sit
-below it. Zagreus 5.0 at 2168 and Stash 15.3 at 2173 came off for the same
-reason and for one more: they are five elo apart, so the bottom of the panel
-was two rungs answering the same question. Goldfish 2.1.1 at 2252, Stash 17.0
-at 2297, SoFCheck 0.9 beta at 2384 and Stash 19.0 at 2473 came off when the
-panel moved up to bracket 2700, having given v0.4.4 between 73% and 89% of
-fifty games each. Stash 20.0.1 at 2511 and Weiss 0.9 at 2650 came off when it
-moved up again to bracket 2800. Their blocks are still in
-`scripts/opponent.sh`, so a ladder can name them again.
-
-Cinnamon 2.4 at 2326 and FoxSEE 8.2 at 2471 have blocks and are not on the
-blitz ladder. Each was built at its pin and played twenty games, so either can
-be named in a ladder without proving its block first.
-Cinnamon prints an illegal move at the end of a principal variation. Halogen 8
-at 2826 and Zahak 5.0 at 2726 were tried for the panel above and have no
-block: the first does not compile under a current g++ and the second builds
-but crashes in its hash under a current Go.
-
-The stash releases a ladder can pick from, with whether ccrl ranked the version
-itself or the figure is a community estimate from the games around it.
-Everything from v13 up was read off the 5 September list. v22 to v24 are not
-on it, so v25.0 at 2932 is the Stash rung at the top of the panel:
+The Stash releases a ladder can pick from, with whether ccrl ranked the version
+itself or the figure is a community estimate from the games around it. From
+v13 up they were read off the 5 September list, which does not have v22 to v24:
 
 | tag | ccrl blitz | |
 | --- | --- | --- |
@@ -1053,84 +758,58 @@ on it, so v25.0 at 2932 is the Stash rung at the top of the panel:
 
 ### Reading the result
 
-The margin printed with the figure is a 95% interval on how much a score of that
-size wobbles, and it describes the games and nothing else. It is the same
-interval the match estimate prints under the same symbol, and both read it off
-one constant, because a ± that means one thing in one report and another thing
-in the next is a trap rather than a figure.
+The margin printed with the figure is a 95% interval on how much a score of
+that size wobbles, and it describes the games and nothing else. It is the same
+interval the match estimate prints under the same symbol. Every margin printed
+before 12 September 2026 was one standard error instead, about half as wide:
+that covers the by-hand 2332 the first panel was built around and the release
+notes up to 0.4.2, which are left as published.
 
-Every margin this tool printed before 12 September 2026 was one standard error
-instead, so those are about half as wide as a margin printed now. That covers
-the by-hand 2332 the first panel was built around and the release notes up to
-0.4.2. They are left as they were published rather than rewritten, and this is
-the note that says how to read them.
+Whether one rating describes the results at all is asked separately. Each
+pairing's score is compared with the one the fit expects of it, and when they
+disagree by more than chance allows the run says so and the margin should be
+read as an understatement. It is a test rather than a second margin, because
+reporting the larger of the two inflated the margin by about a fifth and cried
+wolf on around two runs in five of ordinary data.
 
-Whether one rating describes the results at all is a different question, and it
-is asked separately rather than folded into the margin. A single number cannot
-describe an engine that does better against one opponent than another predicts,
-so each pairing's score is compared with the one the fit expects of it, and when
-they disagree by more than chance allows the run says so and the margin should
-be read as an understatement. It is a test rather than a second opinion on
-purpose: reporting whichever of the two was larger sounded careful and was not,
-because both of them estimate the same thing when the fit is sound, so taking
-the larger inflated the margin by about a fifth and cried wolf on around two
-runs in five of perfectly ordinary data.
+Neither covers the larger error. The opponents earned their ratings at 2m+1s on
+other hardware, and this plays at twenty seconds on a shared runner, so the
+placement carries a systematic error worth something like a hundred points,
+which more games do not shrink. The ladder's ratings are also taken as exact:
+a rung whose rating is a community estimate (v10 above) hands its error
+straight to the answer. Every rung in `scripts/ladders.sh` is ranked, so that is
+a risk only a ladder typed in by hand takes.
 
-Neither covers the part that matters most. The opponents earned their ratings at
-2m+1s on other hardware, and this runs at twenty seconds on a shared runner, so
-the placement carries a systematic error worth something like a hundred points.
-More games shrink the margin printed next to the number and do nothing at all to
-that. It is a placement, not a rating.
-
-The ladder is held as exact, too. A rung whose rating is a community estimate
-rather than a ccrl ranking, which is what v10 in the table above is, hands
-whatever it is wrong by straight to the answer, and no error bar here covers
-that either. Every rung of both ladders in `scripts/ladders.sh` is ranked, so
-that is a risk a ladder typed in by hand takes on rather than one they carry.
-
-The time control is a compromise rather than a default worth keeping by
-accident. Ten seconds runs a rung in under ten minutes but leaves so little
-headroom that a runner hiccup shows up as a loss on time, and one forfeit in a
-twenty-five game pairing is worth about thirty elo of noise. Two minutes would
-match the list it is calibrated against and takes most of a day. Twenty seconds
-costs about a quarter of an hour a rung, which over the eight of them is about
-two hours of runner, and sits closer to the list than ten does. The rungs
-play at once, so those hours are about a quarter of an hour of wall clock.
-
-Games run long here, a little under two hundred plies on average, so most of the
-clock a game uses is increment rather than the base time, and raising the base
-on its own buys less thinking than it looks. Both are doubled here instead, and
-both halve the rate: a runner plays about three and a third games a minute at
-10+0.1 and about one and seven tenths at 20+0.2. Worth remembering before
-raising it again.
+The time control is a compromise. Ten seconds leaves so little headroom that a
+runner hiccup becomes a loss on time, and one forfeit in fifty games is worth
+about fifteen elo of noise. Two minutes would match the list and takes most of
+a day. At 20+0.2 a runner plays about one and seven tenths games a minute, so
+fifty games take about half an hour a rung, four hours of runner over the eight
+and about half an hour of wall clock since the rungs play at once. Games run a
+little under two hundred plies, so most of a game's clock is increment, and
+raising the base alone buys less thinking than it looks; both are doubled
+together.
 
 ### The 40/15 gauntlet
 
-A release plays the gauntlet a second time against the ccrl 40/15 list, which
-rates engines at forty moves in fifteen minutes. It is the same workflow called
-with `list: 40/15` and nothing else of the match, so everything it plays comes
-from that list's block in `scripts/ladders.sh`. The block also names the words
-around the figure (the line in the release notes says "on the ccrl 40/15
-scale") and the artifact prefix, `calibrate-ccrl-40-15`. That prefix keeps the
-two gauntlets of one release run from colliding or reading each other's games.
-mache writes the blitz scale into the line whatever the ladder was, so the
-workflow rewrites it, and refuses to publish a line it cannot find the words
-in.
+A release plays the gauntlet a second time against the ccrl 40/15 list (forty
+moves in fifteen minutes). It is the same workflow called with `list: 40/15`
+and nothing else of the match, so everything it plays comes from that list's
+block in `scripts/ladders.sh`. The block also names the words around the figure
+("on the ccrl 40/15 scale") and the artifact prefix `calibrate-ccrl-40-15`,
+which keeps the two gauntlets of one release run from reading each other's
+games. mache writes the blitz scale into the line whatever the ladder, so the
+workflow rewrites it and refuses to publish a line it cannot find the words in.
 
-It plays at 40/150, a repeating forty moves in 150 seconds. That is one sixth
-of 40/15, which is roughly the scale 20+0.2 is to 2+1. A game of a hundred
-moves a side is two and a half periods, so the clock allows about twelve
-minutes a game, and sixteen games a rung at two at a time is at most about an
-hour and a half of wall clock. That is a first estimate rather than a
-measurement, and the rungs are capped at four hours of play.
+It plays at 40/150, one sixth of 40/15 (as 20+0.2 is roughly a sixth of 2+1).
+The clock allows about twelve minutes a game, so sixteen games a rung two at a
+time take at most about an hour and a half, an estimate rather than a
+measurement; a rung is capped at four hours. Ninety-six games over six rungs
+settle about sixty elo either side, a rough second placement at a slower
+control, with the same hundred points of systematic error.
 
-Sixteen games a rung over six rungs is ninety-six games, near sixty elo either
-side. It is a rough second placement at a slower control. The hundred points
-of systematic error described above apply to it as well.
-
-The ladder brackets 2700, from 2558 to 2845, read off the complete 40/15 list
-of 18 September 2026. It did not move up when the blitz panel did, to bracket
-2800 on 25 September:
+The ladder brackets 2700, from 2558 to 2845, read off the complete 40/15 list of
+18 September 2026. It did not move up when the blitz panel did on 25 September:
 
 | rung | ccrl 40/15 | ccrl blitz | |
 | --- | --- | --- | --- |
@@ -1142,71 +821,57 @@ of 18 September 2026. It did not move up when the blitz panel did, to bracket
 | weiss:v1.0 | 2845 ±26 | 2896 | Weiss 1.0 64-bit |
 
 Four of these are on the blitz panel. The 40/15 list rates Tantabus 2.0.0,
-Blunder 8.5.5 and Inanis 1.1.0 each within thirty points of its blitz figure,
-and Weiss 1.0 fifty one points under its own. Weiss 0.9 left the blitz panel
-when it moved up and keeps its blitz figure here for the comparison. The other
-four blitz rungs are not on this ladder. Three of them (Stash 21.0, Zahak 6.2
-and Weiss 0.10) are not on the 40/15 list at all. Stash 25.0 joined the blitz
-panel a week after this ladder was read off the 40/15 list. Weiss 1.0 has been built and played here before. Stash 21.2 is
-the Stash block at a new pin and has not.
+Blunder 8.5.5 and Inanis 1.1.0 within thirty points of their blitz figures and
+Weiss 1.0 fifty one under. Stash 21.0, Zahak 6.2 and Weiss 0.10 are not on the
+40/15 list, and Stash 25.0 joined the blitz panel after this ladder was read.
+Stash 21.2 is the Stash block at a new pin and had not been played here when
+the ladder was set.
 
 Other rungs the 40/15 list rates and a block here can build: Stash 18.0 at
 2421, SoFCheck 0.9 beta at 2426, FoxSEE 8.2 at 2495, Inanis 1.2.0 at 2835 and
-Stash 23.0 at 2902. Halogen 8 at 2895 has no block, for the reason given above.
+Stash 23.0 at 2902.
 
 ## Cutting a release
 
 Releases are driven by [cargo-release](https://github.com/crate-ci/cargo-release)
 with the changelog generated by [git-cliff](https://github.com/orhun/git-cliff)
-from the conventional commit messages. The whole workspace shares one version,
-declared once in `[workspace.package]` in the root `Cargo.toml`.
+from the conventional commit messages. The workspace shares one version,
+declared in `[workspace.package]` in the root `Cargo.toml`.
 
 ### From the actions tab
 
 Run the **Prepare release** workflow from `master` and pick how much to bump the
 version by. It runs the tests, bumps the version, writes the changelog and opens
-a pull request with the result. `rc` gives a release candidate, `0.3.7` becomes
+a pull request with the result. `rc` gives a release candidate: `0.3.7` becomes
 `0.3.8-rc.1`.
 
 Merging that pull request tags the release and starts the build. Closing it
-without merging calls the release off, nothing is tagged or published until it
-lands.
+without merging calls the release off; nothing is tagged or published until it
+lands. GitHub requires a maintainer to approve the first workflow run on a pull
+request opened by a workflow, so its checks may need the **Approve and run**
+button.
 
 A candidate gets a changelog section like any other release, because the github
-release is created from the section matching the tag and cannot be created
-without one. The section is a preview rather than a record: it covers everything
-since the last full release, which is the same range the release itself will
-cover, so the next thing written replaces it rather than being added alongside
-it. A release at the end of a run of candidates ends up with the changelog it
-would have had if none of them had happened.
+release is created from the section matching the tag. The section is a preview:
+it covers everything since the last full release, so the next one written
+replaces it, and a release at the end of a run of candidates ends up with the
+changelog it would have had without them.
 
-Two things are worth knowing about why it is shaped this way:
+Two constraints shape this. `master` only takes changes through a pull request,
+so the release commit goes through one. And a tag pushed by a workflow does not
+set off another workflow (`workflow_dispatch` is the documented exception), so
+the tag workflow starts the release workflow explicitly. **Tag release**
+decides whether to tag by comparing the version in `Cargo.toml` with the
+existing tags rather than by reading the commit message, which depends on how
+the pull request was merged.
 
-- `master` only takes changes through a pull request, so a workflow cannot push
-  the release commit to it directly. The release commit goes through a pull
-  request like anything else.
-- A tag pushed by a workflow does not set off another workflow. Github
-  suppresses that so workflows cannot trigger each other in a loop, and
-  `workflow_dispatch` is the documented exception, which is why the tag workflow
-  starts the release workflow explicitly rather than leaving it to the tag
-  filter.
-
-**Tag release** decides whether to tag by comparing the version in `Cargo.toml`
-against the existing tags, rather than by looking at the commit message, because
-the message of a merged pull request depends on whether it was merged, squashed
-or rebased.
-
-Github requires a maintainer to approve the first workflow run on a pull request
-opened by a workflow, so the checks on a release pull request may need the
-**Approve and run** button before they start.
-
-The release workflow can also be run from the actions tab on its own, against an
-existing tag, if a release needs redoing.
+The release workflow can also be run from the actions tab against an existing
+tag, if a release needs redoing.
 
 ### By hand
 
 The same thing locally, if something has gone wrong or a release needs to be
-inspected before it goes anywhere.
+inspected before it goes anywhere:
 
 ```
 cargo install cargo-release git-cliff
@@ -1219,32 +884,25 @@ cargo release patch        # or minor / major, prints what it would do
 cargo release patch --execute
 ```
 
-The first of those is a dry run, but it still runs the pre release hook, so it
-leaves a new section prepended to `CHANGELOG.md` that has to be reverted if the
-release is not going ahead.
-
-`release.toml` sets `push = false`, so nothing leaves the machine until:
+The first is a dry run, but it still runs the pre release hook, so it leaves a
+new section prepended to `CHANGELOG.md` to revert if the release is not going
+ahead. `release.toml` sets `push = false`, so nothing leaves the machine until:
 
 ```
 git push
 git push origin vX.Y.Z
 ```
 
-Pushing the tag is what triggers the release workflow, which runs the tests,
-creates the github release from the changelog, and then builds and uploads
-binaries for linux, macos and windows, the x86-64 ones at three cpu levels. It
-goes on to call three workflows that add to the release once it exists:
-**Docker** publishes the lichess-bot image and quotes it in the notes with
-its digest, **Strength** plays the match and adds the elo estimate, and
-**Calibrate** plays the gauntlet and adds the ccrl placement, once against the
-blitz list and then again against the 40/15 list.
+Pushing the tag triggers the release workflow, which runs the tests, creates
+the github release from the changelog, and builds and uploads binaries for
+linux, macos and windows, the x86-64 ones at three cpu levels. It then calls
+the workflows that add to the release: **Docker** publishes the lichess-bot
+image and quotes it in the notes with its digest, **Strength** plays the match,
+and **Calibrate** plays the gauntlet against the blitz list and then the 40/15
+list. They edit the notes by reading and writing them back, so they share a
+concurrency group and take turns.
 
-All of them edit the notes by reading them and writing them back, so they share
-a concurrency group and take turns rather than one landing on top of the other.
-
-The archives and the image are attested as well as checksummed, which needs
-nothing doing by hand: the workflows ask github to sign a statement that these
-bytes came out of that run at that tag, and github answers for it afterwards
-rather than the release page doing so. `gh attestation verify <file> --repo
-aywrite/arche` is what checks one; the readme has it for a binary and
-docs/LICHESS.md for the image.
+The archives and the image are attested as well as checksummed: the workflows
+ask github to sign a statement that these bytes came out of that run at that
+tag. `gh attestation verify <file> --repo aywrite/arche` checks one; the readme
+has it for a binary and [LICHESS.md](LICHESS.md) for the image.
