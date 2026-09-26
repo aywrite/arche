@@ -1056,6 +1056,17 @@ mod tests {
             ),
             Verdict::Scout(0)
         );
+        // a mate at beta alone, which the alpha test does not answer
+        assert_eq!(
+            s.verdict(
+                &quiet,
+                LATE_MOVE_THRESHOLD,
+                LATE_MOVE_MIN_DEPTH,
+                -100,
+                29_500
+            ),
+            Verdict::Scout(0)
+        );
     }
 
     /// The same bounds four ways, so what moves is the flag and nothing
@@ -2020,6 +2031,8 @@ mod tests {
                 !s.skips(&quiet, PAST_THE_COUNT, 2, -29_501, -29_500),
                 "{rule}"
             );
+            // a mate at beta alone, which the alpha test does not answer
+            assert!(!s.skips(&quiet, PAST_THE_COUNT, 2, alpha, 29_500), "{rule}");
 
             s.root_bounds = RootBounds::BOTH;
             assert!(
