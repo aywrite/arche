@@ -58,22 +58,25 @@ const fn packed(mg: [i16; 64], eg: [i16; 64]) -> [i32; 64] {
 }
 
 // These started as https://www.chessprogramming.org/Simplified_Evaluation_Function
-// and were fitted from there; the ridge pulls toward the page's numbers rather
-// than toward zero.
+// and were fitted from there. The first fit's ridge pulled toward the page's
+// numbers rather than toward zero, and each refit's pulls toward the weights
+// it replaces.
 //
 // They are written the way the page prints them, eighth rank first, so the
 // first entry is a8 and the last h1. The board counts a1 as index zero, which
 // is why black takes the tables as written and white takes them mirrored.
 //
-// Fitted 2026-09-10 by `scripts/tune.py` over 1,812 archived strength-run
-// games at 10+0.1, 100,726 quiet rows extracted by `arche terms` at d17622f,
-// K held at 1.3902, at a ridge of 3e-7. The sealed group scores 0.084551 at
-// the weights these replace and 0.082797 at these, a paired difference of
-// -0.001754 against a standard error of 0.000674 over 371 games, and
-// 0.082778 read with the engine's own arithmetic. Each reading is of the
-// rounded weights; the float fit was not saved. Commit 96bad35 is the
-// report. Material was held at its shipped values because the delta margin
-// in quiescence reads it, and moving it would change the search tree for a
+// Refitted 2026-09-26 over 59,049 archived strength-run games at 10+0.1,
+// 3,372,298 quiet rows extracted by `arche terms` at 54d85b9, with every
+// weight but material fitted at once: these tables and the four leaf terms,
+// at a ridge of 1e-7 toward the weights these replace. Every table but the
+// king's midgame one is folded left to right; castling is not mirrored, so
+// that one is not. Five fold cross validation with whole pairs of games held
+// out scores 0.083124 at the weights these replace and 0.082291 at these,
+// -0.000832 against a standard error of 0.000040 over pairs. No sealed group
+// was opened. The fit before this one, over 1,812 games, is 96bad35.
+// Material was held at its shipped values because the delta margin in
+// quiescence reads it, and moving it would change the search tree for a
 // reason that is not the evaluation's accuracy.
 //
 // The tests below pin the shapes rather than the entries.
@@ -81,61 +84,61 @@ const fn packed(mg: [i16; 64], eg: [i16; 64]) -> [i32; 64] {
 #[rustfmt::skip]
 const PAWNS: [i16; 64] = [
       0,   0,   0,   0,   0,   0,   0,   0,
-     50,  51,  51,  50,  50,  50,  50,  51,
-     14,  11,  19,  29,  29,  21,  13,  11,
-      5,   8,  11,  29,  25,   4,   3,  -1,
-      5,   5,   8,  12,  17,  -7,  -2,   5,
-      5,  -5,  -2,   0,   0,  -1,  -4,  -5,
-      2,  -3,  12, -22, -17,   5,  23,   1,
+     51,  51,  51,  50,  50,  51,  51,  51,
+     13,  13,  21,  29,  29,  21,  13,  13,
+      1,   4,   5,  20,  20,   5,   4,   1,
+      2,   0,   2,   8,   8,   2,   0,   2,
+      1,   3,   0,   4,   4,   0,   3,   1,
+     -2,   5,   4, -13, -13,   4,   5,  -2,
       0,   0,   0,   0,   0,   0,   0,   0,
 ];
 
 #[rustfmt::skip]
 const KNIGHTS: [i16; 64] = [
     -50, -40, -30, -30, -30, -30, -40, -50,
-    -40, -20,   0,   0,   1,   0, -20, -39,
-    -31,  -1,  11,  16,  15,  10,   0, -30,
-    -30,   8,  14,  21,  17,  20,   4, -29,
-    -28,   0,  13,  21,  19,  15,   2, -28,
-    -32,  -7,   4,  13,  21,   7,   1, -31,
-    -40, -21,   0,  -1,   5,   1, -19, -38,
-    -50, -34, -31, -31, -31, -30, -38, -50,
+    -39, -20,   0,   1,   1,   0, -20, -39,
+    -30,   0,  11,  16,  16,  11,   0, -30,
+    -29,   4,  19,  20,  20,  19,   4, -29,
+    -26,   2,  14,  17,  17,  14,   2, -26,
+    -30,  -6,  -4,  16,  16,  -4,  -6, -30,
+    -39, -20,  -1,   2,   2,  -1, -20, -39,
+    -50, -30, -29, -31, -31, -29, -30, -50,
 ];
 
 #[rustfmt::skip]
 const BISHOPS: [i16; 64] = [
     -20, -10, -10, -10, -10, -10, -10, -20,
-    -10,  -1,   0,   0,   0,   0,   0, -10,
-    -10,   0,   5,  11,  11,   5,   0,  -9,
-    -11,   8,   7,  12,  13,   5,   4, -11,
-     -9,   1,   7,   9,   4,  11,   0, -11,
-    -10,  13,  10,   5,  16,  11,   9,  -9,
-    -11,  10,   3,  -2,   3,   0,   5,  -9,
-    -20, -10,  -6, -10, -10, -19, -10, -21,
+    -10,   0,   0,   0,   0,   0,   0, -10,
+     -9,   0,   5,  11,  11,   5,   0,  -9,
+    -11,   4,   6,  14,  14,   6,   4, -11,
+     -9,   1,   5,   8,   8,   5,   1,  -9,
+     -8,  10,   9,   6,   6,   9,  10,  -8,
+    -10,   7,   3,   5,   5,   3,   7, -10,
+    -20,  -9,  -8, -10, -10,  -8,  -9, -20,
 ];
 
 #[rustfmt::skip]
 const ROOKS: [i16; 64] = [
-     0,  0,  0,  0,  0,  0,  0,  1,
-     7, 11, 12, 12, 11, 10, 10,  5,
-    -4,  1,  3,  2,  0,  0,  0, -4,
-    -4,  3,  1,  1,  2,  0,  0, -5,
-    -8,  1,  0,  1,  0, -2,  0, -5,
-    -7, -1,  0,  1, -2,  0,  0, -4,
-    -7,  1,  0, -3, -2,  0,  0, -6,
-    -9,  1,  5,  2,  3, -1,  0, -7,
+      1,   0,   0,   0,   0,   0,   0,   1,
+      6,  11,  12,  13,  13,  12,  11,   6,
+     -3,   2,   3,   3,   3,   3,   2,  -3,
+     -4,   3,   2,   3,   3,   2,   3,  -4,
+     -7,   1,  -1,   1,   1,  -1,   1,  -7,
+     -7,  -1,  -1,  -2,  -2,  -1,  -1,  -7,
+     -8,   0,  -2,  -4,  -4,  -2,   0,  -8,
+    -10,  -2,   2,   1,   1,   2,  -2, -10,
 ];
 
 #[rustfmt::skip]
 const QUEENS: [i16; 64] = [
     -20, -10, -10,  -5,  -5, -10, -10, -20,
-    -11,   0,   0,   0,   0,   0,   0,  -9,
-     -9,   0,   5,   5,   5,   5,   0,  -9,
-     -6,   1,   5,   5,   6,   6,   1,  -3,
-     -3,   1,   5,   5,   6,   5,   2,  -5,
-    -10,   3,   4,   7,   5,   6,  -6, -10,
-     -9,  -1,   0,   2,  -1,   0,   1, -10,
-    -20, -13,  -9,  -1,  -2, -11, -10, -20,
+    -10,   0,   0,   0,   0,   0,   0, -10,
+     -8,   0,   5,   5,   5,   5,   0,  -8,
+     -4,   2,   5,   6,   6,   5,   2,  -4,
+     -4,   2,   5,   5,   5,   5,   2,  -4,
+    -10,  -3,   4,   3,   3,   4,  -3, -10,
+    -10,   0,   2,   0,   0,   2,   0, -10,
+    -20, -11, -10,   1,   1, -10, -11, -20,
 ];
 
 // The king is the piece the two phases disagree about most, and the page gives
@@ -146,99 +149,102 @@ const QUEENS: [i16; 64] = [
 const KING: [i16; 64] = [
     -30, -40, -40, -50, -50, -40, -40, -30,
     -30, -39, -40, -50, -50, -40, -40, -30,
-    -30, -40, -40, -50, -50, -40, -40, -30,
-    -30, -40, -40, -50, -50, -39, -39, -30,
-    -20, -30, -30, -41, -40, -30, -30, -20,
-    -10, -20, -22, -20, -20, -21, -20, -10,
-     19,  20,   0,  -1,  -3,  -1,  21,  16,
-     18,  26,  10,  -2,   3,   7,  43,  23,
+    -30, -40, -40, -50, -50, -40, -39, -30,
+    -30, -40, -40, -51, -51, -39, -38, -30,
+    -20, -30, -30, -41, -41, -31, -29, -20,
+    -10, -20, -22, -20, -21, -21, -20, -11,
+     19,  20,  -1,  -1,  -3,  -2,  23,  15,
+     18,  25,  11,  -3,  17,   2,  37,  20,
 ];
 
 #[rustfmt::skip]
 const KING_END: [i16; 64] = [
-    -50, -40, -30, -20, -20, -30, -39, -50,
-    -30, -18, -10,   0,   0,  -9, -19, -29,
-    -29,  -9,  20,  29,  30,  21,  -9, -28,
-    -29,  -9,  27,  38,  41,  31,  -7, -28,
-    -30, -10,  29,  36,  36,  30,  -9, -29,
-    -30,  -9,  13,  27,  27,  18,  -8, -29,
-    -30, -29,  -1,   0,  -5,   1, -24, -32,
-    -51, -30, -30, -31, -31, -29, -28, -48,
+    -50, -39, -29, -20, -20, -29, -39, -50,
+    -29, -17,  -8,   1,   1,  -8, -17, -29,
+    -27,  -7,  21,  29,  29,  21,  -7, -27,
+    -28,  -6,  28,  36,  36,  28,  -6, -28,
+    -29,  -7,  27,  33,  33,  27,  -7, -29,
+    -30,  -8,  13,  25,  25,  13,  -8, -30,
+    -31, -22,  -1,  -1,  -1,  -1, -22, -31,
+    -50, -30, -29, -31, -31, -29, -30, -50,
 ];
 
 /// The page prints a single pawn table, and it is a middlegame one: it pushes
 /// the two centre pawns and holds the rest back to shelter a castled king.
 /// With no pieces left to shelter from, only the distance to promotion is
 /// true. This started as a ramp, one number a rank and the same on every
-/// file; the fit kept the climb and let the files differ by a few centipawns
-/// around it.
+/// file. The fits kept the climb in each rank's total, but after the joint
+/// refit the files differ by up to thirteen centipawns on a rank, enough that
+/// a pawn on the c, d or e file is worth less on the fourth rank than on the
+/// third.
 #[rustfmt::skip]
 const PAWNS_END: [i16; 64] = [
-     0,  0,  0,  0,  0,  0,  0,  0,
-    80, 82, 83, 79, 80, 78, 80, 81,
-    58, 50, 54, 48, 48, 50, 53, 52,
-    32, 32, 28, 23, 29, 15, 31, 26,
-    18, 20, 13,  7,  9, 12, 16, 15,
-    -3,  7, 11, 15,  5, 12,  6,  4,
-     3,  2,  1, -1,  0,  4,  9, -3,
-     0,  0,  0,  0,  0,  0,  0,  0,
+      0,   0,   0,   0,   0,   0,   0,   0,
+     81,  82,  82,  80,  80,  82,  82,  81,
+     55,  53,  53,  47,  47,  53,  53,  55,
+     27,  29,  18,  18,  18,  18,  29,  27,
+     13,  17,  11,   4,   4,  11,  17,  13,
+      4,  11,  14,  12,  12,  14,  11,   4,
+      4,   9,  10,   1,   1,  10,   9,   4,
+      0,   0,   0,   0,   0,   0,   0,   0,
 ];
 
 // The other four handed one array to both ends of the taper until d17622f.
-// The fit moved each about two centipawns rms from its midgame twin, against
-// nineteen for the pawn and forty three for the king, and the difference sits
-// on the first three ranks rather than near the enemy king or on the seventh,
-// where endgame piece placement is supposed to diverge. The games are the
-// engine's own, and an engine that could not tell the two ends apart did not
-// play the positions that would say so.
+// Refitted, each stands under two to about three centipawns rms from its
+// midgame twin (1.6 for the queen to 3.2 for the knight), against nineteen
+// for the pawn and forty three for the king, and the difference is spread
+// over the board rather than near the enemy king or on the seventh, where
+// endgame piece placement is supposed to diverge. The games are the engine's
+// own, and an engine that could not tell the two ends apart did not play the
+// positions that would say so.
 //
 // Written out and not aliased, so editing one table does not move both.
 
 #[rustfmt::skip]
 const KNIGHTS_END: [i16; 64] = [
-    -50, -40, -30, -30, -29, -30, -40, -50,
-    -39, -20,   1,   0,   1,   0, -21, -40,
-    -30,  -1,  12,  15,  15,  10,   0, -30,
-    -30,   7,  14,  21,  18,  17,   5, -30,
-    -30,  -1,  14,  22,  20,  18,   0, -29,
-    -30,   2,   7,  13,  16,  11,   6, -30,
-    -40, -20,  -1,  -2,   7,   0, -20, -40,
-    -50, -39, -31, -30, -31, -30, -40, -50,
+    -50, -40, -30, -29, -29, -30, -40, -50,
+    -39, -20,   1,   1,   1,   1, -20, -39,
+    -30,   0,  12,  15,  15,  12,   0, -30,
+    -29,   6,  16,  20,  20,  16,   6, -29,
+    -28,   0,  17,  21,  21,  17,   0, -28,
+    -30,   3,   6,  14,  14,   6,   3, -30,
+    -40, -20,  -1,   0,   0,  -1, -20, -40,
+    -50, -39, -31, -31, -31, -31, -39, -50,
 ];
 
 #[rustfmt::skip]
 const BISHOPS_END: [i16; 64] = [
-    -20, -11, -11, -11, -10, -10, -11, -20,
-    -11,  -1,  -1,   0,   1,  -1,   1, -11,
-    -10,   0,   4,  10,  10,   5,   1, -10,
-    -10,   5,   3,  12,  12,   4,   4, -10,
-     -9,  -1,   8,   7,   6,  10,   1, -10,
-     -9,  11,   7,   7,  13,  10,  10, -10,
-     -8,   6,  -2,  -2,   1,   0,   4, -10,
-    -20,  -9, -14,  -9, -10, -14, -10, -21,
+    -20, -11, -11, -11, -11, -11, -11, -20,
+    -11,   0,  -1,   0,   0,  -1,   0, -11,
+    -10,   1,   4,  10,  10,   4,   1, -10,
+    -10,   5,   3,  12,  12,   3,   5, -10,
+     -9,   1,   9,   6,   6,   9,   1,  -9,
+     -9,  10,   8,  10,  10,   8,  10,  -9,
+     -9,   3,  -2,  -1,  -1,  -2,   3,  -9,
+    -20, -10, -14, -10, -10, -14, -10, -20,
 ];
 
 #[rustfmt::skip]
 const ROOKS_END: [i16; 64] = [
-     0,  2,  0,  1,  1,  1,  0,  0,
-     9, 12, 12, 12, 11, 10, 11,  5,
-    -2,  2,  3,  1,  1,  0,  0, -3,
-    -3,  1,  0,  1,  0,  1,  1, -4,
-    -8,  1, -1,  2,  0, -2,  0, -5,
-    -5, -1,  1,  2,  0, -1, -4, -5,
-    -8,  1, -3, -1, -2,  0, -2, -7,
-    -6, -1, -2,  6,  3,  0,  0, -4,
+      0,   1,   1,   2,   2,   1,   1,   0,
+      8,  12,  12,  13,  13,  12,  12,   8,
+      0,   3,   3,   3,   3,   3,   3,   0,
+     -1,   3,   3,   3,   3,   3,   3,  -1,
+     -6,   1,  -1,   1,   1,  -1,   1,  -6,
+     -6,  -3,  -2,  -1,  -1,  -2,  -3,  -6,
+     -9,  -2,  -4,  -3,  -3,  -4,  -2,  -9,
+     -9,  -4,  -4,   1,   1,  -4,  -4,  -9,
 ];
 
 #[rustfmt::skip]
 const QUEENS_END: [i16; 64] = [
     -20, -10, -10,  -5,  -5, -10, -10, -20,
     -10,   0,   0,   0,   0,   0,   0, -10,
-    -10,   0,   5,   5,   5,   5,   0,  -9,
-     -5,   0,   5,   5,   6,   5,   0,  -5,
-      0,   1,   5,   5,   6,   6,   1,  -5,
-    -10,   5,   4,   5,   4,   6,  -1, -10,
-    -10,  -1,   5,   0,   0,   0,   0, -10,
+     -9,   0,   5,   5,   5,   5,   0,  -9,
+     -5,   0,   5,   6,   6,   5,   0,  -5,
+     -2,   1,   6,   6,   6,   6,   1,  -2,
+    -10,   2,   4,   4,   4,   4,   2, -10,
+    -10,  -1,   2,   0,   0,   2,  -1, -10,
     -20, -10, -10,  -5,  -5, -10, -10, -20,
 ];
 
@@ -469,10 +475,10 @@ mod tests {
         for (name, half) in HALVES {
             let at = |file, rank| half(packed_at(Piece::Bishop, Color::White, file, rank));
             let worst = worst_four(Piece::Bishop, half);
-            // the midgame half holds this by a centipawn: its fourth lowest
-            // entry is -20 and its fifth is -19, so of the shape pins here
-            // this is the one a re-tune is likeliest to break without the
-            // shape having moved
+            // the midgame half held this by a centipawn before the joint
+            // refit (a fourth lowest of -20 against a fifth of -19), and now
+            // by nine (-20 against -11), so it is no longer the pin a re-tune
+            // is likeliest to break without the shape having moved
             assert_eq!(worst, CORNERS, "the worst {} squares are {:?}", name, worst);
             // the fianchetto squares, which are on a long diagonal and next to a
             // corner that is the table's worst
@@ -582,9 +588,9 @@ mod tests {
         }
     }
 
-    /// The endgame pawn table climbs toward promotion and the midgame one
-    /// does not. The fit let the files differ by a few centipawns around the
-    /// climb, so what is asserted is the rank's total across the files.
+    /// The endgame pawn table climbs toward promotion, and more steeply than
+    /// the midgame one. The files differ by up to thirteen centipawns around
+    /// the climb, so what is asserted is the rank's total across the files.
     #[test]
     fn a_pawn_is_worth_more_the_nearer_it_promotes_in_the_ending() {
         let rank_total = |half: fn(i32) -> i32, rank| {
@@ -611,15 +617,17 @@ mod tests {
                 rank
             );
         }
-        // the middlegame is no climb at all: a pawn that has left the second
-        // rank has left the shelter of a castled king
-        assert!(rank_total(mg_value, 3) < rank_total(mg_value, 2));
-        // and the same rank is not one number there: a pawn on d2 is held
-        // back to cover a castled king and one on a2 is not
-        assert_ne!(
-            value(Piece::Pawn, Color::White, File::D, 2),
-            value(Piece::Pawn, Color::White, File::A, 2)
-        );
+        // the middlegame pays a little for the third rank. Until the joint
+        // refit on 59,049 games it paid nothing: the third rank totalled -12
+        // against the second's 1, where now it is 16 against -12
+        assert!(rank_total(mg_value, 3) > rank_total(mg_value, 2));
+        // and it is the centre pawns that are worth moving: d2 and e2 are the
+        // lowest of their rank, as they were before the refit
+        let home = |file| mg_value(packed_at(Piece::Pawn, Color::White, file, 2));
+        for file in [File::A, File::B, File::C, File::F, File::G, File::H] {
+            assert!(home(File::D) < home(file), "{:?}", file);
+            assert!(home(File::E) < home(file), "{:?}", file);
+        }
     }
 
     /// The four pieces given an endgame table have one that says something,
@@ -695,11 +703,11 @@ mod tests {
     /// Each of the four keeps its own numbers, which the test above cannot
     /// say: exchanging two arrays' contents leaves every name where it was.
     ///
-    /// The fit moved each endgame table about two centipawns from its midgame
-    /// twin, so a piece's two halves are nearer each other than either is to
-    /// any of the other ten tables. The closest pair is the bishop and the
-    /// queen: the bishop's halves are 81 apart summed over the sixty four
-    /// squares, and the nearer of the two to any other piece's table is 172
+    /// The fits moved each endgame table two or three centipawns rms from its
+    /// midgame twin, so a piece's two halves are nearer each other than either
+    /// is to any of the other ten tables. The closest pair is the bishop and
+    /// the queen: the bishop's halves are 102 apart summed over the sixty four
+    /// squares, and the nearer of the two to any other piece's table is 158
     /// from it. A checksum would catch more and is not wanted, for the reason
     /// the shape tests give, and because a re-tune that carries an exchange
     /// would recompute it and bless it. This fires on 24 of the 28 exchanges;

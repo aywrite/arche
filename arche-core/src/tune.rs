@@ -811,26 +811,27 @@ mod tests {
     fn a_slot_names_the_table_entry_it_stands_for() {
         let entry = |file: File, rank: u8| usize::from(coordinate_to_index(rank, file));
         // a black pawn on a2 is a square from promoting
-        assert_eq!(weight(Piece::Pawn as usize * 64 + entry(File::A, 2)), 50);
-        assert_eq!(weight(MIDGAME_SLOTS + entry(File::A, 2)), 80);
+        assert_eq!(weight(Piece::Pawn as usize * 64 + entry(File::A, 2)), 51);
+        assert_eq!(weight(MIDGAME_SLOTS + entry(File::A, 2)), 81);
         // the king hides in the middlegame and comes out in the ending
-        assert_eq!(weight(Piece::King as usize * 64 + entry(File::E, 5)), -40);
+        assert_eq!(weight(Piece::King as usize * 64 + entry(File::E, 5)), -41);
         assert_eq!(
             weight(MIDGAME_SLOTS + Piece::King as usize * 64 + entry(File::E, 5)),
-            36
+            33
         );
         // the other four pieces' endgame tables stand a half of the vector
-        // on from their midgame twins. a1 is the one corner the fit left
-        // alone in all four, which is why one number serves both halves here
-        for (piece, corner) in [
-            (Piece::Knight, -50),
-            (Piece::Bishop, -20),
-            (Piece::Rook, 0),
-            (Piece::Queen, -20),
+        // on from their midgame twins. a1 is a corner the corpus barely
+        // reaches, so the ridge holds it near where it started, and only the
+        // rook's two halves differ there
+        for (piece, midgame, endgame) in [
+            (Piece::Knight, -50, -50),
+            (Piece::Bishop, -20, -20),
+            (Piece::Rook, 1, 0),
+            (Piece::Queen, -20, -20),
         ] {
             let slot = piece as usize * 64 + entry(File::A, 1);
-            assert_eq!(weight(slot), corner, "{:?}", piece);
-            assert_eq!(weight(MIDGAME_SLOTS + slot), corner, "{:?}", piece);
+            assert_eq!(weight(slot), midgame, "{:?}", piece);
+            assert_eq!(weight(MIDGAME_SLOTS + slot), endgame, "{:?}", piece);
         }
         for (piece, value) in [
             (Piece::Pawn, 100),
