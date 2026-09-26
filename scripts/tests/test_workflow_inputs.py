@@ -43,7 +43,8 @@ def call_only(workflow) -> dict[str, object]:
 
 
 def values(workflow):
-    """Where a value is read into env or handed to another workflow."""
+    """Where a value is read into env or handed to another workflow or an
+    action."""
     for key, value in (workflow.get("env") or {}).items():
         yield f"env.{key}", value
     for job_name, job in workflow["jobs"].items():
@@ -51,6 +52,10 @@ def values(workflow):
             yield f"jobs.{job_name}.env.{key}", value
         for key, value in (job.get("with") or {}).items():
             yield f"jobs.{job_name}.with.{key}", value
+        for number, step in enumerate(job.get("steps") or []):
+            for field in ("env", "with"):
+                for key, value in (step.get(field) or {}).items():
+                    yield f"jobs.{job_name}.steps[{number}].{field}.{key}", value
 
 
 def written(default) -> str:
