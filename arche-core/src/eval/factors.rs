@@ -25,11 +25,22 @@
 use crate::misc::{Color, Piece};
 
 /// How many factors a feature has. 0 turns the term off.
+#[cfg(not(feature = "machine-test"))]
 pub(crate) const RANK: usize = 0;
 
 /// The table's scale: a factor of `v` is stored as `v × Q`, so a product of
 /// two is `Q²` too large and the term divides by it.
+#[cfg(not(feature = "machine-test"))]
 pub(crate) const Q: i64 = 1;
+
+/// The rank the tests run the term at. A constant cannot be 0 on master and 8
+/// in a test, so the `machine-test` feature is what turns it on, and it is
+/// for tests alone: nothing that plays builds it.
+#[cfg(feature = "machine-test")]
+pub(crate) const RANK: usize = 8;
+
+#[cfg(feature = "machine-test")]
+pub(crate) const Q: i64 = 64;
 
 /// Two perspectives times six pieces times sixty four squares.
 pub(crate) const FEATURES: usize = 2 * 6 * 64;
@@ -42,7 +53,33 @@ const MOST_PIECES: usize = 32;
 const LIVE: usize = (RANK != 0) as usize;
 
 /// Each feature's factors, at scale `Q`.
+#[cfg(not(feature = "machine-test"))]
 static FACTORS: [[i16; RANK]; FEATURES] = [[0; RANK]; FEATURES];
+
+#[cfg(feature = "machine-test")]
+static FACTORS: [[i16; RANK]; FEATURES] = seeded();
+
+/// A fixed table for the tests: every factor drawn from -96 to 96 by a linear
+/// congruential generator, which puts the term's spread near the fitted
+/// one's (about forty centipawns over a game's positions).
+#[cfg(feature = "machine-test")]
+const fn seeded() -> [[i16; RANK]; FEATURES] {
+    let mut table = [[0; RANK]; FEATURES];
+    let mut state: u64 = 0x9e37_79b9_7f4a_7c15;
+    let mut feature = 0;
+    while feature != FEATURES {
+        let mut lane = 0;
+        while lane != RANK {
+            state = state
+                .wrapping_mul(6_364_136_223_846_793_005)
+                .wrapping_add(1_442_695_040_888_963_407);
+            table[feature][lane] = ((state >> 33) % 193) as i16 - 96;
+            lane += 1;
+        }
+        feature += 1;
+    }
+    table
+}
 
 /// Each feature's `‖q_i‖²`, worked out from the table when it compiles.
 static DIAGONAL: [[i32; LIVE]; FEATURES] = diagonal();
@@ -265,8 +302,117 @@ impl Machine {
 
 #[cfg(test)]
 mod features {
-    use super::feature;
+    use super::{Machine, RANK, feature};
+    use crate::board::{Board, fens};
+    use crate::eval::eval;
     use crate::misc::{Color, Piece};
+    use crate::{bench, strategy, tactics};
+    use pretty_assertions::assert_eq;
+
+    fn suites() -> Vec<String> {
+        let mut fens: Vec<String> = fens::CORE.iter().map(|f| f.to_string()).collect();
+        fens.extend(bench::positions().into_iter().map(|p| p.fen));
+        fens.extend(tactics::positions().into_iter().map(|p| p.fen));
+        fens.extend(strategy::positions().into_iter().map(|p| p.fen));
+        fens
+    }
+
+    /// The colour mirror of a fen: ranks reversed, cases swapped, the side to
+    /// move, the castling rights and the en passant rank swapped with them.
+    fn mirrored(fen: &str) -> String {
+        let fields: Vec<&str> = fen.split(' ').collect();
+        let swap = |c: char| {
+            if c.is_ascii_uppercase() {
+                c.to_ascii_lowercase()
+            } else {
+                c.to_ascii_uppercase()
+            }
+        };
+        let board: Vec<String> = fields[0]
+            .split('/')
+            .rev()
+            .map(|rank| rank.chars().map(swap).collect())
+            .collect();
+        let side = if fields[1] == "w" { "b" } else { "w" };
+        let castling = if fields[2] == "-" {
+            "-".to_string()
+        } else {
+            let mut rights: Vec<char> = fields[2].chars().map(swap).collect();
+            rights.sort_by_key(|c| "KQkq".find(*c));
+            rights.into_iter().collect()
+        };
+        let passant = match fields[3].as_bytes() {
+            [file, b'3'] => format!("{}6", *file as char),
+            [file, b'6'] => format!("{}3", *file as char),
+            _ => fields[3].to_string(),
+        };
+        let mut out = vec![board.join("/"), side.to_string(), castling, passant];
+        out.extend(fields[4..].iter().map(|f| f.to_string()));
+        out.join(" ")
+    }
+
+    /// The divide truncates toward zero, and the mirror depends on it: a
+    /// floor would put a position and its mirror a centipawn apart wherever
+    /// the pair sums do not divide evenly. Over every suite position, at
+    /// whatever rank this is built with.
+    #[test]
+    fn a_mirrored_position_scores_the_same_across_the_suites() {
+        for fen in suites() {
+            let board = Board::from_fen(&fen).unwrap();
+            let mirror = Board::from_fen(&mirrored(&fen)).unwrap();
+            assert_eq!(eval(&board), eval(&mirror), "{}", fen);
+        }
+    }
+
+    /// The state check runs after every move made and not after one
+    /// unmade, so unmaking is asked here: two plies deep from every bench
+    /// and core position, the accumulator comes back equal.
+    #[test]
+    fn unmaking_a_move_restores_the_accumulator() {
+        let mut fens: Vec<String> = fens::CORE.iter().map(|f| f.to_string()).collect();
+        fens.extend(bench::positions().into_iter().map(|p| p.fen));
+        for fen in fens {
+            let mut board = Board::from_fen(&fen).unwrap();
+            let root = board.eval;
+            for play in &board.generate_moves() {
+                if !board.make_move(play) {
+                    continue;
+                }
+                let after = board.eval;
+                for reply in &board.generate_moves() {
+                    if board.make_move(reply) {
+                        board.undo_move();
+                        assert_eq!(board.eval, after, "{} then {}", fen, play);
+                    }
+                }
+                board.undo_move();
+                assert_eq!(board.eval, root, "{} then {}", fen, play);
+            }
+        }
+    }
+
+    /// The tests above hold at rank 0 with nothing to check, so under the
+    /// test rank they have to be seen to be checking something.
+    #[test]
+    fn the_test_rank_scores_something() {
+        if RANK == 0 {
+            return;
+        }
+        let scored = suites()
+            .iter()
+            .map(|fen| {
+                let board = Board::from_fen(fen).unwrap();
+                let pieces = (0..64).filter_map(|index| {
+                    board
+                        .get_piece_and_color_index(index)
+                        .map(|(piece, color)| (index, piece, color))
+                });
+                Machine::of(pieces).score()
+            })
+            .filter(|&score| score != 0)
+            .count();
+        assert!(scored > 1_000, "the term scored {} positions", scored);
+    }
 
     /// Worked by hand from the definition the factors were fitted against,
     /// since every path in the engine and the tuner reads this one function

@@ -45,6 +45,11 @@ authors = [
 ]
 license = "GPL-3.0-or-later"
 
+# The engine's test-only switch for its pair term, passed through so the
+# session tests here run against the same build.
+[features]
+machine-test = ["arche-core/machine-test"]
+
 [dependencies]
 arche-core = { path = "./arche-core" }
 
