@@ -402,13 +402,23 @@ It is for a machine whose load comes in bursts. Load that keeps coming back
 uses up the replacements and ends in a wide interval, which the verdict
 calls not resolved.
 
-The report also compares the two sides at their fastest round each, since
-nothing sharing the machine ever makes a run faster, and that pair is a
-second reading with no interval. The Bench workflow's speed job does the same
-on every pull request, over twenty five rounds rather than the local fifteen,
-both sides built and run on one runner, and posts the result as a comment, or
-to the job summary alone for a pull request from a fork. It reports and does
-not gate: the count is the claim, and the rate is the context it is read in.
+Before the first round each side runs the bench once and the run is thrown
+away. Over 187 of the speed job's runs, the first run of a job was 1.13%
+below its side's median and the second 0.10%, so without it the first round
+leaned about a percent towards whichever side went second.
+
+The report also compares the two sides at their fastest round each. That is
+a diagnostic, not a second estimate. Runs do not only come out slow: on the
+speed job a side's fastest run sat a median 1.5% above its own median. The
+fastest pair has no interval and does not settle as rounds are added, and
+over the layout-only pull requests it showed more than 2% on three times as
+many as the paired change did.
+
+The Bench workflow's speed job does the same on every pull request, over
+twenty five rounds rather than the local fifteen, both sides built and run on
+one runner, and posts the result as a comment, or to the job summary alone
+for a pull request from a fork. It reports and does not gate: the count is
+the claim, and the rate is the context it is read in.
 
 The report lists each round with its own change, then gives one row a side
 and a change row under it, then the paired change and its interval. The
