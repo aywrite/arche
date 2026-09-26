@@ -676,7 +676,7 @@ mod evaluate {
     /// with.
     #[test]
     fn mobility_joins_the_numerator_rather_than_being_tapered_beside_it() {
-        let board = Board::from_fen("4k3/8/8/8/8/8/4P3/1N2K3 w - - 0 1").unwrap();
+        let board = Board::from_fen("4k3/8/8/8/8/8/5P2/1N2K3 w - - 0 1").unwrap();
         let accumulator = board.eval;
         let phase = accumulator.phase.min(TOTAL_PHASE);
         let mobility = pack(11, -1);

@@ -96,8 +96,10 @@ static MASKS: Masks = Masks::new();
 /// What one of those seven counts is worth, as the packed pairs the taper is
 /// read from.
 ///
-/// Fitted 2026-09-12 by `scripts/tune.py` over the whole archived strength
-/// run, 28,675 games and 1,623,149 quiet rows extracted by `arche terms` at
+/// Refitted 2026-09-26 with every weight but material, in the joint refit the tables' comment in `psqt.rs` describes.
+///
+/// First fitted 2026-09-12 by `scripts/tune.py` over the whole archived
+/// strength run, 28,675 games and 1,623,149 quiet rows extracted by `arche terms` at
 /// 4e5bd7d, K held at 1.2071, every other weight held, at a ridge of 1e-8.
 /// The sealed group, opened once after the games had accepted this vector,
 /// scores 0.090914 at zero and 0.090377 at these, a paired difference of
@@ -110,8 +112,8 @@ static MASKS: Masks = Masks::new();
 /// memo in [`super::Caches`] pays for the seven instead.
 ///
 /// Two of the storm's three signs are not what the term was named for: an
-/// enemy pawn one rank in front of the king reads 11 and 35 and three ranks
-/// out reads 14, and our own cover reads -26 in the ending. The corpus is the
+/// enemy pawn one rank in front of the king reads 12 and 35 and three ranks
+/// out reads 14, and our own cover reads -15 and -25 in the ending. The corpus is the
 /// first place to look: 66.4% of its appearances have six or fewer pieces
 /// left and 6.0% thirteen or more, so the midgame half is fitted on the
 /// thinnest slice of the games, and the near storm count carries a
@@ -121,17 +123,17 @@ static MASKS: Masks = Masks::new();
 ///
 /// A side's seven counts come to eighteen at most: five are at most three
 /// pawns each, and the two file counts share three files between them.
-/// Against these weights the largest total one side reaches is 168 in the
-/// midgame half and -207 in the ending half, a long way inside the sixteen
-/// bits `pack` gives each half.
+/// Against these weights one side's total stays within about two hundred at
+/// either end of the taper, a long way inside the sixteen bits `pack` gives
+/// each half.
 static SHELTER: [i32; COUNTS] = [
-    pack(10, -11),
-    pack(21, -26),
-    pack(-11, -26),
-    pack(-8, -1),
-    pack(11, 35),
-    pack(-18, 2),
-    pack(14, -6),
+    pack(19, -15),
+    pack(19, -25),
+    pack(-8, -24),
+    pack(-10, 7),
+    pack(12, 35),
+    pack(-18, 3),
+    pack(14, -7),
 ];
 
 /// The weight of one count, as the packed pair, read through
