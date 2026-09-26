@@ -23,33 +23,12 @@ pub(crate) const COUNTS: usize = mobility::PIECES.len();
 /// What one attacked square of the enemy king's ring is worth to each of
 /// [`mobility::PIECES`], as the packed pairs the taper is read from.
 ///
-/// Refitted 2026-09-26 with every weight but material, in the joint refit the tables' comment in `psqt.rs` describes.
+/// Refitted 2026-09-26 with every weight but material, in the joint fit
+/// whose figures the tables' comment in `psqt.rs` gives. The fit before this
+/// one, which held every other weight, is d3dcc53.
 ///
-/// First fitted 2026-09-16 by `scripts/tune.py` over the whole archived
-/// strength run, 50,677 games and 2,890,773 quiet rows extracted by `arche terms` at
-/// the 820 slot layout (corpus sha256 `a0798d51`, sealed pairs `a723887f`,
-/// rows `6001063b`, fitted vector `f65aa57e`), K held at 1.0821, every other
-/// weight held, at a ridge of zero. The fit's figure is the sealed group's:
-/// opened once at 2026-09-16T10:28:31Z after the vector was frozen, it scores
-/// 0.079520 at zero and 0.079377 at these, a paired difference of -0.000143
-/// against a standard error of 0.000059 over its 6,985 games at a design
-/// factor of 3.2. The selection group read -0.000395 against 0.000052, about
-/// 3.2 standard errors away, and by the rule the fit was registered with (a
-/// disagreement wider than the mobility refit's 1.85) the sealed figure is
-/// the one quoted. Commit d3dcc53 holds the phase split, the column support
-/// and the learning curve, and docs/ROADMAP.md what the term leaves out.
-///
-/// The sealed file names 3,501 pairs over 6,995 games against the 3,498 and
-/// 6,985 that reached a row. Three of those pairs reach no row, which
-/// accounts for at most six of the ten missing games, and where the other
-/// four went is not established.
-///
-/// The first fit's ridge of zero was not overruled: its largest weight was
-/// the rook's 27, and the rook column is the best supported of the four. The
-/// refit keeps the rook largest, at 29.
-///
-/// What counting the ring at every evaluation costs is in docs/ROADMAP.md
-/// and 7991f40.
+/// docs/ROADMAP.md has what the term leaves out. What counting the ring at
+/// every evaluation costs is there too, and in 7991f40.
 ///
 /// `bounds_hold` charges one piece of each kind two squares of the ring for a
 /// knight, three for a bishop, four for a rook and six for a queen, both sides

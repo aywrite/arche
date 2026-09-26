@@ -205,8 +205,7 @@ HEADER_COUNTS = ("positions", "in_check", "unsettled", "drawn", "kept")
 LAYOUT = "layout "
 
 # What the line opens with that says the pair term is on, at what rank and
-# scale: `factors 8 64`. Its rows carry the term's score as a fourth number
-# after the count.
+# scale: `factors 16 256`. Its rows carry the term's score after the count.
 FACTORS = "factors "
 
 
@@ -361,6 +360,8 @@ def parse_terms(lines):
         if line.startswith(FACTORS) and len(words) == 3:
             if rows:
                 raise ValueError("a factors line after the rows it is about")
+            # the rank and the scale, read only to refuse a line that is not
+            # two integers
             int(words[1]), int(words[2])
             machine = True
             continue

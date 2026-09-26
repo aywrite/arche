@@ -4964,7 +4964,7 @@ mod search {
         // killers at ply one exactly: the update sites read the board after
         // the move is unmade. Black is asked for a credited entry rather than
         // a positive total, since the malus on the moves tried before a
-        // cutoff can outweigh the credit (-14 with the pair term on)
+        // cutoff can outweigh the credit
         let mut e = remembering(Board::new());
         completed(e.search(2));
         assert_eq!(e.ordering.history_total(Color::White), 0);

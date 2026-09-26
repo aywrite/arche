@@ -38,10 +38,8 @@ pub(crate) const RANK: usize = 16;
 #[cfg(not(feature = "machine-test"))]
 pub(crate) const Q: i64 = 256;
 
-/// The rank the tests run the term at on a seeded table, so the term is
-/// checked on a table no fit chose. A constant cannot be 16 in the engine and
-/// 8 in a test, so the `machine-test` feature is what sets it, and it is for
-/// tests alone: nothing that plays builds it.
+/// The rank the tests run the term at, on the seeded table the
+/// `machine-test` feature swaps in.
 #[cfg(feature = "machine-test")]
 pub(crate) const RANK: usize = 8;
 
@@ -67,7 +65,7 @@ static FACTORS: [[i16; RANK]; FEATURES] = seeded();
 
 /// A fixed table for the tests: every factor drawn from -96 to 96 by a linear
 /// congruential generator, which puts the term's spread near the fitted
-/// one's (about forty centipawns over a game's positions).
+/// one's.
 #[cfg(feature = "machine-test")]
 const fn seeded() -> [[i16; RANK]; FEATURES] {
     let mut table = [[0; RANK]; FEATURES];
@@ -323,8 +321,7 @@ mod features {
         fens
     }
 
-    /// The colour mirror of a fen: ranks reversed, cases swapped, the side to
-    /// move, the castling rights and the en passant rank swapped with them.
+    /// The colour mirror of a fen.
     fn mirrored(fen: &str) -> String {
         let fields: Vec<&str> = fen.split(' ').collect();
         let swap = |c: char| {
@@ -357,10 +354,8 @@ mod features {
         out.join(" ")
     }
 
-    /// The divide truncates toward zero, and the mirror depends on it: a
-    /// floor would put a position and its mirror a centipawn apart wherever
-    /// the pair sums do not divide evenly. Over every suite position, at
-    /// whatever rank this is built with.
+    /// A position and its colour mirror score the same over every suite
+    /// position, which needs the divide to truncate toward zero.
     #[test]
     fn a_mirrored_position_scores_the_same_across_the_suites() {
         for fen in suites() {

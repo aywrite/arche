@@ -25,7 +25,7 @@ unsafe_op_in_unsafe_fn = "deny"
 
 # Runs the evaluation's pair term at rank 8 on a seeded table in place of the
 # fitted rank 16 one, so the tests check the term on a table no fit chose. For
-# tests only: a build that plays never turns it on.
+# tests only, and not for a build that plays.
 [features]
 machine-test = []
 

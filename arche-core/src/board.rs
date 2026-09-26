@@ -1933,8 +1933,8 @@ impl Board {
         println!();
     }
 
-    /// Put a piece on a square, with the position key, the pawn key, the
-    /// piece square score and the material accumulators following it on.
+    /// Put a piece on a square, with the position key, the pawn key and the
+    /// evaluation's accumulator following it on.
     #[inline]
     fn set_piece_index(&mut self, index: u8, piece: Piece, color: Color) {
         debug_assert!(!self.black.is_bit_set(index));

@@ -127,42 +127,24 @@ pub(super) const fn files_of(pawns: u64) -> u8 {
 /// What one of those eight counts is worth, as the packed pairs the taper is
 /// read from.
 ///
-/// Refitted 2026-09-26 with every weight but material, in the joint refit the tables' comment in `psqt.rs` describes.
+/// Refitted 2026-09-26 with every weight but material, in the joint fit
+/// whose figures the tables' comment in `psqt.rs` gives. The fit before this
+/// one, which held every other weight, is 5c3175b.
 ///
-/// First fitted 2026-09-12 by `scripts/tune.py` over the whole archived
-/// strength run, 34,175 games and 1,922,548 quiet rows extracted by `arche terms` at
-/// 39da0fe (corpus sha256 `f9ff326c`, rows `35fd184d`), K held at 1.1959,
-/// every other weight held, at a ridge of 1e-8. The sealed group, opened once
-/// after the weights were frozen, scores 0.084236 at zero and 0.083240 at
-/// these, a paired difference of -0.000995 against a standard error of
-/// 0.000146 over its 5,480 games at a design factor of 5.0, which is 0.15
-/// standard errors from the selection group's reading. Commit 5c3175b holds
-/// the selection figures, the phase split and the learning curve.
-///
-/// At that first fit the ridge overruled the grid, which ranked no
-/// regularisation first. That
-/// vector put 239 on a passed pawn's seventh rank in the midgame and -29 in
-/// the ending, on the count with the fewest rows (5.31%) and the smallest
-/// summed midgame coefficient of the sixteen: the direction the corpus
-/// constrains least is where an unregularised fit put its error. The
-/// selection group did not catch it, since a held-out group detects a vector
-/// that has memorised its games and not one that has learned a real but
-/// unrepresentative regularity. Overruling cost 0.000132 of selection loss
-/// against a standard error of 0.00015 and bought a largest weight of 53.
-///
-/// Three of the sixteen are not what the term was built to say and are left
-/// as the fit gave them. A passed pawn on the seventh is worth less than one
-/// on the sixth at both ends, which survives every ridge on the grid: a
-/// position with a passer on the seventh is rarely quiet unless the pawn is
-/// blockaded or about to be lost, so those are the rows that reach the fit.
-/// Passed pawns on the second through the fourth are a midgame penalty, and
-/// a doubled pawn is worth 4 in the midgame. All three survive the refit.
+/// Three readings are not what the term was built to say and are left as
+/// the fit gave them. A passed pawn on the seventh is worth less than one on
+/// the sixth at both ends, in this fit and the one before it: a position
+/// with a passer on the seventh is rarely quiet unless the pawn is blockaded
+/// or about to be lost, so those are the rows that reach the fit. It is also
+/// the count with the fewest rows, so it is where a fit without a ridge puts
+/// its error: 5c3175b records 239 there in the midgame at no ridge. Passed
+/// pawns on the second through the fourth are a midgame penalty, and a
+/// doubled pawn is worth 4 in the midgame.
 ///
 /// One pawn can be passed, isolated and doubled at once, but no count exceeds
 /// eight and the six passed counts share the eight pawns, so this term stays
 /// far inside the 32,767 a half has to stay inside. `bounds_hold` charges
-/// eight of every count, which is the looser screen, and puts the whole
-/// vector's boardful at 10,118 after the joint refit.
+/// eight of every count, which is the looser screen.
 static PAWN_STRUCTURE: [i32; COUNTS] = [
     pack(-20, 20),
     pack(-27, 18),

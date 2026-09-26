@@ -77,17 +77,15 @@ pub struct AcceptedLoss {
 
 /// The losses accepted so far.
 ///
-/// All four are the late move count's (5bc4e91), which refuses a
-/// quiet a node of depth one to three has reached past four moves a ply, so
-/// a winning line with such a quiet in it is not searched at those depths.
-/// Each names what depth six answers with instead and the depth the suite's
-/// move comes back at, read one position at a time on that commit.
+/// These are the late move count's (5bc4e91), which refuses a quiet a node
+/// of depth one to three has reached past four moves a ply, so a winning
+/// line with such a quiet in it is not searched at those depths. Each names
+/// what depth six answers with instead and the depth the suite's move comes
+/// back at, read one position at a time on that commit.
 ///
-/// Nine more stood here. 188f2f6 found WAC.022 again through the suite's
-/// other move c4a2, the joint refit of the linear weights on 59,049 games
-/// found seven (the reduction table's WAC.260, five of the count's, and mate
-/// distance pruning's WAC.150), and the evaluation's pair term found the
-/// reduction table's WAC.082.
+/// A position the suite misses and this list does not name was not
+/// accepted: the pair term lost five the joint refit had won back
+/// (6ce33d3), and they were left off.
 pub const ACCEPTED_LOSSES: &[AcceptedLoss] = &[
     AcceptedLoss {
         id: "WAC.232",
