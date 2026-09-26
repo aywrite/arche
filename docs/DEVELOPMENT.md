@@ -442,6 +442,32 @@ right tree is a question only games answer, which is what `Elo:` is for. The
 commit, so that a trailer written today and one written two years ago say the
 same kind of thing.
 
+Below what the rate can resolve, count instructions instead:
+
+```
+python3 scripts/instructions.py <base binary> <candidate binary>
+```
+
+It runs each side's bench once under cachegrind with the cache simulation
+off and prints the instructions executed, the nodes, and the instructions a
+node. The count repeats to within a few hundred instructions (the clock reads
+differ), so one run a side is enough, and a change in the total far smaller
+than the rate can see is a real one. The count covers the whole process,
+startup and the tables' allocation included, so the per node column moves a
+little even when only the size of the tree changed. Cachegrind runs the bench
+about twenty five times slower than it runs natively. The speed job counts
+both sides after timing them and puts the count under the speed in its
+comment.
+
+What it measures is narrower than speed. Cache misses, mispredicted branches
+and the code's alignment all cost time and no instructions, so a change that
+trades an instruction for a miss reads as a win here and a loss in the rate.
+It is also not free of the compiler: a change that should do nothing can
+move the count by a few tenths of a percent through different register
+allocation. Read the two together. A change the count shows and the rate
+cannot resolve is one in instructions only, and whether it is faster is
+still the rate's question.
+
 There are criterion microbenchmarks too, of move generation, perft and the
 search at a fixed depth, for profiling a change by hand:
 

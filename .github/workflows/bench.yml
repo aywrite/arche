@@ -19,7 +19,9 @@ name: Bench
 #
 # The speed job measures the pull request against the commit it would land
 # on, the way scripts/speed.sh measures a perf commit, and reports without
-# gating: a runner's rate is context, not a claim.
+# gating: a runner's rate is context, not a claim. It counts the instructions
+# each side executes as well, which repeat exactly enough to show a change
+# the rate cannot, and says nothing about what the hardware does with them.
 
 on:
   pull_request:
@@ -116,7 +118,7 @@ jobs:
   speed:
     if: github.event_name == 'pull_request'
     runs-on: ubuntu-latest
-    timeout-minutes: 30
+    timeout-minutes: 40
     permissions:
       contents: read
       pull-requests: write
@@ -142,11 +144,27 @@ jobs:
           # the root of the count
           python3 scripts/speed.py ./base-arche ./pr-arche \
             --base-ref "${BASE_SHA:0:8}" --rounds 25 | tee speed.txt
+      - name: Count instructions
+        id: count
+        # after the timing rather than beside it, so cachegrind never shares
+        # the runner with a timed run. It reports and does not gate, and a
+        # hang ends the step rather than the job, so the comment still posts
+        if: ${{ !cancelled() }}
+        continue-on-error: true
+        timeout-minutes: 10
+        shell: bash
+        run: |
+          # the image's package lists go stale between image updates
+          sudo apt-get update -qq
+          sudo apt-get install -y -qq --no-install-recommends valgrind > /dev/null
+          python3 scripts/instructions.py ./base-arche ./pr-arche \
+            --base-ref "${BASE_SHA:0:8}" | tee instructions.txt
       - name: Summarise
         # a failed measurement is reported as one, not as whatever tee wrote
         if: ${{ !cancelled() }}
         env:
           MEASURED: ${{ steps.measure.outcome }}
+          COUNTED: ${{ steps.count.outcome }}
         shell: bash
         run: |
           {
@@ -167,6 +185,20 @@ jobs:
               cat speed.txt
             else
               echo "the measurement failed, see the job's log"
+            fi
+            echo '```'
+            echo
+            echo "The instructions each side's bench executed, counted under"
+            echo "cachegrind. The count repeats to within a few hundred"
+            echo "instructions, so a small change here is a real one, but it"
+            echo "prices instructions only: cache misses, mispredicted branches"
+            echo "and where the code lands are the speed's to show."
+            echo
+            echo '```'
+            if [ "$COUNTED" = success ]; then
+              cat instructions.txt
+            else
+              echo "the count failed, see the job's log"
             fi
             echo '```'
           } > speed-summary.md
