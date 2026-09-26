@@ -255,8 +255,9 @@ been measured.
 The sampling is the census's. Only a late quiet at a node deep enough to reduce
 offers a scout, so the stream is sparser than the census's, and every fail low
 kept costs a reference search in the replay. The attention model was fitted on
-a bench run, so a threshold chosen off these rows is read back on
-`arche-core/tactics.epd` or `arche-core/strategy.epd` rather than on the bench.
+positions from our own games, one ledger a root, split by opening pair, so a
+threshold chosen off these rows is read back on the other half of the pairs
+rather than on the rows it was chosen on.
 
 The run ends with a line per depth: the scouts (skipped rows are counted apart,
 so the fail low share keeps its denominator), the skipped count, the fail low

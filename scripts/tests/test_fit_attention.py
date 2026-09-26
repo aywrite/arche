@@ -3,9 +3,10 @@
 
 """Tests for the attention model fit.
 
-The engine's weights came from a ledger of 193,143 rows that cannot be
-reproduced (see the script), so what is held here is that the script reads
-the format it declares and that the fit is a fit.
+The engine's weights came from a ledger this repository does not hold, on
+rows the script's command line does not select (see the script), so what is
+held here is that the script reads the format it declares and that the fit is
+a fit.
 
 `reductions_sample.txt` is a real ledger, `arche reductions 8 every 220 cap
 800` on the bench suite at ccd1804: 791 rows over five depths, 205 skipped by
