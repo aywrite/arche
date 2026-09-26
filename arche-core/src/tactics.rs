@@ -77,28 +77,18 @@ pub struct AcceptedLoss {
 
 /// The losses accepted so far.
 ///
-/// WAC.082 is the reduction table's (1f805b2): a move it never touches or
-/// reaches late, whose continuation is quiet and is now scouted further back
-/// than the depth can afford.
-///
-/// WAC.232 to WAC.266 are the late move count's (5bc4e91), which refuses a
+/// All four are the late move count's (5bc4e91), which refuses a
 /// quiet a node of depth one to three has reached past four moves a ply, so
 /// a winning line with such a quiet in it is not searched at those depths.
 /// Each names what depth six answers with instead and the depth the suite's
 /// move comes back at, read one position at a time on that commit.
 ///
-/// Eight more stood here. 188f2f6 found WAC.022 again through the suite's
-/// other move c4a2, and the joint refit of the linear weights on 59,049
-/// games found seven: the reduction table's WAC.260, five of the count's,
-/// and mate distance pruning's WAC.150.
+/// Nine more stood here. 188f2f6 found WAC.022 again through the suite's
+/// other move c4a2, the joint refit of the linear weights on 59,049 games
+/// found seven (the reduction table's WAC.260, five of the count's, and mate
+/// distance pruning's WAC.150), and the evaluation's pair term found the
+/// reduction table's WAC.082.
 pub const ACCEPTED_LOSSES: &[AcceptedLoss] = &[
-    AcceptedLoss {
-        id: "WAC.082",
-        why: "the quiet queen lift and rook swing behind the h7 sacrifice are \
-              scouted further back, so the sacrifice never comes back above \
-              alpha at depth six",
-        until: "0.6.0",
-    },
     AcceptedLoss {
         id: "WAC.232",
         why: "depth six answers a6b7 at 19 and the rook trade b8e8 comes \

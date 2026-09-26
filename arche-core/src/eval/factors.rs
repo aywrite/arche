@@ -24,18 +24,23 @@
 
 use crate::misc::{Color, Piece};
 
-/// How many factors a feature has. 0 turns the term off.
+/// How many factors a feature has. 0 turns the term off. 16 is the rank
+/// chosen on 2026-09-26 against a cost bar fixed before it was measured:
+/// ranks 8, 16 and 32 cost 6.2%, 4.4% and 8.2% of the bench's nodes a
+/// second, and 16 bought the most held out loss for what it cost.
 #[cfg(not(feature = "machine-test"))]
-pub(crate) const RANK: usize = 0;
+pub(crate) const RANK: usize = 16;
 
 /// The table's scale: a factor of `v` is stored as `v × Q`, so a product of
-/// two is `Q²` too large and the term divides by it.
+/// two is `Q²` too large and the term divides by it. 256 is the largest power
+/// of two at which [`in_range`] holds for this table.
 #[cfg(not(feature = "machine-test"))]
-pub(crate) const Q: i64 = 1;
+pub(crate) const Q: i64 = 256;
 
-/// The rank the tests run the term at. A constant cannot be 0 on master and 8
-/// in a test, so the `machine-test` feature is what turns it on, and it is
-/// for tests alone: nothing that plays builds it.
+/// The rank the tests run the term at on a seeded table, so the term is
+/// checked on a table no fit chose. A constant cannot be 16 in the engine and
+/// 8 in a test, so the `machine-test` feature is what sets it, and it is for
+/// tests alone: nothing that plays builds it.
 #[cfg(feature = "machine-test")]
 pub(crate) const RANK: usize = 8;
 
@@ -54,7 +59,7 @@ const LIVE: usize = (RANK != 0) as usize;
 
 /// Each feature's factors, at scale `Q`.
 #[cfg(not(feature = "machine-test"))]
-static FACTORS: [[i16; RANK]; FEATURES] = [[0; RANK]; FEATURES];
+static FACTORS: [[i16; RANK]; FEATURES] = include!("factors16.rs");
 
 #[cfg(feature = "machine-test")]
 static FACTORS: [[i16; RANK]; FEATURES] = seeded();

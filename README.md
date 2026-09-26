@@ -18,8 +18,9 @@ static exchange evaluation says the swap wins, with
 MVV-LVA breaking the ties between the ones it prices alike, and the quiet moves by the ones that
 have cut off before. Evaluation is material, piece square tables, piece mobility, the
 pawns standing in front of each king, pawn structure, and the squares around each king the
-enemy pieces attack, tapered between a middlegame and an endgame score. The tables and the
-four leaf terms were fitted to the engine's own games; the material values are hand set.
+enemy pieces attack, tapered between a middlegame and an endgame score, plus a factorization
+machine term that prices every pair of pieces on the board. The tables, the four leaf terms
+and the pair term were fitted to the engine's own games; the material values are hand set.
 
 ### Background
 

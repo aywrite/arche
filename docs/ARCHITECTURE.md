@@ -118,10 +118,17 @@ structure and the king attack zone.
     accumulator about every piece placed, removed and moved, so material and
     the piece square score are carried rather than counted; the leaf terms are
     computed at the leaf. Material that cannot mate is answered with a hard
-    zero, the one place the score is not a sum over the weights. `TERMS`, a
-    descriptor per leaf term, is what the tuner lays its slot vector out from.
-    One walk over each side's pieces probes each attack set once for both
-    mobility and the king attack zone.
+    zero, which with the pair term below is where the score is not a sum over
+    the weights. `TERMS`, a descriptor per leaf term, is what the tuner lays
+    its slot vector out from. One walk over each side's pieces probes each
+    attack set once for both mobility and the king attack zone.
+  - **factors.rs**: The pair term, a factorization machine over the piece
+    square features: a weight for every pair of pieces, as the inner product
+    of two rows of sixteen factors. The accumulator keeps each perspective's
+    sum of the rows, so the leaf reads two sums of squares. The table is
+    `factors16.rs`, generated from the fit; the `machine-test` feature swaps
+    in a seeded rank 8 table so the tests check the term on a table no fit
+    chose.
   - **cache.rs**: The direct mapped cache a remembered term is kept in, one
     per term, holding a score under the whole of its key.
   - **mobility.rs**: How many squares each side's pieces cover. Read at every
@@ -171,10 +178,11 @@ structure and the king attack zone.
   row says whether each side reached it and what each spent under it.
   Driven by the `effort` argument.
 - **tune.rs**: What a position's evaluation is made of. The evaluation is linear
-  in its weights except where material cannot mate, so a position's score is a
-  dot product, and this writes down the position's side of it, one coefficient
-  per weight the position touches. `reconstruct` folds a row back against the
-  live tables and has to give the evaluation exactly. Driven by the `terms`
+  in its weights except where material cannot mate and for the pair term,
+  which a row carries as a number of its own, so a position's score is a dot
+  product and that number, and this writes down the position's side of it,
+  one coefficient per weight the position touches. `reconstruct` folds a row
+  back against the live tables and has to give the evaluation exactly. Driven by the `terms`
   argument, and read by `scripts/tune.py`.
 - **tactics.rs**: 300 tactical positions with a pinned pass count, gated
   in CI.

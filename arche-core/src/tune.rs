@@ -3,12 +3,14 @@
 
 //! What a position's evaluation is made of, weight by weight.
 //!
-//! The evaluation is material plus tapered terms, linear in the weights, so a
-//! position's score is a dot product of one coefficient per weight it touches
-//! against the weights. This module writes the coefficients down and
+//! The evaluation is material plus tapered terms, linear in the weights, plus
+//! the pair term (`eval::factors`), which is not. So a position's score is a
+//! dot product of one coefficient per weight it touches against the weights,
+//! plus that term, which a row carries as a number of its own and a fit reads
+//! as a constant. This module writes the coefficients down and
 //! `scripts/tune.py` fits them.
 //!
-//! The one place the evaluation is not linear is material that cannot mate,
+//! The other place the evaluation is not linear is material that cannot mate,
 //! which `eval` answers with a hard zero. `run` turns those positions away
 //! and counts them in the header, and `scripts/tune.py` refuses a header
 //! without the count, since an extraction printed before the rule holds rows
