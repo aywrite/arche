@@ -12,6 +12,7 @@
 //! weights, its fold, and its memo's key and table width where it has one.
 
 mod cache;
+pub(crate) mod factors;
 mod king_attack;
 mod mobility;
 mod pawn_structure;
@@ -328,6 +329,8 @@ pub(crate) struct Accumulator {
     /// four popcounts there measured dearer than one add per piece touched
     /// here.
     phase: i32,
+    /// The pair term's sums, which take no room when it is off.
+    machine: factors::Machine,
 }
 
 impl Accumulator {
@@ -336,6 +339,7 @@ impl Accumulator {
         material: [0; 2],
         psqt: 0,
         phase: 0,
+        machine: factors::Machine::EMPTY,
     };
 
     /// Count a piece on to or off of a square.
@@ -358,6 +362,7 @@ impl Accumulator {
             self.phase -= phase;
             self.material[color as usize] -= value;
         }
+        self.machine.count::<SET>(index, piece, color);
     }
 
     /// A piece moving between two squares: `count` off one and on to the
@@ -372,6 +377,7 @@ impl Accumulator {
             Color::White => self.psqt += moved,
             Color::Black => self.psqt -= moved,
         }
+        self.machine.relocate(from, to, piece, color);
     }
 
     /// The accumulator the position deserves, computed from the board, for
@@ -394,6 +400,7 @@ impl Accumulator {
                 recomputed.phase += PHASE_WEIGHTS[piece as usize];
             }
         }
+        recomputed.machine = factors::Machine::of(pieces_of(board));
         recomputed
     }
 
@@ -432,14 +439,32 @@ impl Accumulator {
         let tapered = self.psqt + leaf;
         let scaled =
             (mg_value(tapered) * phase + eg_value(tapered) * (TOTAL_PHASE - phase)) / TOTAL_PHASE;
+        // the pair term is not tapered, so it joins material outside the
+        // divide
         let eval = (self.material[Color::White as usize] as i32
             - self.material[Color::Black as usize] as i32
-            + scaled) as Score;
+            + scaled
+            + self.machine.score()) as Score;
         match side {
             Color::White => eval,
             Color::Black => -eval,
         }
     }
+}
+
+/// Every piece on the board as the square, the piece and its colour.
+fn pieces_of(board: &Board) -> impl Iterator<Item = (u8, Piece, Color)> + '_ {
+    let mut occupied = board.occupied();
+    std::iter::from_fn(move || {
+        while occupied != 0 {
+            let index = occupied.trailing_zeros() as u8;
+            occupied &= occupied - 1;
+            if let Some((piece, color)) = board.get_piece_and_color_index(index) {
+                return Some((index, piece, color));
+            }
+        }
+        None
+    })
 }
 
 #[cfg(test)]
