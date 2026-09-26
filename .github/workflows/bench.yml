@@ -133,24 +133,26 @@ jobs:
           # the checkout is a merge of the pull request into its base: the
           # first parent is the base and the merge is what would land
           echo "BASE_SHA=$(git rev-parse HEAD^1)" >> "$GITHUB_ENV"
-          # each side is built inside its own export, under that commit's
-          # rust-toolchain.toml, so the compiler is read from there
-          scripts/build_at.sh HEAD^1 base-arche
+          # one build a side, linked again into a layout for each of the
+          # forty rounds. Each side is built inside its own export, under that
+          # commit's rust-toolchain.toml, so the compiler is read from there
+          scripts/layouts.sh HEAD^1 base-layouts 40 shuffle
           echo "BASE_RUSTC=$(cd "${CARGO_TARGET_DIR:-target}/at/src" && rustc --version)" >> "$GITHUB_ENV"
-          scripts/build_at.sh HEAD pr-arche
+          scripts/layouts.sh HEAD pr-layouts 40 shuffle
           echo "PR_RUSTC=$(cd "${CARGO_TARGET_DIR:-target}/at/src" && rustc --version)" >> "$GITHUB_ENV"
       - name: Measure
         id: measure
         shell: bash
         run: |
-          # twenty five rounds rather than the local fifteen: a round of two
-          # runs is under four seconds here, and the interval narrows with
-          # the root of the count. No round is run again: the runner's noise
-          # is small and even, and over the pull requests up to #321 the rule
-          # would have marked 41 of 1,791 rounds, too few to be worth a step
-          # that chooses rounds by what they measured
-          python3 scripts/speed.py ./base-arche ./pr-arche \
-            --base-ref "${BASE_SHA:0:8}" --rounds 25 --loaded 0 | tee speed.txt
+          # forty rounds rather than the local fifteen: a round of two runs is
+          # under four seconds here, and the interval, which now carries the
+          # layout as well as the run, narrows with the root of the count. No
+          # round is run again: the runner's noise is small and even, and over
+          # the pull requests up to #321 the rule would have marked 41 of 1,791
+          # rounds, too few to be worth a step that chooses rounds by what
+          # they measured
+          python3 scripts/speed.py ./base-layouts ./pr-layouts \
+            --base-ref "${BASE_SHA:0:8}" --rounds 40 --loaded 0 | tee speed.txt
       - name: Count instructions
         id: count
         # after the timing rather than beside it, so cachegrind never shares
@@ -164,7 +166,8 @@ jobs:
           # the image's package lists go stale between image updates
           sudo apt-get update -qq
           sudo apt-get install -y -qq --no-install-recommends valgrind > /dev/null
-          python3 scripts/instructions.py ./base-arche ./pr-arche \
+          # on the default link, since a layout moves no instruction
+          python3 scripts/instructions.py ./base-layouts/default ./pr-layouts/default \
             --base-ref "${BASE_SHA:0:8}" | tee instructions.txt
       - name: Summarise
         # a failed measurement is reported as one, not as whatever tee wrote
@@ -190,12 +193,14 @@ jobs:
             fi
             echo
             echo "Both sides built and run on this runner in this job, the way"
-            echo "\`scripts/speed.sh\` measures a perf commit. The change is read"
-            echo "from each round's pair, with a 95% interval, and the verdict"
-            echo "holds that interval against a 2% threshold, set above the 1.5%"
-            echo "that moving the code about has moved the rate on its own. The"
-            echo "node counts are the search's: they move when the search does,"
-            echo "and a speed change leaves them alone."
+            echo "\`scripts/speed.sh\` measures a perf commit. Each round runs"
+            echo "both sides on a layout of its own, the same compiled code with"
+            echo "its code and data shuffled and moved, so the 95% interval carries"
+            echo "where the code landed as well as the run. The verdict holds the"
+            echo "interval against a 1% threshold. The default layout, the one a"
+            echo "release ships, is measured after as a diagnostic. The node"
+            echo "counts are the search's: they move when the search does, and a"
+            echo "speed change leaves them alone."
             echo
             echo '```'
             if [ "$MEASURED" = success ]; then
