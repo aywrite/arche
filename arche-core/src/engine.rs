@@ -16,7 +16,9 @@ use crate::residual::{Sample, Shortcut};
 use crate::transposition::{
     DEFAULT_TABLE_BYTES, GhiCounters, Probe, SignatureCounters, TranspositionTable,
 };
-use crate::value::{Taint, Value, below_the_mate_window, is_mate};
+use crate::value::{
+    MateDistanceWindow, Taint, Value, below_the_mate_window, is_mate, mate_distance_window,
+};
 use std::fmt;
 use std::sync::Arc;
 use std::sync::atomic::{AtomicBool, Ordering};
@@ -2190,8 +2192,8 @@ impl AlphaBeta {
     #[allow(clippy::too_many_lines)]
     fn alpha_beta(
         &mut self,
-        mut alpha: Score,
-        mut beta: Score,
+        alpha: Score,
+        beta: Score,
         mut depth: u8,
         can_null: bool,
         mut root_bounds: RootBounds,
@@ -2232,33 +2234,14 @@ impl AlphaBeta {
             return Ok(Value::clean(self.eval()));
         }
 
-        // Mate distance pruning. This node cannot be mated sooner than the
-        // ply it stands at, and cannot mate sooner than the ply after it, so
-        // the window is bounded by those two whatever the caller asked for.
-        // Where the bounds cross, the caller already holds a line at least as
-        // good as the fastest mate available here, and nothing below can
-        // improve on it.
-        //
-        // Both bounds are mate scores themselves, so a window with no mate at
-        // either end is left exactly as it arrived and cannot cross. Asking
-        // that first is what every other node pays, and it is cheaper than
-        // the two clamps. Measured under callgrind against the commit before
-        // this one, over five bench positions searched to nine whose trees do
-        // not move: the clamps cost 0.642% of the instructions a node takes
-        // and the question costs 0.457%. The tree is the same either way.
-        //
-        // Where a mate is in the window, this ends every line longer than the
-        // mate already found, which is what stops a proven mate being proved
-        // again a ply deeper on each iteration.
-        if is_mate(alpha) || is_mate(beta) {
-            alpha = alpha.max(Value::mated(self.board.line_ply).score);
-            beta = beta.min(-Value::mated(self.board.line_ply + 1).score);
-            if alpha >= beta {
-                // clean: how far a mate can be from here is a property of the
-                // position and not of the path that reached it
-                return Ok(Value::clean(alpha));
-            }
-        }
+        // mate distance pruning bounds the window by the fastest mate either
+        // side can reach from this ply
+        let (mut alpha, beta) = match mate_distance_window(alpha, beta, self.board.line_ply) {
+            MateDistanceWindow::Open { alpha, beta } => (alpha, beta),
+            // clean: how far a mate can be from here is a property of the
+            // position and not of the path that reached it
+            MateDistanceWindow::Closed(score) => return Ok(Value::clean(score)),
+        };
 
         let mut taint = Taint::default();
         if in_check {
