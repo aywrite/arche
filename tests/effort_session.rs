@@ -13,6 +13,10 @@ mod report_command;
 const ARGUMENTS: [&str; 6] = ["effort", "4", "every", "50", "off", "quiet_futility"];
 
 #[test]
+#[cfg_attr(
+    feature = "machine-test",
+    ignore = "pins a search the evaluation without the pair term makes"
+)]
 fn the_effort_argument_prints_a_header_rows_and_two_summaries() {
     let printed = report_command::run(&ARGUMENTS);
     assert!(

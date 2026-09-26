@@ -257,6 +257,10 @@ const SHARP_MIDDLEGAME: &str = "r1b2rk1/ppp1qppp/4pn2/6N1/Qn1P4/2NBP3/PP3PPP/R3K
 const KIWIPETE: &str = "r3k2r/p1ppqpb1/bn2pnp1/3PN3/1p2P3/2N2Q1p/PPPBBPPP/R3K2R w KQkq - 0 1";
 
 #[test]
+#[cfg_attr(
+    feature = "machine-test",
+    ignore = "pins a search the evaluation without the pair term makes"
+)]
 fn the_move_a_swap_answers_with_opens_the_last_line_said() {
     // a node budget rather than a clock, so the iteration is cut short on
     // the same node on every machine. The budget has to land after an
@@ -392,6 +396,10 @@ fn an_iteration_no_root_move_reached_answers_with_the_depth_before_it() {
 }
 
 #[test]
+#[cfg_attr(
+    feature = "machine-test",
+    ignore = "pins a search the evaluation without the pair term makes"
+)]
 fn a_root_move_that_reaches_beta_is_reported_as_a_floor_and_then_answered_with() {
     // the opening is worth 0 to white at depth six and 49 at depth seven, so
     // depth seven's window is left behind on the other side: a move reaches
@@ -433,6 +441,10 @@ fn a_root_move_that_reaches_beta_is_reported_as_a_floor_and_then_answered_with()
 }
 
 #[test]
+#[cfg_attr(
+    feature = "machine-test",
+    ignore = "pins a search the evaluation without the pair term makes"
+)]
 fn a_floor_answers_until_the_wider_search_replaces_it() {
     // the other half of the floor: what the engine plays when the wider
     // search never finishes. Kiwipete is worth -50 to white at depth

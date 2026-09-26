@@ -711,9 +711,10 @@ mod evaluate {
         );
         let material = accumulator.material[Color::White as usize] as i32
             - accumulator.material[Color::Black as usize] as i32;
+        // the pair term is outside the divide, beside material
         assert_eq!(
             accumulator.score(Color::White, mobility),
-            (material + inside) as crate::misc::Score
+            (material + inside + accumulator.machine.score()) as crate::misc::Score
         );
     }
 
