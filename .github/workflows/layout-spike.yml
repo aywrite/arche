@@ -1,0 +1,74 @@
+name: Layout spike
+
+# Throwaway measurement: how much does code layout alone move bench nps on a
+# hosted runner, and do hardware counters work here. Not for merging.
+
+on:
+  push:
+    branches: [ "spike/layout-noise" ]
+
+permissions:
+  contents: read
+
+jobs:
+  layout:
+    runs-on: ubuntu-latest
+    timeout-minutes: 45
+    strategy:
+      fail-fast: false
+      matrix:
+        runner: [ a, b ]
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+      - name: Machine
+        run: |
+          lscpu
+          nproc
+          uname -a
+          cat /proc/sys/kernel/perf_event_paranoid
+          ls /sys/bus/event_source/devices/
+          ls /sys/bus/event_source/devices/cpu/ 2>&1 || echo "no cpu PMU device"
+          dmesg 2>/dev/null | grep -i -E 'perf|pmu' | head || sudo dmesg | grep -i -E 'perf|pmu' | head || true
+      - name: Install perf
+        id: perf
+        run: |
+          set +e
+          sudo apt-get update -qq
+          sudo apt-get install -y -qq linux-tools-common "linux-tools-$(uname -r)" \
+            || sudo apt-get install -y -qq linux-tools-azure linux-tools-generic
+          sudo sysctl -w kernel.perf_event_paranoid=-1
+          perf --version
+          perf stat -e cycles:u,instructions:u,branch-misses:u -- /bin/true 2>&1 | tee perf-probe.txt
+          perf list hw 2>&1 | head -30
+          if perf stat -x, -e cycles:u -- /bin/true 2>&1 | grep -q -E '^[0-9]+,'; then
+            echo "ok=true" >> "$GITHUB_OUTPUT"; echo "PERF WORKS"
+          else
+            echo "ok=false" >> "$GITHUB_OUTPUT"; echo "PERF DOES NOT COUNT CYCLES"
+          fi
+          exit 0
+      - name: Build variants
+        run: bash scripts/spike/build_variants.sh "$PWD/spike-out/variants"
+      - name: Measure
+        run: |
+          flag=""
+          [ "${{ steps.perf.outputs.ok }}" = true ] && flag=--perf
+          python3 scripts/spike/run_rounds.py spike-out/variants spike-out/raw-${{ matrix.runner }}.csv \
+            --passes 8 --budget 1680 --seed 7 $flag
+      - name: Analyse
+        if: ${{ !cancelled() }}
+        run: python3 scripts/spike/analyse.py spike-out/raw-${{ matrix.runner }}.csv | tee spike-out/summary-${{ matrix.runner }}.txt
+      - name: Collect
+        if: ${{ !cancelled() }}
+        run: |
+          cp perf-probe.txt spike-out/ 2>/dev/null || true
+          lscpu > spike-out/lscpu-${{ matrix.runner }}.txt
+          rm -f spike-out/variants/ctrl-* spike-out/variants/pad-* spike-out/variants/plain
+      - uses: actions/upload-artifact@v4
+        if: ${{ !cancelled() }}
+        with:
+          name: layout-spike-${{ matrix.runner }}
+          path: |
+            spike-out/*.csv
+            spike-out/*.txt
+            spike-out/*.log
+            spike-out/variants/manifest.tsv
