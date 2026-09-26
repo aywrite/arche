@@ -40,6 +40,9 @@ from dataclasses import dataclass, field
 # two sided, so each tail gets half
 CONFIDENCE = 0.95
 
+# the most samples the signed rank bound is counted exactly for
+EXACT = 200
+
 # A percentage, set above how far the rate moves between two builds that
 # differ only in where the code lands. Over the speed job's comments on the
 # pull requests up to #321, 4 of the 53 that changed no build input had an
@@ -264,7 +267,18 @@ def signed_rank_depth(rounds: int) -> int:
     confidence leaves, W being the signed rank statistic of that many rounds
     when nothing changed. Counted exactly rather than from the normal
     approximation, which is poor at the rounds a laptop can spare. Zero when
-    no interval reaches the confidence, which at 95% is below six rounds."""
+    no interval reaches the confidence, which at 95% is below six rounds.
+
+    Past EXACT samples, as a match's games are, the normal approximation is
+    taken instead: by then it agrees with the count to within one, the count
+    grows as the cube of the samples, and past 1023 its 2^n no longer fits a
+    float."""
+    if rounds > EXACT:
+        mean = rounds * (rounds + 1) / 4
+        spread = math.sqrt(rounds * (rounds + 1) * (2 * rounds + 1) / 24)
+        z = statistics.NormalDist().inv_cdf(1 - (1 - CONFIDENCE) / 2)
+        # P(W <= k - 1) at most the tail, with a half for the continuity
+        return math.floor(mean - z * spread + 0.5)
     # ways[w] is how many of the 2^n sign patterns have a rank sum of w
     ways = [1]
     for rank in range(1, rounds + 1):

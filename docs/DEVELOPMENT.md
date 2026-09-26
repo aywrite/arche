@@ -508,6 +508,29 @@ its games and a manifest as an artifact, and the summary counts how the games
 ended, so a result that leant on forfeits or crashes says so; those games stay
 in the estimate.
 
+The summary also says how fast each side searched in those games.
+`scripts/ingame_speed.py` reads what fastchess writes in every move's
+comment, the nodes and nodes a second of the engine's last info line, and
+each game gives one ratio, the candidate's nodes a second against the
+baseline's. A move's rate is read over the span that last line covers and
+not over the whole thinking time, since a search stopped partway through an
+iteration searches nodes it never reports, and that share moves with how a
+change spends its iterations. Both sides played the game under the same
+load, so the ratio cancels it the way a bench round does, and the change is
+the paired estimate `speed.py` uses, with its 95% interval. It reads the
+batch's own games, so a test run in several batches prints one line each.
+
+The bench does not always carry over. Twenty one pairs the strength runs had
+played were measured again on the bench over layouts. The two pure speed
+changes read +3.9% and +0.8% on the bench and +3.5% and +0.3% in their
+games, and the pairs whose trees barely differed missed their games by half
+a point at the median. Skipping the mobility term where the stand pat was
+going to cut read +5.8% on the bench and +1.9% over 900 games. The games run
+a larger table, two to a runner, deeper and from book openings. When the
+search changed, the two sides count different nodes and the line says what a
+reported node cost, not whether the change is faster; that is what the
+games' result is for.
+
 The tools a match is read with (`match-estimate`, `rating-estimate`,
 `match-terminations` and `book-slice`) are the
 [`mache`](https://github.com/aywrite/mache) package, which has a repository of

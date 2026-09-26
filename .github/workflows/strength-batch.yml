@@ -327,3 +327,21 @@ jobs:
             openings came from seed
             ${{ inputs.seed }}${{ inputs.batches > 1 && format(', batch {0} of {1}', inputs.batch, inputs.batches) || '' }},
             which replays this schedule.
+
+      # How fast each side searched in these games, beside the verdict and
+      # never part of it, so a failure here leaves the summary as it was
+      - name: Read the speed in the games
+        if: ${{ !cancelled() }}
+        continue-on-error: true
+        env:
+          CANDIDATE: ${{ inputs.candidate_name }}
+          CANDIDATE_SHA: ${{ inputs.candidate_sha }}
+          BASELINE: ${{ inputs.baseline_name }}
+          BASELINE_SHA: ${{ inputs.baseline_sha }}
+        # the games name each side by the ref the run was given, which is a
+        # sha only when a sha was given, so both are passed
+        run: |
+          python3 scripts/ingame_speed.py shards \
+            --candidate "$CANDIDATE" --candidate "$CANDIDATE_SHA" \
+            --baseline "$BASELINE" --baseline "$BASELINE_SHA" \
+            >> "$GITHUB_STEP_SUMMARY"
