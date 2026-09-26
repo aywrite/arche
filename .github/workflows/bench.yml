@@ -133,17 +133,24 @@ jobs:
           # the checkout is a merge of the pull request into its base: the
           # first parent is the base and the merge is what would land
           echo "BASE_SHA=$(git rev-parse HEAD^1)" >> "$GITHUB_ENV"
+          # each side is built inside its own export, under that commit's
+          # rust-toolchain.toml, so the compiler is read from there
           scripts/build_at.sh HEAD^1 base-arche
+          echo "BASE_RUSTC=$(cd "${CARGO_TARGET_DIR:-target}/at/src" && rustc --version)" >> "$GITHUB_ENV"
           scripts/build_at.sh HEAD pr-arche
+          echo "PR_RUSTC=$(cd "${CARGO_TARGET_DIR:-target}/at/src" && rustc --version)" >> "$GITHUB_ENV"
       - name: Measure
         id: measure
         shell: bash
         run: |
           # twenty five rounds rather than the local fifteen: a round of two
           # runs is under four seconds here, and the interval narrows with
-          # the root of the count
+          # the root of the count. No round is run again: the runner's noise
+          # is small and even, and over the pull requests up to #321 the rule
+          # would have marked 41 of 1,791 rounds, too few to be worth a step
+          # that chooses rounds by what they measured
           python3 scripts/speed.py ./base-arche ./pr-arche \
-            --base-ref "${BASE_SHA:0:8}" --rounds 25 | tee speed.txt
+            --base-ref "${BASE_SHA:0:8}" --rounds 25 --loaded 0 | tee speed.txt
       - name: Count instructions
         id: count
         # after the timing rather than beside it, so cachegrind never shares
@@ -171,6 +178,16 @@ jobs:
             # marks the comment as this job's, so the next run replaces it
             echo "<!-- speed-summary -->"
             echo "## Speed against \`${BASE_SHA:0:8}\`"
+            echo
+            # the rate depends on the machine and the compiler, and neither
+            # is the same from one run of this job to the next
+            echo "Measured on $(lscpu | sed -n 's/^Model name: *//p')."
+            if [ "$BASE_RUSTC" = "$PR_RUSTC" ]; then
+              echo "Both sides built with $PR_RUSTC."
+            else
+              echo "The base built with $BASE_RUSTC and the pull request with"
+              echo "$PR_RUSTC."
+            fi
             echo
             echo "Both sides built and run on this runner in this job, the way"
             echo "\`scripts/speed.sh\` measures a perf commit. The change is read"

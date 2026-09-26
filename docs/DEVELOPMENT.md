@@ -422,10 +422,12 @@ still move, so that is a measurement rather than a promise. Measure with
 nothing else building, pinned or not.
 
 The Bench workflow's speed job does the same on every pull request, over
-twenty five rounds rather than the local fifteen, both sides built and run on
-one runner, and posts the result as a comment, or to the job summary alone
-for a pull request from a fork. It reports and does not gate: the count is
-the claim, and the rate is the context it is read in.
+twenty five rounds rather than the local fifteen and with `--loaded 0`, both
+sides built and run on one runner. It posts the result as a comment, or to
+the job summary alone for a pull request from a fork, with the runner's cpu
+and the compiler each side was built with, since neither is the same from
+run to run. It reports and does not gate: the count is the claim, and the
+rate is the context it is read in.
 
 The report lists each round with its own change, then gives one row a side
 and a change row under it, then the paired change and its interval. The
