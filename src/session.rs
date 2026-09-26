@@ -79,7 +79,15 @@ pub(crate) fn first_word(line: &str) -> &str {
 #[derive(Clone)]
 pub(crate) struct SessionControl {
     searching: Arc<AtomicBool>,
+    /// Up while a `stop` has been read that the loop has not dispatched. A
+    /// stop reaches the loop after the `go` it follows, so a search sees the
+    /// flag up exactly when a stop sent after its `go` has been read. One
+    /// flag set and cleared by the two threads without these counts would
+    /// let the loop's clearing of one stop take a later one with it.
     stop: Arc<AtomicBool>,
+    /// Changed only with the flag, under this lock, so neither thread can
+    /// set it from a count the other has since moved.
+    stops: Arc<Mutex<Stops>>,
     /// Whether a reader thread attends the session. A held answer waits on a
     /// stop only a reader can send, so a session without one answers at once.
     attended: bool,
@@ -87,11 +95,20 @@ pub(crate) struct SessionControl {
     session: thread::Thread,
 }
 
+/// The `stop`s read and dispatched so far, `quit` and a closed pipe counted
+/// as read.
+#[derive(Default)]
+struct Stops {
+    read: u64,
+    dispatched: u64,
+}
+
 impl SessionControl {
     fn for_this_thread() -> Self {
         Self {
             searching: Arc::new(AtomicBool::new(false)),
             stop: Arc::new(AtomicBool::new(false)),
+            stops: Arc::new(Mutex::new(Stops::default())),
             attended: true,
             session: thread::current(),
         }
@@ -113,24 +130,32 @@ impl SessionControl {
         self.searching.store(true, Ordering::Release);
     }
 
-    /// The search has answered: both flags come down. A `stop` read after
-    /// this still reaches the dispatch, which clears the flag again, so it
-    /// does not stop the next search.
     pub(crate) fn answered(&self) {
         self.searching.store(false, Ordering::Release);
-        self.stop.store(false, Ordering::Release);
     }
 
-    /// Set whether or not a search is running: a `stop` typed just after a
-    /// `go` may be read before the session begins searching, and must still
-    /// stop that search.
+    fn stops(&self) -> std::sync::MutexGuard<'_, Stops> {
+        self.stops.lock().unwrap_or_else(PoisonError::into_inner)
+    }
+
+    /// Counted whether or not a search is running: a `stop` typed just after
+    /// a `go` may be read before the session begins searching, and must
+    /// still stop that search.
     fn ask_to_stop(&self) {
+        let mut stops = self.stops();
+        stops.read += 1;
         self.stop.store(true, Ordering::Release);
+        drop(stops);
         self.session.unpark();
     }
 
-    pub(crate) fn clear(&self) {
-        self.stop.store(false, Ordering::Release);
+    /// The loop has reached a `stop`, which is spent: the flag stays up only
+    /// for one read after it.
+    pub(crate) fn stop_dispatched(&self) {
+        let mut stops = self.stops();
+        stops.dispatched += 1;
+        self.stop
+            .store(stops.read > stops.dispatched, Ordering::Release);
     }
 
     pub(crate) fn handle(&self) -> Arc<AtomicBool> {
@@ -254,4 +279,34 @@ where
         read_ahead(input(), out, &reader, sender);
     });
     session_loop(lines, &control, handle);
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn up(control: &SessionControl) -> bool {
+        control.handle().load(Ordering::Acquire)
+    }
+
+    #[test]
+    fn a_stop_is_spent_by_its_own_dispatch_and_no_other() {
+        let control = SessionControl::for_this_thread();
+        // two stops read before the loop reaches the first
+        control.ask_to_stop();
+        control.ask_to_stop();
+        assert!(up(&control));
+        control.stop_dispatched();
+        assert!(up(&control), "the first stop's dispatch spent the second");
+        control.stop_dispatched();
+        assert!(!up(&control), "a spent stop would reach the next search");
+    }
+
+    #[test]
+    fn a_stop_dispatched_with_none_read_raises_nothing() {
+        // an unattended session dispatches stops no reader counted
+        let control = SessionControl::unattended();
+        control.stop_dispatched();
+        assert!(!up(&control));
+    }
 }
