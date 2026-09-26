@@ -414,6 +414,13 @@ fastest pair has no interval and does not settle as rounds are added, and
 over the layout-only pull requests it showed more than 2% on three times as
 many as the paired change did.
 
+`--cpu 4` pins every bench to cpu 4, and `--cpu 4,5` or `--cpu 4-7` to
+several, the way taskset reads them. Under WSL on a desktop that mixes fast
+and slow cores, with other work running, pinning halved how far the paired
+change strayed at fifteen rounds. A WSL cpu is a virtual one the host can
+still move, so that is a measurement rather than a promise. Measure with
+nothing else building, pinned or not.
+
 The Bench workflow's speed job does the same on every pull request, over
 twenty five rounds rather than the local fifteen, both sides built and run on
 one runner, and posts the result as a comment, or to the job summary alone
