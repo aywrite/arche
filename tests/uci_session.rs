@@ -261,12 +261,12 @@ fn the_move_a_swap_answers_with_opens_the_last_line_said() {
     // a node budget rather than a clock, so the iteration is cut short on
     // the same node on every machine. The budget has to land after an
     // iteration finds its better move and before that iteration ends:
-    // depth seven answers d3e2 and finishes at 54,381 nodes, depth eight
-    // reports d3b5 as a floor at 78,751 and finishes at 122,467. The
+    // depth eight answers d3b1 and finishes at 171,930 nodes, depth nine
+    // reports d3e2 as a floor at 256,558 and finishes at 303,040. The
     // budget moves whenever the tree does, in the commit that moved it
     let mut s = Session::start(&[]);
     s.say(&format!("position fen {}", SHARP_MIDDLEGAME));
-    s.say("go nodes 100000");
+    s.say("go nodes 280000");
     let answer = s.wait_for(|l| l.starts_with("bestmove"));
     let best = answer
         .strip_prefix("bestmove ")
@@ -311,17 +311,17 @@ fn line_opens_with(info: &str) -> &str {
 
 #[test]
 fn an_iteration_no_root_move_reached_answers_with_the_depth_before_it() {
-    // the opening is worth 54 to white at depth five and 0 at depth six, so
-    // depth six opens above what the position turns out to be and nothing
-    // inside the window answers it: the depth is reported as the ceiling it
-    // is and searched again wider. The budget lands inside that second
-    // search, which reaches nothing above its own alpha either, so what
-    // answers is still depth five's and not the ceiling just reported. The
-    // first search reports at 5,769 nodes and the second finishes at
-    // 11,258
+    // the middlegame is worth 6 to white at depth six, answered d3b5, and
+    // less at depth seven, so depth seven opens above what the position
+    // turns out to be and nothing inside the window answers it: the depth
+    // is reported as the ceiling it is, on a1d1, and searched again wider.
+    // The budget lands inside that second search, which reaches nothing
+    // above its own alpha either, so what answers is still depth six's and
+    // not the ceiling just reported. The first search reports at 74,346
+    // nodes and the second at 112,727
     let mut s = Session::start(&[]);
-    s.say("position startpos");
-    s.say("go nodes 8000");
+    s.say(&format!("position fen {}", SHARP_MIDDLEGAME));
+    s.say("go nodes 90000");
     let answer = s.wait_for(|l| l.starts_with("bestmove"));
     let best = answer
         .strip_prefix("bestmove ")
@@ -380,9 +380,9 @@ fn an_iteration_no_root_move_reached_answers_with_the_depth_before_it() {
         score_of(completed),
         "the last line moved the score the answering depth said"
     );
-    assert_eq!(nodes_of(total), 8000, "the last line is not the budget");
+    assert_eq!(nodes_of(total), 90000, "the last line is not the budget");
     assert!(
-        nodes_of(ceiling) < 8000,
+        nodes_of(ceiling) < 90000,
         "the ceiling already covered the whole search: {}",
         ceiling
     );

@@ -311,14 +311,15 @@ the bound the scout was asked about, `scout` is `low`, `high` or
 `skipped`, and `cost` is the nodes the scout spent. A fail high prints
 `-` in the `reference` and `label` columns rather than moving the others.
 
-The third outcome word is the skipping rules'. A move the model prices in
-its deadest band at depth four and up, and a quiet move at depth one to
-three that either shallow rule declines, are never scouted at all, so a
+The third outcome word is the skipping rules'. A move the index rule drops
+at depth four and up (or the model, where `index_rule_pruning` is off), and
+a quiet move at depth one to three that either shallow rule declines, are never scouted at all, so a
 sampled skip is recorded where the loop passes it over: the same features,
 a cost of zero and a reduction of zero. Its `searched` count stands one past
 the index, as a scouted row's does, although the move was never searched:
-the column is the attention model's searched feature. The model's own skips
-read that value; a shallow rule's skip reads the index, which the row
+the column is the attention model's searched feature. The model's skips read
+that value where `index_rule_pruning` is off; the index rule's skip and a
+shallow rule's read the index, which the row
 carries beside it. A ledger printed before 25 September 2026 has the index
 there instead. The replay treats a skipped row as it treats a fail
 low, since what was denied is the same full depth search. The search never
@@ -326,12 +327,13 @@ makes a skipped move, so its legality is unknown at the decision; the
 recorder makes and unmakes it around the record alone, and a move that
 turns out illegal is not recorded, because the skip denied it nothing.
 
-Which family a skipped row came from is its depth. The model decides from
-four and both shallow rules stop at three, so a skipped row at depth one,
-two or three is a shallow rule's and one at four or more is the model's,
+Which family a skipped row came from is its depth. The deep skip decides
+from four and both shallow rules stop at three, so a skipped row at depth
+one, two or three is a shallow rule's and one at four or more is the deep
+skip's,
 and a row at one or two carries no scout beside it at its depth because
 nothing scouts there. The index says the same thing a second way: the
-model's skips are never under the late move threshold of four, and a
+deep skip's rows are never under the late move threshold of four, and a
 shallow rule's are never under one, since the node's first searched move
 is exempt. Which of the two shallow rules took a row the ledger does not
 say, and the two overlap on the same moves, so an ablation is what
@@ -428,9 +430,10 @@ so `off` twice is refused rather than read as a pair. The same switch twice
 is refused as well, since it would be the single run under a pair's name, and
 so is a third. Where one switch of a pair is only ever
 asked under the other (`adaptive_null_move` under `null_move`;
-`deep_reductions`, `late_move_pruning`, `reduction_table` and
-`deep_index_rule` under `late_move_reductions`; `deep_index_rule` under
-`deep_reductions`), the pair searches as many nodes as the outer single,
+`deep_reductions`, `late_move_pruning`, `reduction_table`,
+`deep_index_rule` and `index_rule_pruning` under `late_move_reductions`;
+`deep_index_rule` under `deep_reductions`; `index_rule_pruning` under
+`late_move_pruning`), the pair searches as many nodes as the outer single,
 position by position.
 
 **`off` absent means both sides are the default**, which the header says

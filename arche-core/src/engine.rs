@@ -350,10 +350,11 @@ pub struct SearchConfig {
     /// on. Rides on `late_move_reductions`: a move the reduction never
     /// touches is never asked.
     pub deep_reductions: bool,
-    /// Whether a late quiet the attention model prices in its deadest band
-    /// is searched at all. Rides on the reduction's eligibility and the
-    /// deep reduction's depth floor and checking exemption; its threshold is
-    /// a deeper cut of the attention model's score.
+    /// Whether a late quiet the gate prices as dead is searched at all.
+    /// Rides on the reduction's eligibility and the deep reduction's depth
+    /// floor and checking exemption. What prices it is the index rule below
+    /// when that is on, or else the attention model's deadest band, a deeper
+    /// cut of the same score.
     pub late_move_pruning: bool,
     /// Whether a quiet move after the node's first is dropped at depths one
     /// to three because the node's static evaluation plus
@@ -389,6 +390,12 @@ pub struct SearchConfig {
     /// the model's threshold is read as it was, which is what the bench
     /// identity holds it to.
     pub deep_index_rule: bool,
+    /// Whether the skip is decided by the move's index against a floor that
+    /// rises with depth, rather than by the attention model's threshold.
+    /// With `deep_index_rule` on as well the gate computes no evaluation, no
+    /// history scan and no score for the move. On in the default, off in
+    /// the reference, and off it the model's threshold is read as it was.
+    pub index_rule_pruning: bool,
     /// Whether a node orders its quiet moves by what other nodes have
     /// learned: the killers for its distance from the root, and the history
     /// table under them. Off in the reference, which keeps the pinned
@@ -524,7 +531,7 @@ impl SearchConfig {
     ///
     /// `taint` is not among them: it is a policy with four values rather
     /// than a switch, and `residuals` already takes it.
-    pub const SWITCHES: [(&'static str, TurnOff); 14] = [
+    pub const SWITCHES: [(&'static str, TurnOff); 15] = [
         ("reverse_futility", |config| config.reverse_futility = false),
         ("null_move", |config| config.null_move = false),
         ("adaptive_null_move", |config| {
@@ -543,6 +550,9 @@ impl SearchConfig {
         ("late_move_count", |config| config.late_move_count = false),
         ("reduction_table", |config| config.reduction_table = false),
         ("deep_index_rule", |config| config.deep_index_rule = false),
+        ("index_rule_pruning", |config| {
+            config.index_rule_pruning = false
+        }),
         ("move_memory", |config| config.move_memory = false),
         ("aspiration", |config| config.aspiration = false),
     ];
@@ -579,6 +589,7 @@ impl SearchConfig {
             late_move_count: false,
             reduction_table: false,
             deep_index_rule: false,
+            index_rule_pruning: false,
             move_memory: false,
             aspiration: false,
         }
@@ -645,6 +656,7 @@ impl Default for SearchConfig {
             late_move_count: true,
             reduction_table: true,
             deep_index_rule: true,
+            index_rule_pruning: true,
             move_memory: true,
             aspiration: true,
         }
@@ -677,6 +689,7 @@ const fn _every_switch_is_named(config: &SearchConfig) {
         late_move_count: _,
         reduction_table: _,
         deep_index_rule: _,
+        index_rule_pruning: _,
         move_memory: _,
         aspiration: _,
     } = config;
@@ -709,7 +722,7 @@ mod switches {
     }
 
     /// Every setter of the table folded over the default is the reference, so
-    /// the two literals part company in the fourteen switches and in the
+    /// the two literals part company in the fifteen switches and in the
     /// taint policy, which no row names and which this test overwrites.
     #[test]
     fn turning_every_switch_off_gives_the_reference() {
@@ -789,18 +802,24 @@ mod switches {
         };
         let one = |name| SearchConfig::without(name).expect(name);
         let default = nodes(SearchConfig::default());
-        let outers: Vec<(&str, Vec<u64>)> =
-            ["null_move", "late_move_reductions", "deep_reductions"]
-                .into_iter()
-                .map(|outer| (outer, nodes(one(outer).config())))
-                .collect();
+        let outers: Vec<(&str, Vec<u64>)> = [
+            "null_move",
+            "late_move_reductions",
+            "deep_reductions",
+            "late_move_pruning",
+        ]
+        .into_iter()
+        .map(|outer| (outer, nodes(one(outer).config())))
+        .collect();
         for (outer, inner) in [
             ("null_move", "adaptive_null_move"),
             ("late_move_reductions", "deep_reductions"),
             ("late_move_reductions", "late_move_pruning"),
             ("late_move_reductions", "reduction_table"),
             ("late_move_reductions", "deep_index_rule"),
+            ("late_move_reductions", "index_rule_pruning"),
             ("deep_reductions", "deep_index_rule"),
+            ("late_move_pruning", "index_rule_pruning"),
         ] {
             assert_ne!(nodes(one(inner).config()), default, "{inner} did nothing");
             let pair = one(outer).and(one(inner)).expect("a pair");
@@ -1326,7 +1345,8 @@ impl AlphaBeta {
     /// the position the move leaves, as for a scouted move, so the replay
     /// reads a skipped row as it reads a low one. The searched count is one
     /// past the index, as on a scouted row: it is the attention model's
-    /// feature, which the model's own skips read.
+    /// feature, which the model's skips read where `index_rule_pruning` is
+    /// off.
     #[cold]
     #[inline(never)]
     fn ledger_skip(&mut self, staged: reduction::Staged, depth: u8, alpha: Score, beta: Score) {

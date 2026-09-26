@@ -34,7 +34,7 @@ pub const TABLE_BYTES: usize = 16 * 1024 * 1024;
 /// is the gate. A change that moves it in either direction updates this
 /// number in the same commit, which puts the movement in the diff, and a
 /// change that lowers it says what the positions were spent on.
-pub const EXPECTED_PASSES: usize = 235;
+pub const EXPECTED_PASSES: usize = 233;
 
 /// The count the suite may not go under, whatever a commit says it meant to
 /// spend.
@@ -47,8 +47,8 @@ pub const EXPECTED_PASSES: usize = 235;
 /// Two hundred and ten was fourteen under the count when the floor was set
 /// (224) and is eleven under the lowest the suite has been gated at (221).
 /// Since the suite was first gated the count has been 243, 241, 240, 237,
-/// 236, 229, 221, 226, 227, 228, 231, 224, 237, 240, 238, 237, 235, 234
-/// and 235, and the largest single step down in that list is eight, so
+/// 236, 229, 221, 226, 227, 228, 231, 224, 237, 240, 238, 237, 235, 234,
+/// 235 and 233, and the largest single step down in that list is eight, so
 /// one change spending fourteen fails here rather than being written down
 /// and rearmed.
 /// Lowering the floor is a commit whose whole subject is lowering the
@@ -82,20 +82,27 @@ pub struct AcceptedLoss {
 
 /// The losses accepted so far.
 ///
-/// The first two are the reduction table's: a move it never touches or
-/// reaches late, whose continuation is quiet and is now stood further back
-/// than the depth can afford.
+/// The first is the reduction table's: a move it never touches or reaches
+/// late, whose continuation is quiet and is now stood further back than
+/// the depth can afford. A second of its, WAC.260, came back when the skip
+/// was decided by the move's index.
 ///
-/// The nine under them are the late move count's. The count is the only
+/// The seven under it are the late move count's. The count is the only
 /// thing between this build and the one before it, and what it does is
 /// refuse a quiet a node of depth one to three has reached past four moves
 /// a ply, so a winning line with such a quiet in it is not searched at all
 /// at those depths. Each entry names what depth six answers with instead
 /// and the depth the suite's move comes back at, read one position at a
-/// time on this build. Eight of the nine come back a single ply deeper. A
-/// tenth, WAC.022, has been found again since the shortcuts were refused at
-/// every open window, through the suite's other move c4a2 at depth six
-/// rather than the knight sacrifice, which still comes back at nine.
+/// time on this build. Six of the seven come back a single ply deeper. Two
+/// more, WAC.243 and WAC.280, came back with the index rule, and a third,
+/// WAC.022, was found again when the shortcuts were refused at every open
+/// window and is lost again to the index rule, below.
+///
+/// The six after them are the skip's index rule's, which drops a quiet by
+/// its place in the order where the attention model read the node. The
+/// build before it answers each with the suite's move at depth six; this
+/// one answers with another, and the suite's move comes back a ply deeper
+/// for five of them and three deeper for WAC.022.
 ///
 /// The last is mate distance pruning's. The position holds no mate inside
 /// depth six, so what moved it is the reordering of a subtree deeper down
@@ -107,13 +114,6 @@ pub const ACCEPTED_LOSSES: &[AcceptedLoss] = &[
         why: "the quiet queen lift and rook swing behind the h7 sacrifice are \
               scouted further back, so the sacrifice never comes back above \
               alpha at depth six",
-        until: "0.6.0",
-    },
-    AcceptedLoss {
-        id: "WAC.260",
-        why: "the three quiet moves of the mate in five behind the queen check \
-              are scouted further back, so depth six answers with a centipawn \
-              score instead",
         until: "0.6.0",
     },
     AcceptedLoss {
@@ -153,21 +153,45 @@ pub const ACCEPTED_LOSSES: &[AcceptedLoss] = &[
         until: "0.6.0",
     },
     AcceptedLoss {
-        id: "WAC.243",
-        why: "depth six answers h2h3 at 145 and the queen step f2e2 comes \
-              back at depth seven at 144",
-        until: "0.6.0",
-    },
-    AcceptedLoss {
         id: "WAC.266",
         why: "depth six answers f2g3 at 11 and depth seven answers h8h2 \
               with a mate in six",
         until: "0.6.0",
     },
     AcceptedLoss {
-        id: "WAC.280",
-        why: "depth six answers c2e2 at 76 and the bishop to a3 comes back \
-              at depth seven at 94",
+        id: "WAC.022",
+        why: "depth six answers d1h5 at 38 and the suite's c4a2 comes back \
+              at depth nine at 48",
+        until: "0.6.0",
+    },
+    AcceptedLoss {
+        id: "WAC.033",
+        why: "depth six answers h2h4 at 222 and the queen move e4f4 comes \
+              back at depth seven at 226",
+        until: "0.6.0",
+    },
+    AcceptedLoss {
+        id: "WAC.118",
+        why: "depth six answers h1g1 at 102 and the rook lift f4h4 comes back \
+              at depth seven at 440",
+        until: "0.6.0",
+    },
+    AcceptedLoss {
+        id: "WAC.199",
+        why: "depth six answers e3g5 at 205 and f1d1 comes back at depth \
+              seven at 245",
+        until: "0.6.0",
+    },
+    AcceptedLoss {
+        id: "WAC.209",
+        why: "depth six answers a4b5 at 636 and the rook sacrifice e1e5 comes \
+              back at depth seven at 824",
+        until: "0.6.0",
+    },
+    AcceptedLoss {
+        id: "WAC.228",
+        why: "depth six answers d1f1 at -6 and the bishop sacrifice d3e4 \
+              comes back at depth seven at 121",
         until: "0.6.0",
     },
     AcceptedLoss {

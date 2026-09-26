@@ -355,7 +355,7 @@ pub struct EffortSettings {
 /// What is said when `off` names something that is no switch, or names
 /// nothing at all: what stood where a switch would, and then the names the
 /// table carries. In the refusal rather than in the usage line, which says
-/// `<switch>`: a fourteen name list there is long and the join awkward for
+/// `<switch>`: a fifteen name list there is long and the join awkward for
 /// what it buys, and the reader who needs the names is the one who did not
 /// name a switch. That reader is likelier to type `off` and stop than to
 /// misspell a name, so the word with nothing after it is answered with the

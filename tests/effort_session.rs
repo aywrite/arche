@@ -181,6 +181,6 @@ fn a_switch_the_engine_does_not_have_is_refused() {
         .strip_prefix("unrecognised effort off: quiet_futilty (a switch is one of ")
         .and_then(|rest| rest.strip_suffix(')'))
         .unwrap_or_else(|| panic!("stderr: {printed}"));
-    assert_eq!(named.split(", ").count(), 14, "stderr: {printed}");
+    assert_eq!(named.split(", ").count(), 15, "stderr: {printed}");
     assert!(output.stdout.is_empty());
 }

@@ -24,12 +24,12 @@
 //! regression over the reduction ledger's feature columns quantized to
 //! fixed point, whose score is read against two thresholds: under the
 //! first the scout runs a ply deeper than it otherwise would, under the
-//! second the move is dropped from the node. The first threshold is read
-//! only when `deep_index_rule` is off. Under the rule, which the default
-//! carries, the deeper scout is decided by the move's index against a
-//! floor that rises with the node's depth, and the score decides the skip
-//! alone. That ply is relative because the model ranks how dead a move is
-//! and never names a depth. The fifth is `amount`, which reads how many
+//! second the move is dropped from the node. Each threshold is read only
+//! where its own rule switch is off. Under the rules, which the default
+//! carries both of, the deeper scout and the skip are decided by the
+//! move's index against a floor that rises with the node's depth, and the
+//! default derives no score at all. That ply is relative because the
+//! model ranks how dead a move is and never names a depth. The fifth is `amount`, which reads how many
 //! plies a scout gives up off a table by the node's depth and the move's
 //! index.
 //!
@@ -199,6 +199,19 @@ pub(crate) const LATE_MOVE_PRUNING_THRESHOLD: i64 = -5932;
 // (0.312% harmful) and this rule 77.17% at 0.728% (0.375% harmful).
 pub(crate) const DEEP_INDEX_FLOOR: usize = 8;
 pub(crate) const DEEP_INDEX_SLOPE: usize = 1;
+// The index the skip's rule wants a move to have reached, and how much
+// further along the order per ply of depth over the one the gate starts
+// at. Chosen on the ledger and the split above, over the 1,580,640 depth
+// four and up non-checking rows the skip decides, the scouted and the
+// skipped together. Of 36 candidates (floor 8 to 28, slope 0 to 3) this
+// pair covers within three points of the model at the lowest attention
+// rate. Held out, the model then skipped 41.54% at 0.070% attention and
+// this rule 37.67% at 0.578%. On the ledger the model's current weights
+// were fitted on, read on the half they were not fitted on, this rule
+// skips 37.75% at 1.537% attention and those weights 41.32% at 0.030%.
+// Depth and index cannot find the model's dead region.
+pub(crate) const PRUNE_INDEX_FLOOR: usize = 12;
+pub(crate) const PRUNE_INDEX_SLOPE: usize = 2;
 
 /// What the attention model reads about a late quiet at the gate, in the
 /// reduction ledger's units. The index bands and the searched count are
@@ -252,28 +265,6 @@ fn attention_score(f: &AttentionFeatures) -> i64 {
         + ATTENTION_GENERATED * f.generated as i64
         + ATTENTION_SEARCHED * (index + 1)
         + ATTENTION_INTERCEPT
-}
-
-/// A reduction ledger row scored as `scripts/fit_attention.py` reads it,
-/// with the searched column as printed rather than derived from the index.
-/// What holds the printed column to the one the gate read.
-#[cfg(test)]
-pub(crate) fn ledger_row_score(e: &crate::reduction::Event) -> i64 {
-    let f = AttentionFeatures {
-        depth: e.depth,
-        index: e.index,
-        hist_milli: if e.history_max > 0 {
-            i64::from(e.history.max(0)) * 1000 / i64::from(e.history_max)
-        } else {
-            0
-        },
-        killer: e.killer,
-        tt: e.tt,
-        eval_beta: i64::from(e.eval_beta),
-        alpha_gap: i64::from(e.alpha_gap),
-        generated: e.generated,
-    };
-    attention_score(&f) + ATTENTION_SEARCHED * (e.searched as i64 - (e.index as i64 + 1))
 }
 
 /// What the decision reads of the search. Three references rather than
@@ -332,8 +323,8 @@ pub(crate) enum Verdict {
     /// depth only when the scout comes back above alpha. Zero is no
     /// scout: the reduction did not apply.
     Scout(u8),
-    /// The model prices the move in its deadest band: the move is not
-    /// searched at all.
+    /// The gate prices the move as dead, by the index rule or the model's
+    /// deadest band: the move is not searched at all.
     Skip,
 }
 
@@ -612,8 +603,10 @@ fn node_admits(in_check: bool, alpha: Score, beta: Score, root_bounds: RootBound
 
 /// Whether a move `reduces` already accepted is scouted a ply shallower
 /// than the amount alone would give it, or not searched at all: the skip is
-/// asked first, off the model's score, and the deeper scout after it, off
-/// whichever rule `deepens` reads. The node must be deep enough for the
+/// asked first, off whichever rule `prunes` reads, and the deeper scout
+/// after it, off whichever rule `deepens` reads. The model's score is
+/// computed only where one of them reads it, so with both index rules on
+/// the gate evaluates nothing. The node must be deep enough for the
 /// deeper scout to keep its full width ply, a floor the skip inherits,
 /// and the move must not give check: the exemption arm measured checks
 /// as the scout's blind spot, so neither the deeper scout nor the skip
@@ -625,19 +618,26 @@ fn gate(search: &Search, node: &mut Node, m: &Play, searched: usize) -> Verdict 
     {
         return Verdict::Scout(amount(search.config, node.depth, searched, 0));
     }
-    let eval = evaluation(search, node);
-    let f = features(search, node, m, searched);
-    let score = attention_score(&AttentionFeatures {
-        depth: node.depth,
-        index: f.index,
-        hist_milli: f.hist_milli(),
-        killer: f.killer,
-        tt: f.tt,
-        eval_beta: eval - i64::from(node.beta),
-        alpha_gap: i64::from(node.alpha) - eval,
-        generated: f.generated,
-    });
-    if search.config.late_move_pruning && score <= LATE_MOVE_PRUNING_THRESHOLD {
+    let mut scored = None;
+    let mut score = |node: &mut Node| {
+        *scored.get_or_insert_with(|| {
+            let eval = evaluation(search, node);
+            let f = features(search, node, m, searched);
+            attention_score(&AttentionFeatures {
+                depth: node.depth,
+                index: f.index,
+                hist_milli: f.hist_milli(),
+                killer: f.killer,
+                tt: f.tt,
+                eval_beta: eval - i64::from(node.beta),
+                alpha_gap: i64::from(node.alpha) - eval,
+                generated: f.generated,
+            })
+        })
+    };
+    if search.config.late_move_pruning
+        && prunes(search.config, node.depth, searched, || score(node))
+    {
         let info = node.check.get_or_insert_with(|| search.board.check_info());
         return if search.board.gives_check_with(info, m) {
             Verdict::Scout(amount(search.config, node.depth, searched, 0))
@@ -646,7 +646,7 @@ fn gate(search: &Search, node: &mut Node, m: &Play, searched: usize) -> Verdict 
         };
     }
     if search.config.deep_reductions
-        && deepens(search.config, node.depth, searched, score)
+        && deepens(search.config, node.depth, searched, || score(node))
         && !search.board.gives_check_with(
             node.check.get_or_insert_with(|| search.board.check_info()),
             m,
@@ -662,6 +662,25 @@ fn gate(search: &Search, node: &mut Node, m: &Play, searched: usize) -> Verdict 
     Verdict::Scout(amount(search.config, node.depth, searched, 0))
 }
 
+/// Whether the gate skips a move it has already accepted.
+///
+/// Under `index_rule_pruning` the decision reads the node's depth and the
+/// move's index and nothing else, which is what the arm asks: whether the
+/// model earns its place at the one gate it still decides. Off the rule
+/// the model's threshold decides, as it did.
+fn prunes(config: &SearchConfig, depth: u8, searched: usize, score: impl FnOnce() -> i64) -> bool {
+    debug_assert!(
+        depth >= DEEP_REDUCTION_MIN_DEPTH,
+        "the skip is only asked about at the deeper scout's floor"
+    );
+    if config.index_rule_pruning {
+        searched
+            >= PRUNE_INDEX_FLOOR + PRUNE_INDEX_SLOPE * usize::from(depth - DEEP_REDUCTION_MIN_DEPTH)
+    } else {
+        score() <= LATE_MOVE_PRUNING_THRESHOLD
+    }
+}
+
 /// Whether the gate gives a move it has already accepted the deeper
 /// scout's extra ply.
 ///
@@ -670,7 +689,7 @@ fn gate(search: &Search, node: &mut Node, m: &Play, searched: usize) -> Verdict 
 /// model's other features earn their place at this gate. Off the rule the
 /// model's threshold decides, as it did. Neither the amount that extra ply
 /// is worth nor the skip's own threshold moves either way.
-fn deepens(config: &SearchConfig, depth: u8, searched: usize, score: i64) -> bool {
+fn deepens(config: &SearchConfig, depth: u8, searched: usize, score: impl FnOnce() -> i64) -> bool {
     debug_assert!(
         depth >= DEEP_REDUCTION_MIN_DEPTH,
         "the deeper scout is only asked about at a depth it keeps a ply under"
@@ -679,7 +698,7 @@ fn deepens(config: &SearchConfig, depth: u8, searched: usize, score: i64) -> boo
         searched
             >= DEEP_INDEX_FLOOR + DEEP_INDEX_SLOPE * usize::from(depth - DEEP_REDUCTION_MIN_DEPTH)
     } else {
-        score <= DEEP_REDUCTION_THRESHOLD
+        score() <= DEEP_REDUCTION_THRESHOLD
     }
 }
 
@@ -765,8 +784,8 @@ mod tests {
         DEEP_INDEX_FLOOR, DEEP_INDEX_SLOPE, DEEP_REDUCTION, DEEP_REDUCTION_BONUS,
         DEEP_REDUCTION_MIN_DEPTH, DEEP_REDUCTION_THRESHOLD, Features, LATE_MOVE_COUNT,
         LATE_MOVE_MIN_DEPTH, LATE_MOVE_PRUNING_THRESHOLD, LATE_MOVE_REDUCTION, LATE_MOVE_THRESHOLD,
-        Node, QUIET_FUTILITY_MARGIN, REDUCTION, SHALLOW_MAX_DEPTH, Search, Shallow, Verdict,
-        amount, attention_score, decide, features,
+        Node, PRUNE_INDEX_FLOOR, PRUNE_INDEX_SLOPE, QUIET_FUTILITY_MARGIN, REDUCTION,
+        SHALLOW_MAX_DEPTH, Search, Shallow, Verdict, amount, attention_score, decide, features,
     };
     use crate::board::{Board, MoveList, fens, play_named};
     use crate::census::Table;
@@ -1550,7 +1569,10 @@ mod tests {
         assert!(!s.board.gives_check(&quiet));
         assert!(s.board.gives_check(&checks) && checks.capture.is_none());
         const DEPTH: u8 = DEEP_REDUCTION_MIN_DEPTH;
-        let searched = DEEP_INDEX_FLOOR + 4;
+        // past the deep floor and short of the skip's, so the rule deepens
+        // the push rather than dropping it
+        let searched = DEEP_INDEX_FLOOR + 2;
+        const { assert!(DEEP_INDEX_FLOOR + 2 < PRUNE_INDEX_FLOOR) };
         let (alpha, beta): (Score, Score) = (-5_000, -4_999);
         assert_eq!(
             s.verdict(&quiet, searched, DEPTH, alpha, beta),
@@ -1559,6 +1581,45 @@ mod tests {
         assert_eq!(
             s.verdict(&checks, searched, DEPTH, alpha, beta),
             Verdict::Scout(amount(&config, DEPTH, searched, 0))
+        );
+    }
+
+    /// The skip's rule drops a quiet at its floor and scouts it one under,
+    /// two plies up so the slope is read as well, under bounds the model
+    /// would never skip at, so the index is the only thing that can drop
+    /// it. A check at the same index is scouted, and off the switch the
+    /// model's threshold decides again.
+    #[test]
+    fn the_skip_rule_drops_at_its_floor_and_never_a_check() {
+        let config = SearchConfig::default();
+        let mut s = Stand::new(fens::A_CAPTURE_AND_QUIETS, config);
+        let quiet = play_named(&s.board, "a4a5");
+        let checks = play_named(&s.board, "a4a8");
+        assert!(s.board.gives_check(&checks) && checks.capture.is_none());
+        const DEPTH: u8 = DEEP_REDUCTION_MIN_DEPTH + 2;
+        let floor = PRUNE_INDEX_FLOOR + 2 * PRUNE_INDEX_SLOPE;
+        let (alpha, beta): (Score, Score) = (-5_000, -4_999);
+        let eval = s.eval();
+        let generated = s.moves.len();
+        assert!(
+            model_score(eval, generated, DEPTH, floor, alpha, beta) > LATE_MOVE_PRUNING_THRESHOLD
+        );
+        assert_eq!(s.verdict(&quiet, floor, DEPTH, alpha, beta), Verdict::Skip);
+        assert_eq!(
+            s.verdict(&quiet, floor - 1, DEPTH, alpha, beta),
+            Verdict::Scout(amount(&config, DEPTH, floor - 1, DEEP_REDUCTION_BONUS))
+        );
+        assert_eq!(
+            s.verdict(&checks, floor, DEPTH, alpha, beta),
+            Verdict::Scout(amount(&config, DEPTH, floor, 0))
+        );
+        s.config = SearchConfig {
+            index_rule_pruning: false,
+            ..config
+        };
+        assert_eq!(
+            s.verdict(&quiet, floor, DEPTH, alpha, beta),
+            Verdict::Scout(amount(&config, DEPTH, floor, DEEP_REDUCTION_BONUS))
         );
     }
 
