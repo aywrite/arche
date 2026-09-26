@@ -55,6 +55,18 @@ jobs:
     - name: Run tests
       run: cargo test --workspace --locked
 
+  # the evaluation's pair term is off on master, so it is tested at the rank
+  # the machine-test feature sets, debug, where the state check runs
+  test-machine:
+    runs-on: ubuntu-latest
+    steps:
+    - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+    - uses: Swatinem/rust-cache@6323deb102c322ba6fcbdcafc7e3dddab59af2b6 # v2.9.2
+    - name: Run tests with the pair term on
+      run: cargo test --workspace --locked --features machine-test
+    - name: Run clippy with the pair term on
+      run: cargo clippy --workspace --locked --all-targets --features machine-test -- -D warnings
+
   # The tactical and the strategic suites, gating, on one platform: a fixed
   # depth and table make their totals exact on any machine, and twenty seconds
   # or more of searching is not worth paying three times over a matrix that
