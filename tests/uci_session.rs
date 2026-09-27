@@ -191,6 +191,77 @@ fn a_stop_with_nothing_running_is_taken_in_silence() {
     assert!(s.finished().success());
 }
 
+#[test]
+fn the_debug_log_holds_every_line_read_and_said_in_order() {
+    let log = std::env::temp_dir().join(format!("arche-session-{}.log", std::process::id()));
+    let _ = std::fs::remove_file(&log);
+    let typed = [
+        format!("setoption name Debug Log File value {}", log.display()),
+        "uci".to_string(),
+        "position startpos".to_string(),
+        "go infinite".to_string(),
+        "isready".to_string(),
+        "stop".to_string(),
+        "quit".to_string(),
+    ];
+    let mut s = Session::start(&[]);
+    // the first four go at once, so the reader usually has them before the
+    // option that opens the log is handled (the unit tests in session.rs
+    // hold lines deterministically)
+    for line in &typed[..4] {
+        s.say(line);
+    }
+    s.wait_for(|l| l.starts_with("info depth"));
+    // answered by the reader mid-search, not by the session loop
+    s.say(&typed[4]);
+    s.wait_for(|l| l == "readyok");
+    s.say(&typed[5]);
+    s.wait_for(|l| l.starts_with("bestmove"));
+    s.say(&typed[6]);
+    assert!(s.finished().success());
+    // stdout is closed, so this takes what is left and ends
+    while let Ok(line) = s.lines.recv_timeout(DEADLINE) {
+        s.said.push(line);
+    }
+
+    let written = std::fs::read_to_string(&log).expect("the log was written");
+    let _ = std::fs::remove_file(&log);
+    let read: Vec<&str> = written
+        .lines()
+        .filter_map(|l| l.strip_prefix(">> "))
+        .collect();
+    let said: Vec<&str> = written
+        .lines()
+        .filter_map(|l| l.strip_prefix("<< "))
+        .collect();
+    assert_eq!(read, typed, "the log reads: {}", written);
+    assert_eq!(said, s.said, "the log reads: {}", written);
+    // each line in when it was read, not when the loop reached it
+    let at = |start: &str| {
+        written
+            .lines()
+            .position(|l| l.starts_with(start))
+            .unwrap_or_else(|| panic!("no {:?} in the log: {}", start, written))
+    };
+    assert!(
+        at(">> isready") < at("<< readyok"),
+        "the log reads: {}",
+        written
+    );
+    assert!(
+        at(">> stop") < at("<< bestmove"),
+        "the log reads: {}",
+        written
+    );
+    assert!(
+        written
+            .lines()
+            .all(|l| l.starts_with(">> ") || l.starts_with("<< ")),
+        "the log reads: {}",
+        written
+    );
+}
+
 fn nodes_of(info: &str) -> u64 {
     info.split_whitespace()
         .skip_while(|word| *word != "nodes")

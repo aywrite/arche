@@ -11,19 +11,143 @@
 //! `wire` assembles both. A test that wants no reader calls `session_loop`
 //! with the channel filled up front.
 
-use std::io::Write;
+use std::collections::VecDeque;
+use std::fs::{File, OpenOptions};
+use std::io::{LineWriter, Write};
+use std::path::Path;
 use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
 use std::sync::mpsc::{Receiver, Sender, channel};
-use std::sync::{Arc, Mutex, PoisonError};
+use std::sync::{Arc, Mutex, MutexGuard, PoisonError};
 use std::thread;
 
 /// A writer both threads say things through, locked a whole line at a time
-/// so that an `info` line and a `readyok` cannot interleave.
-pub struct SharedWriter<W: Write>(Arc<Mutex<W>>);
+/// so that an `info` line and a `readyok` cannot interleave. It also keeps
+/// the debug log, since every line the engine says passes through here.
+pub struct SharedWriter<W: Write>(Arc<Mutex<Sink<W>>>);
+
+/// A line read, numbered in the order read, so the session loop can say
+/// which one it has reached.
+pub(crate) type Heard = (u64, String);
+
+/// The interface's output and, while one is open, the debug log beside it.
+///
+/// The log has what was read with `>> ` in front and what was said with `<< `.
+/// A line is written to the log when the reader reads it, if the log is open
+/// then. One read while it is closed is held here until the session loop
+/// reaches it, because the lines already queued when the option that opens
+/// the log is dispatched belong in it too. Those go in when the log opens,
+/// after anything said since they were read. A line read while one log is
+/// open goes to that one, even if the loop later moves the log elsewhere.
+pub(crate) struct Sink<W> {
+    out: W,
+    log: Option<LineWriter<File>>,
+    /// Whether the output is at the start of a line, where the log's next
+    /// `<< ` goes.
+    at_line_start: bool,
+    /// The lines read while the log was closed that the loop has not reached.
+    held: VecDeque<Heard>,
+}
 
 impl<W: Write> SharedWriter<W> {
     pub(crate) fn new(inner: W) -> Self {
-        Self(Arc::new(Mutex::new(inner)))
+        Self(Arc::new(Mutex::new(Sink {
+            out: inner,
+            log: None,
+            at_line_start: true,
+            held: VecDeque::new(),
+        })))
+    }
+
+    /// A poisoned lock is a panic already reported on the other thread, and
+    /// the interface still wants its answer, so the sink is used as it is.
+    fn lock(&self) -> MutexGuard<'_, Sink<W>> {
+        self.0.lock().unwrap_or_else(PoisonError::into_inner)
+    }
+
+    /// The reader has read a line it answers itself.
+    fn heard_unqueued(&self, line: &str) {
+        self.lock().log_input(line);
+    }
+
+    /// The reader has read a line for the session loop.
+    fn heard(&self, (number, line): &Heard) {
+        let mut sink = self.lock();
+        if sink.log.is_some() {
+            sink.log_input(line);
+        } else {
+            sink.held.push_back((*number, line.clone()));
+        }
+    }
+
+    /// The session loop has reached a line, so it is no longer held.
+    fn reached(&self, number: u64) {
+        let mut sink = self.lock();
+        if sink.held.front().is_some_and(|(held, _)| *held == number) {
+            sink.held.pop_front();
+        }
+    }
+
+    /// Opens the debug log at `path`, appending to what is there, and writes
+    /// the lines read that have not been reached. A log already open is
+    /// closed first, unless the new one cannot be opened. The line that
+    /// opened it goes first, unless a log was open when it was read and has
+    /// it already.
+    pub(crate) fn open_log(&self, path: &Path, opened_by: &str) -> std::io::Result<()> {
+        let file = OpenOptions::new().create(true).append(true).open(path)?;
+        let mut sink = self.lock();
+        let written = sink.log.is_some();
+        sink.log = Some(LineWriter::new(file));
+        if !written {
+            sink.log_input(opened_by);
+        }
+        while let Some((_, line)) = sink.held.pop_front() {
+            sink.log_input(&line);
+        }
+        Ok(())
+    }
+
+    pub(crate) fn close_log(&self) {
+        self.lock().log = None;
+    }
+}
+
+impl<W: Write> Sink<W> {
+    /// A failed write to the log is let go, since the interface's answers
+    /// matter more than the record of them.
+    fn log_input(&mut self, line: &str) {
+        let Some(log) = &mut self.log else {
+            return;
+        };
+        // every line is said whole under the lock, so this is a guard only
+        if !self.at_line_start {
+            let _ = log.write_all(b"\n");
+            self.at_line_start = true;
+        }
+        let _ = writeln!(log, ">> {}", line);
+    }
+
+    fn log_output(&mut self, said: &[u8]) {
+        for piece in said.split_inclusive(|byte| *byte == b'\n') {
+            if let Some(log) = &mut self.log {
+                if self.at_line_start {
+                    let _ = log.write_all(b"<< ");
+                }
+                let _ = log.write_all(piece);
+            }
+            self.at_line_start = piece.ends_with(b"\n");
+        }
+    }
+}
+
+impl<W: Write> Write for Sink<W> {
+    fn write(&mut self, buf: &[u8]) -> std::io::Result<usize> {
+        let written = self.out.write(buf)?;
+        self.log_output(&buf[..written]);
+        Ok(written)
+    }
+
+    fn flush(&mut self) -> std::io::Result<()> {
+        self.out.flush()
     }
 }
 
@@ -31,8 +155,7 @@ impl<W: Write> SharedWriter<W> {
 impl SharedWriter<Vec<u8>> {
     /// What has been said so far, while the session still holds the writer.
     pub(crate) fn read_back(&self) -> String {
-        let buffer = self.0.lock().unwrap_or_else(PoisonError::into_inner);
-        String::from_utf8(buffer.clone()).unwrap()
+        String::from_utf8(self.lock().out.clone()).unwrap()
     }
 }
 
@@ -44,28 +167,17 @@ impl<W: Write> Clone for SharedWriter<W> {
 }
 
 impl<W: Write> Write for SharedWriter<W> {
-    /// A poisoned lock is a panic already reported on the other thread, and
-    /// the interface still wants its answer, so the buffer is used as it is.
     fn write(&mut self, buf: &[u8]) -> std::io::Result<usize> {
-        self.0
-            .lock()
-            .unwrap_or_else(PoisonError::into_inner)
-            .write(buf)
+        self.lock().write(buf)
     }
 
     fn flush(&mut self) -> std::io::Result<()> {
-        self.0
-            .lock()
-            .unwrap_or_else(PoisonError::into_inner)
-            .flush()
+        self.lock().flush()
     }
 
     /// One lock for a whole line, where the default takes one per piece.
     fn write_fmt(&mut self, args: std::fmt::Arguments<'_>) -> std::io::Result<()> {
-        self.0
-            .lock()
-            .unwrap_or_else(PoisonError::into_inner)
-            .write_fmt(args)
+        self.lock().write_fmt(args)
     }
 }
 
@@ -226,11 +338,16 @@ pub(crate) fn report_panics_to<W: Write + Send + 'static>(out: SharedWriter<W>) 
 /// unanswered, whether or not the loop has begun it, and passes every
 /// other line on in order. Nothing is dropped: a `position` thrown away would
 /// leave the interface and the engine silently on different games.
-fn read_ahead<I, W>(input: I, mut out: W, control: &SessionControl, lines: Sender<String>)
-where
+fn read_ahead<I, W>(
+    input: I,
+    mut out: SharedWriter<W>,
+    control: &SessionControl,
+    lines: Sender<Heard>,
+) where
     I: Iterator<Item = std::io::Result<String>>,
     W: Write,
 {
+    let mut sent = 0;
     for line in input {
         let line = match line {
             Ok(line) => line,
@@ -240,33 +357,44 @@ where
                 break;
             }
         };
-        match first_word(&line) {
+        // answered here and never queued, so it is never held either
+        if first_word(&line) == "isready" && control.searching() {
+            out.heard_unqueued(&line);
+            let _ = writeln!(out, "readyok");
+            continue;
+        }
+        let heard = (sent, line);
+        out.heard(&heard);
+        match first_word(&heard.1) {
             // passed on as well, since the search still owes a bestmove
             "stop" | "quit" => control.ask_to_stop(),
             "go" => control.go_read(),
-            "isready" if control.searching() => {
-                let _ = writeln!(out, "readyok");
-                continue;
-            }
             _ => {}
         }
-        if lines.send(line).is_err() {
+        if lines.send(heard).is_err() {
             return;
         }
+        sent += 1;
     }
     // the pipe closing is the interface leaving, and reads as a quit: a
     // search or a held answer would otherwise outlive it
     control.ask_to_stop();
-    let _ = lines.send("quit".to_string());
+    let _ = lines.send((sent, "quit".to_string()));
 }
 
 /// Hands lines to the handler in order until the input ends or the handler
 /// returns false.
-pub(crate) fn session_loop<H>(lines: Receiver<String>, control: &SessionControl, mut handle: H)
-where
+pub(crate) fn session_loop<W, H>(
+    lines: Receiver<Heard>,
+    out: &SharedWriter<W>,
+    control: &SessionControl,
+    mut handle: H,
+) where
+    W: Write,
     H: FnMut(&str, &SessionControl) -> bool,
 {
-    for line in lines {
+    for (number, line) in lines {
+        out.reached(number);
         if !handle(&line, control) {
             return;
         }
@@ -287,15 +415,123 @@ where
     let control = SessionControl::for_this_thread();
     let (sender, lines) = channel();
     let reader = control.clone();
+    let heard = out.clone();
     thread::spawn(move || {
-        read_ahead(input(), out, &reader, sender);
+        read_ahead(input(), heard, &reader, sender);
     });
-    session_loop(lines, &control, handle);
+    session_loop(lines, &out, &control, handle);
 }
 
 #[cfg(test)]
-mod tests {
+pub(crate) mod tests {
     use super::*;
+    use std::path::PathBuf;
+
+    /// A log file of the test's own, removed before and after.
+    pub(crate) struct Scratch(pub(crate) PathBuf);
+
+    impl Scratch {
+        pub(crate) fn named(name: &str) -> Self {
+            let file = format!("arche-{}-{}.log", name, std::process::id());
+            let path = std::env::temp_dir().join(file);
+            let _ = std::fs::remove_file(&path);
+            Self(path)
+        }
+
+        pub(crate) fn read(&self) -> String {
+            std::fs::read_to_string(&self.0).unwrap_or_default()
+        }
+    }
+
+    impl Drop for Scratch {
+        fn drop(&mut self) {
+            let _ = std::fs::remove_file(&self.0);
+        }
+    }
+
+    fn heard(out: &SharedWriter<Vec<u8>>, number: u64, line: &str) {
+        out.heard(&(number, line.to_string()));
+    }
+
+    #[test]
+    fn lines_queued_when_the_log_opens_follow_the_line_that_opened_it() {
+        let log = Scratch::named("queued");
+        let out = SharedWriter::new(Vec::new());
+        // the reader drains the pipe before the loop reaches the option
+        heard(&out, 0, "setoption name Debug Log File value x");
+        heard(&out, 1, "position startpos");
+        heard(&out, 2, "go depth 1");
+        out.reached(0);
+        out.open_log(&log.0, "setoption name Debug Log File value x")
+            .unwrap();
+        out.reached(1);
+        let _ = writeln!(out.clone(), "readyok");
+        heard(&out, 3, "stop");
+        assert_eq!(
+            log.read(),
+            ">> setoption name Debug Log File value x\n\
+             >> position startpos\n\
+             >> go depth 1\n\
+             << readyok\n\
+             >> stop\n"
+        );
+    }
+
+    #[test]
+    fn a_line_reached_that_was_never_held_releases_no_other() {
+        let log = Scratch::named("reached");
+        let out = SharedWriter::new(Vec::new());
+        out.open_log(&log.0, "open").unwrap();
+        heard(&out, 0, "close");
+        heard(&out, 1, "written before the close was reached");
+        out.reached(0);
+        out.close_log();
+        heard(&out, 2, "reopen");
+        heard(&out, 3, "held behind the reopen");
+        // line 1 was written, not held, so reaching it must leave 2 and 3
+        out.reached(1);
+        out.reached(2);
+        out.open_log(&log.0, "reopen").unwrap();
+        assert!(
+            log.read()
+                .ends_with(">> reopen\n>> held behind the reopen\n"),
+            "the log reads: {}",
+            log.read()
+        );
+    }
+
+    #[test]
+    fn setting_the_log_again_does_not_write_its_line_twice() {
+        // an interface may resend its options before every game
+        let log = Scratch::named("again");
+        let out = SharedWriter::new(Vec::new());
+        heard(&out, 0, "set");
+        out.reached(0);
+        out.open_log(&log.0, "set").unwrap();
+        heard(&out, 1, "set");
+        out.reached(1);
+        out.open_log(&log.0, "set").unwrap();
+        assert_eq!(log.read(), ">> set\n>> set\n");
+    }
+
+    #[test]
+    fn output_is_marked_a_line_at_a_time_however_it_is_written() {
+        let log = Scratch::named("output");
+        let mut out = SharedWriter::new(Vec::new());
+        out.open_log(&log.0, "go").unwrap();
+        out.write_all(b"info depth 1").unwrap();
+        out.write_all(b" score cp 20\nbestmove e2e4\n").unwrap();
+        out.close_log();
+        let _ = writeln!(out, "not logged");
+        assert_eq!(
+            log.read(),
+            ">> go\n<< info depth 1 score cp 20\n<< bestmove e2e4\n"
+        );
+        assert_eq!(
+            out.read_back(),
+            "info depth 1 score cp 20\nbestmove e2e4\nnot logged\n"
+        );
+    }
 
     fn up(control: &SessionControl) -> bool {
         control.handle().load(Ordering::Acquire)
@@ -321,11 +557,11 @@ mod tests {
     fn an_isready_read_behind_a_queued_go_is_answered_by_the_reader() {
         let control = SessionControl::for_this_thread();
         let (sender, lines) = channel();
-        let mut said = Vec::new();
+        let said = SharedWriter::new(Vec::new());
         let input = ["go infinite", "isready"].map(|line| Ok(line.to_string()));
-        read_ahead(input.into_iter(), &mut said, &control, sender);
-        assert_eq!(String::from_utf8(said).unwrap(), "readyok\n");
-        let passed: Vec<String> = lines.into_iter().collect();
+        read_ahead(input.into_iter(), said.clone(), &control, sender);
+        assert_eq!(said.read_back(), "readyok\n");
+        let passed: Vec<String> = lines.into_iter().map(|(_, line)| line).collect();
         assert_eq!(passed, ["go infinite", "quit"]);
     }
 

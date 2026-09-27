@@ -18,6 +18,7 @@ use arche_core::{Play, Score};
 use std::fmt;
 use std::io::{BufRead, Stdout, Write};
 use std::ops::RangeInclusive;
+use std::path::Path;
 
 /// The `Hash` option's range in megabytes, which `bench hash` shares. The top
 /// is 16GiB, or less on a target whose usize cannot address that much.
@@ -55,6 +56,10 @@ enum Setting {
     MoveOverhead,
 }
 
+/// What `<empty>` stands for, as the handshake shows it and as a GUI sends it
+/// back to clear a string option.
+const EMPTY: &str = "<empty>";
+
 /// What kind of thing an option is, as the handshake says it.
 enum OptionKind {
     Spin {
@@ -65,6 +70,8 @@ enum OptionKind {
     },
     /// Pressed rather than set: no value and no state to advertise.
     Button,
+    /// Any text, empty by default.
+    Text,
 }
 
 struct UciOption {
@@ -108,6 +115,12 @@ const OPTIONS: &[UciOption] = &[
             setting: Setting::MoveOverhead,
         },
     },
+    // named as Stockfish names it, so an interface that offers the option
+    // for one offers it for this
+    UciOption {
+        name: "Debug Log File",
+        kind: OptionKind::Text,
+    },
 ];
 
 impl UciOption {
@@ -120,6 +133,7 @@ impl UciOption {
                 self.name, default, min, max
             ),
             OptionKind::Button => format!("option name {} type button", self.name),
+            OptionKind::Text => format!("option name {} type string default {}", self.name, EMPTY),
         }
     }
 }
@@ -167,12 +181,12 @@ pub struct UCI<T: Engine, W: Write> {
     move_overhead: u64,
 
     engine: T,
-    out: W,
+    out: SharedWriter<W>,
 }
 
-impl<T: Engine> UCI<T, SharedWriter<Stdout>> {
+impl<T: Engine> UCI<T, Stdout> {
     pub fn new_with_engine(engine: T) -> Self {
-        Self::with_output(engine, SharedWriter::new(std::io::stdout()))
+        Self::with_output(engine, std::io::stdout())
     }
 
     /// Read stdin on a thread of its own and run the session on this one.
@@ -181,7 +195,7 @@ impl<T: Engine> UCI<T, SharedWriter<Stdout>> {
     }
 }
 
-impl<T: Engine, W: Write + Send + 'static> UCI<T, SharedWriter<W>> {
+impl<T: Engine, W: Write + Send + 'static> UCI<T, W> {
     /// Install the panic hook on this session's writer, so the reason the
     /// engine died goes out under the same lock as every other line.
     pub fn report_panics(&self) {
@@ -202,6 +216,10 @@ impl<T: Engine, W: Write + Send + 'static> UCI<T, SharedWriter<W>> {
 impl<T: Engine, W: Write> UCI<T, W> {
     /// Separate from new_with_engine so that what is said can be captured.
     fn with_output(engine: T, out: W) -> Self {
+        Self::with_writer(engine, SharedWriter::new(out))
+    }
+
+    fn with_writer(engine: T, out: SharedWriter<W>) -> Self {
         Self {
             move_overhead: DEFAULT_MOVE_OVERHEAD_MS,
             engine,
@@ -289,15 +307,19 @@ impl<T: Engine, W: Write> UCI<T, W> {
     #[cfg(test)]
     fn run<R: BufRead>(&mut self, input: R) {
         let (sender, lines) = std::sync::mpsc::channel();
-        for line in input.lines() {
+        for (number, line) in (0..).zip(input.lines()) {
             sender
-                .send(line.expect("a test script reads"))
+                .send((number, line.expect("a test script reads")))
                 .expect("the lines are read after the channel is filled");
         }
         drop(sender);
-        session::session_loop(lines, &SessionControl::unattended(), |line, control| {
-            self.dispatch(line, control)
-        });
+        let out = self.out.clone();
+        session::session_loop(
+            lines,
+            &out,
+            &SessionControl::unattended(),
+            |line, control| self.dispatch(line, control),
+        );
     }
 
     /// The same bench as the command line argument.
@@ -333,10 +355,25 @@ impl<T: Engine, W: Write> UCI<T, W> {
                 self.engine.clear_table();
                 Ok(())
             }
+            // every text option is the log, since it is the only one
+            OptionKind::Text => self.set_log(line),
             OptionKind::Spin {
                 min, max, setting, ..
             } => self.set_spin(option.name, min..=max, setting, &params),
         }
+    }
+
+    /// Opens the debug log at the path given, or closes it for an empty one.
+    /// The path is the rest of the line as sent, so it can hold spaces.
+    fn set_log(&mut self, line: &str) -> Result<(), String> {
+        let path = word_at(line, "value").map_or("", |(_, rest)| rest.trim());
+        if path.is_empty() || path == EMPTY {
+            self.out.close_log();
+            return Ok(());
+        }
+        self.out
+            .open_log(Path::new(path), line)
+            .map_err(|error| format!("could not open the debug log {}: {}", path, error))
     }
 
     fn set_spin(
@@ -380,18 +417,9 @@ impl<T: Engine, W: Write> UCI<T, W> {
             .strip_prefix("position")
             .unwrap_or(line)
             .trim();
-        // the move list begins at the first "moves" standing as a word of its
-        // own: startposmoves is not startpos
-        let moves_at = position_string.match_indices("moves").find(|(at, word)| {
-            let before = position_string[..*at].chars().next_back();
-            let after = position_string[at + word.len()..].chars().next();
-            before.is_none_or(char::is_whitespace) && after.is_none_or(char::is_whitespace)
-        });
-        let (start, move_list) = match moves_at {
-            Some((at, word)) => (
-                position_string[..at].trim(),
-                Some(&position_string[at + word.len()..]),
-            ),
+        // startposmoves is not startpos
+        let (start, move_list) = match word_at(position_string, "moves") {
+            Some((before, after)) => (before.trim(), Some(after)),
             None => (position_string, None),
         };
         // whole words: startposx is not startpos
@@ -664,6 +692,17 @@ impl BenchSettings {
     }
 }
 
+/// The text either side of the first `word` that stands as a word of its
+/// own, with the word itself left out.
+fn word_at<'a>(text: &'a str, word: &str) -> Option<(&'a str, &'a str)> {
+    text.match_indices(word).find_map(|(at, _)| {
+        let (before, after) = (&text[..at], &text[at + word.len()..]);
+        let alone = before.chars().next_back().is_none_or(char::is_whitespace)
+            && after.chars().next().is_none_or(char::is_whitespace);
+        alone.then_some((before, after))
+    })
+}
+
 /// The depth asked of a perft command. A bare `perft` counts to depth one. A
 /// depth too big for a byte is clamped rather than refused: perft is asked
 /// for by hand, and the answer to too deep is to wait or interrupt.
@@ -727,6 +766,7 @@ fn format_info(
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::session::tests::Scratch;
     use arche_core::{AlphaBeta, Board, Clock, PvLine, Unplayable};
     use proptest::prelude::*;
     use std::io::Cursor;
@@ -809,7 +849,7 @@ mod tests {
     }
 
     fn said(uci: &UCI<AlphaBeta, Vec<u8>>) -> String {
-        String::from_utf8(uci.out.clone()).unwrap()
+        uci.out.read_back()
     }
 
     #[test]
@@ -937,7 +977,7 @@ mod tests {
         uci.handle("uci");
         let said = said(&uci);
         let lines: Vec<&str> = said.lines().collect();
-        assert_eq!(lines.len(), 7);
+        assert_eq!(lines.len(), 8);
         assert!(lines[0].starts_with("id name arche "));
         assert!(lines[1].starts_with("id author "));
         assert_eq!(
@@ -953,7 +993,11 @@ mod tests {
             lines[5],
             "option name Move Overhead type spin default 50 min 0 max 5000"
         );
-        assert_eq!(lines[6], "uciok");
+        assert_eq!(
+            lines[6],
+            "option name Debug Log File type string default <empty>"
+        );
+        assert_eq!(lines[7], "uciok");
     }
 
     #[test]
@@ -1335,12 +1379,7 @@ go depth 3
             let mut uci = UCI::with_output(Recorder::to_move(Color::White), Vec::new());
             uci.run(Cursor::new(format!("{}\n", line)));
             assert_eq!(uci.engine.cleared, 1, "{}", line);
-            assert_eq!(
-                String::from_utf8(uci.out.clone()).unwrap(),
-                "",
-                "{} was answered",
-                line
-            );
+            assert_eq!(uci.out.read_back(), "", "{} was answered", line);
         }
     }
 
@@ -1377,6 +1416,35 @@ go depth 3
         let mut uci = uci();
         assert!(uci.handle("setoption"));
         assert!(said(&uci).starts_with("info string setoption without an option name"));
+    }
+
+    #[test]
+    fn the_debug_log_path_is_the_rest_of_the_line_and_empty_closes_it() {
+        let log = Scratch::named("a path with spaces");
+        let open = format!("setoption name Debug Log File value {}", log.0.display());
+        let mut uci = uci();
+        assert!(uci.handle(&open));
+        uci.handle("isready");
+        uci.handle("setoption name Debug Log File value <empty>");
+        uci.handle("isready");
+        assert_eq!(log.read(), format!(">> {}\n<< readyok\n", open));
+        assert_eq!(said(&uci), "readyok\nreadyok\n");
+    }
+
+    #[test]
+    fn a_debug_log_that_cannot_be_opened_is_said_and_the_session_carries_on() {
+        let nowhere = Scratch::named("no such directory").0.join("debug.log");
+        let mut uci = uci();
+        uci.handle(&format!(
+            "setoption name Debug Log File value {}",
+            nowhere.display()
+        ));
+        assert!(
+            said(&uci).starts_with("info string could not open the debug log "),
+            "said: {}",
+            said(&uci)
+        );
+        assert!(uci.handle("isready"));
     }
 
     #[test]
@@ -1836,11 +1904,7 @@ go depth 3
     fn spoken_by(engine: Scripted) -> Vec<String> {
         let mut uci = UCI::with_output(engine, Vec::new());
         uci.run(Cursor::new("position startpos\ngo movetime 300\n"));
-        String::from_utf8(uci.out.clone())
-            .unwrap()
-            .lines()
-            .map(str::to_string)
-            .collect()
+        uci.out.read_back().lines().map(str::to_string).collect()
     }
 
     #[test]
@@ -2032,7 +2096,7 @@ go depth 3
     fn run_session(lines: &[String]) -> String {
         let mut uci = UCI::with_output(Recorder::to_move(Color::White), Vec::new());
         uci.run(Cursor::new(lines.join("\n") + "\n"));
-        String::from_utf8(uci.out.clone()).unwrap()
+        uci.out.read_back()
     }
 
     proptest! {
@@ -2123,7 +2187,7 @@ go depth 3
             let said = SharedWriter::new(Vec::new());
             let out = said.clone();
             let session = thread::spawn(move || {
-                UCI::with_output(engine, out).wire(move || script.into_iter().map(Ok));
+                UCI::with_writer(engine, out).wire(move || script.into_iter().map(Ok));
             });
             Self {
                 typed,
