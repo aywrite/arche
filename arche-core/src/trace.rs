@@ -23,6 +23,8 @@
 use crate::bench::{self, Position};
 use crate::board::Board;
 use crate::engine::{AlphaBeta, Engine, SearchConfig, SearchParameters};
+use crate::misc::Piece;
+use crate::play::Play;
 use std::cell::{Cell, RefCell};
 use std::collections::HashMap;
 use std::fmt;
@@ -65,16 +67,26 @@ enum Stream {
     Nodes = 0,
     Sliders = 1,
     Attacks = 2,
+    Swaps = 3,
+    Lists = 4,
 }
 
 impl Stream {
-    const ALL: [Stream; 3] = [Stream::Nodes, Stream::Sliders, Stream::Attacks];
+    const ALL: [Stream; 5] = [
+        Stream::Nodes,
+        Stream::Sliders,
+        Stream::Attacks,
+        Stream::Swaps,
+        Stream::Lists,
+    ];
 
     fn name(self) -> &'static str {
         match self {
             Stream::Nodes => "nodes",
             Stream::Sliders => "sliders",
             Stream::Attacks => "attacks",
+            Stream::Swaps => "swaps",
+            Stream::Lists => "lists",
         }
     }
 
@@ -84,6 +96,8 @@ impl Stream {
             Stream::Nodes => 96,
             Stream::Sliders => 32,
             Stream::Attacks => 32,
+            Stream::Swaps => 32,
+            Stream::Lists => 32,
         }
     }
 }
@@ -92,13 +106,17 @@ impl Stream {
 #[derive(Clone, Copy, Default)]
 struct Context {
     node: u64,
+    /// The move list the node is working through, numbered when `order`
+    /// was asked for it; zero before.
+    list: u64,
+    kind: u8,
     sampled: bool,
     /// How many more plies below this node are sampled because it is.
     left: u8,
 }
 
 thread_local! {
-    static CONTEXT: Cell<Context> = const { Cell::new(Context { node: 0, sampled: false, left: 0 }) };
+    static CONTEXT: Cell<Context> = const { Cell::new(Context { node: 0, list: 0, kind: 0, sampled: false, left: 0 }) };
     static SINK: RefCell<Option<Sink>> = const { RefCell::new(None) };
 }
 
@@ -118,6 +136,9 @@ struct Sink {
     position: u16,
     /// Nodes entered so far, sampled or not: the next node's number less one.
     entered: u64,
+    /// Move lists begun in sampled nodes so far: the next list's number
+    /// less one.
+    lists: u64,
     sampled: u64,
     writers: Vec<Writer>,
     sites: HashMap<(&'static str, u32, u32), u16>,
@@ -152,6 +173,7 @@ impl Sink {
             cap,
             position: 0,
             entered: 0,
+            lists: 0,
             sampled: 0,
             writers,
             sites: HashMap::new(),
@@ -239,6 +261,8 @@ pub(crate) fn enter(kind: Kind, board: &Board, depth: u8) -> Option<Entered> {
         CONTEXT.with(|c| {
             c.set(Context {
                 node,
+                list: 0,
+                kind: kind as u8,
                 sampled,
                 left,
             })
@@ -307,6 +331,113 @@ pub(crate) fn attack(
         record[24..32].copy_from_slice(&result.to_le_bytes());
         sink.write(Stream::Attacks, &record);
     });
+}
+
+/// A sampled node is about to have its moves ordered: the list is numbered,
+/// and the swaps the ordering runs and the moves the loop reaches are
+/// recorded against it.
+pub(crate) fn list_begin() {
+    let mut context = CONTEXT.with(Cell::get);
+    if !context.sampled {
+        return;
+    }
+    SINK.with(|sink| {
+        if let Some(sink) = sink.borrow_mut().as_mut() {
+            sink.lists += 1;
+            context.list = sink.lists;
+        }
+    });
+    CONTEXT.with(|c| c.set(context));
+}
+
+/// One swap the ordering ran, with the piece that captures.
+pub(crate) fn swap(m: &Play, attacker: Option<Piece>, see: i32) {
+    let context = CONTEXT.with(Cell::get);
+    if !context.sampled || context.list == 0 {
+        return;
+    }
+    SINK.with(|sink| {
+        let mut sink = sink.borrow_mut();
+        let Some(sink) = sink.as_mut() else {
+            return;
+        };
+        let mut record = [0u8; 32];
+        record[0..8].copy_from_slice(&context.list.to_le_bytes());
+        record[8..16].copy_from_slice(&context.node.to_le_bytes());
+        record[16] = m.from;
+        record[17] = m.to;
+        record[18] = piece_code(m.capture);
+        record[19] = piece_code(attacker);
+        record[20] = promote_code(m);
+        record[21] = u8::from(m.en_passant);
+        record[24..28].copy_from_slice(&see.to_le_bytes());
+        sink.write(Stream::Swaps, &record);
+    });
+}
+
+/// What a `lists` record says about its move.
+#[derive(Clone, Copy)]
+enum Listed {
+    /// Its place in the list as `order` left it.
+    Ordered = 0,
+    /// The loop came to it, at the index given.
+    Reached = 1,
+    /// Its score cut the node off.
+    Cutoff = 2,
+}
+
+/// The list as `order` left it, one record a move. `table` is the move the
+/// ordering was told the table holds.
+pub(crate) fn ordered(moves: &[Play], table: Option<Play>) {
+    for (i, m) in moves.iter().enumerate() {
+        listed(Listed::Ordered, i, m, table == Some(*m));
+    }
+}
+
+/// The loop has come to the move at `index`.
+pub(crate) fn reached(index: usize, m: &Play) {
+    listed(Listed::Reached, index, m, false);
+}
+
+/// The move at `index` cut the node off.
+pub(crate) fn cutoff(index: usize, m: &Play) {
+    listed(Listed::Cutoff, index, m, false);
+}
+
+fn listed(what: Listed, index: usize, m: &Play, table: bool) {
+    let context = CONTEXT.with(Cell::get);
+    if !context.sampled || context.list == 0 {
+        return;
+    }
+    SINK.with(|sink| {
+        let mut sink = sink.borrow_mut();
+        let Some(sink) = sink.as_mut() else {
+            return;
+        };
+        let mut record = [0u8; 32];
+        record[0..8].copy_from_slice(&context.list.to_le_bytes());
+        record[8..16].copy_from_slice(&context.node.to_le_bytes());
+        record[16] = what as u8;
+        record[17] = context.kind;
+        record[18] = u8::try_from(index).unwrap_or(u8::MAX);
+        record[19] = m.from;
+        record[20] = m.to;
+        record[21] = piece_code(m.capture);
+        record[22] = promote_code(m);
+        record[23] = u8::from(m.en_passant) | u8::from(m.castle) << 1 | u8::from(table) << 2;
+        sink.write(Stream::Lists, &record);
+    });
+}
+
+/// A piece as the streams number it, pawn 0 to king 5, and 6 for none.
+fn piece_code(piece: Option<Piece>) -> u8 {
+    piece.map_or(6, |p| p as u8)
+}
+
+/// A promotion as the streams number it: 0 for none, then knight 1 to
+/// queen 4.
+fn promote_code(m: &Play) -> u8 {
+    m.promote.map_or(0, |p| p as u8 + 1)
 }
 
 /// A node's number scrambled, so a sample of every n-th hash is spread over
