@@ -3256,6 +3256,60 @@ mod search {
         assert_ne!(format!("{}", result.best_move), "a1a8");
     }
 
+    // Quiescence stands pat without asking whether the side to move has a
+    // move, so a stalemate at the horizon is read as its static eval rather
+    // than as a draw. The three tests below pin that as it stands. A remedy
+    // changes the tree, is measured in games on its own, and would reverse
+    // them.
+
+    /// Black is stalemated and not in check. Qxf7 from
+    /// `TAKES_INTO_STALEMATE` reaches this position.
+    const STALEMATED: &str = "7k/5Q2/7K/8/8/8/8/8 b - - 0 1";
+    /// White to move, a queen against a bishop. The one capture, Qxf7,
+    /// leaves black stalemated.
+    const TAKES_INTO_STALEMATE: &str = "7k/5b2/7K/8/8/8/8/5Q2 w - - 0 1";
+
+    #[test]
+    fn a_stalemate_at_the_horizon_is_read_as_its_static_eval() {
+        let mut board = Board::from_fen(STALEMATED).unwrap();
+        assert!(!board.in_check());
+        assert!(!board.has_legal_move());
+        let mut e = engine(board);
+        let standing = e.eval();
+        assert!(standing < 0, "{}", standing);
+        assert_eq!(e.quiescence_value(), standing);
+    }
+
+    #[test]
+    fn a_capture_into_stalemate_is_scored_as_the_material_it_wins() {
+        let mut after = Board::from_fen(TAKES_INTO_STALEMATE).unwrap();
+        let takes = play_named(&after, "f1f7");
+        assert!(after.make_move(&takes));
+        assert_eq!(
+            after.to_fen(),
+            Board::from_fen(STALEMATED).unwrap().to_fen()
+        );
+        let won = -crate::eval::eval(&after);
+
+        let mut e = engine(Board::from_fen(TAKES_INTO_STALEMATE).unwrap());
+        // a draw would leave white standing pat on the queen for the bishop
+        assert!(e.eval() < won);
+        assert_eq!(e.quiescence_value(), won);
+    }
+
+    #[test]
+    fn a_search_one_ply_short_takes_into_stalemate() {
+        let mut e = engine(Board::from_fen(TAKES_INTO_STALEMATE).unwrap());
+        let shallow = completed(e.search(1));
+        assert_eq!(format!("{}", shallow.best_move), "f1f7");
+        // a ply more searches the stalemated node full width, which finds
+        // no move and scores the draw, and finds Qa1+ Kg8 Qg7# besides
+        let mut e = engine(Board::from_fen(TAKES_INTO_STALEMATE).unwrap());
+        let deeper = completed(e.search(2));
+        assert_ne!(format!("{}", deeper.best_move), "f1f7");
+        assert_eq!(deeper.checkmate_in(), Some(2));
+    }
+
     #[test]
     fn a_capture_that_cannot_reach_alpha_is_not_searched() {
         // one capture on the board: one node when it is skipped, two when
