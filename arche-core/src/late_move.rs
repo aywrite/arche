@@ -49,12 +49,15 @@ pub(crate) const LATE_MOVE_MIN_DEPTH: u8 = LATE_MOVE_REDUCTION + 2;
 // them is scouted shallower. An opening value, not a tuned one.
 pub(crate) const LATE_MOVE_THRESHOLD: usize = 4;
 // How far under alpha a node's static evaluation may stand, per ply to
-// search, and a quiet move still be searched. A pawn a ply, the figure and
-// scale of `REVERSE_FUTILITY_MARGIN`: both bet on how far the static
-// evaluation can be from the search's answer at the depth left, from
-// opposite bounds. Where the rule starts rather than where a fit put it;
-// only games can say which way it should move.
-pub(crate) const QUIET_FUTILITY_MARGIN: Score = 100;
+// search, and a quiet move still be searched. It bets on how far the static
+// evaluation can be from the search's answer at the depth left, as
+// `REVERSE_FUTILITY_MARGIN` does from the other bound. It started at a
+// pawn a ply. On the evaluation refitted with the pair term, the margin
+// that keeps the share of skipped quiets clearing it where 100 kept it
+// before is about 84 at depth seven and 95 at depth nine on the bench
+// suite. 90 sits inside both readings' intervals. Only games can say
+// whether it should have moved.
+pub(crate) const QUIET_FUTILITY_MARGIN: Score = 90;
 // How many moves a node searches per ply of depth before a later quiet is
 // not searched at all: cutoffs of 4, 8 and 12 at depths one to three. At
 // depth one that is `LATE_MOVE_THRESHOLD`, where the reduction would start
@@ -1800,7 +1803,7 @@ mod tests {
         );
     }
 
-    /// The margin fires where the evaluation plus a pawn a ply lands
+    /// The margin fires where the evaluation plus the margin a ply lands
     /// exactly on alpha, and not one centipawn over it, at both ends of
     /// the rule's depth range. Two depths rather than one, so the test
     /// sees the margin scale with the depth rather than only fire.

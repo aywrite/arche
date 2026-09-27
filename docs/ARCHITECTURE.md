@@ -78,7 +78,7 @@ term over every pair of pieces.
   move, fitted offline and carried as integers, decides which moves are not
   searched at all. At depths one to three, below the model's floor, two
   rules drop a quiet move after the node's first: quiet futility, where the
-  static evaluation plus a pawn a ply cannot reach alpha, and a count, once
+  static evaluation plus a margin a ply cannot reach alpha, and a count, once
   the node has searched four moves a ply. The features the model scores are
   the ones the reduction ledger records.
 - **ordering.rs**: The order moves are tried in. The transposition table's

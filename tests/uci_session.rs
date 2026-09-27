@@ -437,14 +437,14 @@ fn a_root_move_that_reaches_beta_is_reported_as_a_floor_and_then_answered_with()
 fn a_floor_answers_until_the_wider_search_replaces_it() {
     // what the engine plays when the wider search never finishes. WAC.021 is
     // answered with d2c3 at depth eight. At depth nine d2h6 reaches beta and
-    // is reported as a floor at 69,845 nodes, and again at 71,941 and 75,109
-    // as the window widens, and the search finishes at 97,698. A budget
+    // is reported as a floor at 66,108 nodes, and again at 68,331 and 71,111
+    // as the window widens, and the search finishes at 81,982. A budget
     // inside that is interrupted before anything beats alpha, so the floor
     // is what is left to answer with; with the floor not held it answers
     // d2c3, the move the search has just shown worse
     let mut s = Session::start(&[]);
     s.say(&format!("position fen {}", WAC_021));
-    s.say("go nodes 85000");
+    s.say("go nodes 76000");
     let answer = s.wait_for(|l| l.starts_with("bestmove"));
     let best = answer
         .strip_prefix("bestmove ")
