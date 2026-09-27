@@ -1180,9 +1180,10 @@ impl Board {
         self.prior_occurrences(1) >= 1
     }
 
-    /// Whether the side to move has a legal move at all. Asked only where a
-    /// draw rule and a mate could coincide, so it plays the moves rather
-    /// than keeping anything incremental.
+    /// Whether the side to move has a legal move at all. Asked where a draw
+    /// rule and a mate could coincide, and behind the king test at pawn-only
+    /// quiescence nodes, so it plays the moves rather than keeping anything
+    /// incremental.
     pub fn has_legal_move(&mut self) -> bool {
         let moves = self.evasions();
         for m in &moves {
@@ -1192,6 +1193,28 @@ impl Board {
             }
         }
         false
+    }
+
+    /// `has_legal_move` for a side not in check, asked at quiescence nodes
+    /// where it would cost a move generation each. The king is tried first
+    /// from the boards: out of check, a square the king can step to that no
+    /// enemy piece attacks is a legal move, since no line runs through the
+    /// king to be opened by its leaving. Only a king with no such square has
+    /// its side's moves played out.
+    pub(crate) fn has_legal_move_out_of_check(&mut self) -> bool {
+        debug_assert!(!self.in_check());
+        let (ours, _) = self.sides(self.active_color);
+        let enemy = !self.active_color;
+        let mut steps = king_attacks(self.king_index(self.active_color)) & !ours;
+        let mut king_can_move = false;
+        while steps != 0 {
+            if !self.square_attacked(pop_lsb(&mut steps), enemy) {
+                king_can_move = true;
+                break;
+            }
+        }
+        debug_assert!(!king_can_move || self.has_legal_move());
+        king_can_move || self.has_legal_move()
     }
 
     pub(crate) fn make_move(&mut self, play: &Play) -> bool {

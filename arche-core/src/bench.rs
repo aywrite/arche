@@ -739,10 +739,10 @@ mod tests {
                 ("wac 4", 1_597),
                 ("rook and pawns", 111_151),
                 ("tarrasch", 157_258),
-                ("lucena", 107_295),
-                ("philidor", 319_956),
+                ("lucena", 107_297),
+                ("philidor", 334_158),
                 ("minor endgame", 109_221),
-                ("queen endgame", 568_854),
+                ("queen endgame", 516_925),
                 ("king and pawn", 41_408),
                 ("trebuchet", 24_681),
             ]
@@ -791,7 +791,7 @@ mod tests {
                 ("lucena", 23_262),
                 ("philidor", 30_711),
                 ("minor endgame", 15_685),
-                ("queen endgame", 197_929),
+                ("queen endgame", 197_925),
                 ("king and pawn", 1_482),
                 ("trebuchet", 766),
             ]

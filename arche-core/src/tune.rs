@@ -314,7 +314,8 @@ fn settled(engine: &mut AlphaBeta, board: &Board) -> bool {
 }
 
 /// Whether the side to move's capture search comes back at the static
-/// evaluation.
+/// evaluation. A stalemate that side or its captures reach comes back as
+/// zero, so a position with one in reach is refused as well.
 fn nothing_to_capture(engine: &mut AlphaBeta, board: Board) -> bool {
     engine.board = board;
     engine.clear_transpositions();
