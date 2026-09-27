@@ -251,7 +251,7 @@ const ITALIAN: &str = "r1bqk2r/pppp1ppp/2n2n2/2b1p3/2B1P3/5N2/PPPP1PPP/RNBQK2R w
 /// The bench's Tarrasch rook ending, whose depth seven fails high.
 const TARRASCH: &str = "r5k1/5ppp/P7/8/8/8/5PPP/3R1K2 w - - 0 1";
 
-/// WAC.021 of the tactical suite, which changes its root move at depth nine
+/// WAC.021 of the tactical suite, which changes its root move at depth ten
 /// and reports the new move as a floor first.
 const WAC_021: &str = "5rk1/1b3p1p/pp3p2/3n1N2/1P6/P1qB1PP1/3Q3P/4R1K1 w - - 0 1";
 
@@ -263,9 +263,9 @@ const WAC_021: &str = "5rk1/1b3p1p/pp3p2/3n1N2/1P6/P1qB1PP1/3Q3P/4R1K1 w - - 0 1
 fn the_move_a_swap_answers_with_opens_the_last_line_said() {
     // a node budget, so the cut falls on the same node on every machine.
     // It has to land after an iteration finds its better move and before
-    // that iteration ends: depth six answers a4d1 and finishes at 20,359
-    // nodes, and depth seven reports d3e2 from 39,063 nodes on and finishes
-    // at 42,398. The budget moves with the tree, in the commit that moved it
+    // that iteration ends: depth six answers a4d1 and finishes at 20,400
+    // nodes, and depth seven reports d3e2 from 39,110 nodes on and finishes
+    // at 42,411. The budget moves with the tree, in the commit that moved it
     let mut s = Session::start(&[]);
     s.say(&format!("position fen {}", SHARP_MIDDLEGAME));
     s.say("go nodes 40000");
@@ -436,15 +436,15 @@ fn a_root_move_that_reaches_beta_is_reported_as_a_floor_and_then_answered_with()
 )]
 fn a_floor_answers_until_the_wider_search_replaces_it() {
     // what the engine plays when the wider search never finishes. WAC.021 is
-    // answered with d2c3 at depth eight. At depth nine d2h6 reaches beta and
-    // is reported as a floor at 69,845 nodes, and again at 71,941 and 75,109
-    // as the window widens, and the search finishes at 97,698. A budget
-    // inside that is interrupted before anything beats alpha, so the floor
+    // answered with d2c3 at depth nine. At depth ten d2h6 reaches beta and
+    // is reported as a floor at 98,927 nodes, and again at 101,499 and
+    // 105,413 as the window widens, and the search finishes at 129,495. A
+    // budget inside that is interrupted before anything beats alpha, so the floor
     // is what is left to answer with; with the floor not held it answers
     // d2c3, the move the search has just shown worse
     let mut s = Session::start(&[]);
     s.say(&format!("position fen {}", WAC_021));
-    s.say("go nodes 85000");
+    s.say("go nodes 115000");
     let answer = s.wait_for(|l| l.starts_with("bestmove"));
     let best = answer
         .strip_prefix("bestmove ")

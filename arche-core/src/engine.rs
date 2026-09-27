@@ -67,10 +67,14 @@ const NULL_MOVE_MIN_DEPTH: u8 = NULL_MOVE_REDUCTION + 1;
 // does not touch to be read against.
 const NULL_MOVE_DEPTH_DIVISOR: u8 = 6;
 // How far the static evaluation must stand above beta to buy one more ply
-// of reduction: a ply for every two pawns of clearance. The residual
-// sampler's split at this margin (ba921e1) supports the direction of the
-// bet, not its size.
-const NULL_MOVE_EVAL_UNIT: Score = 200;
+// of reduction. The residual sampler's split (ba921e1) supports the
+// direction of the bet and not its size. Over the bench suite at depth
+// nine, on 0.4.6 and on the evaluation refitted with the pair term
+// (6ce33d3), every pass that failed high on a node the reference put under
+// beta stood less than 75 over beta, and none that took an extra ply was
+// wrong. Whether a pass stays right with one more ply is not measured, so
+// a pawn and a half is a guess in that direction for games to test.
+const NULL_MOVE_EVAL_UNIT: Score = 150;
 // The most plies the margin alone may add. Past three the pass proves
 // almost nothing, whatever the margin says.
 const NULL_MOVE_EVAL_CAP: u8 = 3;
@@ -2814,9 +2818,9 @@ mod search {
     use super::Board;
     use super::Engine;
     use super::{
-        Limits, MAX_PLY, NULL_MOVE_MIN_DEPTH, NULL_MOVE_REDUCTION, Play, RootBounds, Score,
-        ScoreBound, SearchConfig, SearchOutcome, SearchParameters, SearchResult, TaintPolicy,
-        Value, null_move_reduction,
+        Limits, MAX_PLY, NULL_MOVE_EVAL_UNIT, NULL_MOVE_MIN_DEPTH, NULL_MOVE_REDUCTION, Play,
+        RootBounds, Score, ScoreBound, SearchConfig, SearchOutcome, SearchParameters, SearchResult,
+        TaintPolicy, Value, null_move_reduction,
     };
     use crate::board::{fens, fens::SHARP_MIDDLEGAME, play_named};
     use crate::late_move::{
@@ -4534,8 +4538,20 @@ mod search {
         // `depth - 1 - r` is unsigned at the call site, so every depth a
         // pass is offered at is held to leaving it a number
         let adaptive = SearchConfig::default();
+        let unit = NULL_MOVE_EVAL_UNIT;
         for depth in NULL_MOVE_MIN_DEPTH..=u8::MAX {
-            for eval_beta in [0, 1, 199, 200, 399, 400, 599, 600, 5_000, Score::MAX] {
+            for eval_beta in [
+                0,
+                1,
+                unit - 1,
+                unit,
+                2 * unit - 1,
+                2 * unit,
+                3 * unit - 1,
+                3 * unit,
+                5_000,
+                Score::MAX,
+            ] {
                 let r = null_move_reduction(adaptive, depth, eval_beta);
                 assert!(
                     r < depth,
@@ -4581,17 +4597,18 @@ mod search {
     }
 
     #[test]
-    fn the_margin_term_steps_every_two_pawns_and_stops_at_its_cap() {
+    fn the_margin_term_steps_every_unit_and_stops_at_its_cap() {
         // at depth 18 the clamp cannot reach and the depth term gives 5
         let deep = 18;
+        let unit = NULL_MOVE_EVAL_UNIT;
         for (eval_beta, expected) in [
             (0, 5),
-            (199, 5),
-            (200, 6),
-            (399, 6),
-            (400, 7),
-            (599, 7),
-            (600, 8),
+            (unit - 1, 5),
+            (unit, 6),
+            (2 * unit - 1, 6),
+            (2 * unit, 7),
+            (3 * unit - 1, 7),
+            (3 * unit, 8),
             (5_000, 8),
             (Score::MAX, 8),
         ] {
@@ -4608,7 +4625,7 @@ mod search {
         // the clamp leaves the reduced search at depth zero, quiescence
         for (depth, expected) in [(3, 2), (4, 3), (5, 4), (6, 5), (7, 6), (8, 6)] {
             assert_eq!(
-                null_move_reduction(SearchConfig::default(), depth, 600),
+                null_move_reduction(SearchConfig::default(), depth, 3 * NULL_MOVE_EVAL_UNIT),
                 expected,
                 "depth {depth} at the cap's margin"
             );
