@@ -209,16 +209,11 @@ impl<T: Engine, W: Write> UCI<T, W> {
         }
     }
 
-    /// Handles one line, returning false on `quit`. A `go` is bracketed so
-    /// the reader thread answers `isready` itself while it runs.
+    /// Handles one line, returning false on `quit`.
     fn dispatch(&mut self, line: &str, control: &SessionControl) -> bool {
         match first_word(line) {
             "quit" => return false,
-            "go" => {
-                control.began_searching();
-                self.parse_go(line, control);
-                control.answered();
-            }
+            "go" => self.parse_go(line, control),
             // taken in silence, since the protocol allows a stop at any
             // moment. The reader has already raised the flag
             "stop" => control.stop_dispatched(),
@@ -458,6 +453,9 @@ impl<T: Engine, W: Write> UCI<T, W> {
         if go.holds_its_answer() {
             control.wait_for_stop();
         }
+        // before the bestmove, which an interface may follow at once with a
+        // setoption and an isready the loop has to answer after it
+        control.answered();
         match outcome {
             SearchOutcome::Complete(result, _) | SearchOutcome::Aborted(Some(result)) => {
                 self.say(format_args!("bestmove {}", result.best_move));
@@ -2297,6 +2295,23 @@ go depth 3
             "the search had already answered: {}",
             said
         );
+        driven.type_line("stop");
+        driven.wait_for("bestmove");
+        driven.finish();
+    }
+
+    /// The perft holds the loop, so the isready is read before the go it
+    /// follows is dispatched. An interface waits for the readyok before it
+    /// sends the stop, so an isready queued behind the go is never reached.
+    #[test]
+    fn an_isready_read_before_its_go_is_dispatched_is_answered() {
+        let driven = Driven::searching();
+        driven.type_line("position startpos");
+        driven.type_line("perft 4");
+        driven.type_line("go infinite");
+        driven.type_line("isready");
+        let said = driven.wait_for("readyok");
+        assert!(!said.contains("bestmove"), "{}", said);
         driven.type_line("stop");
         driven.wait_for("bestmove");
         driven.finish();
