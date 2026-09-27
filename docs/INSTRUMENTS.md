@@ -754,3 +754,60 @@ does not sweep sizes itself.
 The audit costs eight bytes an entry, half the table's own size again, and
 refuses to run rather than run unaudited if the memory is not there. An audited
 run and a plain one search the same tree, which the node counts show.
+
+## What the hot functions are asked
+
+The other instruments sample decisions. `arche trace` records the calls the
+search makes of its hot functions, with their inputs, so that a question about
+what those functions are asked (how often the same attack set is worked out
+twice, how much of an ordering a node reads) is answered from what the search
+did rather than argued.
+
+```
+cargo build --release --features trace
+target/release/arche trace [depth] [every <n>] [window <plies>] [cap <n>] [epd <file>] [out <dir>]
+```
+
+The hooks exist only in a build with the `trace` feature. Without it they
+compile to nothing, and the bench runs the same instructions as a build that
+never had them (cachegrind over the full bench read 121 more out of
+12,355,254,497 when the feature was added, which is the clock reads' noise).
+A build without the feature refuses the word.
+
+It searches the bench's suite, or the file named, under the default
+configuration and the bench's table, and numbers every node it enters in visit
+order. About one node in `every` (sixty four by default) is sampled by a hash
+of that number, and so are the nodes up to `window` levels below one, so a
+child's calls can be set beside its parent's. A level is a node entered, not
+always a move: a full width node at depth zero enters quiescence on the same
+position, and the two are parent and child here.
+Recording stops, and the search carries on, when a stream reaches `cap`
+records. Recording changes nothing: `recording_leaves_the_measured_search_where_it_was`
+in `arche-core/src/trace.rs` asserts the node counts.
+
+Three streams are written to `out` (`trace` by default), each a file of fixed
+width little endian records behind a 24 byte header, with `manifest.json`
+beside them:
+
+- `nodes`: each sampled node's number, its parent's, the suite position, the
+  kind (root, full width, quiescence), ply, depth, and the position itself.
+- `sliders`: every magic probe made while a sampled node is being searched:
+  the node, the call site, the direction, the square, the occupancy under the
+  square's blocker mask (all the probe reads) and the attack set.
+- `attacks`: every `attackers_to`, which the search reaches only through the
+  checkers recompute inside `make_move`.
+
+A call site is the line that made the call, found by `track_caller` through
+the board's helpers, so a probe `see` makes through `sliders_onto` is
+attributed to `see`. The manifest lists each site's file, line and column. A
+probe made inside `make_move` is attributed to the node that made the move,
+though the board is by then the child's. Trace a release build: a debug one
+adds the probes its assertions make.
+
+`scripts/trace/read.py` reads a directory's streams into numpy arrays and
+checks the headers against the manifest. `scripts/trace/replay.py` recomputes
+every probe by walking the rays from its recorded inputs, and checks every
+recorded position is a board. It is written from the rules rather than from
+the engine's tables, so a record missing an input fails it. At `every 16` the
+full bench took 3.5 seconds and wrote 752,268 nodes and 7,581,731 probes (315
+MB), and every probe replayed.

@@ -11,6 +11,7 @@ use arche_core::Board;
 use std::process::ExitCode;
 
 /// The arguments that take words, in usage order.
+#[cfg(not(feature = "trace"))]
 const COMMANDS: [&Command; 6] = [
     &uci::BENCH,
     &instruments::RESIDUALS,
@@ -18,6 +19,17 @@ const COMMANDS: [&Command; 6] = [
     &instruments::REDUCTIONS,
     &instruments::EFFORT,
     &instruments::TERMS,
+];
+/// The same, with the trace mode a build with its feature carries.
+#[cfg(feature = "trace")]
+const COMMANDS: [&Command; 7] = [
+    &uci::BENCH,
+    &instruments::RESIDUALS,
+    &instruments::CUTOFFS,
+    &instruments::REDUCTIONS,
+    &instruments::EFFORT,
+    &instruments::TERMS,
+    &instruments::TRACE,
 ];
 
 /// The column the summaries start at.
@@ -116,6 +128,28 @@ fn main() -> ExitCode {
         ),
         Some("effort") => answer("effort", instruments::effort_settings(&params), |s| s.run()),
         Some("terms") => answer("terms", instruments::term_settings(&params), |s| s.run()),
+        #[cfg(feature = "trace")]
+        Some("trace") => match instruments::trace_settings(&params) {
+            Ok(settings) => match arche_core::trace::run(&settings) {
+                Ok(report) => {
+                    print!("{}", report);
+                    ExitCode::SUCCESS
+                }
+                Err(e) => {
+                    eprintln!("trace: {}", e);
+                    ExitCode::from(1)
+                }
+            },
+            Err(what) => {
+                eprintln!("unrecognised trace {}", what);
+                ExitCode::from(2)
+            }
+        },
+        #[cfg(not(feature = "trace"))]
+        Some("trace") => {
+            eprintln!("trace: this build has no trace mode; build it with --features trace");
+            ExitCode::from(2)
+        }
         Some("--version" | "-V") => {
             println!("{} {}", env!("CARGO_PKG_NAME"), env!("CARGO_PKG_VERSION"));
             ExitCode::SUCCESS
@@ -168,8 +202,8 @@ mod tests {
 
     /// Every command beside its settings reader. Written out, because the
     /// dispatch in `main` runs the report rather than returning settings.
-    fn readers() -> [(&'static Command, Reader); 6] {
-        [
+    fn readers() -> Vec<(&'static Command, Reader)> {
+        vec![
             (&uci::BENCH, |p| uci::bench_settings(p).map(|_| ())),
             (&instruments::RESIDUALS, |p| {
                 instruments::residual_settings(p).map(|_| ())
@@ -185,6 +219,10 @@ mod tests {
             }),
             (&instruments::TERMS, |p| {
                 instruments::term_settings(p).map(|_| ())
+            }),
+            #[cfg(feature = "trace")]
+            (&instruments::TRACE, |p| {
+                instruments::trace_settings(p).map(|_| ())
             }),
         ]
     }
@@ -223,6 +261,8 @@ mod tests {
         assert!(instruments::reduction_settings(&Params::of(instruments::REDUCTIONS.name)).is_ok());
         assert!(instruments::effort_settings(&Params::of(instruments::EFFORT.name)).is_ok());
         assert!(instruments::term_settings(&Params::of(instruments::TERMS.name)).is_ok());
+        #[cfg(feature = "trace")]
+        assert!(instruments::trace_settings(&Params::of(instruments::TRACE.name)).is_ok());
     }
 
     #[test]

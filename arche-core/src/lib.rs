@@ -21,6 +21,8 @@ pub mod reduction;
 pub mod residual;
 pub mod strategy;
 pub mod tactics;
+#[cfg(feature = "trace")]
+pub mod trace;
 mod transposition;
 pub mod tune;
 mod value;

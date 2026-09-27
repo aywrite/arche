@@ -246,6 +246,12 @@ impl<const ATTACKS: usize, const LEN: usize> SliderTables<ATTACKS, LEN> {
         }
     }
 
+    /// The part of `occupied` a probe from `square` reads.
+    #[cfg(feature = "trace")]
+    fn relevant(&self, square: u8, occupied: u64) -> u64 {
+        occupied & self.blocker_masks[square as usize]
+    }
+
     #[inline]
     fn attacks(&self, square: u8, occupied: u64) -> u64 {
         let i = square as usize;
@@ -269,13 +275,33 @@ impl Magic {
     }
 
     #[inline]
+    #[cfg_attr(feature = "trace", track_caller)]
     pub fn get_straight_move(&self, square: u8, mask: u64) -> u64 {
-        self.straight.attacks(square, mask)
+        let moves = self.straight.attacks(square, mask);
+        #[cfg(feature = "trace")]
+        crate::trace::slider(
+            std::panic::Location::caller(),
+            true,
+            square,
+            self.straight.relevant(square, mask),
+            moves,
+        );
+        moves
     }
 
     #[inline]
+    #[cfg_attr(feature = "trace", track_caller)]
     pub fn get_diagonal_move(&self, square: u8, mask: u64) -> u64 {
-        self.diagonal.attacks(square, mask)
+        let moves = self.diagonal.attacks(square, mask);
+        #[cfg(feature = "trace")]
+        crate::trace::slider(
+            std::panic::Location::caller(),
+            false,
+            square,
+            self.diagonal.relevant(square, mask),
+            moves,
+        );
+        moves
     }
 }
 

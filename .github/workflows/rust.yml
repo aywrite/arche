@@ -67,6 +67,18 @@ jobs:
     - name: Run clippy with the pair term on
       run: cargo clippy --workspace --locked --all-targets --features machine-test -- -D warnings
 
+  # the trace mode's hooks exist only with its feature, so nothing else here
+  # compiles them
+  test-trace:
+    runs-on: ubuntu-latest
+    steps:
+    - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+    - uses: Swatinem/rust-cache@6323deb102c322ba6fcbdcafc7e3dddab59af2b6 # v2.9.2
+    - name: Run tests with the trace mode built
+      run: cargo test --workspace --locked --release --features trace
+    - name: Run clippy with the trace mode built
+      run: cargo clippy --workspace --locked --all-targets --features trace -- -D warnings
+
   # The tactical and the strategic suites, gating, on one platform: a fixed
   # depth and table make their totals exact on any machine, and twenty seconds
   # or more of searching is not worth paying three times over a matrix that
