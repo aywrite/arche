@@ -12,7 +12,7 @@
 //! with the channel filled up front.
 
 use std::io::Write;
-use std::sync::atomic::{AtomicBool, Ordering};
+use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
 use std::sync::mpsc::{Receiver, Sender, channel};
 use std::sync::{Arc, Mutex, PoisonError};
 use std::thread;
@@ -78,7 +78,13 @@ pub(crate) fn first_word(line: &str) -> &str {
 /// What the reader thread and the session loop share.
 #[derive(Clone)]
 pub(crate) struct SessionControl {
-    searching: Arc<AtomicBool>,
+    /// The `go`s the reader has read, and those the loop has answered. A
+    /// go is searching from the moment it is read, since an `isready` read
+    /// behind it would otherwise queue behind a search that holds its
+    /// answer for a stop. Counted, where one flag would be lowered by the
+    /// first of two queued gos while the second is still to run.
+    gos_read: Arc<AtomicU64>,
+    gos_answered: Arc<AtomicU64>,
     /// Up while a `stop` has been read that the loop has not dispatched. A
     /// stop reaches the loop after the `go` it follows, so a search sees the
     /// flag up exactly when a stop sent after its `go` has been read. One
@@ -106,7 +112,8 @@ struct Stops {
 impl SessionControl {
     fn for_this_thread() -> Self {
         Self {
-            searching: Arc::new(AtomicBool::new(false)),
+            gos_read: Arc::new(AtomicU64::new(0)),
+            gos_answered: Arc::new(AtomicU64::new(0)),
             stop: Arc::new(AtomicBool::new(false)),
             stops: Arc::new(Mutex::new(Stops::default())),
             attended: true,
@@ -122,16 +129,19 @@ impl SessionControl {
         }
     }
 
-    pub(crate) fn searching(&self) -> bool {
-        self.searching.load(Ordering::Acquire)
+    /// Whether a go read has yet to be answered. A go counts as answered
+    /// just before its bestmove is written, so an `isready` sent after the
+    /// bestmove is passed on to the loop.
+    fn searching(&self) -> bool {
+        self.gos_answered.load(Ordering::Acquire) < self.gos_read.load(Ordering::Acquire)
     }
 
-    pub(crate) fn began_searching(&self) {
-        self.searching.store(true, Ordering::Release);
+    fn go_read(&self) {
+        self.gos_read.fetch_add(1, Ordering::Release);
     }
 
     pub(crate) fn answered(&self) {
-        self.searching.store(false, Ordering::Release);
+        self.gos_answered.fetch_add(1, Ordering::Release);
     }
 
     fn stops(&self) -> std::sync::MutexGuard<'_, Stops> {
@@ -212,7 +222,8 @@ pub(crate) fn report_panics_to<W: Write + Send + 'static>(out: SharedWriter<W>) 
     }));
 }
 
-/// The reader thread. It answers `isready` during a search and passes every
+/// The reader thread. It answers `isready` while a go it has read is
+/// unanswered, whether or not the loop has begun it, and passes every
 /// other line on in order. Nothing is dropped: a `position` thrown away would
 /// leave the interface and the engine silently on different games.
 fn read_ahead<I, W>(input: I, mut out: W, control: &SessionControl, lines: Sender<String>)
@@ -232,6 +243,7 @@ where
         match first_word(&line) {
             // passed on as well, since the search still owes a bestmove
             "stop" | "quit" => control.ask_to_stop(),
+            "go" => control.go_read(),
             "isready" if control.searching() => {
                 let _ = writeln!(out, "readyok");
                 continue;
@@ -300,6 +312,21 @@ mod tests {
         assert!(up(&control), "the first stop's dispatch spent the second");
         control.stop_dispatched();
         assert!(!up(&control), "a spent stop would reach the next search");
+    }
+
+    /// No loop runs here, so the go is still queued when the isready is
+    /// read. Passed on, the isready would wait behind a search that holds
+    /// its answer for a stop the interface will not send until it is ready.
+    #[test]
+    fn an_isready_read_behind_a_queued_go_is_answered_by_the_reader() {
+        let control = SessionControl::for_this_thread();
+        let (sender, lines) = channel();
+        let mut said = Vec::new();
+        let input = ["go infinite", "isready"].map(|line| Ok(line.to_string()));
+        read_ahead(input.into_iter(), &mut said, &control, sender);
+        assert_eq!(String::from_utf8(said).unwrap(), "readyok\n");
+        let passed: Vec<String> = lines.into_iter().collect();
+        assert_eq!(passed, ["go infinite", "quit"]);
     }
 
     #[test]
