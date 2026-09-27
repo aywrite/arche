@@ -77,6 +77,40 @@ pub const CUTOFFS: Command = Command {
     ],
 };
 
+/// Taken in every build and refused at run time in one without the trace
+/// feature, which is where its hooks are compiled in.
+pub const TRACE: Command = Command {
+    name: "trace",
+    depth: true,
+    keywords: &[
+        Keyword {
+            word: "every",
+            value: "<n>",
+        },
+        Keyword {
+            word: "window",
+            value: "<plies>",
+        },
+        Keyword {
+            word: "cap",
+            value: "<n>",
+        },
+        Keyword {
+            word: "epd",
+            value: "<file>",
+        },
+        Keyword {
+            word: "out",
+            value: "<dir>",
+        },
+    ],
+    flags: &[],
+    summary: &[
+        "search the bench's suite, or the one named, and record",
+        "what the hot functions are asked (built with --features trace)",
+    ],
+};
+
 pub const REDUCTIONS: Command = Command {
     name: "reductions",
     depth: true,
@@ -400,6 +434,42 @@ impl TermSettings {
     pub fn run(&self) -> tune::Report {
         tune::run(&self.positions, self.epd.as_deref())
     }
+}
+
+/// What a trace argument asked for. The output directory defaults to
+/// `trace` under the working directory.
+#[cfg(feature = "trace")]
+pub fn trace_settings(params: &Params) -> Result<arche_core::trace::Settings, String> {
+    use arche_core::trace;
+    let depth = TRACE.depth(params, bench::DEPTH)?;
+    let every = params
+        .parse::<u64>("every")
+        .or_refuse("every")?
+        .unwrap_or(trace::DEFAULT_EVERY);
+    let window = params
+        .parse::<u8>("window")
+        .or_refuse("window")?
+        .unwrap_or(trace::DEFAULT_WINDOW);
+    let cap = params
+        .parse::<u64>("cap")
+        .or_refuse("cap")?
+        .unwrap_or(trace::DEFAULT_CAP);
+    let out = params
+        .value("out")
+        .or_refuse("out")?
+        .unwrap_or("trace")
+        .into();
+    let (epd, positions) = suite(params)?;
+    TRACE.claim(params)?;
+    Ok(trace::Settings {
+        depth,
+        every,
+        window,
+        cap,
+        out,
+        epd,
+        positions,
+    })
 }
 
 #[cfg(test)]

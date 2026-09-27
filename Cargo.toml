@@ -49,6 +49,8 @@ license = "GPL-3.0-or-later"
 # session tests here run against the same build.
 [features]
 machine-test = ["arche-core/machine-test"]
+# The trace mode, `arche trace`, which a build that plays leaves out.
+trace = ["arche-core/trace"]
 
 [dependencies]
 arche-core = { path = "./arche-core" }
