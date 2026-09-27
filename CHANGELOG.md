@@ -2,6 +2,83 @@
 
 All notable changes to this project will be documented in this file.
 
+## [0.4.7] - 2026-09-27
+
+### Features
+
+- *(eval)* Add a factorization machine term, off at rank 0 [bench 6810240]
+- *(eval)* Refit every weight but material jointly on 59,049 games [bench 6375981]
+- *(eval)* Turn on the factorization machine at rank 16 with its fitted table [bench 6173942] [elo +95 ±19 (1000 games, 10+0.1, vs 8acbbc0)]
+- *(search)* Refit the late move pruning model on game positions [bench 6407589] [elo +0 ±7 (sprt [-10, 0] passed, 4500 games, 10+0.1, vs e77fd54)]
+
+### Bug Fixes
+
+- *(uci)* Match option names ignoring case
+- *(search)* Print the searched count the gate read on the ledger's skipped rows [bench 6900228]
+- *(board)* Say why a move in a position line cannot be played [bench 6900228]
+- *(uci)* Refuse a setting keyword typed without its value
+- *(search)* Refuse reverse futility and the null move at every open window [elo +2 ±9 (sprt [-10, 0] passed, 3000 games, 10+0.1, vs ec3d213)] [bench 6810240]
+- *(uci)* Count stops so a stop read early reaches its own search
+
+### Performance
+
+- *(search)* Skip SEE for the quiescence captures the delta test drops [bench 6900228] [speed +1.8% (bench nps, 95% interval +0.4% to +3.5%, 15 interleaved rounds vs bfc5143)]
+- *(search)* Guard mate distance pruning on a mated alpha or a mating beta [bench 6900228] [speed -1.4% (bench nps, 95% interval -3.3% to +0.8%, 15 interleaved rounds vs c94b6a1)]
+
+### Refactor
+
+- *(search)* Skip the table's move by its place rather than comparing every move [bench 6900228]
+- *(search)* Derive the quiet run from the counts the ordering made [bench 6900228] [elo +13 ±15 (sprt [-10, 0] passed, 1000 games, 10+0.1, vs d379bc8f)]
+- *(board)* Answer gives_check from a per node table of checking squares [bench 6900228]
+- *(search)* Order the quiets lazily, sorting only what the loop reads [bench 6900228]
+- *(magic)* Take the probe's bounds check off with a power of two mask [bench 6900228]
+- *(magic)* Build the magic tables without the long const evaluation warning [bench 6900228]
+- *(search)* Give mate distance pruning a function of its own [bench 6900228]
+
+### Documentation
+
+- *(search)* Record what the mate distance pruning match measured
+- *(search)* Record the game batch for the skip at depth three
+- *(search)* Correct three stale comments on the table, the quiet ordering and the late move count [bench 6900228]
+- *(search)* Shorten the comments on pruning, ordering, the table and the limits [bench 6810240]
+- *(eval)* Shorten the comments on the board, move generation and evaluation [bench 6810240]
+- *(uci)* Shorten the comments on the protocol, the session and time control
+- *(search)* Shorten the comments in the search [bench 6810240]
+- *(eval)* Shorten the pair term's and the refit's comments to the sweep's standard [bench 6407589]
+
+### Development
+
+- *(ci)* Point the match sections at mache where they repeat its readme
+- *(deps)* Bump taiki-e/install-action in the actions group
+- *(release)* Move the gauntlet up to bracket 2800 and add Weiss 1.0 and Stash 25.0
+- *(bench)* Move the effort switch table onto the search configuration
+- *(release)* Correct the 40/15 ladder's comparison with the blitz panel
+- *(search)* Hold the reverse futility margin above its mate boundary with a test that fails [bench 6900228]
+- *(bench)* Let the effort instrument turn two switches off at once
+- *(bench)* Report speed as a paired Hodges-Lehmann estimate with a 95% interval
+- *(bench)* Run a speed round again when the machine was loaded for it
+- *(bench)* Count the bench's instructions under cachegrind beside the speed
+- *(bench)* Discard a warmup bench per side before the speed rounds
+- *(bench)* Add --cpu to pin the speed benches to chosen cpus
+- *(bench)* Name the runner in the speed comment and turn the round rerun off
+- *(bench)* Show the mean of each side's faster half in the speed report
+- *(bench)* Run each speed round on a code layout of its own
+- *(bench)* Measure the speed job over forty shuffled layouts
+- *(ci)* Shorten the comments in the workflows and match scripts
+- *(bench)* Shorten the comments on the instruments
+- *(docs)* Shorten the documentation and correct what had drifted
+- *(search)* Hold the beta mate exemptions with an ordinary alpha [bench 6810240]
+- *(search)* Give the ledger's skipped fixtures the searched count it prints [bench 6810240]
+- *(search)* Drop the switch guard and tighten three search tests [bench 6810240]
+- *(uci)* Refuse an unreadable effort setting and drop a repeated test
+- *(ci)* Close four gaps in the workflow and script tests
+- *(ci)* Report the in-game nodes a second in the strength summary
+- *(eval)* Run the factorization machine at rank 8 under a test feature
+- *(ci)* Test the evaluation's pair term at its test rank
+- *(eval)* Correct what the pair term's tests and comments say about it [bench 6407589]
+- *(docs)* Describe the pair term where the documentation still missed it
+- *(release)* Move the blitz and 40/15 gauntlets up to bracket 2870 and 2800
+
 ## [0.4.6] - 2026-09-23
 
 Corrections to this section, written by hand after it was generated. The
