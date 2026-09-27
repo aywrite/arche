@@ -122,6 +122,97 @@ def check_nodes(directory, report):
     return len(records), bad
 
 
+SEE_VALUES = [100, 300, 300, 500, 900, 10_000]
+KNIGHT = [(1, 2), (2, 1), (2, -1), (1, -2), (-1, -2), (-2, -1), (-2, 1), (-1, 2)]
+KING = [(1, 0), (1, 1), (0, 1), (-1, 1), (-1, 0), (-1, -1), (0, -1), (1, -1)]
+
+
+def steps(square, offsets):
+    file, rank = square % 8, square // 8
+    out = 0
+    for df, dr in offsets:
+        f, r = file + df, rank + dr
+        if 0 <= f < 8 and 0 <= r < 8:
+            out |= 1 << (r * 8 + f)
+    return out
+
+
+def attackers(square, occupied, pieces, white, black):
+    """Every piece of either colour bearing on `square` through `occupied`."""
+    pawns, knights, bishops, rooks, queens, kings = pieces
+    # a white pawn attacks upwards, so the white pawns that bear on a square
+    # stand one rank below it, and the black ones one rank above
+    white_pawns = steps(square, [(-1, -1), (1, -1)]) & white & pawns
+    black_pawns = steps(square, [(-1, 1), (1, 1)]) & black & pawns
+    found = white_pawns | black_pawns
+    found |= steps(square, KNIGHT) & knights
+    found |= steps(square, KING) & kings
+    found |= rays(square, occupied, DIAGONAL) & (bishops | queens)
+    found |= rays(square, occupied, STRAIGHT) & (rooks | queens)
+    return found & occupied
+
+
+def see(node, swap):
+    """The swap on the recorded position, from the rules: the least valuable
+    attacker recaptures in turn, sliders behind joining as the line opens,
+    a promotion counted as the pawn, en passant lifting the pawn it takes,
+    and the fold letting either side stop."""
+    pieces = [int(p) for p in node["pieces"]]
+    white, black = int(node["white"]), int(node["black"])
+    side_white = int(node["side"]) == 1
+    src, dst = int(swap["from"]), int(swap["to"])
+    gain = [SEE_VALUES[int(swap["victim"])]]
+    occupied = (white | black) & ~(1 << src)
+    if swap["en_passant"]:
+        taken = dst - 8 if side_white else dst + 8
+        occupied &= ~(1 << taken)
+    on_square = int(swap["attacker"])
+    mover_white = not side_white
+    while True:
+        side_mask = white if mover_white else black
+        found = attackers(dst, occupied, pieces, white, black) & side_mask
+        if not found:
+            break
+        for kind in range(6):
+            subset = found & pieces[kind]
+            if subset:
+                bit = subset & -subset
+                break
+        gain.append(SEE_VALUES[on_square] - gain[-1])
+        if on_square == 5:
+            break
+        occupied &= ~bit
+        on_square = kind
+        mover_white = not mover_white
+    while len(gain) > 1:
+        go_on = gain.pop()
+        gain[-1] = -max(-gain[-1], go_on)
+    return gain[0]
+
+
+def check_swaps(directory, report):
+    """Every swap recomputed on its node's recorded position. The ordering
+    runs before the node makes a move, so the position is the node's."""
+    swaps = stream(directory, "swaps")
+    nodes = stream(directory, "nodes")
+    by_node = {int(n["node"]): n for n in nodes}
+    bad = 0
+    missing = 0
+    for i, s in enumerate(swaps):
+        node = by_node.get(int(s["node"]))
+        if node is None:
+            missing += 1
+            continue
+        expected = see(node, s)
+        if expected != int(s["see"]):
+            bad += 1
+            report(
+                f"swaps record {i}: node {int(s['node'])} {int(s['from'])}->{int(s['to'])}, "
+                f"recorded {int(s['see'])}, the rules give {expected}"
+            )
+    return len(swaps), missing, bad
+
+
 def check_attacks(directory, report):
     records = stream(directory, "attacks")
     bad = int(np.count_nonzero(records["result"] & ~records["occupied"]))
@@ -151,9 +242,13 @@ def main(argv):
     print(f"nodes    {nodes:>12} records, {bad_nodes} not boards")
     attacks, bad_attacks = check_attacks(directory, report)
     print(f"attacks  {attacks:>12} records, {bad_attacks} inconsistent")
+    swaps, missing, bad_swaps = check_swaps(directory, report)
+    print(
+        f"swaps    {swaps:>12} records, {bad_swaps} disagree, {missing} with no node record"
+    )
     for line in shown:
         print(line)
-    return 1 if bad_sliders or bad_nodes or bad_attacks else 0
+    return 1 if bad_sliders or bad_nodes or bad_attacks or bad_swaps or missing else 0
 
 
 if __name__ == "__main__":

@@ -1604,13 +1604,19 @@ impl AlphaBeta {
             }
         }
         // no memories here: they say nothing about captures or evasions
+        #[cfg(feature = "trace")]
+        crate::trace::list_begin();
         let Ordered { front, .. } = self.ordering.order(&self.board, &mut moves, pv_play, None);
+        #[cfg(feature = "trace")]
+        crate::trace::ordered(&moves, pv_play);
 
         // quiescence never reads a draw itself, but a probe trusting
         // tainted scores can cut on one inside a capture tree
         let mut taint = Taint::default();
         let mut found_legal_move = false;
         for (i, m) in moves.iter().enumerate() {
+            #[cfg(feature = "trace")]
+            crate::trace::reached(i, m);
             // two skips the reference does not make. A promotion is exempt
             // because the swap prices the arriving piece as the pawn that
             // left, and an evasion because a side in check has no standing
@@ -1645,6 +1651,8 @@ impl AlphaBeta {
                 }
                 if score > alpha {
                     if score >= beta {
+                        #[cfg(feature = "trace")]
+                        crate::trace::cutoff(i, m);
                         let value = taint.stamp(score);
                         if self.keeps(value) {
                             let landed =
@@ -2075,11 +2083,15 @@ impl AlphaBeta {
             self.board.generate_moves()
         };
         let ply = self.memory_ply();
+        #[cfg(feature = "trace")]
+        crate::trace::list_begin();
         let Ordered {
             front,
             table_at,
             losing,
         } = self.ordering.order(&self.board, &mut moves, pv_play, ply);
+        #[cfg(feature = "trace")]
+        crate::trace::ordered(&moves, pv_play);
         // the place the loop passes over, since the table's move was searched
         // above. `order` sorts by `pv_play` and the search played
         // `tt_tried`, which differ when `is_pseudo_legal` refused the move
@@ -2159,6 +2171,8 @@ impl AlphaBeta {
                 continue;
             }
             let m = &moves[i];
+            #[cfg(feature = "trace")]
+            crate::trace::reached(i, m);
             if tt_at == Some(i) {
                 debug_assert_eq!(tt_tried, Some(*m), "the place is not the table's move");
                 if tt_searched {
@@ -2274,6 +2288,8 @@ impl AlphaBeta {
             }
             if score > alpha {
                 if score >= beta {
+                    #[cfg(feature = "trace")]
+                    crate::trace::cutoff(i, m);
                     // before the cutoff teaches the memories
                     if self.census.is_some() {
                         self.census_event(
@@ -2448,7 +2464,11 @@ impl AlphaBeta {
         // debug assertion in `order` holds the table's move at the head
         let pv_play = self.transpositions.ordering_play(&self.board);
         let mut moves = self.board.generate_moves();
+        #[cfg(feature = "trace")]
+        crate::trace::list_begin();
         self.ordering.order(&self.board, &mut moves, pv_play, None);
+        #[cfg(feature = "trace")]
+        crate::trace::ordered(&moves, pv_play);
 
         // the root reduces nothing
         for m in &moves {
