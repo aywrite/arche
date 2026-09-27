@@ -1555,6 +1555,16 @@ impl AlphaBeta {
         // delivered by a capture searched here. Fail soft.
         let mut best = Score::MIN + 1;
         let in_check = self.board.in_check();
+        // a stalemate is not in check, so standing pat would read it as the
+        // eval. Only a side with nothing but pawns and a king is asked: a
+        // piece almost always has a move, and where the king test fails the
+        // answer costs a move generation
+        if !in_check
+            && !self.board.has_non_pawn_material()
+            && !self.board.has_legal_move_out_of_check()
+        {
+            return Ok(Value::clean(0));
+        }
         let standing = if in_check { None } else { Some(self.eval()) };
         if let Some(score) = standing {
             if score >= beta {
@@ -1604,7 +1614,7 @@ impl AlphaBeta {
         // no memories here: they say nothing about captures or evasions
         let Ordered { front, .. } = self.ordering.order(&self.board, &mut moves, pv_play, None);
 
-        // quiescence never reads a draw itself, but a probe trusting
+        // quiescence reads no draw by rule itself, but a probe trusting
         // tainted scores can cut on one inside a capture tree
         let mut taint = Taint::default();
         let mut found_legal_move = false;
@@ -3256,11 +3266,9 @@ mod search {
         assert_ne!(format!("{}", result.best_move), "a1a8");
     }
 
-    // Quiescence stands pat without asking whether the side to move has a
-    // move, so a stalemate at the horizon is read as its static eval rather
-    // than as a draw. The three tests below pin that as it stands. A remedy
-    // changes the tree, is measured in games on its own, and would reverse
-    // them.
+    // A stalemate is not in check, so quiescence would stand pat on it and
+    // read it as the eval. A side with only pawns and a king is asked
+    // whether it has a move first.
 
     /// Black is stalemated and not in check. Qxf7 from
     /// `TAKES_INTO_STALEMATE` reaches this position.
@@ -3270,18 +3278,17 @@ mod search {
     const TAKES_INTO_STALEMATE: &str = "7k/5b2/7K/8/8/8/8/5Q2 w - - 0 1";
 
     #[test]
-    fn a_stalemate_at_the_horizon_is_read_as_its_static_eval() {
+    fn a_stalemate_at_the_horizon_is_scored_as_a_draw() {
         let mut board = Board::from_fen(STALEMATED).unwrap();
         assert!(!board.in_check());
         assert!(!board.has_legal_move());
         let mut e = engine(board);
-        let standing = e.eval();
-        assert!(standing < 0, "{}", standing);
-        assert_eq!(e.quiescence_value(), standing);
+        assert!(e.eval() < 0);
+        assert_eq!(e.quiescence_value(), 0);
     }
 
     #[test]
-    fn a_capture_into_stalemate_is_scored_as_the_material_it_wins() {
+    fn a_capture_into_stalemate_is_not_scored_as_the_material_it_wins() {
         let mut after = Board::from_fen(TAKES_INTO_STALEMATE).unwrap();
         let takes = play_named(&after, "f1f7");
         assert!(after.make_move(&takes));
@@ -3289,25 +3296,47 @@ mod search {
             after.to_fen(),
             Board::from_fen(STALEMATED).unwrap().to_fen()
         );
-        let won = -crate::eval::eval(&after);
 
+        // the capture draws, so white stands pat a queen against a bishop
         let mut e = engine(Board::from_fen(TAKES_INTO_STALEMATE).unwrap());
-        // a draw would leave white standing pat on the queen for the bishop
-        assert!(e.eval() < won);
-        assert_eq!(e.quiescence_value(), won);
+        let standing = e.eval();
+        assert!(standing > 0);
+        assert_eq!(e.quiescence_value(), standing);
     }
 
     #[test]
-    fn a_search_one_ply_short_takes_into_stalemate() {
+    fn a_search_one_ply_short_does_not_take_into_stalemate() {
         let mut e = engine(Board::from_fen(TAKES_INTO_STALEMATE).unwrap());
         let shallow = completed(e.search(1));
-        assert_eq!(format!("{}", shallow.best_move), "f1f7");
-        // a ply more searches the stalemated node full width, which finds
-        // no move and scores the draw, and finds Qa1+ Kg8 Qg7# besides
+        assert_ne!(format!("{}", shallow.best_move), "f1f7");
+        assert!(shallow.score > 0);
+        // a ply more finds Qa1+ Kg8 Qg7#
         let mut e = engine(Board::from_fen(TAKES_INTO_STALEMATE).unwrap());
         let deeper = completed(e.search(2));
-        assert_ne!(format!("{}", deeper.best_move), "f1f7");
         assert_eq!(deeper.checkmate_in(), Some(2));
+    }
+
+    #[test]
+    fn the_king_test_answers_as_playing_the_moves_out_does() {
+        // side to move, none in check
+        let cases = [
+            // the king steps out, so no move is played
+            ("8/8/8/3k4/8/3K4/3P4/8 b - - 0 1", true),
+            // stalemate
+            (STALEMATED, false),
+            // the king is boxed in and the pawn can still push
+            ("7k/5Q2/7K/8/8/8/p7/8 b - - 0 1", true),
+            // boxed in, and the pawn is blocked
+            ("7k/5Q2/7K/8/8/p7/P7/8 b - - 0 1", false),
+            // boxed in, and the pawn's one capture is pinned by the bishop
+            ("7k/4N1p1/6KP/8/8/8/8/B7 b - - 0 1", false),
+        ];
+        for (fen, expected) in cases {
+            let mut board = Board::from_fen(fen).unwrap();
+            assert!(!board.in_check(), "{}", fen);
+            assert_eq!(board.has_legal_move(), expected, "{}", fen);
+            assert_eq!(board.has_legal_move_out_of_check(), expected, "{}", fen);
+        }
     }
 
     #[test]
