@@ -54,8 +54,8 @@ worth doing.
   first mobility fit while covering zero, and the games ranked the two
 - the rest of the uci protocol
   - the only options advertised are `Hash`, the `Clear Hash` button, a `Threads` fixed at
-    one and `Move Overhead`, so everything else an interface might set, `Ponder` among
-    them, is refused rather than acted on
+    one, `Move Overhead` and `Debug Log File`, so everything else an interface might set,
+    `Ponder` among them, is refused rather than acted on
   - `ponderhit`, `debug` and `register` are not handled, so pondering is still out of reach
     even though `stop` is answered now
 - read an opening book in the engine, only the lichess-bot image has one at the moment and it is

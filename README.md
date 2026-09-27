@@ -86,7 +86,8 @@ searches on one thread and says so, so a `Threads` of anything but one is report
 ignored. `setoption name Move Overhead value <milliseconds>` says how much of each budget to
 hold back for the wait between the search answering and the interface having the move. It
 takes 0 to 5000 and starts at 50, which suits an interface on this machine rather than one
-across a network.
+across a network. `setoption name Debug Log File value <path>` appends every line the engine
+reads and says to that file, marked `>>` and `<<`, and an empty value or `<empty>` closes it.
 
 ## Strength
 
