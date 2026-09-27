@@ -49,8 +49,8 @@ pub(crate) const LATE_MOVE_MIN_DEPTH: u8 = LATE_MOVE_REDUCTION + 2;
 // them is scouted shallower. An opening value, not a tuned one.
 pub(crate) const LATE_MOVE_THRESHOLD: usize = 4;
 // How far under alpha a node's static evaluation may stand, per ply to
-// search, and a quiet move still be searched. A pawn a ply, the figure and
-// scale of `REVERSE_FUTILITY_MARGIN`: both bet on how far the static
+// search, and a quiet move still be searched. A pawn a ply, on the scale
+// of `REVERSE_FUTILITY_MARGIN`: both bet on how far the static
 // evaluation can be from the search's answer at the depth left, from
 // opposite bounds. Where the rule starts rather than where a fit put it;
 // only games can say which way it should move.

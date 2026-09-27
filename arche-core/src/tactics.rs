@@ -34,7 +34,7 @@ pub const TABLE_BYTES: usize = 16 * 1024 * 1024;
 /// is the gate. A change that moves it in either direction updates this
 /// number in the same commit, and a change that lowers it says what the
 /// positions were spent on.
-pub const EXPECTED_PASSES: usize = 230;
+pub const EXPECTED_PASSES: usize = 234;
 
 /// The count the suite may not go under, whatever a commit says it meant to
 /// spend.
@@ -87,12 +87,6 @@ pub struct AcceptedLoss {
 /// accepted: the pair term lost five the joint refit had won back
 /// (6ce33d3), and they were left off.
 pub const ACCEPTED_LOSSES: &[AcceptedLoss] = &[
-    AcceptedLoss {
-        id: "WAC.232",
-        why: "depth six answers a6b7 at 19 and the rook trade b8e8 comes \
-              back at depth seven at 311",
-        until: "0.6.0",
-    },
     AcceptedLoss {
         id: "WAC.239",
         why: "depth six answers f2e2 at -61 and f2f1 comes back at depth \

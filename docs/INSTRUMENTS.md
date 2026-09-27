@@ -70,10 +70,10 @@ One kind is not a shortcut. A `shadow_futility` row is a reverse futility
 candidate: a node where every gate but the margin test passed and the
 evaluation stood at or above beta, recorded whether or not the test fired. The
 fired rows alone cannot price a tighter margin, because every one of them stood
-a whole margin above beta. A shadow row claims the same `eval - 100 * depth`
-the live kind does, so on a candidate the margin declined the claim sits below
-beta, and the crossing says whether a margin firing there would have been
-wrong. A node answered from the table never reaches the margin test, so the
+a whole margin above beta. A shadow row claims the same
+`eval - REVERSE_FUTILITY_MARGIN * depth` the live kind does, so on a
+candidate the margin declined the claim sits below beta, and the crossing says
+whether a margin firing there would have been wrong. A node answered from the table never reaches the margin test, so the
 population is conditioned on a table miss, for the shadow as for the live kind.
 
 The run ends with a line for each kind at each depth: the count, the crossings

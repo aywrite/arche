@@ -37,18 +37,22 @@ pub const MAX_PLY: u8 = 128;
 // rail has to leave room for that inside a byte
 const _: () = assert!(MAX_PLY < u8::MAX);
 // How far above beta the static eval has to stand, per ply still to
-// search, for a node to be answered from it: a pawn a ply. The bench
-// prefers a little less (sixty to a hundred and twenty span about five
-// percent of the count, not monotone). The figure is held above the margin
-// at which a depth four mate in two is lost. On the default search that
-// boundary read between eighty five and ninety one while it could be read
-// there; the default's other shortcuts now lose the mate at every margin
-// from sixty to a hundred. With this shortcut alone on the reference the
-// boundary is seventy seven, which
-// the_reverse_futility_margin_keeps_the_depth_four_mate pins. That test
-// guards only a cut below seventy seven, so re-measure before moving the
-// figure. docs/ROADMAP.md has the shadow lane's reading.
-const REVERSE_FUTILITY_MARGIN: Score = 100;
+// search, for a node to be answered from it. It was set at a pawn a ply on
+// the evaluation before the joint refit and the pair term. On the refitted
+// evaluation, over the bench suite at depth nine, the nodes it answered at
+// 100 were wrong (the reference below beta) 1.7 times as often as before,
+// a point estimate whose interval over the suite's roots (0.94 to 5.49)
+// does not rule out no change. The margin that restores the old rate reads
+// about 135, and 120 is a step towards it. The bench is not monotone in the
+// figure, so it cannot choose one.
+// The figure is held above the margin at which a depth four mate in two is
+// lost. With this shortcut alone on the reference that boundary is
+// eighty four on this evaluation (seventy seven before it), and
+// the_reverse_futility_margin_keeps_the_depth_four_mate fails below it.
+// The default's other shortcuts lose that mate at every margin from sixty
+// to a hundred, and at this one.
+// docs/ROADMAP.md has the shadow lane's reading.
+const REVERSE_FUTILITY_MARGIN: Score = 120;
 // The deepest node the margin may answer. Four, six and eight give the
 // same bench count to a tenth of a percent.
 const REVERSE_FUTILITY_MAX_DEPTH: u8 = 4;
@@ -3194,7 +3198,7 @@ mod search {
 
     /// What holds `REVERSE_FUTILITY_MARGIN` above the boundary its comment
     /// gives: with the shortcut the only thing added to the reference, a
-    /// margin of seventy six or less cuts off the line this mate is found
+    /// margin of eighty three or less cuts off the line this mate is found
     /// in. Cold, so no table decides it.
     #[test]
     fn the_reverse_futility_margin_keeps_the_depth_four_mate() {
