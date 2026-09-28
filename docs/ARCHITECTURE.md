@@ -31,21 +31,21 @@ term over every pair of pieces.
   some state that could be recomputed from them but would be too slow to: an
   array of what stands on each square, the zobrist key, a second key over the
   pawns alone, the evaluation's running totals (material, the piece square
-  score and the pair term's sums), the pieces giving check, and a ring of the
-  last ~1024 plies (used by the repetition and fifty move rules, and to undo
-  moves). All piece placement goes through one function, which is what keeps
-  the derived state in sync. Debug builds recompute the derived state from
-  scratch after every move and assert it matches, so a bug in an incremental
-  update fails tests instead of misevaluating quietly. It names no evaluation
-  term: each one reads the boards it needs through `pub(crate)` accessors and
-  keeps its own counts and masks beside its weights. Move generation also
-  lives here. It is pseudo-legal: moves are generated without checking whether
-  they leave the king in check, and `make_move` rejects the ones that do. When
-  already in check the list is first filtered down to moves that could address
-  the check, which saves sorting and playing moves that would only be
-  rejected. Two questions the search asks about a move before making it are
-  answered here as well: what a swap on its square is worth, and whether it
-  gives check.
+  score and the pair term's sums), the pieces giving check, each side's king
+  square, and a ring of the last ~1024 plies (used by the repetition and fifty
+  move rules, and to undo moves). All piece placement goes through one
+  function, which is what keeps the derived state in sync. Debug builds
+  recompute the derived state from scratch after every move and assert it
+  matches, so a bug in an incremental update fails tests instead of
+  misevaluating quietly. It names no evaluation term: each one reads the
+  boards it needs through `pub(crate)` accessors and keeps its own counts and
+  masks beside its weights. Move generation also lives here. It is
+  pseudo-legal: moves are generated without checking whether they leave the
+  king in check, and `make_move` rejects the ones that do. When already in
+  check the list is first filtered down to moves that could address the check,
+  which saves sorting and playing moves that would only be rejected. Two
+  questions the search asks about a move before making it are answered here as
+  well: what a swap on its square is worth, and whether it gives check.
 - **swap_table.rs**: What a swap wins when no slider can join it from
   behind, by capturer and each side's attackers counted by value. Built at
   compile time; `see` reads it and walks the swap only when it cannot.
