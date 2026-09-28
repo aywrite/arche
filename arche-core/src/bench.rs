@@ -12,6 +12,7 @@
 
 use crate::board::Board;
 use crate::engine::{AlphaBeta, Engine, SearchConfig, SearchOutcome, SearchParameters};
+use crate::limits::Limits;
 use crate::misc::Score;
 use crate::play::Play;
 use crate::transposition::SignatureCounters;
@@ -32,6 +33,21 @@ pub const TABLE_BYTES: usize = 16 * 1024 * 1024;
 
 const SUITE: &str = include_str!("../bench.epd");
 
+/// The games suite: positions drawn uniformly from whole games the engine
+/// played against itself, so a phase of the game counts as often as games
+/// reach it. The bench's own suite is searched to a depth, so its big
+/// opening and middlegame trees hold most of its nodes, and a change to code
+/// that runs where captures are dense reads larger on it than in play. This
+/// one is read beside it, not in its place: the bench is still what the
+/// `Bench:` trailer states.
+const GAMES: &str = include_str!("../games.epd");
+
+/// The nodes each position of the games suite is searched to. A budget
+/// rather than a depth, because a game gives each move a similar budget
+/// whatever its phase. With the ninety six positions it comes to about one
+/// and a half times the bench's nodes.
+pub const GAMES_NODES: u64 = 100_000;
+
 /// A position of the suite, as a full fen and the name the report gives it.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct Position {
@@ -43,6 +59,22 @@ pub struct Position {
 
 pub fn positions() -> Vec<Position> {
     parse_epd(SUITE)
+}
+
+pub fn games() -> Vec<Position> {
+    parse_epd(GAMES)
+}
+
+/// How far a run searches each position.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum Reach {
+    /// Deepened to this depth, as the bench is.
+    Depth(u8),
+    /// Deepened until this many nodes, and stopped there wherever the
+    /// iteration stood. The search is deterministic, so a run repeats move
+    /// for move. The node total is the budget's, not the tree's, so unlike
+    /// the bench's it does not say whether the search changed.
+    Nodes(u64),
 }
 
 /// Reads epd: the first four fields are the fen, and an `id "..."` operation
@@ -120,7 +152,7 @@ pub struct PositionReport {
 
 #[derive(Debug, Clone)]
 pub struct Report {
-    pub depth: u8,
+    pub reach: Reach,
     pub table_bytes: usize,
     pub config: SearchConfig,
     pub positions: Vec<PositionReport>,
@@ -168,7 +200,19 @@ pub fn run_suite(
     table_bytes: usize,
     config: SearchConfig,
 ) -> Report {
-    run(positions, depth, table_bytes, config, false)
+    run(positions, Reach::Depth(depth), table_bytes, config, false)
+        .expect("an unaudited run asks for no keys and so cannot fail to get them")
+}
+
+/// The same with each position searched to `nodes` rather than to a depth,
+/// which is how `bench games` runs.
+pub fn run_suite_to_nodes(
+    positions: &[Position],
+    nodes: u64,
+    table_bytes: usize,
+    config: SearchConfig,
+) -> Report {
+    run(positions, Reach::Nodes(nodes), table_bytes, config, false)
         .expect("an unaudited run asks for no keys and so cannot fail to get them")
 }
 
@@ -181,21 +225,24 @@ pub fn run_suite(
 /// size again, rather than a report with no audit in it.
 pub fn run_audited_suite(
     positions: &[Position],
-    depth: u8,
+    reach: Reach,
     table_bytes: usize,
     config: SearchConfig,
 ) -> Option<Report> {
-    run(positions, depth, table_bytes, config, true)
+    run(positions, reach, table_bytes, config, true)
 }
 
 fn run(
     positions: &[Position],
-    depth: u8,
+    reach: Reach,
     table_bytes: usize,
     config: SearchConfig,
     audit: bool,
 ) -> Option<Report> {
-    let depth = depth.max(1);
+    let reach = match reach {
+        Reach::Depth(depth) => Reach::Depth(depth.max(1)),
+        Reach::Nodes(nodes) => Reach::Nodes(nodes.max(1)),
+    };
     let positions = positions
         .iter()
         .map(|position| {
@@ -205,11 +252,18 @@ fn run(
             if audit && !engine.audit_signatures() {
                 return None;
             }
-            let outcome = engine
-                .iterative_deepening_search(SearchParameters::to_depth(depth), |_, _, _, _| {});
-            let result = match outcome {
-                SearchOutcome::Complete(result, _) => result,
-                other => panic!(
+            let parameters = match reach {
+                Reach::Depth(depth) => SearchParameters::to_depth(depth),
+                Reach::Nodes(nodes) => {
+                    SearchParameters::new(None, Limits::starting_now(None, Some(nodes)))
+                }
+            };
+            let outcome = engine.iterative_deepening_search(parameters, |_, _, _, _| {});
+            let result = match (reach, outcome) {
+                (_, SearchOutcome::Complete(result, _)) => result,
+                // a budget stops the deepening partway, which is the point
+                (Reach::Nodes(_), SearchOutcome::Aborted(Some(result))) => result,
+                (_, other) => panic!(
                     "bench position {} did not complete: {:?}",
                     position.id, other
                 ),
@@ -234,7 +288,7 @@ fn run(
         })
         .collect::<Option<Vec<PositionReport>>>()?;
     Some(Report {
-        depth,
+        reach,
         table_bytes,
         config,
         positions,
@@ -255,10 +309,14 @@ fn share(part: u64, whole: u64) -> f64 {
 /// <nps> nps` and nothing else.
 impl fmt::Display for Report {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        let reach = match self.reach {
+            Reach::Depth(depth) => format!("depth {depth}"),
+            Reach::Nodes(nodes) => format!("nodes {nodes}"),
+        };
         writeln!(
             f,
-            "bench depth {} hash {}MB positions {} taint {}",
-            self.depth,
+            "bench {} hash {}MB positions {} taint {}",
+            reach,
             self.table_bytes / (1024 * 1024),
             self.positions.len(),
             self.config.taint_word()
@@ -573,8 +631,42 @@ mod tests {
     fn a_depth_of_zero_is_searched_as_one() {
         let suite = parse_epd("4k3/8/8/8/8/8/8/4K3 w - - id \"bare kings\";");
         let report = run_suite(&suite, 0, 1 << 20, SearchConfig::default());
-        assert_eq!(report.depth, 1);
+        assert_eq!(report.reach, Reach::Depth(1));
         assert!(report.positions[0].nodes > 0);
+    }
+
+    /// Every position of the games suite is one a search can start from: it
+    /// parses and there is a move to make.
+    #[test]
+    fn the_games_suite_is_ninety_six_playable_positions() {
+        let suite = games();
+        assert_eq!(suite.len(), 96);
+        for position in &suite {
+            let mut board =
+                Board::from_fen(&position.fen).unwrap_or_else(|e| panic!("{}: {}", position.id, e));
+            assert!(board.has_legal_move(), "{} has no move", position.id);
+        }
+    }
+
+    /// A budget stops each search on its node, or sooner where the search
+    /// ran out of depths first, and a second run stops on the same node with
+    /// the same move and score.
+    #[test]
+    fn a_node_budget_stops_every_search_on_the_same_node() {
+        let suite = small_suite();
+        let first = run_suite_to_nodes(&suite, 5_000, 1 << 20, SearchConfig::default());
+        let second = run_suite_to_nodes(&suite, 5_000, 1 << 20, SearchConfig::default());
+        assert_eq!(first.reach, Reach::Nodes(5_000));
+        for (a, b) in first.positions.iter().zip(&second.positions) {
+            assert_eq!(a.nodes, 5_000, "{}", a.id);
+            assert_eq!(
+                (a.nodes, a.play, a.score),
+                (b.nodes, b.play, b.score),
+                "{}",
+                a.id
+            );
+        }
+        assert!(format!("{first}").starts_with("bench nodes 5000 hash 1MB positions 2"));
     }
 
     fn small_suite() -> Vec<Position> {
@@ -598,8 +690,8 @@ mod tests {
     fn an_audited_run_searches_the_same_tree() {
         let suite = small_suite();
         let plain = run_suite(&suite, 4, 4 << 20, SearchConfig::default());
-        let audited =
-            run_audited_suite(&suite, 4, 4 << 20, SearchConfig::default()).expect("the keys");
+        let audited = run_audited_suite(&suite, Reach::Depth(4), 4 << 20, SearchConfig::default())
+            .expect("the keys");
         assert_eq!(plain.nodes(), audited.nodes());
         let played = |report: &Report| {
             report
@@ -619,8 +711,13 @@ mod tests {
     /// would pass a bound.
     #[test]
     fn an_audited_run_prints_a_summary_that_holds_together() {
-        let report =
-            run_audited_suite(&small_suite(), 4, 4 << 20, SearchConfig::default()).expect("keys");
+        let report = run_audited_suite(
+            &small_suite(),
+            Reach::Depth(4),
+            4 << 20,
+            SearchConfig::default(),
+        )
+        .expect("keys");
         let counted = report.signatures().expect("an audited run counted");
         assert!(counted.probes > 0, "nothing was probed");
         assert!(counted.hits <= counted.probes);
@@ -704,8 +801,10 @@ mod tests {
     #[test]
     fn two_audited_runs_count_the_same() {
         let suite = small_suite();
-        let first = run_audited_suite(&suite, 4, 4 << 20, SearchConfig::default()).expect("keys");
-        let second = run_audited_suite(&suite, 4, 4 << 20, SearchConfig::default()).expect("keys");
+        let first = run_audited_suite(&suite, Reach::Depth(4), 4 << 20, SearchConfig::default())
+            .expect("keys");
+        let second = run_audited_suite(&suite, Reach::Depth(4), 4 << 20, SearchConfig::default())
+            .expect("keys");
         assert_eq!(first.signatures(), second.signatures());
     }
 
