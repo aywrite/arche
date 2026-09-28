@@ -785,7 +785,7 @@ Recording stops, and the search carries on, when a stream reaches `cap`
 records. Recording changes nothing: `recording_leaves_the_measured_search_where_it_was`
 in `arche-core/src/trace.rs` asserts the node counts.
 
-Five streams are written to `out` (`trace` by default), each a file of fixed
+Eight streams are written to `out` (`trace` by default), each a file of fixed
 width little endian records behind a 24 byte header, with `manifest.json`
 beside them:
 
@@ -804,10 +804,24 @@ beside them:
   after `order` returns, so a move the loop comes to is named by its squares
   as well as its index. Together these say how much of each ordering the
   search read.
+- `evals`: every evaluation: the line that asked for it, the position's key,
+  whether the material could not mate, whether each of the two tables held
+  the position, the score, and what it was made of (the phase, the piece
+  square pair, material, the pair term, each leaf term's packed pair and
+  each side's mobility and king attack counts).
+- `walks`: every piece the evaluation's walk visits, numbered by the
+  evaluation it belongs to: its square, kind and colour, its attack set, and
+  how many squares of it mobility and the king attack zone each counted.
+- `bounds`: what the search did with an evaluation: each comparison a rule
+  made with it (the stand pat against beta and alpha, the delta test per
+  capture, reverse futility, the null move's gate, quiet futility and the
+  late move gate's score), the bound it was compared with and the outcome,
+  and whether quiescence returned it.
 
 A call site is the line that made the call, found by `track_caller` through
 the board's helpers, so a probe `see` makes through `sliders_onto` is
-attributed to `see`. The manifest lists each site's file, line and column. A
+attributed to `see`, and an evaluation to the line in the search that asked
+for it. The manifest lists each site's file, line and column. A
 probe made inside `make_move` is attributed to the node that made the move,
 though the board is by then the child's. Trace a release build: a debug one
 adds the probes its assertions make.
@@ -815,8 +829,11 @@ adds the probes its assertions make.
 `scripts/trace/read.py` reads a directory's streams into numpy arrays and
 checks the headers against the manifest. `scripts/trace/replay.py` recomputes
 every probe by walking the rays from its recorded inputs, recomputes every
-swap on its node's recorded position (the ordering runs before the node makes
-a move), and checks every recorded position is a board. It is written from the rules rather than from
+swap and every evaluation's walk on its node's recorded position (the
+ordering and the evaluation both run before the node makes a move), and
+checks every recorded position is a board. It is written from the rules rather than from
 the engine's tables, so a record missing an input fails it. At `every 16` the
 full bench took 3.5 seconds and wrote 752,268 nodes and 7,581,731 probes (315
-MB), and every probe replayed.
+MB), and every probe replayed. With the evaluation's streams it takes 5.6
+seconds and 675 MB, and every one of the 472,519 evaluations' 4,684,356 walked
+pieces replays.

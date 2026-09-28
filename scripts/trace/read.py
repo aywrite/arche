@@ -75,6 +75,48 @@ LAYOUTS = {
         ("flags", "u1"),
         ("_", "<u8"),
     ],
+    "evals": [
+        ("node", "<u8"),
+        ("eval", "<u8"),
+        ("key", "<u8"),
+        ("site", "<u2"),
+        ("flags", "u1"),
+        ("walked", "u1"),
+        ("score", "<i2"),
+        ("phase", "<u2"),
+        ("psqt", "<i4"),
+        ("material", "<i4"),
+        ("machine", "<i4"),
+        ("mobility", "<i4"),
+        ("king_attack", "<i4"),
+        ("shelter", "<i4"),
+        ("pawn_structure", "<i4"),
+        ("_", "<u4"),
+        # white's mobility counts, black's, white's ring counts, black's,
+        # knight, bishop, rook and queen in each
+        ("counts", "<u2", (16,)),
+    ],
+    "walks": [
+        ("eval", "<u8"),
+        ("attacks", "<u8"),
+        ("square", "u1"),
+        ("kind", "u1"),
+        ("color", "u1"),
+        ("scope", "u1"),
+        ("ring", "u1"),
+        ("_1", "u1"),
+        ("_2", "<u2"),
+    ],
+    "bounds": [
+        ("node", "<u8"),
+        ("eval", "<u8"),
+        ("kind", "u1"),
+        ("outcome", "u1"),
+        ("_", "<u2"),
+        ("threshold", "<i4"),
+        ("value", "<i4"),
+        ("aux", "<i4"),
+    ],
     "attacks": [
         ("node", "<u8"),
         ("site", "<u2"),
@@ -93,6 +135,24 @@ KINDS = {0: "root", 1: "full", 2: "quiescence"}
 ORDERED, REACHED, CUTOFF = 0, 1, 2
 # a piece code, pawn to king, and 6 for none
 PIECES = "pnbrqk-"
+# an `evals` record's `flags`: the sum answered zero for material that
+# cannot mate, it was handed the searcher's tables, and each table held the
+# position
+DRAWN, CACHED, SHELTER_HIT, PAWNS_HIT = 1, 2, 4, 8
+# a `walks` record's `kind`, and the order an `evals` record's counts are in
+WALKED = "nbrq"
+# a `bounds` record's `kind`
+BOUNDS = {
+    1: "stand pat beta",
+    2: "stand pat alpha",
+    3: "delta filter",
+    4: "delta loop",
+    5: "returned",
+    6: "reverse futility",
+    7: "null move",
+    8: "quiet futility",
+    9: "late move gate",
+}
 
 
 def manifest(directory):

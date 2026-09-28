@@ -457,6 +457,14 @@ impl Shallow {
         };
         if !self.under {
             self.under = eval_memo(search.board, eval) + margin <= i64::from(alpha);
+            #[cfg(feature = "trace")]
+            crate::trace::bound(
+                crate::trace::Bound::QuietFutility,
+                (i64::from(alpha) - margin) as i32,
+                eval.unwrap_or_default() as i32,
+                0,
+                self.under,
+            );
         }
         self.under
     }
@@ -546,6 +554,14 @@ fn gate(search: &Search, node: &mut Node, m: &Play, searched: usize) -> Verdict 
         alpha_gap: i64::from(node.alpha) - eval,
         generated: f.generated,
     });
+    #[cfg(feature = "trace")]
+    crate::trace::bound(
+        crate::trace::Bound::LateMoveGate,
+        (score - (ATTENTION_EVAL_BETA - ATTENTION_ALPHA_GAP) * eval) as i32,
+        eval as i32,
+        score as i32,
+        search.config.late_move_pruning && score <= LATE_MOVE_PRUNING_THRESHOLD,
+    );
     if search.config.late_move_pruning && score <= LATE_MOVE_PRUNING_THRESHOLD {
         let info = node.check.get_or_insert_with(|| search.board.check_info());
         return if search.board.gives_check_with(info, m) {
