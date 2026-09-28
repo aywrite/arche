@@ -48,7 +48,7 @@ const _: () = assert!(MAX_PLY < u8::MAX);
 // the_reverse_futility_margin_keeps_the_depth_four_mate pins. That test
 // guards only a cut below seventy seven, so re-measure before moving the
 // figure. docs/ROADMAP.md has the shadow lane's reading.
-const REVERSE_FUTILITY_MARGIN: Score = 100;
+const REVERSE_FUTILITY_MARGIN: Score = 200;
 // The deepest node the margin may answer. Four, six and eight give the
 // same bench count to a tenth of a percent.
 const REVERSE_FUTILITY_MAX_DEPTH: u8 = 4;
