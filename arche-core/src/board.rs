@@ -2053,14 +2053,15 @@ impl Board {
     fn relocate_piece_index(&mut self, from: u8, to: u8, piece: Piece, color: Color) {
         debug_assert!(from != to);
         debug_assert!(from < 64 && to < 64);
-        let moved =
-            ZOBRIST.get_piece_key(from, piece, color) ^ ZOBRIST.get_piece_key(to, piece, color);
+        let left = eval::row(from, piece, color);
+        let arrived = eval::row(to, piece, color);
+        let moved = left.key ^ arrived.key;
         self.key ^= moved;
         // the pawn key uses the same randoms over the pawns alone
         if piece == Piece::Pawn {
             self.pawn_key ^= moved;
         }
-        self.eval.relocate(from, to, piece, color);
+        self.eval.relocate(left, arrived);
 
         let both = (1u64 << from) | (1u64 << to);
         self.pieces[piece as usize] ^= both;
@@ -2082,12 +2083,13 @@ impl Board {
     /// Put down or pick up a piece, the two directions written once.
     #[inline(always)]
     fn move_accumulators<const SET: bool>(&mut self, index: u8, piece: Piece, color: Color) {
-        let piece_key = ZOBRIST.get_piece_key(index, piece, color);
+        let row = eval::row(index, piece, color);
+        let piece_key = row.key;
         self.key ^= piece_key;
         if piece == Piece::Pawn {
             self.pawn_key ^= piece_key;
         }
-        self.eval.count::<SET>(index, piece, color);
+        self.eval.count::<SET>(row, piece, color);
 
         let board = &mut self.pieces[piece as usize];
         if SET {

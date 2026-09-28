@@ -54,14 +54,14 @@ const MOST_PIECES: usize = 32;
 
 /// 1 when the term is on and 0 when it is off, so the diagonal sums are
 /// sized to vanish with it rather than kept and read at rank 0.
-const LIVE: usize = (RANK != 0) as usize;
+pub(crate) const LIVE: usize = (RANK != 0) as usize;
 
 /// Each feature's factors, at scale `Q`.
 #[cfg(not(feature = "machine-test"))]
-static FACTORS: [[i16; RANK]; FEATURES] = include!("factors16.rs");
+pub(crate) static FACTORS: [[i16; RANK]; FEATURES] = include!("factors16.rs");
 
 #[cfg(feature = "machine-test")]
-static FACTORS: [[i16; RANK]; FEATURES] = seeded();
+pub(crate) static FACTORS: [[i16; RANK]; FEATURES] = seeded();
 
 /// A fixed table for the tests: every factor drawn from -96 to 96 by a linear
 /// congruential generator, which puts the term's spread near the fitted
@@ -86,7 +86,7 @@ const fn seeded() -> [[i16; RANK]; FEATURES] {
 }
 
 /// Each feature's `‖q_i‖²`, worked out from the table when it compiles.
-static DIAGONAL: [[i32; LIVE]; FEATURES] = diagonal();
+pub(crate) static DIAGONAL: [[i32; LIVE]; FEATURES] = diagonal();
 
 const fn diagonal() -> [[i32; LIVE]; FEATURES] {
     let mut out = [[0; LIVE]; FEATURES];
@@ -206,25 +206,24 @@ impl Machine {
         diagonal: [[0; LIVE]; 2],
     };
 
-    /// A piece counted on to or off of a square, in both perspectives.
+    /// A piece counted on to or off of a square, both perspectives read from
+    /// the piece's one row.
     #[inline(always)]
-    pub(crate) fn count<const SET: bool>(&mut self, index: u8, piece: Piece, color: Color) {
-        // the loops below walk nothing at rank 0, but the table's index is
-        // still bounds checked, which costs at every move
+    pub(crate) fn count<const SET: bool>(&mut self, row: &super::Row) {
+        // at rank 0 a row holds no lanes and the loops below walk nothing;
+        // the return says so rather than leaving it to the optimiser
         if RANK == 0 {
             return;
         }
-        for perspective in [Color::Black, Color::White] {
-            let feature = feature(perspective, index, piece, color);
-            let at = perspective as usize;
-            for (sum, &factor) in self.sums[at].iter_mut().zip(&FACTORS[feature]) {
+        for at in 0..2 {
+            for (sum, &factor) in self.sums[at].iter_mut().zip(&row.lanes[at]) {
                 *sum = if SET {
                     sum.wrapping_add(factor)
                 } else {
                     sum.wrapping_sub(factor)
                 };
             }
-            for (sum, &diagonal) in self.diagonal[at].iter_mut().zip(&DIAGONAL[feature]) {
+            for (sum, &diagonal) in self.diagonal[at].iter_mut().zip(&row.diagonal[at]) {
                 *sum = if SET {
                     sum.wrapping_add(diagonal)
                 } else {
@@ -234,27 +233,25 @@ impl Machine {
         }
     }
 
-    /// A piece moving between two squares.
+    /// A piece moving between two squares, from the two squares' rows.
     #[inline(always)]
-    pub(crate) fn relocate(&mut self, from: u8, to: u8, piece: Piece, color: Color) {
+    pub(crate) fn relocate(&mut self, left: &super::Row, arrived: &super::Row) {
+        // as in `count`
         if RANK == 0 {
             return;
         }
-        for perspective in [Color::Black, Color::White] {
-            let left = feature(perspective, from, piece, color);
-            let arrived = feature(perspective, to, piece, color);
-            let at = perspective as usize;
+        for at in 0..2 {
             for ((sum, &off), &on) in self.sums[at]
                 .iter_mut()
-                .zip(&FACTORS[left])
-                .zip(&FACTORS[arrived])
+                .zip(&left.lanes[at])
+                .zip(&arrived.lanes[at])
             {
                 *sum = sum.wrapping_add(on.wrapping_sub(off));
             }
             for ((sum, &off), &on) in self.diagonal[at]
                 .iter_mut()
-                .zip(&DIAGONAL[left])
-                .zip(&DIAGONAL[arrived])
+                .zip(&left.diagonal[at])
+                .zip(&arrived.diagonal[at])
             {
                 *sum = sum.wrapping_add(on.wrapping_sub(off));
             }

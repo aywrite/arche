@@ -128,9 +128,12 @@ term over every pair of pieces.
     the piece square score are carried rather than counted; the leaf terms are
     computed at the leaf. Material that cannot mate is answered with a hard
     zero, which with the pair term below is where the score is not a sum over
-    the weights. `TERMS`, a descriptor per leaf term, is what the tuner lays
-    its slot vector out from. One walk over each side's pieces probes each
-    attack set once for both mobility and the king attack zone.
+    the weights. `ROWS` holds, for each piece on each square, everything the
+    board's update reads in one row: the pair term's factors in both
+    perspectives, the piece square pair and the zobrist key. `TERMS`, a
+    descriptor per leaf term, is what the tuner lays its slot vector out
+    from. One walk over each side's pieces probes each attack set once for
+    both mobility and the king attack zone.
   - **factors.rs**: The pair term, a factorization machine over the piece
     square features: a weight for every pair of pieces, as the inner product
     of two rows of sixteen factors. The accumulator keeps each perspective's

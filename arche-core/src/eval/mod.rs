@@ -41,6 +41,80 @@ pub(crate) const TOTAL_PHASE: i32 = 24;
 /// of the search's indirect mispredicts were this dispatch.
 const MATERIAL: [u32; 6] = [100, 310, 320, 500, 900, 10000];
 
+/// Everything a make reads for one piece of one colour on one square, in one
+/// place: the pair term's factors in both perspectives and their squares, the
+/// piece square pair signed white relative, and the zobrist key. Indexed as
+/// `Zobrist` and `PieceSquareTables` index their rows, so one index finds all
+/// of it.
+#[derive(Debug, Clone, Copy)]
+#[repr(C, align(32))]
+pub(crate) struct Row {
+    pub(crate) lanes: [[i16; factors::RANK]; 2],
+    pub(crate) diagonal: [[i32; factors::LIVE]; 2],
+    pub(crate) psqt: i32,
+    pub(crate) key: u64,
+}
+
+pub(crate) static ROWS: [Row; 768] = rows();
+
+const fn rows() -> [Row; 768] {
+    let empty = Row {
+        lanes: [[0; factors::RANK]; 2],
+        diagonal: [[0; factors::LIVE]; 2],
+        psqt: 0,
+        key: 0,
+    };
+    let mut out = [empty; 768];
+    let colors = [Color::Black, Color::White];
+    let pieces = [
+        Piece::Pawn,
+        Piece::Knight,
+        Piece::Bishop,
+        Piece::Rook,
+        Piece::Queen,
+        Piece::King,
+    ];
+    let mut table = 0;
+    while table < 12 {
+        let color = if table < 6 {
+            Color::White
+        } else {
+            Color::Black
+        };
+        let piece = pieces[table % 6];
+        let mut square = 0;
+        while square < 64 {
+            let row = &mut out[table * 64 + square];
+            let mut at = 0;
+            while at < 2 {
+                let feature = factors::feature(colors[at], square as u8, piece, color);
+                row.lanes[at] = factors::FACTORS[feature];
+                row.diagonal[at] = factors::DIAGONAL[feature];
+                at += 1;
+            }
+            let value = PieceSquareTables::TABLES.value_at(table, square);
+            row.psqt = match color {
+                Color::White => value,
+                Color::Black => -value,
+            };
+            row.key = crate::zobrist::Zobrist::TABLE.piece_key_at(table, square);
+            square += 1;
+        }
+        table += 1;
+    }
+    out
+}
+
+/// The row of a piece on a square.
+#[inline(always)]
+pub(crate) fn row(index: u8, piece: Piece, color: Color) -> &'static Row {
+    let table = match color {
+        Color::White => piece as usize,
+        Color::Black => piece as usize + 6,
+    };
+    &ROWS[table * 64 + (index & 63) as usize]
+}
+
 /// The material weight of one piece, for the board's own seeding walk.
 pub(crate) fn material(piece: Piece) -> u32 {
     MATERIAL[piece as usize]
@@ -333,42 +407,33 @@ impl Accumulator {
         machine: factors::Machine::EMPTY,
     };
 
-    /// Count a piece on to or off of a square.
+    /// Count a piece on to or off of a square, from its row. The row's pair
+    /// is negated whole for black, and negating the sum negates both halves.
     #[inline(always)]
-    pub(crate) fn count<const SET: bool>(&mut self, index: u8, piece: Piece, color: Color) {
-        // a packed pair, negated whole for black: negating the sum negates
-        // both halves
-        let psqt = match color {
-            Color::White => PIECE_SQUARE_TABLES.get_value(index as usize, piece, Color::White),
-            Color::Black => -PIECE_SQUARE_TABLES.get_value(index as usize, piece, Color::Black),
-        };
+    pub(crate) fn count<const SET: bool>(&mut self, row: &Row, piece: Piece, color: Color) {
         let phase = PHASE_WEIGHTS[piece as usize];
         let value = MATERIAL[piece as usize];
         if SET {
-            self.psqt += psqt;
+            self.psqt += row.psqt;
             self.phase += phase;
             self.material[color as usize] += value;
         } else {
-            self.psqt -= psqt;
+            self.psqt -= row.psqt;
             self.phase -= phase;
             self.material[color as usize] -= value;
         }
-        self.machine.count::<SET>(index, piece, color);
+        self.machine.count::<SET>(row);
     }
 
-    /// A piece moving between two squares: `count` off one and on to the
-    /// other, with the material and phase updates, which cancel, left out.
-    /// The pair is added and subtracted whole either way, so a borrow between
-    /// the two halves cancels here as it does there.
+    /// A piece moving between two squares, from the two squares' rows:
+    /// `count` off one and on to the other, with the material and phase
+    /// updates, which cancel, left out. The pair is added and subtracted whole
+    /// either way, so a borrow between the two halves cancels here as it does
+    /// there.
     #[inline(always)]
-    pub(crate) fn relocate(&mut self, from: u8, to: u8, piece: Piece, color: Color) {
-        let moved = PIECE_SQUARE_TABLES.get_value(to as usize, piece, color)
-            - PIECE_SQUARE_TABLES.get_value(from as usize, piece, color);
-        match color {
-            Color::White => self.psqt += moved,
-            Color::Black => self.psqt -= moved,
-        }
-        self.machine.relocate(from, to, piece, color);
+    pub(crate) fn relocate(&mut self, left: &Row, arrived: &Row) {
+        self.psqt += arrived.psqt - left.psqt;
+        self.machine.relocate(left, arrived);
     }
 
     /// The accumulator the position deserves, computed from the board, for
