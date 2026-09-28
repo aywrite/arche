@@ -85,6 +85,11 @@ impl Zobrist {
         self.pieces[piece_index][index as usize]
     }
 
+    /// A piece key by table row, for building tables at compile time.
+    pub(crate) const fn piece_key_at(&self, table: usize, square: usize) -> u64 {
+        self.pieces[table][square]
+    }
+
     #[inline]
     pub fn en_passant_key(&self, index: u8) -> u64 {
         self.en_passant[(index % 8) as usize]

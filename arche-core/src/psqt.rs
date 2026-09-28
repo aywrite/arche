@@ -260,6 +260,11 @@ pub struct PieceSquareTables {
 }
 
 impl PieceSquareTables {
+    /// A packed pair by table row, for building tables at compile time.
+    pub(crate) const fn value_at(&self, table: usize, square: usize) -> i32 {
+        self.tables[table][square]
+    }
+
     /// The packed pair for a piece on a square, both phases at once.
     #[inline]
     pub fn get_value(&self, index: usize, piece: Piece, color: Color) -> i32 {
