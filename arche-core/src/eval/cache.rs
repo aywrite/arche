@@ -61,8 +61,9 @@ impl<const BITS: usize> Cache<BITS> {
 
     /// What the table holds under `key`, and nothing where the slot stands
     /// for another key. For the tests in [`super`], which read the tables
-    /// rather than the score.
-    #[cfg(test)]
+    /// rather than the score, and for the trace mode, which records whether
+    /// the table answered.
+    #[cfg(any(test, feature = "trace"))]
     pub(super) fn stored(&self, key: u64) -> Option<i32> {
         let entry = &self.entries[(key as usize) & (Self::SLOTS - 1)];
         (entry.key == key).then_some(entry.packed)

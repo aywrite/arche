@@ -17,6 +17,11 @@ function would read the missing input off its board and agree with itself.
 - `attacks` is checked for consistency only (a result inside the occupancy
   passed). Its calls come from inside make_move, where the board is the
   child's and the stream does not record it.
+- Every evaluation's walk in `walks` is recomputed on its node's recorded
+  position (the key says it is the node's): each piece's attack set, the
+  squares of it mobility counts (less its own side's pieces and the squares
+  an enemy pawn covers) and the squares of the enemy king's ring it bears
+  on, and each side's totals in `evals`.
 
     replay.py <trace directory>
 
@@ -213,6 +218,99 @@ def check_swaps(directory, report):
     return len(swaps), missing, bad
 
 
+def pawn_cover(pawns):
+    """The squares the pawns in `pawns[0]` (white's) and `pawns[1]`
+    (black's) attack."""
+    white, black = pawns
+    cover = [0, 0]
+    for square in range(64):
+        bit = 1 << square
+        if white & bit:
+            cover[0] |= steps(square, [(-1, 1), (1, 1)])
+        if black & bit:
+            cover[1] |= steps(square, [(-1, -1), (1, -1)])
+    return cover
+
+
+def walk(node):
+    """What the evaluation's walk visits on a node's position: for each side,
+    white first, its knights, bishops, rooks and queens in that order and by
+    square, each as (square, kind, attack set, mobility count, ring count)."""
+    pieces = [int(p) for p in node["pieces"]]
+    colours = [int(node["white"]), int(node["black"])]
+    occupied = colours[0] | colours[1]
+    pawns = [pieces[0] & colours[0], pieces[0] & colours[1]]
+    cover = pawn_cover(pawns)
+    kings = [(pieces[5] & c).bit_length() - 1 for c in colours]
+    out = []
+    for side in (0, 1):
+        scope = ~(colours[side] | cover[1 - side]) & (2**64 - 1)
+        ring = steps(kings[1 - side], KING)
+        for kind, piece in enumerate((1, 2, 3, 4)):
+            board = pieces[piece] & colours[side]
+            for square in range(64):
+                if not board >> square & 1:
+                    continue
+                if piece == 1:
+                    attacks = steps(square, KNIGHT)
+                else:
+                    attacks = 0
+                    if piece in (2, 4):
+                        attacks |= rays(square, occupied, DIAGONAL)
+                    if piece in (3, 4):
+                        attacks |= rays(square, occupied, STRAIGHT)
+                out.append(
+                    (
+                        side,
+                        square,
+                        kind,
+                        attacks,
+                        bin(attacks & scope).count("1"),
+                        bin(attacks & ring).count("1"),
+                    )
+                )
+    return out
+
+
+def check_evals(directory, report):
+    """Every walk recomputed on its node's position. An evaluation whose key
+    is not its node's (the rails', made before the node is entered) is
+    counted and not checked."""
+    evals = stream(directory, "evals")
+    walks = stream(directory, "walks")
+    nodes = stream(directory, "nodes")
+    by_node = {int(n["node"]): n for n in nodes}
+    starts = np.searchsorted(walks["eval"], evals["eval"])
+    bad = elsewhere = 0
+    for e, start in zip(evals, starts):
+        node = by_node.get(int(e["node"]))
+        if node is None or int(node["key"]) != int(e["key"]):
+            elsewhere += 1
+            continue
+        walked = [] if e["flags"] & 1 else walk(node)
+        recorded = walks[start : start + int(e["walked"])]
+        totals = [0] * 16
+        for side, square, kind, attacks, scope, ring in walked:
+            totals[4 * side + kind] += scope
+            totals[8 + 4 * side + kind] += ring
+        same = len(recorded) == int(e["walked"]) == len(walked)
+        same = same and all(
+            int(r["eval"]) == int(e["eval"])
+            and (int(r["color"]) == 1) == (side == 0)
+            and (int(r["square"]), int(r["kind"]), int(r["attacks"]))
+            == (square, kind, attacks)
+            and (int(r["scope"]), int(r["ring"])) == (scope, ring)
+            for r, (side, square, kind, attacks, scope, ring) in zip(recorded, walked)
+        )
+        same = same and [int(c) for c in e["counts"]] == totals
+        if not same:
+            bad += 1
+            report(
+                f"evals record {int(e['eval'])}: node {int(e['node'])}, the walk differs"
+            )
+    return len(evals), len(walks), elsewhere, bad
+
+
 def check_attacks(directory, report):
     records = stream(directory, "attacks")
     bad = int(np.count_nonzero(records["result"] & ~records["occupied"]))
@@ -246,9 +344,17 @@ def main(argv):
     print(
         f"swaps    {swaps:>12} records, {bad_swaps} disagree, {missing} with no node record"
     )
+    evals, walked, elsewhere, bad_evals = check_evals(directory, report)
+    print(
+        f"evals    {evals:>12} records, {walked} pieces walked, {bad_evals} disagree, "
+        f"{elsewhere} not on their node's position"
+    )
     for line in shown:
         print(line)
-    return 1 if bad_sliders or bad_nodes or bad_attacks or bad_swaps or missing else 0
+    failed = (
+        bad_sliders or bad_nodes or bad_attacks or bad_swaps or missing or bad_evals
+    )
+    return 1 if failed else 0
 
 
 if __name__ == "__main__":
