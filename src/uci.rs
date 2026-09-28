@@ -601,6 +601,9 @@ pub struct BenchSettings {
     /// Whether each table keeps the full key of every entry, so the report
     /// can say how often an entry's signature accepted another position's.
     pub audit: bool,
+    /// Whether the games suite is searched, each position to
+    /// `bench::GAMES_NODES`, in place of the bench's own suite to a depth.
+    pub games: bool,
 }
 
 /// The bench's words, for the usage and for `claim`.
@@ -617,10 +620,11 @@ pub const BENCH: Command = Command {
             value: "refuse|trust|skip|rule50",
         },
     ],
-    flags: &["audit"],
+    flags: &["audit", "games"],
     summary: &[
         "search a fixed suite and print what each search counted,",
-        "with audit adding what the table's key signature cost",
+        "with audit adding what the table's key signature cost and",
+        "games searching positions drawn from whole games to a node budget",
     ],
 };
 
@@ -646,6 +650,14 @@ pub fn bench_settings(params: &Params) -> Result<BenchSettings, String> {
         Some(mb) => return Err(format!("hash: {mb}")),
     };
     let config = taint(params)?;
+    let games = params.flag("games");
+    // a budget stands in for the depth, so a depth given as well would be
+    // read as meaning something and mean nothing
+    if let (true, Param::Read(depth)) = (games, params.parse::<u8>(BENCH.name)) {
+        return Err(format!(
+            "depth: {depth} with games, which searches to a node budget"
+        ));
+    }
     // last, so a word that was going to be read as the depth has already
     // been refused under the better name
     BENCH.claim(params)?;
@@ -654,6 +666,7 @@ pub fn bench_settings(params: &Params) -> Result<BenchSettings, String> {
         table_bytes,
         config,
         audit: params.flag("audit"),
+        games,
     })
 }
 
@@ -678,16 +691,22 @@ impl BenchSettings {
     /// Runs the bench, or nothing when the audit's keys could not be
     /// allocated, which the caller reports with `NO_AUDIT_MEMORY`.
     pub fn run(&self) -> Option<bench::Report> {
-        let positions = bench::positions();
-        if self.audit {
-            bench::run_audited_suite(&positions, self.depth, self.table_bytes, self.config)
+        let (positions, reach) = if self.games {
+            (bench::games(), bench::Reach::Nodes(bench::GAMES_NODES))
         } else {
-            Some(bench::run_suite(
-                &positions,
-                self.depth,
-                self.table_bytes,
-                self.config,
-            ))
+            (bench::positions(), bench::Reach::Depth(self.depth))
+        };
+        if self.audit {
+            bench::run_audited_suite(&positions, reach, self.table_bytes, self.config)
+        } else {
+            Some(match reach {
+                bench::Reach::Depth(depth) => {
+                    bench::run_suite(&positions, depth, self.table_bytes, self.config)
+                }
+                bench::Reach::Nodes(nodes) => {
+                    bench::run_suite_to_nodes(&positions, nodes, self.table_bytes, self.config)
+                }
+            })
         }
     }
 }
@@ -1732,6 +1751,21 @@ go depth 3
         assert!(audited.audit);
         let plain = bench_settings(&Params::of("bench 1")).expect("a depth");
         assert!(!plain.audit);
+    }
+
+    #[test]
+    fn the_games_suite_takes_no_depth() {
+        let games = bench_settings(&Params::of("bench games")).expect("games is a word");
+        assert!(games.games);
+        assert!(
+            !bench_settings(&Params::of("bench 1"))
+                .expect("a depth")
+                .games
+        );
+        assert_eq!(
+            bench_settings(&Params::of("bench 5 games")).err(),
+            Some("depth: 5 with games, which searches to a node budget".to_string())
+        );
     }
 
     #[test]

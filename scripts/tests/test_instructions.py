@@ -20,6 +20,8 @@ def fake_valgrind(directory):
         "import pathlib, sys\n"
         "binary = pathlib.Path(sys.argv[sys.argv.index('bench') - 1])\n"
         "refs, nodes = binary.with_suffix('.counts').read_text().split()\n"
+        "if 'games' in sys.argv:\n"
+        "    nodes = str(int(nodes) * 2)\n"
         "print('bench depth 1 hash 16MB positions 1')\n"
         "print(nodes + ' nodes 1000 nps')\n"
         "print('==123== I refs:        ' + refs, file=sys.stderr)\n"
@@ -60,7 +62,7 @@ def test_a_change_with_the_counts_held_leaves_the_nodes_cell_empty(tmp_path, cap
     argv = [str(base), str(candidate), "--valgrind", str(valgrind), "--base-ref", "a1"]
     assert instructions.main(argv) == 0
     out = capsys.readouterr().out
-    assert "instructions against a1, one cachegrind run a side" in out
+    assert "instructions against a1, one cachegrind run a side, bench" in out
     assert "base          1,000,000   1000    1000.0" in out
     assert "candidate       997,000   1000     997.0" in out
     assert "change           -0.30%           -0.30%" in out
@@ -85,3 +87,38 @@ def test_a_run_with_no_summary_is_named_rather_than_a_traceback(tmp_path):
     with pytest.raises(SystemExit) as left:
         instructions.count(str(quiet), "engine", None)
     assert "no instruction count" in str(left.value)
+
+
+def test_games_asks_each_binary_for_the_games_suite(tmp_path, capsys):
+    # the fake doubles the nodes when it is handed `games`, so the counts
+    # show which suite each side was asked for
+    valgrind = fake_valgrind(tmp_path)
+    base = engine(tmp_path, "base", "1,000,000", 1000)
+    candidate = engine(tmp_path, "candidate", "990,000", 1000)
+    argv = [str(base), str(candidate), "--games", "--valgrind", str(valgrind)]
+    assert instructions.main(argv) == 0
+    out = capsys.readouterr().out
+    assert "one cachegrind run a side, bench games" in out
+    assert "base          1,000,000   2000     500.0" in out
+
+
+def test_a_depth_and_the_games_suite_are_refused_together(tmp_path):
+    with pytest.raises(SystemExit):
+        instructions.main(["base", "candidate", "--games", "--depth", "3"])
+
+
+def test_a_binary_that_refuses_the_bench_is_named_rather_than_a_traceback(tmp_path):
+    refusing = tmp_path / ("refusing.cmd" if sys.platform == "win32" else "refusing")
+    if sys.platform == "win32":
+        refusing.write_text(
+            "@echo off\r\necho unrecognised bench depth: games 1>&2\r\nexit /b 2\r\n"
+        )
+    else:
+        refusing.write_text(
+            "#!/bin/sh\necho 'unrecognised bench depth: games' >&2\nexit 2\n"
+        )
+    refusing.chmod(0o755)
+    with pytest.raises(SystemExit) as left:
+        instructions.count(str(refusing), "engine", None, games=True)
+    assert "exited 2" in str(left.value)
+    assert "depth: games" in str(left.value)
