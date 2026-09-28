@@ -70,7 +70,7 @@ const NULL_MOVE_DEPTH_DIVISOR: u8 = 6;
 // of reduction: a ply for every two pawns of clearance. The residual
 // sampler's split at this margin (ba921e1) supports the direction of the
 // bet, not its size.
-const NULL_MOVE_EVAL_UNIT: Score = 200;
+const NULL_MOVE_EVAL_UNIT: Score = 400;
 // The most plies the margin alone may add. Past three the pass proves
 // almost nothing, whatever the margin says.
 const NULL_MOVE_EVAL_CAP: u8 = 3;
