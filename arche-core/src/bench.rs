@@ -546,8 +546,8 @@ mod tests {
             ],
             [
                 [188_166, 7_009, 23_849, 400, 0, 192, 0],
-                [18_218, 1_401, 4_905, 90, 25, 0, 0],
-                [16_173, 1_178, 4_261, 5, 0, 0, 57],
+                [17_738, 1_439, 4_702, 85, 25, 0, 0],
+                [15_645, 1_117, 4_134, 5, 0, 0, 57],
             ],
             "nodes, cutoffs, stores, tainted, tcuts, refused, skipped"
         );
@@ -727,24 +727,24 @@ mod tests {
         assert_eq!(
             counted,
             vec![
-                ("start", 668_490),
-                ("italian", 1_224_555),
-                ("ruy lopez", 439_845),
-                ("kiwipete", 1_153_595),
-                ("perft 4", 399_736),
-                ("promotions", 371_216),
-                ("middlegame", 336_498),
-                ("sharp middlegame", 361_186),
+                ("start", 490_245),
+                ("italian", 933_433),
+                ("ruy lopez", 495_106),
+                ("kiwipete", 1_061_037),
+                ("perft 4", 272_837),
+                ("promotions", 283_087),
+                ("middlegame", 226_317),
+                ("sharp middlegame", 336_759),
                 ("bratko kopec 1", 11_047),
                 ("wac 4", 1_597),
-                ("rook and pawns", 111_151),
-                ("tarrasch", 157_258),
-                ("lucena", 107_297),
-                ("philidor", 334_158),
-                ("minor endgame", 109_221),
-                ("queen endgame", 516_925),
-                ("king and pawn", 41_408),
-                ("trebuchet", 24_681),
+                ("rook and pawns", 97_186),
+                ("tarrasch", 125_781),
+                ("lucena", 106_325),
+                ("philidor", 417_901),
+                ("minor endgame", 107_776),
+                ("queen endgame", 865_166),
+                ("king and pawn", 40_771),
+                ("trebuchet", 23_485),
             ]
         );
     }
