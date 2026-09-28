@@ -33,10 +33,11 @@ use crate::misc::{Color, Piece};
 pub(crate) const RANK: usize = 16;
 
 /// The table's scale: a factor of `v` is stored as `v × Q`, so a product of
-/// two is `Q²` too large and the term divides by it. 256 is the largest power
-/// of two at which [`in_range`] holds for this table.
+/// two is `Q²` too large and the term divides by it. 64 is the largest power
+/// of two at which [`in_range`] holds for this table; the i32 sum of squares
+/// is what binds.
 #[cfg(not(feature = "machine-test"))]
-pub(crate) const Q: i64 = 256;
+pub(crate) const Q: i64 = 64;
 
 /// The rank the tests run the term at, on the seeded table the
 /// `machine-test` feature swaps in.

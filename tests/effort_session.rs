@@ -10,7 +10,7 @@ mod report_command;
 /// the instrument offers an event at every full width node on each side, so
 /// fifty keeps hundreds of rows at this depth, and the switch is one whose
 /// rule acts at exactly these depths.
-const ARGUMENTS: [&str; 6] = ["effort", "4", "every", "50", "off", "quiet_futility"];
+const ARGUMENTS: [&str; 6] = ["effort", "5", "every", "50", "off", "quiet_futility"];
 
 #[test]
 #[cfg_attr(
@@ -22,7 +22,7 @@ fn the_effort_argument_prints_a_header_rows_and_two_summaries() {
     assert!(
         printed
             .header
-            .starts_with("effort depth 4 every 50 off quiet_futility positions "),
+            .starts_with("effort depth 5 every 50 off quiet_futility positions "),
         "header: {}",
         printed.header
     );
