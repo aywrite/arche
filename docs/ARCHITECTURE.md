@@ -170,7 +170,9 @@ term over every pair of pieces.
 - **zobrist.rs**: The position hash, updated incrementally as pieces move.
 - **bench.rs**: A fixed suite of positions searched to a fixed depth,
   printing exact node counts. This is what a commit's `Bench:` trailer
-  states and what CI verifies.
+  states and what CI verifies. Beside it, the games suite: positions drawn
+  from whole games and searched to a node budget, which weights the phases
+  of a game the way play does, for measuring speed.
 - **recorder.rs**: What the four recorders below share: the reservoir that
   hangs off an engine and keeps one node in every n, the loop that searches
   a suite with one armed, and the lanes that keep their samples apart. An
