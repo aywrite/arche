@@ -528,7 +528,7 @@ fn pieces_of(board: &Board) -> impl Iterator<Item = (u8, Piece, Color)> + '_ {
 mod evaluate {
     use super::{
         Board, Caches, Memo, PawnCache, ShelterCache, TERMS, TOTAL_PHASE, eval, eval_cached,
-        king_attack, mobility, pawn_structure, shelter,
+        factors, king_attack, mobility, pawn_structure, pieces_of, shelter,
     };
     use crate::board::fens;
     use crate::misc::{Color, File, coordinate_to_index};
@@ -661,16 +661,23 @@ mod evaluate {
 
     /// The point of tapering: the same king on the same square is scored
     /// differently depending on what is left on the board. Each pair below
-    /// differs by the king's square and nothing else, material included, so
-    /// the difference is the king's table alone, and what is pinned is the
+    /// differs by the king's square and nothing else, material included, and
+    /// the pair term is taken out because it is not tapered, so the
+    /// difference is what the phase weighs, and what is pinned is the
     /// direction the score moves in as the board empties, which a phase read
     /// the wrong way round would reverse.
     #[test]
     fn a_king_is_worth_more_in_the_middle_the_emptier_the_board() {
-        // two king squares, e4 and g1, at three phases
+        // two king squares, e4 and g1, at three phases. The fitted pair term
+        // prefers e4 behind a full board by about eighty centipawns, which
+        // hid the opening's sign; it is white relative, as these scores are
+        // with white to move
+        fn tapered(fen: &str) -> i32 {
+            let board = Board::from_fen(fen).unwrap();
+            i32::from(eval(&board)) - factors::Machine::of(pieces_of(&board)).score()
+        }
         fn centre_over_corner(centre: &str, corner: &str) -> i32 {
-            i32::from(eval(&Board::from_fen(centre).unwrap()))
-                - i32::from(eval(&Board::from_fen(corner).unwrap()))
+            tapered(centre) - tapered(corner)
         }
         let opening = centre_over_corner(
             "rnbqkbnr/pppppppp/8/8/4K3/8/PPPPPPPP/RNBQ1B1R w kq - 0 1",

@@ -3594,10 +3594,16 @@ mod search {
         };
         const DEPTH: u8 = 6;
         let mut narrowed_somewhere = false;
+        // the promotions position was the third until the pair term's refit
+        // at a ridge of 3e-7, under which a queen and a rook promotion tie
+        // at depth six (573 each) and the two searches break the tie
+        // differently. A tie says nothing about the schedule, so the sharp
+        // middlegame stands in for it, and every position here answers with
+        // the same move both ways with the fitted table and the test rank
         for fen in [
             fens::KIWIPETE,
             "8/2p5/3p4/KP5r/1R3p1k/8/4P1P1/8 w - - 10 10",
-            fens::PROMOTIONS,
+            fens::SHARP_MIDDLEGAME,
         ] {
             let mut direct = reference(Board::from_fen(fen).unwrap());
             let expected = completed(direct.search(DEPTH));
@@ -3614,17 +3620,12 @@ mod search {
             );
 
             assert_eq!(result.score, expected.score, "score differs for {}", fen);
-            // the pinned positions have one best move each with the fitted
-            // table; the test rank's ties a queen and a rook promotion, and
-            // the two searches break the tie differently
-            if !cfg!(feature = "machine-test") {
-                assert_eq!(
-                    format!("{}", result.best_move),
-                    format!("{}", expected.best_move),
-                    "best move differs for {}",
-                    fen
-                );
-            }
+            assert_eq!(
+                format!("{}", result.best_move),
+                format!("{}", expected.best_move),
+                "best move differs for {}",
+                fen
+            );
             narrowed_somewhere |= result.nodes != full.nodes;
         }
         assert!(
@@ -4333,8 +4334,11 @@ mod search {
         // a tainted entry the reference refuses to cut on still names the
         // move to try first. Seeded with each capture in turn, the capture
         // search's tree has to change with the move named; were the refusal
-        // read as a miss, every seed would search the same tree
-        let board = Board::from_fen(fens::KIWIPETE).unwrap();
+        // read as a miss, every seed would search the same tree. Kiwipete was
+        // this fixture until the pair term's refit at a ridge of 3e-7, under
+        // which every one of its eight seeds searches the same 681 nodes. The
+        // promotions position's six seeds search four different trees
+        let board = Board::from_fen(fens::PROMOTIONS).unwrap();
         let mut probe = board.clone();
         let captures: Vec<Play> = board
             .generate_captures()
