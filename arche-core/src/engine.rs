@@ -44,11 +44,14 @@ const _: () = assert!(MAX_PLY < u8::MAX);
 // boundary read between eighty five and ninety one while it could be read
 // there; the default's other shortcuts now lose the mate at every margin
 // from sixty to a hundred. With this shortcut alone on the reference the
-// boundary is seventy seven, which
-// the_reverse_futility_margin_keeps_the_depth_four_mate pins. That test
-// guards only a cut below seventy seven, so re-measure before moving the
+// boundary was seventy seven under the pair term fitted at a ridge of 1e-6,
+// with the margin at a hundred. The wider term fitted at 3e-8 moved it to
+// between a hundred and fifty and a hundred and fifty five, and the margin
+// moved with it, keeping about the same gap above it.
+// the_reverse_futility_margin_keeps_the_depth_four_mate pins the boundary.
+// That test guards only a cut below it, so re-measure before moving the
 // figure. docs/ROADMAP.md has the shadow lane's reading.
-const REVERSE_FUTILITY_MARGIN: Score = 100;
+const REVERSE_FUTILITY_MARGIN: Score = 175;
 // The deepest node the margin may answer. Four, six and eight give the
 // same bench count to a tenth of a percent.
 const REVERSE_FUTILITY_MAX_DEPTH: u8 = 4;
