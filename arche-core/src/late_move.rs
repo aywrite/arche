@@ -155,12 +155,12 @@ const ATTENTION_INTERCEPT: i64 = -3540;
 // coverage operating point, and not chosen again for these.
 const DEEP_REDUCTION_THRESHOLD: i64 = -4637;
 // The score at or under which a late quiet is not searched at all: the
-// largest whose region covers no more of the fitting half's rows than the
-// weights these replaced covered at their own threshold, -7954 (41.47%).
-// On the other half it skips 41.32% of the rows at 0.0303% attention,
-// against 41.29% at 0.0373% for the weights it replaced, a ratio of 1.230
-// (95% 1.157 to 1.308 over resampled pairs).
-pub(crate) const LATE_MOVE_PRUNING_THRESHOLD: i64 = -5932;
+// largest whose region's attention rate on the fitting half is no worse
+// than the weights these replaced had at their own threshold, -7954. On
+// the other half it skips 46.55% of the rows at 0.0364% attention, against
+// 41.29% at 0.0373% for the weights it replaced. The refit first stood at
+// -5932, where it matched their coverage instead (41.32% at 0.0303%).
+pub(crate) const LATE_MOVE_PRUNING_THRESHOLD: i64 = -5457;
 // The index the deep reduction's rule wants a move to have reached, and
 // how much further along the order per ply of depth over the floor the
 // deeper scout starts at. Chosen offline on the training half of a ledger
@@ -1134,8 +1134,8 @@ mod tests {
         // a killer with the whole of the node's history, deep in a lost
         // window: dead despite both
         assert_eq!(row(4, 4, 1000, true, Table::Miss, -1883, 1882, 32), -17241);
-        // one of the 171 fitting rows at depth four and up that sit on the
-        // skip's threshold exactly
+        // one of the 171 fitting rows at depth four and up that sat on the
+        // refit's first threshold exactly
         assert_eq!(row(6, 5, 107, false, Table::Move, -325, 324, 33), -5932);
         // the deadest row of the fitting half
         assert_eq!(row(4, 4, 0, false, Table::Move, -3744, 3743, 25), -33489);
@@ -1143,16 +1143,13 @@ mod tests {
         assert_eq!(row(4, 7, 0, false, Table::Move, 368, -1343, 24), 12057);
         // a row the gate skipped at depth five
         assert_eq!(row(5, 8, 0, false, Table::Move, -338, 337, 40), -6563);
-        // the killer weight raises a row by exactly its coefficient, and
-        // on the threshold row that is the whole distance out of the dead
-        // region. It is a weight and not an exemption: the first row
-        // above is a killer and dead all the same, so the model may skip
-        // a killer whose bounds bury it
+        // the killer weight raises a row by exactly its coefficient. It is
+        // a weight and not an exemption: the first row above is a killer
+        // and dead all the same, so the model may skip a killer whose
+        // bounds bury it
         let on_edge = row(6, 5, 107, false, Table::Move, -325, 324, 33);
         let as_killer = row(6, 5, 107, true, Table::Move, -325, 324, 33);
         assert_eq!(as_killer - on_edge, ATTENTION_KILLER);
-        assert!(on_edge <= LATE_MOVE_PRUNING_THRESHOLD);
-        assert!(as_killer > LATE_MOVE_PRUNING_THRESHOLD);
     }
 
     /// The gate driven with the bounds solved to land the score exactly
