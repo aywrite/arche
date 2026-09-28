@@ -379,8 +379,9 @@ pub(crate) fn eval_cached(board: &Board, caches: &mut Caches) -> Score {
     sum(board, caches)
 }
 
-/// The evaluation's incremental state, hosted by the board and kept in step
-/// by being told about every piece placed, removed and relocated.
+/// The evaluation's incremental state, hosted by the board. The board's make
+/// tells it about every piece placed, removed and relocated, and its unmake
+/// copies back the state saved before the move.
 #[derive(Debug, Copy, Clone, PartialEq, Eq)]
 pub(crate) struct Accumulator {
     /// Each side's material, indexed by `Color`'s discriminant: an index is a

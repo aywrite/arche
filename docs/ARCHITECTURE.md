@@ -33,10 +33,12 @@ term over every pair of pieces.
   pawns alone, the evaluation's running totals (material, the piece square
   score and the pair term's sums), the pieces giving check, each side's king
   square, and a ring of the last ~1024 plies (used by the repetition and fifty
-  move rules, and to undo moves). All piece placement goes through one
-  function, which is what keeps the derived state in sync. Debug builds
-  recompute the derived state from scratch after every move and assert it
-  matches, so a bug in an incremental update fails tests instead of
+  move rules, and to undo moves). A stack by ply holds the pawn key and the
+  running totals as they stood before each move. A make places every piece
+  through one function, which keeps the derived state in sync; the unmake
+  moves the pieces back on the boards alone and copies the rest back. Debug
+  builds recompute the derived state from scratch after every move and assert
+  it matches, so a bug in an incremental update fails tests instead of
   misevaluating quietly. It names no evaluation term: each one reads the
   boards it needs through `pub(crate)` accessors and keeps its own counts and
   masks beside its weights. Move generation also lives here. It is
@@ -123,17 +125,18 @@ term over every pair of pieces.
 - **eval/**: What a position scores: a file per leaf term, the pair term and
   its table, and two files for what they share.
   - **mod.rs**: The material values, the phase weights the taper is read at,
-    the accumulator, and the sum the search asks for. The board tells the
-    accumulator about every piece placed, removed and moved, so material and
-    the piece square score are carried rather than counted; the leaf terms are
-    computed at the leaf. Material that cannot mate is answered with a hard
-    zero, which with the pair term below is where the score is not a sum over
-    the weights. `ROWS` holds, for each piece on each square, everything the
-    board's update reads in one row: the pair term's factors in both
-    perspectives, the piece square pair and the zobrist key. `TERMS`, a
-    descriptor per leaf term, is what the tuner lays its slot vector out
-    from. One walk over each side's pieces probes each attack set once for
-    both mobility and the king attack zone.
+    the accumulator, and the sum the search asks for. The board's make tells
+    the accumulator about every piece placed, removed and moved, and its
+    unmake copies the accumulator back, so material and the piece square
+    score are carried rather than counted; the leaf terms are computed at the
+    leaf. Material that cannot mate is answered with a hard zero, which with
+    the pair term below is where the score is not a sum over the weights.
+    `ROWS` holds, for each piece on each square, everything the board's update
+    reads in one row: the pair term's factors in both perspectives, the piece
+    square pair and the zobrist key. `TERMS`, a descriptor per leaf term, is
+    what the tuner lays its slot vector out from. One walk over each side's
+    pieces probes each attack set once for both mobility and the king attack
+    zone.
   - **factors.rs**: The pair term, a factorization machine over the piece
     square features: a weight for every pair of pieces, as the inner product
     of two rows of sixteen factors. The accumulator keeps each perspective's

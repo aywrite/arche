@@ -135,6 +135,49 @@ fn history_index(ply: usize) -> usize {
 const INITIAL_KEY: u64 = 2_340_980_257_093;
 static EMPTY_HISTORY: [Option<PlayState>; MAX_GAME_SIZE] = [None; MAX_GAME_SIZE];
 
+/// What a move changes that the unmake restores by copy rather than by
+/// reverse update: the pawn key and the accumulator, as they stood before
+/// the move.
+#[derive(Debug, Copy, Clone)]
+struct Kept {
+    pawn_key: u64,
+    eval: Accumulator,
+}
+
+impl Kept {
+    const EMPTY: Self = Self {
+        pawn_key: 0,
+        eval: Accumulator::EMPTY,
+    };
+}
+
+/// Plies of `Kept` the board holds, as a ring indexed by ply. Only a move
+/// that is still to be taken back reads its entry, so this covers the depth
+/// of a search (`MAX_PLY`), not the fifty move window the history covers.
+const KEPT_PLIES: usize = 256;
+// a search deeper than the ring would read a slot a later move overwrote
+const _: () = assert!(KEPT_PLIES > crate::engine::MAX_PLY as usize + 1);
+
+/// The saved state a make leaves for its unmake. Scratch rather than
+/// position: two boards standing on the same position are equal whatever
+/// their stacks hold, and printing one leaves it out.
+#[derive(Clone)]
+struct KeptStack([Kept; KEPT_PLIES]);
+
+impl PartialEq for KeptStack {
+    fn eq(&self, _: &Self) -> bool {
+        true
+    }
+}
+
+impl Eq for KeptStack {}
+
+impl fmt::Debug for KeptStack {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        f.write_str("KeptStack")
+    }
+}
+
 const A1: u8 = 0;
 const B1: u8 = 1;
 const C1: u8 = 2;
@@ -411,7 +454,7 @@ impl fmt::Display for Unplayable {
     }
 }
 
-/// The whole position with its history, a little over forty kilobytes. The
+/// The whole position with its history, about sixty four kilobytes. The
 /// search makes and unmakes moves on the one board and never clones it; the
 /// type is not `Copy`, so a copy has to be written as a clone.
 ///
@@ -419,8 +462,8 @@ impl fmt::Display for Unplayable {
 /// restate the piece boards and are kept in step with them by every move
 /// made and unmade. `key` also folds in the side to move, the castle rights
 /// and the en passant square. In a debug build `debug_assert_state_in_step`
-/// recomputes the first five after every move, and `make_move` checks
-/// `checkers` beside it. Outside the crate the position is read through the accessors
+/// recomputes the first five after every move made and taken back, and
+/// `make_move` checks `checkers` beside it. Outside the crate the position is read through the accessors
 /// and moved on through `play_by_name`, which has no counterpart that takes
 /// a move back.
 #[derive(Debug, PartialEq, Clone, Eq)]
@@ -433,13 +476,15 @@ pub struct Board {
     white: u64,
     black: u64,
 
-    // what stands on each square, written only by `move_accumulators`. Not
-    // called a mailbox because `magic` already calls its sentinel grid that.
+    // what stands on each square, written wherever a piece is placed,
+    // lifted or moved. Not called a mailbox because `magic` already calls its
+    // sentinel grid that.
     squares: [Option<Piece>; 64],
 
     pub(crate) active_color: Color,
     // each side's king square, indexed by `Color`: set by `from_fen` and
-    // kept by `relocate_piece_index`, the only thing that moves a king
+    // kept by `relocate_piece_index` and the unmake's `relocate_bare`, the
+    // only things that move a king
     king_squares: [u8; 2],
     castle: CastlePermissions,
     en_passant: Option<Coordinate>,
@@ -459,6 +504,7 @@ pub struct Board {
     pub(crate) eval: Accumulator,
 
     history: [Option<PlayState>; MAX_GAME_SIZE],
+    kept: KeptStack,
     pub(crate) key: u64,
     /// The zobrist key over both sides' pawns alone: no side to move, castle
     /// rights or en passant square, so two positions with the same pawns
@@ -1353,6 +1399,10 @@ impl Board {
             position_key: self.key,
             checkers: self.checkers,
         });
+        self.kept.0[self.ply % KEPT_PLIES] = Kept {
+            pawn_key: self.pawn_key,
+            eval: self.eval,
+        };
 
         let opposing_color = !self.active_color;
         let old_castle = self.castle;
@@ -1512,39 +1562,80 @@ impl Board {
                 Color::White => play.to - 8,
                 Color::Black => play.to + 8,
             };
-            self.set_piece_index(en_passant_index, Piece::Pawn, self.active_color);
+            self.place_bare::<true>(en_passant_index, Piece::Pawn, self.active_color);
         }
 
-        let from_piece = self
-            .get_piece_index(play.to)
-            .expect("The to square must always be occupied when undoing");
         if let Some(promote) = play.promote {
-            self.clear_piece_index(play.to, (&promote).into(), opposing_color);
-            self.set_piece_index(play.from, Piece::Pawn, opposing_color);
+            self.place_bare::<false>(play.to, (&promote).into(), opposing_color);
+            self.place_bare::<true>(play.from, Piece::Pawn, opposing_color);
         } else {
-            self.relocate_piece_index(play.to, play.from, from_piece, opposing_color);
+            let from_piece = self
+                .get_piece_index(play.to)
+                .expect("The to square must always be occupied when undoing");
+            self.relocate_bare(play.to, play.from, from_piece, opposing_color);
         }
 
         if let Some(capture) = play.capture {
             if !play.en_passant {
-                self.set_piece_index(play.to, capture, self.active_color);
+                self.place_bare::<true>(play.to, capture, self.active_color);
             }
         }
         if play.castle {
             match play.to {
-                C1 => self.move_piece(D1, A1, Piece::Rook, None, opposing_color),
-                C8 => self.move_piece(D8, A8, Piece::Rook, None, opposing_color),
-                G1 => self.move_piece(F1, H1, Piece::Rook, None, opposing_color),
-                G8 => self.move_piece(F8, H8, Piece::Rook, None, opposing_color),
+                C1 => self.relocate_bare(D1, A1, Piece::Rook, opposing_color),
+                C8 => self.relocate_bare(D8, A8, Piece::Rook, opposing_color),
+                G1 => self.relocate_bare(F1, H1, Piece::Rook, opposing_color),
+                G8 => self.relocate_bare(F8, H8, Piece::Rook, opposing_color),
                 _ => unreachable!(),
             }
         }
 
         self.active_color = opposing_color;
-        // the key comes back from the history rather than being unfolded, so
-        // make and undo cannot let it drift
+        // the key, the pawn key and the accumulator come back by copy rather
+        // than being unfolded: the pieces are moved back on the boards alone
+        let kept = &self.kept.0[self.ply % KEPT_PLIES];
+        self.pawn_key = kept.pawn_key;
+        self.eval = kept.eval;
         self.key = history.position_key;
         self.checkers = history.checkers;
+        self.debug_assert_state_in_step();
+    }
+
+    /// Move a piece on the boards and `squares` alone, for the unmake.
+    #[inline(always)]
+    fn relocate_bare(&mut self, from: u8, to: u8, piece: Piece, color: Color) {
+        let both = (1u64 << from) | (1u64 << to);
+        self.pieces[piece as usize] ^= both;
+        match color {
+            Color::Black => self.black ^= both,
+            Color::White => self.white ^= both,
+        }
+        self.squares[(from & 63) as usize] = None;
+        self.squares[(to & 63) as usize] = Some(piece);
+        if piece == Piece::King {
+            self.king_squares[color as usize] = to;
+        }
+    }
+
+    /// Put down or pick up a piece on the boards and `squares` alone.
+    #[inline(always)]
+    fn place_bare<const SET: bool>(&mut self, index: u8, piece: Piece, color: Color) {
+        let board = &mut self.pieces[piece as usize];
+        if SET {
+            board.set_bit(index);
+        } else {
+            board.clear_bit(index);
+        }
+        self.squares[(index & 63) as usize] = if SET { Some(piece) } else { None };
+        let side = match color {
+            Color::Black => &mut self.black,
+            Color::White => &mut self.white,
+        };
+        if SET {
+            side.set_bit(index);
+        } else {
+            side.clear_bit(index);
+        }
     }
 
     /// Hand the move to the other side without touching a piece. Not a
@@ -2342,6 +2433,7 @@ impl Board {
             eval: Accumulator::EMPTY,
 
             history: EMPTY_HISTORY,
+            kept: KeptStack([Kept::EMPTY; KEPT_PLIES]),
             key: INITIAL_KEY,
             pawn_key: 0,
         };
