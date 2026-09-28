@@ -1876,6 +1876,7 @@ impl AlphaBeta {
     // parameter rather than as a field of the engine, and the root bounds.
     #[inline(always)]
     #[allow(clippy::too_many_arguments)]
+    #[cfg_attr(feature = "trace", track_caller)]
     fn search_child(
         &mut self,
         m: &Play,

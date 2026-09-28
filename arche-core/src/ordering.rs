@@ -573,7 +573,11 @@ fn keyed(board: &Board, m: &Play, is_table_move: bool, quiet: Option<&Quiet<'_>>
 fn capture_score(board: &Board, m: &Play, victim: Piece) -> i64 {
     let see = board.see(m);
     #[cfg(feature = "trace")]
-    crate::trace::swap(m, board.get_piece_index(m.from), see);
+    crate::trace::swap(
+        m,
+        board.get_piece_and_color_index(m.from).map(|(p, _)| p),
+        see,
+    );
     let see = i64::from(see);
     let score = see * SEE_UNIT + mvv_lva(board, m, victim);
     if see >= 0 {

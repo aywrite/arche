@@ -100,6 +100,14 @@ pub const TRACE: Command = Command {
             value: "<file>",
         },
         Keyword {
+            word: "nodes",
+            value: "<n>",
+        },
+        Keyword {
+            word: "streams",
+            value: "<stream>[,<stream>]",
+        },
+        Keyword {
             word: "out",
             value: "<dir>",
         },
@@ -459,10 +467,17 @@ pub fn trace_settings(params: &Params) -> Result<arche_core::trace::Settings, St
         .or_refuse("out")?
         .unwrap_or("trace")
         .into();
+    let nodes = params.parse::<u64>("nodes").or_refuse("nodes")?;
+    let streams = params
+        .value("streams")
+        .or_refuse("streams")?
+        .map(|s| s.split(',').map(str::to_string).collect());
     let (epd, positions) = suite(params)?;
     TRACE.claim(params)?;
     Ok(trace::Settings {
         depth,
+        nodes,
+        streams,
         every,
         window,
         cap,

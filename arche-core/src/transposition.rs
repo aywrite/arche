@@ -741,6 +741,8 @@ impl TranspositionTable {
     /// Store unless the slot holds something worth more. Reports whether
     /// the entry landed.
     fn set(&mut self, key: u64, pv: Pv) -> bool {
+        #[cfg(feature = "trace")]
+        crate::trace::read(crate::trace::Read::KeyStore);
         let (index, i) = self.slot_for(key);
         let old = self.table[index].entries[i];
         if old.generation() != 0 && self.age(old) < STALE_AFTER_SEARCHES {
@@ -781,6 +783,8 @@ impl TranspositionTable {
     /// there earlier in the game must not outrank it. When one did, the
     /// engine answered one move while its line opened with another.
     fn set_always(&mut self, key: u64, pv: Pv) {
+        #[cfg(feature = "trace")]
+        crate::trace::read(crate::trace::Read::KeyStore);
         let (index, i) = self.slot_for(key);
         self.store(index, i, key, pv);
     }
@@ -847,6 +851,8 @@ impl TranspositionTable {
         refuse_tainted: bool,
         guard_rule50: bool,
     ) -> Probe {
+        #[cfg(feature = "trace")]
+        crate::trace::read(crate::trace::Read::KeyProbe);
         let (found, foreign) = self.get_audited(board.key);
         let Some(pv) = found else {
             return Probe::Miss;
@@ -879,6 +885,8 @@ impl TranspositionTable {
     /// The move to try first here, whatever wrote it, quiescence included.
     #[inline]
     pub fn ordering_play(&self, board: &Board) -> Option<Play> {
+        #[cfg(feature = "trace")]
+        crate::trace::read(crate::trace::Read::KeyProbe);
         self.get(board.key).map(|pv| pv.play)
     }
 

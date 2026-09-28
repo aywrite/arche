@@ -768,7 +768,8 @@ did rather than argued.
 
 ```
 cargo build --release --features trace
-target/release/arche trace [depth] [every <n>] [window <plies>] [cap <n>] [epd <file>] [out <dir>]
+target/release/arche trace [depth] [every <n>] [window <plies>] [cap <n>] [epd <file>]
+    [nodes <n>] [streams <stream>[,<stream>]] [out <dir>]
 ```
 
 The hooks exist only in a build with the `trace` feature. Without it they
@@ -784,11 +785,14 @@ of that number, and so are the nodes up to `window` levels below one, so a
 child's calls can be set beside its parent's. A level is a node entered, not
 always a move: a full width node at depth zero enters quiescence on the same
 position, and the two are parent and child here.
+`nodes` searches each position to that many nodes rather than to the depth,
+as `bench games` does (`nodes 100000 epd arche-core/games.epd` traces the games
+suite), and `streams` records only the streams named, the nodes always.
 Recording stops, and the search carries on, when a stream reaches `cap`
 records. Recording changes nothing: `recording_leaves_the_measured_search_where_it_was`
 in `arche-core/src/trace.rs` asserts the node counts.
 
-Eight streams are written to `out` (`trace` by default), each a file of fixed
+Nine streams are written to `out` (`trace` by default), each a file of fixed
 width little endian records behind a 24 byte header, with `manifest.json`
 beside them:
 
@@ -820,6 +824,22 @@ beside them:
   capture, reverse futility, the null move's gate, quiet futility and the
   late move gate's score), the bound it was compared with and the outcome,
   and whether quiescence returned it.
+- `makes`: every move a sampled node makes, and every pass: the line that
+  asked, the move and the piece that moved, which legality probe ran and
+  whether the move was legal, the key and fifty move counter before, the
+  child node's number, and the state the move left
+  (the boards, the side, rights, en passant square and fifty counter, the
+  key, the pawn key, the checkers, the accumulator and the pair term's sums),
+  taken when the probe answers, so an illegal move is recorded just before it
+  is taken back. When the move is taken back the record gets the nodes and
+  moves made below it, and how often each piece of that state was read below
+  it, over the whole subtree and before the first move made below it. A read
+  is counted where the search asks (the table's probe and store, the
+  repetition and fifty move tests, the two tables' keys, the taper, the check
+  tests, the evasion mask, `get_piece_index` and the boards' main readers),
+  whether or not the node is sampled; the upkeep's own reads are not. It also
+  says whether `gives_check` had been asked of the move at that node, and
+  what it answered.
 
 A call site is the line that made the call, found by `track_caller` through
 the board's helpers, so a probe `see` makes through `sliders_onto` is

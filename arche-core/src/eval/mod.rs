@@ -186,12 +186,16 @@ type PawnCache = Cache<{ pawn_structure::CACHE_BITS }>;
 impl Memo for Caches {
     #[inline]
     fn shelter(&mut self, board: &Board) -> i32 {
+        #[cfg(feature = "trace")]
+        crate::trace::read(crate::trace::Read::PawnKey);
         self.shelter
             .get(shelter::key(board), || shelter::fold(board))
     }
 
     #[inline]
     fn pawn_structure(&mut self, board: &Board) -> i32 {
+        #[cfg(feature = "trace")]
+        crate::trace::read(crate::trace::Read::PawnKey);
         self.pawns
             .get(board.pawn_key, || pawn_structure::fold(board))
     }
@@ -223,6 +227,8 @@ impl Memo for Caches {
 #[inline]
 #[cfg_attr(feature = "trace", track_caller)]
 fn sum(board: &Board, memo: &mut impl Memo) -> Score {
+    #[cfg(feature = "trace")]
+    crate::trace::read(crate::trace::Read::Boards);
     #[cfg(feature = "trace")]
     let hits = memo.hits(board);
     if board.drawn_by_material() {
@@ -562,6 +568,8 @@ impl Accumulator {
     /// `tune::reconstruct` folds a whole row with one.
     #[inline]
     fn score(&self, side: Color, leaf: i32) -> Score {
+        #[cfg(feature = "trace")]
+        crate::trace::read(crate::trace::Read::Accumulator);
         // promotions can leave more on the board than the opening had, so the
         // phase is capped. It cannot go the other way: no weight is negative.
         let phase = self.phase.min(TOTAL_PHASE);
@@ -578,6 +586,17 @@ impl Accumulator {
             Color::White => eval,
             Color::Black => -eval,
         }
+    }
+}
+
+#[cfg(feature = "trace")]
+impl Accumulator {
+    /// The piece square pair, each side's material, the phase, and the pair
+    /// term's sums and diagonals, for the trace mode's `makes` stream.
+    #[allow(clippy::type_complexity)]
+    pub(crate) fn traced(&self) -> (i32, [u32; 2], i32, [[i16; 16]; 2], [i32; 2]) {
+        let (sums, diagonal) = self.machine.traced();
+        (self.psqt, self.material, self.phase, sums, diagonal)
     }
 }
 
