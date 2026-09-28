@@ -9,6 +9,7 @@ use super::misc::{
 use super::play::Play;
 use crate::eval::{self, Accumulator};
 use crate::magic::MAGIC;
+use crate::swap_table;
 use crate::zobrist::Zobrist;
 use smallvec::SmallVec;
 use std::fmt;
@@ -1060,9 +1061,85 @@ impl Board {
     /// counted as the pawn it was on both sides of the exchange, which
     /// undervalues promoting captures; the ordering promotions get is theirs
     /// to fix. Pins are ignored. A move with no victim is worth zero.
+    ///
+    /// Most swaps are answered without walking them. With nothing defending
+    /// the square the capture wins the victim. With no piece of ours able to
+    /// follow the defender's recapture, it wins the victim less the
+    /// capturer. And when no slider stands behind the pieces bearing on the
+    /// square (one probe through the occupancy without them says so), the
+    /// line is fixed by the attackers alone and `swap_table` has the answer.
+    /// The rest, and a side with more than three attackers, walk the swap.
     pub(crate) fn see(&self, m: &Play) -> i32 {
         #[cfg(feature = "trace")]
         crate::trace::read(crate::trace::Read::Boards);
+        let Some(victim) = m.capture else {
+            return 0;
+        };
+        let won = SEE_VALUES[victim as usize];
+        let mut occupied = self.white | self.black;
+        occupied &= !(1u64 << m.from);
+        if m.en_passant {
+            let taken = match self.active_color {
+                Color::White => m.to - 8,
+                Color::Black => m.to + 8,
+            };
+            occupied &= !(1u64 << taken);
+        }
+        let (ours, theirs) = self.sides(self.active_color);
+        let bearing = (self.steppers_onto(m.to) | self.sliders_onto(m.to, occupied)) & occupied;
+        let defenders = bearing & theirs;
+        if defenders == 0 {
+            return won;
+        }
+        // the sliders on the square's lines that do not bear on it yet: the
+        // only pieces a capture could uncover
+        let i = (m.to & 63) as usize;
+        let behind = occupied & !bearing;
+        let lined = ((ATTACK_MASKS.diagonal[i] & (self.bishops() | self.queens()))
+            | (ATTACK_MASKS.straight[i] & (self.rooks() | self.queens())))
+            & behind;
+        let attackers = bearing & ours;
+        let capturer = self.squares[(m.from & 63) as usize].map_or(6, |p| p as usize);
+        if attackers == 0 && lined & ours == 0 {
+            // the defender takes back and nothing of ours can follow
+            return won - SEE_VALUES.get(capturer).copied().unwrap_or(0);
+        }
+        // a slider that bears through the occupancy with every direct
+        // attacker gone is the only kind that can join as they leave, so
+        // none there means none at all
+        if lined != 0 && self.sliders_onto(m.to, behind) & behind != 0 {
+            return self.swap_walk(m);
+        }
+        let at = swap_table::CAPTURER_BLOCK[capturer]
+            + usize::from(swap_table::OURS[self.attacker_code(attackers)])
+            + usize::from(swap_table::THEIRS[self.attacker_code(defenders)]);
+        // a side with more than three attackers reads past the table
+        match swap_table::TABLE.get(at) {
+            Some(&back) => won - 100 * i32::from(back),
+            None => self.swap_walk(m),
+        }
+    }
+
+    /// A side's direct attackers packed as `swap_table` counts them, masked to
+    /// its code tables' length.
+    #[inline(always)]
+    fn attacker_code(&self, mut set: u64) -> usize {
+        let mut code = 0;
+        while set != 0 {
+            let at = set.trailing_zeros() as usize & 63;
+            code += swap_table::PLACE_VALUE[self.squares[at].map_or(6, |p| p as usize)];
+            set &= set - 1;
+        }
+        code & (swap_table::CODES - 1)
+    }
+
+    /// The swap walked: the least valuable attacker captures on each side in
+    /// turn, sliders behind a capturer joining as the line opens, and a
+    /// negamax fold over the recorded gains lets either side stop where
+    /// continuing stands worse. `see` comes here for the exchanges a slider
+    /// can join and for a side with more than three attackers.
+    #[inline(never)]
+    fn swap_walk(&self, m: &Play) -> i32 {
         let Some(victim) = m.capture else {
             return 0;
         };
@@ -4182,6 +4259,50 @@ mod between {
 mod see {
     use super::{Board, Color, Piece, Play, SEE_VALUES, play_named};
     use pretty_assertions::assert_eq;
+
+    /// Every capture in every position of the three suites, and in every
+    /// position one capture on from each: the answer `see` reads off its
+    /// exits and its table is the swap walked.
+    #[test]
+    fn the_table_and_the_exits_agree_with_the_walk() {
+        let suites = [
+            include_str!("../bench.epd"),
+            include_str!("../tactics.epd"),
+            include_str!("../strategy.epd"),
+        ];
+        let mut compared = 0;
+        let mut compare = |board: &Board| {
+            for m in board
+                .generate_moves()
+                .iter()
+                .filter(|m| m.capture.is_some())
+            {
+                assert_eq!(board.see(m), board.swap_walk(m), "{} {m:?}", board.to_fen());
+                compared += 1;
+            }
+        };
+        for line in suites.iter().flat_map(|s| s.lines()) {
+            let fields: Vec<&str> = line.split_whitespace().take(4).collect();
+            if fields.len() < 4 {
+                continue;
+            }
+            let Ok(mut board) = Board::from_fen(&format!("{} 0 1", fields.join(" "))) else {
+                continue;
+            };
+            compare(&board);
+            for m in board
+                .generate_moves()
+                .iter()
+                .filter(|m| m.capture.is_some())
+            {
+                if board.make_move(m) {
+                    compare(&board);
+                    board.undo_move();
+                }
+            }
+        }
+        assert!(compared > 20_000, "only {compared} captures were compared");
+    }
 
     fn see_of(fen: &str, name: &str) -> i32 {
         let board = Board::from_fen(fen).unwrap();

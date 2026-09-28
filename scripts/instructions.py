@@ -77,6 +77,7 @@ def count(
         capture_output=True,
         text=True,
         stdin=subprocess.DEVNULL,
+        check=False,
     )
     if output.returncode != 0:
         # most often a build from before `bench games`, which refuses the word

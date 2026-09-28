@@ -20,6 +20,7 @@ pub mod recorder;
 pub mod reduction;
 pub mod residual;
 pub mod strategy;
+mod swap_table;
 pub mod tactics;
 #[cfg(feature = "trace")]
 pub mod trace;

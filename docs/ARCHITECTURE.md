@@ -46,6 +46,9 @@ term over every pair of pieces.
   rejected. Two questions the search asks about a move before making it are
   answered here as well: what a swap on its square is worth, and whether it
   gives check.
+- **swap_table.rs**: What a swap wins when no slider can join it from
+  behind, by capturer and each side's attackers counted by value. Built at
+  compile time; `see` reads it and walks the swap only when it cannot.
 - **magic.rs**: Attack lookups for the sliding pieces (bishop, rook,
   queen), using magic bitboards: a table computed at compile time that maps
   "rook on this square, these pieces in the way" directly to the attacked
