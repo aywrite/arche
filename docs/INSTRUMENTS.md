@@ -39,7 +39,7 @@ It searches the bench's suite, or the one `epd` names, samples the nodes
 reverse futility and the null move pass answered, and then asks the reference
 what each of those positions is really worth. Those are the two shortcuts that
 answer a whole node, which is what leaves the reference something to be asked.
-The quiescence skips pass over a move rather than answering a node, and what
+The quiescence skip passes over a move rather than answering a node, and what
 the late move reduction and pruning write off is the reduction ledger's
 question further down.
 
@@ -473,7 +473,7 @@ A capture search that reaches a stalemate comes back at zero, so a position
 with one in reach is refused as well, and a corpus built before quiescence
 scored stalemates can differ from one built after.
 The capture search is the reference's, because the default's quiescence skips
-captures it prices as hopeless, and a corpus whose quietness was decided by a
+captures it prices as losing, and a corpus whose quietness was decided by a
 guess would carry the guess into every weight fitted on it.
 
 The header states what the run turned away beside what it kept:
@@ -625,8 +625,8 @@ logistic of the evaluation, with log loss printed beside it; if the two
 scoring rules disagree about a candidate that is worth seeing. The scaling
 constant K is fitted once on the training games at the shipped weights and held
 there, because K and the scale of the weights are one degree of freedom and
-the scale is not free: `REVERSE_FUTILITY_MARGIN`, `DELTA_MARGIN` and the
-ledger's `eval_beta` column all assume a pawn is about a hundred.
+the scale is not free: `REVERSE_FUTILITY_MARGIN` and the ledger's
+`eval_beta` column both assume a pawn is about a hundred.
 
 Scoring a vector over the corpus is one matrix-vector product, so a candidate
 evaluation term is one appended column whose held-out loss can be read before
@@ -674,9 +674,8 @@ carry is refused whatever it scores. The selection loss beside the chosen vector
 is therefore the fit's own best case; the sealed group is where an honest
 interval comes from.
 
-`MATERIAL` is held by default, because the delta margin in quiescence reads it,
-so moving it changes the tree for a reason unrelated to the evaluation's
-accuracy; `--free-material` lets it move. `--hold tables` holds the table
+`MATERIAL` is held by default, as it was while the delta margin in quiescence
+read it; `--free-material` lets it move. `--hold tables` holds the table
 entries, and `--hold <term>` any leaf term the layout line names, given once
 for each term held; a name the line does not carry is refused before the rows
 are read. A hold freezes both halves of the term's taper.

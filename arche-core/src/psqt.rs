@@ -76,8 +76,8 @@ const fn packed(mg: [i16; 64], eg: [i16; 64]) -> [i32; 64] {
 // -0.000832 against a standard error of 0.000040 over pairs. No sealed group
 // was opened. The fit before this one, over 1,812 games, is 96bad35.
 // Material was held at its shipped values because the delta margin in
-// quiescence reads it, and moving it would change the search tree for a
-// reason that is not the evaluation's accuracy.
+// quiescence read it at the time, and moving it would have changed the
+// search tree for a reason that is not the evaluation's accuracy.
 //
 // The tests below pin the shapes rather than the entries.
 

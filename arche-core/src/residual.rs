@@ -27,9 +27,9 @@ use std::fmt;
 /// The shortcut that answered a node, or the shadow lane that watched one
 /// it could have.
 ///
-/// Only shortcuts that answer a whole node are here. The delta margin and
-/// the losing capture skip pass over a move in quiescence, and the late move
-/// reduction's scout is the reduction ledger's question.
+/// Only shortcuts that answer a whole node are here. The losing capture skip
+/// passes over a move in quiescence, and the late move reduction's scout is
+/// the reduction ledger's question.
 ///
 /// The shadow kind answers nothing. It records every reverse futility
 /// candidate (eval at or above beta with the other gates passed) whether

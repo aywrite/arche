@@ -1,14 +1,14 @@
 // SPDX-License-Identifier: GPL-3.0-or-later
 // Copyright (C) 2022-2026 Andrew Wright
 
-use crate::board::{Board, MOVE_LIST_INLINE, Unplayable};
+use crate::board::{Board, Unplayable};
 use crate::census;
 use crate::effort;
 use crate::eval;
 use crate::ghi::GhiCounters;
 use crate::late_move;
 use crate::limits::Limits;
-use crate::misc::{Color, Piece, Score};
+use crate::misc::{Color, Score};
 use crate::ordering::{MoveOrdering, Ordered};
 use crate::play::Play;
 use crate::recorder::{Sampler, Window};
@@ -74,10 +74,6 @@ const NULL_MOVE_EVAL_UNIT: Score = 200;
 // The most plies the margin alone may add. Past three the pass proves
 // almost nothing, whatever the margin says.
 const NULL_MOVE_EVAL_CAP: u8 = 3;
-// How far short of alpha a capture may leave the standing eval, with the
-// captured piece counted as fully won, and still be searched in
-// quiescence. The conventional figure for conventional piece values.
-const DELTA_MARGIN: Score = 200;
 // How far either side of the previous iteration's score the root opens.
 // Chosen by a bench sweep of ten to forty at depth nine as the widest
 // width within a percent of the cheapest that also cost less than opening
@@ -110,13 +106,6 @@ fn null_move_reduction(config: SearchConfig, depth: u8, eval_beta: Score) -> u8 
     let margin = (eval_beta.max(0) / NULL_MOVE_EVAL_UNIT).min(NULL_MOVE_EVAL_CAP as Score) as u8;
     let grown = NULL_MOVE_REDUCTION + depth / NULL_MOVE_DEPTH_DIVISOR + margin;
     grown.min(depth - 1)
-}
-
-/// Quiescence's delta test: a capture short of alpha with its piece counted
-/// as fully won is expected to be worth less than alpha. Which captures it
-/// applies to is the caller's, and the move loop says why.
-fn short_of_alpha(standing: Score, captured: Piece, alpha: Score) -> bool {
-    standing + eval::material(captured) as Score + DELTA_MARGIN < alpha
 }
 
 /// Which places in a node's move list the node made and searched, a bit
@@ -274,9 +263,6 @@ pub struct SearchConfig {
     /// margin over beta rather than being the flat two. Rides on
     /// `null_move`, and changes no node's eligibility to pass.
     pub adaptive_null_move: bool,
-    /// Whether quiescence may skip a capture that leaves the standing eval
-    /// a margin short of alpha with its piece counted as fully won.
-    pub delta_margin: bool,
     /// Whether quiescence may skip a capture the swap prices as losing. The
     /// swap sees no pins and nothing beyond its square.
     pub see_pruning: bool,
@@ -427,13 +413,12 @@ impl SearchConfig {
     ///
     /// `taint` is not among them: it is a policy with four values rather
     /// than a switch, and `residuals` already takes it.
-    pub const SWITCHES: [(&'static str, TurnOff); 14] = [
+    pub const SWITCHES: [(&'static str, TurnOff); 13] = [
         ("reverse_futility", |config| config.reverse_futility = false),
         ("null_move", |config| config.null_move = false),
         ("adaptive_null_move", |config| {
             config.adaptive_null_move = false
         }),
-        ("delta_margin", |config| config.delta_margin = false),
         ("see_pruning", |config| config.see_pruning = false),
         ("late_move_reductions", |config| {
             config.late_move_reductions = false
@@ -473,7 +458,6 @@ impl SearchConfig {
             reverse_futility: false,
             null_move: false,
             adaptive_null_move: false,
-            delta_margin: false,
             see_pruning: false,
             late_move_reductions: false,
             deep_reductions: false,
@@ -528,7 +512,6 @@ impl Default for SearchConfig {
             reverse_futility: true,
             null_move: true,
             adaptive_null_move: true,
-            delta_margin: true,
             see_pruning: true,
             late_move_reductions: true,
             deep_reductions: true,
@@ -1590,27 +1573,6 @@ impl AlphaBeta {
         } else {
             self.board.generate_captures()
         };
-        // the delta test at the starting alpha, before the order prices
-        // each capture with the swap. Alpha only rises, so the loop would
-        // skip every capture dropped here. Two cases are left to the loop
-        // because filtering them would change the search: under a mate beta
-        // a mating capture can lift alpha into the mate window, after which
-        // the loop searches every capture, and a list that spills the
-        // buffer is ordered with no losing band (`MoveOrdering::order`)
-        if let Some(standing) = standing {
-            if self.config.delta_margin
-                && !is_mate(alpha)
-                && !is_mate(beta)
-                && moves.len() <= MOVE_LIST_INLINE
-            {
-                moves.retain(|m| match m.capture {
-                    Some(captured) if m.promote.is_none() => {
-                        !short_of_alpha(standing, captured, alpha)
-                    }
-                    _ => true,
-                });
-            }
-        }
         // no memories here: they say nothing about captures or evasions
         let Ordered { front, .. } = self.ordering.order(&self.board, &mut moves, pv_play, None);
 
@@ -1619,25 +1581,22 @@ impl AlphaBeta {
         let mut taint = Taint::default();
         let mut found_legal_move = false;
         for (i, m) in moves.iter().enumerate() {
-            // two skips the reference does not make. A promotion is exempt
+            // a skip the reference does not make: every capture behind the
+            // front is one the swap priced as losing. A promotion is exempt
             // because the swap prices the arriving piece as the pawn that
             // left, and an evasion because a side in check has no standing
-            // eval. A mate window alpha is exempt because the margin's
-            // arithmetic would skip every capture, the mating one included;
-            // after the stand pat, alpha is in the window only with a mate
-            // already in hand. A sacrifice that would find a first mate is
-            // skipped like any other losing capture
-            if let (Some(standing), Some(captured)) = (standing, m.capture) {
-                if !is_mate(alpha) && m.promote.is_none() {
-                    if self.config.delta_margin && short_of_alpha(standing, captured, alpha) {
-                        continue;
-                    }
-                    // every capture behind the front is one the swap priced
-                    // as losing
-                    if self.config.see_pruning && i >= front {
-                        continue;
-                    }
-                }
+            // eval. A mate window alpha is exempt: after the stand pat,
+            // alpha is in the window only with a mate already in hand. A
+            // sacrifice that would find a first mate is skipped like any
+            // other losing capture
+            if standing.is_some()
+                && m.capture.is_some()
+                && !is_mate(alpha)
+                && m.promote.is_none()
+                && self.config.see_pruning
+                && i >= front
+            {
+                continue;
             }
             if self.board.make_move(m) {
                 found_legal_move = true;
@@ -3337,76 +3296,6 @@ mod search {
             assert_eq!(board.has_legal_move(), expected, "{}", fen);
             assert_eq!(board.has_legal_move_out_of_check(), expected, "{}", fen);
         }
-    }
-
-    #[test]
-    fn a_capture_that_cannot_reach_alpha_is_not_searched() {
-        // one capture on the board: one node when it is skipped, two when
-        // it is searched
-        let fen = "7k/8/8/8/R3p3/8/8/7K w - - 0 1";
-        let mut e = engine(Board::from_fen(fen).unwrap());
-        let standing = e.eval();
-        let gain = crate::eval::material(Piece::Pawn) as Score;
-
-        // one point past what the pawn and the whole margin can make up
-        let alpha = standing + gain + super::DELTA_MARGIN + 1;
-        let Ok(value) = e.quiescence(alpha, alpha + 1) else {
-            panic!("an unlimited search aborted");
-        };
-        assert_eq!(e.nodes, 1);
-        assert_eq!(value, Value::clean(standing));
-
-        // at the edge the capture is searched
-        let mut e = engine(Board::from_fen(fen).unwrap());
-        let alpha = standing + gain + super::DELTA_MARGIN;
-        assert!(e.quiescence(alpha, alpha + 1).is_ok());
-        assert_eq!(e.nodes, 2);
-    }
-
-    #[test]
-    fn an_evasion_is_searched_whatever_the_margin_says() {
-        // taking the checking queen is the one evasion, at an alpha no
-        // capture could reach under the margin
-        let fen = "7k/8/8/8/8/8/1q6/K7 w - - 0 1";
-        let mut b = Board::from_fen(fen).unwrap();
-        let takes = play_named(&b, "a1b2");
-        assert!(b.make_move(&takes));
-        let expected = -crate::eval::eval(&b);
-
-        let mut e = engine(Board::from_fen(fen).unwrap());
-        let Ok(value) = e.quiescence(20_000, 20_001) else {
-            panic!("an unlimited search aborted");
-        };
-        assert_eq!(e.nodes, 2);
-        assert_eq!(value, Value::clean(expected));
-    }
-
-    #[test]
-    fn a_promotion_is_searched_whatever_the_margin_says() {
-        // the pawn can promote, taking the rook or pushing, at an alpha far
-        // past what any margin allows
-        let fen = "r6k/1P6/8/8/8/8/8/7K w - - 0 1";
-        let mut e = engine(Board::from_fen(fen).unwrap());
-        assert!(e.quiescence(10_000, 10_001).is_ok());
-        assert!(e.nodes > 1, "no promotion was searched");
-    }
-
-    #[test]
-    fn a_mating_capture_is_searched_whatever_the_margin_says() {
-        // rook takes rook and mates on the back rank, asked under an alpha
-        // inside the mate window, where the margin would call every capture
-        // hopeless
-        let fen = "3r3k/6pp/8/8/8/8/8/3R3K w - - 0 1";
-        let mut e = engine(Board::from_fen(fen).unwrap());
-        let Ok(value) = e.quiescence(29_500, 29_501) else {
-            panic!("an unlimited search aborted");
-        };
-        assert!(e.nodes > 1, "the mating capture was not searched");
-        assert!(
-            super::is_mate(value.score) && value.score > 29_500,
-            "no mate found: {}",
-            value.score
-        );
     }
 
     /// Quiescence at a window one point wide around the standing eval, so

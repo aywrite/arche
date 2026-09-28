@@ -912,8 +912,8 @@ def test_a_candidate_is_scored_against_the_shipped_weights(tmp_path, capsys):
 
 
 def test_a_fit_holds_the_material_values_unless_it_is_told_not_to(tmp_path, capsys):
-    """The delta margin in quiescence reads `eval::material`, so moving it
-    changes the tree for a reason unrelated to the evaluation's accuracy."""
+    """Material is held by default, as it was while the delta margin in
+    quiescence read `eval::material`."""
     vector = weights({0: 20})
     rows, labels = sample(vector)
     terms, corpus = fixture_run(tmp_path, vector, rows, labels)

@@ -671,8 +671,8 @@ def fit_k(scores, results, counts, low=0.1, high=4.0, steps=60):
 
     Fitted once and held for the run. K and the overall scale of the weights
     are one degree of freedom, and the scale is not free: the reverse futility
-    margin, the delta margin and the ledger's eval column all assume a pawn is
-    about a hundred, so a fit free to rescale would retune all three.
+    margin and the ledger's eval column both assume a pawn is about a hundred,
+    so a fit free to rescale would retune both.
     """
     ratio = (math.sqrt(5.0) - 1.0) / 2.0
     left, right = low, high
@@ -1434,9 +1434,8 @@ def command_loss(args):
 def frozen_slots(layout, free_material, held=()):
     """Which weights a fit holds where they are.
 
-    Material is held unless freed: the delta margin in quiescence reads
-    `eval::material`, so moving it changes the tree for a reason that has
-    nothing to do with the evaluation's accuracy. The material block alone; a
+    Material is held unless freed, as it was while the delta margin in
+    quiescence read `eval::material`. The material block alone; a
     freeze that ran to the end of the vector would hold every leaf term at
     zero and print a null result.
 
