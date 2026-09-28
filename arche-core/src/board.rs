@@ -415,12 +415,12 @@ impl fmt::Display for Unplayable {
 /// search makes and unmakes moves on the one board and never clones it; the
 /// type is not `Copy`, so a copy has to be written as a clone.
 ///
-/// `squares`, `key`, `pawn_key`, `eval` and `checkers` restate the piece
-/// boards and are kept in step with them by every move made and unmade.
-/// `key` also folds in the side to move, the castle rights and the en
-/// passant square. In a debug build `debug_assert_state_in_step` recomputes
-/// the first four after every move, and `make_move` checks `checkers`
-/// beside it. Outside the crate the position is read through the accessors
+/// `squares`, `king_squares`, `key`, `pawn_key`, `eval` and `checkers`
+/// restate the piece boards and are kept in step with them by every move
+/// made and unmade. `key` also folds in the side to move, the castle rights
+/// and the en passant square. In a debug build `debug_assert_state_in_step`
+/// recomputes the first five after every move, and `make_move` checks
+/// `checkers` beside it. Outside the crate the position is read through the accessors
 /// and moved on through `play_by_name`, which has no counterpart that takes
 /// a move back.
 #[derive(Debug, PartialEq, Clone, Eq)]
@@ -438,6 +438,9 @@ pub struct Board {
     squares: [Option<Piece>; 64],
 
     pub(crate) active_color: Color,
+    // each side's king square, indexed by `Color`: set by `from_fen` and
+    // kept by `relocate_piece_index`, the only thing that moves a king
+    king_squares: [u8; 2],
     castle: CastlePermissions,
     en_passant: Option<Coordinate>,
     // the pieces giving check to the side to move, maintained by make_move.
@@ -520,8 +523,8 @@ impl Board {
     /// it. The move a name finds is always this board's own.
     pub fn play_by_name(&mut self, name: &str) -> Result<(), Unplayable> {
         let play = self.move_named(name).ok_or(Unplayable::NoSuchMove)?;
-        // a false from make_move is a move that exposed its own king, and it
-        // has already been taken back
+        // a false from make_move is a move that would expose its own king,
+        // and the board is as it was
         if self.make_move(&play) {
             Ok(())
         } else {
@@ -844,6 +847,14 @@ impl Board {
             self.recompute_squares(),
             "squares out of step"
         );
+        for color in [Color::White, Color::Black] {
+            let (ours, _) = self.sides(color);
+            debug_assert_eq!(
+                self.king_squares[color as usize] as u32,
+                (self.kings() & ours).trailing_zeros(),
+                "king square out of step"
+            );
+        }
         // the key recompute reads the rights and the en passant square as
         // they stand, so it cannot tell a field set against the rule: assert
         // the rules themselves. Both hold of a played position, and
@@ -924,7 +935,19 @@ impl Board {
     }
 
     pub fn square_attacked(&self, index: u8, color: Color) -> bool {
-        let all = self.black | self.white;
+        self.square_attacked_through(index, color, self.black | self.white)
+    }
+
+    /// Whether `color` attacks the square a king steps to from `from`, with
+    /// the king taken off `from`: the step's legality, asked before it is made.
+    #[inline(always)]
+    fn king_step_attacked(&self, from: u8, to: u8, color: Color) -> bool {
+        self.square_attacked_through(to, color, (self.black | self.white) & !(1u64 << from))
+    }
+
+    /// `square_attacked` with the sliders read through `all`.
+    #[inline(always)]
+    fn square_attacked_through(&self, index: u8, color: Color, all: u64) -> bool {
         let attack_masks = &ATTACK_MASKS;
         let magic = &MAGIC;
         let (color_mask, pawn_masks) = match color {
@@ -1303,6 +1326,25 @@ impl Board {
     /// `checkers_given` is skipped. History still saves and restores the
     /// field, so the board's checkers are intact once the walk unwinds.
     fn make_move_impl<const MAINTAIN_CHECKERS: bool>(&mut self, play: &Play) -> bool {
+        // A king step is legal exactly when its landing square is unattacked
+        // with the king lifted off its own square, so it is settled from the
+        // boards before anything moves. An illegal one (most illegal moves
+        // are king steps) then costs no make and no unmake. A castle keeps
+        // the probe after the move, since its rook changes the lines, and so
+        // does a walk that keeps no checkers: it is the old path, which the
+        // debug build checks every refused step against.
+        if MAINTAIN_CHECKERS
+            && !play.castle
+            && self.kings().is_bit_set(play.from)
+            && self.king_step_attacked(play.from, play.to, !self.active_color)
+        {
+            debug_assert!(
+                !self.clone().make_move_impl::<false>(play),
+                "the king step test refused a legal {}",
+                play
+            );
+            return false;
+        }
         self.history[history_index(self.ply)] = Some(PlayState {
             play: *play,
             en_passant: self.en_passant,
@@ -1387,8 +1429,10 @@ impl Board {
         // A move can only expose its own king when there was a check to walk
         // back into, the king itself moved, en passant emptied a second
         // square, or a square on a line through the king was vacated. Any
-        // other move leaves the king as unattacked as it was. The first
-        // three take the full probe. The fourth takes one slider probe: the
+        // other move leaves the king as unattacked as it was. A king step
+        // was settled before the make and takes no probe; a castle, and a
+        // king move in a walk that keeps no checkers, take the full probe
+        // with the other two. The fourth takes one slider probe: the
         // king stood unattacked, so the only attack the move can open runs
         // through the square it left, a rook line or a bishop line and
         // never both, and the landing square can only block a line. A
@@ -1397,7 +1441,10 @@ impl Board {
         // the move opened. `checkers` still holds the mover's own checkers
         // here; it is replaced below once the move stands.
         let attack_masks = &ATTACK_MASKS;
-        let probe = if !MAINTAIN_CHECKERS
+        // a king step that reaches here was found legal before the make
+        let probe = if MAINTAIN_CHECKERS && from_piece == Piece::King && !play.castle {
+            Exposure::None
+        } else if !MAINTAIN_CHECKERS
             || self.checkers != 0
             || from_piece == Piece::King
             || play.en_passant
@@ -1691,9 +1738,9 @@ impl Board {
     /// Where this side's king stands. Every board has exactly one king a side,
     /// which is what `from_fen` checks for: without a king this returns 64 and
     /// the attack masks are indexed off the end.
+    #[inline]
     pub(crate) fn king_index(&self, color: Color) -> u8 {
-        let (ours, _) = self.sides(color);
-        (self.kings() & ours).trailing_zeros() as u8
+        self.king_squares[color as usize]
     }
 
     /// This side's pieces and the other side's, in that order.
@@ -2071,6 +2118,9 @@ impl Board {
         }
         self.squares[(from & 63) as usize] = None;
         self.squares[(to & 63) as usize] = Some(piece);
+        if piece == Piece::King {
+            self.king_squares[color as usize] = to;
+        }
     }
 
     /// Take a piece off a square, undoing everything `set_piece_index` did.
@@ -2279,6 +2329,7 @@ impl Board {
 
             active_color: Color::from_char(active_color_token)
                 .ok_or("Failed to parse active color from token")?,
+            king_squares: [64; 2],
             castle: CastlePermissions::from_fen(castle)?,
 
             ply: move_number * 2,
@@ -2344,6 +2395,7 @@ impl Board {
                     color
                 ));
             }
+            board.king_squares[color as usize] = (board.kings() & mask).trailing_zeros() as u8;
         }
         if board.square_attacked(board.king_index(!board.active_color), board.active_color) {
             return Err("Error parsing FEN: the side which is not to move is in check".to_string());
@@ -3175,6 +3227,11 @@ mod in_step {
                 (board.kings() & mask).count_ones(),
                 1,
                 "not exactly one king of one colour"
+            );
+            prop_assert_eq!(
+                board.king_squares[color as usize] as u32,
+                (board.kings() & mask).trailing_zeros(),
+                "king square out of step"
             );
         }
         prop_assert_eq!(
