@@ -8,6 +8,7 @@
 //! score could sit behind and nothing for `Accumulator::count` to add and
 //! take away.
 
+#[cfg(test)]
 use super::weigh;
 use crate::board::{Board, knight_attacks, pawn_attacks, pop_lsb};
 use crate::magic::MAGIC;
@@ -51,7 +52,9 @@ pub(crate) const ALL_KINDS: u8 = (1 << COUNTS) - 1;
 
 /// The kinds [`super::eval`] counts: the ones whose [`MOBILITY`] weight is not
 /// zero at one end of the taper or the other, derived from the weights so a
-/// refit changes the set with nothing else edited.
+/// refit changes the set with nothing else edited. When the first fit left
+/// six of the eight weights at zero, leaving three kinds out took a bit over
+/// a third off what the term cost (7b0f38b).
 pub(crate) const SCORED_KINDS: u8 = scored_kinds();
 
 /// Whether `kinds` names the piece at `index` in [`PIECES`].
@@ -143,16 +146,6 @@ pub(crate) fn counts_of<const KINDS: u8>(board: &Board, color: Color) -> [i32; C
 /// the tuner's walk.
 pub(crate) fn counts(board: &Board, color: Color, into: &mut [i32]) {
     into.copy_from_slice(&counts_of::<ALL_KINDS>(board, color));
-}
-
-/// What white's mobility stands ahead by, as a packed pair on the scale the
-/// piece square pair is on, given each side's counts from the walk in
-/// `eval/mod.rs`, which counts only [`SCORED_KINDS`]. When the first fit left
-/// six of the eight weights at zero, leaving three kinds out took a bit over
-/// a third off what the term cost (7b0f38b).
-#[inline]
-pub(crate) fn fold_counts(white: [i32; COUNTS], black: [i32; COUNTS]) -> i32 {
-    weigh(&MOBILITY, white, black)
 }
 
 /// The fold with the counts taken by [`counts_of`] over [`SCORED_KINDS`],

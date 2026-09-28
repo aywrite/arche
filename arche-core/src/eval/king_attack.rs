@@ -9,6 +9,7 @@
 //! which the mobility cache was measured on and turned down.
 
 use super::mobility;
+#[cfg(test)]
 use super::weigh;
 use crate::board::{Board, king_attacks, knight_attacks, pop_lsb};
 use crate::magic::MAGIC;
@@ -16,8 +17,8 @@ use crate::misc::Color;
 use crate::psqt::{eg_value, mg_value, pack};
 
 /// One count per piece kind, in the order [`mobility::PIECES`] names them,
-/// so the shared walk in `eval/mod.rs` writes each reading into the slot the
-/// other term uses.
+/// so one index in the shared walk in `eval/mod.rs` reads both terms'
+/// weights.
 pub(crate) const COUNTS: usize = mobility::PIECES.len();
 
 /// What one attacked square of the enemy king's ring is worth to each of
@@ -130,13 +131,6 @@ pub(crate) fn counts_of(board: &Board, color: Color) -> [i32; COUNTS] {
 /// the tuner's walk.
 pub(crate) fn counts(board: &Board, color: Color, into: &mut [i32]) {
     into.copy_from_slice(&counts_of(board, color));
-}
-
-/// What white's bearing on the black king stands ahead by, as a packed pair on
-/// the scale the piece square pair is on, given each side's counts.
-#[inline]
-pub(crate) fn fold_counts(white: [i32; COUNTS], black: [i32; COUNTS]) -> i32 {
-    weigh(&KING_ATTACK, white, black)
 }
 
 /// The fold with the counts taken by [`counts_of`], which is what the sum

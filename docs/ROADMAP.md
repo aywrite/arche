@@ -105,8 +105,8 @@ worth doing.
   and it now takes its counts in mobility's walk. Measured with callgrind over
   `arche bench` at depth 7, the shared walk forced out of line, the walk is 777,417,417 of
   4,600,409,835 instructions, 16.9%, and the same walk without the ring is 576,199,267, so
-  the ring is 201,218,150 of them, 4.4%, and 4.8% with its fold. The shipped build costs
-  1,085 instructions a node against 1,040 before the term, 4.3% more. The pair term costs
+  the ring is 201,218,150 of them, 4.4%, and 4.8% with its fold. The build that shipped
+  it cost 1,085 instructions a node against 1,040 before the term, 4.3% more. The pair term costs
   4.4% of the bench's nodes a second, under the 5%, and 7.6% of the nodes a second in the
   games that measured it at +95 ±19 (6ce33d3), over it
 - on 1,812 games a held-out loss could not resolve a fit of the piece square tables one
