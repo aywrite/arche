@@ -48,8 +48,9 @@ bench_board_fen!(perft_3, b, {
 // between iterations would cost more than the search itself.
 const BENCH_TABLE_BYTES: usize = 16 * 1024 * 1024;
 
-// The table is cleared between iterations, or each would search a tree the
-// last one filled in. Only the search is timed.
+// The table and the history are cleared between iterations, or each would
+// search a tree the last one filled in or order it by what the last one
+// learned. Only the search is timed.
 macro_rules! bench_engine_fen {
     ($func:ident, $e:ident, $setup:block, $routine:block) => {
         pub fn $func(c: &mut Criterion) {
@@ -80,7 +81,7 @@ bench_engine_fen!(
     alpha_beta_5,
     engine,
     {
-        engine.clear_transpositions();
+        engine.new_game();
     },
     { engine.iterative_deepening_search(SearchParameters::to_depth(5), |_, _, _, _| {}) }
 );

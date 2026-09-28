@@ -349,8 +349,8 @@ impl<T: Engine, W: Write> UCI<T, W> {
         };
         match option.kind {
             // every button empties the table, since `Clear Hash` is the only
-            // one; a second would want an enum beside `Setting`. The killers
-            // and the history already start empty at every `go`
+            // one; a second would want an enum beside `Setting`. The button
+            // empties the history as well, which is carried between searches
             OptionKind::Button => {
                 self.engine.clear_table();
                 Ok(())

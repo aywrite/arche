@@ -56,6 +56,10 @@ const KILLER_BONUS: [i64; 2] = [9_000_000, 8_000_000];
 /// ahead of every losing capture on the spilled list path.
 /// `the_bands_do_not_overlap` checks both.
 const HISTORY_MAX: i32 = 8_192;
+/// What a history entry is divided by when a new search begins. Two is a
+/// middle value and not tuned: wiping the history and keeping all of it are
+/// the alternatives either side.
+const HISTORY_KEPT_DIVISOR: i32 = 2;
 
 /// Most valuable victim: what taking each piece is worth.
 const VICTIM_SCORES: [i64; 6] = [100, 250, 300, 400, 500, 1000];
@@ -138,9 +142,25 @@ impl MoveOrdering {
         }
     }
 
-    /// Forget both memories. Each `go` starts with this: the memories
-    /// describe the tree being searched now, and the iterations of one
-    /// deepening share them.
+    /// What a new search keeps of the last one: the history, halved, and
+    /// no killers. The killers are indexed by distance from the root, which
+    /// a move played shifts, while a history entry names a move the next
+    /// search is still likely to meet. Halving keeps the order the last
+    /// search learned and lets the new search's own cutoffs outweigh it
+    /// within a few iterations.
+    pub(crate) fn age(&mut self) {
+        self.killers.fill([None; 2]);
+        for side in self.history.iter_mut() {
+            for from in side.iter_mut() {
+                for entry in from.iter_mut() {
+                    *entry /= HISTORY_KEPT_DIVISOR;
+                }
+            }
+        }
+    }
+
+    /// Forget both memories, for a new game or a search that has to be
+    /// the same whatever was searched before it.
     pub(crate) fn forget(&mut self) {
         self.killers.fill([None; 2]);
         for side in self.history.iter_mut() {
@@ -1137,6 +1157,25 @@ mod memory {
             ordering.cutoff(Color::White, &m, &[], 0, MAX_PLY);
             assert_eq!(ordering.history[Color::White as usize][8][16], HISTORY_MAX);
         }
+    }
+
+    #[test]
+    fn a_new_search_keeps_half_the_history_and_no_killers() {
+        let mut ordering = MoveOrdering::new();
+        let m = quiet(8, 16);
+        let tried = quiet(9, 17);
+        ordering.cutoff(Color::White, &m, &[tried], 2, 4);
+        let credited = ordering.history[Color::White as usize][8][16];
+        let marked = ordering.history[Color::White as usize][9][17];
+        assert!(credited > 1 && marked < -1, "{} {}", credited, marked);
+        // an odd negative entry, where a shift would round away from zero
+        ordering.history[Color::Black as usize][1][2] = -5;
+        ordering.age();
+        assert!(ordering.killers.iter().all(|k| *k == [None, None]));
+        assert_eq!(ordering.history[Color::White as usize][8][16], credited / 2);
+        // a marked down entry keeps its sign and halves toward zero
+        assert_eq!(ordering.history[Color::White as usize][9][17], marked / 2);
+        assert_eq!(ordering.history[Color::Black as usize][1][2], -2);
     }
 
     #[test]

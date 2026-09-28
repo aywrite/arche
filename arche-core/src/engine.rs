@@ -153,7 +153,7 @@ pub trait Engine {
     /// Forget what was learned from the game just finished. Stored scores do not
     /// account for repetition or the fifty move counter, so a position that
     /// comes up again in a new game would otherwise be scored from a line that
-    /// no longer applies to it.
+    /// no longer applies to it. The history carried between searches goes too.
     fn new_game(&mut self);
 
     /// Play the move of this name, in the coordinate notation the protocol
@@ -175,8 +175,8 @@ pub trait Engine {
     #[must_use]
     fn set_table_bytes(&mut self, bytes: usize) -> bool;
 
-    /// Empty the transposition table and leave everything else as it is:
-    /// the protocol's `Clear Hash`.
+    /// Empty the transposition table and the history the searches carry
+    /// between them: the protocol's `Clear Hash`.
     fn clear_table(&mut self);
 
     /// The position, printed the way the board prints itself. A string,
@@ -2578,10 +2578,16 @@ impl Engine for AlphaBeta {
 
     fn new_game(&mut self) {
         self.clear_transpositions();
+        // the history is carried from one search to the next, and a new
+        // game's positions are not the ones it was learned on
+        self.ordering.forget();
     }
 
     fn clear_table(&mut self) {
         self.clear_transpositions();
+        // the history is carried between searches too, and a search after
+        // the button should cost what a cold one does
+        self.ordering.forget();
     }
 
     fn set_table_bytes(&mut self, bytes: usize) -> bool {
@@ -2611,10 +2617,10 @@ impl Engine for AlphaBeta {
             Some(depth) => depth.min(MAX_PLY),
             None => MAX_PLY,
         };
-        // one generation for every iteration, and the memories kept from
-        // one iteration to the next
+        // one generation for every iteration, the memories kept from one
+        // iteration to the next, and half the history the last search left
         self.transpositions.new_search();
-        self.ordering.forget();
+        self.ordering.age();
 
         for depth in 1..=max_depth {
             // the soft bound, asked once a depth rather than before each
@@ -5154,31 +5160,47 @@ mod search {
     }
 
     #[test]
-    fn every_search_starts_with_the_quiet_memories_empty() {
-        // a killer from the position before would order this one. Both
-        // entry points empty them
-        fn run(e: &mut AlphaBeta, deepened: bool) -> SearchResult {
-            let depth = 5;
-            if deepened {
-                let options = SearchParameters::to_depth(depth);
-                completed(e.iterative_deepening_search(options, |_, _, _, _| {}))
-            } else {
-                completed(e.search(depth))
-            }
-        }
+    fn a_fixed_depth_search_starts_with_the_quiet_memories_empty() {
+        // a killer or a history entry from the position before would order
+        // this one
+        let mut warm = remembering(Board::from_fen(SHARP_MIDDLEGAME).unwrap());
+        completed(warm.search(5));
+        warm.board = Board::new();
+        warm.clear_transpositions();
+        let result = completed(warm.search(5));
 
-        for deepened in [false, true] {
-            let mut warm = remembering(Board::from_fen(SHARP_MIDDLEGAME).unwrap());
-            run(&mut warm, deepened);
-            warm.board = Board::new();
-            warm.clear_transpositions();
-            let result = run(&mut warm, deepened);
+        let expected = completed(remembering(Board::new()).search(5));
+        assert_eq!(result.nodes, expected.nodes);
+        assert_eq!(result.score, expected.score);
+    }
 
-            let mut cold = remembering(Board::new());
-            let expected = run(&mut cold, deepened);
-            assert_eq!(result.nodes, expected.nodes, "deepened: {deepened}");
-            assert_eq!(result.score, expected.score, "deepened: {deepened}");
+    #[test]
+    fn a_deepening_carries_the_history_until_a_new_game() {
+        fn deepen(e: &mut AlphaBeta) -> SearchResult {
+            completed(e.iterative_deepening_search(SearchParameters::to_depth(5), |_, _, _, _| {}))
         }
+        let expected = deepen(&mut remembering(Board::new()));
+
+        // what the last search learned orders this one, so it searches
+        // another tree
+        let mut warm = remembering(Board::from_fen(SHARP_MIDDLEGAME).unwrap());
+        deepen(&mut warm);
+        warm.board = Board::new();
+        warm.clear_transpositions();
+        assert_ne!(
+            deepen(&mut warm).nodes,
+            expected.nodes,
+            "nothing was carried"
+        );
+
+        // and a new game starts from nothing
+        let mut warm = remembering(Board::from_fen(SHARP_MIDDLEGAME).unwrap());
+        deepen(&mut warm);
+        warm.board = Board::new();
+        warm.new_game();
+        let result = deepen(&mut warm);
+        assert_eq!(result.nodes, expected.nodes);
+        assert_eq!(result.score, expected.score);
     }
 
     /// Whether `played` is worth `score` to the side to move in `fen`, asked
