@@ -6,13 +6,15 @@
 //! at all. `decide` answers with a `Verdict`; the scout itself is
 //! `windowed`'s, in `engine.rs`.
 //!
-//! At depths one to three `Shallow` holds two pruning rules for a quiet
+//! At depths one to three `Shallow` holds the pruning rules for a quiet
 //! move after the node's first: quiet futility, when the evaluation plus a
-//! margin a ply cannot reach alpha, and the late move count, when the node
-//! has searched `LATE_MOVE_COUNT` moves a ply. Everything in them but one
-//! comparison against alpha is settled by the node, so the loop builds it
-//! once and asks it per move. They stop a ply under the model's floor, so
-//! a shallow rule and the model never decide at one depth.
+//! margin a ply cannot reach alpha; the late move count, when the node has
+//! searched `LATE_MOVE_COUNT` moves a ply; and the exchange, when the move
+//! puts its piece where the swap loses more than `SEE_QUIET_MARGIN` times
+//! the depth squared. Everything in them but a comparison against alpha
+//! and the swap is settled by the node, so the loop builds it once and
+//! asks it per move. They stop a ply under the model's floor, so a shallow
+//! rule and the model never decide at one depth.
 //!
 //! `decide` covers the rest. The late move reduction scouts a quiet move
 //! searched after the fourth, with the exemptions `reduces` lists. From
@@ -64,6 +66,12 @@ pub(crate) const QUIET_FUTILITY_MARGIN: Score = 100;
 // model stands behind the cutoff and at depth three nothing does. Untuned;
 // a match is what would move it.
 pub(crate) const LATE_MOVE_COUNT: usize = 4;
+// How much a quiet move may lose on its square, in `SEE_VALUES` units, per
+// square of the depth, and still be searched: 50, 200 and 450 at depths
+// one to three. Quadratic, the usual shape for quiets in engines that
+// prune both quiets and captures by the swap. A starting figure, not a
+// fitted one.
+pub(crate) const SEE_QUIET_MARGIN: i32 = 50;
 // How many plies shallower the deep reduction scouts a late quiet the gate
 // deepens, with the table off: a ply over the flat amount.
 pub(crate) const DEEP_REDUCTION: u8 = 2;
@@ -72,7 +80,7 @@ pub(crate) const DEEP_REDUCTION_MIN_DEPTH: u8 = DEEP_REDUCTION + 2;
 // The gate's extra ply over the flat amount, written as the difference so
 // the table cannot drift from the pair of constants it replaced.
 const DEEP_REDUCTION_BONUS: u8 = DEEP_REDUCTION - LATE_MOVE_REDUCTION;
-// The deepest node either shallow rule decides: a ply under the model's
+// The deepest node any shallow rule decides: a ply under the model's
 // floor, so the two never decide at one depth.
 pub(crate) const SHALLOW_MAX_DEPTH: u8 = DEEP_REDUCTION_MIN_DEPTH - 1;
 const _: () = assert!(SHALLOW_MAX_DEPTH < DEEP_REDUCTION_MIN_DEPTH);
@@ -342,13 +350,15 @@ pub(crate) fn decide(search: &Search, node: &mut Node, m: &Play, searched: usize
     gate(search, node, m, searched)
 }
 
-/// The node's half of the two shallow rules, held across its move loop.
+/// The node's half of the shallow rules, held across its move loop.
 ///
 /// Quiet futility guesses that a move cannot reach alpha when the node's
 /// evaluation plus `QUIET_FUTILITY_MARGIN` a ply does not. The late move
 /// count guesses that a node which has searched `LATE_MOVE_COUNT` moves a
-/// ply has searched those worth searching, and reads no evaluation. Each
-/// has a switch of its own.
+/// ply has searched those worth searching, and reads no evaluation. The
+/// exchange guesses that a quiet which hands over material on its square
+/// is not worth a search this close to the leaves, and reads neither the
+/// evaluation nor alpha. Each has a switch of its own.
 ///
 /// The exemptions are `reduces`'s without its depth and count floors, plus
 /// the material gate. The first move searched is exempt, because the loop
@@ -360,7 +370,7 @@ pub(crate) fn decide(search: &Search, node: &mut Node, m: &Play, searched: usize
 /// alpha can reach the mate window, which is an exemption, so the mate test
 /// is asked per move in front of the latch rather than folded into it.
 pub(crate) struct Shallow {
-    /// Whether the node's own facts admit either rule.
+    /// Whether the node's own facts admit any of the rules.
     admits: bool,
     /// `QUIET_FUTILITY_MARGIN` at this node's depth, or none with the
     /// margin's switch off.
@@ -368,10 +378,19 @@ pub(crate) struct Shallow {
     /// The searched count at or past which the count drops a quiet, or none
     /// with its switch off.
     count: Option<usize>,
+    /// The least the swap on a quiet's square may come to before the move
+    /// is dropped, or none with the exchange's switch off.
+    see_floor: Option<i32>,
+    /// How many moves the exchange has dropped, which the count and the
+    /// reduction read as though they had been searched: read as unsearched,
+    /// the count admitted a searched move in place of each cheap one dropped
+    /// and the bench grew by 15%. A king step is not counted, since the
+    /// swap drops one only onto an attacked square, where it is illegal.
+    exchanged: usize,
     under: bool,
 }
 
-/// The node's half of the two rules, read once before the loop.
+/// The node's half of the rules, read once before the loop.
 pub(crate) fn shallow(
     config: &SearchConfig,
     board: &Board,
@@ -380,7 +399,7 @@ pub(crate) fn shallow(
     beta: Score,
     root_bounds: RootBounds,
 ) -> Shallow {
-    let admits = (config.quiet_futility || config.late_move_count)
+    let admits = (config.quiet_futility || config.late_move_count || config.see_quiets)
         && (1..=SHALLOW_MAX_DEPTH).contains(&depth)
         && !in_check
         && !is_mate(beta)
@@ -391,20 +410,23 @@ pub(crate) fn shallow(
         margin: (admits && config.quiet_futility)
             .then(|| i64::from(QUIET_FUTILITY_MARGIN) * i64::from(depth)),
         count: (admits && config.late_move_count).then(|| LATE_MOVE_COUNT * usize::from(depth)),
+        see_floor: (admits && config.see_quiets)
+            .then(|| -SEE_QUIET_MARGIN * i32::from(depth) * i32::from(depth)),
+        exchanged: 0,
         under: false,
     }
 }
 
 impl Shallow {
-    /// Whether either rule drops this move. `searched` is how many moves the
+    /// Whether any rule drops this move. `searched` is how many moves the
     /// node has searched already and `alpha` its bound as the move is
     /// reached.
     ///
     /// The order of the tests is the cost order: the count before the
-    /// margin, so a move the count drops needs no evaluation, and the check
-    /// probe last, since the slider probes cost more than everything before
-    /// them. A check is exempt because a pruned check is never seen, where
-    /// a scouted one is seen shallower.
+    /// margin, so a move the count drops needs no evaluation, then the
+    /// swap, and the check probe last, which the swap spares for most of
+    /// the moves it keeps. A check is exempt because a pruned check is
+    /// never seen, where a scouted one is seen shallower.
     #[inline]
     pub(crate) fn skips(
         &mut self,
@@ -415,22 +437,41 @@ impl Shallow {
         searched: usize,
         alpha: Score,
     ) -> bool {
-        self.admits
+        if !(self.admits
             && searched >= 1
             && m.capture.is_none()
             && m.promote.is_none()
-            && !is_mate(alpha)
-            && (self.counted(searched) || self.under_alpha(search, eval, alpha))
-            && !search
-                .board
-                .gives_check_with(check.get_or_insert_with(|| search.board.check_info()), m)
+            && !is_mate(alpha))
+        {
+            return false;
+        }
+        let latched = self.counted(searched) || self.under_alpha(search, eval, alpha);
+        if !latched && !self.loses_exchange(search, m) {
+            return false;
+        }
+        if search
+            .board
+            .gives_check_with(check.get_or_insert_with(|| search.board.check_info()), m)
+        {
+            return false;
+        }
+        if !latched
+            && !matches!(
+                search.board.get_piece_index(m.from),
+                Some(crate::misc::Piece::King)
+            )
+        {
+            self.exchanged += 1;
+        }
+        true
     }
 
-    /// Whether either rule would drop every later quiet that neither gives
-    /// check nor promotes: the half of `skips` that does not read the move.
+    /// Whether the count or the margin would drop every later quiet that
+    /// neither gives check nor promotes: the half of `skips` that does not
+    /// read the move. The exchange reads the move, so it is not asked.
     /// It stays true once true while alpha is short of a mate, since
-    /// `searched` and alpha only rise; the lazy quiet ordering relies on
-    /// that.
+    /// `searched`, the exchange's drops and alpha only rise; the lazy quiet
+    /// ordering relies on that.
     #[inline]
     pub(crate) fn active(
         &mut self,
@@ -445,9 +486,23 @@ impl Shallow {
             && (self.counted(searched) || self.under_alpha(search, eval, alpha))
     }
 
+    /// How many moves the exchange has dropped at this node, which the
+    /// reduction adds to the moves searched.
+    #[inline]
+    pub(crate) fn exchanged(&self) -> usize {
+        self.exchanged
+    }
+
     #[inline]
     fn counted(&self, searched: usize) -> bool {
-        self.count.is_some_and(|count| searched >= count)
+        self.count
+            .is_some_and(|count| searched + self.exchanged >= count)
+    }
+
+    #[inline]
+    fn loses_exchange(&self, search: &Search, m: &Play) -> bool {
+        self.see_floor
+            .is_some_and(|floor| !search.board.see_at_least(m, floor))
     }
 
     #[inline]
@@ -514,7 +569,7 @@ pub(crate) fn admits(
         && node_admits(in_check, alpha, beta, root_bounds)
 }
 
-/// The exemptions the reduction and the two shallow rules share, for the
+/// The exemptions the reduction and the shallow rules share, for the
 /// reasons `reduces` gives. `Shallow` reads the three fixed at the node
 /// once and alpha's per move.
 #[inline]
@@ -725,6 +780,14 @@ mod tests {
             quiet_futility: true,
             late_move_count: true,
             ..pruning()
+        }
+    }
+
+    /// The reference with the exchange alone on.
+    fn exchanging() -> SearchConfig {
+        SearchConfig {
+            see_quiets: true,
+            ..SearchConfig::reference()
         }
     }
 
@@ -1892,6 +1955,85 @@ mod tests {
                 "at depth {depth}"
             );
         }
+    }
+
+    /// A knight put where a pawn takes it for nothing loses 300: past the
+    /// floor at depths one and two, inside it at three, and out of the
+    /// rule's range at four. The bounds are an open window the margin
+    /// could not fire on, and the switch is the only rule on.
+    #[test]
+    fn a_quiet_onto_a_pawns_square_is_dropped_only_near_the_leaves() {
+        let mut s = Stand::new("4k3/8/3p4/8/8/5N2/8/4K3 w - - 0 1", exchanging());
+        let hung = play_named(&s.board, "f3e5");
+        let safe = play_named(&s.board, "f3g5");
+        assert!(s.skips(&hung, 1, 1, -100, 100));
+        assert!(s.skips(&hung, 1, 2, -100, 100));
+        assert!(!s.skips(&hung, 1, 3, -100, 100));
+        assert!(!s.skips(&hung, 1, SHALLOW_MAX_DEPTH + 1, -100, 100));
+        assert!(!s.skips(&safe, 1, 1, -100, 100));
+        // the first move searched is exempt, as it is from the other rules
+        assert!(!s.skips(&hung, 0, 1, -100, 100));
+        // and with the switch off nothing is dropped
+        let mut off = Stand::new(
+            "4k3/8/3p4/8/8/5N2/8/4K3 w - - 0 1",
+            SearchConfig::reference(),
+        );
+        assert!(!off.skips(&hung, 1, 1, -100, 100));
+    }
+
+    /// A knight that checks from a square a pawn takes it on is searched:
+    /// a pruned check is never seen.
+    #[test]
+    fn a_checking_quiet_is_never_dropped_by_the_exchange() {
+        let mut s = Stand::new("4k3/4p3/8/8/4N3/8/8/4K3 w - - 0 1", exchanging());
+        let check = play_named(&s.board, "e4d6");
+        assert!(!s.board.see_at_least(&check, -299));
+        for depth in 1..=SHALLOW_MAX_DEPTH {
+            assert!(!s.skips(&check, 1, depth, -100, 100), "at depth {depth}");
+        }
+    }
+
+    /// A move the exchange drops counts toward the late move count's line,
+    /// as though it had been searched.
+    #[test]
+    fn the_count_reads_a_dropped_move_as_tried() {
+        let config = SearchConfig {
+            see_quiets: true,
+            late_move_count: true,
+            ..SearchConfig::reference()
+        };
+        let mut s = Stand::new("4k3/8/3p4/8/8/5N2/8/4K3 w - - 0 1", config);
+        let hung = play_named(&s.board, "f3e5");
+        let safe = play_named(&s.board, "f3g5");
+        let line = LATE_MOVE_COUNT;
+        let mut shallow = s.rule(1, 100);
+        assert!(!s.asks(&mut shallow, &safe, line - 1, -100));
+        assert!(s.asks(&mut shallow, &hung, line - 1, -100));
+        assert_eq!(shallow.exchanged(), 1);
+        assert!(s.asks(&mut shallow, &safe, line - 1, -100));
+        // a drop the count made is not the exchange's
+        assert_eq!(shallow.exchanged(), 1);
+    }
+
+    /// A king step onto an attacked square is illegal, so the exchange
+    /// drops it without counting it toward the count's line: three such
+    /// steps at depth one leave the knight's quiet searched.
+    #[test]
+    fn an_illegal_king_step_is_dropped_and_not_counted() {
+        let config = SearchConfig {
+            see_quiets: true,
+            late_move_count: true,
+            ..SearchConfig::reference()
+        };
+        let mut s = Stand::new("4k3/8/8/8/8/8/r7/4K2N w - - 0 1", config);
+        let knight = play_named(&s.board, "h1g3");
+        let mut shallow = s.rule(1, 100);
+        for step in ["e1d2", "e1e2", "e1f2"] {
+            let step = play_named(&s.board, step);
+            assert!(s.asks(&mut shallow, &step, 1, -100), "{step}");
+        }
+        assert_eq!(shallow.exchanged(), 0);
+        assert!(!s.asks(&mut shallow, &knight, 1, -100));
     }
 
     /// At the model's floor both shallow rules are silent and the model's

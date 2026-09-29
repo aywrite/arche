@@ -82,10 +82,12 @@ term over every pair of pieces.
   move's index passes a floor that rises with the node's depth. The
   attention model, a logistic regression over what the node knows about the
   move, fitted offline and carried as integers, decides which moves are not
-  searched at all. At depths one to three, below the model's floor, two
+  searched at all. At depths one to three, below the model's floor, three
   rules drop a quiet move after the node's first: quiet futility, where the
-  static evaluation plus a pawn a ply cannot reach alpha, and a count, once
-  the node has searched four moves a ply. The features the model scores are
+  static evaluation plus a pawn a ply cannot reach alpha; a count, once
+  the node has searched four moves a ply; and the exchange, where the static
+  exchange evaluation says the moved piece loses more than half a pawn
+  times the depth squared on its square. The features the model scores are
   the ones the reduction ledger records.
 - **ordering.rs**: The order moves are tried in. The transposition table's
   move first, then the captures the swap prices as winning or even, by
