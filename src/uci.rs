@@ -1466,6 +1466,37 @@ go depth 3
         assert_eq!(said(&uci), "readyok\nreadyok\n");
     }
 
+    /// Run on a thread, so the test fails rather than hangs if the open
+    /// waits for a reader.
+    #[cfg(unix)]
+    #[test]
+    fn a_debug_log_on_a_fifo_is_refused_rather_than_waited_on() {
+        let fifo = Scratch::named("fifo");
+        let made = std::process::Command::new("mkfifo")
+            .arg(&fifo.0)
+            .status()
+            .expect("mkfifo runs");
+        assert!(made.success());
+        let path = fifo.0.clone();
+        let (done, answered) = std::sync::mpsc::channel();
+        thread::spawn(move || {
+            let mut uci = uci();
+            uci.handle(&format!(
+                "setoption name Debug Log File value {}",
+                path.display()
+            ));
+            let _ = done.send(said(&uci));
+        });
+        let said = answered
+            .recv_timeout(Duration::from_secs(10))
+            .expect("the open waited on the fifo");
+        assert!(
+            said.starts_with("info string could not open the debug log "),
+            "said: {}",
+            said
+        );
+    }
+
     #[test]
     fn a_debug_log_that_cannot_be_opened_is_said_and_the_session_carries_on() {
         let nowhere = Scratch::named("no such directory").0.join("debug.log");
