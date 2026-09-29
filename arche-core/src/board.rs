@@ -1254,9 +1254,12 @@ impl Board {
         let Some(victim) = m.capture else {
             return 0;
         };
-        // more slots than pieces that could ever join one square's swap.
-        // Every slot is written before it is read: `d` counts the swap up
-        // and the fold reads it down
+        // more slots than pieces that could join one square's swap from a
+        // legal position. A parsed one can bring more (`from_fen` bounds
+        // neither the number of pieces nor what they are), so the loop
+        // stops at the last slot rather than write past it. Every slot is
+        // written before it is read: `d` counts the swap up and the fold
+        // reads it down
         let mut gain = [const { MaybeUninit::<i32>::uninit() }; 32];
         gain[0].write(SEE_VALUES[victim as usize]);
         let mut occupied = self.white | self.black;
@@ -1284,6 +1287,11 @@ impl Board {
             let Some((bit, piece)) = self.least_valuable(attackers) else {
                 break;
             };
+            // a swap the slots cannot hold ends where they run out, as
+            // though the next capturer had declined
+            if d + 1 == gain.len() {
+                break;
+            }
             d += 1;
             // SAFETY: slot `d - 1` was written before `d` reached this
             // value, slot zero above and every later one here
@@ -4425,6 +4433,29 @@ mod see {
     #[test]
     fn a_promoting_capture_values_the_piece_taken() {
         assert_eq!(see_of("r3k3/1Pn5/8/8/8/8/8/4K3 w - - 0 1", "b7a8q"), 400);
+    }
+
+    /// Every ray from e4 is a chain of one colour's sliders and the knights
+    /// stand on every square they can, so thirty five pieces bear on the
+    /// pawn, more than the swap has slots for. `from_fen` accepts the
+    /// position, and the swap used to write past its buffer pricing it.
+    #[test]
+    fn a_swap_with_more_attackers_than_slots_ends_at_the_last_slot() {
+        let fen = "b3R2K/1b2R2B/2bnRnB1/2nbRBn1/rrrrpRRR/2NbrBN1/2bNrNB1/kb2r2B w - - 0 1";
+        let board = Board::from_fen(fen).unwrap();
+        let e4 = play_named(&board, "f4e4").to;
+        let mut joining = 0;
+        let mut occupied = board.white | board.black;
+        // the pieces that bear on the square once those ahead of them leave
+        while board.attackers_to(e4, occupied) != 0 {
+            let piece = board.attackers_to(e4, occupied);
+            occupied &= !(piece & piece.wrapping_neg());
+            joining += 1;
+        }
+        assert!(joining > 32, "only {} pieces join the swap", joining);
+        for m in &board.generate_captures() {
+            assert_eq!(board.see(m), board.swap_walk(m), "{}", m);
+        }
     }
 
     /// With a second rook behind the first the king cannot legally take, so
