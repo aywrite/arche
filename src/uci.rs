@@ -2369,6 +2369,29 @@ go depth 3
         driven.finish();
     }
 
+    /// A stop typed while nothing searches is counted as read like any
+    /// other. The reader once counted a stop only during a search, and the
+    /// stray one's dispatch then spent a later search's stop.
+    #[test]
+    fn a_stop_while_idle_leaves_the_next_searches_their_own_stops() {
+        let driven = Driven::searching();
+        driven.type_line("position startpos");
+        driven.type_line("perft 4");
+        for line in ["stop", "go infinite", "stop", "go infinite", "stop"] {
+            driven.type_line(line);
+        }
+        let deadline = Instant::now() + Duration::from_secs(10);
+        while driven.said().matches("bestmove").count() < 2 {
+            assert!(
+                Instant::now() < deadline,
+                "a search was never stopped: {}",
+                driven.said()
+            );
+            thread::sleep(Duration::from_millis(1));
+        }
+        driven.finish();
+    }
+
     #[test]
     fn a_stop_while_nothing_is_searching_is_taken_in_silence() {
         // it used to come back as an unrecognised command
