@@ -3286,10 +3286,6 @@ mod search {
         assert_ne!(format!("{}", result.best_move), "a1a8");
     }
 
-    // A stalemate is not in check, so quiescence would stand pat on it and
-    // read it as the eval. A side with only pawns and a king is asked
-    // whether it has a move first.
-
     /// Black is stalemated and not in check. Qxf7 from
     /// `TAKES_INTO_STALEMATE` reaches this position.
     const STALEMATED: &str = "7k/5Q2/7K/8/8/8/8/8 b - - 0 1";

@@ -66,13 +66,11 @@ const ATTACKER_SCORES: [i64; 6] = [6, 5, 4, 3, 2, 1];
 /// in. Six, since a list wider than the buffer takes the other sort.
 const PLACE_BITS: u32 = 6;
 const PLACE_MASK: i64 = (1 << PLACE_BITS) - 1;
-/// The quiet run's keys are 32 bits: the history is held to `HISTORY_MAX`
-/// either way, so the killers only have to rank above it, and they take
-/// the two ranks just over the bound. The order is the one the 64 bit
-/// bonuses give, since the map is strictly increasing.
+/// The killers' ranks in the quiet run's 32 bit keys: the two just over
+/// the history's bound, so the keys order as the 64 bit bonuses do.
 const QUIET_KILLER: [i32; 2] = [HISTORY_MAX + 2, HISTORY_MAX + 1];
-/// A quiet run's keys, with a vector's width of padding after the run's
-/// last place, where `key_quiets` writes keys nothing can undercut.
+/// A quiet run's keys and a vector's width of padding after the run, which
+/// `key_quiets` fills with `i32::MAX`.
 const QUIET_KEYS: usize = MOVE_LIST_INLINE + 4;
 /// The buffer's width has been moved before, and moving it past the place
 /// field would reorder moves quietly.
@@ -304,7 +302,8 @@ impl MoveOrdering {
         ply: Option<usize>,
     ) -> Ordered {
         // no capture and no quiet table's move: nothing is keyed and nothing
-        // moves, which a third of the lists come to, so the call is not made
+        // moves, which 29% of the lists came to on the games suite
+        // (376a2c5), so the call is not made
         let quiet_table_move = table_move.is_some_and(|m| m.capture.is_none());
         if captures == 0 && !quiet_table_move && moves.len() <= MOVE_LIST_INLINE {
             debug_assert_eq!(
@@ -580,7 +579,8 @@ impl MoveOrdering {
     /// The second stage, keyed but not sorted: every quiet of the run gets
     /// its packed key, a zero key included, and the search takes them in
     /// order with `pick`, `sort_rest` and `keep_unskippable`. Returns the
-    /// run's length.
+    /// run's length. `pick` and `sort_rest` have to be handed exactly this
+    /// run, since their vector forms read the padding after it.
     #[inline]
     pub(crate) fn key_quiets(
         &mut self,
@@ -599,11 +599,10 @@ impl MoveOrdering {
             .iter()
             .all(|k| k.is_none_or(|k| named_by_its_squares(&k)))
         {
-            // each killer's rank is written into its own entry for the
-            // loop and the entry put back after it, so the loop reads one
-            // entry a quiet and compares nothing. The table is this
-            // search's own; a history shared between threads could not
-            // lend its entries this way
+            // each killer's rank is lent to its own entry for the loop and
+            // put back after it, so a quiet's key is one read and no
+            // compare. Sound only while the history is this search's own:
+            // one shared between threads could not lend its entries
             let slot = |k: Option<Play>| k.map(|k| ((k.from & 63) as usize, (k.to & 63) as usize));
             let (first, second) = (slot(killers[0]), slot(killers[1]));
             let saved = [
@@ -643,8 +642,7 @@ impl MoveOrdering {
         keys[run..run + 4].fill(i32::MAX);
         #[cfg(debug_assertions)]
         {
-            // every key against the one the 64 bit bonus gives, compared
-            // move by move with both killers
+            // every key against the 64 bit bonus
             let quiet = Quiet {
                 killers,
                 history: &self.history[board.active_color as usize],
@@ -682,10 +680,9 @@ impl MoveOrdering {
     pub(crate) fn sort_rest(&mut self, run: &mut [Play], t: usize, ply: usize) {
         let len = run.len();
         let orig = &self.quiet_orig[ply];
-        // a short rest goes by rank: each key's place in the order is the
-        // count of the keys under it, which the vector compares four at a
-        // time with no branch. Nothing reads the keys once the rest is
-        // sorted, so they are left where they stand
+        // a short rest goes by rank: a key's place is the count of the keys
+        // under it. Nothing reads the keys after this, so they are left
+        // unsorted
         if len - t <= RANK_SORT_MAX {
             let keys = &self.quiet_keys[ply];
             let rest = &mut run[t..];
@@ -776,11 +773,11 @@ impl Quiet<'_> {
     /// about, under zero for one tried more often than it has cut, and
     /// never past the capture bands either side.
     ///
-    /// The squares are masked to six bits to take the bounds checks off
-    /// this read, as they are in the quiet keying's reads (`key_quiets`).
-    /// The mask was measured per site (docs/ROADMAP.md) and pays only on
-    /// the keying reads, so the other reads and the write keep their
-    /// check, which panics where a mask would read a different square.
+    /// The squares are masked to six bits, measured to pay when this read
+    /// keyed every quiet (docs/ROADMAP.md). Since 8f9dafe `key_quiets` makes
+    /// that read and this one serves only the ledger's sort, a spilled list
+    /// and the debug check. The write in `cutoff` keeps its check, which
+    /// panics where a mask would read a different square.
     #[inline(always)]
     fn bonus(&self, m: &Play) -> i64 {
         if self.killers[0] == Some(*m) {
@@ -866,10 +863,8 @@ fn least_from(keys: &[i32; QUIET_KEYS], t: usize, len: usize) -> usize {
 }
 
 /// Key the run's quiets by their history entries four at a time, as far
-/// as whole fours go, and return how many were keyed. The four moves' from
-/// and to bytes are gathered into one register and turned into their
-/// entries' indexes with one multiply-add; the entries themselves are read
-/// one by one.
+/// as whole fours go, and return how many were keyed. The entries are read
+/// one by one; only the indexes are computed four at a time.
 #[cfg(all(target_arch = "x86_64", target_feature = "sse4.1"))]
 #[inline(always)]
 fn key_fours(history: &[[i32; 64]; 64], quiets: &[Play], keys: &mut [i32]) -> usize {
@@ -887,12 +882,13 @@ fn key_fours(history: &[[i32; 64]; 64], quiets: &[Play], keys: &mut [i32]) -> us
     assert!(keys.len() >= quiets.len());
     let table = history.as_ptr().cast::<i32>();
     let mut i = 0;
-    // SAFETY: the build enables sse4.1, which the cfg on this function
-    // checks. Each step reads the 24 bytes of four moves of `quiets` (at
-    // the first move and eight bytes on) and writes four keys, both inside
-    // the slices while `i + 4` is within them; a move is six initialised
-    // bytes (the assert above). An index is a from square times 64 and a
-    // to square, each masked to six bits, so under 4,096, the table's size
+    // SAFETY: the cfg on this function checks that the build enables
+    // sse4.1, which implies the ssse3 the byte shuffle and the multiply-add
+    // need. Each step reads the 24 bytes of four moves of `quiets` (at the
+    // first move and eight bytes on) and writes four keys, both inside the
+    // slices while `i + 4` is within them; a move is six initialised bytes
+    // (the assert above). An index is a from square times 64 and a to
+    // square, each masked to six bits, so under 4,096, the table's size
     unsafe {
         // the first two moves' squares from the low sixteen bytes, the
         // other two from the sixteen that start eight bytes in
