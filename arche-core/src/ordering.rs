@@ -627,6 +627,15 @@ impl MoveOrdering {
             if let (Some((f, t)), Some(entry)) = (second, saved[1]) {
                 history[f][t] = entry;
             }
+            // a lent rank is above any entry the history can hold, so one
+            // not put back shows here
+            debug_assert!(
+                [first, second]
+                    .iter()
+                    .flatten()
+                    .all(|&(f, t)| history[f][t] <= HISTORY_MAX),
+                "a killer's lent rank was left in the history"
+            );
         } else {
             for (i, m) in rest[..run].iter().enumerate() {
                 let bonus = if killers[0] == Some(*m) {
