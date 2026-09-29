@@ -146,14 +146,15 @@ worth doing.
   whose king or rook is not standing on its square is dropped, and so is a square that is not
   on the rank a double push crosses, is occupied, has no pawn placed to take there, or has no
   enemy pawn behind it
-- nothing validates the five `unsafe` operations, four in `board.rs` and the table's
-  `madvise` in `transposition.rs`.
+- nothing validates the eight `unsafe` operations, four in `board.rs`, the table's
+  `madvise` in `transposition.rs`, and three blocks of SSE code in `ordering.rs`.
   `unsafe_op_in_unsafe_fn` is denied in `arche-core/Cargo.toml`, so every one of them sits
   in a block carrying a `SAFETY` note, and the `arche` crate forbids unsafe outright. That
   is the half a compiler can check. The other half is Miri, which needs nightly. Two of the
   sites are ones where a slip is undefined behaviour rather than a wrong answer: the static
   exchange gain array's `assume_init` and the move list's writes into its buffer before
-  `set_len`.
+  `set_len`. The ordering's SSE blocks are too: a load or a store past the keys, the moves
+  or the history table reads or writes memory the array does not own.
   A slip in the `madvise` is a refused call or a huge page flag on memory the table does
   not own, not undefined behaviour.
   The exposure is carried knowingly until a scheduled Miri run reports on it
@@ -444,10 +445,11 @@ of these again without saying what is different this time.
   here, and on the same two indexes it is now 0.6% less, having been asked
   again after the loop around the read was rewritten. A mask that lost once
   is worth re-measuring when the code holding it moves, the way
-  `inline(always)` moved on `Quiet::bonus` below. Only the sort's read
-  carries it. The write in `cutoff` and the census read are cold and keep
-  their check, which is the better failure for a square that cannot be out
-  of range: a check panics where a mask reads a different square.
+  `inline(always)` moved on `Quiet::bonus` below. Only the quiet keying's
+  reads carry it (`Quiet::bonus` and `key_quiets`, SSE and scalar). The
+  write in `cutoff` and the census read are cold and keep their check,
+  which is the better failure for a square that cannot be out of range: a
+  check panics where a mask reads a different square.
 - Keeping the swap's attacker set across a static exchange and adding only
   the sliders each capture opens, rather than finding the attackers again
   from the board. The set it builds is the same one, since taking a piece

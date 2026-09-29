@@ -66,6 +66,14 @@ const ATTACKER_SCORES: [i64; 6] = [6, 5, 4, 3, 2, 1];
 /// in. Six, since a list wider than the buffer takes the other sort.
 const PLACE_BITS: u32 = 6;
 const PLACE_MASK: i64 = (1 << PLACE_BITS) - 1;
+/// The quiet run's keys are 32 bits: the history is held to `HISTORY_MAX`
+/// either way, so the killers only have to rank above it, and they take
+/// the two ranks just over the bound. The order is the one the 64 bit
+/// bonuses give, since the map is strictly increasing.
+const QUIET_KILLER: [i32; 2] = [HISTORY_MAX + 2, HISTORY_MAX + 1];
+/// A quiet run's keys, with a vector's width of padding after the run's
+/// last place, where `key_quiets` writes keys nothing can undercut.
+const QUIET_KEYS: usize = MOVE_LIST_INLINE + 4;
 /// The buffer's width has been moved before, and moving it past the place
 /// field would reorder moves quietly.
 const _: () = assert!(MOVE_LIST_INLINE <= 1 << PLACE_BITS);
@@ -123,7 +131,7 @@ pub(crate) struct MoveOrdering {
     /// from it, and the run in generated order, which a key's place
     /// indexes. Per ply because the picking spans the node's child
     /// searches.
-    quiet_keys: Box<[[i64; MOVE_LIST_INLINE]; MAX_PLY as usize]>,
+    quiet_keys: Box<[[i32; QUIET_KEYS]; MAX_PLY as usize]>,
     quiet_orig: Box<[[Play; MOVE_LIST_INLINE]; MAX_PLY as usize]>,
 }
 
@@ -134,7 +142,7 @@ impl MoveOrdering {
             sorted: [NOWHERE; MOVE_LIST_INLINE],
             killers: [[None; 2]; MAX_PLY as usize],
             history: [[[0; 64]; 64]; 2],
-            quiet_keys: Box::new([[0; MOVE_LIST_INLINE]; MAX_PLY as usize]),
+            quiet_keys: Box::new([[0; QUIET_KEYS]; MAX_PLY as usize]),
             quiet_orig: Box::new([[NOWHERE; MOVE_LIST_INLINE]; MAX_PLY as usize]),
         }
     }
@@ -582,15 +590,74 @@ impl MoveOrdering {
         ply: usize,
     ) -> usize {
         let run = rest.len() - losing;
-        let quiet = Quiet {
-            killers: self.killers[ply],
-            history: &self.history[board.active_color as usize],
-        };
+        let killers = self.killers[ply];
+        let history = &mut self.history[board.active_color as usize];
         let keys = &mut self.quiet_keys[ply];
         let orig = &mut self.quiet_orig[ply];
         orig[..run].copy_from_slice(&rest[..run]);
-        for (i, m) in rest[..run].iter().enumerate() {
-            keys[i] = pack(-quiet.bonus(m), i);
+        if killers
+            .iter()
+            .all(|k| k.is_none_or(|k| named_by_its_squares(&k)))
+        {
+            // each killer's rank is written into its own entry for the
+            // loop and the entry put back after it, so the loop reads one
+            // entry a quiet and compares nothing. The table is this
+            // search's own; a history shared between threads could not
+            // lend its entries this way
+            let slot = |k: Option<Play>| k.map(|k| ((k.from & 63) as usize, (k.to & 63) as usize));
+            let (first, second) = (slot(killers[0]), slot(killers[1]));
+            let saved = [
+                first.map(|(f, t)| history[f][t]),
+                second.map(|(f, t)| history[f][t]),
+            ];
+            if let Some((f, t)) = second {
+                history[f][t] = QUIET_KILLER[1];
+            }
+            if let Some((f, t)) = first {
+                history[f][t] = QUIET_KILLER[0];
+            }
+            let fours = key_fours(history, &rest[..run], &mut keys[..run]);
+            for i in fours..run {
+                let m = &rest[i];
+                let entry = history[(m.from & 63) as usize][(m.to & 63) as usize];
+                keys[i] = pack_quiet(entry, i);
+            }
+            if let (Some((f, t)), Some(entry)) = (first, saved[0]) {
+                history[f][t] = entry;
+            }
+            if let (Some((f, t)), Some(entry)) = (second, saved[1]) {
+                history[f][t] = entry;
+            }
+        } else {
+            for (i, m) in rest[..run].iter().enumerate() {
+                let bonus = if killers[0] == Some(*m) {
+                    QUIET_KILLER[0]
+                } else if killers[1] == Some(*m) {
+                    QUIET_KILLER[1]
+                } else {
+                    history[(m.from & 63) as usize][(m.to & 63) as usize]
+                };
+                keys[i] = pack_quiet(bonus, i);
+            }
+        }
+        keys[run..run + 4].fill(i32::MAX);
+        #[cfg(debug_assertions)]
+        {
+            // every key against the one the 64 bit bonus gives, compared
+            // move by move with both killers
+            let quiet = Quiet {
+                killers,
+                history: &self.history[board.active_color as usize],
+            };
+            for (i, m) in rest[..run].iter().enumerate() {
+                let wide = pack(-quiet.bonus(m), i);
+                let bonus = match -(wide >> PLACE_BITS) {
+                    b if b == KILLER_BONUS[0] => QUIET_KILLER[0],
+                    b if b == KILLER_BONUS[1] => QUIET_KILLER[1],
+                    b => i32::try_from(b).expect("a history entry fits 32 bits"),
+                };
+                assert_eq!(keys[i], pack_quiet(bonus, i), "{m} at {i}");
+            }
         }
         run
     }
@@ -600,14 +667,12 @@ impl MoveOrdering {
     #[inline]
     pub(crate) fn pick(&mut self, run: &mut [Play], t: usize, ply: usize) {
         let keys = &mut self.quiet_keys[ply];
-        let mut best = t;
-        let mut key = keys[t];
-        for (j, &k) in keys[t + 1..run.len()].iter().enumerate() {
-            if k < key {
-                key = k;
-                best = t + 1 + j;
-            }
-        }
+        let best = least_from(keys, t, run.len());
+        debug_assert_eq!(
+            Some(best),
+            (t..run.len()).min_by_key(|&j| keys[j]),
+            "the pick is not the least key"
+        );
         keys.swap(t, best);
         run.swap(t, best);
     }
@@ -615,7 +680,33 @@ impl MoveOrdering {
     /// Sort the run from `t` on whole.
     #[inline(never)]
     pub(crate) fn sort_rest(&mut self, run: &mut [Play], t: usize, ply: usize) {
-        let keys = &mut self.quiet_keys[ply][t..run.len()];
+        let len = run.len();
+        let orig = &self.quiet_orig[ply];
+        // a short rest goes by rank: each key's place in the order is the
+        // count of the keys under it, which the vector compares four at a
+        // time with no branch. Nothing reads the keys once the rest is
+        // sorted, so they are left where they stand
+        if len - t <= RANK_SORT_MAX {
+            let keys = &self.quiet_keys[ply];
+            let rest = &mut run[t..];
+            for &key in &keys[t..len] {
+                rest[keys_under(keys, key, t, len)] = orig[(key & PLACE_MASK as i32) as usize];
+            }
+            #[cfg(debug_assertions)]
+            {
+                let mut sorted = keys[t..len].to_vec();
+                sorted.sort_unstable();
+                for (m, key) in rest.iter().zip(&sorted) {
+                    assert_eq!(
+                        *m,
+                        orig[(key & PLACE_MASK as i32) as usize],
+                        "the rank sort"
+                    );
+                }
+            }
+            return;
+        }
+        let keys = &mut self.quiet_keys[ply][t..len];
         for i in 1..keys.len() {
             let k = keys[i];
             let mut j = i;
@@ -625,9 +716,8 @@ impl MoveOrdering {
             }
             keys[j] = k;
         }
-        let orig = &self.quiet_orig[ply];
         for (slot, key) in run[t..].iter_mut().zip(keys.iter()) {
-            *slot = orig[(key & PLACE_MASK) as usize];
+            *slot = orig[(key & PLACE_MASK as i32) as usize];
         }
     }
 
@@ -687,10 +777,10 @@ impl Quiet<'_> {
     /// never past the capture bands either side.
     ///
     /// The squares are masked to six bits to take the bounds checks off
-    /// this read, which is made for every quiet keyed. The mask was
-    /// measured per site (docs/ROADMAP.md) and pays only here, so the
-    /// other reads and the write keep their check, which panics where a
-    /// mask would read a different square.
+    /// this read, as they are in the quiet keying's reads (`key_quiets`).
+    /// The mask was measured per site (docs/ROADMAP.md) and pays only on
+    /// the keying reads, so the other reads and the write keep their
+    /// check, which panics where a mask would read a different square.
     #[inline(always)]
     fn bonus(&self, m: &Play) -> i64 {
         if self.killers[0] == Some(*m) {
@@ -701,6 +791,220 @@ impl Quiet<'_> {
         }
         i64::from(self.history[(m.from & 63) as usize][(m.to & 63) as usize])
     }
+}
+
+/// Whether a killer's squares name it among the quiets of any list: no
+/// promotion push and no castle can go from its square to its square, so
+/// the only quiet a list can hold on that journey is the killer itself.
+/// A promotion push is one rank onto the last, and a castle is the king's
+/// two squares from its starting square.
+#[inline(always)]
+fn named_by_its_squares(k: &Play) -> bool {
+    let (from, to) = (k.from, k.to);
+    let promotes =
+        (48..56).contains(&from) && to == from + 8 || (8..16).contains(&from) && to + 8 == from;
+    let castles = (from == 4 || from == 60) && (to == from + 2 || to + 2 == from);
+    k.promote.is_none() && !k.castle && !promotes && !castles
+}
+
+/// A quiet's key: the bonus above its place, smallest first.
+#[inline(always)]
+fn pack_quiet(bonus: i32, place: usize) -> i32 {
+    debug_assert!(place < 1 << PLACE_BITS, "a place has to fit its field");
+    debug_assert!(bonus.abs() <= HISTORY_MAX + 2, "the bonus outgrew its band");
+    place as i32 - (bonus << PLACE_BITS)
+}
+
+/// Where the least key of `keys[t..len]` stands. The keys are distinct and
+/// the four after `len` are `i32::MAX`, so the vector reads past the run
+/// find nothing and the first equal lane is the one.
+#[cfg(all(target_arch = "x86_64", target_feature = "sse4.1"))]
+#[inline(always)]
+fn least_from(keys: &[i32; QUIET_KEYS], t: usize, len: usize) -> usize {
+    use core::arch::x86_64::{
+        __m128i, _mm_castsi128_ps, _mm_cmpeq_epi32, _mm_loadu_si128, _mm_min_epi32,
+        _mm_movemask_ps, _mm_set1_epi32, _mm_shuffle_epi32,
+    };
+    assert!(t < len && len + 4 <= QUIET_KEYS);
+    // SAFETY: the build enables sse4.1, which the cfg on this function
+    // checks, and every load starts under `len`, whose four lanes the
+    // assert above keeps inside the array
+    unsafe {
+        let at = |j: usize| _mm_loadu_si128(keys.as_ptr().add(j).cast::<__m128i>());
+        let mut least = _mm_set1_epi32(i32::MAX);
+        let mut j = t;
+        while j < len {
+            least = _mm_min_epi32(least, at(j));
+            j += 4;
+        }
+        least = _mm_min_epi32(least, _mm_shuffle_epi32::<0b01_00_11_10>(least));
+        least = _mm_min_epi32(least, _mm_shuffle_epi32::<0b10_11_00_01>(least));
+        let mut j = t;
+        while j < len {
+            let mask = _mm_movemask_ps(_mm_castsi128_ps(_mm_cmpeq_epi32(at(j), least)));
+            if mask != 0 {
+                return j + mask.trailing_zeros() as usize;
+            }
+            j += 4;
+        }
+    }
+    unreachable!("the least key was not found again")
+}
+
+#[cfg(not(all(target_arch = "x86_64", target_feature = "sse4.1")))]
+#[inline(always)]
+fn least_from(keys: &[i32; QUIET_KEYS], t: usize, len: usize) -> usize {
+    let mut best = t;
+    let mut key = keys[t];
+    for (j, &k) in keys[t + 1..len].iter().enumerate() {
+        if k < key {
+            key = k;
+            best = t + 1 + j;
+        }
+    }
+    best
+}
+
+/// Key the run's quiets by their history entries four at a time, as far
+/// as whole fours go, and return how many were keyed. The four moves' from
+/// and to bytes are gathered into one register and turned into their
+/// entries' indexes with one multiply-add; the entries themselves are read
+/// one by one.
+#[cfg(all(target_arch = "x86_64", target_feature = "sse4.1"))]
+#[inline(always)]
+fn key_fours(history: &[[i32; 64]; 64], quiets: &[Play], keys: &mut [i32]) -> usize {
+    use core::arch::x86_64::{
+        __m128i, _mm_add_epi32, _mm_and_si128, _mm_cvtepu16_epi32, _mm_cvtsi128_si32,
+        _mm_extract_epi32, _mm_loadu_si128, _mm_maddubs_epi16, _mm_or_si128, _mm_set1_epi8,
+        _mm_set1_epi16, _mm_set1_epi32, _mm_setr_epi8, _mm_setr_epi32, _mm_shuffle_epi8,
+        _mm_slli_epi32, _mm_storeu_si128, _mm_sub_epi32,
+    };
+    // the moves are read as bytes, so a move has to be six of them with
+    // no padding, and the squares are found where the compiler put them
+    const _: () = assert!(size_of::<Play>() == 6);
+    const F: i8 = core::mem::offset_of!(Play, from) as i8;
+    const T: i8 = core::mem::offset_of!(Play, to) as i8;
+    assert!(keys.len() >= quiets.len());
+    let table = history.as_ptr().cast::<i32>();
+    let mut i = 0;
+    // SAFETY: the build enables sse4.1, which the cfg on this function
+    // checks. Each step reads the 24 bytes of four moves of `quiets` (at
+    // the first move and eight bytes on) and writes four keys, both inside
+    // the slices while `i + 4` is within them; a move is six initialised
+    // bytes (the assert above). An index is a from square times 64 and a
+    // to square, each masked to six bits, so under 4,096, the table's size
+    unsafe {
+        // the first two moves' squares from the low sixteen bytes, the
+        // other two from the sixteen that start eight bytes in
+        let low = _mm_setr_epi8(
+            F,
+            T,
+            F + 6,
+            T + 6,
+            -1,
+            -1,
+            -1,
+            -1,
+            -1,
+            -1,
+            -1,
+            -1,
+            -1,
+            -1,
+            -1,
+            -1,
+        );
+        let high = _mm_setr_epi8(
+            -1,
+            -1,
+            -1,
+            -1,
+            F + 4,
+            T + 4,
+            F + 10,
+            T + 10,
+            -1,
+            -1,
+            -1,
+            -1,
+            -1,
+            -1,
+            -1,
+            -1,
+        );
+        let square = _mm_set1_epi8(63);
+        // from times 64 plus to, for each byte pair
+        let weights = _mm_set1_epi16(0x0140);
+        let four = _mm_set1_epi32(4);
+        let mut place = _mm_setr_epi32(0, 1, 2, 3);
+        while i + 4 <= quiets.len() {
+            let at = quiets.as_ptr().add(i).cast::<u8>();
+            let first = _mm_loadu_si128(at.cast::<__m128i>());
+            let last = _mm_loadu_si128(at.add(8).cast::<__m128i>());
+            let squares = _mm_and_si128(
+                _mm_or_si128(_mm_shuffle_epi8(first, low), _mm_shuffle_epi8(last, high)),
+                square,
+            );
+            let index = _mm_cvtepu16_epi32(_mm_maddubs_epi16(squares, weights));
+            let entries = _mm_setr_epi32(
+                *table.add(_mm_cvtsi128_si32(index) as usize),
+                *table.add(_mm_extract_epi32::<1>(index) as usize),
+                *table.add(_mm_extract_epi32::<2>(index) as usize),
+                *table.add(_mm_extract_epi32::<3>(index) as usize),
+            );
+            // the place less the entry above it, as `pack_quiet` makes it
+            let key = _mm_sub_epi32(place, _mm_slli_epi32::<6>(entries));
+            _mm_storeu_si128(keys.as_mut_ptr().add(i).cast::<__m128i>(), key);
+            place = _mm_add_epi32(place, four);
+            i += 4;
+        }
+    }
+    i
+}
+
+#[cfg(not(all(target_arch = "x86_64", target_feature = "sse4.1")))]
+#[inline(always)]
+fn key_fours(_: &[[i32; 64]; 64], _: &[Play], _: &mut [i32]) -> usize {
+    0
+}
+
+/// How long a rest `sort_rest` orders by rank. The rank costs a compare
+/// for every pair, which outgrows the insertion sort's shifts on a long run.
+const RANK_SORT_MAX: usize = 24;
+
+/// How many of `keys[t..len]` are under `key`. The four after `len` are
+/// `i32::MAX`, which nothing is over.
+#[cfg(all(target_arch = "x86_64", target_feature = "sse4.1"))]
+#[inline(always)]
+fn keys_under(keys: &[i32; QUIET_KEYS], key: i32, t: usize, len: usize) -> usize {
+    use core::arch::x86_64::{
+        __m128i, _mm_add_epi32, _mm_cmpgt_epi32, _mm_cvtsi128_si32, _mm_loadu_si128,
+        _mm_set1_epi32, _mm_setzero_si128, _mm_shuffle_epi32, _mm_sub_epi32,
+    };
+    assert!(t < len && len + 4 <= QUIET_KEYS);
+    // SAFETY: the build enables sse4.1, which the cfg on this function
+    // checks, and every load starts under `len`, whose four lanes the
+    // assert above keeps inside the array
+    unsafe {
+        let key = _mm_set1_epi32(key);
+        let mut under = _mm_setzero_si128();
+        let mut j = t;
+        while j < len {
+            let four = _mm_loadu_si128(keys.as_ptr().add(j).cast::<__m128i>());
+            // a lane under the key compares as -1
+            under = _mm_sub_epi32(under, _mm_cmpgt_epi32(key, four));
+            j += 4;
+        }
+        under = _mm_add_epi32(under, _mm_shuffle_epi32::<0b01_00_11_10>(under));
+        under = _mm_add_epi32(under, _mm_shuffle_epi32::<0b10_11_00_01>(under));
+        _mm_cvtsi128_si32(under) as usize
+    }
+}
+
+#[cfg(not(all(target_arch = "x86_64", target_feature = "sse4.1")))]
+#[inline(always)]
+fn keys_under(keys: &[i32; QUIET_KEYS], key: i32, t: usize, len: usize) -> usize {
+    keys[t..len].iter().filter(|&&k| k < key).count()
 }
 
 /// One update of a history entry: `entry += bonus - entry * |bonus| / MAX`.
