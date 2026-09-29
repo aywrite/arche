@@ -40,11 +40,11 @@ cargo test --workspace
 
 The release run is the quicker and the usual choice while working. Run the
 second before landing a change. It keeps the overflow checks and the board's
-state-in-step assertions, which check the position key, the pawn key, the eval
-accumulators, the square array and the en passant rule against a recompute on
-every move made. Release compiles all of that out, so a green release run says
-nothing about them. The second run is still compiled optimised (`opt-level =
-2` on the test profile in the root manifest), which leaves those checks on.
+state-in-step assertions, which check everything the board derives from its
+piece boards against a recompute on every move made and taken back. Release
+compiles all of that out, so a green release run says nothing about them. The
+second run is still compiled optimised (`opt-level = 2` on the test profile in
+the root manifest), which leaves those checks on.
 The perft suites are its longest tests.
 
 CI runs the tests a third time, in debug, with the evaluation's pair term on a
@@ -304,35 +304,29 @@ adjusted.
 
 ### The games suite
 
-The bench's positions are searched to a depth, so each counts by the size of
-its tree, and the opening and middlegame positions hold most of its nodes. A
-game gives every move a similar budget to its end, and most of a game comes
-after the captures have thinned out. So the bench weights code that runs where
-captures are dense more heavily than play does:
-
 ```
 target/release/arche bench games
 ```
 
-searches `arche-core/games.epd` instead: 96 positions drawn uniformly from
-every position after the book in 300 games the engine played against itself
-(`scripts/build_games.py`, which says how), each to 100,000 nodes with a fresh
-table. Two of them are mates in one, whose searches run out of depths first,
-so the total is 9,409,127 rather than 9,600,000. The report has the bench's
-shape and its last line, so the tools that read the bench read this.
+searches `arche-core/games.epd` in place of the bench's suite: 96 positions
+drawn uniformly from the positions after the book in 300 games the engine played
+against itself (`scripts/build_games.py`), each to 100,000 nodes with a fresh
+table. The bench searches to a depth, so its opening and middlegame positions
+hold most of its nodes, where a game spends a similar budget on every move and
+most of its moves come after the captures have thinned out. A saving in code
+that runs where captures are dense therefore reads larger on the bench than on
+this suite. Under cachegrind at 9a893f2 (before the swap table), counting each
+source file's lines wherever they were inlined, the swap (`Board::see`) was 6.5%
+of the bench's instructions and 4.1% of the games suite's, `magic.rs` 3.2% and
+1.8%, the files under `eval/` 14.5% and 12.5%, and `engine.rs` 9.7% and 11.5%.
 
-Profiled under cachegrind at 9a893f2, counting each source file's lines
-wherever they were inlined, the swap (`Board::see`) is 6.5% of the bench's
-instructions and 4.1% of the games suite's, `magic.rs` 3.2% and 1.8%, the
-evaluation's files under `eval/` 14.5% and 12.5%, and `engine.rs`, the
-search's own loop, 9.7% and 11.5%. A change's saving on one is not its
-saving on the other, and the games suite is the one shaped like play.
-
-It is read beside the bench, not in its place. The bench is what the
-`Bench:` trailer states and what the tests pin. The games suite's node count is
-the budget times the positions whenever the search gets that far, so it moves
-only where a search stops short, and nothing pins it. `games` takes `hash`,
-`taint` and `audit` as the bench does, and refuses a depth.
+It is read beside the bench, not in its place. The bench is what the `Bench:`
+trailer states and what the tests pin, and nothing pins the games suite. Its
+node total is the budget times the positions except where a search stops short
+(two mates in one do), so it moves only there. `games` takes `hash`, `taint`
+and `audit` as the bench does, and refuses a depth. The report has the bench's
+shape and last line. `scripts/instructions.py --games` counts it, and
+`scripts/speed.py` has no option to run it.
 
 ### Measuring speed
 
@@ -433,13 +427,12 @@ python3 scripts/instructions.py <base binary> <candidate binary>
 
 It runs each side's bench once under cachegrind with the cache simulation off
 and prints the instructions, the nodes and the instructions a node. `--games`
-runs `bench games` instead, for the saving in play rather than on the bench's
-middlegames; both sides need a build that has it. The count repeats to within a
-few hundred instructions (e9afc4d), so one run a side is
-enough and a change far smaller than the rate can see is a real one. It covers
-the whole process, startup included, so the per node column moves a little
-even when only the tree changed. The speed job counts both sides after timing
-them and adds the count to its comment.
+counts the games suite instead, and both sides need a build that has it. The
+count repeats to within a few hundred instructions (e9afc4d), so one run a side
+is enough and a change far smaller than the rate can see is a real one. It
+covers the whole process, startup included, so the per node column moves a
+little even when only the tree changed. The speed job counts both sides after
+timing them and adds the count to its comment.
 
 Cache misses, mispredicted branches and code alignment cost time and no
 instructions, so a change that trades an instruction for a miss reads as a win
