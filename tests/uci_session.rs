@@ -596,6 +596,9 @@ fn run_to_end(args: &[&str]) -> std::process::Output {
         .expect("the binary runs")
 }
 
+/// Names the commands by hand on purpose, rather than walking the array the
+/// binary dispatches from: a command dropped from that array fails here,
+/// where a loop over the shorter array would pass.
 #[test]
 fn a_setting_that_cannot_be_read_is_refused_on_stderr() {
     // stdout stays empty, so no measuring tool mistakes a refusal for a
