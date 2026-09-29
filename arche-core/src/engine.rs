@@ -2148,7 +2148,11 @@ impl AlphaBeta {
         let mut filtered = false;
         // the places from which the rest of the run is known to be dropped
         let mut dropped = usize::MAX..usize::MAX;
-        for i in 0..moves.len() {
+        let len = moves.len();
+        let mut next = 0;
+        while next < len {
+            let i = next;
+            next += 1;
             // the front did not cut this node off, so the quiets are keyed
             // and put in order only as far as the node reads them
             if i == front {
@@ -2182,7 +2186,11 @@ impl AlphaBeta {
                         ply,
                         &mut check_info,
                     );
-                    dropped = front + kept..end;
+                    // a run whose every move survives drops none, and
+                    // leaves no run for the step below
+                    if front + kept < end {
+                        dropped = front + kept..end;
+                    }
                     lazy = None;
                     filtered = true;
                 } else if *picks >= 4 {
@@ -2194,7 +2202,12 @@ impl AlphaBeta {
                     *picks += 1;
                 }
             }
-            if dropped.contains(&i) {
+            if i >= dropped.start {
+                // the rest of the run is dropped: step past it whole rather
+                // than a place at a time
+                debug_assert!(i < dropped.end, "the dropped run is behind the loop");
+                next = dropped.end;
+                dropped = usize::MAX..usize::MAX;
                 continue;
             }
             let m = &moves[i];
