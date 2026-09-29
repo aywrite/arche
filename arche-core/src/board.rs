@@ -1202,6 +1202,7 @@ impl Board {
         let bearing = (self.steppers_onto(m.to) | self.sliders_onto(m.to, occupied)) & occupied;
         let defenders = bearing & theirs;
         if defenders == 0 {
+            debug_assert_eq!(won, self.swap_walk(m), "{m}: an undefended capture");
             return won;
         }
         // the sliders on the square's lines that do not bear on it yet: the
@@ -1215,7 +1216,9 @@ impl Board {
         let capturer = self.squares[(m.from & 63) as usize].map_or(6, |p| p as usize);
         if attackers == 0 && lined & ours == 0 {
             // the defender takes back and nothing of ours can follow
-            return won - SEE_VALUES.get(capturer).copied().unwrap_or(0);
+            let after = won - SEE_VALUES.get(capturer).copied().unwrap_or(0);
+            debug_assert_eq!(after, self.swap_walk(m), "{m}: one recapture");
+            return after;
         }
         // a slider that bears through the occupancy with every direct
         // attacker gone is the only kind that can join as they leave, so
@@ -1228,7 +1231,11 @@ impl Board {
             + usize::from(swap_table::THEIRS[self.attacker_code(defenders)]);
         // a side with more than three attackers reads past the table
         match swap_table::TABLE.get(at) {
-            Some(&back) => won - 100 * i32::from(back),
+            Some(&back) => {
+                let after = won - 100 * i32::from(back);
+                debug_assert_eq!(after, self.swap_walk(m), "{m}: the swap table");
+                after
+            }
             None => self.swap_walk(m),
         }
     }
