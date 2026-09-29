@@ -765,10 +765,32 @@ def line_search(objective, x, direction, value, slope, length):
 
 def lbfgs(objective, start, iterations=300, history=10, tolerance=1e-12):
     """L-BFGS on the closed-form gradient, which the evaluation being linear in
-    its weights allows; Texel's one-weight-at-a-time walk is not needed."""
+    its weights allows; Texel's one-weight-at-a-time walk is not needed.
+
+    Returns the point, its value and how the search stopped, since a fit that
+    ran out of iterations or could not find a step looks like one that
+    converged from the point alone. The stop's `reason` is one of:
+
+        iterations           the cap was reached
+        zero_direction       the gradient was exactly zero
+        line_search_failed   no step along the direction lowered the value
+        tolerance            the last step improved the value by `tolerance`
+                             or less, which says nothing about the gradient
+
+    with the steps taken (`iterations`), the norm of the gradient at the point
+    returned (`gradient_norm`) and the last step's improvement (`improvement`,
+    `None` before the first step).
+
+    A `tolerance` stop can hide a failed line search. Once the search halves
+    its step below the rounding of every coordinate it moves, the point stays
+    where it is, the trial value equals the current one, and the acceptance
+    test takes it. The gradient norm tells the two apart: a search that gave
+    up leaves it large.
+    """
     x = np.array(start, dtype=np.float64)
     value, gradient = objective(x)
     olds, news, rhos = [], [], []
+    reason, taken, improvement = "iterations", 0, None
     for _ in range(iterations):
         direction = -gradient
         alphas = []
@@ -788,11 +810,13 @@ def lbfgs(objective, start, iterations=300, history=10, tolerance=1e-12):
             slope = float(gradient @ direction)
         norm = float(np.linalg.norm(direction))
         if norm == 0.0:
+            reason = "zero_direction"
             break
         stepped = line_search(
             objective, x, direction, value, slope, 1.0 if olds else 1.0 / norm
         )
         if stepped is None:
+            reason = "line_search_failed"
             break
         candidate, trial, trial_gradient = stepped
         step = candidate - x
@@ -808,9 +832,17 @@ def lbfgs(objective, start, iterations=300, history=10, tolerance=1e-12):
                 rhos.pop(0)
         improvement = value - trial
         x, value, gradient = candidate, trial, trial_gradient
+        taken += 1
         if improvement <= tolerance:
+            reason = "tolerance"
             break
-    return x, value
+    stop = {
+        "reason": reason,
+        "iterations": taken,
+        "gradient_norm": float(np.linalg.norm(gradient)),
+        "improvement": improvement,
+    }
+    return x, value, stop
 
 
 def objective_for(corpus, mask, k, start, penalty, frozen):
@@ -1099,7 +1131,7 @@ def cross_validate(corpus, penalties, start, frozen, iterations, out=None):
             corpus.scores(corpus.weights)[held], results, k
         )
         for penalty in penalties:
-            fitted, _ = lbfgs(
+            fitted, _, _ = lbfgs(
                 objective_for(corpus, train, k, start, penalty, frozen),
                 start,
                 iterations,
@@ -1166,7 +1198,7 @@ def choose_penalty(
     print(f"shipped selection mse {float(weight @ shipped):.6f}", file=out)
     best = None
     for penalty in penalties:
-        fitted, _ = lbfgs(
+        fitted, _, _ = lbfgs(
             objective_for(corpus, train, k, start, penalty, frozen),
             start,
             iterations,

@@ -549,9 +549,72 @@ def test_the_optimiser_finds_the_bottom_of_a_bowl():
         slack = (x - centre) * 1e-4
         return float(slack @ slack), 2e-8 * (x - centre)
 
-    found, value = tune.lbfgs(objective, np.zeros(LAYOUT.slots))
+    found, value, stop = tune.lbfgs(objective, np.zeros(LAYOUT.slots))
     assert value < 1e-12
     assert np.max(np.abs(found - centre)) < 1e-3
+    assert stop["reason"] == "tolerance"
+    assert 0 < stop["iterations"] < 300
+    assert stop["improvement"] <= 1e-12
+
+
+def test_the_optimiser_says_it_ran_out_of_iterations():
+    """A cap reached looks like convergence from the point alone."""
+
+    def objective(x):
+        return float(x @ x), 2 * x
+
+    _, _, stop = tune.lbfgs(objective, np.ones(4), iterations=1)
+    assert stop["reason"] == "iterations"
+    assert stop["iterations"] == 1
+    assert stop["improvement"] > 0
+
+
+def test_the_optimiser_says_it_started_at_a_stationary_point():
+    def objective(x):
+        return float(x @ x), 2 * x
+
+    _, _, stop = tune.lbfgs(objective, np.zeros(4))
+    assert stop == {
+        "reason": "zero_direction",
+        "iterations": 0,
+        "gradient_norm": 0.0,
+        "improvement": None,
+    }
+
+
+def test_the_optimiser_says_no_step_lowered_the_value():
+    """A gradient that points uphill leaves the line search nothing to take,
+    which is a give up and not a bottom: the gradient is still large. The
+    value is zero at the start so the search's acceptance test stays exact.
+    With a value away from zero and every coordinate far from zero, a step too
+    short to move the point is taken instead, and reads as `tolerance` with an
+    improvement of zero (the next test)."""
+    start = np.ones(4)
+
+    def objective(x):
+        return float((x - start) @ (x - start)), np.ones(4)
+
+    found, _, stop = tune.lbfgs(objective, start)
+    assert stop["reason"] == "line_search_failed"
+    assert stop["iterations"] == 0
+    assert stop["gradient_norm"] == pytest.approx(2.0)
+    assert np.array_equal(found, start)
+
+
+def test_a_step_too_short_to_move_the_point_reads_as_tolerance():
+    """The same uphill gradient where the value is not zero: the search halves
+    until the step no longer moves the point, takes it, and the loop stops on
+    an improvement of exactly zero. A reader of the stop tells this from a
+    small real improvement by the zero and the gradient."""
+
+    def objective(x):
+        return float(x @ x), -2 * x
+
+    found, _, stop = tune.lbfgs(objective, np.ones(4))
+    assert stop["reason"] == "tolerance"
+    assert stop["improvement"] == 0.0
+    assert stop["gradient_norm"] == pytest.approx(4.0)
+    assert np.array_equal(found, np.ones(4))
 
 
 def test_a_vector_the_engine_could_not_carry_is_refused():
