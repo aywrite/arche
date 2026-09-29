@@ -3,27 +3,29 @@
 
 //! What a full width node does with a quiet move its ordering put late:
 //! search it whole, scout it some plies shallower first, or not search it
-//! at all. `decide` answers with a `Verdict`; the scout itself is
-//! `windowed`'s, in `engine.rs`.
+//! at all. `decide_admitted` answers with a `Verdict`; the scout itself
+//! is `windowed`'s, in `engine.rs`.
 //!
 //! At depths one to three `Shallow` holds two pruning rules for a quiet
 //! move after the node's first: quiet futility, when the evaluation plus a
 //! margin a ply cannot reach alpha, and the late move count, when the node
 //! has searched `LATE_MOVE_COUNT` moves a ply. Everything in them but one
 //! comparison against alpha is settled by the node, so the loop builds it
-//! once and asks it per move. They stop a ply under the model's floor, so
-//! a shallow rule and the model never decide at one depth.
+//! once, hands it alpha again when alpha rises, and asks it per move. They
+//! stop a ply under the model's floor, so a shallow rule and the model
+//! never decide at one depth.
 //!
-//! `decide` covers the rest. The late move reduction scouts a quiet move
-//! searched after the fourth, with the exemptions `reduces` lists. From
-//! `DEEP_REDUCTION_MIN_DEPTH` the attention model (a logistic regression
-//! over the reduction ledger's columns, in fixed point) drops a move whose
-//! score is under one threshold, and gives the scout an extra ply under
-//! another. Under `deep_index_rule`, which the default carries, that extra
-//! ply is decided by the move's index against a floor rising with depth
-//! instead. The ply is added to the amount rather than naming a depth,
-//! because the model ranks how dead a move is and says nothing about
-//! depth. `amount` reads the plies off a table by depth and index.
+//! `Admission` and `decide_admitted` cover the rest. The late move
+//! reduction scouts a quiet move searched after the fourth, with the
+//! exemptions `reduces` lists. From `DEEP_REDUCTION_MIN_DEPTH` the
+//! attention model (a logistic regression over the reduction ledger's
+//! columns, in fixed point) drops a move whose score is under one
+//! threshold, and gives the scout an extra ply under another. Under
+//! `deep_index_rule`, which the default carries, that extra ply is decided
+//! by the move's index against a floor rising with depth instead. The ply
+//! is added to the amount rather than naming a depth, because the model
+//! ranks how dead a move is and says nothing about depth. `amount` reads
+//! the plies off a table by depth and index.
 //!
 //! `features` derives the ledger's columns once, and the gate and the
 //! ledger both read them, so the score that decided a move and the row
@@ -333,12 +335,29 @@ impl Features {
 /// The verdict for one move at a full width node. `searched` is how many
 /// moves the node has searched already, the table's move among them. The
 /// reduction's exemptions are asked first, so a node that reduces nothing
-/// pays for no feature.
-#[inline]
+/// pays for no feature. The tests' reference: the loop asks `Admission`
+/// and then `decide_admitted`, which give the same verdict.
+#[cfg(test)]
 pub(crate) fn decide(search: &Search, node: &mut Node, m: &Play, searched: usize) -> Verdict {
     if !reduces(search, node, m, searched) {
         return Verdict::Scout(0);
     }
+    gate(search, node, m, searched)
+}
+
+/// `decide` for a quiet move at a node the loop's `Admission` already
+/// admitted: what is left of `reduces` is settled, so this is the gate.
+#[inline]
+pub(crate) fn decide_admitted(
+    search: &Search,
+    node: &mut Node,
+    m: &Play,
+    searched: usize,
+) -> Verdict {
+    debug_assert!(
+        reduces(search, node, m, searched),
+        "the loop admitted a move the reduction refuses"
+    );
     gate(search, node, m, searched)
 }
 
@@ -357,21 +376,34 @@ pub(crate) fn decide(search: &Search, node: &mut Node, m: &Play, searched: usize
 /// which also means the margin reads an evaluation the node already has.
 ///
 /// Alpha only rises, so the margin's test is a latch (`under`). A rising
-/// alpha can reach the mate window, which is an exemption, so the mate test
-/// is asked per move in front of the latch rather than folded into it.
+/// alpha can reach the mate window, which is an exemption, and can leave
+/// it from below, so the node half is read again at every rise
+/// (`raised`) rather than per move: between two rises only the searched
+/// count moves, and it moves the rules only at the thresholds held here.
 pub(crate) struct Shallow {
     /// Whether the node's own facts admit either rule.
     admits: bool,
+    /// The searched count from which either rule may drop a move: one while
+    /// the node admits them and alpha is short of a mate, else never.
+    from: usize,
     /// `QUIET_FUTILITY_MARGIN` at this node's depth, or none with the
     /// margin's switch off.
     margin: Option<i64>,
-    /// The searched count at or past which the count drops a quiet, or none
-    /// with its switch off.
-    count: Option<usize>,
-    under: bool,
+    /// The searched count at or past which the count drops a quiet, or
+    /// never with its switch off.
+    count: usize,
+    /// The margin's answer at the alpha it was asked at: `ASK` when it has
+    /// to be asked, `SHORT` when it did not hold at the alpha standing,
+    /// `UNDER` once it held, which stands while alpha rises.
+    under: u8,
 }
 
-/// The node's half of the two rules, read once before the loop.
+const ASK: u8 = 0;
+const SHORT: u8 = 1;
+const UNDER: u8 = 2;
+
+/// The node's half of the two rules, read once before the loop. The loop
+/// hands it alpha with `raised` before the first move and at every rise.
 pub(crate) fn shallow(
     config: &SearchConfig,
     board: &Board,
@@ -386,19 +418,40 @@ pub(crate) fn shallow(
         && !is_mate(beta)
         && !root_bounds.beta
         && board.has_non_pawn_material();
+    let margin = (admits && config.quiet_futility)
+        .then(|| i64::from(QUIET_FUTILITY_MARGIN) * i64::from(depth));
     Shallow {
         admits,
-        margin: (admits && config.quiet_futility)
-            .then(|| i64::from(QUIET_FUTILITY_MARGIN) * i64::from(depth)),
-        count: (admits && config.late_move_count).then(|| LATE_MOVE_COUNT * usize::from(depth)),
-        under: false,
+        from: usize::MAX,
+        margin,
+        count: if admits && config.late_move_count {
+            LATE_MOVE_COUNT * usize::from(depth)
+        } else {
+            usize::MAX
+        },
+        // with the margin off the answer never has to be asked
+        under: if margin.is_some() { ASK } else { SHORT },
     }
 }
 
 impl Shallow {
+    /// Alpha as the loop now holds it: before the first move and after
+    /// every rise.
+    #[inline]
+    pub(crate) fn raised(&mut self, alpha: Score) {
+        self.from = if self.admits && !is_mate(alpha) {
+            1
+        } else {
+            usize::MAX
+        };
+        if self.under == SHORT && self.margin.is_some() {
+            self.under = ASK;
+        }
+    }
+
     /// Whether either rule drops this move. `searched` is how many moves the
     /// node has searched already and `alpha` its bound as the move is
-    /// reached.
+    /// reached, the one last handed to `raised`.
     ///
     /// The order of the tests is the cost order: the count before the
     /// margin, so a move the count drops needs no evaluation, and the check
@@ -415,12 +468,15 @@ impl Shallow {
         searched: usize,
         alpha: Score,
     ) -> bool {
-        self.admits
-            && searched >= 1
+        debug_assert_eq!(
+            searched >= self.from,
+            self.admits && searched >= 1 && !is_mate(alpha),
+            "the node half was not handed the alpha standing"
+        );
+        searched >= self.from
             && m.capture.is_none()
             && m.promote.is_none()
-            && !is_mate(alpha)
-            && (self.counted(searched) || self.under_alpha(search, eval, alpha))
+            && (searched >= self.count || self.under_alpha(search, eval, alpha))
             && !search
                 .board
                 .gives_check_with(check.get_or_insert_with(|| search.board.check_info()), m)
@@ -439,26 +495,74 @@ impl Shallow {
         searched: usize,
         alpha: Score,
     ) -> bool {
-        self.admits
-            && searched >= 1
-            && !is_mate(alpha)
-            && (self.counted(searched) || self.under_alpha(search, eval, alpha))
-    }
-
-    #[inline]
-    fn counted(&self, searched: usize) -> bool {
-        self.count.is_some_and(|count| searched >= count)
+        debug_assert_eq!(
+            searched >= self.from,
+            self.admits && searched >= 1 && !is_mate(alpha),
+            "the node half was not handed the alpha standing"
+        );
+        searched >= self.from && (searched >= self.count || self.under_alpha(search, eval, alpha))
     }
 
     #[inline]
     fn under_alpha(&mut self, search: &Search, eval: &mut Option<i64>, alpha: Score) -> bool {
-        let Some(margin) = self.margin else {
-            return false;
-        };
-        if !self.under {
-            self.under = eval_memo(search.board, eval) + margin <= i64::from(alpha);
+        if self.under == ASK {
+            let margin = self.margin.expect("the margin is asked only when it is on");
+            self.under = if eval_memo(search.board, eval) + margin <= i64::from(alpha) {
+                UNDER
+            } else {
+                SHORT
+            };
         }
-        self.under
+        debug_assert!(
+            self.under != SHORT
+                || self
+                    .margin
+                    .is_none_or(|margin| eval_memo(search.board, eval) + margin > i64::from(alpha)),
+            "a margin held short at an alpha it reaches"
+        );
+        self.under == UNDER
+    }
+}
+
+/// The late move reduction's node half: `admits` without the searched
+/// count, held across the loop and read again at every rise of alpha, so
+/// the loop asks one comparison per move.
+pub(crate) struct Admission {
+    node: bool,
+    /// The searched count from which the node admits a reduction, or never.
+    from: usize,
+}
+
+pub(crate) fn admission(
+    config: &SearchConfig,
+    depth: u8,
+    in_check: bool,
+    beta: Score,
+    root_bounds: RootBounds,
+) -> Admission {
+    Admission {
+        node: config.late_move_reductions
+            && depth >= LATE_MOVE_MIN_DEPTH
+            && !in_check
+            && !is_mate(beta)
+            && !root_bounds.beta,
+        from: usize::MAX,
+    }
+}
+
+impl Admission {
+    #[inline]
+    pub(crate) fn raised(&mut self, alpha: Score) {
+        self.from = if self.node && !is_mate(alpha) {
+            LATE_MOVE_THRESHOLD
+        } else {
+            usize::MAX
+        };
+    }
+
+    #[inline]
+    pub(crate) fn admits(&self, searched: usize) -> bool {
+        searched >= self.from
     }
 }
 
@@ -515,8 +619,8 @@ pub(crate) fn admits(
 }
 
 /// The exemptions the reduction and the two shallow rules share, for the
-/// reasons `reduces` gives. `Shallow` reads the three fixed at the node
-/// once and alpha's per move.
+/// reasons `reduces` gives. `Shallow` and `Admission` read the three fixed
+/// at the node once and alpha's again at each rise.
 #[inline]
 fn node_admits(in_check: bool, alpha: Score, beta: Score, root_bounds: RootBounds) -> bool {
     !in_check && !is_mate(alpha) && !is_mate(beta) && !root_bounds.beta
@@ -852,6 +956,7 @@ mod tests {
                 ordering: &self.ordering,
                 config: &self.config,
             };
+            shallow.raised(alpha);
             shallow.skips(&search, &mut self.eval, &mut None, m, searched, alpha)
         }
 
