@@ -83,6 +83,7 @@ impl Building {
     /// captures lead it.
     #[inline(always)]
     fn finish(&self, out: &mut MoveList) -> usize {
+        // the captures lead the list only if it starts empty
         debug_assert!(out.is_empty());
         let captures = self.captures_len;
         let len = captures + self.quiets_len;
@@ -91,7 +92,10 @@ impl Building {
         }
         // SAFETY: each push writes an entry before it counts it, so the
         // first `len` of each array are initialised; `MaybeUninit<Play>`
-        // has the layout of `Play`, and the list has room for both. The
+        // has the layout of `Play`. The list has room for `len` from its
+        // first slot whatever it held: its capacity is at least
+        // `MOVE_LIST_INLINE`, and `reserve` makes it at least `len` more
+        // than it held. So `set_len` covers only slots written here. The
         // captures are few, so they go one at a time rather than through a
         // call to memcpy.
         unsafe {
