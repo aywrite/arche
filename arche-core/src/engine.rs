@@ -1,7 +1,7 @@
 // SPDX-License-Identifier: GPL-3.0-or-later
 // Copyright (C) 2022-2026 Andrew Wright
 
-use crate::board::{Board, MOVE_LIST_INLINE, Unplayable};
+use crate::board::{Board, MOVE_LIST_INLINE, MoveList, Unplayable};
 use crate::census;
 use crate::effort;
 use crate::eval;
@@ -1585,10 +1585,11 @@ impl AlphaBeta {
             Probe::Miss => None,
         };
         // in check every evasion is searched, quiet or not
-        let mut moves = if in_check {
-            self.board.evasions()
+        let mut moves = MoveList::new();
+        let mut captures = if in_check {
+            self.board.evasions_into(&mut moves)
         } else {
-            self.board.generate_captures()
+            self.board.generate_captures_into(&mut moves)
         };
         // the delta test at the starting alpha, before the order prices
         // each capture with the swap. Alpha only rises, so the loop would
@@ -1596,23 +1597,39 @@ impl AlphaBeta {
         // because filtering them would change the search: under a mate beta
         // a mating capture can lift alpha into the mate window, after which
         // the loop searches every capture, and a list that spills the
-        // buffer is ordered with no losing band (`MoveOrdering::order`)
+        // buffer is ordered with no losing band (`MoveOrdering::order_split`)
         if let Some(standing) = standing {
             if self.config.delta_margin
                 && !is_mate(alpha)
                 && !is_mate(beta)
                 && moves.len() <= MOVE_LIST_INLINE
             {
-                moves.retain(|m| match m.capture {
-                    Some(captured) if m.promote.is_none() => {
-                        !short_of_alpha(standing, captured, alpha)
-                    }
-                    _ => true,
-                });
+                // only captures are dropped, and they lead the list: keep
+                // them in order, then close the rest up behind them
+                let mut kept = 0;
+                for j in 0..captures {
+                    let m = moves[j];
+                    let keep = match m.capture {
+                        Some(captured) if m.promote.is_none() => {
+                            !short_of_alpha(standing, captured, alpha)
+                        }
+                        _ => true,
+                    };
+                    moves[kept] = m;
+                    kept += usize::from(keep);
+                }
+                if kept < captures {
+                    let len = moves.len();
+                    moves.copy_within(captures..len, kept);
+                    moves.truncate(len - (captures - kept));
+                    captures = kept;
+                }
             }
         }
         // no memories here: they say nothing about captures or evasions
-        let Ordered { front, .. } = self.ordering.order(&self.board, &mut moves, pv_play, None);
+        let Ordered { front, .. } =
+            self.ordering
+                .order_split(&self.board, &mut moves, captures, pv_play, None);
 
         // quiescence reads no draw by rule itself, but a probe trusting
         // tainted scores can cut on one inside a capture tree
@@ -2075,19 +2092,22 @@ impl AlphaBeta {
 
         let tt_searched = found_legal_move;
 
-        let mut moves = if in_check {
-            self.board.evasions()
+        let mut moves = MoveList::new();
+        let captures = if in_check {
+            self.board.evasions_into(&mut moves)
         } else {
-            self.board.generate_moves()
+            self.board.generate_moves_into(&mut moves)
         };
         let ply = self.memory_ply();
         let Ordered {
             front,
             table_at,
             losing,
-        } = self.ordering.order(&self.board, &mut moves, pv_play, ply);
+        } = self
+            .ordering
+            .order_split(&self.board, &mut moves, captures, pv_play, ply);
         // the place the loop passes over, since the table's move was searched
-        // above. `order` sorts by `pv_play` and the search played
+        // above. `order_split` sorts by `pv_play` and the search played
         // `tt_tried`, which differ when `is_pseudo_legal` refused the move
         let tt_at = if tt_tried.is_some() { table_at } else { None };
 
