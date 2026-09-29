@@ -12,8 +12,11 @@ see is still a change here. What it cannot see is everything the hardware
 adds to an instruction: cache misses, branch mispredictions and where the
 code lands. Read it beside the speed, not in place of it.
 
-    instructions.py <base binary> <candidate binary> [--depth D]
+    instructions.py <base binary> <candidate binary> [--depth D | --games]
                     [--base-ref SHA] [--valgrind PATH]
+
+`--games` counts `bench games` in place of the bench, for a change's saving
+in play rather than on the bench's openings and middlegames.
 """
 
 import argparse
@@ -48,7 +51,9 @@ def nodes_in(stdout: str) -> int | None:
     return int(words[0])
 
 
-def count(valgrind: str, binary: str, depth: int | None) -> Counted:
+def count(
+    valgrind: str, binary: str, depth: int | None, games: bool = False
+) -> Counted:
     command = [
         valgrind,
         "--tool=cachegrind",
@@ -57,16 +62,26 @@ def count(valgrind: str, binary: str, depth: int | None) -> Counted:
         "--cachegrind-out-file=/dev/null",
         binary,
         "bench",
-    ] + ([str(depth)] if depth is not None else [])
+    ]
+    if depth is not None:
+        command.append(str(depth))
+    if games:
+        command.append("games")
     # stdin closed, so a binary from before the bench existed does not sit in
     # its uci loop waiting
     output = subprocess.run(
         command,
-        check=True,
         capture_output=True,
         text=True,
         stdin=subprocess.DEVNULL,
+        check=False,
     )
+    if output.returncode != 0:
+        # most often a build from before `bench games`, which refuses the word
+        raise SystemExit(
+            f"{binary}: `{' '.join(command[5:])}` exited {output.returncode}, "
+            f"saying: {output.stderr.strip()[-300:]!r}"
+        )
     instructions = instructions_in(output.stderr)
     nodes = nodes_in(output.stdout)
     if instructions is None or nodes is None:
@@ -125,14 +140,17 @@ def main(argv: list[str]) -> int:
     parser = argparse.ArgumentParser(description=__doc__.splitlines()[0])
     parser.add_argument("base")
     parser.add_argument("candidate")
-    parser.add_argument("--depth", type=int, default=None)
+    suite = parser.add_mutually_exclusive_group()
+    suite.add_argument("--depth", type=int, default=None)
+    suite.add_argument("--games", action="store_true")
     parser.add_argument("--base-ref", default="base")
     parser.add_argument("--valgrind", default="valgrind")
     args = parser.parse_args(argv)
 
-    base = count(args.valgrind, args.base, args.depth)
-    candidate = count(args.valgrind, args.candidate, args.depth)
-    print(f"instructions against {args.base_ref}, one cachegrind run a side")
+    base = count(args.valgrind, args.base, args.depth, args.games)
+    candidate = count(args.valgrind, args.candidate, args.depth, args.games)
+    suite = "bench games" if args.games else "bench"
+    print(f"instructions against {args.base_ref}, one cachegrind run a side, {suite}")
     print()
     for line in report(base, candidate):
         print(line)

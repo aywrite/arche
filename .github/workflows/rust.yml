@@ -67,6 +67,20 @@ jobs:
     - name: Run clippy with the pair term on
       run: cargo clippy --workspace --locked --all-targets --features machine-test -- -D warnings
 
+  # .cargo/config.toml builds for x86-64-v2, so every x86 job above runs the
+  # quiet ordering's SSE forms; this runs the tests on the scalar forms the
+  # baseline archive ships, where a fault in them would otherwise show only
+  # on the arm build
+  test-baseline:
+    runs-on: ubuntu-latest
+    env:
+      RUSTFLAGS: -C target-cpu=x86-64
+    steps:
+    - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+    - uses: Swatinem/rust-cache@6323deb102c322ba6fcbdcafc7e3dddab59af2b6 # v2.9.2
+    - name: Run tests on the baseline target
+      run: cargo test --workspace --locked --release
+
   # The tactical and the strategic suites, gating, on one platform: a fixed
   # depth and table make their totals exact on any machine, and twenty seconds
   # or more of searching is not worth paying three times over a matrix that

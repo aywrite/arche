@@ -550,7 +550,9 @@ impl<T: Engine, W: Write> UCI<T, W> {
 struct Go {
     /// Held to `MAX_PLY` rather than refused, since a depth past it is a
     /// request to go deep. The rail also keeps the root's check extension
-    /// inside a byte (`depth 255` in check used to overflow).
+    /// inside a byte (`depth 255` in check used to overflow). Held to one
+    /// from below as well: a depth of zero, which a negative count reads as,
+    /// would run no iteration and answer with no move.
     depth: Option<u8>,
     /// The node budget. An unreadable one is ignored rather than obeyed as
     /// zero, which would stop the search before it had a move to report.
@@ -563,10 +565,12 @@ struct Go {
 impl Go {
     fn of(params: &Params, color: Color, overhead: u64) -> Self {
         Go {
-            depth: params
-                .count("depth")
-                .read()
-                .map(|depth| depth.try_into().unwrap_or(u8::MAX).min(arche_core::MAX_PLY)),
+            depth: params.count("depth").read().map(|depth| {
+                depth
+                    .try_into()
+                    .unwrap_or(u8::MAX)
+                    .clamp(1, arche_core::MAX_PLY)
+            }),
             nodes: params.count("nodes").read(),
             time: TimeControl::of(params, color),
             overhead,
@@ -601,6 +605,9 @@ pub struct BenchSettings {
     /// Whether each table keeps the full key of every entry, so the report
     /// can say how often an entry's signature accepted another position's.
     pub audit: bool,
+    /// Whether the games suite is searched, each position to
+    /// `bench::GAMES_NODES`, in place of the bench's own suite to a depth.
+    pub games: bool,
 }
 
 /// The bench's words, for the usage and for `claim`.
@@ -617,10 +624,11 @@ pub const BENCH: Command = Command {
             value: "refuse|trust|skip|rule50",
         },
     ],
-    flags: &["audit"],
+    flags: &["audit", "games"],
     summary: &[
         "search a fixed suite and print what each search counted,",
-        "with audit adding what the table's key signature cost",
+        "with audit adding what the table's key signature cost and",
+        "games searching positions drawn from whole games to a node budget",
     ],
 };
 
@@ -646,6 +654,13 @@ pub fn bench_settings(params: &Params) -> Result<BenchSettings, String> {
         Some(mb) => return Err(format!("hash: {mb}")),
     };
     let config = taint(params)?;
+    let games = params.flag("games");
+    // a depth beside the node budget would be ignored, so it is refused
+    if let (true, Param::Read(depth)) = (games, params.parse::<u8>(BENCH.name)) {
+        return Err(format!(
+            "depth: {depth} with games, which searches to a node budget"
+        ));
+    }
     // last, so a word that was going to be read as the depth has already
     // been refused under the better name
     BENCH.claim(params)?;
@@ -654,6 +669,7 @@ pub fn bench_settings(params: &Params) -> Result<BenchSettings, String> {
         table_bytes,
         config,
         audit: params.flag("audit"),
+        games,
     })
 }
 
@@ -678,16 +694,22 @@ impl BenchSettings {
     /// Runs the bench, or nothing when the audit's keys could not be
     /// allocated, which the caller reports with `NO_AUDIT_MEMORY`.
     pub fn run(&self) -> Option<bench::Report> {
-        let positions = bench::positions();
-        if self.audit {
-            bench::run_audited_suite(&positions, self.depth, self.table_bytes, self.config)
+        let (positions, reach) = if self.games {
+            (bench::games(), bench::Reach::Nodes(bench::GAMES_NODES))
         } else {
-            Some(bench::run_suite(
-                &positions,
-                self.depth,
-                self.table_bytes,
-                self.config,
-            ))
+            (bench::positions(), bench::Reach::Depth(self.depth))
+        };
+        if self.audit {
+            bench::run_audited_suite(&positions, reach, self.table_bytes, self.config)
+        } else {
+            Some(match reach {
+                bench::Reach::Depth(depth) => {
+                    bench::run_suite(&positions, depth, self.table_bytes, self.config)
+                }
+                bench::Reach::Nodes(nodes) => {
+                    bench::run_suite_to_nodes(&positions, nodes, self.table_bytes, self.config)
+                }
+            })
         }
     }
 }
@@ -1049,6 +1071,19 @@ mod tests {
                 fen
             );
             assert!(said.ends_with("bestmove 0000\n"), "{}: {}", fen, said);
+        }
+    }
+
+    #[test]
+    fn a_depth_of_zero_still_answers_with_a_move() {
+        // it used to run no iteration and answer 0000 from the start position
+        for line in ["go depth 0", "go depth -1"] {
+            let mut uci = uci();
+            uci.run(Cursor::new(format!("position startpos\n{}\n", line)));
+            let said = said(&uci);
+            let last = said.lines().last().unwrap_or("");
+            assert!(last.starts_with("bestmove "), "{}: {}", line, said);
+            assert_ne!(last, "bestmove 0000", "{}: {}", line, said);
         }
     }
 
@@ -1560,6 +1595,9 @@ go depth 3
         for (line, depth) in [
             ("go depth 5", Some(5)),
             ("go depth 999", Some(arche_core::MAX_PLY)),
+            // zero and below would run no iteration, so they read as one
+            ("go depth 0", Some(1)),
+            ("go depth -1", Some(1)),
             ("go depth abc", None),
             // and a depth word with nothing after it is no depth either
             ("go depth", None),
@@ -1732,6 +1770,21 @@ go depth 3
         assert!(audited.audit);
         let plain = bench_settings(&Params::of("bench 1")).expect("a depth");
         assert!(!plain.audit);
+    }
+
+    #[test]
+    fn the_games_suite_takes_no_depth() {
+        let games = bench_settings(&Params::of("bench games")).expect("games is a word");
+        assert!(games.games);
+        assert!(
+            !bench_settings(&Params::of("bench 1"))
+                .expect("a depth")
+                .games
+        );
+        assert_eq!(
+            bench_settings(&Params::of("bench 5 games")).err(),
+            Some("depth: 5 with games, which searches to a node budget".to_string())
+        );
     }
 
     #[test]
@@ -2329,6 +2382,29 @@ go depth 3
             assert!(
                 Instant::now() < deadline,
                 "the second search was never stopped: {}",
+                driven.said()
+            );
+            thread::sleep(Duration::from_millis(1));
+        }
+        driven.finish();
+    }
+
+    /// A stop typed while nothing searches is counted as read like any
+    /// other. The reader once counted a stop only during a search, and the
+    /// stray one's dispatch then spent a later search's stop.
+    #[test]
+    fn a_stop_while_idle_leaves_the_next_searches_their_own_stops() {
+        let driven = Driven::searching();
+        driven.type_line("position startpos");
+        driven.type_line("perft 4");
+        for line in ["stop", "go infinite", "stop", "go infinite", "stop"] {
+            driven.type_line(line);
+        }
+        let deadline = Instant::now() + Duration::from_secs(10);
+        while driven.said().matches("bestmove").count() < 2 {
+            assert!(
+                Instant::now() < deadline,
+                "a search was never stopped: {}",
                 driven.said()
             );
             thread::sleep(Duration::from_millis(1));

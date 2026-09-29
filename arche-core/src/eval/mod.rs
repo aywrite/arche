@@ -41,11 +41,10 @@ pub(crate) const TOTAL_PHASE: i32 = 24;
 /// of the search's indirect mispredicts were this dispatch.
 const MATERIAL: [u32; 6] = [100, 310, 320, 500, 900, 10000];
 
-/// Everything a make reads for one piece of one colour on one square, in one
-/// place: the pair term's factors in both perspectives and their squares, the
-/// piece square pair signed white relative, and the zobrist key. Indexed as
-/// `Zobrist` and `PieceSquareTables` index their rows, so one index finds all
-/// of it.
+/// Everything a make reads for one piece of one colour on one square, so one
+/// index finds all of it. Indexed as `Zobrist` and `PieceSquareTables` index
+/// their rows; `psqt` is signed from white's side. `Accumulator::recomputed`
+/// and the key recompute read the source tables rather than these rows.
 #[derive(Debug, Clone, Copy)]
 #[repr(C, align(32))]
 pub(crate) struct Row {
@@ -292,8 +291,9 @@ fn sum(board: &Board, memo: &mut impl Memo) -> Score {
 
 /// One side's mobility and king attack zone as one packed pair, from one walk
 /// over its knights, bishops, rooks and queens. Each piece's two counts are
-/// weighed as they are read, so the walk carries one sum rather than sixteen
-/// live counters, which did not fit in registers and spilled.
+/// weighed as they are read, so the walk carries one sum rather than a
+/// counter per kind and term, sixteen with both sides inlined into [`sum`],
+/// which spilled.
 ///
 /// `KINDS` says which kinds mobility counts, as [`mobility::counted`] reads
 /// it, and `RING` whether the ring is counted at all. A count not asked for

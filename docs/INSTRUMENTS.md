@@ -469,9 +469,9 @@ nothing to win by capturing. And the same holds after a pass, so the opponent
 has nothing to win either. The pass makes the test two sided: a one sided test
 keeps a position where the side to move is about to lose a hanging queen, and
 labels an evaluation that misses it with the result of a game that did not.
-A capture search that reaches a stalemate comes back at zero, so a position
-with one in reach is refused as well, and a corpus built before quiescence
-scored stalemates can differ from one built after.
+Since d1beb6b a capture search comes back at zero from a stalemate of a side
+with only pawns and a king, so a position with one in reach is refused as
+well, and a corpus built before that commit can differ from one built after.
 The capture search is the reference's, because the default's quiescence skips
 captures it prices as hopeless, and a corpus whose quietness was decided by a
 guess would carry the guess into every weight fitted on it.

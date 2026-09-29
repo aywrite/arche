@@ -37,9 +37,9 @@ term over every pair of pieces.
   running totals as they stood before each move. A make places every piece
   through one function, which keeps the derived state in sync; the unmake
   moves the pieces back on the boards alone and copies the rest back. Debug
-  builds recompute the derived state from scratch after every move and assert
-  it matches, so a bug in an incremental update fails tests instead of
-  misevaluating quietly. It names no evaluation term: each one reads the
+  builds recompute the derived state from scratch after every make and unmake
+  and assert it matches, so a bug in an incremental update fails tests instead
+  of misevaluating quietly. It names no evaluation term: each one reads the
   boards it needs through `pub(crate)` accessors and keeps its own counts and
   masks beside its weights. Move generation also lives here, each list with
   its captures first so the ordering keys only those. It is pseudo-legal:
@@ -115,14 +115,11 @@ term over every pair of pieces.
   age and depth. A hit can answer a node outright or just say which move
   to try first. Tainted scores are by default trusted anyway, except close
   to the fifty move horizon where every cutoff is refused; ROADMAP.md has
-  the match that chose that, and the reference search keeps the refusal. A
-  probe says whether it cut, refused or only ordered, and a store whether
-  it landed. Outside its signature audit the table counts none of it.
-- **ghi.rs**: What the search counts of its use of the table: the cutoffs
-  and stores, how many of each carried a draw taint, and the cutoffs and
-  stores the taint policy turned away. The searcher owns the counts, so
-  they run over the engine's life and survive a new table. The bench
-  prints them.
+  the match that chose that, and the reference search keeps the refusal.
+  Outside its signature audit the table counts nothing; ghi.rs does.
+- **ghi.rs**: What the search counts of its use of the table, draw taint
+  included. The searcher owns the counts, so they survive a new table. The
+  bench prints them.
 - **eval/**: What a position scores: a file per leaf term, the pair term and
   its table, and two files for what they share.
   - **mod.rs**: The material values, the phase weights the taper is read at,
@@ -132,12 +129,10 @@ term over every pair of pieces.
     score are carried rather than counted; the leaf terms are computed at the
     leaf. Material that cannot mate is answered with a hard zero, which with
     the pair term below is where the score is not a sum over the weights.
-    `ROWS` holds, for each piece on each square, everything the board's update
-    reads in one row: the pair term's factors in both perspectives, the piece
-    square pair and the zobrist key. `TERMS`, a descriptor per leaf term, is
-    what the tuner lays its slot vector out from. One walk over each side's
-    pieces probes each attack set once for both mobility and the king attack
-    zone.
+    `ROWS` gathers what a make reads for one piece on one square into one
+    row. `TERMS`, a descriptor per leaf term, is what the tuner lays its slot
+    vector out from. One walk over each side's pieces probes each attack set
+    once for both mobility and the king attack zone.
   - **factors.rs**: The pair term, a factorization machine over the piece
     square features: a weight for every pair of pieces, as the inner product
     of two rows of sixteen factors. The accumulator keeps each perspective's
@@ -170,7 +165,9 @@ term over every pair of pieces.
 - **zobrist.rs**: The position hash, updated incrementally as pieces move.
 - **bench.rs**: A fixed suite of positions searched to a fixed depth,
   printing exact node counts. This is what a commit's `Bench:` trailer
-  states and what CI verifies.
+  states and what CI verifies. Beside it, the games suite: positions drawn
+  from whole games and searched to a node budget, which weights the phases
+  of a game the way play does, for measuring speed.
 - **recorder.rs**: What the four recorders below share: the reservoir that
   hangs off an engine and keeps one node in every n, the loop that searches
   a suite with one armed, and the lanes that keep their samples apart. An
