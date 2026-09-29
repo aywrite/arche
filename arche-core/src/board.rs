@@ -582,7 +582,9 @@ impl Board {
         self.line_ply = 0;
     }
 
-    /// The move of this name (coordinate notation) here, or none.
+    /// The move of this name (coordinate notation) here, or none. Case is
+    /// ignored: the protocol writes the promotion piece in lower case and
+    /// some interfaces send it in upper.
     ///
     /// Read from the whole pseudo legal list, so a move that leaves the king
     /// in check is still found and can be refused for that reason. `evasions`
@@ -590,7 +592,7 @@ impl Board {
     pub(crate) fn move_named(&self, name: &str) -> Option<Play> {
         self.generate_moves()
             .iter()
-            .find(|m| m.to_string() == name)
+            .find(|m| m.to_string().eq_ignore_ascii_case(name))
             .copied()
     }
 
@@ -4669,6 +4671,16 @@ mod play_by_name {
         let promotion = Board::from_fen(fens::PROMOTIONS).unwrap();
         assert!(play_named(&promotion, "d7c8q").promote.is_some());
         played(fens::PROMOTIONS, "d7c8q");
+    }
+
+    #[test]
+    fn a_promotion_named_in_upper_case_is_the_same_move() {
+        // the protocol writes the piece in lower case and some interfaces
+        // send it in upper; refused, the engine would stay a move behind
+        let lower = played(fens::PROMOTIONS, "d7c8q");
+        let upper = played(fens::PROMOTIONS, "d7c8Q");
+        assert_eq!(lower, upper);
+        assert_ne!(lower, played(fens::PROMOTIONS, "d7c8N"));
     }
 }
 
