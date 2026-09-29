@@ -348,7 +348,13 @@ fn read_ahead<I, W>(
     for line in input {
         let line = match line {
             Ok(line) => line,
-            // leave as the pipe closing does
+            // a line that is not utf-8 (a log path in a windows code page,
+            // say) has been consumed whole, so it is dropped and the next
+            // read. Any other error leaves as the pipe closing does
+            Err(error) if error.kind() == std::io::ErrorKind::InvalidData => {
+                let _ = writeln!(out, "info string dropped a line that is not utf-8");
+                continue;
+            }
             Err(error) => {
                 let _ = writeln!(out, "info string could not read input: {}", error);
                 break;
@@ -560,6 +566,31 @@ pub(crate) mod tests {
         assert_eq!(said.read_back(), "readyok\n");
         let passed: Vec<String> = lines.into_iter().map(|(_, line)| line).collect();
         assert_eq!(passed, ["go infinite", "quit"]);
+    }
+
+    /// `BufRead::lines` has consumed the bad line by the time it reports it,
+    /// so the next line reads normally. The reader used to leave as the pipe
+    /// closing does, taking the session with it.
+    #[test]
+    fn a_line_that_is_not_utf8_is_dropped_and_the_rest_read() {
+        let control = SessionControl::for_this_thread();
+        let (sender, lines) = channel();
+        let said = SharedWriter::new(Vec::new());
+        let input = [
+            Ok("isready".to_string()),
+            Err(std::io::Error::new(
+                std::io::ErrorKind::InvalidData,
+                "stream did not contain valid UTF-8",
+            )),
+            Ok("isready".to_string()),
+        ];
+        read_ahead(input.into_iter(), said.clone(), &control, sender);
+        assert_eq!(
+            said.read_back(),
+            "info string dropped a line that is not utf-8\n"
+        );
+        let passed: Vec<String> = lines.into_iter().map(|(_, line)| line).collect();
+        assert_eq!(passed, ["isready", "isready", "quit"]);
     }
 
     #[test]
