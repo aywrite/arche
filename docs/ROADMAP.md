@@ -98,18 +98,17 @@ worth doing.
   selection group's -0.000649. The next fit wanting an honest held-out interval wants
   games this corpus never saw. The access log is not in this repository
 - an evaluation term is allowed 5% of the search. Mobility and the king attack zone share
-  one walk, so the rule has two readings. Measured with callgrind over the full `arche
-  bench` at 8f9dafe, with the walk forced out of line and a walk of each term alone run
-  beside it, the shared walk is about 10.6% of the tree search. Taking mobility out and
-  keeping the ring would save 4.36%, and taking the ring out would save 3.39%, so each is
-  under the 5% as a marginal. The rest, about 2.9%, is the probes and loops both need. A
-  walk of mobility alone is about 7.3%, over it. The 13.5% this line used to carry was
-  mobility's own walk at `378c148` on `bench 5`, before the ring joined it, the joint
-  refit and 7e2dee7, so the two do not measure the same thing. The 5% is a rule of
-  thumb that nothing enforces: the term was made 6% cheaper across the whole search and
-  6,000 games could not see it (1a5e362). The pair term costs 4.4% of the bench's nodes
-  a second, under the 5%, and 7.6% of the nodes a second in the
-  games that measured it at +95 ±19 (6ce33d3), over it
+  one walk, so the rule has two readings. Under callgrind over the full `arche bench` at
+  8f9dafe, with the walk out of line and a walk of each term alone beside it, the shared
+  walk is about 10.6% of the tree search. Taking mobility out and keeping the ring would
+  save 4.36%, and taking the ring out 3.39%, so each is under the 5% as a marginal, and
+  the remaining 2.9% is charged to neither. A walk of mobility alone is about 7.3%, over
+  it. The 13.5% once recorded here was mobility's own walk at `378c148` on `bench 5` and
+  does not compare. The 5% is a rule of thumb that nothing enforces, and games at this
+  scale do not check it: lazy mobility took 6.05% off the search to a fixed depth and
+  none of its three margins resolved a gain in 6,000 games (below). The pair term costs
+  4.4% of the bench's nodes a second, under the 5%, and 7.6% of the nodes a second in
+  the games that measured it at +95 ±19 (6ce33d3), over it
 - on 1,812 games a held-out loss could not resolve a fit of the piece square tables one
   way or the other, so an sprt decided the re-tune. Measured 2026-09-10 over those games,
   100,726 quiet positions across 1,807 of them: the weights then shipped score 0.093561 on
@@ -347,8 +346,8 @@ of these again without saying what is different this time.
 - Widening the late move pruning band, so that a late quiet the attention
   model prices at or under -6000 is skipped where the threshold stood at
   -7954. These scores are on the weights fitted on 2026-09-06, which the
-  refit below replaced; the refit's own threshold, -5932, is not a point on
-  this scale. The offline reading was favourable and the games could not see it.
+  refit below replaced; the refit's thresholds are not points on this scale.
+  The offline reading was favourable and the games could not see it.
   What prices the move is the rate in the band the wider threshold newly
   reaches, since the moves already skipped are skipped either way and the
   moves the reduced scout writes off are written off either way. Over the
@@ -371,7 +370,10 @@ of these again without saying what is different this time.
   what the skip costs in accuracy and says nothing about what the nodes it
   saves are worth, which at this control is nothing a game can see. Re-ask
   only at a control long enough for 1.7% of the tree to show, or with the
-  skip moved to where it takes more than that.
+  skip moved to where it takes more than that. On the refit's scale cc865ba
+  later widened the band from -5932 to -5457 as a non-regression pass (+17
+  ±15 over 1,000 games, sprt [-10, 0]), not a measured gain; -4308 read -17
+  ±22 over 500.
 - Fitting the attention model against the two points the gates read, rather
   than by log loss over every row of the reduction ledger. The thirteen
   integers come from a logistic regression over the whole ledger, while the
