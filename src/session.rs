@@ -92,6 +92,14 @@ impl<W: Write> SharedWriter<W> {
     /// opened it goes first, unless a log is already open: the line was then
     /// written to a log when it was read or when that log opened.
     pub(crate) fn open_log(&self, path: &Path, opened_by: &str) -> std::io::Result<()> {
+        // opening a fifo waits for a reader, which would stop the session;
+        // reading its metadata does not
+        if std::fs::metadata(path).is_ok_and(|found| !found.is_file()) {
+            return Err(std::io::Error::new(
+                std::io::ErrorKind::InvalidInput,
+                "not a regular file",
+            ));
+        }
         let file = OpenOptions::new().create(true).append(true).open(path)?;
         let mut sink = self.lock();
         let written = sink.log.is_some();
