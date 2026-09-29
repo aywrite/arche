@@ -651,8 +651,7 @@ pub fn bench_settings(params: &Params) -> Result<BenchSettings, String> {
     };
     let config = taint(params)?;
     let games = params.flag("games");
-    // a budget stands in for the depth, so a depth given as well would be
-    // read as meaning something and mean nothing
+    // a depth beside the node budget would be ignored, so it is refused
     if let (true, Param::Read(depth)) = (games, params.parse::<u8>(BENCH.name)) {
         return Err(format!(
             "depth: {depth} with games, which searches to a node budget"

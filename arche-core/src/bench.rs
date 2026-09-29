@@ -9,6 +9,9 @@
 //! change, which an engine commit states in its `Bench:` trailer. The speed
 //! is what the match tools scale their time controls by, so the clock runs
 //! over the search alone and not over allocating the table.
+//!
+//! The games suite is searched to a node budget instead (see `Reach`), so
+//! its node count is not such a signature.
 
 use crate::board::Board;
 use crate::engine::{AlphaBeta, Engine, SearchConfig, SearchOutcome, SearchParameters};
@@ -35,17 +38,13 @@ const SUITE: &str = include_str!("../bench.epd");
 
 /// The games suite: positions drawn uniformly from whole games the engine
 /// played against itself, so a phase of the game counts as often as games
-/// reach it. The bench's own suite is searched to a depth, so its big
-/// opening and middlegame trees hold most of its nodes, and a change to code
-/// that runs where captures are dense reads larger on it than in play. This
-/// one is read beside it, not in its place: the bench is still what the
-/// `Bench:` trailer states.
+/// reach it. It is read beside the bench, not in its place: the bench is
+/// still what the `Bench:` trailer states.
 const GAMES: &str = include_str!("../games.epd");
 
 /// The nodes each position of the games suite is searched to. A budget
 /// rather than a depth, because a game gives each move a similar budget
-/// whatever its phase. With the ninety six positions it comes to about one
-/// and a half times the bench's nodes.
+/// whatever its phase.
 pub const GAMES_NODES: u64 = 100_000;
 
 /// A position of the suite, as a full fen and the name the report gives it.

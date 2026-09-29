@@ -15,11 +15,8 @@ code lands. Read it beside the speed, not in place of it.
     instructions.py <base binary> <candidate binary> [--depth D | --games]
                     [--base-ref SHA] [--valgrind PATH]
 
-`--games` counts `bench games` in place of the bench: positions drawn from
-whole games, each searched to a node budget, which weights the phases of a
-game the way play does. The bench's suite is opening and middlegame heavy,
-so a change to code that runs where captures are dense reads larger on it
-than on this.
+`--games` counts `bench games` in place of the bench, for a change's saving
+in play rather than on the bench's openings and middlegames.
 """
 
 import argparse

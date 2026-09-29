@@ -4,13 +4,10 @@
 
 """Build the games suite: positions drawn from whole games, for `bench games`.
 
-The bench's eighteen positions are searched to a fixed depth, so each counts
-by the size of its tree, and its opening and middlegame trees hold most of its
-nodes. A game spends a similar budget on every move to its end, most of them
-past the point where captures are dense. This suite weights positions the way
-games do: the engine plays itself from book openings to the end of the game,
-every position after the book goes into one pool, and the suite is a uniform
-sample of that pool, so a long game gives more positions than a short one.
+The engine plays itself from book openings to the end of each game, every
+position after the book goes into one pool, and the suite is a uniform sample
+of that pool, so a long game gives more positions than a short one. Why the
+bench wants a second suite is in docs/DEVELOPMENT.md, under the games suite.
 
     python3 scripts/build_games.py <engine> <book.pgn> arche-core/games.epd --commit <sha>
 
