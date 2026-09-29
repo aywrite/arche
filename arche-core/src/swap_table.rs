@@ -27,9 +27,21 @@
 //! with it, and `the_table_and_the_exits_agree_with_the_walk` in `board.rs`
 //! checks `see` against the walk, which prices by `SEE_VALUES`.
 
+use crate::board::SEE_VALUES;
+
 /// What each value class is worth to the swap: pawn, minor, rook, queen and
-/// king, as `SEE_VALUES` prices them.
-const CLASS_VALUE: [i32; 5] = [100, 300, 500, 900, 10_000];
+/// king, read off `SEE_VALUES` so the table and the walk price alike.
+const CLASS_VALUE: [i32; 5] = [
+    SEE_VALUES[0],
+    SEE_VALUES[1],
+    SEE_VALUES[3],
+    SEE_VALUES[4],
+    SEE_VALUES[5],
+];
+
+// the classes put the knight and the bishop in one, so the walk has to
+// price them alike
+const _: () = assert!(SEE_VALUES[1] == SEE_VALUES[2]);
 
 /// The radix of each class's place: one more than the most attackers of that
 /// class that can bear on one square directly (two pawns, twelve minors from
