@@ -5,10 +5,12 @@
 //! measures is on its module in `arche-core`.
 //!
 //! Arguments rather than uci commands, since none of them is the protocol.
-//! `bench` stays in `uci` because the engine answers it as both.
+//! `bench` stays in `uci` because the engine answers it as both, and has its
+//! entry in `INSTRUMENTS` beside the rest.
 
 use crate::command::{Command, Keyword};
 use crate::params::{NO_VALUE, Param, Params};
+use crate::uci;
 use arche_core::Ablation;
 use arche_core::Board;
 use arche_core::SearchConfig;
@@ -19,6 +21,78 @@ use arche_core::recorder;
 use arche_core::reduction;
 use arche_core::residual;
 use arche_core::tune;
+use std::fmt;
+
+/// A line that has been read and not yet run. Running it does the work and
+/// hands back what to print on stdout, or the failure it met after the
+/// settings were read.
+pub type Run = Box<dyn FnOnce() -> Result<Box<dyn fmt::Display>, String>>;
+
+/// A command the binary takes and the reader of its settings, which refuses
+/// a line with the setting it could not read.
+pub struct Instrument {
+    pub command: &'static Command,
+    pub read: fn(&Params) -> Result<Run, String>,
+}
+
+/// Every command the binary takes, in usage order. The dispatch and the
+/// usage both walk it, so a command cannot be listed without being taken.
+pub const INSTRUMENTS: [Instrument; 6] = [
+    Instrument {
+        command: &uci::BENCH,
+        read: read_bench,
+    },
+    Instrument {
+        command: &RESIDUALS,
+        read: |params| report(residual_settings(params)?, ResidualSettings::run),
+    },
+    Instrument {
+        command: &CUTOFFS,
+        read: |params| report(cutoff_settings(params)?, CutoffSettings::run),
+    },
+    Instrument {
+        command: &REDUCTIONS,
+        read: |params| report(reduction_settings(params)?, ReductionSettings::run),
+    },
+    Instrument {
+        command: &EFFORT,
+        read: |params| report(effort_settings(params)?, EffortSettings::run),
+    },
+    Instrument {
+        command: &TERMS,
+        read: |params| report(term_settings(params)?, TermSettings::run),
+    },
+];
+
+/// A run that prints the report as it stands.
+fn report<S: 'static, R: fmt::Display + 'static>(
+    settings: S,
+    run: fn(&S) -> R,
+) -> Result<Run, String> {
+    Ok(Box::new(move || {
+        Ok(Box::new(run(&settings)) as Box<dyn fmt::Display>)
+    }))
+}
+
+/// The bench's run may find no memory for the audit's keys, a failure met
+/// after the settings were read.
+fn read_bench(params: &Params) -> Result<Run, String> {
+    let settings = uci::bench_settings(params)?;
+    Ok(Box::new(move || match settings.run() {
+        Some(report) => Ok(Box::new(Line(report)) as Box<dyn fmt::Display>),
+        None => Err(uci::NO_AUDIT_MEMORY.to_string()),
+    }))
+}
+
+/// The bench's report and a newline. The report leaves its last line open,
+/// since the uci loop ends each line it says; the other reports end in one.
+struct Line(bench::Report);
+
+impl fmt::Display for Line {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        writeln!(f, "{}", self.0)
+    }
+}
 
 /// The settings the four searching instruments share.
 struct Sampling {
@@ -192,7 +266,7 @@ pub struct ResidualSettings {
 
 pub fn residual_settings(params: &Params) -> Result<ResidualSettings, String> {
     let Sampling { depth, every, cap } = sampling(params, &RESIDUALS, residual::DEFAULT_EVERY)?;
-    let config = crate::uci::taint(params)?;
+    let config = uci::taint(params)?;
     let (epd, positions) = suite(params)?;
     Ok(ResidualSettings {
         depth,
@@ -443,6 +517,134 @@ mod tests {
         }
     }
 
+    /// A suite other than the bench's, for a line that names one.
+    const SUITE: &str = concat!(env!("CARGO_MANIFEST_DIR"), "/arche-core/tactics.epd");
+
+    /// A value each keyword takes, so a line can name the keyword and still
+    /// be read. It has to be one the reader accepts: the readers parse a
+    /// value before `claim`, so a refused one would be named as
+    /// `<kw>: <value>` rather than as given twice. A keyword added without
+    /// one here fails the tests that ask.
+    fn a_value_for(keyword: &str) -> &'static str {
+        match keyword {
+            "every" | "cap" | "budget" | "hash" => "1",
+            "epd" => SUITE,
+            "taint" => "trust",
+            "off" => "null_move",
+            _ => panic!("no value to give {keyword}"),
+        }
+    }
+
+    /// What the reader refused the line as. A read line is not run.
+    fn refusal(instrument: &Instrument, line: &str) -> String {
+        match (instrument.read)(&Params::of(line)) {
+            Ok(_) => panic!("{line} was read"),
+            Err(what) => what,
+        }
+    }
+
+    #[test]
+    fn every_instrument_reads_its_name_alone() {
+        for instrument in &INSTRUMENTS {
+            let name = instrument.command.name;
+            assert!((instrument.read)(&Params::of(name)).is_ok(), "{name}");
+        }
+    }
+
+    /// Past the depth's place, where a word is refused as `depth:`.
+    #[test]
+    fn every_instrument_refuses_a_word_it_does_not_know() {
+        for instrument in &INSTRUMENTS {
+            let command = instrument.command;
+            assert!(!command.takes("spare"), "{}", command.name);
+            let line = if command.depth {
+                format!("{} 1 spare", command.name)
+            } else {
+                format!("{} spare", command.name)
+            };
+            assert_eq!(refusal(instrument, &line), "word: spare", "{line}");
+        }
+    }
+
+    /// The reader takes the first, so the second would be read by nobody.
+    #[test]
+    fn every_instrument_refuses_a_keyword_given_twice() {
+        for instrument in &INSTRUMENTS {
+            let name = instrument.command.name;
+            for keyword in instrument.command.keywords {
+                let (word, value) = (keyword.word, a_value_for(keyword.word));
+                for line in [
+                    format!("{name} {word} {value} {word} {value}"),
+                    format!("{name} {word} {value} {word}"),
+                ] {
+                    assert_eq!(
+                        refusal(instrument, &line),
+                        format!("{word}: given twice"),
+                        "{line}"
+                    );
+                }
+            }
+        }
+    }
+
+    /// A word typed with nothing after it used to run at the default in
+    /// silence.
+    #[test]
+    fn every_keyword_given_no_value_is_refused_by_the_reader_that_takes_it() {
+        for instrument in &INSTRUMENTS {
+            for keyword in instrument.command.keywords {
+                let line = format!("{} {}", instrument.command.name, keyword.word);
+                let what = refusal(instrument, &line);
+                assert!(
+                    what.starts_with(&format!("{}: no value", keyword.word)),
+                    "{line} was refused as {what}"
+                );
+            }
+        }
+    }
+
+    /// The manifest is the case worth pinning: it opens and parses into
+    /// positions whose fens no board will take. A reader that skipped the
+    /// suite would run the bench's positions in its place.
+    #[test]
+    fn every_instrument_that_takes_a_suite_refuses_one_that_is_no_suite() {
+        let manifest = concat!(env!("CARGO_MANIFEST_DIR"), "/Cargo.toml");
+        let empty = Unpositioned::written("instruments");
+        for instrument in &INSTRUMENTS {
+            let command = instrument.command;
+            if !command.keywords.iter().any(|keyword| keyword.word == "epd") {
+                continue;
+            }
+            for path in ["no/such/file.epd", manifest, &empty.path] {
+                let line = format!("{} epd {path}", command.name);
+                assert_eq!(refusal(instrument, &line), format!("epd: {path}"), "{line}");
+            }
+            // the line is refused before the suite is read, so a word past
+            // the file is named rather than the file
+            let line = format!("{} epd no/such/file.epd spare", command.name);
+            assert_eq!(refusal(instrument, &line), "word: spare", "{line}");
+        }
+    }
+
+    /// The bench's report leaves its last line open for the uci loop to
+    /// end, so the argument's run ends it. Depth one takes milliseconds.
+    #[test]
+    fn the_bench_argument_ends_its_last_line() {
+        let bench = INSTRUMENTS
+            .iter()
+            .find(|instrument| instrument.command.name == "bench")
+            .expect("the bench is an instrument");
+        let Ok(run) = (bench.read)(&Params::of("bench 1 hash 1")) else {
+            panic!("bench 1 hash 1 was refused");
+        };
+        let Ok(report) = run() else {
+            panic!("bench 1 hash 1 found no memory");
+        };
+        let printed = report.to_string();
+        assert!(printed.ends_with(" nps\n"), "{printed}");
+        assert!(!printed.ends_with("\n\n"), "{printed}");
+    }
+
     /// The settings alone, not a run: the run costs minutes.
     #[test]
     fn a_residuals_argument_reads_its_depth_rate_cap_and_policy() {
@@ -491,7 +693,7 @@ mod tests {
         assert_eq!(bench.epd, None);
         assert_eq!(bench.positions, bench::positions());
 
-        let path = concat!(env!("CARGO_MANIFEST_DIR"), "/arche-core/tactics.epd");
+        let path = SUITE;
         let line = format!("residuals 4 epd {path}");
         let named = residual_settings(&Params::of(&line)).expect(&line);
         assert_eq!(named.depth, 4);
@@ -500,34 +702,6 @@ mod tests {
         // positions is caught
         assert_eq!(named.positions, from_file(path));
         assert_ne!(named.positions, bench::positions());
-    }
-
-    /// The manifest is the case worth pinning: it opens and parses into
-    /// positions whose fens no board will take.
-    #[test]
-    fn a_residuals_suite_that_is_no_suite_is_named_rather_than_run() {
-        let manifest = concat!(env!("CARGO_MANIFEST_DIR"), "/Cargo.toml");
-        let empty = Unpositioned::written("residuals");
-        for (line, what) in [
-            (
-                "residuals 4 epd no/such/file.epd".to_string(),
-                "epd: no/such/file.epd".to_string(),
-            ),
-            (
-                format!("residuals 4 epd {manifest}"),
-                format!("epd: {manifest}"),
-            ),
-            (
-                format!("residuals 4 epd {}", empty.path),
-                format!("epd: {}", empty.path),
-            ),
-        ] {
-            assert_eq!(
-                residual_settings(&Params::of(&line)).err(),
-                Some(what),
-                "{line}"
-            );
-        }
     }
 
     #[test]
@@ -597,39 +771,13 @@ mod tests {
         assert_eq!(bench.epd, None);
         assert_eq!(bench.positions, bench::positions());
 
-        let path = concat!(env!("CARGO_MANIFEST_DIR"), "/arche-core/tactics.epd");
+        let path = SUITE;
         let line = format!("reductions 4 epd {path}");
         let named = reduction_settings(&Params::of(&line)).expect(&line);
         assert_eq!(named.depth, 4);
         assert_eq!(named.epd.as_deref(), Some(path));
         assert_eq!(named.positions, from_file(path));
         assert_ne!(named.positions, bench::positions());
-    }
-
-    #[test]
-    fn a_reductions_suite_that_is_no_suite_is_named_rather_than_run() {
-        let manifest = concat!(env!("CARGO_MANIFEST_DIR"), "/Cargo.toml");
-        let empty = Unpositioned::written("reductions");
-        for (line, what) in [
-            (
-                "reductions 4 epd no/such/file.epd".to_string(),
-                "epd: no/such/file.epd".to_string(),
-            ),
-            (
-                format!("reductions 4 epd {manifest}"),
-                format!("epd: {manifest}"),
-            ),
-            (
-                format!("reductions 4 epd {}", empty.path),
-                format!("epd: {}", empty.path),
-            ),
-        ] {
-            assert_eq!(
-                reduction_settings(&Params::of(&line)).err(),
-                Some(what),
-                "{line}"
-            );
-        }
     }
 
     #[test]
@@ -704,7 +852,7 @@ mod tests {
         assert_eq!(bench.epd, None);
         assert_eq!(bench.positions, bench::positions());
 
-        let path = concat!(env!("CARGO_MANIFEST_DIR"), "/arche-core/tactics.epd");
+        let path = SUITE;
         let line = format!("effort 4 epd {path}");
         let named = effort_settings(&Params::of(&line)).expect(&line);
         assert_eq!(named.depth, 4);
@@ -715,7 +863,6 @@ mod tests {
 
     #[test]
     fn an_unreadable_effort_setting_is_named_rather_than_run() {
-        let empty = Unpositioned::written("effort");
         let switches = SearchConfig::SWITCHES.map(|(name, _)| name).join(", ");
         for (line, what) in [
             ("effort abc".to_string(), "depth: abc".to_string()),
@@ -752,10 +899,6 @@ mod tests {
                 "effort 4 budget lots".to_string(),
                 "budget: lots".to_string(),
             ),
-            (
-                format!("effort 4 epd {}", empty.path),
-                format!("epd: {}", empty.path),
-            ),
         ] {
             assert_eq!(
                 effort_settings(&Params::of(&line)).err(),
@@ -766,51 +909,14 @@ mod tests {
     }
 
     /// Read as absent, `effort 4 off` would run the null for as long as the
-    /// run asked for.
+    /// run asked for. `off` carries the switch names on this refusal as well
+    /// as on a misspelling, for the reason on `no_such_switch`.
     #[test]
-    fn a_setting_given_no_value_is_named_rather_than_run() {
-        for (line, what) in [
-            ("residuals 4 every", "every: no value"),
-            ("residuals 4 cap", "cap: no value"),
-            ("residuals 4 taint", "taint: no value"),
-            ("residuals 4 epd", "epd: no value"),
-        ] {
-            assert_eq!(
-                residual_settings(&Params::of(line)).err(),
-                Some(what.to_string()),
-                "{line}"
-            );
-        }
-        assert_eq!(
-            effort_settings(&Params::of("effort 4 budget")).err(),
-            Some("budget: no value".to_string())
-        );
-        // `off` carries the switch names on this refusal as well as on a
-        // misspelling, for the reason on `no_such_switch`
+    fn an_off_given_no_value_names_the_switches() {
         let switches = SearchConfig::SWITCHES.map(|(name, _)| name).join(", ");
         assert_eq!(
             effort_settings(&Params::of("effort 4 off")).err(),
             Some(format!("off: no value (a switch is one of {switches})"))
-        );
-        assert_eq!(
-            term_settings(&Params::of("terms epd")).err(),
-            Some("epd: no value".to_string())
-        );
-    }
-
-    /// The setting reads the first, so the second would be read by nobody.
-    #[test]
-    fn a_setting_given_twice_is_named_rather_than_run() {
-        for line in ["residuals 4 cap 10 cap 20", "residuals 4 cap 10 cap"] {
-            assert_eq!(
-                residual_settings(&Params::of(line)).err(),
-                Some("cap: given twice".to_string()),
-                "{line}"
-            );
-        }
-        assert_eq!(
-            effort_settings(&Params::of("effort 4 off null_move off")).err(),
-            Some("off: given twice".to_string())
         );
     }
 
@@ -820,7 +926,7 @@ mod tests {
         assert_eq!(bench.epd, None);
         assert_eq!(bench.positions, bench::positions());
 
-        let path = concat!(env!("CARGO_MANIFEST_DIR"), "/arche-core/tactics.epd");
+        let path = SUITE;
         let line = format!("terms epd {path}");
         let named = term_settings(&Params::of(&line)).expect(&line);
         assert_eq!(named.epd.as_deref(), Some(path));
@@ -828,38 +934,11 @@ mod tests {
         assert_ne!(named.positions, bench::positions());
     }
 
-    #[test]
-    fn a_terms_suite_that_is_no_suite_is_named_rather_than_run() {
-        let manifest = concat!(env!("CARGO_MANIFEST_DIR"), "/Cargo.toml");
-        let empty = Unpositioned::written("terms");
-        for (line, what) in [
-            (
-                "terms epd no/such/file.epd".to_string(),
-                "epd: no/such/file.epd".to_string(),
-            ),
-            (format!("terms epd {manifest}"), format!("epd: {manifest}")),
-            (
-                format!("terms epd {}", empty.path),
-                format!("epd: {}", empty.path),
-            ),
-        ] {
-            assert_eq!(
-                term_settings(&Params::of(&line)).err(),
-                Some(what),
-                "{line}"
-            );
-        }
-    }
-
     /// This argument has no depth, so a number where one would stand is a
     /// word it does not know.
     #[test]
     fn an_unreadable_terms_setting_is_named_rather_than_run() {
-        for (line, what) in [
-            ("terms 4", "word: 4"),
-            ("terms every 50", "word: every"),
-            ("terms epd suite.epd spare", "word: spare"),
-        ] {
+        for (line, what) in [("terms 4", "word: 4"), ("terms every 50", "word: every")] {
             assert_eq!(
                 term_settings(&Params::of(line)).err(),
                 Some(what.to_string()),

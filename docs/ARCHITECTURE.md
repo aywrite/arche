@@ -211,7 +211,9 @@ term over every pair of pieces.
   through the session loop, on the thread the engine was built on.
 - **instruments.rs**: What the research commands take and run. They are
   not the protocol (an interface cannot ask for any of them), which is why
-  they are here rather than in uci.rs.
+  they are here rather than in uci.rs. `INSTRUMENTS` pairs every argument
+  that takes words, `bench` included, with a reader that returns its run or
+  refuses the line, and main.rs dispatches and spells the usage from it.
 - **session.rs**: The threads a session runs on. A reader owns stdin and
   acts on the commands that cannot wait for a search to end (`stop`,
   `quit`, `isready`); everything else is queued for the session loop,
