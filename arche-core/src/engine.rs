@@ -296,10 +296,6 @@ pub struct SearchConfig {
     /// has searched `LATE_MOVE_COUNT` moves a ply. Separate from
     /// `quiet_futility` so an ablation can tell the two apart.
     pub late_move_count: bool,
-    /// Whether a quiet move at depths one to three is dropped when the
-    /// exchange on its square loses more than `SEE_QUIET_MARGIN` times the
-    /// depth squared.
-    pub see_quiets: bool,
     /// Whether the late move reduction's amount is read off the table by
     /// depth and move index rather than being the flat ply. Rides on
     /// `late_move_reductions`.
@@ -431,7 +427,7 @@ impl SearchConfig {
     ///
     /// `taint` is not among them: it is a policy with four values rather
     /// than a switch, and `residuals` already takes it.
-    pub const SWITCHES: [(&'static str, TurnOff); 15] = [
+    pub const SWITCHES: [(&'static str, TurnOff); 14] = [
         ("reverse_futility", |config| config.reverse_futility = false),
         ("null_move", |config| config.null_move = false),
         ("adaptive_null_move", |config| {
@@ -448,7 +444,6 @@ impl SearchConfig {
         }),
         ("quiet_futility", |config| config.quiet_futility = false),
         ("late_move_count", |config| config.late_move_count = false),
-        ("see_quiets", |config| config.see_quiets = false),
         ("reduction_table", |config| config.reduction_table = false),
         ("deep_index_rule", |config| config.deep_index_rule = false),
         ("move_memory", |config| config.move_memory = false),
@@ -485,7 +480,6 @@ impl SearchConfig {
             late_move_pruning: false,
             quiet_futility: false,
             late_move_count: false,
-            see_quiets: false,
             reduction_table: false,
             deep_index_rule: false,
             move_memory: false,
@@ -541,7 +535,6 @@ impl Default for SearchConfig {
             late_move_pruning: true,
             quiet_futility: true,
             late_move_count: true,
-            see_quiets: true,
             reduction_table: true,
             deep_index_rule: true,
             move_memory: true,
@@ -2234,14 +2227,11 @@ impl AlphaBeta {
             // list is sorted under the loop, and only where the node admits
             // a reduction: most moves are searched whole. The ledger's
             // staged half travels to the scout as a parameter so the
-            // reduced moves inside it cannot mistake it for their own.
-            // A move the exchange dropped counts toward the reduction's
-            // threshold and table as it does toward the count
-            let index = searched + shallow.exchanged();
+            // reduced moves inside it cannot mistake it for their own
             let (reduction, staged) = if late_move::admits(
                 &self.config,
                 depth,
-                index,
+                searched,
                 in_check,
                 alpha,
                 beta,
@@ -2260,17 +2250,17 @@ impl AlphaBeta {
                     history_max: &mut history_max,
                     check: &mut check_info,
                 };
-                match late_move::decide(&self.deciding(), &mut node, m, index) {
+                match late_move::decide(&self.deciding(), &mut node, m, searched) {
                     late_move::Verdict::Skip => {
                         if self.ledger.is_some() {
-                            let staged = self.staged_reduction(m, index, &mut node);
+                            let staged = self.staged_reduction(m, searched, &mut node);
                             self.ledger_skip(staged, depth, alpha, beta);
                         }
                         continue;
                     }
                     late_move::Verdict::Scout(reduction) => {
                         let staged = if reduction > 0 && self.ledger.is_some() {
-                            Some(self.staged_reduction(m, index, &mut node))
+                            Some(self.staged_reduction(m, searched, &mut node))
                         } else {
                             None
                         };
