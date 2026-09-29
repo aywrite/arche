@@ -2137,6 +2137,10 @@ impl AlphaBeta {
             beta,
             root_bounds,
         );
+        shallow.raised(alpha);
+        // the reduction's node half, read again only where alpha rises
+        let mut admission = late_move::admission(&self.config, depth, in_check, beta, root_bounds);
+        admission.raised(alpha);
         // the quiet run still being taken in order: where it ends and how
         // many moves have been picked from it one at a time. After four
         // picks the rest is sorted whole
@@ -2237,48 +2241,56 @@ impl AlphaBeta {
             // a reduction: most moves are searched whole. The ledger's
             // staged half travels to the scout as a parameter so the
             // reduced moves inside it cannot mistake it for their own
-            let (reduction, staged) = if late_move::admits(
-                &self.config,
-                depth,
-                searched,
-                in_check,
-                alpha,
-                beta,
-                root_bounds,
-            ) {
-                let mut node = late_move::Node {
+            debug_assert_eq!(
+                admission.admits(searched),
+                late_move::admits(
+                    &self.config,
                     depth,
+                    searched,
+                    in_check,
                     alpha,
                     beta,
                     root_bounds,
-                    in_check,
-                    ply,
-                    tt,
-                    moves: &moves,
-                    eval: &mut eval,
-                    history_max: &mut history_max,
-                    check: &mut check_info,
-                };
-                match late_move::decide(&self.deciding(), &mut node, m, searched) {
-                    late_move::Verdict::Skip => {
-                        if self.ledger.is_some() {
-                            let staged = self.staged_reduction(m, searched, &mut node);
-                            self.ledger_skip(staged, depth, alpha, beta);
+                ),
+                "the reduction's node half was not handed the alpha standing"
+            );
+            // a capture or a promotion is never reduced, so its node is
+            // never built
+            let (reduction, staged) =
+                if admission.admits(searched) && m.capture.is_none() && m.promote.is_none() {
+                    let mut node = late_move::Node {
+                        depth,
+                        alpha,
+                        beta,
+                        root_bounds,
+                        in_check,
+                        ply,
+                        tt,
+                        moves: &moves,
+                        eval: &mut eval,
+                        history_max: &mut history_max,
+                        check: &mut check_info,
+                    };
+                    match late_move::decide_admitted(&self.deciding(), &mut node, m, searched) {
+                        late_move::Verdict::Skip => {
+                            if self.ledger.is_some() {
+                                let staged = self.staged_reduction(m, searched, &mut node);
+                                self.ledger_skip(staged, depth, alpha, beta);
+                            }
+                            continue;
                         }
-                        continue;
+                        late_move::Verdict::Scout(reduction) => {
+                            let staged = if reduction > 0 && self.ledger.is_some() {
+                                Some(self.staged_reduction(m, searched, &mut node))
+                            } else {
+                                None
+                            };
+                            (reduction, staged)
+                        }
                     }
-                    late_move::Verdict::Scout(reduction) => {
-                        let staged = if reduction > 0 && self.ledger.is_some() {
-                            Some(self.staged_reduction(m, searched, &mut node))
-                        } else {
-                            None
-                        };
-                        (reduction, staged)
-                    }
-                }
-            } else {
-                (0, None)
-            };
+                } else {
+                    (0, None)
+                };
             let reduced = reduction > 0;
             let Some(value) = self.search_child(
                 m,
@@ -2349,6 +2361,8 @@ impl AlphaBeta {
                     "a filtered node raised alpha to a mate without cutting off"
                 );
                 root_bounds = root_bounds.alpha_raised();
+                shallow.raised(alpha);
+                admission.raised(alpha);
             }
         }
 
