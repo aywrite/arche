@@ -550,7 +550,9 @@ impl<T: Engine, W: Write> UCI<T, W> {
 struct Go {
     /// Held to `MAX_PLY` rather than refused, since a depth past it is a
     /// request to go deep. The rail also keeps the root's check extension
-    /// inside a byte (`depth 255` in check used to overflow).
+    /// inside a byte (`depth 255` in check used to overflow). Held to one
+    /// from below as well: a depth of zero, which a negative count reads as,
+    /// would run no iteration and answer with no move.
     depth: Option<u8>,
     /// The node budget. An unreadable one is ignored rather than obeyed as
     /// zero, which would stop the search before it had a move to report.
@@ -563,10 +565,12 @@ struct Go {
 impl Go {
     fn of(params: &Params, color: Color, overhead: u64) -> Self {
         Go {
-            depth: params
-                .count("depth")
-                .read()
-                .map(|depth| depth.try_into().unwrap_or(u8::MAX).min(arche_core::MAX_PLY)),
+            depth: params.count("depth").read().map(|depth| {
+                depth
+                    .try_into()
+                    .unwrap_or(u8::MAX)
+                    .clamp(1, arche_core::MAX_PLY)
+            }),
             nodes: params.count("nodes").read(),
             time: TimeControl::of(params, color),
             overhead,
@@ -1067,6 +1071,19 @@ mod tests {
                 fen
             );
             assert!(said.ends_with("bestmove 0000\n"), "{}: {}", fen, said);
+        }
+    }
+
+    #[test]
+    fn a_depth_of_zero_still_answers_with_a_move() {
+        // it used to run no iteration and answer 0000 from the start position
+        for line in ["go depth 0", "go depth -1"] {
+            let mut uci = uci();
+            uci.run(Cursor::new(format!("position startpos\n{}\n", line)));
+            let said = said(&uci);
+            let last = said.lines().last().unwrap_or("");
+            assert!(last.starts_with("bestmove "), "{}: {}", line, said);
+            assert_ne!(last, "bestmove 0000", "{}: {}", line, said);
         }
     }
 
@@ -1578,6 +1595,9 @@ go depth 3
         for (line, depth) in [
             ("go depth 5", Some(5)),
             ("go depth 999", Some(arche_core::MAX_PLY)),
+            // zero and below would run no iteration, so they read as one
+            ("go depth 0", Some(1)),
+            ("go depth -1", Some(1)),
             ("go depth abc", None),
             // and a depth word with nothing after it is no depth either
             ("go depth", None),
