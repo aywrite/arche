@@ -58,6 +58,14 @@ cargo test --workspace --features machine-test
 A test that pins node counts or a tree made with the fitted table is ignored
 under the feature, with its reason, so a new one needs the same `cfg_attr`.
 
+It also runs the release suite for the baseline target, which compiles the
+quiet ordering's scalar forms in place of its SSE ones, so a change there is
+tested on both:
+
+```
+RUSTFLAGS="-C target-cpu=x86-64" cargo test --workspace --release
+```
+
 The tactical and strategic suites are in none of these runs. They are marked ignored
 and asked for by name, locally as in ci, since `--ignored` alone also runs
 `regenerate_magics`, which prints replacement constants rather than checking
