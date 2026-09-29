@@ -10,7 +10,7 @@ mod report_command;
 /// the instrument offers an event at every full width node on each side, so
 /// fifty keeps hundreds of rows at this depth, and the switch is one whose
 /// rule acts at exactly these depths.
-const ARGUMENTS: [&str; 6] = ["effort", "4", "every", "50", "off", "quiet_futility"];
+const ARGUMENTS: [&str; 6] = ["effort", "4", "every", "50", "off", "late_move_count"];
 
 #[test]
 #[cfg_attr(
@@ -22,7 +22,7 @@ fn the_effort_argument_prints_a_header_rows_and_two_summaries() {
     assert!(
         printed
             .header
-            .starts_with("effort depth 4 every 50 off quiet_futility positions "),
+            .starts_with("effort depth 4 every 50 off late_move_count positions "),
         "header: {}",
         printed.header
     );
@@ -175,6 +175,6 @@ fn a_switch_the_engine_does_not_have_is_refused() {
         .strip_prefix("unrecognised effort off: quiet_futilty (a switch is one of ")
         .and_then(|rest| rest.strip_suffix(')'))
         .unwrap_or_else(|| panic!("stderr: {printed}"));
-    assert_eq!(named.split(", ").count(), 14, "stderr: {printed}");
+    assert_eq!(named.split(", ").count(), 15, "stderr: {printed}");
     assert!(output.stdout.is_empty());
 }

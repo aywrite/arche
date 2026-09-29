@@ -64,6 +64,11 @@ pub(crate) const QUIET_FUTILITY_MARGIN: Score = 100;
 // model stands behind the cutoff and at depth three nothing does. Untuned;
 // a match is what would move it.
 pub(crate) const LATE_MOVE_COUNT: usize = 4;
+// How much a capture may lose on its exchange, in `SEE_VALUES` units, per
+// ply of depth, and still be searched: 100, 200 and 300 at depths one to
+// three. Linear, the usual shape for captures in engines that prune them by
+// the swap. A starting figure, not a fitted one.
+pub(crate) const SEE_CAPTURE_MARGIN: i32 = 100;
 // How many plies shallower the deep reduction scouts a late quiet the gate
 // deepens, with the table off: a ply over the flat amount.
 pub(crate) const DEEP_REDUCTION: u8 = 2;
@@ -360,7 +365,7 @@ pub(crate) fn decide(search: &Search, node: &mut Node, m: &Play, searched: usize
 /// alpha can reach the mate window, which is an exemption, so the mate test
 /// is asked per move in front of the latch rather than folded into it.
 pub(crate) struct Shallow {
-    /// Whether the node's own facts admit either rule.
+    /// Whether the node's own facts admit any of the rules.
     admits: bool,
     /// `QUIET_FUTILITY_MARGIN` at this node's depth, or none with the
     /// margin's switch off.
@@ -368,10 +373,13 @@ pub(crate) struct Shallow {
     /// The searched count at or past which the count drops a quiet, or none
     /// with its switch off.
     count: Option<usize>,
+    /// The least `Board::see` a capture may read before it is dropped, or
+    /// none with the capture rule's switch off.
+    capture_floor: Option<i32>,
     under: bool,
 }
 
-/// The node's half of the two rules, read once before the loop.
+/// The node's half of the rules, read once before the loop.
 pub(crate) fn shallow(
     config: &SearchConfig,
     board: &Board,
@@ -380,7 +388,7 @@ pub(crate) fn shallow(
     beta: Score,
     root_bounds: RootBounds,
 ) -> Shallow {
-    let admits = (config.quiet_futility || config.late_move_count)
+    let admits = (config.quiet_futility || config.late_move_count || config.see_captures)
         && (1..=SHALLOW_MAX_DEPTH).contains(&depth)
         && !in_check
         && !is_mate(beta)
@@ -391,21 +399,32 @@ pub(crate) fn shallow(
         margin: (admits && config.quiet_futility)
             .then(|| i64::from(QUIET_FUTILITY_MARGIN) * i64::from(depth)),
         count: (admits && config.late_move_count).then(|| LATE_MOVE_COUNT * usize::from(depth)),
+        capture_floor: (admits && config.see_captures)
+            .then(|| -SEE_CAPTURE_MARGIN * i32::from(depth)),
         under: false,
     }
 }
 
 impl Shallow {
-    /// Whether either rule drops this move. `searched` is how many moves the
+    /// Whether any rule drops this move. `searched` is how many moves the
     /// node has searched already and `alpha` its bound as the move is
-    /// reached.
+    /// reached. A capture is asked only whether its swap loses more than
+    /// the capture rule allows, and only when `priced_losing` says the
+    /// ordering put it in the losing band: a capture outside it has a swap
+    /// of zero or more, so asking the swap again could only say no. A quiet
+    /// is asked the other two rules.
     ///
     /// The order of the tests is the cost order: the count before the
     /// margin, so a move the count drops needs no evaluation, and the check
     /// probe last, since the slider probes cost more than everything before
     /// them. A check is exempt because a pruned check is never seen, where
-    /// a scouted one is seen shallower.
+    /// a scouted one is seen shallower. A promotion is exempt too, and a
+    /// promoting capture besides because the swap prices it as its pawn.
+    ///
+    /// A dropped capture is not counted as searched: the losing captures
+    /// sort after the quiets, so nothing that reads the count follows them.
     #[inline]
+    #[allow(clippy::too_many_arguments)]
     pub(crate) fn skips(
         &mut self,
         search: &Search,
@@ -414,13 +433,22 @@ impl Shallow {
         m: &Play,
         searched: usize,
         alpha: Score,
+        priced_losing: bool,
     ) -> bool {
         self.admits
             && searched >= 1
-            && m.capture.is_none()
             && m.promote.is_none()
             && !is_mate(alpha)
-            && (self.counted(searched) || self.under_alpha(search, eval, alpha))
+            && if m.capture.is_some() {
+                debug_assert!(
+                    priced_losing || search.board.see(m) >= 0,
+                    "a losing capture sorted outside the losing band: {m:?} in {}",
+                    search.board.to_fen()
+                );
+                priced_losing && self.loses_capture(search, m)
+            } else {
+                self.counted(searched) || self.under_alpha(search, eval, alpha)
+            }
             && !search
                 .board
                 .gives_check_with(check.get_or_insert_with(|| search.board.check_info()), m)
@@ -443,6 +471,12 @@ impl Shallow {
             && searched >= 1
             && !is_mate(alpha)
             && (self.counted(searched) || self.under_alpha(search, eval, alpha))
+    }
+
+    #[inline]
+    fn loses_capture(&self, search: &Search, m: &Play) -> bool {
+        self.capture_floor
+            .is_some_and(|floor| search.board.see(m) < floor)
     }
 
     #[inline]
@@ -728,6 +762,14 @@ mod tests {
         }
     }
 
+    /// The reference with the capture rule alone on.
+    fn capturing() -> SearchConfig {
+        SearchConfig {
+            see_captures: true,
+            ..SearchConfig::reference()
+        }
+    }
+
     /// A searched count past the count's cutoff at every depth it reaches.
     const PAST_THE_COUNT: usize = LATE_MOVE_COUNT * SHALLOW_MAX_DEPTH as usize;
 
@@ -852,7 +894,16 @@ mod tests {
                 ordering: &self.ordering,
                 config: &self.config,
             };
-            shallow.skips(&search, &mut self.eval, &mut None, m, searched, alpha)
+            let priced_losing = m.capture.is_some() && self.board.see(m) < 0;
+            shallow.skips(
+                &search,
+                &mut self.eval,
+                &mut None,
+                m,
+                searched,
+                alpha,
+                priced_losing,
+            )
         }
 
         /// What the node would tell the ledger about one move, read
@@ -1891,6 +1942,41 @@ mod tests {
                 s.skips(&quiet, 1, depth, alpha, alpha + 1),
                 "at depth {depth}"
             );
+        }
+    }
+
+    /// A knight that takes a pawn its neighbour defends loses 200: past the
+    /// floor at depth one, on it at depth two, and out of the rule's range
+    /// at four. A capture that wins is never asked about, and the first
+    /// move searched is exempt as it is from the other rules.
+    #[test]
+    fn a_losing_capture_is_dropped_only_past_its_floor() {
+        let mut s = Stand::new("4k3/8/3p4/4p3/8/5N2/8/4K3 w - - 0 1", capturing());
+        let taken = play_named(&s.board, "f3e5");
+        assert_eq!(s.board.see(&taken), -200);
+        assert!(s.skips(&taken, 1, 1, -100, 100));
+        assert!(!s.skips(&taken, 1, 2, -100, 100));
+        assert!(!s.skips(&taken, 1, SHALLOW_MAX_DEPTH + 1, -100, 100));
+        assert!(!s.skips(&taken, 0, 1, -100, 100));
+        let mut off = Stand::new(
+            "4k3/8/3p4/4p3/8/5N2/8/4K3 w - - 0 1",
+            SearchConfig::reference(),
+        );
+        assert!(!off.skips(&taken, 1, 1, -100, 100));
+        let mut won = Stand::new("4k3/8/8/4p3/8/5N2/8/4K3 w - - 0 1", capturing());
+        let free = play_named(&won.board, "f3e5");
+        assert!(!won.skips(&free, 1, 1, -100, 100));
+    }
+
+    /// A rook that takes a defended pawn with check loses 400 and is still
+    /// searched: a pruned check is never seen.
+    #[test]
+    fn a_checking_capture_is_never_dropped() {
+        let mut s = Stand::new("4k3/8/3p4/4p3/8/8/8/4RK2 w - - 0 1", capturing());
+        let check = play_named(&s.board, "e1e5");
+        assert_eq!(s.board.see(&check), -400);
+        for depth in 1..=SHALLOW_MAX_DEPTH {
+            assert!(!s.skips(&check, 1, depth, -100, 100), "at depth {depth}");
         }
     }
 

@@ -296,6 +296,9 @@ pub struct SearchConfig {
     /// has searched `LATE_MOVE_COUNT` moves a ply. Separate from
     /// `quiet_futility` so an ablation can tell the two apart.
     pub late_move_count: bool,
+    /// Whether a capture at depths one to three is dropped when its swap
+    /// loses more than `SEE_CAPTURE_MARGIN` a ply.
+    pub see_captures: bool,
     /// Whether the late move reduction's amount is read off the table by
     /// depth and move index rather than being the flat ply. Rides on
     /// `late_move_reductions`.
@@ -427,7 +430,7 @@ impl SearchConfig {
     ///
     /// `taint` is not among them: it is a policy with four values rather
     /// than a switch, and `residuals` already takes it.
-    pub const SWITCHES: [(&'static str, TurnOff); 14] = [
+    pub const SWITCHES: [(&'static str, TurnOff); 15] = [
         ("reverse_futility", |config| config.reverse_futility = false),
         ("null_move", |config| config.null_move = false),
         ("adaptive_null_move", |config| {
@@ -444,6 +447,7 @@ impl SearchConfig {
         }),
         ("quiet_futility", |config| config.quiet_futility = false),
         ("late_move_count", |config| config.late_move_count = false),
+        ("see_captures", |config| config.see_captures = false),
         ("reduction_table", |config| config.reduction_table = false),
         ("deep_index_rule", |config| config.deep_index_rule = false),
         ("move_memory", |config| config.move_memory = false),
@@ -480,6 +484,7 @@ impl SearchConfig {
             late_move_pruning: false,
             quiet_futility: false,
             late_move_count: false,
+            see_captures: false,
             reduction_table: false,
             deep_index_rule: false,
             move_memory: false,
@@ -535,6 +540,7 @@ impl Default for SearchConfig {
             late_move_pruning: true,
             quiet_futility: true,
             late_move_count: true,
+            see_captures: true,
             reduction_table: true,
             deep_index_rule: true,
             move_memory: true,
@@ -2201,6 +2207,7 @@ impl AlphaBeta {
                 m,
                 searched,
                 alpha,
+                i + losing >= moves.len(),
             ) {
                 // never made, so whether it was legal is never learned, and
                 // nothing is taught about it

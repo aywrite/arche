@@ -85,8 +85,10 @@ term over every pair of pieces.
   searched at all. At depths one to three, below the model's floor, two
   rules drop a quiet move after the node's first: quiet futility, where the
   static evaluation plus a pawn a ply cannot reach alpha, and a count, once
-  the node has searched four moves a ply. The features the model scores are
-  the ones the reduction ledger records.
+  the node has searched four moves a ply. A capture after the first is
+  dropped there too when the static exchange evaluation says it loses more
+  than a pawn a ply. The features the model scores are the ones the
+  reduction ledger records.
 - **ordering.rs**: The order moves are tried in. The transposition table's
   move first, then the captures the swap prices as winning or even, by
   what each wins with most valuable victim / least valuable attacker
