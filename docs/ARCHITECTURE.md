@@ -112,11 +112,13 @@ term over every pair of pieces.
 - **transposition.rs**: The transposition table: a cache of positions
   searched before, keyed by zobrist hash, holding the score and best move
   found last time. Entries are 16 bytes, four to a cache line, replaced by
-  age and depth. A hit can answer a node outright or just say which move
-  to try first. Tainted scores are by default trusted anyway, except close
-  to the fifty move horizon where every cutoff is refused; ROADMAP.md has
-  the match that chose that, and the reference search keeps the refusal.
-  Outside its signature audit the table counts nothing; ghi.rs does.
+  age and depth; the four keys' slices sit side by side at the head of the
+  line, so one compare reads them all. A hit can answer a node outright or
+  just say which move to try first. Tainted scores are by default trusted
+  anyway, except close to the fifty move horizon where every cutoff is
+  refused; ROADMAP.md has the match that chose that, and the reference
+  search keeps the refusal. Outside its signature audit the table counts
+  nothing; ghi.rs does.
 - **ghi.rs**: What the search counts of its use of the table, draw taint
   included. The searcher owns the counts, so they survive a new table. The
   bench prints them.

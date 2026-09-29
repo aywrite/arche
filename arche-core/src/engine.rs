@@ -123,18 +123,27 @@ fn short_of_alpha(standing: Score, captured: Piece, alpha: Score) -> bool {
 /// each: under a cutoff the quiet moves with a bit below the cutting
 /// move's place are the history's malus.
 ///
-/// Four words, because a position can hold two hundred and eighteen moves.
+/// Four words, because a position can hold two hundred and eighteen legal
+/// moves. The list is pseudo-legal, and a composed position with many
+/// promoted pieces can make it longer.
 #[derive(Default)]
 struct Searched([u64; 4]);
 
 impl Searched {
+    /// Inline, since the call cost more than the mark. The word is taken
+    /// modulo four rather than checked: a release build gives a list of
+    /// more than 256 moves the bits of the places 256 below, so its malus
+    /// may name a move it did not search, where the checked index
+    /// panicked. The debug build asserts.
+    #[inline(always)]
     fn mark(&mut self, place: usize) {
         debug_assert!(place < 64 * 4, "a move list wider than the mask");
-        self.0[place / 64] |= 1 << (place % 64);
+        self.0[place / 64 % 4] |= 1 << (place % 64);
     }
 
+    #[inline(always)]
     fn holds(&self, place: usize) -> bool {
-        self.0[place / 64] >> (place % 64) & 1 == 1
+        self.0[place / 64 % 4] >> (place % 64) & 1 == 1
     }
 
     /// How many places are marked. The move loop asserts this against its

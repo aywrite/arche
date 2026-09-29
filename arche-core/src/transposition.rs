@@ -275,6 +275,7 @@ struct Entry {
 const _: () = assert!(mem::size_of::<Entry>() == 16);
 const _: () = assert!(mem::size_of::<Bucket>() == 64);
 const _: () = assert!(mem::align_of::<Bucket>() == 64);
+const _: () = assert!(mem::offset_of!(Bucket, slices) == 0);
 
 // The audit's cell is not `Sync`, and the table is not asked to be; the
 // protocol moves an engine whole to the search thread, which needs `Send`.
@@ -351,19 +352,138 @@ impl Entry {
 }
 
 /// Four entries in one cache line, so four positions that hash alike are
-/// kept and a probe still touches one line.
+/// kept and a probe still touches one line. The four slices come first,
+/// side by side, so that one compare reads them all; the rest of each entry
+/// follows in the order the entries do. An `Entry` is the two halves put
+/// back together.
 #[derive(Copy, Clone, Debug)]
 #[repr(C, align(64))]
 struct Bucket {
-    entries: [Entry; 4],
+    slices: [u32; BUCKET],
+    rest: [Rest; BUCKET],
 }
+
+/// An entry less its slice: twelve bytes.
+#[derive(Copy, Clone, Debug)]
+#[repr(C)]
+struct Rest {
+    play: Play,
+    score: Score,
+    depth: u8,
+    flags: u8,
+    static_eval: i16,
+}
+
+const _: () = assert!(mem::size_of::<Rest>() == 12);
 
 const BUCKET: usize = 4;
 
 impl Bucket {
     const EMPTY: Bucket = Bucket {
-        entries: [Entry::EMPTY; BUCKET],
+        slices: [Entry::EMPTY.key; BUCKET],
+        rest: [Rest {
+            play: Entry::EMPTY.play,
+            score: Entry::EMPTY.score,
+            depth: Entry::EMPTY.depth,
+            flags: Entry::EMPTY.flags,
+            static_eval: Entry::EMPTY.static_eval,
+        }; BUCKET],
     };
+
+    #[inline(always)]
+    fn entry(&self, i: usize) -> Entry {
+        let rest = self.rest[i];
+        Entry {
+            key: self.slices[i],
+            play: rest.play,
+            score: rest.score,
+            depth: rest.depth,
+            flags: rest.flags,
+            static_eval: rest.static_eval,
+        }
+    }
+
+    #[inline(always)]
+    fn put(&mut self, i: usize, entry: Entry) {
+        self.slices[i] = entry.key;
+        self.rest[i] = Rest {
+            play: entry.play,
+            score: entry.score,
+            depth: entry.depth,
+            flags: entry.flags,
+            static_eval: entry.static_eval,
+        };
+    }
+
+    /// The live entries whose slice is `slice`, a bit each. A slot never
+    /// written is `Entry::EMPTY`, since every store writes a generation of
+    /// one or more, so only a zero slice can match one, and only then are
+    /// the generations read.
+    #[inline(always)]
+    fn holding(&self, slice: u32) -> u32 {
+        let matches = self.slices_equal(slice);
+        let live = if matches != 0 && slice == 0 {
+            matches & self.written()
+        } else {
+            matches
+        };
+        debug_assert_eq!(
+            live,
+            (0..BUCKET).fold(0, |live, i| {
+                let entry = self.entry(i);
+                live | u32::from(entry.key == slice && entry.generation() != 0) << i
+            }),
+            "the slice compare and the entry by entry scan disagree"
+        );
+        live
+    }
+
+    /// The four slices against one, compared at once.
+    #[cfg(all(target_arch = "x86_64", target_feature = "sse2"))]
+    #[inline(always)]
+    fn slices_equal(&self, slice: u32) -> u32 {
+        use core::arch::x86_64::{
+            __m128i, _mm_castsi128_ps, _mm_cmpeq_epi32, _mm_load_si128, _mm_movemask_ps,
+            _mm_set1_epi32,
+        };
+        // SAFETY: the build enables sse2 (the cfg above). The load reads
+        // the four slices, sixteen bytes at the start of a bucket aligned
+        // to 64 (both asserted beside `Entry`)
+        unsafe {
+            let slices = _mm_load_si128(self.slices.as_ptr().cast::<__m128i>());
+            let equal = _mm_cmpeq_epi32(slices, _mm_set1_epi32(slice as i32));
+            _mm_movemask_ps(_mm_castsi128_ps(equal)) as u32
+        }
+    }
+
+    #[cfg(not(all(target_arch = "x86_64", target_feature = "sse2")))]
+    #[inline(always)]
+    fn slices_equal(&self, slice: u32) -> u32 {
+        self.slices
+            .iter()
+            .enumerate()
+            .fold(0, |equal, (i, &key)| equal | u32::from(key == slice) << i)
+    }
+
+    /// The entries ever written, a bit each. Out of line, so that the
+    /// compare above does not keep the entries in registers for it.
+    #[cold]
+    #[inline(never)]
+    fn written(&self) -> u32 {
+        (0..BUCKET).fold(0, |written, i| {
+            written | u32::from(self.entry(i).generation() != 0) << i
+        })
+    }
+}
+
+/// The generations whose entries a store may take whatever they hold, a
+/// bit each: zero, never written, and those `STALE_AFTER_SEARCHES` or more
+/// searches older than `generation`.
+fn replaceable_under(generation: u8) -> u32 {
+    (0..=GENERATIONS).fold(0, |replaceable, g| {
+        let age = (generation + GENERATIONS - g) % GENERATIONS;
+        replaceable | u32::from(g == 0 || age >= STALE_AFTER_SEARCHES) << g
+    })
 }
 
 /// Asking the kernel to back the table with huge pages.
@@ -505,11 +625,19 @@ mod huge_pages {
     pub(super) fn advise(_buffer: *mut super::Bucket, _buckets: usize) {}
 }
 
+/// A bucket's index as `index_for` drew it from a key. Nothing else makes
+/// one, so an index read without its bounds check is always one drawn
+/// from this table's length.
+#[derive(Copy, Clone)]
+struct Home(usize);
+
 #[derive(Debug)]
 pub struct TranspositionTable {
     table: Vec<Bucket>,
     /// The search under way, as the entries it stores are marked.
     generation: u8,
+    /// `replaceable_under(generation)`, kept beside it.
+    replaceable: u32,
     /// The full keys of the entries, or none, which is what every table an
     /// engine plays with holds. `audit_signatures` fills it in.
     audit: Option<Box<Audit>>,
@@ -556,6 +684,7 @@ impl TranspositionTable {
         Some(Self {
             table,
             generation: 1,
+            replaceable: replaceable_under(1),
             audit: None,
         })
     }
@@ -563,6 +692,7 @@ impl TranspositionTable {
     pub fn clear(&mut self) {
         self.table.fill(Bucket::EMPTY);
         self.generation = 1;
+        self.replaceable = replaceable_under(1);
         if let Some(audit) = self.audit.as_deref_mut() {
             audit.keys.fill(0);
         }
@@ -632,6 +762,7 @@ impl TranspositionTable {
     /// earlier searches stored ages by one.
     pub fn new_search(&mut self) {
         self.generation = self.generation % GENERATIONS + 1;
+        self.replaceable = replaceable_under(self.generation);
     }
 
     /// How many searches ago an entry was stored.
@@ -640,10 +771,42 @@ impl TranspositionTable {
         (self.generation + GENERATIONS - entry.generation()) % GENERATIONS
     }
 
+    /// Whether a store may take this entry's slot whatever it holds: never
+    /// written, or stale.
+    #[inline(always)]
+    fn replaceable(&self, entry: Entry) -> bool {
+        let replaceable = self.replaceable >> entry.generation() & 1 != 0;
+        debug_assert_eq!(
+            replaceable,
+            entry.generation() == 0 || self.age(entry) >= STALE_AFTER_SEARCHES
+        );
+        replaceable
+    }
+
     #[inline]
-    fn index_for(&self, key: u64) -> usize {
+    fn index_for(&self, key: u64) -> Home {
         // multiply-shift: onto 0..len without a 64 bit division
-        (((key as u128) * (self.table.len() as u128)) >> 64) as usize
+        Home((((key as u128) * (self.table.len() as u128)) >> 64) as usize)
+    }
+
+    /// The bucket at a key's home, without the bounds check it cannot
+    /// fail: a key under 2^64 times the length, shifted down by 64, is
+    /// under the length.
+    #[inline(always)]
+    fn bucket(&self, home: Home) -> &Bucket {
+        debug_assert!(home.0 < self.table.len());
+        // SAFETY: only `index_for` makes a `Home`, which is under the
+        // length for every key, and the length does not change while one
+        // is held (both borrow the table). The table is never empty
+        // (`with_capacity` makes one bucket at least)
+        unsafe { self.table.get_unchecked(home.0) }
+    }
+
+    #[inline(always)]
+    fn bucket_mut(&mut self, home: Home) -> &mut Bucket {
+        debug_assert!(home.0 < self.table.len());
+        // SAFETY: as for `bucket`
+        unsafe { self.table.get_unchecked_mut(home.0) }
     }
 
     fn get(&self, key: u64) -> Option<Pv> {
@@ -652,28 +815,44 @@ impl TranspositionTable {
 
     /// The same lookup, saying as well whether the entry it accepted
     /// belongs to another position. Always false without the audit.
+    ///
+    /// The audit is asked first and counted out of line, so that a miss
+    /// in a table without it returns straight from the compare.
     #[inline(always)]
     fn get_audited(&self, key: u64) -> (Option<Pv>, bool) {
+        if let Some(audit) = self.audit.as_deref() {
+            return self.get_counted(key, audit);
+        }
+        let bucket = self.bucket(self.index_for(key));
+        let holding = bucket.holding(Entry::slice(key));
+        if holding == 0 {
+            return (None, false);
+        }
+        // the first that holds it, as a scan would find
+        let i = holding.trailing_zeros() as usize % BUCKET;
+        (Some(bucket.entry(i).unpack()), false)
+    }
+
+    /// `get_audited` under the audit, counting what it compared.
+    #[cold]
+    #[inline(never)]
+    fn get_counted(&self, key: u64, audit: &Audit) -> (Option<Pv>, bool) {
         let index = self.index_for(key);
         let slice = Entry::slice(key);
-        let bucket = &self.table[index].entries;
-        let found = bucket
-            .iter()
-            .enumerate()
-            // the key first: in a warm table nearly every entry has a
-            // generation, and the key is what rejects the others
-            .find(|(_, entry)| entry.key == slice && entry.generation() != 0);
+        let bucket = self.bucket(index);
+        let holding = bucket.holding(slice);
+        let found = (holding != 0).then(|| {
+            let i = holding.trailing_zeros() as usize % BUCKET;
+            (i, bucket.entry(i))
+        });
         let pv = found.map(|(_, entry)| entry.unpack());
-        let Some(audit) = self.audit.as_deref() else {
-            return (pv, false);
-        };
-        // the entries the scan looked at, up to and including the one it
-        // took, rather than an assumed four
+        // the entries a scan in order would have looked at, up to and
+        // including the one taken, rather than an assumed four
         let examined = found.map_or(BUCKET, |(i, _)| i + 1);
         let mut comparisons = 0;
         let mut narrow = [0; NARROW_WIDTHS.len()];
-        for (i, entry) in bucket[..examined].iter().enumerate() {
-            if entry.generation() == 0 || audit.keys[index * BUCKET + i] == key {
+        for (i, entry) in (0..examined).map(|i| (i, bucket.entry(i))) {
+            if entry.generation() == 0 || audit.keys[index.0 * BUCKET + i] == key {
                 continue;
             }
             comparisons += 1;
@@ -686,7 +865,7 @@ impl TranspositionTable {
                 }
             }
         }
-        let foreign = found.is_some_and(|(i, _)| audit.keys[index * BUCKET + i] != key);
+        let foreign = found.is_some_and(|(i, _)| audit.keys[index.0 * BUCKET + i] != key);
         audit.count(|counters| {
             counters.probes += 1;
             counters.hits += u64::from(found.is_some());
@@ -713,37 +892,39 @@ impl TranspositionTable {
 
     /// Where in its bucket a position goes: its own entry if it has one,
     /// else an empty one, else a stale one, else the shallowest. This and
-    /// the depth contest in `set` are the whole replacement policy.
-    #[inline]
-    fn slot_for(&self, key: u64) -> (usize, usize) {
+    /// the depth contest in `set` are the whole replacement policy. The
+    /// third field says the slot was found replaceable, so the contest need
+    /// not ask again.
+    #[inline(always)]
+    fn slot_for(&self, key: u64) -> (Home, usize, bool) {
         let index = self.index_for(key);
-        let slice = Entry::slice(key);
-        let bucket = &self.table[index].entries;
         // its own entry first, so a position is never in a bucket twice
-        if let Some(i) = bucket
-            .iter()
-            .position(|entry| entry.key == slice && entry.generation() != 0)
-        {
-            return (index, i);
+        let own = self.bucket(index).holding(Entry::slice(key));
+        if own != 0 {
+            return (index, own.trailing_zeros() as usize % BUCKET, false);
         }
+        let bucket = self.bucket(index);
         let mut victim = 0;
-        for (i, entry) in bucket.iter().enumerate() {
-            if entry.generation() == 0 || self.age(*entry) >= STALE_AFTER_SEARCHES {
-                return (index, i);
+        for i in 0..BUCKET {
+            let entry = bucket.entry(i);
+            if self.replaceable(entry) {
+                return (index, i, true);
             }
-            if entry.depth < bucket[victim].depth {
+            if entry.depth < bucket.rest[victim].depth {
                 victim = i;
             }
         }
-        (index, victim)
+        (index, victim, false)
     }
 
     /// Store unless the slot holds something worth more. Reports whether
     /// the entry landed.
+    #[inline(always)]
     fn set(&mut self, key: u64, pv: Pv) -> bool {
-        let (index, i) = self.slot_for(key);
-        let old = self.table[index].entries[i];
-        if old.generation() != 0 && self.age(old) < STALE_AFTER_SEARCHES {
+        let (index, i, free) = self.slot_for(key);
+        let old = self.bucket(index).entry(i);
+        debug_assert!(!free || self.replaceable(old));
+        if !free && !self.replaceable(old) {
             if pv.depth < old.depth {
                 return false;
             }
@@ -762,13 +943,17 @@ impl TranspositionTable {
     /// Write the entry, and under the audit record its full key and count
     /// an aliased eviction.
     #[inline]
-    fn store(&mut self, index: usize, i: usize, key: u64, pv: Pv) {
-        let old = self.table[index].entries[i];
-        self.table[index].entries[i] = Entry::pack(key, pv, self.generation);
+    fn store(&mut self, index: Home, i: usize, key: u64, pv: Pv) {
+        // `Bucket::holding` reads a zero generation as a slot never written
+        debug_assert!(self.generation != 0, "a store is marked as written");
+        let old = self.bucket(index).entry(i);
+        let generation = self.generation;
+        self.bucket_mut(index)
+            .put(i, Entry::pack(key, pv, generation));
         let Some(audit) = self.audit.as_deref_mut() else {
             return;
         };
-        let at = index * BUCKET + i;
+        let at = index.0 * BUCKET + i;
         if old.generation() != 0 && old.key == Entry::slice(key) && audit.keys[at] != key {
             audit.count(|counters| counters.aliased_evictions += 1);
         }
@@ -781,7 +966,7 @@ impl TranspositionTable {
     /// there earlier in the game must not outrank it. When one did, the
     /// engine answered one move while its line opened with another.
     fn set_always(&mut self, key: u64, pv: Pv) {
-        let (index, i) = self.slot_for(key);
+        let (index, i, _) = self.slot_for(key);
         self.store(index, i, key, pv);
     }
 
@@ -789,6 +974,7 @@ impl TranspositionTable {
     /// position's worth, fail soft, so at least as tight as the beta it
     /// crossed. Each `record_` method reports whether the entry landed.
     #[must_use]
+    #[inline(always)]
     pub fn record_cutoff(&mut self, board: &Board, play: Play, floor: Value, depth: u8) -> bool {
         self.set(board.key, entry(board, play, floor, depth, Bound::Lower))
     }
@@ -1325,6 +1511,30 @@ mod tests {
         table.set(1, new_pv(Bound::Exact, 8));
         assert_eq!(table.get(1 + (1 << 32)).unwrap().depth, 8);
         assert!(table.get(2).is_none());
+    }
+
+    /// An empty slot's slice is zero, so a key whose slice is zero agrees
+    /// with every empty slot, and only the generations tell them apart. An
+    /// empty table misses the key, a stored one is found, and a second key
+    /// on the same slice takes the first one's slot rather than an empty
+    /// one, leaving three for other positions.
+    #[test]
+    fn a_key_with_a_zero_slice_is_told_from_an_empty_slot() {
+        let mut table = TranspositionTable::with_capacity(4).expect("a table of one bucket");
+        assert!(
+            table.get(0).is_none(),
+            "an empty slot was taken for the key"
+        );
+        assert!(table.get(1 << 32).is_none());
+        table.set(1 << 32, new_pv(Bound::Exact, 4));
+        assert_eq!(table.get(1 << 32).expect("stored").depth, 4);
+        table.set(2 << 32, new_pv(Bound::Exact, 6));
+        assert_eq!(table.get(2 << 32).expect("stored").depth, 6);
+        for key in 1..=3 {
+            table.set(key, new_pv(Bound::Exact, 4));
+        }
+        assert_eq!(kept(&table, 1..=3), 3, "the zero slice took a second slot");
+        assert_eq!(table.get(2 << 32).expect("kept").depth, 6);
     }
 
     /// A table with no audit has nothing to report rather than zeroes.
