@@ -97,17 +97,18 @@ worth doing.
   standard error of 0.000118 over its 5,772 games, which is 0.68 standard errors from the
   selection group's -0.000649. The next fit wanting an honest held-out interval wants
   games this corpus never saw. The access log is not in this repository
-- an evaluation term is allowed 5% of the search, and mobility is over it: 13.5% of the
-  bench at `378c148`. The 5% is a rule of thumb and nothing enforces it, and the games say
-  so: the term was made 6% cheaper across the whole search and 6,000 of them could not see
-  it (1a5e362). So the ceiling is under question rather than the term. The king attack
-  zone costs less than the 5%. It was 11.5% of the run as a walk of its own at its fit,
-  and it now takes its counts in mobility's walk. Measured with callgrind over
-  `arche bench` at depth 7, the shared walk forced out of line, the walk is 777,417,417 of
-  4,600,409,835 instructions, 16.9%, and the same walk without the ring is 576,199,267, so
-  the ring is 201,218,150 of them, 4.4%, and 4.8% with its fold. The build that shipped
-  it cost 1,085 instructions a node against 1,040 before the term, 4.3% more. The pair term costs
-  4.4% of the bench's nodes a second, under the 5%, and 7.6% of the nodes a second in the
+- an evaluation term is allowed 5% of the search. Mobility and the king attack zone share
+  one walk, so the rule has two readings. Measured with callgrind over the full `arche
+  bench` at 8f9dafe, with the walk forced out of line and a walk of each term alone run
+  beside it, the shared walk is about 10.6% of the tree search. Taking mobility out and
+  keeping the ring would save 4.36%, and taking the ring out would save 3.39%, so each is
+  under the 5% as a marginal. The rest, about 2.9%, is the probes and loops both need. A
+  walk of mobility alone is about 7.3%, over it. The 13.5% this line used to carry was
+  mobility's own walk at `378c148` on `bench 5`, before the ring joined it, the joint
+  refit and 7e2dee7, so the two do not measure the same thing. The 5% is a rule of
+  thumb that nothing enforces: the term was made 6% cheaper across the whole search and
+  6,000 games could not see it (1a5e362). The pair term costs 4.4% of the bench's nodes
+  a second, under the 5%, and 7.6% of the nodes a second in the
   games that measured it at +95 ±19 (6ce33d3), over it
 - on 1,812 games a held-out loss could not resolve a fit of the piece square tables one
   way or the other, so an sprt decided the re-tune. Measured 2026-09-10 over those games,
@@ -530,3 +531,6 @@ of these again without saying what is different this time.
   evaluations for 6.05% off the run to a fixed depth, and no game can tell. Branches
   `eval/lazy-mobility`, `eval/lazy-mobility-200` and `eval/lazy-mobility-50` hold the code,
   and the pairs were recorded, so any of the three tests resumes rather than restarts.
+  Re-read at 8f9dafe, where the walk is shared with the king attack zone, a margin of a
+  hundred fires at 22.3% of stand pats and could save at most 0.63% of the search before
+  its own cost, and a cut exactly where the full score cuts at most 1.19%.
