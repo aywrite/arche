@@ -31,13 +31,12 @@ pub(crate) type Heard = (u64, String);
 
 /// The interface's output and, while one is open, the debug log beside it.
 ///
-/// The log has what was read with `>> ` in front and what was said with `<< `.
-/// A line is written to the log when the reader reads it, if the log is open
-/// then. One read while it is closed is held here until the session loop
-/// reaches it, because the lines already queued when the option that opens
-/// the log is dispatched belong in it too. Those go in when the log opens,
-/// after anything said since they were read. A line read while one log is
-/// open goes to that one, even if the loop later moves the log elsewhere.
+/// The log marks what was read with `>> ` and what was said with `<< `. A
+/// line goes in when the reader reads it. One read while the log is closed
+/// is held until the session loop reaches it, since the lines queued behind
+/// the option that opens the log belong in it too; they go in when it opens,
+/// after anything said meanwhile. A line read while a log is open stays in
+/// that log, even if the loop later moves the log elsewhere.
 pub(crate) struct Sink<W> {
     out: W,
     log: Option<LineWriter<File>>,
@@ -90,8 +89,8 @@ impl<W: Write> SharedWriter<W> {
     /// Opens the debug log at `path`, appending to what is there, and writes
     /// the lines read that have not been reached. A log already open is
     /// closed first, unless the new one cannot be opened. The line that
-    /// opened it goes first, unless a log was open when it was read and has
-    /// it already.
+    /// opened it goes first, unless a log is already open: the line was then
+    /// written to a log when it was read or when that log opened.
     pub(crate) fn open_log(&self, path: &Path, opened_by: &str) -> std::io::Result<()> {
         let file = OpenOptions::new().create(true).append(true).open(path)?;
         let mut sink = self.lock();
@@ -241,9 +240,7 @@ impl SessionControl {
         }
     }
 
-    /// Whether a go read has yet to be answered. A go counts as answered
-    /// just before its bestmove is written, so an `isready` sent after the
-    /// bestmove is passed on to the loop.
+    /// Whether a go read has yet to be answered.
     fn searching(&self) -> bool {
         self.gos_answered.load(Ordering::Acquire) < self.gos_read.load(Ordering::Acquire)
     }
