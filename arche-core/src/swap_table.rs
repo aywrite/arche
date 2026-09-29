@@ -23,7 +23,9 @@
 //! hundredths in a byte.
 //!
 //! Nothing here is built at run time. `every_entry_is_the_exchange_played_out`
-//! checks the whole table against a minimax written separately.
+//! checks the whole table against a minimax that shares only `CLASS_VALUE`
+//! with it, and `the_table_and_the_exits_agree_with_the_walk` in `board.rs`
+//! checks `see` against the walk, which prices by `SEE_VALUES`.
 
 /// What each value class is worth to the swap: pawn, minor, rook, queen and
 /// king, as `SEE_VALUES` prices them.

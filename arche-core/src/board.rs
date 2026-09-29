@@ -37,8 +37,8 @@ pub(crate) struct CheckInfo {
     blockers: u64,
 }
 
-/// A move list while it is being generated: the captures and the other
-/// moves in two plain arrays, each with its length.
+/// A move list while it is being generated, the captures kept apart from the
+/// other moves.
 ///
 /// A `SmallVec` push asks whether the list has spilled and whether it is
 /// full on every push. Here a push is a store and an increment, and the list
@@ -184,11 +184,12 @@ impl Kept {
     };
 }
 
-/// Plies of `Kept` the board holds, as a ring indexed by ply. Only a move
-/// that is still to be taken back reads its entry, so this covers the depth
-/// of a search (`MAX_PLY`), not the fifty move window the history covers.
+/// Plies of `Kept` the board holds, as a ring indexed by ply. A slot is
+/// written over once this many later moves are made, so a move can be taken
+/// back only within that many plies: the depth of a search (`MAX_PLY`), not
+/// the fifty move window the history covers. Only the debug state check
+/// would see a slot read after it was written over.
 const KEPT_PLIES: usize = 256;
-// a search deeper than the ring would read a slot a later move overwrote
 const _: () = assert!(KEPT_PLIES > crate::engine::MAX_PLY as usize + 1);
 
 /// The saved state a make leaves for its unmake. Scratch rather than
@@ -496,9 +497,9 @@ impl fmt::Display for Unplayable {
 /// made and unmade. `key` also folds in the side to move, the castle rights
 /// and the en passant square. In a debug build `debug_assert_state_in_step`
 /// recomputes the first five after every move made and taken back, and
-/// `make_move` checks `checkers` beside it. Outside the crate the position is read through the accessors
-/// and moved on through `play_by_name`, which has no counterpart that takes
-/// a move back.
+/// `make_move` checks `checkers` beside it. Outside the crate the position is
+/// read through the accessors and moved on through `play_by_name`, which has
+/// no counterpart that takes a move back.
 #[derive(Debug, PartialEq, Clone, Eq)]
 pub struct Board {
     // Indexed by `Piece` rather than a field each: as fields, the pick in
@@ -778,8 +779,6 @@ impl Board {
         };
         let evasion_filter = if EVASIONS { self.evasion_targets() } else { !0 };
         let target_filter = king_filter & evasion_filter;
-        // a piece's captures and its other moves go to their own lists,
-        // each in the order the targets are walked
         let push = |moves: &mut Building, from: u8, targets: u64| {
             let mut captures = targets & capture_mask;
             while captures != 0 {
@@ -1180,13 +1179,9 @@ impl Board {
     /// undervalues promoting captures; the ordering promotions get is theirs
     /// to fix. Pins are ignored. A move with no victim is worth zero.
     ///
-    /// Most swaps are answered without walking them. With nothing defending
-    /// the square the capture wins the victim. With no piece of ours able to
-    /// follow the defender's recapture, it wins the victim less the
-    /// capturer. And when no slider stands behind the pieces bearing on the
-    /// square (one probe through the occupancy without them says so), the
-    /// line is fixed by the attackers alone and `swap_table` has the answer.
-    /// The rest, and a side with more than three attackers, walk the swap.
+    /// Most swaps are answered at an early exit or from `swap_table`, which
+    /// give what the walk would. A swap a slider can join, or with a side of
+    /// more than three attackers, is walked.
     pub(crate) fn see(&self, m: &Play) -> i32 {
         let Some(victim) = m.capture else {
             return 0;
@@ -1548,19 +1543,17 @@ impl Board {
         // A move can only expose its own king when there was a check to walk
         // back into, the king itself moved, en passant emptied a second
         // square, or a square on a line through the king was vacated. Any
-        // other move leaves the king as unattacked as it was. A king step
-        // was settled before the make and takes no probe; a castle, and a
-        // king move in a walk that keeps no checkers, take the full probe
-        // with the other two. The fourth takes one slider probe: the
-        // king stood unattacked, so the only attack the move can open runs
-        // through the square it left, a rook line or a bishop line and
-        // never both, and the landing square can only block a line. A
-        // probe from the king over the occupancy as it now stands reads
-        // every line of that kind at once, and any it finds open is the one
-        // the move opened. `checkers` still holds the mover's own checkers
-        // here; it is replaced below once the move stands.
+        // other move leaves the king as unattacked as it was. The first
+        // three take the full probe, except a king step settled above, which
+        // takes none. The fourth takes one slider probe: the king stood
+        // unattacked, so the only attack the move can open runs through the
+        // square it left, a rook line or a bishop line and never both, and
+        // the landing square can only block a line. A probe from the king
+        // over the occupancy as it now stands reads every line of that kind
+        // at once, and any it finds open is the one the move opened.
+        // `checkers` still holds the mover's own checkers here; it is
+        // replaced below once the move stands.
         let attack_masks = &ATTACK_MASKS;
-        // a king step that reaches here was found legal before the make
         let probe = if MAINTAIN_CHECKERS && from_piece == Piece::King && !play.castle {
             Exposure::None
         } else if !MAINTAIN_CHECKERS
