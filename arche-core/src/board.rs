@@ -37,14 +37,17 @@ pub(crate) struct CheckInfo {
     blockers: u64,
 }
 
-/// A move list while it is being generated: a plain array and a length.
+/// A move list while it is being generated: the captures and the other
+/// moves in two plain arrays, each with its length.
 ///
 /// A `SmallVec` push asks whether the list has spilled and whether it is
 /// full on every push. Here a push is a store and an increment, and the list
-/// is built once at the end.
+/// is built once at the end, the captures ahead of the rest.
 struct Building {
-    moves: [MaybeUninit<Play>; MAX_GENERATED],
-    len: usize,
+    captures: [MaybeUninit<Play>; MAX_GENERATED],
+    quiets: [MaybeUninit<Play>; MAX_GENERATED],
+    captures_len: usize,
+    quiets_len: usize,
 }
 
 impl Building {
@@ -55,25 +58,55 @@ impl Building {
         // here measured thirteen percent slower than the pushing it replaced
         // (49747fa).
         Self {
-            moves: [const { MaybeUninit::uninit() }; MAX_GENERATED],
-            len: 0,
+            captures: [const { MaybeUninit::uninit() }; MAX_GENERATED],
+            quiets: [const { MaybeUninit::uninit() }; MAX_GENERATED],
+            captures_len: 0,
+            quiets_len: 0,
         }
     }
 
     #[inline(always)]
-    fn push(&mut self, play: Play) {
-        self.moves[self.len].write(play);
-        self.len += 1;
+    fn capture(&mut self, play: Play) {
+        debug_assert!(play.capture.is_some());
+        self.captures[self.captures_len].write(play);
+        self.captures_len += 1;
     }
 
     #[inline(always)]
-    fn finish(&self) -> MoveList {
-        let filled = &self.moves[..self.len];
-        // SAFETY: `push` writes an entry before it counts it, so the first
-        // `len` are all initialised, and `MaybeUninit<Play>` has the layout
-        // of `Play`.
-        let filled = unsafe { &*(filled as *const [MaybeUninit<Play>] as *const [Play]) };
-        MoveList::from_slice(filled)
+    fn quiet(&mut self, play: Play) {
+        debug_assert!(play.capture.is_none());
+        self.quiets[self.quiets_len].write(play);
+        self.quiets_len += 1;
+    }
+
+    /// Write the list into `out`, the captures first, and return how many
+    /// captures lead it.
+    #[inline(always)]
+    fn finish(&self, out: &mut MoveList) -> usize {
+        debug_assert!(out.is_empty());
+        let captures = self.captures_len;
+        let len = captures + self.quiets_len;
+        if len > MOVE_LIST_INLINE {
+            out.reserve(len);
+        }
+        // SAFETY: each push writes an entry before it counts it, so the
+        // first `len` of each array are initialised; `MaybeUninit<Play>`
+        // has the layout of `Play`, and the list has room for both. The
+        // captures are few, so they go one at a time rather than through a
+        // call to memcpy.
+        unsafe {
+            let at = out.as_mut_ptr();
+            for i in 0..captures {
+                at.add(i).write(self.captures[i].assume_init());
+            }
+            std::ptr::copy_nonoverlapping(
+                self.quiets.as_ptr().cast::<Play>(),
+                at.add(captures),
+                self.quiets_len,
+            );
+            out.set_len(len);
+        }
+        captures
     }
 }
 
@@ -664,7 +697,16 @@ impl Board {
     /// The subset of generate_moves that changes material, the captures and
     /// the promoting pushes, in the same order.
     pub fn generate_captures(&self) -> MoveList {
-        self.generate::<true, false>()
+        let mut moves = MoveList::new();
+        self.generate::<true, false>(&mut moves);
+        moves
+    }
+
+    /// `generate_captures` into an empty list, returning how many captures
+    /// lead it (the promoting pushes follow them).
+    #[inline]
+    pub(crate) fn generate_captures_into(&self, moves: &mut MoveList) -> usize {
+        self.generate::<true, false>(moves)
     }
 
     /// Every pseudo legal move, less those that cannot answer a check when
@@ -672,15 +714,32 @@ impl Board {
     /// list `retain_evasions` returns, move for move.
     #[inline]
     pub fn evasions(&self) -> MoveList {
+        let mut moves = MoveList::new();
+        self.evasions_into(&mut moves);
+        moves
+    }
+
+    /// `evasions` into an empty list, returning how many captures lead it.
+    #[inline]
+    pub(crate) fn evasions_into(&self, moves: &mut MoveList) -> usize {
         if self.in_check() {
-            self.generate::<false, true>()
+            self.generate::<false, true>(moves)
         } else {
-            self.generate_moves()
+            self.generate_moves_into(moves)
         }
     }
 
     pub fn generate_moves(&self) -> MoveList {
-        self.generate::<false, false>()
+        let mut moves = MoveList::new();
+        self.generate::<false, false>(&mut moves);
+        moves
+    }
+
+    /// `generate_moves` into an empty list, returning how many captures
+    /// lead it.
+    #[inline]
+    pub(crate) fn generate_moves_into(&self, moves: &mut MoveList) -> usize {
+        self.generate::<false, false>(moves)
     }
 
     /// The squares a piece other than the king must land on to answer the
@@ -697,8 +756,14 @@ impl Board {
         self.checkers | BETWEEN[king][checker]
     }
 
-    /// The one generator behind the three lists.
-    fn generate<const CAPTURES_ONLY: bool, const EVASIONS: bool>(&self) -> MoveList {
+    /// The one generator behind the three lists. Each list holds its
+    /// captures first and then its other moves, each part in the order the
+    /// pieces and their targets are walked, and the count of captures comes
+    /// back so the ordering need not look for them.
+    fn generate<const CAPTURES_ONLY: bool, const EVASIONS: bool>(
+        &self,
+        out: &mut MoveList,
+    ) -> usize {
         let mut moves = Building::new();
         let (color_mask, capture_mask) = self.sides(self.active_color);
         let all_pieces = self.black | self.white;
@@ -713,48 +778,52 @@ impl Board {
         };
         let evasion_filter = if EVASIONS { self.evasion_targets() } else { !0 };
         let target_filter = king_filter & evasion_filter;
-        let capture_at = |to: u8| {
-            if CAPTURES_ONLY {
-                self.get_piece_index(to)
-            } else {
-                self.capture_on(to, capture_mask)
+        // a piece's captures and its other moves go to their own lists,
+        // each in the order the targets are walked
+        let push = |moves: &mut Building, from: u8, targets: u64| {
+            let mut captures = targets & capture_mask;
+            while captures != 0 {
+                let to = pop_lsb(&mut captures);
+                moves.capture(Play::new(
+                    from,
+                    to,
+                    self.get_piece_index(to),
+                    None,
+                    false,
+                    false,
+                ));
+            }
+            if !CAPTURES_ONLY {
+                let mut quiets = targets & !capture_mask;
+                while quiets != 0 {
+                    let to = pop_lsb(&mut quiets);
+                    moves.quiet(Play::new(from, to, None, None, false, false));
+                }
             }
         };
         let mut knights = self.knights() & color_mask;
         while knights != 0 {
             let from = pop_lsb(&mut knights);
-            let mut targets = attack_masks.knights[from as usize] & target_filter;
-            while targets != 0 {
-                let to = pop_lsb(&mut targets);
-                moves.push(Play::new(from, to, capture_at(to), None, false, false));
-            }
+            let targets = attack_masks.knights[from as usize] & target_filter;
+            push(&mut moves, from, targets);
         }
         let mut queens_and_rooks = (self.queens() | self.rooks()) & color_mask;
         while queens_and_rooks != 0 {
             let from = pop_lsb(&mut queens_and_rooks);
-            let mut targets = magic.get_straight_move(from, all_pieces) & target_filter;
-            while targets != 0 {
-                let to = pop_lsb(&mut targets);
-                moves.push(Play::new(from, to, capture_at(to), None, false, false));
-            }
+            let targets = magic.get_straight_move(from, all_pieces) & target_filter;
+            push(&mut moves, from, targets);
         }
         let mut queens_and_bishops = (self.queens() | self.bishops()) & color_mask;
         while queens_and_bishops != 0 {
             let from = pop_lsb(&mut queens_and_bishops);
-            let mut targets = magic.get_diagonal_move(from, all_pieces) & target_filter;
-            while targets != 0 {
-                let to = pop_lsb(&mut targets);
-                moves.push(Play::new(from, to, capture_at(to), None, false, false));
-            }
+            let targets = magic.get_diagonal_move(from, all_pieces) & target_filter;
+            push(&mut moves, from, targets);
         }
         let mut kings = self.kings() & color_mask;
         while kings != 0 {
             let from = pop_lsb(&mut kings);
-            let mut targets = attack_masks.kings[from as usize] & king_filter;
-            while targets != 0 {
-                let to = pop_lsb(&mut targets);
-                moves.push(Play::new(from, to, capture_at(to), None, false, false));
-            }
+            let targets = attack_masks.kings[from as usize] & king_filter;
+            push(&mut moves, from, targets);
             if CAPTURES_ONLY {
                 continue;
             }
@@ -784,7 +853,7 @@ impl Board {
                         && (empty & all_pieces) == 0
                         && !passes.iter().any(|s| self.square_attacked(*s, opponent))
                     {
-                        moves.push(Play::new(from, king_to, None, None, false, true));
+                        moves.quiet(Play::new(from, king_to, None, None, false, true));
                     }
                 }
             }
@@ -807,10 +876,10 @@ impl Board {
                 let capture = self.get_piece_index(to);
                 if can_promote {
                     for p in PromotePiece::VARIANTS {
-                        moves.push(Play::new(from, to, capture, Some(p), false, false));
+                        moves.capture(Play::new(from, to, capture, Some(p), false, false));
                     }
                 } else {
-                    moves.push(Play::new(from, to, capture, None, false, false));
+                    moves.capture(Play::new(from, to, capture, None, false, false));
                 }
             }
             // the captures list keeps the promoting pushes: quiescence would
@@ -829,12 +898,12 @@ impl Board {
                     if can_promote {
                         if blocks {
                             for p in PromotePiece::VARIANTS {
-                                moves.push(Play::new(from, to, None, Some(p), false, false));
+                                moves.quiet(Play::new(from, to, None, Some(p), false, false));
                             }
                         }
                     } else {
                         if blocks {
-                            moves.push(Play::new(from, to, None, None, false, false));
+                            moves.quiet(Play::new(from, to, None, None, false, false));
                         }
                         if match self.active_color {
                             Color::White => rank == 2,
@@ -847,7 +916,7 @@ impl Board {
                             if !all_pieces.is_bit_set(to as u8)
                                 && evasion_filter.is_bit_set(to as u8)
                             {
-                                moves.push(Play::new(from, to as u8, None, None, false, false));
+                                moves.quiet(Play::new(from, to as u8, None, None, false, false));
                             }
                         }
                     }
@@ -860,11 +929,11 @@ impl Board {
                     Color::Black => attack_masks.white_pawns[from as usize].is_bit_set(i),
                 };
                 if can_en_passant {
-                    moves.push(Play::new(from, i, Some(Piece::Pawn), None, true, false));
+                    moves.capture(Play::new(from, i, Some(Piece::Pawn), None, true, false));
                 }
             }
         }
-        moves.finish()
+        moves.finish(out)
     }
 
     /// Check everything maintained a piece at a time against the position it
@@ -2250,18 +2319,6 @@ impl Board {
             side.set_bit(index);
         } else {
             side.clear_bit(index);
-        }
-    }
-
-    /// What is being taken on the to square. Most generated moves are quiet,
-    /// so the mask answers those from a register and the load is reached
-    /// only for the rest.
-    #[inline(always)]
-    fn capture_on(&self, to: u8, capture_mask: u64) -> Option<Piece> {
-        if capture_mask.is_bit_set(to) {
-            self.get_piece_index(to)
-        } else {
-            None
         }
     }
 

@@ -152,7 +152,8 @@ worth doing.
   in a block carrying a `SAFETY` note, and the `arche` crate forbids unsafe outright. That
   is the half a compiler can check. The other half is Miri, which needs nightly. Two of the
   sites are ones where a slip is undefined behaviour rather than a wrong answer: the static
-  exchange gain array's `assume_init` and the move list's cast of its initialised prefix.
+  exchange gain array's `assume_init` and the move list's writes into its buffer before
+  `set_len`.
   A slip in the `madvise` is a refused call or a huge page flag on memory the table does
   not own, not undefined behaviour.
   The exposure is carried knowingly until a scheduled Miri run reports on it

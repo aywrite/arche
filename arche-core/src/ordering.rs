@@ -5,9 +5,9 @@
 //! `Board::see` prices as winning or even, the killers, the quiet moves by
 //! history, and the losing captures last.
 //!
-//! The list is ordered in two stages. `order` sorts the table's move and
-//! the captures and leaves the quiet moves in generated order between the
-//! two capture bands. The search keys the quiet moves (`key_quiets`) only
+//! The list is ordered in two stages. `order_split` sorts the table's move
+//! and the captures and leaves the quiet moves in generated order between
+//! the two capture bands. The search keys the quiet moves (`key_quiets`) only
 //! when it reaches the first of them, and orders them only as far as it
 //! reads: `pick` selects the first few, then `sort_rest` sorts what is left,
 //! or once a shallow skip rule turns on, `keep_unskippable` keeps only the
@@ -93,6 +93,7 @@ const NOWHERE: Play = Play {
 type History = [[[i32; 64]; 64]; 2];
 
 /// What `order` worked out about the list while it keyed it.
+#[derive(Debug, PartialEq, Eq)]
 pub(crate) struct Ordered {
     /// How many moves the front holds: the table's move, when the list
     /// has it, and the captures the swap prices as winning or even.
@@ -259,10 +260,190 @@ impl MoveOrdering {
     ///
     /// Quiescence reads `front` for its losing capture skip, which needs
     /// every capture from there on to be one the swap priced as losing;
-    /// the front holds no losing capture but the table's move. A list that spilled the buffer is ordered
-    /// whole, memories included, and its whole length comes back as the
-    /// front, which the skip reads as nothing to skip.
+    /// the front holds no losing capture but the table's move. A list that
+    /// spilled the buffer is ordered whole, memories included, and its
+    /// whole length comes back as the front, which the skip reads as
+    /// nothing to skip.
+    ///
+    /// The list has to be one a generator made, its captures first: this
+    /// counts them from the head, and `order_split` is the same with the
+    /// count given.
     pub(crate) fn order(
+        &mut self,
+        board: &Board,
+        moves: &mut MoveList,
+        table_move: Option<Play>,
+        ply: Option<usize>,
+    ) -> Ordered {
+        let captures = moves.iter().take_while(|m| m.capture.is_some()).count();
+        self.order_split(board, moves, captures, table_move, ply)
+    }
+
+    /// `order` for a list whose first `captures` moves are its captures,
+    /// each part in generated order, as the generators leave it. Only the
+    /// captures are keyed: the quiets key zero and keep their order, so
+    /// they move only as a block, behind the front and ahead of the losing
+    /// captures, and around a quiet table's move taken out to the head.
+    /// No capture keys what a quiet does, so this is the stable sort of
+    /// the list in generated order.
+    #[inline(always)]
+    pub(crate) fn order_split(
+        &mut self,
+        board: &Board,
+        moves: &mut MoveList,
+        captures: usize,
+        table_move: Option<Play>,
+        ply: Option<usize>,
+    ) -> Ordered {
+        // no capture and no quiet table's move: nothing is keyed and nothing
+        // moves, which a third of the lists come to, so the call is not made
+        let quiet_table_move = table_move.is_some_and(|m| m.capture.is_none());
+        if captures == 0 && !quiet_table_move && moves.len() <= MOVE_LIST_INLINE {
+            debug_assert_eq!(
+                self.order_by_sort(board, &mut moves.clone(), table_move, ply),
+                Ordered {
+                    front: 0,
+                    table_at: None,
+                    losing: 0,
+                }
+            );
+            return Ordered {
+                front: 0,
+                table_at: None,
+                losing: 0,
+            };
+        }
+        self.order_keyed(board, moves, captures, table_move, ply)
+    }
+
+    #[inline(never)]
+    fn order_keyed(
+        &mut self,
+        board: &Board,
+        moves: &mut MoveList,
+        captures: usize,
+        table_move: Option<Play>,
+        ply: Option<usize>,
+    ) -> Ordered {
+        debug_assert!(moves[..captures].iter().all(|m| m.capture.is_some()));
+        debug_assert!(moves[captures..].iter().all(|m| m.capture.is_none()));
+        #[cfg(debug_assertions)]
+        let expected = {
+            let mut copy = moves.clone();
+            let ordered = self.order_by_sort(board, &mut copy, table_move, ply);
+            (copy, ordered)
+        };
+        let ordered = self.order_split_inner(board, moves, captures, table_move, ply);
+        #[cfg(debug_assertions)]
+        {
+            assert_eq!(expected.1, ordered, "the split order's counts");
+            assert_eq!(&expected.0[..], &moves[..], "the split order");
+        }
+        ordered
+    }
+
+    #[inline(always)]
+    fn order_split_inner(
+        &mut self,
+        board: &Board,
+        moves: &mut MoveList,
+        captures: usize,
+        table_move: Option<Play>,
+        ply: Option<usize>,
+    ) -> Ordered {
+        if moves.len() > MOVE_LIST_INLINE {
+            return self.order_by_sort(board, moves, table_move, ply);
+        }
+        let len = moves.len();
+        let keys = &mut self.keys;
+        let mut front = 0;
+        let mut table_at = None;
+        for i in 0..captures {
+            let m = &moves[i];
+            let is_table_move = table_move == Some(*m);
+            if is_table_move {
+                table_at = Some(0);
+            }
+            let key = keyed(board, m, is_table_move, None);
+            front += usize::from(key < 0);
+            keys[i] = pack(key, i);
+        }
+        // a quiet table's move is found by its squares first, one compare
+        // a quiet, and only then as a whole
+        let mut quiet_table = None;
+        if let Some(table_move) = table_move {
+            if table_move.capture.is_none() {
+                let squares = squares_of(&table_move);
+                for (j, m) in moves.iter().enumerate().skip(captures) {
+                    if squares_of(m) == squares && *m == table_move {
+                        quiet_table = Some(j);
+                        break;
+                    }
+                }
+            }
+        }
+        let losing = captures - front;
+        if captures == 0 && quiet_table.is_none() {
+            return Ordered {
+                front: 0,
+                table_at: None,
+                losing: 0,
+            };
+        }
+        let keys = &mut keys[..captures];
+        for i in 1..keys.len() {
+            let k = keys[i];
+            let mut j = i;
+            while j > 0 && keys[j - 1] > k {
+                keys[j] = keys[j - 1];
+                j -= 1;
+            }
+            keys[j] = k;
+        }
+        let sorted = &mut self.sorted;
+        sorted[..captures].copy_from_slice(&moves[..captures]);
+        // the head the front captures are written from: one place in when a
+        // quiet table's move goes ahead of them
+        let head = match quiet_table {
+            None => {
+                if losing > 0 {
+                    moves.copy_within(captures..len, front);
+                }
+                0
+            }
+            Some(at) => {
+                let table = moves[at];
+                let before = at - captures;
+                if captures != front + 1 {
+                    moves.copy_within(captures..at, front + 1);
+                }
+                if losing > 0 {
+                    moves.copy_within(at + 1..len, front + 1 + before);
+                }
+                moves[0] = table;
+                table_at = Some(0);
+                1
+            }
+        };
+        for (slot, key) in moves[head..head + front].iter_mut().zip(&keys[..front]) {
+            *slot = sorted[(key & PLACE_MASK) as usize];
+        }
+        for (slot, key) in moves[len - losing..].iter_mut().zip(&keys[front..]) {
+            *slot = sorted[(key & PLACE_MASK) as usize];
+        }
+        Ordered {
+            front: front + head,
+            table_at,
+            losing,
+        }
+    }
+
+    /// The first stage as one stable sort over the whole list, whatever
+    /// order it comes in: the spilled path, and the debug build's check of
+    /// the split one.
+    #[cold]
+    #[inline(never)]
+    fn order_by_sort(
         &mut self,
         board: &Board,
         moves: &mut MoveList,
@@ -590,6 +771,12 @@ fn mvv_lva(board: &Board, m: &Play, victim: Piece) -> i64 {
         return 0;
     };
     VICTIM_SCORES[victim as usize] + ATTACKER_SCORES[attacker as usize]
+}
+
+/// A move's two squares in one word.
+#[inline(always)]
+fn squares_of(m: &Play) -> u16 {
+    u16::from(m.from) | u16::from(m.to) << 8
 }
 
 /// A key with the place its move was generated in under it. Two moves of
