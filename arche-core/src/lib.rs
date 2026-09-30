@@ -22,6 +22,8 @@ pub mod residual;
 pub mod strategy;
 mod swap_table;
 pub mod tactics;
+#[cfg(feature = "trace")]
+pub mod trace;
 mod transposition;
 pub mod tune;
 mod value;

@@ -31,6 +31,9 @@ unsafe_op_in_unsafe_fn = "deny"
 # tests only, and not for a build that plays.
 [features]
 machine-test = []
+# Records what the search's hot functions are asked, for `arche trace`. Every
+# hook compiles to nothing without it, and no build that plays enables it.
+trace = []
 
 [dependencies]
 smallvec = "1.15.1"

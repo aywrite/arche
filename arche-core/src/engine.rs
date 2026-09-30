@@ -1727,6 +1727,8 @@ impl AlphaBeta {
         self.poll_deadline()?;
         self.nodes += 1;
         self.quiescence_nodes += 1;
+        #[cfg(feature = "trace")]
+        let _traced = crate::trace::enter(crate::trace::Kind::Quiescence, &self.board, 0);
 
         // a side in check cannot stand pat, so its static eval is no floor.
         // The full search never enters here in check (the extension
@@ -2405,6 +2407,8 @@ impl AlphaBeta {
         self.selective_depth = self.selective_depth.max(self.board.line_ply as u8);
         self.nodes += 1;
         let entered_at = self.nodes;
+        #[cfg(feature = "trace")]
+        let _traced = crate::trace::enter(crate::trace::Kind::Full, &self.board, depth);
 
         let in_check = self.board.in_check();
         if let Some(value) = self.answered_by_rule(in_check) {
@@ -2659,6 +2663,8 @@ impl AlphaBeta {
             return SearchOutcome::Aborted(None);
         }
         self.nodes += 1;
+        #[cfg(feature = "trace")]
+        let _traced = crate::trace::enter(crate::trace::Kind::Root, &self.board, depth);
 
         if self.board.in_check() {
             depth += 1;

@@ -37,7 +37,8 @@ pub struct Instrument {
 
 /// Every command the binary takes, in usage order. The dispatch and the
 /// usage both walk it, so a command cannot be listed without being taken.
-pub const INSTRUMENTS: [Instrument; 6] = [
+/// The trace is listed only in a build with its feature.
+pub const INSTRUMENTS: [Instrument; if cfg!(feature = "trace") { 7 } else { 6 }] = [
     Instrument {
         command: &uci::BENCH,
         read: read_bench,
@@ -62,6 +63,11 @@ pub const INSTRUMENTS: [Instrument; 6] = [
         command: &TERMS,
         read: |params| report(term_settings(params)?, TermSettings::run),
     },
+    #[cfg(feature = "trace")]
+    Instrument {
+        command: &TRACE,
+        read: read_trace,
+    },
 ];
 
 /// A run that prints the report as it stands.
@@ -81,6 +87,17 @@ fn read_bench(params: &Params) -> Result<Run, String> {
     Ok(Box::new(move || match settings.run() {
         Some(report) => Ok(Box::new(Line(report)) as Box<dyn fmt::Display>),
         None => Err(uci::NO_AUDIT_MEMORY.to_string()),
+    }))
+}
+
+/// The trace's run may fail to write its directory, a failure met after
+/// the settings were read.
+#[cfg(feature = "trace")]
+fn read_trace(params: &Params) -> Result<Run, String> {
+    let settings = trace_settings(params)?;
+    Ok(Box::new(move || match arche_core::trace::run(&settings) {
+        Ok(report) => Ok(Box::new(report) as Box<dyn fmt::Display>),
+        Err(e) => Err(format!("trace: {}", e)),
     }))
 }
 
@@ -148,6 +165,41 @@ pub const CUTOFFS: Command = Command {
     summary: &[
         "search the same suite and print which move cut each",
         "sampled node off, or that none did",
+    ],
+};
+
+/// Taken only by a build with the trace feature, which is where its hooks
+/// are compiled in.
+#[cfg(feature = "trace")]
+pub const TRACE: Command = Command {
+    name: "trace",
+    depth: true,
+    keywords: &[
+        Keyword {
+            word: "every",
+            value: "<n>",
+        },
+        Keyword {
+            word: "window",
+            value: "<plies>",
+        },
+        Keyword {
+            word: "cap",
+            value: "<n>",
+        },
+        Keyword {
+            word: "epd",
+            value: "<file>",
+        },
+        Keyword {
+            word: "out",
+            value: "<dir>",
+        },
+    ],
+    flags: &[],
+    summary: &[
+        "search the bench's suite, or the one named, and record",
+        "what the hot functions are asked (built with --features trace)",
     ],
 };
 
@@ -476,6 +528,44 @@ impl TermSettings {
     }
 }
 
+/// What a trace argument asked for. The output directory defaults to
+/// `trace` under the working directory.
+#[cfg(feature = "trace")]
+pub fn trace_settings(params: &Params) -> Result<arche_core::trace::Settings, String> {
+    use arche_core::trace;
+    let depth = TRACE.depth(params, bench::DEPTH)?;
+    let every = params
+        .parse::<u64>("every")
+        .or_refuse("every")?
+        .unwrap_or(trace::DEFAULT_EVERY);
+    let window = params
+        .parse::<u8>("window")
+        .or_refuse("window")?
+        .unwrap_or(trace::DEFAULT_WINDOW);
+    let cap = params
+        .parse::<u64>("cap")
+        .or_refuse("cap")?
+        .unwrap_or(trace::DEFAULT_CAP);
+    let out = params
+        .value("out")
+        .or_refuse("out")?
+        .unwrap_or("trace")
+        .into();
+    // before the suite is read, so a word past the file is named rather
+    // than the file
+    TRACE.claim(params)?;
+    let (epd, positions) = suite(params)?;
+    Ok(trace::Settings {
+        depth,
+        every,
+        window,
+        cap,
+        out,
+        epd,
+        positions,
+    })
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -527,7 +617,8 @@ mod tests {
     /// one here fails the tests that ask.
     fn a_value_for(keyword: &str) -> &'static str {
         match keyword {
-            "every" | "cap" | "budget" | "hash" => "1",
+            "every" | "cap" | "budget" | "hash" | "window" => "1",
+            "out" => "trace",
             "epd" => SUITE,
             "taint" => "trust",
             "off" => "null_move",

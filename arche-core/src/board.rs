@@ -1080,6 +1080,7 @@ impl Board {
         squares
     }
 
+    #[cfg_attr(feature = "trace", track_caller)]
     pub fn square_attacked(&self, index: u8, color: Color) -> bool {
         self.square_attacked_through(index, color, self.black | self.white)
     }
@@ -1136,6 +1137,7 @@ impl Board {
     /// `square_attacked`, for the legality probe that knows which kind a
     /// move could have opened.
     #[inline(always)]
+    #[cfg_attr(feature = "trace", track_caller)]
     fn slider_reaches<const STRAIGHT: bool>(&self, index: u8, color: Color) -> bool {
         let (theirs, _) = self.sides(color);
         let all = self.black | self.white;
@@ -1152,8 +1154,19 @@ impl Board {
     /// attacker it finds: written over this it measured 0.36% more
     /// instructions (cdffd6d).
     #[inline]
+    #[cfg_attr(feature = "trace", track_caller)]
     fn attackers_to(&self, index: u8, occupied: u64) -> u64 {
-        (self.steppers_onto(index) | self.sliders_onto(index, occupied)) & occupied
+        let attackers = (self.steppers_onto(index) | self.sliders_onto(index, occupied)) & occupied;
+        #[cfg(feature = "trace")]
+        crate::trace::attack(
+            std::panic::Location::caller(),
+            crate::trace::Query::AttackersTo,
+            index,
+            2,
+            occupied,
+            attackers,
+        );
+        attackers
     }
 
     /// The pawns, knights and kings bearing on `index`: the half of
@@ -1170,6 +1183,7 @@ impl Board {
 
     /// The bishops, rooks and queens bearing on `index` through `occupied`.
     #[inline]
+    #[cfg_attr(feature = "trace", track_caller)]
     fn sliders_onto(&self, index: u8, occupied: u64) -> u64 {
         let attack_masks = &ATTACK_MASKS;
         let magic = &MAGIC;
@@ -2068,6 +2082,7 @@ impl Board {
     /// a castle, en passant or promotion: the square vacated could change
     /// the answer only if the moving piece already attacked the king, which
     /// is illegal with us to move.
+    #[cfg_attr(feature = "trace", track_caller)]
     pub(crate) fn check_info(&self) -> CheckInfo {
         let king = self.king_index(!self.active_color);
         let attack_masks = &ATTACK_MASKS;
@@ -2369,6 +2384,19 @@ impl Board {
         // masked so the read carries no bounds check; the debug assert is
         // what catches a square off the board
         self.squares[(index & 63) as usize]
+    }
+
+    /// The position as the trace mode's `nodes` stream records it.
+    #[cfg(feature = "trace")]
+    pub(crate) fn traced(&self) -> crate::trace::Snapshot {
+        let p = &self.pieces;
+        crate::trace::Snapshot {
+            boards: [p[0], p[1], p[2], p[3], p[4], p[5], self.white, self.black],
+            side: self.active_color as u8,
+            castle: self.castle.bits(),
+            en_passant: self.en_passant.map_or(64, |c| c.as_index()),
+            key: self.key,
+        }
     }
 
     /// Walks the six piece boards rather than reading `squares`. The

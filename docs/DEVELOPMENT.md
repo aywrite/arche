@@ -66,6 +66,13 @@ tested on both:
 RUSTFLAGS="-C target-cpu=x86-64" cargo test --workspace --release
 ```
 
+A last run builds the trace mode, since its hooks exist only under its
+feature and no other run compiles them:
+
+```
+cargo test --workspace --release --features trace
+```
+
 The tactical and strategic suites are in none of these runs. They are marked ignored
 and asked for by name, locally as in ci, since `--ignored` alone also runs
 `regenerate_magics`, which prints replacement constants rather than checking
@@ -157,6 +164,7 @@ They are gated in ci, and a clean tree prints no warnings:
 cargo fmt --all --check
 cargo clippy --workspace --all-targets -- -D warnings
 cargo clippy --workspace --all-targets --features machine-test -- -D warnings
+cargo clippy --workspace --all-targets --features trace -- -D warnings
 ```
 
 The `allow(long_running_const_eval)` beside `MAGIC` in `arche-core/src/magic.rs`

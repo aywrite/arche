@@ -86,6 +86,11 @@ fn main() -> ExitCode {
             print!("{}", usage());
             ExitCode::SUCCESS
         }
+        #[cfg(not(feature = "trace"))]
+        Some("trace") => {
+            eprintln!("trace: this build has no trace mode; build it with --features trace");
+            ExitCode::from(2)
+        }
         Some(word) => match INSTRUMENTS.iter().find(|i| i.command.name == word) {
             Some(instrument) => measure(instrument, &params),
             // refused rather than left to the uci loop, which would wait in
