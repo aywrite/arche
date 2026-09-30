@@ -281,7 +281,7 @@ pub(crate) struct Node<'a> {
     pub(crate) moves: &'a [Play],
     /// The node's static evaluation. The recorders take their own, so a
     /// node the gate scores nothing at never computes one.
-    pub(crate) eval: &'a mut Option<i64>,
+    pub(crate) eval: &'a mut Option<Score>,
     /// The node's history denominator. Held rather than walked again so
     /// that the row a staging records says what the gate scored: a child
     /// search between two of the node's moves can teach the history.
@@ -388,7 +388,7 @@ pub(crate) struct Shallow {
     from: usize,
     /// `QUIET_FUTILITY_MARGIN` at this node's depth, or none with the
     /// margin's switch off.
-    margin: Option<i64>,
+    margin: Option<i32>,
     /// The searched count at or past which the count drops a quiet, or
     /// never with its switch off.
     count: usize,
@@ -419,7 +419,7 @@ pub(crate) fn shallow(
         && !root_bounds.beta
         && board.has_non_pawn_material();
     let margin = (admits && config.quiet_futility)
-        .then(|| i64::from(QUIET_FUTILITY_MARGIN) * i64::from(depth));
+        .then(|| i32::from(QUIET_FUTILITY_MARGIN) * i32::from(depth));
     Shallow {
         admits,
         from: usize::MAX,
@@ -462,7 +462,7 @@ impl Shallow {
     pub(crate) fn skips(
         &mut self,
         search: &Search,
-        eval: &mut Option<i64>,
+        eval: &mut Option<Score>,
         check: &mut Option<crate::board::CheckInfo>,
         m: &Play,
         searched: usize,
@@ -491,7 +491,7 @@ impl Shallow {
     pub(crate) fn active(
         &mut self,
         search: &Search,
-        eval: &mut Option<i64>,
+        eval: &mut Option<Score>,
         searched: usize,
         alpha: Score,
     ) -> bool {
@@ -504,10 +504,10 @@ impl Shallow {
     }
 
     #[inline]
-    fn under_alpha(&mut self, search: &Search, eval: &mut Option<i64>, alpha: Score) -> bool {
+    fn under_alpha(&mut self, search: &Search, eval: &mut Option<Score>, alpha: Score) -> bool {
         if self.under == ASK {
             let margin = self.margin.expect("the margin is asked only when it is on");
-            self.under = if eval_memo(search.board, eval) + margin <= i64::from(alpha) {
+            self.under = if i32::from(eval_memo(search.board, eval)) + margin <= i32::from(alpha) {
                 UNDER
             } else {
                 SHORT
@@ -517,7 +517,8 @@ impl Shallow {
             self.under != SHORT
                 || self
                     .margin
-                    .is_none_or(|margin| eval_memo(search.board, eval) + margin > i64::from(alpha)),
+                    .is_none_or(|margin| i32::from(eval_memo(search.board, eval)) + margin
+                        > i32::from(alpha)),
             "a margin held short at an alpha it reaches"
         );
         self.under == UNDER
@@ -638,7 +639,7 @@ fn gate(search: &Search, node: &mut Node, m: &Play, searched: usize) -> Verdict 
     {
         return Verdict::Scout(amount(search.config, node.depth, searched, 0));
     }
-    let eval = evaluation(search, node);
+    let eval = i64::from(evaluation(search, node));
     let f = features(search, node, m, searched);
     let score = attention_score(&AttentionFeatures {
         depth: node.depth,
@@ -729,12 +730,14 @@ pub(crate) fn features(search: &Search, node: &mut Node, m: &Play, searched: usi
     }
 }
 
-fn evaluation(search: &Search, node: &mut Node) -> i64 {
+fn evaluation(search: &Search, node: &mut Node) -> Score {
     eval_memo(search.board, node.eval)
 }
 
-fn eval_memo(board: &Board, eval: &mut Option<i64>) -> i64 {
-    *eval.get_or_insert_with(|| i64::from(crate::eval::eval(board)))
+/// The node's static evaluation, computed by the first call and read back
+/// by the rest.
+fn eval_memo(board: &Board, eval: &mut Option<Score>) -> Score {
+    *eval.get_or_insert_with(|| crate::eval::eval(board))
 }
 
 /// The largest history score among the node's generated quiets, signed:
@@ -847,7 +850,7 @@ mod tests {
         root_bounds: RootBounds,
         ply: Option<usize>,
         tt: Table,
-        eval: Option<i64>,
+        eval: Option<Score>,
         history_max: Option<i32>,
     }
 
@@ -935,7 +938,7 @@ mod tests {
         /// seeded, as it seeds it from what `shortcuts` read.
         fn skips_seeded(
             &mut self,
-            seed: i64,
+            seed: Score,
             m: &Play,
             searched: usize,
             depth: u8,
@@ -2228,7 +2231,7 @@ mod tests {
         // stands well over these bounds, so a rule that computed one
         // rather than reading the seed would not fire
         let (alpha, beta): (Score, Score) = (0, 1);
-        let seed = i64::from(alpha) - i64::from(QUIET_FUTILITY_MARGIN) * 2;
+        let seed = alpha - QUIET_FUTILITY_MARGIN * 2;
         assert!(s.eval() + i64::from(QUIET_FUTILITY_MARGIN) * 2 > i64::from(alpha));
         assert!(!s.skips(&quiet, 1, 2, alpha, beta));
         assert!(s.skips_seeded(seed, &quiet, 1, 2, alpha, beta));
