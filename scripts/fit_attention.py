@@ -2,7 +2,7 @@
 # SPDX-License-Identifier: GPL-3.0-or-later
 # Copyright (C) 2022-2026 Andrew Wright
 
-"""Fit the attention model the deep reduction and the late move pruning gate on.
+"""Fit the attention model the late move pruning gates on.
 
     arche reductions 8 every 1 cap 2000000 > ledger.txt
     scripts/fit_attention.py ledger.txt
@@ -13,10 +13,9 @@ come from a logistic regression over the reduction ledger, split by fen so a
 position cannot be in both halves, quantized to fixed point at a scale of 1024.
 
 A scout deserves attention when it failed high or the replay called its fail
-low harmful; the rest are the dead region the engine reduces harder or skips
-inside. The script prints the score at four coverage targets, each threshold
-chosen on the training half and read off the holdout half, which is the table
-`DEEP_REDUCTION_THRESHOLD` was picked from, and a two-feature gate on the
+low harmful; the rest are the dead region the engine skips inside. The script
+prints the score at four coverage targets, each threshold chosen on the
+training half and read off the holdout half, and a two-feature gate on the
 index and the history fraction beside it, since a model is only worth carrying
 if it beats the obvious rule.
 

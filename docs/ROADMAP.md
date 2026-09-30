@@ -383,7 +383,8 @@ of these again without saying what is different this time.
   search reads the ranking at two pinned coverages, so a direct search for
   the vector that lowers the attention rate inside the skipped region and
   the deeper-scouted band is a different objective and the one the gate
-  wants. Measured on 2026-09-19 at `54d85b9` over the 1,428 game roots at
+  wants. (The deeper scout has since moved to an index rule, so only the
+  skip's point is left.) Measured on 2026-09-19 at `54d85b9` over the 1,428 game roots at
   depth 8 (`reductions 8 every 4`), with the features, the corpus, the split
   by source game and the search policy held fixed so the objective was the
   only variable. On the half no fit saw, at coverage pinned to the live

@@ -2253,7 +2253,7 @@ mod search {
     fn the_pruning_reaches_the_search() {
         // a different tree rather than a smaller one: skipping a move
         // changes what the table and the ordering hold, so the pruning can
-        // cost nodes, as it does here
+        // cost nodes
         let mut e = pruning(Board::from_fen(SHARP_MIDDLEGAME).unwrap());
         completed(e.search(6));
         let mut deep = deep_reducing(Board::from_fen(SHARP_MIDDLEGAME).unwrap());
