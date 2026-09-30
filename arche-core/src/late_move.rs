@@ -416,7 +416,7 @@ pub(crate) fn shallow(
         && (1..=SHALLOW_MAX_DEPTH).contains(&depth)
         && !in_check
         && !is_mate(beta)
-        && !root_bounds.beta
+        && !root_bounds.beta_is_roots()
         && board.has_non_pawn_material();
     let margin = (admits && config.quiet_futility)
         .then(|| i32::from(QUIET_FUTILITY_MARGIN) * i32::from(depth));
@@ -546,7 +546,7 @@ pub(crate) fn admission(
             && depth >= LATE_MOVE_MIN_DEPTH
             && !in_check
             && !is_mate(beta)
-            && !root_bounds.beta,
+            && !root_bounds.beta_is_roots(),
         from: usize::MAX,
     }
 }
@@ -582,8 +582,8 @@ impl Admission {
 /// a policy rather than a proof: that node's answer is what the root
 /// reports, so a late move trusted a ply short there costs the answer and
 /// not a bound. An arm that wants to reduce there lifts the flag and plays
-/// a match. Alpha's bit is not read, because at such a node every move
-/// failing low is the reduction's own guess.
+/// a match. Whether alpha is the root's is not read, because at such a
+/// node every move failing low is the reduction's own guess.
 ///
 /// A quiet move that gives check is reduced like any other: exempting
 /// checks was measured and lost (docs/ROADMAP.md).
@@ -624,7 +624,7 @@ pub(crate) fn admits(
 /// at the node once and alpha's again at each rise.
 #[inline]
 fn node_admits(in_check: bool, alpha: Score, beta: Score, root_bounds: RootBounds) -> bool {
-    !in_check && !is_mate(alpha) && !is_mate(beta) && !root_bounds.beta
+    !in_check && !is_mate(alpha) && !is_mate(beta) && !root_bounds.beta_is_roots()
 }
 
 /// Whether a move `reduces` already accepted is skipped, or scouted a ply
@@ -864,7 +864,7 @@ mod tests {
                 config,
                 moves,
                 in_check: false,
-                root_bounds: RootBounds::NEITHER,
+                root_bounds: RootBounds::Neither,
                 ply: None,
                 tt: Table::Miss,
                 eval: None,
@@ -976,7 +976,7 @@ mod tests {
                 depth: 0,
                 alpha: 0,
                 beta: 1,
-                root_bounds: RootBounds::NEITHER,
+                root_bounds: RootBounds::Neither,
                 in_check: self.in_check,
                 ply: self.ply,
                 tt: self.tt,
@@ -1188,10 +1188,10 @@ mod tests {
         );
     }
 
-    /// The same bounds four ways, so what moves is the flag and nothing
-    /// else. Beta is the bound read: marked, the reduction is refused, and
-    /// what alpha's bit says makes no difference. The fourth case pins
-    /// that alpha's bit is never read.
+    /// The same bounds four ways, so what moves is the root bounds and
+    /// nothing else. Beta is the bound read: the root's, the reduction is
+    /// refused, and whether alpha is the root's makes no difference. The
+    /// fourth case pins that alpha is never read.
     #[test]
     fn a_beta_that_is_still_the_roots_stands_the_reduction_down() {
         let mut s = Stand::new(fens::A_CAPTURE_AND_QUIETS, reducing());
@@ -1201,22 +1201,13 @@ mod tests {
             s.verdict(&quiet, LATE_MOVE_THRESHOLD, LATE_MOVE_MIN_DEPTH, -100, 100)
         };
         assert_eq!(
-            verdict(RootBounds::NEITHER),
+            verdict(RootBounds::Neither),
             Verdict::Scout(LATE_MOVE_REDUCTION)
         );
-        assert_eq!(verdict(RootBounds::BOTH), Verdict::Scout(0));
+        assert_eq!(verdict(RootBounds::Both), Verdict::Scout(0));
+        assert_eq!(verdict(RootBounds::Beta), Verdict::Scout(0));
         assert_eq!(
-            verdict(RootBounds {
-                alpha: false,
-                beta: true
-            }),
-            Verdict::Scout(0)
-        );
-        assert_eq!(
-            verdict(RootBounds {
-                alpha: true,
-                beta: false
-            }),
+            verdict(RootBounds::Alpha),
             Verdict::Scout(LATE_MOVE_REDUCTION)
         );
     }
@@ -2153,18 +2144,15 @@ mod tests {
             // a mate at beta alone, which the alpha test does not answer
             assert!(!s.skips(&quiet, PAST_THE_COUNT, 2, alpha, 29_500), "{rule}");
 
-            s.root_bounds = RootBounds::BOTH;
+            s.root_bounds = RootBounds::Both;
             assert!(
                 !s.skips(&quiet, PAST_THE_COUNT, 2, alpha, alpha + 1),
                 "{rule}"
             );
-            s.root_bounds = RootBounds {
-                alpha: true,
-                beta: false,
-            };
+            s.root_bounds = RootBounds::Alpha;
             assert!(
                 s.skips(&quiet, PAST_THE_COUNT, 2, alpha, alpha + 1),
-                "{rule}: alpha's bit is not the one read"
+                "{rule}: alpha is not the bound read"
             );
 
             // a side with nothing but pawns is the side zugzwang happens

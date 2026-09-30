@@ -317,7 +317,7 @@ mod search {
             2,
             true,
             0,
-            RootBounds::BOTH,
+            RootBounds::Both,
             None,
         ) else {
             panic!("an unlimited search aborted");
@@ -335,7 +335,7 @@ mod search {
             Value::clean(-alpha - 1),
             SEEDED_DEPTH
         ));
-        let Ok(value) = e.windowed(alpha, beta, 2, false, 0, RootBounds::NEITHER, None) else {
+        let Ok(value) = e.windowed(alpha, beta, 2, false, 0, RootBounds::Neither, None) else {
             panic!("an unlimited search aborted");
         };
         assert_eq!(value.score, exact.score);
@@ -909,7 +909,7 @@ mod search {
         assert!(e.board.in_check());
         e.board.line_ply = MAX_PLY as usize;
 
-        let Ok(railed) = e.alpha_beta(Score::MIN + 1, Score::MAX - 1, 4, true, RootBounds::BOTH)
+        let Ok(railed) = e.alpha_beta(Score::MIN + 1, Score::MAX - 1, 4, true, RootBounds::Both)
         else {
             panic!("an unlimited search aborted");
         };
@@ -926,7 +926,7 @@ mod search {
         e.board.line_ply = MAX_PLY as usize - 1;
 
         assert!(
-            e.alpha_beta(Score::MIN + 1, Score::MAX - 1, 4, true, RootBounds::BOTH)
+            e.alpha_beta(Score::MIN + 1, Score::MAX - 1, 4, true, RootBounds::Both)
                 .is_ok(),
             "an unlimited search aborted"
         );
@@ -1424,7 +1424,7 @@ mod search {
         let alpha = eval + 10_000;
         assert!(!crate::value::is_mate(alpha));
         for depth in 1..=crate::late_move::SHALLOW_MAX_DEPTH {
-            let Ok(value) = e.alpha_beta(alpha, alpha + 1, depth, true, RootBounds::NEITHER) else {
+            let Ok(value) = e.alpha_beta(alpha, alpha + 1, depth, true, RootBounds::Neither) else {
                 panic!("nothing was armed to abort this search");
             };
             assert!(
@@ -1834,7 +1834,7 @@ mod search {
         let board = Board::from_fen("7k/5K1N/8/8/8/8/Q7/8 w - - 0 1").unwrap();
         let mut e = passing_adaptively(board);
         let beta = e.eval();
-        let Ok(value) = e.alpha_beta(beta - 1, beta, 6, true, RootBounds::NEITHER) else {
+        let Ok(value) = e.alpha_beta(beta - 1, beta, 6, true, RootBounds::Neither) else {
             panic!("nothing was armed to abort this search");
         };
         assert!(
@@ -1894,7 +1894,7 @@ mod search {
         let board = Board::from_fen("7k/5K1N/8/8/8/8/Q7/8 w - - 0 1").unwrap();
         let mut e = passing(board);
         let beta = e.eval();
-        let Ok(value) = e.alpha_beta(beta - 1, beta, 5, true, RootBounds::NEITHER) else {
+        let Ok(value) = e.alpha_beta(beta - 1, beta, 5, true, RootBounds::Neither) else {
             panic!("nothing was armed to abort this search");
         };
         assert!(
@@ -1919,7 +1919,7 @@ mod search {
         // the pass reads the draw, which clears a beta of zero
         let board = Board::from_fen(ONLY_A_PASS_READS_THE_DRAW).unwrap();
         let mut e = passing(board);
-        let Ok(value) = e.alpha_beta(-1, 0, 3, true, RootBounds::NEITHER) else {
+        let Ok(value) = e.alpha_beta(-1, 0, 3, true, RootBounds::Neither) else {
             panic!("nothing was armed to abort this search");
         };
         assert_eq!(value, Value::tainted(0));
@@ -1933,7 +1933,7 @@ mod search {
         let mut e = passing(board);
         let beta = e.eval();
         assert!(beta > 0, "the pass has to fail, so beta must beat a draw");
-        let Ok(value) = e.alpha_beta(beta - 1, beta, 3, true, RootBounds::NEITHER) else {
+        let Ok(value) = e.alpha_beta(beta - 1, beta, 3, true, RootBounds::Neither) else {
             panic!("nothing was armed to abort this search");
         };
         assert!(value.tainted, "the failed pass left no taint behind it");
@@ -1964,7 +1964,7 @@ mod search {
             -alpha,
             depth - 1 - LATE_MOVE_REDUCTION,
             true,
-            RootBounds::NEITHER,
+            RootBounds::Neither,
         ) else {
             panic!("an unlimited search aborted");
         };
@@ -1984,7 +1984,7 @@ mod search {
             DEPTH,
             true,
             0,
-            RootBounds::BOTH,
+            RootBounds::Both,
             None,
         ) else {
             panic!("an unlimited search aborted");
@@ -2003,7 +2003,7 @@ mod search {
             DEPTH,
             false,
             LATE_MOVE_REDUCTION,
-            RootBounds::NEITHER,
+            RootBounds::Neither,
             None,
         ) else {
             panic!("an unlimited search aborted");
@@ -2013,7 +2013,7 @@ mod search {
 
         let mut probe = at_reducible_child(SearchConfig::reference());
         let Ok(unreduced) =
-            probe.windowed(alpha, alpha + 1, DEPTH, false, 0, RootBounds::NEITHER, None)
+            probe.windowed(alpha, alpha + 1, DEPTH, false, 0, RootBounds::Neither, None)
         else {
             panic!("an unlimited search aborted");
         };
@@ -2040,7 +2040,7 @@ mod search {
             DEPTH,
             true,
             0,
-            RootBounds::BOTH,
+            RootBounds::Both,
             None,
         ) else {
             panic!("an unlimited search aborted");
@@ -2056,7 +2056,7 @@ mod search {
         let mut then_probed = at_reducible_child(SearchConfig::reference());
         scout(&mut then_probed, alpha, DEPTH);
         let Ok(unreduced) =
-            then_probed.windowed(alpha, beta, DEPTH, false, 0, RootBounds::NEITHER, None)
+            then_probed.windowed(alpha, beta, DEPTH, false, 0, RootBounds::Neither, None)
         else {
             panic!("an unlimited search aborted");
         };
@@ -2072,7 +2072,7 @@ mod search {
             DEPTH,
             false,
             LATE_MOVE_REDUCTION,
-            RootBounds::NEITHER,
+            RootBounds::Neither,
             None,
         ) else {
             panic!("an unlimited search aborted");
@@ -2101,7 +2101,7 @@ mod search {
             10_000,
             LATE_MOVE_MIN_DEPTH - 1,
             true,
-            RootBounds::NEITHER,
+            RootBounds::Neither,
         ) else {
             panic!("an unlimited search aborted");
         };
@@ -2111,7 +2111,7 @@ mod search {
             10_000,
             LATE_MOVE_MIN_DEPTH - 1,
             true,
-            RootBounds::NEITHER,
+            RootBounds::Neither,
         ) else {
             panic!("an unlimited search aborted");
         };
@@ -2127,20 +2127,20 @@ mod search {
         // mate in hand (`late_move::tests::the_mate_window_stands_the_reduction_down`)
         let fen = SHARP_MIDDLEGAME;
         let mut e = reducing(Board::from_fen(fen).unwrap());
-        let Ok(value) = e.alpha_beta(29_500, 29_501, 5, true, RootBounds::NEITHER) else {
+        let Ok(value) = e.alpha_beta(29_500, 29_501, 5, true, RootBounds::Neither) else {
             panic!("an unlimited search aborted");
         };
         let mut cold = reference(Board::from_fen(fen).unwrap());
-        let Ok(expected) = cold.alpha_beta(29_500, 29_501, 5, true, RootBounds::NEITHER) else {
+        let Ok(expected) = cold.alpha_beta(29_500, 29_501, 5, true, RootBounds::Neither) else {
             panic!("an unlimited search aborted");
         };
         assert_eq!(e.nodes, cold.nodes);
         assert_eq!(value, expected);
 
         let mut e = reducing(Board::from_fen(fen).unwrap());
-        assert!(e.alpha_beta(-1, 0, 5, true, RootBounds::NEITHER).is_ok());
+        assert!(e.alpha_beta(-1, 0, 5, true, RootBounds::Neither).is_ok());
         let mut cold = reference(Board::from_fen(fen).unwrap());
-        assert!(cold.alpha_beta(-1, 0, 5, true, RootBounds::NEITHER).is_ok());
+        assert!(cold.alpha_beta(-1, 0, 5, true, RootBounds::Neither).is_ok());
         assert!(
             e.nodes < cold.nodes,
             "nothing was reduced outside the mate window: {} against {}",
@@ -2176,7 +2176,7 @@ mod search {
             DEPTH,
             true,
             0,
-            RootBounds::BOTH,
+            RootBounds::Both,
             None,
         ) else {
             panic!("an unlimited search aborted");
@@ -2190,7 +2190,7 @@ mod search {
             -alpha,
             DEPTH - 1 - DEEP_REDUCTION,
             true,
-            RootBounds::NEITHER,
+            RootBounds::Neither,
         ) else {
             panic!("an unlimited search aborted");
         };
@@ -2205,7 +2205,7 @@ mod search {
             DEPTH,
             false,
             DEEP_REDUCTION,
-            RootBounds::NEITHER,
+            RootBounds::Neither,
             None,
         ) else {
             panic!("an unlimited search aborted");
@@ -2220,7 +2220,7 @@ mod search {
             DEPTH,
             false,
             LATE_MOVE_REDUCTION,
-            RootBounds::NEITHER,
+            RootBounds::Neither,
             None,
         ) else {
             panic!("an unlimited search aborted");
@@ -2725,7 +2725,7 @@ mod sampling {
             depth,
             false,
             true,
-            RootBounds::NEITHER,
+            RootBounds::Neither,
             &mut taint,
             &mut None,
         ) else {
@@ -2889,21 +2889,13 @@ mod sampling {
         let taken = shortcut_at(SearchConfig::default(), beta - 1, beta, 5);
         assert!(taken.iter().any(|s| s.kind == Shortcut::NullMove));
 
-        // the root's beta at a zero window, then the proof's bits at an
+        // the root's beta at a zero window, then the proof's bounds at an
         // open one (its alpha is the root's and its beta is not), then one
         // under the open window and the other side of it
-        let roots_beta = RootBounds {
-            alpha: false,
-            beta: true,
-        };
-        let proof = RootBounds {
-            alpha: true,
-            beta: false,
-        };
         for (alpha, root_bounds) in [
-            (beta - 1, roots_beta),
-            (beta - 500, proof),
-            (beta - 2, RootBounds::NEITHER),
+            (beta - 1, RootBounds::Beta),
+            (beta - 500, RootBounds::Alpha),
+            (beta - 2, RootBounds::Neither),
         ] {
             let mut e = engine(SHARP_MIDDLEGAME);
             e.arm(Sampler::<Sample>::every(1));
@@ -2946,7 +2938,7 @@ mod sampling {
             1,
             false,
             true,
-            RootBounds::NEITHER,
+            RootBounds::Neither,
             &mut taint,
             &mut None,
         ) else {
@@ -2977,7 +2969,7 @@ mod sampling {
             1,
             false,
             true,
-            RootBounds::NEITHER,
+            RootBounds::Neither,
             &mut taint,
             &mut None,
         ) else {
@@ -3008,7 +3000,7 @@ mod sampling {
             1,
             false,
             true,
-            RootBounds::NEITHER,
+            RootBounds::Neither,
             &mut taint,
             &mut eval,
         ) else {
@@ -3409,7 +3401,7 @@ mod reductions {
             depth: 0,
             alpha: 0,
             beta: 1,
-            root_bounds: RootBounds::NEITHER,
+            root_bounds: RootBounds::Neither,
             in_check: false,
             ply,
             tt: Table::Miss,
@@ -3451,7 +3443,7 @@ mod reductions {
         let child_fen = e.board.to_fen();
         let child_key = e.board.key;
         let (alpha, beta): (Score, Score) = (5000, 5001);
-        let Ok(value) = e.windowed(alpha, beta, 3, false, 1, RootBounds::NEITHER, Some(&staged))
+        let Ok(value) = e.windowed(alpha, beta, 3, false, 1, RootBounds::Neither, Some(&staged))
         else {
             panic!("an unlimited search aborted");
         };
@@ -3511,7 +3503,7 @@ mod reductions {
         let staged = staged(&e, &m, 6, None);
         assert!(e.board.make_move(&m));
         let (alpha, beta): (Score, Score) = (5000, 5001);
-        let Ok(value) = e.windowed(alpha, beta, 4, false, 2, RootBounds::NEITHER, Some(&staged))
+        let Ok(value) = e.windowed(alpha, beta, 4, false, 2, RootBounds::Neither, Some(&staged))
         else {
             panic!("an unlimited search aborted");
         };
@@ -3541,7 +3533,7 @@ mod reductions {
         // staged row is picked out by the position it left
         let left = e.board.to_fen();
         let (alpha, beta): (Score, Score) = (-5000, -4999);
-        let Ok(_) = e.windowed(alpha, beta, 3, false, 1, RootBounds::NEITHER, Some(&staged)) else {
+        let Ok(_) = e.windowed(alpha, beta, 3, false, 1, RootBounds::Neither, Some(&staged)) else {
             panic!("an unlimited search aborted");
         };
         let sampled = e
@@ -3565,10 +3557,10 @@ mod reductions {
     }
 
     /// The exemption threaded through the recursion. The bounds sit inside
-    /// the mate scores, so only the bits can keep a scout off the root's
-    /// beta, and a bit dropped or a flip forgotten shows up as an open node
-    /// reducing against a beta of twenty thousand. A bit left set where it
-    /// should clear only adds refusals and is invisible here;
+    /// the mate scores, so only the root bounds can keep a scout off the
+    /// root's beta, and a state dropped or a turn forgotten shows up as an
+    /// open node reducing against a beta of twenty thousand. A state kept
+    /// where it should clear only adds refusals and is invisible here;
     /// `what_a_child_carries_and_what_a_raise_leaves` pins that.
     ///
     /// Twenty thousand is above anything the evaluation produces, so an
@@ -3607,11 +3599,11 @@ mod reductions {
             (at_beta, sampled.taken.len())
         }
 
-        let (marked, rows) = rows_at_the_roots_beta(RootBounds::BOTH);
+        let (marked, rows) = rows_at_the_roots_beta(RootBounds::Both);
         assert!(rows > 0, "the tree held no reduction to read either way");
         assert_eq!(marked, 0, "a scout was reduced against the root's beta");
 
-        let (unmarked, _) = rows_at_the_roots_beta(RootBounds::NEITHER);
+        let (unmarked, _) = rows_at_the_roots_beta(RootBounds::Neither);
         assert!(
             unmarked > 0,
             "nothing reduced against that beta with neither bound marked, \

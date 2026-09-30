@@ -695,24 +695,41 @@ mod switches {
     }
 }
 
-/// Which of a node's two bounds is still the one the root opened with,
-/// rather than a score a search returned. That is narrower than being a
-/// principal variation node: a node searched at an open window can have
-/// neither bit set, and a node at a zero window never has one.
+/// Which of a node's two bounds are still the ones the root opened with,
+/// rather than scores a search returned.
 ///
-/// A bound the root opened with is one the tree under it has said nothing
-/// about, so the shortcuts and the late move reduction are refused wherever
-/// beta is one: the principal variation exemption. The shortcuts are also
-/// refused at every open window, which `shortcuts` reads from the bounds.
-/// The bits change only in `child` and `alpha_raised`.
+/// A bound the root opened with is one the tree under the root has said
+/// nothing about, so the shortcuts and the late move rules stand down
+/// wherever beta is such a bound (`beta_is_roots`): the principal
+/// variation exemption, as this engine draws it. It is narrower than the
+/// open window test other engines use for the same exemption, which would
+/// also cover the proof of a later move (`Alpha` here) and every open
+/// window under one. Exempting every open window from the reduction and
+/// the shallow rules as well was measured and lost (docs/ROADMAP.md); the
+/// shortcuts alone refuse every open window besides. Whether alpha is the
+/// root's is read by no rule. It is
+/// carried because the first move and the proof take the window turned
+/// round, so whether the child's beta is the root's is whether this
+/// node's alpha was.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
-pub(crate) struct RootBounds {
-    pub(crate) alpha: bool,
-    pub(crate) beta: bool,
+pub(crate) enum RootBounds {
+    /// Both bounds are the root's: the root before a move raises its
+    /// alpha, and every full window search under such a node.
+    Both,
+    /// Alpha is the root's and beta a returned score: the window of a
+    /// `Beta` node turned round, for its first move or the proof of a
+    /// later one.
+    Alpha,
+    /// Beta is the root's and alpha a returned score: a node whose alpha
+    /// a move has raised with its beta untouched, or the window of an
+    /// `Alpha` node turned round.
+    Beta,
+    /// Neither: every zero window search, and everything under one.
+    Neither,
 }
 
-/// The searches a node asks of a child, which the bits a child carries are
-/// keyed on.
+/// The searches a node asks of a child, which the bounds a child carries
+/// are keyed on.
 #[derive(Clone, Copy)]
 enum ChildSearch {
     /// The node's first move, at the window as it stands.
@@ -728,37 +745,43 @@ enum ChildSearch {
 }
 
 impl RootBounds {
-    /// The root's own window: both bounds are the ones it opened with.
-    pub(crate) const BOTH: Self = Self {
-        alpha: true,
-        beta: true,
-    };
-    /// Neither bound is the root's.
-    pub(crate) const NEITHER: Self = Self {
-        alpha: false,
-        beta: false,
-    };
+    /// Whether beta is still the root's own bound: the one question the
+    /// rules ask.
+    #[inline(always)]
+    pub(crate) fn beta_is_roots(self) -> bool {
+        matches!(self, Self::Both | Self::Beta)
+    }
 
     /// What a child search carries. The first move and the proof take
-    /// this node's window turned round, so they take these bits turned
+    /// this node's window turned round, so they take these bounds turned
     /// round with it. The other three take a zero window, which is this
     /// node's own question about alpha, so they take neither bound.
     fn child(self, search: ChildSearch) -> Self {
         match search {
-            ChildSearch::FirstMove | ChildSearch::Proof => Self {
-                alpha: self.beta,
-                beta: self.alpha,
-            },
-            ChildSearch::Scout | ChildSearch::Probe | ChildSearch::Pass => Self::NEITHER,
+            ChildSearch::FirstMove | ChildSearch::Proof => self.turned_round(),
+            ChildSearch::Scout | ChildSearch::Probe | ChildSearch::Pass => Self::Neither,
+        }
+    }
+
+    /// The bounds as the child of a full window search sees them: its
+    /// alpha is this node's beta negated, and its beta this node's alpha.
+    fn turned_round(self) -> Self {
+        match self {
+            Self::Both => Self::Both,
+            Self::Alpha => Self::Beta,
+            Self::Beta => Self::Alpha,
+            Self::Neither => Self::Neither,
         }
     }
 
     /// What a raise of alpha leaves: alpha is a returned score from there
     /// on, and beta is untouched.
     fn alpha_raised(self) -> Self {
-        Self {
-            alpha: false,
-            beta: self.beta,
+        match self {
+            Self::Both => Self::Beta,
+            Self::Alpha => Self::Neither,
+            Self::Beta => Self::Beta,
+            Self::Neither => Self::Neither,
         }
     }
 }
@@ -768,42 +791,53 @@ mod root_bounds {
     use super::{ChildSearch, RootBounds};
     use pretty_assertions::assert_eq;
 
-    /// At a full window every bit the search reads sits beside a mate
+    /// At a full window every bound the search reads sits beside a mate
     /// gate that answers the same way, so the reference's pinned counts
-    /// cannot see a wrong bit and this is what holds the rule. The cases
-    /// start from asymmetric bounds because a flip the wrong way round is
-    /// invisible on a pair that agree.
+    /// cannot see a wrong state and this is what holds the rule. The
+    /// cases start from the one sided states because a turn the wrong way
+    /// round is invisible on the two that are symmetric.
     #[test]
     fn what_a_child_carries_and_what_a_raise_leaves() {
-        let alpha_only = RootBounds {
-            alpha: true,
-            beta: false,
-        };
-        let beta_only = RootBounds {
-            alpha: false,
-            beta: true,
-        };
-
-        assert_eq!(alpha_only.child(ChildSearch::FirstMove), beta_only);
-        assert_eq!(alpha_only.child(ChildSearch::Proof), beta_only);
-        assert_eq!(alpha_only.child(ChildSearch::Scout), RootBounds::NEITHER);
-        assert_eq!(alpha_only.child(ChildSearch::Probe), RootBounds::NEITHER);
-        assert_eq!(alpha_only.child(ChildSearch::Pass), RootBounds::NEITHER);
+        assert_eq!(
+            RootBounds::Alpha.child(ChildSearch::FirstMove),
+            RootBounds::Beta
+        );
+        assert_eq!(
+            RootBounds::Alpha.child(ChildSearch::Proof),
+            RootBounds::Beta
+        );
+        assert_eq!(
+            RootBounds::Alpha.child(ChildSearch::Scout),
+            RootBounds::Neither
+        );
+        assert_eq!(
+            RootBounds::Alpha.child(ChildSearch::Probe),
+            RootBounds::Neither
+        );
+        assert_eq!(
+            RootBounds::Alpha.child(ChildSearch::Pass),
+            RootBounds::Neither
+        );
         // the leftmost line: the root's own window turned round is still
         // the root's own window
         assert_eq!(
-            RootBounds::BOTH.child(ChildSearch::FirstMove),
-            RootBounds::BOTH
+            RootBounds::Both.child(ChildSearch::FirstMove),
+            RootBounds::Both
         );
         assert_eq!(
-            RootBounds::NEITHER.child(ChildSearch::Proof),
-            RootBounds::NEITHER
+            RootBounds::Neither.child(ChildSearch::Proof),
+            RootBounds::Neither
         );
 
-        assert_eq!(RootBounds::BOTH.alpha_raised(), beta_only);
-        assert_eq!(alpha_only.alpha_raised(), RootBounds::NEITHER);
-        assert_eq!(beta_only.alpha_raised(), beta_only);
-        assert_eq!(RootBounds::NEITHER.alpha_raised(), RootBounds::NEITHER);
+        assert_eq!(RootBounds::Both.alpha_raised(), RootBounds::Beta);
+        assert_eq!(RootBounds::Alpha.alpha_raised(), RootBounds::Neither);
+        assert_eq!(RootBounds::Beta.alpha_raised(), RootBounds::Beta);
+        assert_eq!(RootBounds::Neither.alpha_raised(), RootBounds::Neither);
+
+        assert!(RootBounds::Both.beta_is_roots());
+        assert!(RootBounds::Beta.beta_is_roots());
+        assert!(!RootBounds::Alpha.beta_is_roots());
+        assert!(!RootBounds::Neither.beta_is_roots());
     }
 }
 
@@ -1725,11 +1759,12 @@ impl AlphaBeta {
     /// material bounds the eval, and kept in case the eval grows terms that
     /// reach higher). And a beta that is still the root's own bound, or an
     /// open window, has had nothing claimed of it to stand above: an open
-    /// window asks for the node's score rather than a bound on it. The bit
-    /// alone would leave the proof after a probe fails high open to both
-    /// shortcuts, since it takes the window turned round with its beta bit
-    /// clear. The reductions and the shallow rules still read the bit alone:
-    /// exempting every open window from them as well measured a loss.
+    /// window asks for the node's score rather than a bound on it. The root
+    /// bounds alone would leave the proof after a probe fails high open to
+    /// both shortcuts, since it takes the window turned round, with alpha
+    /// the root's and beta a returned score. The reductions and the shallow
+    /// rules still read the root bounds alone: exempting every open window
+    /// from them as well measured a loss.
     ///
     /// A `Some` answers the node. A pass that failed answers nothing but
     /// leaves whatever it read in the node's taint.
@@ -1761,7 +1796,7 @@ impl AlphaBeta {
             || in_check
             || !self.board.has_non_pawn_material()
             || is_mate(beta)
-            || root_bounds.beta
+            || root_bounds.beta_is_roots()
             // the open window, spelt without the subtraction, which
             // overflows a Score at the full window
             || alpha + 1 < beta
@@ -2497,7 +2532,7 @@ impl AlphaBeta {
         let opening_alpha = window.alpha;
         let beta = window.beta;
         let mut alpha = opening_alpha;
-        let mut root_bounds = RootBounds::BOTH;
+        let mut root_bounds = RootBounds::Both;
         // the fail soft answer, whether or not anything reached alpha
         let mut top: Option<(Play, Score)> = None;
         let mut found_legal_move = false;
