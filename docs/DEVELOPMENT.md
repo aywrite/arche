@@ -465,7 +465,7 @@ were noise.
 The search runs under a `SearchConfig`, and two configurations are named. The
 reference, `SearchConfig::reference()`, is alpha-beta with every shortcut off:
 its table only speeds it up, so a position searched warm answers as it does
-cold, and the tests in `arche-core/src/engine.rs` that say so build the
+cold, and the tests in `arche-core/src/engine/tests.rs` that say so build the
 reference. They are the soundness check: a change that claims to be sound
 keeps them green whatever else it moves.
 
