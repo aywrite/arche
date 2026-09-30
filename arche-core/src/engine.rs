@@ -1749,7 +1749,7 @@ impl AlphaBeta {
         can_null: bool,
         root_bounds: RootBounds,
         taint: &mut Taint,
-        eval_memo: &mut Option<i64>,
+        eval_memo: &mut Option<Score>,
     ) -> Result<Option<Value>, Aborted> {
         let margin = self.config.reverse_futility && depth <= REVERSE_FUTILITY_MAX_DEPTH;
         // no pass directly under a pass, or the search would answer a
@@ -1769,7 +1769,7 @@ impl AlphaBeta {
             return Ok(None);
         }
         let eval = self.eval();
-        *eval_memo = Some(i64::from(eval));
+        *eval_memo = Some(eval);
 
         // the margin proves `eval - margin` as a lower bound, and fail soft
         // returns that. Clean: a static eval consulted no path
@@ -2034,7 +2034,7 @@ impl AlphaBeta {
 
         // the node's static evaluation, filled by the shortcuts and read by
         // the late move decision
-        let mut eval: Option<i64> = None;
+        let mut eval: Option<Score> = None;
         if let Some(value) = self.shortcuts(
             alpha,
             beta,

@@ -2996,10 +2996,10 @@ mod sampling {
         let mut e =
             AlphaBeta::with_table_bytes(Board::from_fen(SHARP_MIDDLEGAME).unwrap(), TABLE_BYTES);
         assert!(e.config.quiet_futility, "the default carries the rule");
-        let direct = i64::from(crate::eval::eval(&e.board));
+        let direct = crate::eval::eval(&e.board);
         // beta at the evaluation, so the gates pass and the margin does not
         // answer
-        let beta = direct as Score;
+        let beta = direct;
         let mut taint = Taint::default();
         let mut eval = None;
         let Ok(answered) = e.shortcuts(
@@ -3162,9 +3162,9 @@ mod taught {
 /// directly, with the memories taught by hand, so a row's history column
 /// can be held to a history the test chose.
 mod cutoffs {
+    use super::taught::{quiets, unmade_journey};
     use crate::board::fens::SHARP_MIDDLEGAME;
     use crate::census::{self, Class, Cutting, Table};
-    use super::taught::{quiets, unmade_journey};
     use crate::engine::{AlphaBeta, Board, Score, SearchConfig};
     use crate::play::Play;
     use crate::recorder::{Sampler, Window};
@@ -3381,9 +3381,9 @@ mod cutoffs {
 /// and `windowed` at the child are driven directly, with the memories
 /// taught by hand.
 mod reductions {
+    use super::taught::{quiets, unmade_journey};
     use crate::board::fens::SHARP_MIDDLEGAME;
     use crate::census::Table;
-    use super::taught::{quiets, unmade_journey};
     use crate::engine::{AlphaBeta, Board, RootBounds, Score};
     use crate::late_move;
     use crate::play::Play;
