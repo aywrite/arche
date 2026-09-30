@@ -28,8 +28,7 @@ $env:RUSTFLAGS=''; cargo build --release      # powershell
 ```
 
 A `RUSTFLAGS` that is set at all, even empty, replaces the file's flags, which
-is why the release workflow names a level for each variant it builds and
-`shell.nix` restates the level.
+is why the release workflow names a level for each variant it builds.
 
 ## Tests
 

@@ -1,11 +1,5 @@
 /target
 /arche-core/target
-# the cargo home shell.nix puts in the tree. Its contents rather than the
-# directory, since git cannot name a file back in under an excluded one
-.cargo/*
-!.cargo/config.toml
-.rustup
-
 __pycache__/
 
 # profiling
