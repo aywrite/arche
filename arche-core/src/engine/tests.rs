@@ -11,9 +11,9 @@ mod search {
     use crate::engine::Board;
     use crate::engine::Engine;
     use crate::engine::{
-        Limits, MAX_PLY, NULL_MOVE_MIN_DEPTH, NULL_MOVE_REDUCTION, Play, RootBounds, Score,
-        ScoreBound, SearchConfig, SearchOutcome, SearchParameters, SearchResult, TaintPolicy,
-        Value, null_move_reduction,
+        Decision, Limits, MAX_PLY, NULL_MOVE_MIN_DEPTH, NULL_MOVE_REDUCTION, Play, RootBounds,
+        Score, ScoreBound, SearchConfig, SearchOutcome, SearchParameters, SearchResult,
+        TaintPolicy, Value, null_move_reduction,
     };
     use crate::late_move::{
         DEEP_REDUCTION, DEEP_REDUCTION_MIN_DEPTH, LATE_MOVE_MIN_DEPTH, LATE_MOVE_REDUCTION,
@@ -26,6 +26,15 @@ mod search {
     use std::sync::Arc;
     use std::sync::atomic::{AtomicBool, Ordering};
     use std::time;
+
+    /// A later move as the loop asks for it, scouted `reduction` plies
+    /// shallower first when that is not zero, with no ledger staging.
+    fn later(reduction: u8) -> Decision {
+        Decision::Search {
+            reduction,
+            staged: None,
+        }
+    }
 
     /// The default table is 256MB, and one per test dominated the suite's
     /// memory and run time.
@@ -315,10 +324,8 @@ mod search {
             Score::MIN + 2,
             Score::MAX,
             2,
-            true,
-            0,
+            &Decision::First,
             RootBounds::Both,
-            None,
         ) else {
             panic!("an unlimited search aborted");
         };
@@ -335,7 +342,7 @@ mod search {
             Value::clean(-alpha - 1),
             SEEDED_DEPTH
         ));
-        let Ok(value) = e.windowed(alpha, beta, 2, false, 0, RootBounds::Neither, None) else {
+        let Ok(value) = e.windowed(alpha, beta, 2, &later(0), RootBounds::Neither) else {
             panic!("an unlimited search aborted");
         };
         assert_eq!(value.score, exact.score);
@@ -1982,10 +1989,8 @@ mod search {
             Score::MIN + 2,
             Score::MAX,
             DEPTH,
-            true,
-            0,
+            &Decision::First,
             RootBounds::Both,
-            None,
         ) else {
             panic!("an unlimited search aborted");
         };
@@ -2001,10 +2006,8 @@ mod search {
             alpha,
             alpha + 1,
             DEPTH,
-            false,
-            LATE_MOVE_REDUCTION,
+            &later(LATE_MOVE_REDUCTION),
             RootBounds::Neither,
-            None,
         ) else {
             panic!("an unlimited search aborted");
         };
@@ -2012,8 +2015,7 @@ mod search {
         assert_eq!(value, scout_value);
 
         let mut probe = at_reducible_child(SearchConfig::reference());
-        let Ok(unreduced) =
-            probe.windowed(alpha, alpha + 1, DEPTH, false, 0, RootBounds::Neither, None)
+        let Ok(unreduced) = probe.windowed(alpha, alpha + 1, DEPTH, &later(0), RootBounds::Neither)
         else {
             panic!("an unlimited search aborted");
         };
@@ -2038,10 +2040,8 @@ mod search {
             Score::MIN + 2,
             Score::MAX,
             DEPTH,
-            true,
-            0,
+            &Decision::First,
             RootBounds::Both,
-            None,
         ) else {
             panic!("an unlimited search aborted");
         };
@@ -2056,7 +2056,7 @@ mod search {
         let mut then_probed = at_reducible_child(SearchConfig::reference());
         scout(&mut then_probed, alpha, DEPTH);
         let Ok(unreduced) =
-            then_probed.windowed(alpha, beta, DEPTH, false, 0, RootBounds::Neither, None)
+            then_probed.windowed(alpha, beta, DEPTH, &later(0), RootBounds::Neither)
         else {
             panic!("an unlimited search aborted");
         };
@@ -2070,10 +2070,8 @@ mod search {
             alpha,
             beta,
             DEPTH,
-            false,
-            LATE_MOVE_REDUCTION,
+            &later(LATE_MOVE_REDUCTION),
             RootBounds::Neither,
-            None,
         ) else {
             panic!("an unlimited search aborted");
         };
@@ -2174,10 +2172,8 @@ mod search {
             Score::MIN + 2,
             Score::MAX,
             DEPTH,
-            true,
-            0,
+            &Decision::First,
             RootBounds::Both,
-            None,
         ) else {
             panic!("an unlimited search aborted");
         };
@@ -2203,10 +2199,8 @@ mod search {
             alpha,
             alpha + 1,
             DEPTH,
-            false,
-            DEEP_REDUCTION,
+            &later(DEEP_REDUCTION),
             RootBounds::Neither,
-            None,
         ) else {
             panic!("an unlimited search aborted");
         };
@@ -2218,10 +2212,8 @@ mod search {
             alpha,
             alpha + 1,
             DEPTH,
-            false,
-            LATE_MOVE_REDUCTION,
+            &later(LATE_MOVE_REDUCTION),
             RootBounds::Neither,
-            None,
         ) else {
             panic!("an unlimited search aborted");
         };
@@ -3401,7 +3393,7 @@ mod reductions {
     use super::taught::{quiets, unmade_journey};
     use crate::board::fens::SHARP_MIDDLEGAME;
     use crate::census::Table;
-    use crate::engine::{AlphaBeta, Board, Node, RootBounds, Score};
+    use crate::engine::{AlphaBeta, Board, Decision, Node, RootBounds, Score};
     use crate::late_move;
     use crate::play::Play;
     use crate::recorder::{Sampler, Window};
@@ -3437,6 +3429,15 @@ mod reductions {
         e.staged_reduction(m, &node, &mut rules, &moves)
     }
 
+    /// A later move scouted `reduction` plies shallower with the ledger's
+    /// staging, as the loop hands it to the scout.
+    fn staging(reduction: u8, staged: reduction::Staged) -> Decision {
+        Decision::Search {
+            reduction,
+            staged: Some(staged),
+        }
+    }
+
     /// An engine nobody asked a ledger of holds none.
     #[test]
     fn an_engine_records_no_ledger_until_it_is_asked_to() {
@@ -3467,8 +3468,7 @@ mod reductions {
         let child_fen = e.board.to_fen();
         let child_key = e.board.key;
         let (alpha, beta): (Score, Score) = (5000, 5001);
-        let Ok(value) = e.windowed(alpha, beta, 3, false, 1, RootBounds::Neither, Some(&staged))
-        else {
+        let Ok(value) = e.windowed(alpha, beta, 3, &staging(1, staged), RootBounds::Neither) else {
             panic!("an unlimited search aborted");
         };
         assert!(value.score <= alpha, "the scout did not fail low");
@@ -3566,8 +3566,7 @@ mod reductions {
         let staged = staged(&e, &m, 6, None);
         assert!(e.board.make_move(&m));
         let (alpha, beta): (Score, Score) = (5000, 5001);
-        let Ok(value) = e.windowed(alpha, beta, 4, false, 2, RootBounds::Neither, Some(&staged))
-        else {
+        let Ok(value) = e.windowed(alpha, beta, 4, &staging(2, staged), RootBounds::Neither) else {
             panic!("an unlimited search aborted");
         };
         assert!(value.score <= alpha, "the scout did not fail low");
@@ -3596,7 +3595,7 @@ mod reductions {
         // staged row is picked out by the position it left
         let left = e.board.to_fen();
         let (alpha, beta): (Score, Score) = (-5000, -4999);
-        let Ok(_) = e.windowed(alpha, beta, 3, false, 1, RootBounds::Neither, Some(&staged)) else {
+        let Ok(_) = e.windowed(alpha, beta, 3, &staging(1, staged), RootBounds::Neither) else {
             panic!("an unlimited search aborted");
         };
         let sampled = e
