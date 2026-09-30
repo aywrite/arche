@@ -23,7 +23,7 @@
 use crate::bench::{self, Position};
 use crate::board::Board;
 use crate::engine::{AlphaBeta, Engine, SearchConfig, SearchParameters};
-use crate::misc::Piece;
+use crate::misc::{Color, Piece};
 use crate::play::Play;
 use std::cell::{Cell, RefCell};
 use std::collections::HashMap;
@@ -69,15 +69,21 @@ enum Stream {
     Attacks = 2,
     Swaps = 3,
     Lists = 4,
+    Evals = 5,
+    Walks = 6,
+    Bounds = 7,
 }
 
 impl Stream {
-    const ALL: [Stream; 5] = [
+    const ALL: [Stream; 8] = [
         Stream::Nodes,
         Stream::Sliders,
         Stream::Attacks,
         Stream::Swaps,
         Stream::Lists,
+        Stream::Evals,
+        Stream::Walks,
+        Stream::Bounds,
     ];
 
     fn name(self) -> &'static str {
@@ -87,6 +93,9 @@ impl Stream {
             Stream::Attacks => "attacks",
             Stream::Swaps => "swaps",
             Stream::Lists => "lists",
+            Stream::Evals => "evals",
+            Stream::Walks => "walks",
+            Stream::Bounds => "bounds",
         }
     }
 
@@ -98,6 +107,9 @@ impl Stream {
             Stream::Attacks => 32,
             Stream::Swaps => 32,
             Stream::Lists => 32,
+            Stream::Evals => 96,
+            Stream::Walks => 24,
+            Stream::Bounds => 32,
         }
     }
 }
@@ -109,6 +121,9 @@ struct Context {
     /// The move list the node is working through, numbered when `order`
     /// was asked for it; zero before.
     list: u64,
+    /// The node's last evaluation, numbered when it was recorded; zero
+    /// before. What the search then compares it with is recorded against it.
+    eval: u64,
     kind: u8,
     sampled: bool,
     /// How many more plies below this node are sampled because it is.
@@ -116,8 +131,28 @@ struct Context {
 }
 
 thread_local! {
-    static CONTEXT: Cell<Context> = const { Cell::new(Context { node: 0, list: 0, kind: 0, sampled: false, left: 0 }) };
+    static CONTEXT: Cell<Context> = const { Cell::new(Context { node: 0, list: 0, eval: 0, kind: 0, sampled: false, left: 0 }) };
     static SINK: RefCell<Option<Sink>> = const { RefCell::new(None) };
+}
+
+thread_local! {
+    /// Set while the trace does work of its own on the board, which the
+    /// recorders then leave out.
+    static MUTED: Cell<u32> = const { Cell::new(0) };
+}
+
+/// `f` with the recorders shut: what the trace asks of the board for its
+/// own records (the evaluation's recount of the walk) is not what the
+/// search asked.
+pub(crate) fn muted<R>(f: impl FnOnce() -> R) -> R {
+    MUTED.with(|m| m.set(m.get() + 1));
+    let result = f();
+    MUTED.with(|m| m.set(m.get() - 1));
+    result
+}
+
+fn is_muted() -> bool {
+    MUTED.with(Cell::get) != 0
 }
 
 /// One stream's file and its counts.
@@ -139,6 +174,12 @@ struct Sink {
     /// Move lists begun in sampled nodes so far: the next list's number
     /// less one.
     lists: u64,
+    /// Evaluations made in sampled nodes so far: the next one's number less
+    /// one. The walk's records are written before the evaluation's own, so
+    /// they carry the number it is about to take.
+    evals: u64,
+    /// Pieces walked for the evaluation being made.
+    walked: u8,
     sampled: u64,
     writers: Vec<Writer>,
     sites: HashMap<(&'static str, u32, u32), u16>,
@@ -174,6 +215,8 @@ impl Sink {
             position: 0,
             entered: 0,
             lists: 0,
+            evals: 0,
+            walked: 0,
             sampled: 0,
             writers,
             sites: HashMap::new(),
@@ -262,6 +305,7 @@ pub(crate) fn enter(kind: Kind, board: &Board, depth: u8) -> Option<Entered> {
             c.set(Context {
                 node,
                 list: 0,
+                eval: 0,
                 kind: kind as u8,
                 sampled,
                 left,
@@ -281,7 +325,7 @@ pub(crate) fn slider(
     result: u64,
 ) {
     let context = CONTEXT.with(Cell::get);
-    if !context.sampled {
+    if !context.sampled || is_muted() {
         return;
     }
     SINK.with(|sink| {
@@ -312,7 +356,7 @@ pub(crate) fn attack(
     result: u64,
 ) {
     let context = CONTEXT.with(Cell::get);
-    if !context.sampled {
+    if !context.sampled || is_muted() {
         return;
     }
     SINK.with(|sink| {
@@ -438,6 +482,177 @@ fn piece_code(piece: Option<Piece>) -> u8 {
 /// queen 4.
 fn promote_code(m: &Play) -> u8 {
     m.promote.map_or(0, |p| p as u8 + 1)
+}
+
+/// What one evaluation was made of, as the `evals` stream records it. The
+/// packed pairs are the tapered halves `psqt::pack` makes, before the one
+/// divide.
+pub(crate) struct Evaluation {
+    pub(crate) score: i16,
+    /// Material that cannot mate, so the sum answered zero and walked
+    /// nothing.
+    pub(crate) drawn: bool,
+    /// Whether the shelter's and the pawn structure's tables held the
+    /// position before it was asked, or none where the sum was handed no
+    /// tables.
+    pub(crate) hits: Option<(bool, bool)>,
+    /// The accumulator's phase, before the cap.
+    pub(crate) phase: i32,
+    pub(crate) psqt: i32,
+    /// White's material less black's.
+    pub(crate) material: i32,
+    /// The pair term's score, which joins material outside the divide.
+    pub(crate) machine: i32,
+    pub(crate) mobility: i32,
+    pub(crate) king_attack: i32,
+    pub(crate) shelter: i32,
+    pub(crate) pawn_structure: i32,
+    /// Each side's mobility counts and its king attack counts, white's
+    /// first, as the walk returned them.
+    pub(crate) scope: [[i32; 4]; 2],
+    pub(crate) ring: [[i32; 4]; 2],
+}
+
+/// An evaluation, recorded when the sum returns. `at` is the line in the
+/// search that asked for it.
+pub(crate) fn evaluated(at: &'static Location<'static>, board: &Board, e: &Evaluation) {
+    let mut context = CONTEXT.with(Cell::get);
+    if !context.sampled {
+        return;
+    }
+    SINK.with(|sink| {
+        let mut sink = sink.borrow_mut();
+        let Some(sink) = sink.as_mut() else {
+            return;
+        };
+        let site = sink.site(at);
+        sink.evals += 1;
+        context.eval = sink.evals;
+        let walked = std::mem::take(&mut sink.walked);
+        let mut record = [0u8; 96];
+        record[0..8].copy_from_slice(&context.node.to_le_bytes());
+        record[8..16].copy_from_slice(&sink.evals.to_le_bytes());
+        record[16..24].copy_from_slice(&board.key.to_le_bytes());
+        record[24..26].copy_from_slice(&site.to_le_bytes());
+        let (shelter_hit, pawns_hit) = e.hits.unwrap_or((false, false));
+        record[26] = u8::from(e.drawn)
+            | u8::from(e.hits.is_some()) << 1
+            | u8::from(shelter_hit) << 2
+            | u8::from(pawns_hit) << 3;
+        record[27] = walked;
+        record[28..30].copy_from_slice(&e.score.to_le_bytes());
+        record[30..32].copy_from_slice(&u16::try_from(e.phase).unwrap_or(u16::MAX).to_le_bytes());
+        for (i, value) in [
+            e.psqt,
+            e.material,
+            e.machine,
+            e.mobility,
+            e.king_attack,
+            e.shelter,
+            e.pawn_structure,
+        ]
+        .into_iter()
+        .enumerate()
+        {
+            record[32 + 4 * i..36 + 4 * i].copy_from_slice(&value.to_le_bytes());
+        }
+        // 32 + 7 * 4 = 60, then four bytes of padding
+        let counts = e.scope[0]
+            .iter()
+            .chain(&e.scope[1])
+            .chain(&e.ring[0])
+            .chain(&e.ring[1]);
+        for (i, count) in counts.enumerate() {
+            let count = u16::try_from(*count).unwrap_or(u16::MAX);
+            record[64 + 2 * i..66 + 2 * i].copy_from_slice(&count.to_le_bytes());
+        }
+        sink.write(Stream::Evals, &record);
+    });
+    CONTEXT.with(|c| c.set(context));
+}
+
+/// One piece the evaluation's walk visited: its attack set, and the squares
+/// of it each term counted (`u8::MAX` for a term that does not count it).
+pub(crate) fn walked(color: Color, kind: usize, square: u8, attacks: u64, scope: u8, ring: u8) {
+    let context = CONTEXT.with(Cell::get);
+    if !context.sampled {
+        return;
+    }
+    SINK.with(|sink| {
+        let mut sink = sink.borrow_mut();
+        let Some(sink) = sink.as_mut() else {
+            return;
+        };
+        sink.walked = sink.walked.saturating_add(1);
+        let mut record = [0u8; 24];
+        record[0..8].copy_from_slice(&(sink.evals + 1).to_le_bytes());
+        record[8..16].copy_from_slice(&attacks.to_le_bytes());
+        record[16] = square;
+        record[17] = u8::try_from(kind).unwrap_or(u8::MAX);
+        record[18] = color as u8;
+        record[19] = scope;
+        record[20] = ring;
+        sink.write(Stream::Walks, &record);
+    });
+}
+
+/// What the search compared an evaluation with, or did with it.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub(crate) enum Bound {
+    /// Quiescence's stand pat against beta: at or above it, the node
+    /// returns the evaluation.
+    StandPatBeta = 1,
+    /// The same against alpha: at or above it, the evaluation is alpha.
+    StandPatAlpha = 2,
+    /// The delta test on one capture before the ordering, at the alpha the
+    /// stand pat left. The capture is dropped when the evaluation is under
+    /// the threshold.
+    DeltaFilter = 3,
+    /// The same test in the move loop, at the alpha the loop has reached.
+    DeltaLoop = 4,
+    /// Quiescence returning: whether its value is the evaluation, which no
+    /// capture beat.
+    Returned = 5,
+    /// Reverse futility: at or above the threshold, the node returns the
+    /// evaluation less the margin.
+    ReverseFutility = 6,
+    /// The null move's gate against beta. The pass's reduction reads how
+    /// far above beta the evaluation stands.
+    NullMove = 7,
+    /// Quiet futility: at or under the threshold, the node's later quiets
+    /// are dropped.
+    QuietFutility = 8,
+    /// The late move gate's score, which reads the evaluation linearly.
+    /// The threshold column holds the score with the evaluation's part
+    /// taken out, and the outcome is whether the score is at or under the
+    /// pruning threshold (a move that gives check is searched all the same).
+    LateMoveGate = 9,
+}
+
+/// One use of the node's last evaluation. `threshold` is the bound the
+/// value was compared with, `value` the evaluation as the rule read it and
+/// `aux` whatever else the rule needs (the captured piece, the gate's
+/// score).
+pub(crate) fn bound(kind: Bound, threshold: i32, value: i32, aux: i32, outcome: bool) {
+    let context = CONTEXT.with(Cell::get);
+    if !context.sampled {
+        return;
+    }
+    SINK.with(|sink| {
+        let mut sink = sink.borrow_mut();
+        let Some(sink) = sink.as_mut() else {
+            return;
+        };
+        let mut record = [0u8; 32];
+        record[0..8].copy_from_slice(&context.node.to_le_bytes());
+        record[8..16].copy_from_slice(&context.eval.to_le_bytes());
+        record[16] = kind as u8;
+        record[17] = u8::from(outcome);
+        record[20..24].copy_from_slice(&threshold.to_le_bytes());
+        record[24..28].copy_from_slice(&value.to_le_bytes());
+        record[28..32].copy_from_slice(&aux.to_le_bytes());
+        sink.write(Stream::Bounds, &record);
+    });
 }
 
 /// A node's number scrambled, so a sample of every n-th hash is spread over

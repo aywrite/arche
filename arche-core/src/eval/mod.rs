@@ -213,6 +213,9 @@ const fn widest() -> usize {
 trait Memo {
     fn shelter(&mut self, board: &Board) -> i32;
     fn pawn_structure(&mut self, board: &Board) -> i32;
+    /// Whether each table holds the position, or none for no tables.
+    #[cfg(feature = "trace")]
+    fn hits(&self, board: &Board) -> Option<(bool, bool)>;
 }
 
 /// The memo that remembers nothing, which is what [`eval`] hands the sum.
@@ -227,6 +230,11 @@ impl Memo for NoMemo {
     #[inline]
     fn pawn_structure(&mut self, board: &Board) -> i32 {
         pawn_structure::fold(board)
+    }
+
+    #[cfg(feature = "trace")]
+    fn hits(&self, _: &Board) -> Option<(bool, bool)> {
+        None
     }
 }
 
@@ -260,6 +268,14 @@ impl Memo for Caches {
         self.pawns
             .get(board.pawn_key, || pawn_structure::fold(board))
     }
+
+    #[cfg(feature = "trace")]
+    fn hits(&self, board: &Board) -> Option<(bool, bool)> {
+        Some((
+            self.shelter.stored(shelter::key(board)).is_some(),
+            self.pawns.stored(board.pawn_key).is_some(),
+        ))
+    }
 }
 
 /// The score of the position from the side to move's point of view, with the
@@ -278,16 +294,102 @@ impl Memo for Caches {
 /// sits here rather than at the node because the model gate, the tuner's
 /// walk and the instruments all read this function.
 #[inline]
+#[cfg_attr(feature = "trace", track_caller)]
 fn sum(board: &Board, memo: &mut impl Memo) -> Score {
+    #[cfg(feature = "trace")]
+    let hits = memo.hits(board);
     if board.drawn_by_material() {
+        #[cfg(feature = "trace")]
+        traced(std::panic::Location::caller(), board, 0, hits, false);
         return 0;
     }
     let walk =
         |color| attack_score::<{ mobility::SCORED_KINDS }, { king_attack::SCORED }>(board, color);
     let leaf =
         walk(Color::White) - walk(Color::Black) + memo.shelter(board) + memo.pawn_structure(board);
-    board.eval.score(board.active_color, leaf)
+    let score = board.eval.score(board.active_color, leaf);
+    #[cfg(feature = "trace")]
+    traced(std::panic::Location::caller(), board, score, hits, true);
+    score
 }
+
+/// The evaluation just made, handed to the trace mode. The four leaf terms
+/// are folded again rather than read off the sum, which adds them as it
+/// goes; the tables are exact, so the shelter and the pawn structure fold
+/// to what the tables answered, and the recorded score is the sum's own.
+#[cfg(feature = "trace")]
+fn traced(
+    at: &'static std::panic::Location<'static>,
+    board: &Board,
+    score: Score,
+    hits: Option<(bool, bool)>,
+    walked: bool,
+) {
+    let accumulator = &board.eval;
+    // counted again by each term's own walk, which the shared walk is held
+    // to; the sum no longer keeps the counts
+    // muted, so their probes are not recorded as the search's
+    let [white_scope, black_scope, white_ring, black_ring] = if walked {
+        crate::trace::muted(|| {
+            [
+                mobility::counts_of::<{ mobility::SCORED_KINDS }>(board, Color::White),
+                mobility::counts_of::<{ mobility::SCORED_KINDS }>(board, Color::Black),
+                king_attack::counts_of(board, Color::White),
+                king_attack::counts_of(board, Color::Black),
+            ]
+        })
+    } else {
+        Default::default()
+    };
+    crate::trace::evaluated(
+        at,
+        board,
+        &crate::trace::Evaluation {
+            score,
+            drawn: !walked,
+            hits,
+            phase: accumulator.phase,
+            psqt: accumulator.psqt,
+            material: accumulator.material[Color::White as usize] as i32
+                - accumulator.material[Color::Black as usize] as i32,
+            machine: accumulator.machine.score(),
+            mobility: if walked {
+                weigh(&MOBILITY_WEIGHTS, white_scope, black_scope)
+            } else {
+                0
+            },
+            king_attack: if walked && king_attack::SCORED {
+                weigh(&KING_ATTACK_WEIGHTS, white_ring, black_ring)
+            } else {
+                0
+            },
+            shelter: if walked { shelter::fold(board) } else { 0 },
+            pawn_structure: if walked {
+                pawn_structure::fold(board)
+            } else {
+                0
+            },
+            scope: [white_scope, black_scope],
+            ring: [white_ring, black_ring],
+        },
+    );
+}
+
+/// The two terms' weights as packed pairs, for the trace mode's fold.
+#[cfg(feature = "trace")]
+const MOBILITY_WEIGHTS: [i32; mobility::COUNTS] = [
+    mobility::weight(0),
+    mobility::weight(1),
+    mobility::weight(2),
+    mobility::weight(3),
+];
+#[cfg(feature = "trace")]
+const KING_ATTACK_WEIGHTS: [i32; king_attack::COUNTS] = [
+    king_attack::weight(0),
+    king_attack::weight(1),
+    king_attack::weight(2),
+    king_attack::weight(3),
+];
 
 /// One side's mobility and king attack zone as one packed pair, from one walk
 /// over its knights, bishops, rooks and queens. Each piece's two counts are
@@ -331,33 +433,70 @@ fn attack_score<const KINDS: u8, const RING: bool>(board: &Board, color: Color) 
         while knights != 0 {
             let from = pop_lsb(&mut knights);
             read(0, knight_attacks(from));
+            #[cfg(feature = "trace")]
+            walked_one::<KINDS, RING>(color, 0, from, knight_attacks(from), scope, ring);
         }
     }
     if walked(1) {
         let mut bishops = board.bishops() & ours;
         while bishops != 0 {
             let from = pop_lsb(&mut bishops);
-            read(1, magic.get_diagonal_move(from, occupied));
+            let attacks = magic.get_diagonal_move(from, occupied);
+            read(1, attacks);
+            #[cfg(feature = "trace")]
+            walked_one::<KINDS, RING>(color, 1, from, attacks, scope, ring);
         }
     }
     if walked(2) {
         let mut rooks = board.rooks() & ours;
         while rooks != 0 {
             let from = pop_lsb(&mut rooks);
-            read(2, magic.get_straight_move(from, occupied));
+            let attacks = magic.get_straight_move(from, occupied);
+            read(2, attacks);
+            #[cfg(feature = "trace")]
+            walked_one::<KINDS, RING>(color, 2, from, attacks, scope, ring);
         }
     }
     if walked(3) {
         let mut queens = board.queens() & ours;
         while queens != 0 {
             let from = pop_lsb(&mut queens);
-            read(
-                3,
-                magic.get_straight_move(from, occupied) | magic.get_diagonal_move(from, occupied),
-            );
+            let attacks =
+                magic.get_straight_move(from, occupied) | magic.get_diagonal_move(from, occupied);
+            read(3, attacks);
+            #[cfg(feature = "trace")]
+            walked_one::<KINDS, RING>(color, 3, from, attacks, scope, ring);
         }
     }
     packed
+}
+
+/// One piece of the walk, handed to the trace mode with the squares each
+/// term counted of its attack set.
+#[cfg(feature = "trace")]
+fn walked_one<const KINDS: u8, const RING: bool>(
+    color: Color,
+    index: usize,
+    from: u8,
+    attacks: u64,
+    scope: u64,
+    ring: u64,
+) {
+    let counted = |on: bool, mask: u64| {
+        if on {
+            (attacks & mask).count_ones() as u8
+        } else {
+            u8::MAX
+        }
+    };
+    crate::trace::walked(
+        color,
+        index,
+        from,
+        attacks,
+        counted(mobility::counted(KINDS, index), scope),
+        counted(RING, ring),
+    );
 }
 
 /// The score with the shelter and the pawn structure computed every time, for
@@ -365,6 +504,7 @@ fn attack_score<const KINDS: u8, const RING: bool>(board: &Board, color: Color) 
 /// score of the position alone. None is hot enough for the difference between
 /// the two doors to matter.
 #[inline]
+#[cfg_attr(feature = "trace", track_caller)]
 pub(crate) fn eval(board: &Board) -> Score {
     sum(board, &mut NoMemo)
 }
@@ -375,6 +515,7 @@ pub(crate) fn eval(board: &Board) -> Score {
 /// `the_cache_answers_what_the_full_evaluation_does` holds the two to, so the
 /// node counts do not move when the search calls this instead.
 #[inline]
+#[cfg_attr(feature = "trace", track_caller)]
 pub(crate) fn eval_cached(board: &Board, caches: &mut Caches) -> Score {
     sum(board, caches)
 }

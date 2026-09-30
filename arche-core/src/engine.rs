@@ -120,6 +120,20 @@ fn short_of_alpha(standing: Score, captured: Piece, alpha: Score) -> bool {
     standing + eval::material(captured) as Score + DELTA_MARGIN < alpha
 }
 
+/// The delta test on one capture, handed to the trace mode as a bound on
+/// the standing evaluation: the capture is dropped when the evaluation is
+/// under the threshold.
+#[cfg(feature = "trace")]
+fn traced_delta(kind: crate::trace::Bound, standing: Score, captured: Piece, alpha: Score) {
+    crate::trace::bound(
+        kind,
+        i32::from(alpha) - eval::material(captured) as i32 - i32::from(DELTA_MARGIN),
+        standing.into(),
+        captured as i32,
+        short_of_alpha(standing, captured, alpha),
+    );
+}
+
 /// Which places in a node's move list the node made and searched, a bit
 /// each: under a cutoff the quiet moves with a bit below the cutting
 /// move's place are the history's malus.
@@ -1557,6 +1571,7 @@ impl AlphaBeta {
 
     /// The score at this node, with the memoised terms read from the
     /// engine's caches. The score is the one `eval::eval` gives.
+    #[cfg_attr(feature = "trace", track_caller)]
     fn eval(&mut self) -> Score {
         crate::eval::eval_cached(&self.board, &mut self.caches)
     }
@@ -1748,9 +1763,25 @@ impl AlphaBeta {
         }
         let standing = if in_check { None } else { Some(self.eval()) };
         if let Some(score) = standing {
+            #[cfg(feature = "trace")]
+            crate::trace::bound(
+                crate::trace::Bound::StandPatBeta,
+                beta.into(),
+                score.into(),
+                0,
+                score >= beta,
+            );
             if score >= beta {
                 return Ok(Value::clean(score));
             }
+            #[cfg(feature = "trace")]
+            crate::trace::bound(
+                crate::trace::Bound::StandPatAlpha,
+                alpha.into(),
+                score.into(),
+                0,
+                score >= alpha,
+            );
             best = score;
             if score >= alpha {
                 alpha = score;
@@ -1792,6 +1823,13 @@ impl AlphaBeta {
                     let m = moves[j];
                     let keep = match m.capture {
                         Some(captured) if m.promote.is_none() => {
+                            #[cfg(feature = "trace")]
+                            traced_delta(
+                                crate::trace::Bound::DeltaFilter,
+                                standing,
+                                captured,
+                                alpha,
+                            );
                             !short_of_alpha(standing, captured, alpha)
                         }
                         _ => true,
@@ -1833,6 +1871,10 @@ impl AlphaBeta {
             // skipped like any other losing capture
             if let (Some(standing), Some(captured)) = (standing, m.capture) {
                 if !is_mate(alpha) && m.promote.is_none() {
+                    #[cfg(feature = "trace")]
+                    if self.config.delta_margin {
+                        traced_delta(crate::trace::Bound::DeltaLoop, standing, captured, alpha);
+                    }
                     if self.config.delta_margin && short_of_alpha(standing, captured, alpha) {
                         continue;
                     }
@@ -1872,6 +1914,16 @@ impl AlphaBeta {
             return Ok(Value::mated(self.board.line_ply));
         }
 
+        #[cfg(feature = "trace")]
+        if let Some(standing) = standing {
+            crate::trace::bound(
+                crate::trace::Bound::Returned,
+                best.into(),
+                standing.into(),
+                0,
+                best_move.is_none(),
+            );
+        }
         let value = taint.stamp(best);
         if let Some(play) = best_move {
             self.store_answer(play, value, 0, alpha != old_alpha);
@@ -1944,6 +1996,14 @@ impl AlphaBeta {
         // returns that. Clean: a static eval consulted no path
         if margin {
             let floor = eval.saturating_sub(REVERSE_FUTILITY_MARGIN * depth as Score);
+            #[cfg(feature = "trace")]
+            crate::trace::bound(
+                crate::trace::Bound::ReverseFutility,
+                i32::from(beta) + i32::from(REVERSE_FUTILITY_MARGIN) * i32::from(depth),
+                eval.into(),
+                0,
+                floor >= beta,
+            );
             // the shadow row: every candidate, fired or not, since the fired
             // rows say nothing about where a tighter margin would fire
             if self.sampler.is_some() && eval >= beta {
@@ -1958,6 +2018,16 @@ impl AlphaBeta {
         }
 
         // a zero window: the question is only whether a pass beats beta
+        #[cfg(feature = "trace")]
+        if pass {
+            crate::trace::bound(
+                crate::trace::Bound::NullMove,
+                beta.into(),
+                eval.into(),
+                depth.into(),
+                eval >= beta,
+            );
+        }
         if pass && eval >= beta {
             let reduction = null_move_reduction(self.config, depth, eval - beta);
             self.board.make_null_move();
