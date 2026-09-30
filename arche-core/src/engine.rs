@@ -134,6 +134,21 @@ fn traced_delta(kind: crate::trace::Bound, standing: Score, captured: Piece, alp
     );
 }
 
+/// A node returning, for the trace mode's `search` stream: why, its value,
+/// and `v` (the best score, the alpha it opened with, its alpha at the end,
+/// the cutting place and the evaluation it held, where it has them).
+#[cfg(feature = "trace")]
+fn traced_end(reason: u8, value: Value, v: [i64; 5]) {
+    crate::trace::node(
+        crate::trace::Node::End,
+        reason,
+        u8::from(value.tainted),
+        0,
+        0,
+        [value.score.into(), v[0], v[1], v[2], v[3], v[4]],
+    );
+}
+
 /// Which places in a node's move list the node made and searched, a bit
 /// each: under a cutoff the quiet moves with a bit below the cutting
 /// move's place are the history's malus.
@@ -1619,6 +1634,9 @@ impl AlphaBeta {
             self.config.taint.guards_rule50(),
         );
         self.ghi.count_probe(probe);
+        #[cfg(feature = "trace")]
+        self.transpositions
+            .traced_probe(&self.board, alpha, beta, depth, probe);
         probe
     }
 
@@ -1751,6 +1769,15 @@ impl AlphaBeta {
         // delivered by a capture searched here. Fail soft.
         let mut best = Score::MIN + 1;
         let in_check = self.board.in_check();
+        #[cfg(feature = "trace")]
+        crate::trace::visit(
+            crate::trace::Kind::Quiescence,
+            &self.board,
+            0,
+            alpha,
+            beta,
+            u8::from(in_check) << 3,
+        );
         // a stalemate is not in check, so standing pat would read it as the
         // eval. Only a side with nothing but pawns and a king is asked: a
         // piece almost always has a move, and where the king test fails the
@@ -1759,9 +1786,27 @@ impl AlphaBeta {
             && !self.board.has_non_pawn_material()
             && !self.board.has_legal_move_out_of_check()
         {
+            #[cfg(feature = "trace")]
+            traced_end(20, Value::clean(0), [0; 5]);
             return Ok(Value::clean(0));
         }
         let standing = if in_check { None } else { Some(self.eval()) };
+        #[cfg(feature = "trace")]
+        crate::trace::node(
+            crate::trace::Node::QEnter,
+            u8::from(in_check),
+            u8::from(crate::trace::muted(|| self.board.has_non_pawn_material())),
+            u8::try_from(self.board.line_ply).unwrap_or(u8::MAX),
+            0,
+            [
+                alpha.into(),
+                beta.into(),
+                standing.map_or(i64::MIN, i64::from),
+                0,
+                0,
+                0,
+            ],
+        );
         if let Some(score) = standing {
             #[cfg(feature = "trace")]
             crate::trace::bound(
@@ -1772,6 +1817,8 @@ impl AlphaBeta {
                 score >= beta,
             );
             if score >= beta {
+                #[cfg(feature = "trace")]
+                traced_end(21, Value::clean(score), [0; 5]);
                 return Ok(Value::clean(score));
             }
             #[cfg(feature = "trace")]
@@ -1792,7 +1839,11 @@ impl AlphaBeta {
         let old_alpha = alpha;
         // a probe at depth zero: any stored bound is deep enough here
         let pv_play = match self.probe(alpha, beta, 0) {
-            Probe::Cut(value) => return Ok(value),
+            Probe::Cut(value) => {
+                #[cfg(feature = "trace")]
+                traced_end(22, value, [0; 5]);
+                return Ok(value);
+            }
             Probe::Order(play) | Probe::Refused(play) => Some(play),
             Probe::Miss => None,
         };
@@ -1879,6 +1930,21 @@ impl AlphaBeta {
                 None,
             );
             crate::trace::call(&self.board, 3, crate::trace::Kind::Quiescence, &moves, &[]);
+            crate::trace::node(
+                crate::trace::Node::QList,
+                0,
+                0,
+                0,
+                0,
+                [
+                    generated_list.len() as i64,
+                    0,
+                    moves.len() as i64,
+                    front as i64,
+                    captures as i64,
+                    0,
+                ],
+            );
         }
 
         // quiescence reads no draw by rule itself, but a probe trusting
@@ -1905,6 +1971,15 @@ impl AlphaBeta {
                     if self.config.delta_margin && short_of_alpha(standing, captured, alpha) {
                         #[cfg(feature = "trace")]
                         crate::trace::decided(i, m, crate::trace::Outcome::Delta, 0, 0, 0);
+                        #[cfg(feature = "trace")]
+                        crate::trace::node(
+                            crate::trace::Node::QPlace,
+                            0,
+                            0,
+                            0,
+                            i32::try_from(i).unwrap_or(i32::MAX),
+                            [alpha.into(), crate::trace::play_word(Some(*m)), 0, 0, 0, 0],
+                        );
                         continue;
                     }
                     // every capture behind the front is one the swap priced
@@ -1912,6 +1987,15 @@ impl AlphaBeta {
                     if self.config.see_pruning && i >= front {
                         #[cfg(feature = "trace")]
                         crate::trace::decided(i, m, crate::trace::Outcome::Losing, 0, 0, 0);
+                        #[cfg(feature = "trace")]
+                        crate::trace::node(
+                            crate::trace::Node::QPlace,
+                            1,
+                            0,
+                            0,
+                            i32::try_from(i).unwrap_or(i32::MAX),
+                            [alpha.into(), crate::trace::play_word(Some(*m)), 0, 0, 0, 0],
+                        );
                         continue;
                     }
                 }
@@ -1939,6 +2023,22 @@ impl AlphaBeta {
                     0,
                     crate::trace::entered() - below,
                 );
+                #[cfg(feature = "trace")]
+                crate::trace::node(
+                    crate::trace::Node::QPlace,
+                    3,
+                    0,
+                    0,
+                    i32::try_from(i).unwrap_or(i32::MAX),
+                    [
+                        alpha.into(),
+                        crate::trace::play_word(Some(*m)),
+                        0,
+                        value.score.into(),
+                        0,
+                        (crate::trace::entered() - below) as i64 | i64::from(value.tainted) << 62,
+                    ],
+                );
                 taint.absorb(value);
                 let score = value.score;
                 if score > best {
@@ -1954,6 +2054,18 @@ impl AlphaBeta {
                         }
                         let value = taint.stamp(score);
                         self.store_cutoff(m, value, 0);
+                        #[cfg(feature = "trace")]
+                        traced_end(
+                            23,
+                            value,
+                            [
+                                best.into(),
+                                old_alpha.into(),
+                                alpha.into(),
+                                i as i64,
+                                standing.map_or(i64::MIN, i64::from),
+                            ],
+                        );
                         return Ok(value);
                     }
                     alpha = score;
@@ -1962,12 +2074,22 @@ impl AlphaBeta {
             #[cfg(feature = "trace")]
             if !legal {
                 crate::trace::decided(i, m, crate::trace::Outcome::Illegal, 0, 0, 0);
+                crate::trace::node(
+                    crate::trace::Node::QPlace,
+                    2,
+                    0,
+                    0,
+                    i32::try_from(i).unwrap_or(i32::MAX),
+                    [alpha.into(), crate::trace::play_word(Some(*m)), 0, 0, 0, 0],
+                );
             }
         }
         #[cfg(feature = "trace")]
         crate::trace::ended(moves.len(), None);
 
         if in_check && !found_legal_move {
+            #[cfg(feature = "trace")]
+            traced_end(24, Value::mated(self.board.line_ply), [0; 5]);
             return Ok(Value::mated(self.board.line_ply));
         }
 
@@ -1985,6 +2107,18 @@ impl AlphaBeta {
         if let Some(play) = best_move {
             self.store_answer(play, value, 0, alpha != old_alpha);
         }
+        #[cfg(feature = "trace")]
+        traced_end(
+            25,
+            value,
+            [
+                best.into(),
+                old_alpha.into(),
+                alpha.into(),
+                -1,
+                standing.map_or(i64::MIN, i64::from),
+            ],
+        );
         Ok(value)
     }
 
@@ -2035,6 +2169,15 @@ impl AlphaBeta {
         // eval gate below stands (the window and the eval turn round under a
         // pass), and kept for the day that gate is dropped or given a margin
         let pass = self.config.null_move && can_null && depth >= NULL_MOVE_MIN_DEPTH;
+        // the gates as one word, for the trace mode's `search` stream
+        #[cfg(feature = "trace")]
+        let gates = u8::from(margin)
+            | u8::from(pass) << 1
+            | u8::from(in_check) << 2
+            | u8::from(crate::trace::muted(|| self.board.has_non_pawn_material())) << 3
+            | u8::from(is_mate(beta)) << 4
+            | u8::from(root_bounds.beta_is_roots()) << 5
+            | u8::from(alpha + 1 < beta) << 6;
         if (!margin && !pass)
             || in_check
             || !self.board.has_non_pawn_material()
@@ -2044,6 +2187,15 @@ impl AlphaBeta {
             // overflows a Score at the full window
             || alpha + 1 < beta
         {
+            #[cfg(feature = "trace")]
+            crate::trace::node(
+                crate::trace::Node::Shortcuts,
+                gates,
+                0,
+                0,
+                depth.into(),
+                [i64::MIN, 0, 0, 0, alpha.into(), beta.into()],
+            );
             return Ok(None);
         }
         let eval = self.eval();
@@ -2070,6 +2222,15 @@ impl AlphaBeta {
                 if self.sampler.is_some() {
                     self.sample(Shortcut::ReverseFutility, depth, floor, alpha, beta, eval);
                 }
+                #[cfg(feature = "trace")]
+                crate::trace::node(
+                    crate::trace::Node::Shortcuts,
+                    gates,
+                    1,
+                    0,
+                    depth.into(),
+                    [eval.into(), floor.into(), 0, 0, alpha.into(), beta.into()],
+                );
                 return Ok(Some(Value::clean(floor)));
             }
         }
@@ -2106,10 +2267,51 @@ impl AlphaBeta {
                 if self.sampler.is_some() {
                     self.sample(Shortcut::NullMove, depth, score, alpha, beta, eval);
                 }
+                #[cfg(feature = "trace")]
+                crate::trace::node(
+                    crate::trace::Node::Shortcuts,
+                    gates,
+                    2,
+                    reduction,
+                    depth.into(),
+                    [
+                        eval.into(),
+                        0,
+                        value.score.into(),
+                        i64::from(value.tainted),
+                        alpha.into(),
+                        beta.into(),
+                    ],
+                );
                 return Ok(Some(Value::with_taint(score, value.tainted)));
             }
             taint.absorb(value);
+            #[cfg(feature = "trace")]
+            crate::trace::node(
+                crate::trace::Node::Shortcuts,
+                gates,
+                3,
+                reduction,
+                depth.into(),
+                [
+                    eval.into(),
+                    0,
+                    value.score.into(),
+                    i64::from(value.tainted),
+                    alpha.into(),
+                    beta.into(),
+                ],
+            );
         }
+        #[cfg(feature = "trace")]
+        crate::trace::node(
+            crate::trace::Node::Shortcuts,
+            gates,
+            4,
+            0,
+            depth.into(),
+            [eval.into(), 0, 0, 0, alpha.into(), beta.into()],
+        );
         Ok(None)
     }
 
@@ -2191,6 +2393,15 @@ impl AlphaBeta {
                 true,
                 root_bounds.child(ChildSearch::Scout),
             )?;
+            #[cfg(feature = "trace")]
+            crate::trace::node(
+                crate::trace::Node::Pass,
+                1,
+                reduction,
+                u8::from(scout.tainted),
+                depth.into(),
+                [scout.score.into(), alpha.into(), beta.into(), 0, 0, 0],
+            );
             if let Some(staged) = staged {
                 self.ledger_event(
                     *staged,
@@ -2216,6 +2427,15 @@ impl AlphaBeta {
             true,
             root_bounds.child(ChildSearch::Probe),
         )?;
+        #[cfg(feature = "trace")]
+        crate::trace::node(
+            crate::trace::Node::Pass,
+            2,
+            reduction,
+            u8::from(probe.tainted),
+            depth.into(),
+            [probe.score.into(), alpha.into(), beta.into(), 0, 0, 0],
+        );
         // `alpha + 1 >= beta` is the zero window, spelt without the
         // subtraction: `beta - alpha` overflows a Score at the full window
         if probe.score <= alpha || alpha + 1 >= beta {
@@ -2228,6 +2448,15 @@ impl AlphaBeta {
             true,
             root_bounds.child(ChildSearch::Proof),
         )?;
+        #[cfg(feature = "trace")]
+        crate::trace::node(
+            crate::trace::Node::Pass,
+            3,
+            reduction,
+            u8::from(proof.tainted),
+            depth.into(),
+            [proof.score.into(), alpha.into(), beta.into(), 0, 0, 0],
+        );
         Ok(Value::with_taint(
             proof.score,
             proof.tainted || probe.tainted || tainted,
@@ -2302,6 +2531,39 @@ impl AlphaBeta {
             value.score,
             facts.depth,
         )))
+    }
+
+    /// One place of a full width node's loop and what the node did there,
+    /// for the trace mode's `search` stream: 0 dropped, 1 the table's place,
+    /// 2 a shallow skip, 3 a late move skip, 4 illegal, 5 searched.
+    #[cfg(feature = "trace")]
+    #[allow(clippy::too_many_arguments)]
+    fn traced_place(
+        &self,
+        what: u8,
+        at: usize,
+        m: &Play,
+        node: &late_move::Node,
+        searched: usize,
+        reduction: u8,
+        score: i64,
+        below: i64,
+    ) {
+        crate::trace::node(
+            crate::trace::Node::Place,
+            what,
+            u8::try_from(searched).unwrap_or(u8::MAX),
+            u8::from(node.admits(&self.deciding(), searched)),
+            i32::try_from(at).unwrap_or(i32::MAX),
+            [
+                node.alpha.into(),
+                crate::trace::play_word(Some(*m)),
+                reduction.into(),
+                score,
+                node.eval.map_or(i64::MIN, i64::from),
+                below,
+            ],
+        );
     }
 
     /// The quiet moves put in order as far as the loop reads them, asked
@@ -2391,6 +2653,7 @@ impl AlphaBeta {
             #[cfg(feature = "trace")]
             for (j, m) in moves.iter().enumerate().take(past).skip(i) {
                 crate::trace::decided(j, m, crate::trace::Outcome::Dropped, 0, searched, 0);
+                self.traced_place(0, j, m, node, searched, 0, 0, 0);
             }
             return Some(past);
         }
@@ -2419,7 +2682,10 @@ impl AlphaBeta {
         if node.skips(&self.deciding(), m, searched) {
             self.record_skip(node, moves, m, searched);
             #[cfg(feature = "trace")]
-            crate::trace::decided(at, m, crate::trace::Outcome::Shallow, 0, searched, 0);
+            {
+                crate::trace::decided(at, m, crate::trace::Outcome::Shallow, 0, searched, 0);
+                self.traced_place(2, at, m, node, searched, 0, 0, 0);
+            }
             return Decision::Skip;
         }
         if !node.admits(&self.deciding(), searched) || m.capture.is_some() || m.promote.is_some() {
@@ -2432,7 +2698,10 @@ impl AlphaBeta {
             late_move::Verdict::Skip => {
                 self.record_skip(node, moves, m, searched);
                 #[cfg(feature = "trace")]
-                crate::trace::decided(at, m, crate::trace::Outcome::Pruned, 0, searched, 0);
+                {
+                    crate::trace::decided(at, m, crate::trace::Outcome::Pruned, 0, searched, 0);
+                    self.traced_place(3, at, m, node, searched, 0, 0, 0);
+                }
                 Decision::Skip
             }
             late_move::Verdict::Scout(reduction) => Decision::Search {
@@ -2453,13 +2722,19 @@ impl AlphaBeta {
             // repeated position cannot be one: it would have ended the game
             // the first time it came up
             if in_check && !self.board.has_legal_move() {
+                #[cfg(feature = "trace")]
+                traced_end(1, Value::mated(self.board.line_ply), [0; 5]);
                 return Some(Value::mated(self.board.line_ply));
             }
             // where the taint starts: the draw is true of the path that
             // reached this position, not of the position itself
+            #[cfg(feature = "trace")]
+            traced_end(2, Value::tainted(0), [0; 5]);
             return Some(Value::tainted(0));
         }
         if self.board.has_repeated() {
+            #[cfg(feature = "trace")]
+            traced_end(3, Value::tainted(0), [0; 5]);
             return Some(Value::tainted(0));
         }
         // a line of checks that keeps capturing is ended by neither draw
@@ -2467,7 +2742,10 @@ impl AlphaBeta {
         // ends it. A static eval, clean because it consulted no path; it
         // gives up the mate a node standing here may be in
         if self.board.line_ply >= MAX_PLY as usize {
-            return Some(Value::clean(self.eval()));
+            let value = Value::clean(self.eval());
+            #[cfg(feature = "trace")]
+            traced_end(4, value, [0; 5]);
+            return Some(value);
         }
         None
     }
@@ -2574,6 +2852,18 @@ impl AlphaBeta {
         let _traced = crate::trace::enter(crate::trace::Kind::Full, &self.board, depth);
 
         let in_check = self.board.in_check();
+        #[cfg(feature = "trace")]
+        crate::trace::visit(
+            crate::trace::Kind::Full,
+            &self.board,
+            depth,
+            alpha,
+            beta,
+            u8::from(can_null)
+                | u8::from(matches!(root_bounds, RootBounds::Both | RootBounds::Alpha)) << 1
+                | u8::from(root_bounds.beta_is_roots()) << 2
+                | u8::from(in_check) << 3,
+        );
         if let Some(value) = self.answered_by_rule(in_check) {
             return Ok(value);
         }
@@ -2582,17 +2872,36 @@ impl AlphaBeta {
             MateDistanceWindow::Open { alpha, beta } => (alpha, beta),
             // clean: how far a mate can be from here is a property of the
             // position and not of the path that reached it
-            MateDistanceWindow::Closed(score) => return Ok(Value::clean(score)),
+            MateDistanceWindow::Closed(score) => {
+                #[cfg(feature = "trace")]
+                traced_end(5, Value::clean(score), [0; 5]);
+                return Ok(Value::clean(score));
+            }
         };
+        #[cfg(feature = "trace")]
+        crate::trace::node(
+            crate::trace::Node::MateDistance,
+            0,
+            0,
+            0,
+            0,
+            [alpha.into(), beta.into(), 0, 0, 0, 0],
+        );
         if in_check {
             depth += 1;
         }
         if depth == 0 {
+            #[cfg(feature = "trace")]
+            traced_end(6, Value::clean(0), [0; 5]);
             return self.quiescence(alpha, beta);
         }
 
         let pv_play = match self.probe(alpha, beta, depth) {
-            Probe::Cut(value) => return Ok(value),
+            Probe::Cut(value) => {
+                #[cfg(feature = "trace")]
+                traced_end(7, value, [0; 5]);
+                return Ok(value);
+            }
             Probe::Order(play) | Probe::Refused(play) => Some(play),
             Probe::Miss => None,
         };
@@ -2610,6 +2919,8 @@ impl AlphaBeta {
             &mut taint,
             &mut eval,
         )? {
+            #[cfg(feature = "trace")]
+            traced_end(8, value, [0, 0, 0, -1, eval.map_or(i64::MIN, i64::from)]);
             return Ok(value);
         }
 
@@ -2626,12 +2937,72 @@ impl AlphaBeta {
         };
         if let Some(tt) = table_move {
             if let Some(value) = self.search_table_move(tt, facts, &mut answer)? {
+                #[cfg(feature = "trace")]
+                {
+                    crate::trace::node(
+                        crate::trace::Node::TableMove,
+                        3,
+                        0,
+                        0,
+                        0,
+                        [
+                            answer.best.into(),
+                            crate::trace::play_word(Some(tt)),
+                            answer.alpha.into(),
+                            0,
+                            0,
+                            0,
+                        ],
+                    );
+                    traced_end(
+                        9,
+                        value,
+                        [
+                            answer.best.into(),
+                            answer.opening_alpha.into(),
+                            answer.alpha.into(),
+                            -1,
+                            eval.map_or(i64::MIN, i64::from),
+                        ],
+                    );
+                }
                 return Ok(value);
             }
+            #[cfg(feature = "trace")]
+            crate::trace::node(
+                crate::trace::Node::TableMove,
+                if answer.searched > 0 { 2 } else { 1 },
+                0,
+                0,
+                0,
+                [
+                    answer.best.into(),
+                    crate::trace::play_word(Some(tt)),
+                    answer.alpha.into(),
+                    0,
+                    0,
+                    0,
+                ],
+            );
         }
         #[cfg(feature = "trace")]
         if let (Some(tt), None) = (pv_play, table_move) {
             crate::trace::table_tried(&tt, 0, 0);
+            crate::trace::node(
+                crate::trace::Node::TableMove,
+                0,
+                0,
+                0,
+                0,
+                [
+                    0,
+                    crate::trace::play_word(Some(tt)),
+                    answer.alpha.into(),
+                    0,
+                    0,
+                    0,
+                ],
+            );
         }
         let tt_searched = answer.searched > 0;
 
@@ -2688,6 +3059,25 @@ impl AlphaBeta {
             facts.tt,
             eval,
         );
+        #[cfg(feature = "trace")]
+        {
+            let (admits, margin, count) = node.traced_shallow();
+            crate::trace::node(
+                crate::trace::Node::Loop,
+                u8::from(admits),
+                u8::from(crate::trace::muted(|| self.board.has_non_pawn_material())),
+                u8::from(tt_searched),
+                i32::try_from(answer.searched).unwrap_or(i32::MAX),
+                [
+                    margin,
+                    count,
+                    moves.len() as i64,
+                    ordered.front as i64,
+                    tt_at.map_or(-1, |at| at as i64),
+                    ordered.losing as i64 | (captures as i64) << 16,
+                ],
+            );
+        }
         // a skipped move has no bit, and nor has one that turned out illegal
         let mut made = Searched::default();
         let len = moves.len();
@@ -2710,14 +3100,17 @@ impl AlphaBeta {
                     made.mark(i);
                 }
                 #[cfg(feature = "trace")]
-                crate::trace::decided(
-                    i,
-                    m,
-                    crate::trace::Outcome::TablePlace,
-                    0,
-                    answer.searched,
-                    0,
-                );
+                {
+                    crate::trace::decided(
+                        i,
+                        m,
+                        crate::trace::Outcome::TablePlace,
+                        0,
+                        answer.searched,
+                        0,
+                    );
+                    self.traced_place(1, i, m, &node, answer.searched, 0, 0, 0);
+                }
                 continue;
             }
             debug_assert_eq!(
@@ -2743,14 +3136,26 @@ impl AlphaBeta {
             )?
             else {
                 #[cfg(feature = "trace")]
-                crate::trace::decided(
-                    i,
-                    m,
-                    crate::trace::Outcome::Illegal,
-                    reduction,
-                    answer.searched,
-                    crate::trace::entered() - below,
-                );
+                {
+                    crate::trace::decided(
+                        i,
+                        m,
+                        crate::trace::Outcome::Illegal,
+                        reduction,
+                        answer.searched,
+                        crate::trace::entered() - below,
+                    );
+                    self.traced_place(
+                        4,
+                        i,
+                        m,
+                        &node,
+                        answer.searched,
+                        reduction,
+                        0,
+                        (crate::trace::entered() - below) as i64,
+                    );
+                }
                 continue;
             };
             #[cfg(feature = "trace")]
@@ -2765,6 +3170,17 @@ impl AlphaBeta {
                 reduction,
                 answer.searched,
                 crate::trace::entered() - below,
+            );
+            #[cfg(feature = "trace")]
+            self.traced_place(
+                5,
+                i,
+                m,
+                &node,
+                answer.searched,
+                reduction,
+                value.score.into(),
+                (crate::trace::entered() - below) as i64 | i64::from(value.tainted) << 62,
             );
             made.mark(i);
             match answer.absorb(m, value) {
@@ -2788,7 +3204,20 @@ impl AlphaBeta {
                         .enumerate()
                         .filter(|(place, _)| made.holds(*place))
                         .map(|(_, tried)| tried);
-                    return Ok(self.cutoff(m, tried, answer.taint, value.score, depth));
+                    let value = self.cutoff(m, tried, answer.taint, value.score, depth);
+                    #[cfg(feature = "trace")]
+                    traced_end(
+                        10,
+                        value,
+                        [
+                            answer.best.into(),
+                            answer.opening_alpha.into(),
+                            answer.alpha.into(),
+                            i as i64,
+                            node.eval.map_or(i64::MIN, i64::from),
+                        ],
+                    );
+                    return Ok(value);
                 }
                 Reached::Alpha => {
                     // the dropped moves stay dropped only while alpha is
@@ -2821,8 +3250,12 @@ impl AlphaBeta {
         if answer.searched == 0 {
             // clean: mate and stalemate are properties of the position
             if in_check {
+                #[cfg(feature = "trace")]
+                traced_end(11, Value::mated(self.board.line_ply), [0; 5]);
                 return Ok(Value::mated(self.board.line_ply));
             }
+            #[cfg(feature = "trace")]
+            traced_end(12, Value::clean(0), [0; 5]);
             return Ok(Value::clean(0));
         }
         let play = answer
@@ -2830,6 +3263,18 @@ impl AlphaBeta {
             .expect("a legal move was found, so one of them is best");
         let value = answer.taint.stamp(answer.best);
         self.store_answer(play, value, depth, answer.raised_alpha());
+        #[cfg(feature = "trace")]
+        traced_end(
+            13,
+            value,
+            [
+                answer.best.into(),
+                answer.opening_alpha.into(),
+                answer.alpha.into(),
+                -1,
+                node.eval.map_or(i64::MIN, i64::from),
+            ],
+        );
         Ok(value)
     }
 

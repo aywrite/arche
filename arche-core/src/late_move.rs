@@ -370,6 +370,12 @@ impl Node {
             .active(search, &mut self.eval, searched, self.alpha)
     }
 
+    /// The shallow rules' node half, for the trace mode.
+    #[cfg(feature = "trace")]
+    pub(crate) fn traced_shallow(&self) -> (bool, i64, i64) {
+        self.shallow.traced()
+    }
+
     /// Whether the node admits a reduction of its next move: `admits`
     /// without the move, read off the node half and the count. The search
     /// is read only by the debug build's check against `admits`.
@@ -611,6 +617,21 @@ impl Shallow {
         searched >= self.from && (searched >= self.count || self.under_alpha(search, eval, alpha))
     }
 
+    /// What the node half holds, for the trace mode: whether the node
+    /// admits either rule, the margin and the count (-1 for none).
+    #[cfg(feature = "trace")]
+    pub(crate) fn traced(&self) -> (bool, i64, i64) {
+        (
+            self.admits,
+            self.margin.map_or(-1, i64::from),
+            if self.count == usize::MAX {
+                -1
+            } else {
+                self.count as i64
+            },
+        )
+    }
+
     #[inline]
     fn under_alpha(&mut self, search: &Search, eval: &mut Option<Score>, alpha: Score) -> bool {
         if self.under == ASK {
@@ -773,6 +794,26 @@ fn gate(search: &Search, node: &mut Node, moves: &[Play], m: &Play, searched: us
         eval as i32,
         score as i32,
         search.config.late_move_pruning && score <= LATE_MOVE_PRUNING_THRESHOLD,
+    );
+    #[cfg(feature = "trace")]
+    crate::trace::node(
+        crate::trace::Node::Gate,
+        u8::from(f.killer),
+        match f.tt {
+            census::Table::Miss => 0,
+            census::Table::Move => 1,
+            census::Table::ScoreOnly => 2,
+        },
+        0,
+        i32::try_from(f.index).unwrap_or(i32::MAX),
+        [
+            eval,
+            f.history.into(),
+            f.history_max.into(),
+            score,
+            f.generated as i64,
+            0,
+        ],
     );
     if search.config.late_move_pruning && score <= LATE_MOVE_PRUNING_THRESHOLD {
         let info = node.check.get_or_insert_with(|| search.board.check_info());

@@ -810,6 +810,8 @@ impl TranspositionTable {
     }
 
     fn get(&self, key: u64) -> Option<Pv> {
+        #[cfg(feature = "trace")]
+        self.traced_lookup(key);
         self.get_audited(key).0
     }
 
@@ -928,6 +930,8 @@ impl TranspositionTable {
         debug_assert!(!free || self.replaceable(old));
         if !free && !self.replaceable(old) {
             if pv.depth < old.depth {
+                #[cfg(feature = "trace")]
+                self.traced_store(3, index, i, key, pv, 1);
                 return false;
             }
             if pv.depth == old.depth
@@ -935,9 +939,13 @@ impl TranspositionTable {
                 && matches!(old.bound(), Bound::Exact)
                 && !matches!(pv.bound, Bound::Exact)
             {
+                #[cfg(feature = "trace")]
+                self.traced_store(3, index, i, key, pv, 2);
                 return false;
             }
         }
+        #[cfg(feature = "trace")]
+        self.traced_store(3, index, i, key, pv, 0);
         self.store(index, i, key, pv);
         true
     }
@@ -971,6 +979,8 @@ impl TranspositionTable {
         #[cfg(feature = "trace")]
         crate::trace::read(crate::trace::Read::KeyStore);
         let (index, i, _) = self.slot_for(key);
+        #[cfg(feature = "trace")]
+        self.traced_store(4, index, i, key, pv, 0);
         self.store(index, i, key, pv);
     }
 
@@ -1083,6 +1093,112 @@ impl TranspositionTable {
     pub fn intended_play(&self, board: &Board) -> Option<Play> {
         let pv = self.get(board.key)?;
         (pv.depth > 0 && !matches!(pv.bound, Bound::Ordering)).then_some(pv.play)
+    }
+}
+
+/// The trace mode's view of the table: each probe, store and lookup as the
+/// `table` stream records it. Nothing here writes the table.
+#[cfg(feature = "trace")]
+impl TranspositionTable {
+    /// The bucket a key maps to, the entry a lookup accepts there, and its
+    /// place: the first live entry holding the key's slice, as the probe
+    /// takes it.
+    fn traced_find(&self, key: u64) -> (Home, Option<(usize, Entry)>) {
+        let index = self.index_for(key);
+        let slice = Entry::slice(key);
+        let bucket = self.bucket(index);
+        let found = (0..BUCKET)
+            .map(|i| (i, bucket.entry(i)))
+            .find(|(_, entry)| entry.key == slice && entry.generation() != 0);
+        (index, found)
+    }
+
+    /// The found half of a record: the place, the entry's score, depth,
+    /// flags, move and age.
+    fn traced_found(&self, record: &mut [u8; 32], index: Home, found: Option<(usize, Entry)>) {
+        record[8..12].copy_from_slice(&(index.0 as u32).to_le_bytes());
+        record[5] = u8::MAX;
+        if let Some((i, entry)) = found {
+            record[5] = i as u8;
+            record[12..14].copy_from_slice(&entry.score.to_le_bytes());
+            record[14] = entry.depth;
+            record[15] = entry.flags;
+            record[22] = entry.play.from;
+            record[23] = entry.play.to;
+            record[28] = self.age(entry);
+        }
+    }
+
+    /// A probe of the search and what it answered: 0 a miss, 1 a move, 2 a
+    /// cutoff refused, 3 a cutoff.
+    pub(crate) fn traced_probe(
+        &self,
+        board: &Board,
+        alpha: Score,
+        beta: Score,
+        depth: u8,
+        probe: Probe,
+    ) {
+        let (index, found) = self.traced_find(board.key);
+        let mut record = [0u8; 32];
+        record[4] = 2;
+        record[6] = match probe {
+            Probe::Miss => 0,
+            Probe::Order(_) => 1,
+            Probe::Refused(_) => 2,
+            Probe::Cut(_) => 3,
+        };
+        record[7] = depth;
+        self.traced_found(&mut record, index, found);
+        record[16..18].copy_from_slice(&alpha.to_le_bytes());
+        record[18..20].copy_from_slice(&beta.to_le_bytes());
+        record[20] = u8::try_from(board.line_ply).unwrap_or(u8::MAX);
+        record[21] = u8::from(board.halfmove_clock() >= 96);
+        record[24..28].copy_from_slice(&Entry::slice(board.key).to_le_bytes());
+        crate::trace::table(record);
+    }
+
+    /// A lookup outside the search's probe: the line read back, or the
+    /// root's ordering move.
+    fn traced_lookup(&self, key: u64) {
+        let (index, found) = self.traced_find(key);
+        let mut record = [0u8; 32];
+        record[4] = 5;
+        self.traced_found(&mut record, index, found);
+        record[24..28].copy_from_slice(&Entry::slice(key).to_le_bytes());
+        crate::trace::table(record);
+    }
+
+    /// A store and what became of it: 0 it landed, 1 turned away by a
+    /// deeper entry, 2 turned away by an exact entry of the same depth.
+    /// The bucket as the store found it goes with it, an entry a sixteen
+    /// bit word: its depth, whether its slice is the key's, whether it is
+    /// empty and whether it is stale.
+    fn traced_store(&self, what: u8, index: Home, i: usize, key: u64, pv: Pv, outcome: u8) {
+        let bucket = self.bucket(index);
+        let mut record = [0u8; 32];
+        record[4] = what;
+        record[5] = i as u8;
+        record[6] = outcome;
+        record[7] = pv.depth;
+        record[8..12].copy_from_slice(&(index.0 as u32).to_le_bytes());
+        record[12..14].copy_from_slice(&pv.score.to_le_bytes());
+        record[14] = bucket.entry(i).depth;
+        record[15] = (pv.bound as u8) | (u8::from(pv.tainted) << 2);
+        for j in 0..BUCKET {
+            let entry = bucket.entry(j);
+            let live = entry.generation() != 0;
+            let word = u16::from(entry.depth)
+                | u16::from(entry.key == Entry::slice(key) && live) << 8
+                | u16::from(!live) << 9
+                | u16::from(live && self.replaceable(entry)) << 10;
+            record[16 + 2 * j..18 + 2 * j].copy_from_slice(&word.to_le_bytes());
+        }
+        record[24] = bucket.entry(i).flags;
+        record[26] = pv.play.from;
+        record[27] = pv.play.to;
+        record[28..32].copy_from_slice(&Entry::slice(key).to_le_bytes());
+        crate::trace::table(record);
     }
 }
 

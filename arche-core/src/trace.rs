@@ -75,10 +75,12 @@ enum Stream {
     Makes = 8,
     Orders = 9,
     Calls = 10,
+    Search = 11,
+    Table = 12,
 }
 
 impl Stream {
-    const ALL: [Stream; 11] = [
+    const ALL: [Stream; 13] = [
         Stream::Nodes,
         Stream::Sliders,
         Stream::Attacks,
@@ -90,6 +92,8 @@ impl Stream {
         Stream::Makes,
         Stream::Orders,
         Stream::Calls,
+        Stream::Search,
+        Stream::Table,
     ];
 
     fn name(self) -> &'static str {
@@ -105,6 +109,8 @@ impl Stream {
             Stream::Makes => "makes",
             Stream::Orders => "orders",
             Stream::Calls => "calls",
+            Stream::Search => "search",
+            Stream::Table => "table",
         }
     }
 
@@ -122,6 +128,8 @@ impl Stream {
             Stream::Makes => MAKE_WIDTH,
             Stream::Orders => 48,
             Stream::Calls => 32,
+            Stream::Search => 64,
+            Stream::Table => 32,
         }
     }
 }
@@ -199,7 +207,7 @@ struct Sink {
     walked: u8,
     sampled: u64,
     /// Which streams are recorded; the others' files hold a header alone.
-    enabled: [bool; 11],
+    enabled: [bool; 13],
     /// History entries written (one `gravitate` each) and quiet cutoffs
     /// taught, sampled or not: the ordering's memories as a clock.
     history_writes: u64,
@@ -231,13 +239,14 @@ impl Sink {
         cap: u64,
         only: Option<&[String]>,
     ) -> io::Result<Self> {
-        // the calls stream records every node's lists, sampled or not, so it
-        // is written only when it is named
+        // the calls and table streams record every node, sampled or not, so
+        // they are written only when named
         let enabled = Stream::ALL.map(|stream| {
             stream == Stream::Nodes
-                || only.map_or(stream != Stream::Calls, |names| {
-                    names.iter().any(|n| n == stream.name())
-                })
+                || only.map_or(
+                    stream != Stream::Calls && stream != Stream::Table,
+                    |names| names.iter().any(|n| n == stream.name()),
+                )
         });
         std::fs::create_dir_all(dir)?;
         let mut writers = Vec::new();
@@ -1032,6 +1041,128 @@ pub(crate) fn bound(kind: Bound, threshold: i32, value: i32, aux: i32, outcome: 
         record[24..28].copy_from_slice(&value.to_le_bytes());
         record[28..32].copy_from_slice(&aux.to_le_bytes());
         sink.write(Stream::Bounds, &record);
+    });
+}
+
+/// What the `search` stream records at a sampled node: the node's own work
+/// (its window, the draw tests, the shortcuts, the table's move, the late
+/// move rules, the loop's bookkeeping and how the node ended).
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub(crate) enum Node {
+    /// A full width node entered: the window and depth handed in and the
+    /// draw tests' answers.
+    Enter = 1,
+    /// The window after mate distance pruning, or the score it closed on.
+    MateDistance = 2,
+    /// The shortcuts: their gates, the evaluation, reverse futility's floor
+    /// and the pass's reduction and answer.
+    Shortcuts = 3,
+    /// The table's move tried before generation.
+    TableMove = 4,
+    /// The list and the shallow rules' node half, before the loop.
+    Loop = 5,
+    /// One place of the loop and what the node did with it.
+    Place = 6,
+    /// The late move gate's features and score.
+    Gate = 7,
+    /// One pass of `windowed`: the scout, the probe or the proof.
+    Pass = 8,
+    /// The node returning, and why.
+    End = 9,
+    /// Quiescence entered: the window and the standing evaluation.
+    QEnter = 10,
+    /// Quiescence's list: generated, kept by the delta filter, the front.
+    QList = 11,
+    /// One place of quiescence's loop.
+    QPlace = 12,
+}
+
+/// One event of a sampled node, in the `search` stream.
+pub(crate) fn node(event: Node, x: u8, y: u8, z: u8, p: i32, v: [i64; 6]) {
+    let context = CONTEXT.with(Cell::get);
+    if !context.sampled {
+        return;
+    }
+    SINK.with(|sink| {
+        let mut sink = sink.borrow_mut();
+        let Some(sink) = sink.as_mut() else {
+            return;
+        };
+        let mut record = [0u8; 64];
+        record[0..8].copy_from_slice(&context.node.to_le_bytes());
+        record[8] = event as u8;
+        record[9] = x;
+        record[10] = y;
+        record[11] = z;
+        record[12..16].copy_from_slice(&p.to_le_bytes());
+        for (i, value) in v.iter().enumerate() {
+            record[16 + 8 * i..24 + 8 * i].copy_from_slice(&value.to_le_bytes());
+        }
+        sink.write(Stream::Search, &record);
+    });
+}
+
+/// A move as the `search` stream packs it.
+pub(crate) fn play_word(m: Option<Play>) -> i64 {
+    packed_play(m)
+}
+
+/// A node entered, for the `table` stream (every node, sampled or not) and,
+/// at a full width node, the `search` stream's `Enter`. `flags` holds
+/// `can_null`, the root bounds and whether the side is in check.
+pub(crate) fn visit(kind: Kind, board: &Board, depth: u8, alpha: i16, beta: i16, flags: u8) {
+    let context = CONTEXT.with(Cell::get);
+    let full = kind == Kind::Full;
+    // the draw tests as alpha_beta asks them: the repetition only when the
+    // counter has not expired
+    let expired = full && board.halfmove_clock() >= 100;
+    // muted, so the trace's own test is not counted as a read the search made
+    let repeated = full && !expired && muted(|| board.has_repeated());
+    let flags = flags | u8::from(expired) << 4 | u8::from(repeated) << 5;
+    SINK.with(|sink| {
+        let mut sink = sink.borrow_mut();
+        let Some(sink) = sink.as_mut() else {
+            return;
+        };
+        let mut record = [0u8; 32];
+        record[0..4].copy_from_slice(&(context.node as u32).to_le_bytes());
+        record[4] = if full { 0 } else { 1 };
+        record[5] = u8::MAX;
+        record[7] = depth;
+        record[8..16].copy_from_slice(&board.key.to_le_bytes());
+        record[16..18].copy_from_slice(&alpha.to_le_bytes());
+        record[18..20].copy_from_slice(&beta.to_le_bytes());
+        record[20] = u8::try_from(board.line_ply).unwrap_or(u8::MAX);
+        record[21] = flags;
+        record[22..24].copy_from_slice(&sink.position.to_le_bytes());
+        let halfmove = u16::try_from(board.halfmove_clock()).unwrap_or(u16::MAX);
+        record[24..26].copy_from_slice(&halfmove.to_le_bytes());
+        sink.write(Stream::Table, &record);
+    });
+    if full {
+        node(
+            Node::Enter,
+            depth,
+            flags,
+            u8::try_from(board.line_ply).unwrap_or(u8::MAX),
+            i32::try_from(board.halfmove_clock()).unwrap_or(i32::MAX),
+            [alpha.into(), beta.into(), 0, 0, 0, 0],
+        );
+    }
+}
+
+/// A record of the `table` stream from the table itself (a probe, a store
+/// or a lookup), stamped with the node asking.
+pub(crate) fn table(mut record: [u8; 32]) {
+    let context = CONTEXT.with(Cell::get);
+    record[0..4].copy_from_slice(&(context.node as u32).to_le_bytes());
+    // a store's record holds the key's slice in its last four bytes
+    let at = if matches!(record[4], 3 | 4) { 25 } else { 29 };
+    record[at] = context.kind;
+    SINK.with(|sink| {
+        if let Some(sink) = sink.borrow_mut().as_mut() {
+            sink.write(Stream::Table, &record);
+        }
     });
 }
 

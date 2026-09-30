@@ -792,7 +792,7 @@ Recording stops, and the search carries on, when a stream reaches `cap`
 records. Recording changes nothing: `recording_leaves_the_measured_search_where_it_was`
 in `arche-core/src/trace.rs` asserts the node counts.
 
-Eleven streams are written to `out` (`trace` by default), each a file of fixed
+Thirteen streams are written to `out` (`trace` by default), each a file of fixed
 width little endian records behind a 24 byte header, with `manifest.json`
 beside them:
 
@@ -854,6 +854,21 @@ beside them:
 - `calls`: every list of every node, sampled or not, as the position's key
   and a hash of the moves (and of the quiet keys), so a repeat over the whole
   run can be counted. It is written only when named.
+- `search`: the search node's own work at each sampled node, one record an
+  event: a full width node's window, depth and draw tests on entry, the
+  window after mate distance pruning, the shortcuts' gates and answers (the
+  evaluation, reverse futility's floor, the pass's reduction and score), the
+  table's move, the list and the shallow rules' node half, each place of the
+  loop (what the node did with it, the searched count, alpha, the reduction,
+  the child's score), the late move gate's features and score, each pass of
+  `windowed`, and why the node returned and with what. Quiescence records its
+  window and standing evaluation, its list and each place of its loop.
+- `table`: every node entered (its key, window, depth, ply and fifty move
+  counter, and the draw tests' answers), every probe of the transposition
+  table (the bucket, the slot it found, the entry's score, depth, flags and
+  age, and what the probe answered) and every store (the slot, the bucket as
+  the store found it, and whether the entry landed). It covers the whole run,
+  sampled or not, so it is written only when named.
 
 A call site is the line that made the call, found by `track_caller` through
 the board's helpers, so a probe `see` makes through `sliders_onto` is
