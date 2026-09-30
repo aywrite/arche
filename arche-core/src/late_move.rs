@@ -279,9 +279,10 @@ pub(crate) struct Node {
     /// where the killer slots are read.
     pub(crate) ply: Option<usize>,
     pub(crate) tt: census::Table,
-    /// The node's static evaluation: what the shortcuts read, or none
-    /// until the first move that needs it. The recorders take their own,
-    /// so a node the gate scores nothing at never computes one.
+    /// The node's static evaluation: what the table's entry held or the
+    /// shortcuts read, or none until the first move that needs it. The
+    /// recorders take their own, so a node the gate scores nothing at never
+    /// computes one.
     pub(crate) eval: Option<Score>,
     /// The node's history denominator. Held rather than walked again so
     /// that the row a staging records says what the gate scored: a child
@@ -294,8 +295,8 @@ pub(crate) struct Node {
 }
 
 impl Node {
-    /// The node before its first move, with `eval` as the shortcuts left
-    /// it. The two rule halves are built here and handed alpha.
+    /// The node before its first move, with `eval` as the table and the
+    /// shortcuts left it. The two rule halves are built here and handed alpha.
     // two past clippy's limit: every fact the rules read, once
     #[allow(clippy::too_many_arguments)]
     pub(crate) fn new(

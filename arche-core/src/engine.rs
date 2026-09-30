@@ -14,7 +14,9 @@ use crate::play::Play;
 use crate::recorder::{Sampler, Window};
 use crate::reduction;
 use crate::residual::{Sample, Shortcut};
-use crate::transposition::{DEFAULT_TABLE_BYTES, Probe, SignatureCounters, TranspositionTable};
+use crate::transposition::{
+    DEFAULT_TABLE_BYTES, NO_EVAL, Probe, SignatureCounters, TranspositionTable,
+};
 use crate::value::{
     MateDistanceWindow, Taint, Value, below_the_mate_window, is_mate, mate_distance_window,
 };
@@ -1850,7 +1852,7 @@ impl AlphaBeta {
                 if score > alpha {
                     if score >= beta {
                         let value = taint.stamp(score);
-                        self.store_cutoff(m, value, 0);
+                        self.store_cutoff(m, value, 0, standing.unwrap_or(NO_EVAL));
                         return Ok(value);
                     }
                     alpha = score;
@@ -1864,7 +1866,13 @@ impl AlphaBeta {
 
         let value = taint.stamp(best);
         if let Some(play) = best_move {
-            self.store_answer(play, value, 0, alpha != old_alpha);
+            self.store_answer(
+                play,
+                value,
+                0,
+                alpha != old_alpha,
+                standing.unwrap_or(NO_EVAL),
+            );
         }
         Ok(value)
     }
@@ -1894,7 +1902,9 @@ impl AlphaBeta {
     /// leaves whatever it read in the node's taint.
     ///
     /// `eval_memo` is filled wherever the gates passed and an evaluation
-    /// was read, fired or not, so the move loop does not evaluate twice.
+    /// was read, fired or not, so the move loop does not evaluate twice. It
+    /// arrives filled where the node's table entry held the evaluation, and
+    /// is then read rather than computed.
     /// Alpha is read only for the open window and by the sampler.
     // two arguments past clippy's limit: the root bounds and the evaluation
     // handed back to the loop.
@@ -1927,7 +1937,10 @@ impl AlphaBeta {
         {
             return Ok(None);
         }
-        let eval = self.eval();
+        let eval = match *eval_memo {
+            Some(eval) => eval,
+            None => self.eval(),
+        };
         *eval_memo = Some(eval);
 
         // the margin proves `eval - margin` as a lower bound, and fail soft
@@ -2109,10 +2122,11 @@ impl AlphaBeta {
         taint: Taint,
         score: Score,
         depth: u8,
+        static_eval: Score,
     ) -> Value {
         self.remember_cutoff(m, tried, depth);
         let value = taint.stamp(score);
-        self.store_cutoff(m, value, depth);
+        self.store_cutoff(m, value, depth, static_eval);
         value
     }
 
@@ -2126,6 +2140,7 @@ impl AlphaBeta {
         tt: Play,
         facts: NodeFacts,
         answer: &mut NodeAnswer,
+        static_eval: Score,
     ) -> Result<Option<Value>, Aborted> {
         let Some(value) = self.search_child(
             &tt,
@@ -2155,6 +2170,7 @@ impl AlphaBeta {
             answer.taint,
             value.score,
             facts.depth,
+            static_eval,
         )))
     }
 
@@ -2308,11 +2324,11 @@ impl AlphaBeta {
     }
 
     /// A cutoff's value to the table, when the taint policy allows.
-    fn store_cutoff(&mut self, m: &Play, value: Value, depth: u8) {
+    fn store_cutoff(&mut self, m: &Play, value: Value, depth: u8, static_eval: Score) {
         if self.keeps(value) {
-            let landed = self
-                .transpositions
-                .record_cutoff(&self.board, *m, value, depth);
+            let landed =
+                self.transpositions
+                    .record_cutoff(&self.board, *m, value, depth, static_eval);
             self.ghi.count_store(landed, value);
         }
     }
@@ -2321,14 +2337,21 @@ impl AlphaBeta {
     /// best move with its score where a move raised alpha, and as a
     /// ceiling where none did, the move beside it then being only the one
     /// that came closest.
-    fn store_answer(&mut self, play: Play, value: Value, depth: u8, raised_alpha: bool) {
+    fn store_answer(
+        &mut self,
+        play: Play,
+        value: Value,
+        depth: u8,
+        raised_alpha: bool,
+        static_eval: Score,
+    ) {
         if self.keeps(value) {
             let landed = if raised_alpha {
                 self.transpositions
-                    .record_best(&self.board, play, value, depth)
+                    .record_best(&self.board, play, value, depth, static_eval)
             } else {
                 self.transpositions
-                    .record_ceiling(&self.board, play, value, depth)
+                    .record_ceiling(&self.board, play, value, depth, static_eval)
             };
             self.ghi.count_store(landed, value);
         }
@@ -2431,8 +2454,9 @@ impl AlphaBeta {
         };
         let mut taint = Taint::default();
         // the node's static evaluation, filled by the shortcuts and read by
-        // the late move decision
-        let mut eval: Option<Score> = None;
+        // the late move decision, or found in the table's entry
+        let table_eval = self.transpositions.probed_eval(self.board.key);
+        let mut eval: Option<Score> = (table_eval != NO_EVAL).then_some(table_eval);
         if let Some(value) = self.shortcuts(
             alpha,
             beta,
@@ -2445,6 +2469,8 @@ impl AlphaBeta {
         )? {
             return Ok(value);
         }
+        // what the node's stores carry into the table
+        let static_eval = eval.unwrap_or(NO_EVAL);
 
         let mut answer = NodeAnswer::open(alpha, beta, root_bounds, taint);
         let table_move = pv_play.filter(|tt| self.board.is_pseudo_legal(tt));
@@ -2458,7 +2484,7 @@ impl AlphaBeta {
             entered_at,
         };
         if let Some(tt) = table_move {
-            if let Some(value) = self.search_table_move(tt, facts, &mut answer)? {
+            if let Some(value) = self.search_table_move(tt, facts, &mut answer, static_eval)? {
                 return Ok(value);
             }
         }
@@ -2552,7 +2578,14 @@ impl AlphaBeta {
                         .enumerate()
                         .filter(|(place, _)| made.holds(*place))
                         .map(|(_, tried)| tried);
-                    return Ok(self.cutoff(m, tried, answer.taint, value.score, depth));
+                    return Ok(self.cutoff(
+                        m,
+                        tried,
+                        answer.taint,
+                        value.score,
+                        depth,
+                        static_eval,
+                    ));
                 }
                 Reached::Alpha => {
                     // the dropped moves stay dropped only while alpha is
@@ -2591,7 +2624,7 @@ impl AlphaBeta {
             .best_move
             .expect("a legal move was found, so one of them is best");
         let value = answer.taint.stamp(answer.best);
-        self.store_answer(play, value, depth, answer.raised_alpha());
+        self.store_answer(play, value, depth, answer.raised_alpha(), static_eval);
         Ok(value)
     }
 

@@ -35,6 +35,48 @@ mod search {
         AlphaBeta::with_table_bytes(board, TABLE_BYTES)
     }
 
+    /// A full width node takes its static evaluation from the entry its
+    /// probe finds, so what the search stores beside a position has to be
+    /// that position's evaluation. After a search, every position within two
+    /// plies of the root whose entry holds one is held to the evaluation
+    /// computed afresh.
+    #[test]
+    fn a_table_entry_holds_its_own_positions_evaluation() {
+        fn stored(e: &AlphaBeta, board: &Board) -> Option<Score> {
+            let _ = e
+                .transpositions
+                .probe(board, Score::MIN + 1, Score::MAX - 1, 0, false, false);
+            let found = e.transpositions.probed_eval(board.key);
+            (found != crate::transposition::NO_EVAL).then_some(found)
+        }
+        for fen in fens::CORE {
+            let mut e = engine(Board::from_fen(fen).unwrap());
+            completed(e.search(6));
+            let mut board = e.board.clone();
+            let mut positions = vec![board.clone()];
+            for m in &board.generate_moves() {
+                if board.make_move(m) {
+                    positions.push(board.clone());
+                    for reply in &board.generate_moves() {
+                        if board.make_move(reply) {
+                            positions.push(board.clone());
+                            board.undo_move();
+                        }
+                    }
+                    board.undo_move();
+                }
+            }
+            let mut held = 0;
+            for position in &positions {
+                if let Some(found) = stored(&e, position) {
+                    assert_eq!(found, crate::eval::eval(position), "{}", fen);
+                    held += 1;
+                }
+            }
+            assert!(held > 0, "no entry held an evaluation in {}", fen);
+        }
+    }
+
     #[test]
     fn a_resized_table_is_the_size_asked_for_and_still_searched_on() {
         let mut e = engine(Board::new());
@@ -238,10 +280,13 @@ mod search {
         let game = Board::from_fen("k7/8/8/3q4/8/8/3R4/K7 w - - 0 1").unwrap();
         let mut e = engine(game);
         let quiet = play_named(&e.board, "a1b1");
-        assert!(
-            e.transpositions
-                .record_best(&e.board, quiet, Value::clean(0), 14)
-        );
+        assert!(e.transpositions.record_best(
+            &e.board,
+            quiet,
+            Value::clean(0),
+            14,
+            crate::transposition::NO_EVAL
+        ));
         let result = completed(e.search(2));
         let takes = play_named(&e.board, "d2d5");
         assert_eq!(result.best_move, takes);
@@ -280,20 +325,26 @@ mod search {
         let (best, best_score) = scored[2];
 
         let mut e = engine(Board::from_fen(FEN).unwrap());
-        assert!(
-            e.transpositions
-                .record_best(&e.board, middle, Value::clean(0), SEEDED_DEPTH)
-        );
+        assert!(e.transpositions.record_best(
+            &e.board,
+            middle,
+            Value::clean(0),
+            SEEDED_DEPTH,
+            crate::transposition::NO_EVAL
+        ));
         let result = completed(e.search(1));
         assert_eq!(result.best_move, best);
         assert_eq!(result.score, best_score);
         assert_eq!(e.nodes, 9);
 
         let mut e = engine(Board::from_fen(FEN).unwrap());
-        assert!(
-            e.transpositions
-                .record_best(&e.board, best, Value::clean(0), SEEDED_DEPTH)
-        );
+        assert!(e.transpositions.record_best(
+            &e.board,
+            best,
+            Value::clean(0),
+            SEEDED_DEPTH,
+            crate::transposition::NO_EVAL
+        ));
         let result = completed(e.search(1));
         assert_eq!(result.best_move, best);
         assert_eq!(result.score, best_score);
@@ -333,7 +384,8 @@ mod search {
             &e.board,
             reply,
             Value::clean(-alpha - 1),
-            SEEDED_DEPTH
+            SEEDED_DEPTH,
+            crate::transposition::NO_EVAL
         ));
         let Ok(value) = e.windowed(alpha, beta, 2, false, 0, RootBounds::Neither, None) else {
             panic!("an unlimited search aborted");
@@ -1548,10 +1600,13 @@ mod search {
         let mut trees = Vec::new();
         for play in captures {
             let mut e = reference(board.clone());
-            assert!(
-                e.transpositions
-                    .record_best(&e.board, play, Value::tainted(0), 1)
-            );
+            assert!(e.transpositions.record_best(
+                &e.board,
+                play,
+                Value::tainted(0),
+                1,
+                crate::transposition::NO_EVAL
+            ));
             e.quiescence_value();
             assert_eq!(e.ghi().refused_cutoffs, 1, "the seed was not refused");
             trees.push(e.nodes);
@@ -1576,18 +1631,24 @@ mod search {
                 assert!(board.make_move(&play), "failed to play {}", name);
             }
             let any = play_named(&board, "b1c1");
-            assert!(
-                e.transpositions
-                    .record_best(&board, any, Value::tainted(0), 9)
-            );
+            assert!(e.transpositions.record_best(
+                &board,
+                any,
+                Value::tainted(0),
+                9,
+                crate::transposition::NO_EVAL
+            ));
             // the root's entry names the king move, so the seeded line is
             // searched first, at the open window, before standing pat could
             // end the frame
             let king = play_named(&e.board, "a1b1");
-            assert!(
-                e.transpositions
-                    .record_best(&e.board, king, Value::clean(0), 9)
-            );
+            assert!(e.transpositions.record_best(
+                &e.board,
+                king,
+                Value::clean(0),
+                9,
+                crate::transposition::NO_EVAL
+            ));
             // the seeding went straight into the table, which counts
             // nothing, so every tainted store here is the search's
             completed(e.search(1));
@@ -2537,10 +2598,13 @@ mod search {
         let mut board = e.board.clone();
         for name in cycle.iter().cycle().take(16) {
             let play = play_named(&board, name);
-            assert!(
-                e.transpositions
-                    .record_best(&board, play, Value::clean(0), SEEDED_DEPTH)
-            );
+            assert!(e.transpositions.record_best(
+                &board,
+                play,
+                Value::clean(0),
+                SEEDED_DEPTH,
+                crate::transposition::NO_EVAL
+            ));
             assert!(board.make_move(&play), "failed to play {}", name);
         }
 
@@ -2554,10 +2618,13 @@ mod search {
         let mut board = e.board.clone();
         for name in ["c3d4", "f8g8"] {
             let play = play_named(&board, name);
-            assert!(
-                e.transpositions
-                    .record_best(&board, play, Value::clean(0), SEEDED_DEPTH)
-            );
+            assert!(e.transpositions.record_best(
+                &board,
+                play,
+                Value::clean(0),
+                SEEDED_DEPTH,
+                crate::transposition::NO_EVAL
+            ));
             assert!(board.make_move(&play), "failed to play {}", name);
         }
         assert!(board.fifty_move_expired());
@@ -2572,10 +2639,13 @@ mod search {
         let a2 = 8;
         let a5 = 32;
         let colliding = Play::new(a2, a5, None, None, false, false);
-        assert!(
-            e.transpositions
-                .record_best(&e.board, colliding, Value::clean(0), SEEDED_DEPTH)
-        );
+        assert!(e.transpositions.record_best(
+            &e.board,
+            colliding,
+            Value::clean(0),
+            SEEDED_DEPTH,
+            crate::transposition::NO_EVAL
+        ));
 
         assert_eq!(format!("{}", e.pv_line()), "");
     }
@@ -2586,10 +2656,13 @@ mod search {
         // what the engine means to play
         let mut e = engine(Board::new());
         let play = play_named(&e.board, "e2e4");
-        assert!(
-            e.transpositions
-                .record_best(&e.board, play, Value::clean(0), 0)
-        );
+        assert!(e.transpositions.record_best(
+            &e.board,
+            play,
+            Value::clean(0),
+            0,
+            crate::transposition::NO_EVAL
+        ));
 
         assert_eq!(format!("{}", e.pv_line()), "");
     }
@@ -2601,10 +2674,13 @@ mod search {
         let board = Board::from_fen("4r2k/8/8/8/8/8/4N3/4K3 w - - 0 1").unwrap();
         let mut e = engine(board);
         let pinned = play_named(&e.board, "e2d4");
-        assert!(
-            e.transpositions
-                .record_best(&e.board, pinned, Value::clean(0), SEEDED_DEPTH)
-        );
+        assert!(e.transpositions.record_best(
+            &e.board,
+            pinned,
+            Value::clean(0),
+            SEEDED_DEPTH,
+            crate::transposition::NO_EVAL
+        ));
 
         assert_eq!(format!("{}", e.pv_line()), "");
     }
@@ -2641,10 +2717,13 @@ mod search {
             }
             let play =
                 chosen.unwrap_or_else(|| panic!("nothing carries the line on at ply {}", ply));
-            assert!(
-                e.transpositions
-                    .record_best(&board, play, Value::clean(0), SEEDED_DEPTH)
-            );
+            assert!(e.transpositions.record_best(
+                &board,
+                play,
+                Value::clean(0),
+                SEEDED_DEPTH,
+                crate::transposition::NO_EVAL
+            ));
             assert!(board.make_move(&play), "failed to play {}", play);
         }
 
