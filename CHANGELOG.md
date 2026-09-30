@@ -2,6 +2,71 @@
 
 All notable changes to this project will be documented in this file.
 
+## [0.4.8-rc.1] - 2026-09-30
+
+### Features
+
+- *(uci)* Add a debug log of every line read and said
+- *(search)* Widen the late move pruning band to -5457 [bench 5769245]
+- *(eval)* Report how the tuner's L-BFGS stopped [bench 5769245]
+- *(eval)* Refit the pair term's factors at a weaker ridge of 3e-7 [bench 5966188] [elo +10 ±7 (6000 games, 10+0.1, vs d073151)]
+
+### Bug Fixes
+
+- *(uci)* Answer an isready read behind a queued go infinite
+- *(search)* Score a stalemate at the quiescence horizon as a draw [bench 6369864] [elo +3 ±8 (sprt [-10, 0] passed, 3000 games, 10+0.1, vs e01fb9a)]
+- *(board)* Stop the swap walk at its last slot rather than write past it [bench 5769245]
+- *(board)* Read a move name's promotion piece whatever its case [bench 5769245]
+- *(uci)* Drop a line that is not utf-8 rather than leave the session
+- *(uci)* Search a depth of zero or less as depth one
+- *(uci)* Refuse a debug log path that is not a regular file
+- *(board)* Try a promotion or an en passant capture from the table before generating [elo -4 ±10 (sprt [-10, 0] inconclusive, 2000 games, 10+0.1, vs ffdb1f0)] [bench 5965973]
+
+### Performance
+
+- *(eval)* Weigh mobility and the king attack zone at each piece in the shared walk [bench 6369864] [speed +0.4% (bench nps, 95% interval -0.8% to +1.6%, 60 interleaved rounds over shuffled layouts vs d1beb6b)]
+- *(board)* Read the static exchange evaluation from a table of attacker counts [bench 6369864] [speed +2.1% (bench nps, 95% interval +0.8% to +3.2%, 60 interleaved rounds over shuffled layouts vs d1beb6b)]
+- *(board)* Read a piece's key, piece square value and factors from one row per square [bench 6369864] [speed +2.3% (bench nps, 95% interval +0.5% to +4.0%, 60 interleaved rounds over shuffled layouts vs 9d71072)]
+- *(board)* Test a king step's legality before making the move [bench 6369864] [speed +0.9% (bench nps, 95% interval -0.7% to +2.6%, 60 interleaved rounds over shuffled layouts vs 4a05e83)]
+- *(board)* Restore the pawn key and accumulator by copy in the unmake [bench 6369864] [speed +0.2% (bench nps, 95% interval -2.1% to +2.5%, 60 interleaved rounds over shuffled layouts vs 9f0d56f)]
+- *(search)* Generate captures ahead of quiet moves so the ordering keys only the captures [bench 5769245] [speed +5.4% (bench nps, 95% interval +3.5% to +7.2%, 60 interleaved rounds over shuffled layouts vs cc865ba)]
+- *(search)* Key the quiet moves four at a time with SSE and pick the least by a vector minimum [bench 5769245] [speed +0.3% (bench nps, 95% interval -1.3% to +2.1%, 60 interleaved rounds over shuffled layouts vs fe513cb)]
+- *(search)* Probe a transposition table bucket with one SSE2 key compare and a generation mask [bench 5966188] [speed +0.6% (bench nps, 95% interval -0.9% to +2.0%, 60 interleaved rounds over shuffled layouts vs f22a1fe)]
+- *(search)* Hoist the node checks of late move reductions and of futility and move count pruning out of the move loop [bench 5966188] [speed -0.8% (bench nps, 95% interval -2.2% to +0.5%, 60 interleaved rounds over shuffled layouts vs 44c7159)]
+- *(search)* Step over the pruned quiet moves in one jump rather than one place at a time [bench 5966188] [speed +0.7% (bench nps, 95% interval -0.8% to +2.0%, 60 interleaved rounds over shuffled layouts vs 92829a8)]
+
+### Refactor
+
+- *(search)* Count the transposition table's cutoffs and stores on the searcher [bench 6407589]
+- *(board)* Read the swap table's piece values off the swap's own [bench 5966188]
+- *(uci)* Dispatch the binary's commands from one array of instruments
+- *(search)* Move the search's tests into a file of their own [bench 5966188]
+- *(search)* Key the killers by comparing indexes rather than lending their ranks to the history [bench 5966188]
+- *(search)* Carry the node's evaluation memo as a Score [bench 5966188]
+- *(search)* Name the four states of the root bounds [bench 5966188]
+- *(search)* Split alpha_beta into named steps and put each instrument behind one call [bench 5966188]
+- *(board)* Shrink the history ring from 1,024 plies to 256 [bench 5965973]
+
+### Documentation
+
+- *(eval)* Restate mobility's cost against the 5% budget at 8f9dafe
+- *(uci)* Shorten the comments on the debug log, the isready fix and the games suite
+- *(board)* Shorten the comments on the swap table, the kept stack and the king step [bench 5769245]
+- *(search)* Shorten the comments on the SSE quiet keying and the stalemate test [bench 5769245]
+- *(board)* Say why the move generator's writes are sound whatever the list held [bench 5966188]
+
+### Development
+
+- *(search)* Pin how quiescence scores a stalemate at the horizon
+- *(bench)* Add a games suite searched to a node budget beside the bench
+- *(docs)* Correct the documentation the changes since 0.4.7 left behind
+- *(uci)* Hold a stop read while idle to being counted like any other
+- *(ci)* Test the quiet ordering's scalar forms on the baseline x86-64 target
+- *(search)* Check in debug builds that the killers' lent ranks are put back [bench 5966188]
+- *(board)* Check the static exchange's fast exits against the walk in debug builds [bench 5966188]
+- *(deps)* Bump the mache actions from v0.5.0 to v0.7.1
+- *(ci)* Name the 40/15 scale through mache rather than rewriting its line
+
 ## [0.4.7] - 2026-09-27
 
 ### Features
