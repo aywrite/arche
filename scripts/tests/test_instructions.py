@@ -80,6 +80,32 @@ def test_differing_counts_split_the_change_into_nodes_and_cost(tmp_path, capsys)
     assert "change           -1.00%  -10.00%   +10.00%" in out
 
 
+def test_the_verdict_holds_the_change_against_an_incidental_edit(tmp_path, capsys):
+    valgrind = fake_valgrind(tmp_path)
+    base = engine(tmp_path, "base", "1,000,000", 1000)
+    within = engine(tmp_path, "within", "994,000", 1000)
+    beyond = engine(tmp_path, "beyond", "990,000", 1000)
+    assert instructions.main([str(base), str(within), "--valgrind", str(valgrind)]) == 0
+    assert "within ±0.7%" in capsys.readouterr().out
+    assert instructions.main([str(base), str(beyond), "--valgrind", str(valgrind)]) == 0
+    assert "fewer instructions, beyond the ±0.7%" in capsys.readouterr().out
+
+
+def test_the_band_is_inclusive_and_a_rise_is_named():
+    base = instructions.Counted(1_000_000, 1000)
+    edge = instructions.verdict(base, instructions.Counted(1_007_000, 1000))
+    assert edge.startswith("within")
+    rise = instructions.verdict(base, instructions.Counted(1_008_000, 1000))
+    assert rise.startswith("more instructions")
+
+
+def test_the_verdict_stands_aside_when_the_trees_differ():
+    said = instructions.verdict(
+        instructions.Counted(1_000_000, 1000), instructions.Counted(900_000, 900)
+    )
+    assert said.startswith("the trees differ")
+
+
 def test_a_run_with_no_summary_is_named_rather_than_a_traceback(tmp_path):
     quiet = tmp_path / ("quiet.cmd" if sys.platform == "win32" else "quiet")
     quiet.write_text("@echo off\r\n" if sys.platform == "win32" else "#!/bin/sh\n")
