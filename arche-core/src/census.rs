@@ -94,8 +94,9 @@ pub enum Table {
     Miss,
     /// The probe returned a move and the node put it first.
     Move,
-    /// The probe hit, and its move was not one this position could play (a
-    /// signature collision can hand over another position's move).
+    /// The probe hit, and its move was not one this position could play
+    /// before generating (a collision's foreign move, or a castle, which
+    /// `is_pseudo_legal` refuses).
     ScoreOnly,
 }
 
