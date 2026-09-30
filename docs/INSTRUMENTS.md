@@ -788,7 +788,7 @@ Recording stops, and the search carries on, when a stream reaches `cap`
 records. Recording changes nothing: `recording_leaves_the_measured_search_where_it_was`
 in `arche-core/src/trace.rs` asserts the node counts.
 
-Three streams are written to `out` (`trace` by default), each a file of fixed
+Five streams are written to `out` (`trace` by default), each a file of fixed
 width little endian records behind a 24 byte header, with `manifest.json`
 beside them:
 
@@ -799,6 +799,14 @@ beside them:
   square's blocker mask (all the probe reads) and the attack set.
 - `attacks`: every `attackers_to`, which the search reaches only through the
   checkers recompute inside `make_move`.
+- `swaps`: every swap the ordering runs: the list it was run for, the move,
+  the victim, the capturer and the result.
+- `lists`: each move list the ordering is asked for, one record a move in the
+  order `order` left it, then a record for each move the loop comes to and
+  one for the move that cut the node off. The quiet moves are put in order
+  after `order` returns, so a move the loop comes to is named by its squares
+  as well as its index. Together these say how much of each ordering the
+  search read.
 
 A call site is the line that made the call, found by `track_caller` through
 the board's helpers, so a probe `see` makes through `sliders_onto` is
@@ -809,8 +817,9 @@ adds the probes its assertions make.
 
 `scripts/trace/read.py` reads a directory's streams into numpy arrays and
 checks the headers against the manifest. `scripts/trace/replay.py` recomputes
-every probe by walking the rays from its recorded inputs, and checks every
-recorded position is a board. It is written from the rules rather than from
+every probe by walking the rays from its recorded inputs, recomputes every
+swap on its node's recorded position (the ordering runs before the node makes
+a move), and checks every recorded position is a board. It is written from the rules rather than from
 the engine's tables, so a record missing an input fails it. At `every 16` the
 full bench took 3.1 seconds and wrote 699,783 nodes and 6,413,410 probes (260
 MB), and every probe replayed.

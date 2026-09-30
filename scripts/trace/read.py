@@ -49,6 +49,32 @@ LAYOUTS = {
         ("relevant", "<u8"),
         ("result", "<u8"),
     ],
+    "swaps": [
+        ("list", "<u8"),
+        ("node", "<u8"),
+        ("from", "u1"),
+        ("to", "u1"),
+        ("victim", "u1"),
+        ("attacker", "u1"),
+        ("promote", "u1"),
+        ("en_passant", "u1"),
+        ("_1", "<u2"),
+        ("see", "<i4"),
+        ("_2", "<u4"),
+    ],
+    "lists": [
+        ("list", "<u8"),
+        ("node", "<u8"),
+        ("what", "u1"),
+        ("kind", "u1"),
+        ("index", "u1"),
+        ("from", "u1"),
+        ("to", "u1"),
+        ("victim", "u1"),
+        ("promote", "u1"),
+        ("flags", "u1"),
+        ("_", "<u8"),
+    ],
     "attacks": [
         ("node", "<u8"),
         ("site", "<u2"),
@@ -63,6 +89,10 @@ LAYOUTS = {
 }
 
 KINDS = {0: "root", 1: "full", 2: "quiescence"}
+# a `lists` record's `what`
+ORDERED, REACHED, CUTOFF = 0, 1, 2
+# a piece code, pawn to king, and 6 for none
+PIECES = "pnbrqk-"
 
 
 def manifest(directory):
