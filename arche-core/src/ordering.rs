@@ -591,7 +591,7 @@ impl MoveOrdering {
     ) -> usize {
         let run = rest.len() - losing;
         let killers = self.killers[ply];
-        let history = &mut self.history[board.active_color as usize];
+        let history = &self.history[board.active_color as usize];
         let keys = &mut self.quiet_keys[ply];
         let orig = &mut self.quiet_orig[ply];
         orig[..run].copy_from_slice(&rest[..run]);
@@ -599,43 +599,16 @@ impl MoveOrdering {
             .iter()
             .all(|k| k.is_none_or(|k| named_by_its_squares(&k)))
         {
-            // each killer's rank is lent to its own entry for the loop and
-            // put back after it, so a quiet's key is one read and no
-            // compare. Sound only while the history is this search's own:
-            // one shared between threads could not lend its entries
-            let slot = |k: Option<Play>| k.map(|k| ((k.from & 63) as usize, (k.to & 63) as usize));
-            let (first, second) = (slot(killers[0]), slot(killers[1]));
-            let saved = [
-                first.map(|(f, t)| history[f][t]),
-                second.map(|(f, t)| history[f][t]),
-            ];
-            if let Some((f, t)) = second {
-                history[f][t] = QUIET_KILLER[1];
-            }
-            if let Some((f, t)) = first {
-                history[f][t] = QUIET_KILLER[0];
-            }
-            let fours = key_fours(history, &rest[..run], &mut keys[..run]);
+            // a killer is the only quiet on its squares, so a quiet's key is
+            // its history entry unless its index is a killer's, when it is
+            // the killer's rank: one read and two compares. The history is
+            // read and never written here
+            let ranks = KillerRanks::of(killers);
+            let flat = history.as_flattened();
+            let fours = key_fours(flat, &ranks, &rest[..run], &mut keys[..run]);
             for i in fours..run {
-                let m = &rest[i];
-                let entry = history[(m.from & 63) as usize][(m.to & 63) as usize];
-                keys[i] = pack_quiet(entry, i);
+                keys[i] = pack_quiet(ranks.entry(flat, history_index(&rest[i])), i);
             }
-            if let (Some((f, t)), Some(entry)) = (first, saved[0]) {
-                history[f][t] = entry;
-            }
-            if let (Some((f, t)), Some(entry)) = (second, saved[1]) {
-                history[f][t] = entry;
-            }
-            // a lent rank is above any entry the history can hold, so one
-            // not put back shows here
-            debug_assert!(
-                [first, second]
-                    .iter()
-                    .flatten()
-                    .all(|&(f, t)| history[f][t] <= HISTORY_MAX),
-                "a killer's lent rank was left in the history"
-            );
         } else {
             for (i, m) in rest[..run].iter().enumerate() {
                 let bonus = if killers[0] == Some(*m) {
@@ -871,17 +844,19 @@ fn least_from(keys: &[i32; QUIET_KEYS], t: usize, len: usize) -> usize {
     best
 }
 
-/// Key the run's quiets by their history entries four at a time, as far
-/// as whole fours go, and return how many were keyed. The entries are read
-/// one by one; only the indexes are computed four at a time.
+/// Key the run's quiets four at a time, as far as whole fours go, by their
+/// history entries or a killer's rank, and return how many were keyed. The
+/// entries are read one by one; only the indexes are computed four at a
+/// time.
 #[cfg(all(target_arch = "x86_64", target_feature = "sse4.1"))]
 #[inline(always)]
-fn key_fours(history: &[[i32; 64]; 64], quiets: &[Play], keys: &mut [i32]) -> usize {
+fn key_fours(history: &[i32], ranks: &KillerRanks, quiets: &[Play], keys: &mut [i32]) -> usize {
     use core::arch::x86_64::{
-        __m128i, _mm_add_epi32, _mm_and_si128, _mm_cvtepu16_epi32, _mm_cvtsi128_si32,
-        _mm_extract_epi32, _mm_loadu_si128, _mm_maddubs_epi16, _mm_or_si128, _mm_set1_epi8,
-        _mm_set1_epi16, _mm_set1_epi32, _mm_setr_epi8, _mm_setr_epi32, _mm_shuffle_epi8,
-        _mm_slli_epi32, _mm_storeu_si128, _mm_sub_epi32,
+        __m128i, _mm_add_epi32, _mm_and_si128, _mm_blendv_epi8, _mm_cmpeq_epi32,
+        _mm_cvtepu16_epi32, _mm_cvtsi128_si32, _mm_extract_epi32, _mm_loadu_si128,
+        _mm_maddubs_epi16, _mm_or_si128, _mm_set1_epi8, _mm_set1_epi16, _mm_set1_epi32,
+        _mm_setr_epi8, _mm_setr_epi32, _mm_shuffle_epi8, _mm_slli_epi32, _mm_storeu_si128,
+        _mm_sub_epi32,
     };
     // the moves are read as bytes, so a move has to be six of them with
     // no padding, and the squares are found where the compiler put them
@@ -889,7 +864,8 @@ fn key_fours(history: &[[i32; 64]; 64], quiets: &[Play], keys: &mut [i32]) -> us
     const F: i8 = core::mem::offset_of!(Play, from) as i8;
     const T: i8 = core::mem::offset_of!(Play, to) as i8;
     assert!(keys.len() >= quiets.len());
-    let table = history.as_ptr().cast::<i32>();
+    assert!(history.len() == 64 * 64);
+    let table = history.as_ptr();
     let mut i = 0;
     // SAFETY: the cfg on this function checks that the build enables
     // sse4.1, which implies the ssse3 the byte shuffle and the multiply-add
@@ -941,6 +917,8 @@ fn key_fours(history: &[[i32; 64]; 64], quiets: &[Play], keys: &mut [i32]) -> us
         // from times 64 plus to, for each byte pair
         let weights = _mm_set1_epi16(0x0140);
         let four = _mm_set1_epi32(4);
+        let killer_index = ranks.index.map(|index| _mm_set1_epi32(index));
+        let killer_rank = QUIET_KILLER.map(|rank| _mm_set1_epi32(rank));
         let mut place = _mm_setr_epi32(0, 1, 2, 3);
         while i + 4 <= quiets.len() {
             let at = quiets.as_ptr().add(i).cast::<u8>();
@@ -951,12 +929,19 @@ fn key_fours(history: &[[i32; 64]; 64], quiets: &[Play], keys: &mut [i32]) -> us
                 square,
             );
             let index = _mm_cvtepu16_epi32(_mm_maddubs_epi16(squares, weights));
-            let entries = _mm_setr_epi32(
+            let mut entries = _mm_setr_epi32(
                 *table.add(_mm_cvtsi128_si32(index) as usize),
                 *table.add(_mm_extract_epi32::<1>(index) as usize),
                 *table.add(_mm_extract_epi32::<2>(index) as usize),
                 *table.add(_mm_extract_epi32::<3>(index) as usize),
             );
+            // a lane whose index is a killer's takes the killer's rank, the
+            // first killer last as in `entry`; no two quiets share an index
+            // on this path
+            for k in (0..2).rev() {
+                let is_killer = _mm_cmpeq_epi32(index, killer_index[k]);
+                entries = _mm_blendv_epi8(entries, killer_rank[k], is_killer);
+            }
             // the place less the entry above it, as `pack_quiet` makes it
             let key = _mm_sub_epi32(place, _mm_slli_epi32::<6>(entries));
             _mm_storeu_si128(keys.as_mut_ptr().add(i).cast::<__m128i>(), key);
@@ -969,8 +954,50 @@ fn key_fours(history: &[[i32; 64]; 64], quiets: &[Play], keys: &mut [i32]) -> us
 
 #[cfg(not(all(target_arch = "x86_64", target_feature = "sse4.1")))]
 #[inline(always)]
-fn key_fours(_: &[[i32; 64]; 64], _: &[Play], _: &mut [i32]) -> usize {
+fn key_fours(_: &[i32], _: &KillerRanks, _: &[Play], _: &mut [i32]) -> usize {
     0
+}
+
+/// The two killers as the quiet keying reads them: the index each one's
+/// entry has in the side's history, flattened. An empty slot holds an
+/// index no move has, so nothing matches it. Each keys at its
+/// `QUIET_KILLER` rank.
+struct KillerRanks {
+    index: [i32; 2],
+}
+
+/// Past every index a move can have.
+const NO_KILLER: i32 = 64 * 64;
+
+impl KillerRanks {
+    #[inline(always)]
+    fn of(killers: [Option<Play>; 2]) -> Self {
+        let index = |k: Option<Play>| k.map_or(NO_KILLER, |k| history_index(&k) as i32);
+        Self {
+            index: [index(killers[0]), index(killers[1])],
+        }
+    }
+
+    /// What a quiet whose entry sits at `index` keys at: a killer's rank
+    /// when the index is one of theirs, else the entry itself.
+    #[inline(always)]
+    fn entry(&self, history: &[i32], index: usize) -> i32 {
+        if index == self.index[0] as usize {
+            QUIET_KILLER[0]
+        } else if index == self.index[1] as usize {
+            QUIET_KILLER[1]
+        } else {
+            history[index]
+        }
+    }
+}
+
+/// Where a move's entry sits in one side's history, flattened: the from
+/// square times sixty four plus the to square. Both are masked to six
+/// bits, which is what lets the compiler drop the bounds check.
+#[inline(always)]
+fn history_index(m: &Play) -> usize {
+    usize::from(m.from & 63) << 6 | usize::from(m.to & 63)
 }
 
 /// How long a rest `sort_rest` orders by rank. The rank costs a compare
