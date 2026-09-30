@@ -163,8 +163,10 @@ jobs:
         with:
           fetch-depth: 0
 
-      - uses: aywrite/mache/actions/setup@a429bcecb0b5718c0ef9fe8c02f0b360d986635b # v0.5.0
+      - uses: aywrite/mache/actions/setup@e3a59ce295c9dfabb62ddb077e88606d022cc55d # v0.7.1
         id: tools
+        with:
+          book_table: scripts/book.sh
 
       # the cache keeps the dependencies; each side is built from an export of
       # its commit
@@ -182,7 +184,7 @@ jobs:
           scripts/build_at.sh "$CANDIDATE_SHA" tools/new
           scripts/build_at.sh "$BASELINE_SHA" tools/old
 
-      - uses: aywrite/mache/actions/play-shard@a429bcecb0b5718c0ef9fe8c02f0b360d986635b # v0.5.0
+      - uses: aywrite/mache/actions/play-shard@e3a59ce295c9dfabb62ddb077e88606d022cc55d # v0.7.1
         id: play
         with:
           candidate: ${{ inputs.candidate_name }}
@@ -190,6 +192,7 @@ jobs:
           opponent: ${{ inputs.baseline_name }}
           opponent_binary: ./old
           book: ${{ inputs.book }}
+          book_table: scripts/book.sh
           pairs: ${{ inputs.pairs }}
           shards: ${{ inputs.count }}
           shard: ${{ matrix.shard }}
@@ -293,7 +296,7 @@ jobs:
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
 
-      - uses: aywrite/mache/actions/setup@a429bcecb0b5718c0ef9fe8c02f0b360d986635b # v0.5.0
+      - uses: aywrite/mache/actions/setup@e3a59ce295c9dfabb62ddb077e88606d022cc55d # v0.7.1
         with:
           estimator_only: true
 
@@ -307,7 +310,7 @@ jobs:
           pattern: ${{ env.ARTIFACTS }}-shard-*
           path: shards
 
-      - uses: aywrite/mache/actions/summarise-match@a429bcecb0b5718c0ef9fe8c02f0b360d986635b # v0.5.0
+      - uses: aywrite/mache/actions/summarise-match@e3a59ce295c9dfabb62ddb077e88606d022cc55d # v0.7.1
         id: summary
         with:
           games: shards
