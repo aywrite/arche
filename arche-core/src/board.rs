@@ -624,15 +624,18 @@ impl Board {
     /// slot in `transposition` gives the odds), when its move belongs to
     /// another position. Ordering passes such a move over because it matches
     /// nothing generated; playing it is worse, since `make_move` reads the
-    /// capture, promotion and castling fields as a description of this board
-    /// and a foreign move corrupts the position.
+    /// capture, promotion, en passant and castling fields as a description
+    /// of this board and a foreign move corrupts the position.
     ///
-    /// A false no costs nothing (the caller generates anyway), so castling,
-    /// en passant and promotion are refused rather than checked. This is also
-    /// `make_move`'s precondition: keep it stated over the move and the
-    /// position alone.
+    /// A false no costs nothing (the caller generates anyway), so a castle
+    /// is refused rather than checked: it needs the rights, the empty
+    /// squares and the unattacked passes the generator reads, for a move the
+    /// table rarely holds. A promotion is checked, since the table holds one
+    /// at every node of a race to queen, and an en passant capture because
+    /// its check is a square compare. This is also `make_move`'s
+    /// precondition: keep it stated over the move and the position alone.
     pub fn is_pseudo_legal(&self, m: &Play) -> bool {
-        if m.castle || m.en_passant || m.promote.is_some() {
+        if m.castle {
             return false;
         }
 
@@ -646,13 +649,33 @@ impl Board {
         let Some(piece) = self.get_piece_index(m.from) else {
             return false;
         };
+        let attack_masks = &ATTACK_MASKS;
+        // the pawn taken en passant does not stand on the to square, so
+        // the capture test below would refuse the move. The square is the
+        // one a double push just passed over, which is empty, and the pawn
+        // that takes has to attack it
+        if m.en_passant {
+            let attacks = match self.active_color {
+                Color::White => attack_masks.black_pawns[m.from as usize],
+                Color::Black => attack_masks.white_pawns[m.from as usize],
+            };
+            return piece == Piece::Pawn
+                && m.capture == Some(Piece::Pawn)
+                && m.promote.is_none()
+                && self
+                    .en_passant
+                    .is_some_and(|square| square.as_index() == m.to)
+                && attacks.is_bit_set(m.to);
+        }
         // make_move clears exactly the piece the move names
         if m.capture != self.get_piece_index(m.to) {
             return false;
         }
+        if piece != Piece::Pawn && m.promote.is_some() {
+            return false;
+        }
 
         let all_pieces = self.black | self.white;
-        let attack_masks = &ATTACK_MASKS;
         let magic = &MAGIC;
         match piece {
             Piece::Knight => attack_masks.knights[m.from as usize].is_bit_set(m.to),
@@ -665,11 +688,13 @@ impl Board {
             }
             Piece::Pawn => {
                 let (rank, _) = index_to_coordinate(m.from);
-                // a pawn one step from the far rank only ever promotes
-                if match self.active_color {
+                // a pawn one step from the far rank only ever promotes, and
+                // no other pawn does
+                let promotes = match self.active_color {
                     Color::White => rank == 7,
                     Color::Black => rank == 2,
-                } {
+                };
+                if promotes != m.promote.is_some() {
                     return false;
                 }
                 if m.capture.is_some() {
@@ -4110,7 +4135,7 @@ mod perft_edge_cases {
 mod pseudo_legal {
     use super::fens;
     use super::{Board, Play};
-    use crate::misc::Piece;
+    use crate::misc::{Piece, PromotePiece};
 
     /// "d4" to the index the board uses.
     fn sq(name: &str) -> u8 {
@@ -4141,16 +4166,63 @@ mod pseudo_legal {
     ];
 
     /// A move refused here is one the search has to find again the slow
-    /// way; this pins that the three refused kinds are the only ones.
+    /// way; this pins that a castle is the only kind refused.
     #[test]
-    fn accepts_every_generated_move_but_the_refused_kinds() {
+    fn accepts_every_generated_move_but_a_castle() {
         for fen in POSITIONS {
             let board = Board::from_fen(fen).unwrap();
             for m in &board.generate_moves() {
-                let refused_kind = m.castle || m.en_passant || m.promote.is_some();
-                assert_eq!(board.is_pseudo_legal(m), !refused_kind, "{} in {}", m, fen);
+                assert_eq!(board.is_pseudo_legal(m), !m.castle, "{} in {}", m, fen);
             }
         }
+    }
+
+    /// The generated promotions and en passant captures are accepted, and
+    /// the shapes a foreign move of either kind takes are refused.
+    #[test]
+    fn checks_a_promotion_and_an_en_passant_against_the_position() {
+        let promotes = |from, to, capture| {
+            Play::new(
+                sq(from),
+                sq(to),
+                capture,
+                Some(PromotePiece::Queen),
+                false,
+                false,
+            )
+        };
+        // the pawn on d7 can take the bishop on c8 and is blocked by the
+        // queen on d8
+        let board = Board::from_fen(fens::PROMOTIONS).unwrap();
+        assert!(board.is_pseudo_legal(&promotes("d7", "c8", Some(Piece::Bishop))));
+        assert!(!board.is_pseudo_legal(&promotes("d7", "d8", None)));
+        // a promotion claimed for a pawn that is not on the seventh
+        assert!(!board.is_pseudo_legal(&promotes("g2", "g3", None)));
+        // and for a piece that is not a pawn
+        assert!(!board.is_pseudo_legal(&Play::new(
+            sq("e1"),
+            sq("e2"),
+            None,
+            Some(PromotePiece::Queen),
+            false,
+            false
+        )));
+        let push = Board::from_fen("4k3/1P6/8/8/8/8/8/4K3 w - - 0 1").unwrap();
+        assert!(push.is_pseudo_legal(&promotes("b7", "b8", None)));
+        // a push onto the last rank that names no piece to promote to
+        assert!(!push.is_pseudo_legal(&quiet("b7", "b8")));
+
+        let en_passant = "rnbqkbnr/ppp1pppp/8/8/3pP3/8/PPPP1PPP/RNBQKBNR b KQkq e3 0 1";
+        let board = Board::from_fen(en_passant).unwrap();
+        let takes_en_passant =
+            |from, to| Play::new(sq(from), sq(to), Some(Piece::Pawn), None, true, false);
+        assert!(board.is_pseudo_legal(&takes_en_passant("d4", "e3")));
+        // a square the pawn does not attack
+        assert!(!board.is_pseudo_legal(&takes_en_passant("d4", "c3")));
+        // the same move on a board with no en passant square
+        let moved =
+            Board::from_fen("rnbqkbnr/ppp1pppp/8/8/3pP3/8/PPPP1PPP/RNBQKBNR b KQkq - 0 1").unwrap();
+        assert!(!moved.is_pseudo_legal(&takes_en_passant("d4", "e3")));
     }
 
     /// The shapes of foreign move that would corrupt the board if played.
@@ -4269,10 +4341,9 @@ mod random_games {
                     break;
                 }
                 for m in &moves {
-                    let refused_kind = m.castle || m.en_passant || m.promote.is_some();
                     prop_assert_eq!(
                         board.is_pseudo_legal(m),
-                        !refused_kind,
+                        !m.castle,
                         "is_pseudo_legal disagrees about {}",
                         m
                     );
@@ -4668,9 +4739,9 @@ mod play_by_name {
     }
 
     #[test]
-    fn the_moves_is_pseudo_legal_refuses_are_played_by_name() {
-        // castling, en passant and promotion, each checked to be the kind
-        // of move it is named for before it is played
+    fn a_castle_an_en_passant_and_a_promotion_are_played_by_name() {
+        // each checked to be the kind of move it is named for before it is
+        // played; the castle is the kind `is_pseudo_legal` refuses
         let castle = Board::from_fen(fens::KIWIPETE).unwrap();
         assert!(play_named(&castle, "e1g1").castle);
         played(fens::KIWIPETE, "e1g1");
