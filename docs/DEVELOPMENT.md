@@ -448,6 +448,20 @@ here and a loss in the rate. Register allocation alone can move the count by a
 few tenths of a percent. Read the two together: a change the count shows and
 the rate cannot resolve is one in instructions only.
 
+Each pull request's count is read against its own base, so changes too small
+to notice one at a time can add up. The Instruction history workflow, run by
+hand, builds every commit on master's first parent line in a range that
+touched the engine, all with one compiler, and counts each. Its summary gives
+each commit's step from the one before, and the product of the steps that left
+the node count alone, which is the drift in what the code costs with the
+search's changes left out. A new rustc can move the count as far as a commit
+does, so counts made by different compilers are not a series, and a range is
+counted again each time rather than kept. `scripts/instruction_history.py`
+does the counting and the report. Run locally, it builds inside the checkout
+unless `CARGO_TARGET_DIR` points outside it, and inside, the checkout's
+`.cargo/config.toml` applies to every commit's build as well as the commit's
+own.
+
 There are criterion microbenchmarks too, of move generation, perft and the
 search at a fixed depth, for profiling by hand:
 

@@ -1,0 +1,142 @@
+name: Instruction history
+
+# Counts the bench's instructions at every commit on master's first parent
+# line in a range that touched the engine, all built with one compiler in one
+# run, and reports how the count moved from each commit to the next. Run by
+# hand: the counts are only a series when one compiler made them all, so a
+# range is counted again rather than kept (scripts/instruction_history.py).
+
+on:
+  workflow_dispatch:
+    inputs:
+      since:
+        description: The first commit counted, and the one the rest are read from.
+        type: string
+        required: true
+        default: v0.4.6
+      until:
+        description: The last commit counted.
+        type: string
+        required: true
+        default: master
+      depth:
+        description: The bench depth, or empty for each commit's own.
+        type: string
+        required: false
+        default: "11"
+
+permissions:
+  contents: read
+
+jobs:
+  resolve:
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    outputs:
+      chunks: ${{ steps.list.outputs.chunks }}
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          fetch-depth: 0
+      - name: List the commits
+        id: list
+        env:
+          SINCE: ${{ inputs.since }}
+          UNTIL: ${{ inputs.until }}
+        shell: bash
+        run: |
+          since=$(git rev-parse --verify "origin/${SINCE}^{commit}" 2>/dev/null \
+            || git rev-parse --verify "${SINCE}^{commit}")
+          until=$(git rev-parse --verify "origin/${UNTIL}^{commit}" 2>/dev/null \
+            || git rev-parse --verify "${UNTIL}^{commit}")
+          # a commit that touched none of these builds the binary the one
+          # before it did
+          { echo "$since"
+            git rev-list --first-parent --reverse "${since}..${until}" -- \
+              src arche-core Cargo.toml Cargo.lock rust-toolchain.toml .cargo
+          } > commits.txt
+          echo "$(wc -l < commits.txt) commits"
+          # six commits to a job, which takes about a quarter of an hour
+          echo "chunks=$(jq -Rsc 'split("\n") | map(select(length > 0))
+            | [range(0; length; 6) as $i | .[$i:$i + 6] | join(" ")]' commits.txt)" \
+            >> "$GITHUB_OUTPUT"
+      # the report reads a commit on the list with no row as a gap
+      - uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+        with:
+          name: commits
+          path: commits.txt
+
+  count:
+    needs: resolve
+    runs-on: ubuntu-latest
+    timeout-minutes: 60
+    strategy:
+      fail-fast: false
+      matrix:
+        commits: ${{ fromJSON(needs.resolve.outputs.chunks) }}
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          fetch-depth: 0
+      - name: Install valgrind
+        run: |
+          sudo apt-get update -qq
+          sudo apt-get install -y -qq --no-install-recommends valgrind > /dev/null
+      - name: Count
+        env:
+          COMMITS: ${{ matrix.commits }}
+          DEPTH: ${{ inputs.depth }}
+          # outside the checkout, so the checkout's .cargo/config.toml is not
+          # merged into every commit's build (build_at.sh)
+          CARGO_TARGET_DIR: ${{ runner.temp }}/target
+        shell: bash
+        run: |
+          read -ra commits <<< "$COMMITS"
+          echo "NAME=counts-${commits[0]:0:10}" >> "$GITHUB_ENV"
+          python3 scripts/instruction_history.py count "${commits[@]}" \
+            --out counts.csv ${DEPTH:+--depth "$DEPTH"}
+      # the rows a failed chunk did count are still worth having
+      - if: ${{ !cancelled() }}
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+        with:
+          name: ${{ env.NAME }}
+          path: counts.csv
+
+  report:
+    needs: count
+    if: ${{ !cancelled() }}
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          fetch-depth: 0
+      - uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v8.0.1
+        with:
+          pattern: counts-*
+          path: counts
+      - uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v8.0.1
+        with:
+          name: commits
+      - name: Report
+        shell: bash
+        run: |
+          shopt -s nullglob
+          files=(counts/*/counts.csv)
+          if [ "${#files[@]}" -eq 0 ]; then
+            echo "No commit was counted, see the count jobs' logs." \
+              | tee -a "$GITHUB_STEP_SUMMARY"
+            exit 1
+          fi
+          python3 scripts/instruction_history.py report "${files[@]}" \
+            --commits commits.txt | tee -a "$GITHUB_STEP_SUMMARY"
+          python3 - "${files[@]}" > history.csv <<'EOF'
+          import sys
+          print(open(sys.argv[1]).readline(), end="")
+          for path in sys.argv[1:]:
+              print("".join(open(path).readlines()[1:]), end="")
+          EOF
+      - uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+        with:
+          name: instruction-history
+          path: history.csv
