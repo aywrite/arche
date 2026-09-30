@@ -29,8 +29,8 @@ use std::time;
 /// has left, and the reported line is walked no further. It also sizes the
 /// ordering's per ply tables.
 ///
-/// It sits well inside the board's history ring (1024 plies, less the
-/// fifty move window) and the mate score window (a thousand under the mate
+/// It sits inside the board's history ring (256 plies, less the fifty
+/// move window) and the mate score window (a thousand under the mate
 /// score). Sixty four would fit; it was set where a play change need not
 /// move it again.
 pub const MAX_PLY: u8 = 128;

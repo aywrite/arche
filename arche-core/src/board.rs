@@ -158,19 +158,20 @@ const NULL_PLAY: Play = Play {
 
 // Plies of history the board records, as a ring. Only the fifty move window
 // is ever read back, so this has to cover that plus the depth of a search,
-// not the whole game.
-const MAX_GAME_SIZE: usize = 1024;
+// not the whole game. Every board carries it, so it is no longer than that.
+const HISTORY_PLIES: usize = 256;
+const _: () = assert!(HISTORY_PLIES > 100 + crate::engine::MAX_PLY as usize + 1);
 
-/// Where a ply is recorded. A game past MAX_GAME_SIZE plies, or a position
+/// Where a ply is recorded. A game past HISTORY_PLIES plies, or a position
 /// parsed at a move number past it, wraps rather than running off the end.
 fn history_index(ply: usize) -> usize {
-    ply % MAX_GAME_SIZE
+    ply % HISTORY_PLIES
 }
 
 /// The value a position key starts from, before any piece or right is folded
 /// into it. Arbitrary, it only has to be the same everywhere.
 const INITIAL_KEY: u64 = 2_340_980_257_093;
-static EMPTY_HISTORY: [Option<PlayState>; MAX_GAME_SIZE] = [None; MAX_GAME_SIZE];
+static EMPTY_HISTORY: [Option<PlayState>; HISTORY_PLIES] = [None; HISTORY_PLIES];
 
 /// What a move changes that the unmake restores by copy rather than by
 /// reverse update: the pawn key and the accumulator, as they stood before
@@ -492,7 +493,7 @@ impl fmt::Display for Unplayable {
     }
 }
 
-/// The whole position with its history, about sixty four kilobytes. The
+/// The whole position with its history, about thirty five kilobytes. The
 /// search makes and unmakes moves on the one board and never clones it; the
 /// type is not `Copy`, so a copy has to be written as a clone.
 ///
@@ -541,7 +542,7 @@ pub struct Board {
     // means; the board only keeps it in step
     pub(crate) eval: Accumulator,
 
-    history: [Option<PlayState>; MAX_GAME_SIZE],
+    history: [Option<PlayState>; HISTORY_PLIES],
     kept: KeptStack,
     pub(crate) key: u64,
     /// The zobrist key over both sides' pawns alone: no side to move, castle
@@ -1367,7 +1368,7 @@ impl Board {
         // only the fifty move window can hold a repetition, since a pawn
         // move or a capture puts the position out of reach for good. A fen
         // can claim a count longer than the history or the game
-        let window = self.fifty_move_rule.min(self.ply).min(MAX_GAME_SIZE - 1);
+        let window = self.fifty_move_rule.min(self.ply).min(HISTORY_PLIES - 1);
         let mut found = 0;
         let mut back = 2;
         while back <= window {
@@ -2752,7 +2753,7 @@ pub(crate) fn play_named(board: &Board, name: &str) -> Play {
 #[cfg(test)]
 mod make_move {
     use super::fens;
-    use super::{A1, A8, B1, B8, MAX_GAME_SIZE};
+    use super::{A1, A8, B1, B8, HISTORY_PLIES};
     use super::{Board, Play};
     use pretty_assertions::{assert_eq, assert_ne};
 
@@ -2818,14 +2819,14 @@ mod make_move {
 
     /// The shuffle position one ply short of the end of the history ring.
     const NEAR_THE_WRAP: &str =
-        "r4rk1/1pp1qppp/p1np1n2/2b1p1B1/2B1P1b1/P1NP1N2/1PP1QPPP/R4RK1 b - - 3 511";
+        "r4rk1/1pp1qppp/p1np1n2/2b1p1B1/2B1P1b1/P1NP1N2/1PP1QPPP/R4RK1 b - - 3 127";
 
     #[test]
     fn a_repetition_is_still_seen_when_the_history_wraps() {
         let mut board = Board::from_fen(NEAR_THE_WRAP).unwrap();
         assert_eq!(
             board.ply,
-            MAX_GAME_SIZE - 1,
+            HISTORY_PLIES - 1,
             "the cycle must cross the wrap"
         );
 
@@ -3726,7 +3727,7 @@ mod fen_parsing {
                         board.undo_move();
                     }
                     // not prop_assert_eq, which would print two boards and
-                    // the thousand plies of history each carries
+                    // the plies of history each carries
                     prop_assert!(board == before, "{} did not unmake", m);
                 }
             }
