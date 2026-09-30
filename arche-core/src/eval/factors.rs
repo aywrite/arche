@@ -283,6 +283,23 @@ impl Machine {
         Self { sums, diagonal }
     }
 
+    /// Each perspective's sums, the first sixteen lanes, and its diagonal,
+    /// for the trace mode's `makes` stream.
+    #[cfg(feature = "trace")]
+    pub(crate) fn traced(&self) -> ([[i16; 16]; 2], [i32; 2]) {
+        let mut sums = [[0; 16]; 2];
+        for (kept, lanes) in sums.iter_mut().zip(&self.sums) {
+            for (to, &from) in kept.iter_mut().zip(lanes) {
+                *to = from;
+            }
+        }
+        let diagonal = [
+            self.diagonal[0].first().copied().unwrap_or(0),
+            self.diagonal[1].first().copied().unwrap_or(0),
+        ];
+        (sums, diagonal)
+    }
+
     /// The term, white relative, in centipawns.
     #[inline(always)]
     pub(crate) fn score(&self) -> i32 {

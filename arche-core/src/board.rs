@@ -636,6 +636,8 @@ impl Board {
     /// its check is a square compare. This is also `make_move`'s
     /// precondition: keep it stated over the move and the position alone.
     pub fn is_pseudo_legal(&self, m: &Play) -> bool {
+        #[cfg(feature = "trace")]
+        crate::trace::read(crate::trace::Read::Boards);
         if m.castle {
             return false;
         }
@@ -780,6 +782,8 @@ impl Board {
     /// En passant is left unmasked, since the captured pawn does not stand on
     /// the to square and the mask would misread it.
     fn evasion_targets(&self) -> u64 {
+        #[cfg(feature = "trace")]
+        crate::trace::read(crate::trace::Read::Checkers);
         debug_assert!(self.checkers != 0, "asked of a position not in check");
         if self.checkers.count_ones() > 1 {
             return 0;
@@ -797,6 +801,8 @@ impl Board {
         &self,
         out: &mut MoveList,
     ) -> usize {
+        #[cfg(feature = "trace")]
+        crate::trace::read(crate::trace::Read::Boards);
         let mut moves = Building::new();
         let (color_mask, capture_mask) = self.sides(self.active_color);
         let all_pieces = self.black | self.white;
@@ -1229,6 +1235,8 @@ impl Board {
     /// give what the walk would. A swap a slider can join, or with a side of
     /// more than three attackers, is walked.
     pub(crate) fn see(&self, m: &Play) -> i32 {
+        #[cfg(feature = "trace")]
+        crate::trace::read(crate::trace::Read::Boards);
         let Some(victim) = m.capture else {
             return 0;
         };
@@ -1416,6 +1424,8 @@ impl Board {
     /// side mated has a move to claim the draw with, so a caller that can
     /// tell a mate asks `has_legal_move` as well.
     pub fn fifty_move_expired(&self) -> bool {
+        #[cfg(feature = "trace")]
+        crate::trace::read(crate::trace::Read::Fifty);
         self.fifty_move_rule >= 100
     }
 
@@ -1424,6 +1434,8 @@ impl Board {
     /// transposition cutoff, as Stockfish does in its main search, and here
     /// in quiescence besides.
     pub fn fifty_move_near_expiry(&self) -> bool {
+        #[cfg(feature = "trace")]
+        crate::trace::read(crate::trace::Read::Fifty);
         self.fifty_move_rule >= 96
     }
 
@@ -1448,6 +1460,8 @@ impl Board {
     /// compare, since the window is a range of plies. Engines that let a
     /// repetition be claimed through a pass differ here.
     pub fn has_repeated(&self) -> bool {
+        #[cfg(feature = "trace")]
+        crate::trace::read(crate::trace::Read::Repetition);
         self.prior_occurrences(1) >= 1
     }
 
@@ -1488,6 +1502,7 @@ impl Board {
         king_can_move || self.has_legal_move()
     }
 
+    #[cfg_attr(feature = "trace", track_caller)]
     pub(crate) fn make_move(&mut self, play: &Play) -> bool {
         self.make_move_impl::<true>(play)
     }
@@ -1496,7 +1511,13 @@ impl Board {
     /// unconditionally, since the stale checkers cannot be consulted, and
     /// `checkers_given` is skipped. History still saves and restores the
     /// field, so the board's checkers are intact once the walk unwinds.
+    #[cfg_attr(feature = "trace", track_caller)]
     fn make_move_impl<const MAINTAIN_CHECKERS: bool>(&mut self, play: &Play) -> bool {
+        #[cfg(feature = "trace")]
+        let (at, key_before) = (
+            std::panic::Location::caller(),
+            (self.key, self.fifty_move_rule),
+        );
         // A king step is legal exactly when its landing square is unattacked
         // with the king lifted off its own square, so it is settled from the
         // boards before anything moves. An illegal one (most illegal moves
@@ -1510,10 +1531,17 @@ impl Board {
             && self.king_step_attacked(play.from, play.to, !self.active_color)
         {
             debug_assert!(
-                !self.clone().make_move_impl::<false>(play),
+                !self.king_step_on_a_copy(play),
                 "the king step test refused a legal {}",
                 play
             );
+            // nothing moved, so the record holds the position the step
+            // was asked from, and it is taken back at once
+            #[cfg(feature = "trace")]
+            if MAINTAIN_CHECKERS {
+                self.trace_made(at, play, false, Some(Piece::King), 4, key_before);
+                crate::trace::unmade();
+            }
             return false;
         }
         self.history[history_index(self.ply)] = Some(PlayState {
@@ -1577,7 +1605,7 @@ impl Board {
             }
         }
         let from_piece = self
-            .get_piece_index(play.from)
+            .piece_on(play.from)
             .expect("The from square must always be occupied");
         self.move_piece(
             play.from,
@@ -1615,6 +1643,10 @@ impl Board {
         // `checkers` still holds the mover's own checkers here; it is
         // replaced below once the move stands.
         let attack_masks = &ATTACK_MASKS;
+        #[cfg(feature = "trace")]
+        if MAINTAIN_CHECKERS {
+            crate::trace::read(crate::trace::Read::CheckedByMake);
+        }
         let probe = if MAINTAIN_CHECKERS && from_piece == Piece::King && !play.castle {
             Exposure::None
         } else if !MAINTAIN_CHECKERS
@@ -1633,6 +1665,13 @@ impl Board {
         self.active_color = opposing_color;
         self.key ^= ZOBRIST.side;
         self.debug_assert_state_in_step();
+        #[cfg(feature = "trace")]
+        let exposure = match probe {
+            Exposure::None => 0,
+            Exposure::Straight => 1,
+            Exposure::Diagonal => 2,
+            Exposure::Whole => 3,
+        };
         let exposed = match probe {
             Exposure::Whole => self.square_attacked(king_index, opposing_color),
             Exposure::Straight => self.slider_reaches::<true>(king_index, opposing_color),
@@ -1646,6 +1685,10 @@ impl Board {
             play
         );
         if exposed {
+            #[cfg(feature = "trace")]
+            if MAINTAIN_CHECKERS {
+                self.trace_made(at, play, false, Some(from_piece), exposure, key_before);
+            }
             self.undo_move();
             false
         } else {
@@ -1662,12 +1705,63 @@ impl Board {
                     play
                 );
             }
+            #[cfg(feature = "trace")]
+            if MAINTAIN_CHECKERS {
+                self.trace_made(at, play, true, Some(from_piece), exposure, key_before);
+            }
             true
         }
     }
 
+    /// A refused king step made the old way on a copy, which the debug
+    /// build checks the step test against. The trace mode does not record
+    /// that make as the search's.
+    fn king_step_on_a_copy(&self, play: &Play) -> bool {
+        let make = || self.clone().make_move_impl::<false>(play);
+        #[cfg(feature = "trace")]
+        let make = || crate::trace::muted(make);
+        make()
+    }
+
+    /// A move made or a pass, handed to the trace mode with the state it
+    /// left.
+    #[cfg(feature = "trace")]
+    fn trace_made(
+        &self,
+        at: &'static std::panic::Location<'static>,
+        play: &Play,
+        legal: bool,
+        moved: Option<Piece>,
+        exposure: u8,
+        (key_before, fifty_before): (u64, usize),
+    ) {
+        crate::trace::made(at, || {
+            let (psqt, material, phase, sums, diagonal) = self.eval.traced();
+            crate::trace::Made {
+                play: *play,
+                pass: *play == NULL_PLAY && moved.is_none(),
+                legal,
+                moved,
+                exposure,
+                key_before,
+                fifty_before: u16::try_from(fifty_before).unwrap_or(u16::MAX),
+                snapshot: self.traced(),
+                pawn_key: self.pawn_key,
+                checkers: if legal { self.checkers } else { 0 },
+                fifty: u16::try_from(self.fifty_move_rule).unwrap_or(u16::MAX),
+                psqt,
+                material,
+                phase,
+                sums,
+                diagonal,
+            }
+        });
+    }
+
     #[inline(always)]
     pub(crate) fn undo_move(&mut self) {
+        #[cfg(feature = "trace")]
+        crate::trace::unmade();
         let previous = history_index(self.ply - 1);
         let history = self.history[previous].unwrap();
         self.history[previous] = None;
@@ -1693,7 +1787,7 @@ impl Board {
             self.place_bare::<true>(play.from, Piece::Pawn, opposing_color);
         } else {
             let from_piece = self
-                .get_piece_index(play.to)
+                .piece_on(play.to)
                 .expect("The to square must always be occupied when undoing");
             self.relocate_bare(play.to, play.from, from_piece, opposing_color);
         }
@@ -1769,7 +1863,13 @@ impl Board {
     /// buy the side to move its way out of a draw. The history entry's key is
     /// salted to keep the pass out of the repetition arithmetic;
     /// `has_repeated` has the reasoning.
+    #[cfg_attr(feature = "trace", track_caller)]
     pub(crate) fn make_null_move(&mut self) {
+        #[cfg(feature = "trace")]
+        let (at, key_before) = (
+            std::panic::Location::caller(),
+            (self.key, self.fifty_move_rule),
+        );
         debug_assert!(!self.in_check(), "a side in check cannot pass");
         self.history[history_index(self.ply)] = Some(PlayState {
             play: NULL_PLAY,
@@ -1797,11 +1897,15 @@ impl Board {
             self.recompute_checkers(),
             "checkers out of step after a pass"
         );
+        #[cfg(feature = "trace")]
+        self.trace_made(at, &NULL_PLAY, true, None, 0, key_before);
     }
 
     /// Take the pass back. The mirror of `make_null_move`, and the only thing
     /// that may follow one.
     pub(crate) fn undo_null_move(&mut self) {
+        #[cfg(feature = "trace")]
+        crate::trace::unmade();
         let previous = history_index(self.ply - 1);
         let history = self.history[previous].unwrap();
         self.history[previous] = None;
@@ -1969,6 +2073,8 @@ impl Board {
     /// Whether the side to move stands in check, read from the checkers
     /// `make_move` maintains rather than by probing the king's square.
     pub fn in_check(&self) -> bool {
+        #[cfg(feature = "trace")]
+        crate::trace::read(crate::trace::Read::InCheck);
         self.checkers != 0
     }
 
@@ -1976,6 +2082,8 @@ impl Board {
     /// that has not is the side zugzwang happens to: every move it has
     /// commits a pawn or the king, so the static eval is no floor there.
     pub fn has_non_pawn_material(&self) -> bool {
+        #[cfg(feature = "trace")]
+        crate::trace::read(crate::trace::Read::Boards);
         let ours = match self.active_color {
             Color::White => self.white,
             Color::Black => self.black,
@@ -2084,6 +2192,8 @@ impl Board {
     /// is illegal with us to move.
     #[cfg_attr(feature = "trace", track_caller)]
     pub(crate) fn check_info(&self) -> CheckInfo {
+        #[cfg(feature = "trace")]
+        crate::trace::read(crate::trace::Read::Boards);
         let king = self.king_index(!self.active_color);
         let attack_masks = &ATTACK_MASKS;
         let magic = &MAGIC;
@@ -2124,6 +2234,8 @@ impl Board {
     #[inline(always)]
     pub(crate) fn gives_check_with(&self, info: &CheckInfo, m: &Play) -> bool {
         let answer = self.gives_check_from(info, m);
+        #[cfg(feature = "trace")]
+        crate::trace::asked_check(m, answer);
         debug_assert_eq!(
             answer,
             self.gives_check(m),
@@ -2380,6 +2492,8 @@ impl Board {
     /// What stands on a square, read rather than searched for.
     #[inline]
     pub(crate) fn get_piece_index(&self, index: u8) -> Option<Piece> {
+        #[cfg(feature = "trace")]
+        crate::trace::read(crate::trace::Read::Squares);
         debug_assert!(index < 64);
         // masked so the read carries no bounds check; the debug assert is
         // what catches a square off the board
@@ -2397,6 +2511,14 @@ impl Board {
             en_passant: self.en_passant.map_or(64, |c| c.as_index()),
             key: self.key,
         }
+    }
+
+    /// `get_piece_index` for `make_move` and `undo_move`, which the trace
+    /// mode does not count as a read of `squares` by the search.
+    #[inline]
+    fn piece_on(&self, index: u8) -> Option<Piece> {
+        debug_assert!(index < 64);
+        self.squares[(index & 63) as usize]
     }
 
     /// Walks the six piece boards rather than reading `squares`. The

@@ -192,6 +192,14 @@ pub const TRACE: Command = Command {
             value: "<file>",
         },
         Keyword {
+            word: "nodes",
+            value: "<n>",
+        },
+        Keyword {
+            word: "streams",
+            value: "<stream>[,<stream>]",
+        },
+        Keyword {
             word: "out",
             value: "<dir>",
         },
@@ -551,12 +559,22 @@ pub fn trace_settings(params: &Params) -> Result<arche_core::trace::Settings, St
         .or_refuse("out")?
         .unwrap_or("trace")
         .into();
+    let nodes = params.parse::<u64>("nodes").or_refuse("nodes")?;
+    let streams = params
+        .value("streams")
+        .or_refuse("streams")?
+        .map(|s| s.split(',').map(str::to_string).collect::<Vec<_>>());
+    if let Some(unknown) = streams.iter().flatten().find(|s| !trace::is_stream(s)) {
+        return Err(format!("streams: {unknown}"));
+    }
     // before the suite is read, so a word past the file is named rather
     // than the file
     TRACE.claim(params)?;
     let (epd, positions) = suite(params)?;
     Ok(trace::Settings {
         depth,
+        nodes,
+        streams,
         every,
         window,
         cap,
@@ -619,6 +637,8 @@ mod tests {
         match keyword {
             "every" | "cap" | "budget" | "hash" | "window" => "1",
             "out" => "trace",
+            "nodes" => "1",
+            "streams" => "makes",
             "epd" => SUITE,
             "taint" => "trust",
             "off" => "null_move",
@@ -632,6 +652,19 @@ mod tests {
             Ok(_) => panic!("{line} was read"),
             Err(what) => what,
         }
+    }
+
+    /// A misspelt stream would otherwise record the nodes alone, in silence.
+    #[cfg(feature = "trace")]
+    #[test]
+    fn the_trace_refuses_a_stream_it_does_not_write() {
+        let trace = INSTRUMENTS
+            .iter()
+            .find(|instrument| instrument.command.name == "trace")
+            .expect("the trace is an instrument");
+        assert_eq!(refusal(trace, "trace streams serach"), "streams: serach");
+        assert_eq!(refusal(trace, "trace streams makes,x"), "streams: x");
+        assert!((trace.read)(&Params::of("trace streams makes,nodes")).is_ok());
     }
 
     #[test]

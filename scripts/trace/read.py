@@ -194,6 +194,9 @@ def main(argv):
         f"{m['engine']}, {m['settings']}: {m['entered']} nodes entered, {m['sampled']} sampled"
     )
     for entry in m["streams"]:
+        if entry["name"] not in LAYOUTS:
+            print(f"{entry['name']:<8} {entry['records']:>12} records, no layout here to read them")
+            continue
         records = stream(directory, entry["name"])
         if len(records) != entry["records"]:
             print(

@@ -72,10 +72,11 @@ enum Stream {
     Evals = 5,
     Walks = 6,
     Bounds = 7,
+    Makes = 8,
 }
 
 impl Stream {
-    const ALL: [Stream; 8] = [
+    const ALL: [Stream; 9] = [
         Stream::Nodes,
         Stream::Sliders,
         Stream::Attacks,
@@ -84,6 +85,7 @@ impl Stream {
         Stream::Evals,
         Stream::Walks,
         Stream::Bounds,
+        Stream::Makes,
     ];
 
     fn name(self) -> &'static str {
@@ -96,6 +98,7 @@ impl Stream {
             Stream::Evals => "evals",
             Stream::Walks => "walks",
             Stream::Bounds => "bounds",
+            Stream::Makes => "makes",
         }
     }
 
@@ -110,8 +113,14 @@ impl Stream {
             Stream::Evals => 96,
             Stream::Walks => 24,
             Stream::Bounds => 32,
+            Stream::Makes => MAKE_WIDTH,
         }
     }
+}
+
+/// Whether `name` is a stream's, for the settings reader to refuse the rest.
+pub fn is_stream(name: &str) -> bool {
+    Stream::ALL.iter().any(|s| s.name() == name)
 }
 
 /// The node being searched, as the hooks see it.
@@ -142,8 +151,8 @@ thread_local! {
 }
 
 /// `f` with the recorders shut: what the trace asks of the board for its
-/// own records (the evaluation's recount of the walk) is not what the
-/// search asked.
+/// own records (the evaluation's recount of the walk), or what a debug
+/// check makes on a copy, is not what the search asked.
 pub(crate) fn muted<R>(f: impl FnOnce() -> R) -> R {
     MUTED.with(|m| m.set(m.get() + 1));
     let result = f();
@@ -181,6 +190,15 @@ struct Sink {
     /// Pieces walked for the evaluation being made.
     walked: u8,
     sampled: u64,
+    /// Which streams are recorded; the others' files hold a header alone.
+    enabled: [bool; 9],
+    /// Moves made (and passes) so far, sampled or not.
+    makes: u64,
+    /// One frame a move made and not yet taken back, innermost last.
+    frames: Vec<Frame>,
+    /// What `gives_check` answered at each sampled node still on the path,
+    /// by the move asked about.
+    asked: HashMap<u64, Vec<(u8, u8, u8, bool)>>,
     writers: Vec<Writer>,
     sites: HashMap<(&'static str, u32, u32), u16>,
     site_list: Vec<(&'static str, u32, u32)>,
@@ -188,7 +206,23 @@ struct Sink {
 }
 
 impl Sink {
+    #[cfg(test)]
     fn create(dir: &Path, every: u64, window: u8, cap: u64) -> io::Result<Self> {
+        Self::create_only(dir, every, window, cap, None)
+    }
+
+    /// The same, recording only the streams named (the nodes always).
+    fn create_only(
+        dir: &Path,
+        every: u64,
+        window: u8,
+        cap: u64,
+        only: Option<&[String]>,
+    ) -> io::Result<Self> {
+        let enabled = Stream::ALL.map(|stream| {
+            stream == Stream::Nodes
+                || only.is_none_or(|names| names.iter().any(|n| n == stream.name()))
+        });
         std::fs::create_dir_all(dir)?;
         let mut writers = Vec::new();
         for stream in Stream::ALL {
@@ -218,6 +252,10 @@ impl Sink {
             evals: 0,
             walked: 0,
             sampled: 0,
+            enabled,
+            makes: 0,
+            frames: Vec::new(),
+            asked: HashMap::new(),
             writers,
             sites: HashMap::new(),
             site_list: Vec::new(),
@@ -238,6 +276,9 @@ impl Sink {
 
     fn write(&mut self, stream: Stream, record: &[u8]) {
         debug_assert_eq!(record.len(), stream.width());
+        if !self.enabled[stream as usize] {
+            return;
+        }
         let writer = &mut self.writers[stream as usize];
         if writer.records >= self.cap {
             writer.dropped += 1;
@@ -258,6 +299,14 @@ pub(crate) struct Entered {
 
 impl Drop for Entered {
     fn drop(&mut self) {
+        let leaving = CONTEXT.with(Cell::get);
+        if leaving.sampled {
+            SINK.with(|sink| {
+                if let Some(sink) = sink.borrow_mut().as_mut() {
+                    sink.asked.remove(&leaving.node);
+                }
+            });
+        }
         CONTEXT.with(|c| c.set(self.saved));
     }
 }
@@ -655,6 +704,249 @@ pub(crate) fn bound(kind: Bound, threshold: i32, value: i32, aux: i32, outcome: 
     });
 }
 
+/// A read of the state `make_move` keeps, as the `makes` stream counts it.
+/// Each is counted where the search asks, whether or not the node is
+/// sampled, so a sampled move's record says what its whole subtree read.
+/// The upkeep's own reads (the next move's xor into the key, `undo_move`'s
+/// restore) are not reads here.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub(crate) enum Read {
+    /// The transposition table's probe, or a lookup of its move, by the key.
+    KeyProbe = 0,
+    /// A store into the table, by the key.
+    KeyStore = 1,
+    /// The repetition test: the key against the keys the history ring holds.
+    Repetition = 2,
+    /// The fifty move counter, by the draw rule or the probe's guard.
+    Fifty = 3,
+    /// The pawn key, by the pawn structure's table or the shelter's key.
+    PawnKey = 4,
+    /// The accumulator and the pair term's sums, by the taper.
+    Accumulator = 5,
+    /// Whether the side to move stands in check, asked by the search, the
+    /// generator's choice of list, or a draw test.
+    InCheck = 6,
+    /// The same, asked by a move made from here, whose legality probe it
+    /// chooses.
+    CheckedByMake = 7,
+    /// The checking pieces themselves, which the evasion mask reads.
+    Checkers = 8,
+    /// What stands on a square, read from the `squares` array.
+    Squares = 9,
+    /// The piece boards, by a generator, the evaluation, the swap, a check
+    /// test, the table move's test or the zugzwang guard. A move made below
+    /// reads them too; the record counts those makes separately.
+    Boards = 10,
+}
+
+/// How many kinds of read the `makes` stream counts.
+pub(crate) const READS: usize = 11;
+
+thread_local! {
+    static READ_COUNTS: [Cell<u64>; READS] = const { [const { Cell::new(0) }; READS] };
+}
+
+/// One read of the kept state.
+#[inline(always)]
+pub(crate) fn read(what: Read) {
+    if is_muted() {
+        return;
+    }
+    READ_COUNTS.with(|c| {
+        let c = &c[what as usize];
+        c.set(c.get() + 1);
+    });
+}
+
+fn read_counts() -> [u64; READS] {
+    READ_COUNTS.with(|c| std::array::from_fn(|i| c[i].get()))
+}
+
+/// Bytes a `makes` record.
+const MAKE_WIDTH: usize = 232 + 8 * READS;
+
+/// A move made and not yet taken back.
+struct Frame {
+    /// The read counts when it was made.
+    counts: [u64; READS],
+    /// The same when the first move below it was made, or none yet.
+    first: Option<[u64; READS]>,
+    entered: u64,
+    makes: u64,
+    /// Its record, whose last columns are filled when it is taken back;
+    /// none where the node that made it is not sampled.
+    record: Option<Box<[u8; MAKE_WIDTH]>>,
+}
+
+/// What a made move (or a pass) left on the board, as the `makes` stream
+/// records it. Taken when the legality probe has answered: an illegal move
+/// is recorded as made, just before it is taken back.
+pub(crate) struct Made {
+    pub(crate) play: Play,
+    pub(crate) pass: bool,
+    pub(crate) legal: bool,
+    /// The piece that moved, as `squares` held it.
+    pub(crate) moved: Option<Piece>,
+    /// Which legality probe ran: 0 none, 1 a rook line, 2 a bishop line, 3
+    /// the whole attack test.
+    pub(crate) exposure: u8,
+    pub(crate) key_before: u64,
+    pub(crate) fifty_before: u16,
+    pub(crate) snapshot: Snapshot,
+    pub(crate) pawn_key: u64,
+    /// Zero for an illegal move, whose checkers are never computed.
+    pub(crate) checkers: u64,
+    pub(crate) fifty: u16,
+    pub(crate) psqt: i32,
+    pub(crate) material: [u32; 2],
+    pub(crate) phase: i32,
+    pub(crate) sums: [[i16; 16]; 2],
+    pub(crate) diagonal: [i32; 2],
+}
+
+/// `gives_check` answered for a move at the node being searched.
+pub(crate) fn asked_check(m: &Play, answer: bool) {
+    let context = CONTEXT.with(Cell::get);
+    if !context.sampled {
+        return;
+    }
+    SINK.with(|sink| {
+        if let Some(sink) = sink.borrow_mut().as_mut() {
+            sink.asked.entry(context.node).or_default().push((
+                m.from,
+                m.to,
+                promote_code(m),
+                answer,
+            ));
+        }
+    });
+}
+
+/// A move made, or a pass. `made` is asked only where the node making it is
+/// sampled. `at` is the line that asked for the move.
+pub(crate) fn made(at: &'static Location<'static>, made: impl FnOnce() -> Made) {
+    if is_muted() {
+        return;
+    }
+    let context = CONTEXT.with(Cell::get);
+    SINK.with(|sink| {
+        let mut sink = sink.borrow_mut();
+        let Some(sink) = sink.as_mut() else {
+            return;
+        };
+        let counts = read_counts();
+        if let Some(top) = sink.frames.last_mut() {
+            top.first.get_or_insert(counts);
+        }
+        sink.makes += 1;
+        let record = if context.sampled && sink.writers[Stream::Makes as usize].records < sink.cap {
+            let m = made();
+            let site = sink.site(at);
+            let asked = sink
+                .asked
+                .get(&context.node)
+                .and_then(|asked| {
+                    asked.iter().rev().find(|&&(from, to, promote, _)| {
+                        (from, to, promote) == (m.play.from, m.play.to, promote_code(&m.play))
+                    })
+                })
+                .map_or(0, |&(_, _, _, answer)| 1 + u8::from(answer));
+            let mut r = Box::new([0u8; MAKE_WIDTH]);
+            r[0..8].copy_from_slice(&context.node.to_le_bytes());
+            r[8..16].copy_from_slice(&m.key_before.to_le_bytes());
+            r[16..24].copy_from_slice(&m.snapshot.key.to_le_bytes());
+            r[24..32].copy_from_slice(&m.pawn_key.to_le_bytes());
+            r[32..40].copy_from_slice(&m.checkers.to_le_bytes());
+            for (i, board) in m.snapshot.boards.iter().enumerate() {
+                r[40 + 8 * i..48 + 8 * i].copy_from_slice(&board.to_le_bytes());
+            }
+            // 40 + 8 * 8 = 104
+            r[104] = m.play.from;
+            r[105] = m.play.to;
+            r[106] = piece_code(m.play.capture);
+            r[107] = promote_code(&m.play);
+            r[108] = u8::from(m.play.en_passant)
+                | u8::from(m.play.castle) << 1
+                | u8::from(m.pass) << 2
+                | u8::from(m.legal) << 3;
+            r[109] = piece_code(m.moved);
+            r[110] = m.exposure;
+            r[111] = m.snapshot.castle;
+            r[112] = m.snapshot.en_passant;
+            r[113] = m.snapshot.side;
+            r[114..116].copy_from_slice(&m.fifty.to_le_bytes());
+            r[116..118].copy_from_slice(&site.to_le_bytes());
+            r[118] = context.kind;
+            r[119] = asked;
+            r[120..124].copy_from_slice(&m.psqt.to_le_bytes());
+            r[124..128].copy_from_slice(&m.material[0].to_le_bytes());
+            r[128..132].copy_from_slice(&m.material[1].to_le_bytes());
+            r[132..136].copy_from_slice(&m.phase.to_le_bytes());
+            for (p, sums) in m.sums.iter().enumerate() {
+                for (lane, sum) in sums.iter().enumerate() {
+                    let at = 136 + 32 * p + 2 * lane;
+                    r[at..at + 2].copy_from_slice(&sum.to_le_bytes());
+                }
+            }
+            // 136 + 64 = 200
+            r[200..204].copy_from_slice(&m.diagonal[0].to_le_bytes());
+            r[204..208].copy_from_slice(&m.diagonal[1].to_le_bytes());
+            let tail = 216 + 8 * READS;
+            // the child's number, if the move is searched, is the next node
+            r[tail..tail + 8].copy_from_slice(&(sink.entered + 1).to_le_bytes());
+            r[tail + 8..tail + 10].copy_from_slice(&m.fifty_before.to_le_bytes());
+            Some(r)
+        } else {
+            None
+        };
+        sink.frames.push(Frame {
+            counts,
+            first: None,
+            entered: sink.entered,
+            makes: sink.makes,
+            record,
+        });
+    });
+}
+
+/// The innermost move made is being taken back: its record, if it has one,
+/// is finished with what its subtree read and written.
+pub(crate) fn unmade() {
+    if is_muted() {
+        return;
+    }
+    SINK.with(|sink| {
+        let mut sink = sink.borrow_mut();
+        let Some(sink) = sink.as_mut() else {
+            return;
+        };
+        let Some(frame) = sink.frames.pop() else {
+            return;
+        };
+        let Some(mut r) = frame.record else {
+            return;
+        };
+        let counts = read_counts();
+        let first = frame.first.unwrap_or(counts);
+        let nodes = u32::try_from(sink.entered - frame.entered).unwrap_or(u32::MAX);
+        if nodes == 0 {
+            let tail = 216 + 8 * READS;
+            r[tail..tail + 8].copy_from_slice(&0u64.to_le_bytes());
+        }
+        let makes = u32::try_from(sink.makes - frame.makes).unwrap_or(u32::MAX);
+        r[208..212].copy_from_slice(&nodes.to_le_bytes());
+        r[212..216].copy_from_slice(&makes.to_le_bytes());
+        for i in 0..READS {
+            let whole = u32::try_from(counts[i] - frame.counts[i]).unwrap_or(u32::MAX);
+            let before = u32::try_from(first[i] - frame.counts[i]).unwrap_or(u32::MAX);
+            r[216 + 4 * i..220 + 4 * i].copy_from_slice(&whole.to_le_bytes());
+            let at = 216 + 4 * READS + 4 * i;
+            r[at..at + 4].copy_from_slice(&before.to_le_bytes());
+        }
+        sink.write(Stream::Makes, &r[..]);
+    });
+}
+
 /// A node's number scrambled, so a sample of every n-th hash is spread over
 /// the tree rather than taking every n-th node in visit order.
 fn mix(node: u64) -> u64 {
@@ -679,6 +971,11 @@ pub(crate) struct Snapshot {
 /// What a trace argument asked for.
 pub struct Settings {
     pub depth: u8,
+    /// Search each position to this many nodes rather than to `depth`, as
+    /// `bench games` does.
+    pub nodes: Option<u64>,
+    /// The streams to record besides the nodes, or none for all of them.
+    pub streams: Option<Vec<String>>,
     pub every: u64,
     pub window: u8,
     pub cap: u64,
@@ -724,7 +1021,13 @@ impl fmt::Display for Report {
 /// and write the streams and the manifest into `settings.out`.
 pub fn run(settings: &Settings) -> io::Result<Report> {
     let depth = settings.depth.max(1);
-    let sink = Sink::create(&settings.out, settings.every, settings.window, settings.cap)?;
+    let sink = Sink::create_only(
+        &settings.out,
+        settings.every,
+        settings.window,
+        settings.cap,
+        settings.streams.as_deref(),
+    )?;
     SINK.with(|s| *s.borrow_mut() = Some(sink));
     for (i, position) in settings.positions.iter().enumerate() {
         let board = Board::from_fen(&position.fen)
@@ -732,10 +1035,20 @@ pub fn run(settings: &Settings) -> io::Result<Report> {
         SINK.with(|s| {
             if let Some(sink) = s.borrow_mut().as_mut() {
                 sink.position = u16::try_from(i).expect("fewer than 65,536 positions");
+                // the line a report walks is made on a copy and never taken
+                // back, so its frames are dropped between positions
+                sink.frames.clear();
             }
         });
         let mut engine = AlphaBeta::with_config(board, bench::TABLE_BYTES, SearchConfig::default());
-        engine.iterative_deepening_search(SearchParameters::to_depth(depth), |_, _, _, _| {});
+        let parameters = match settings.nodes {
+            Some(nodes) => SearchParameters::new(
+                None,
+                crate::limits::Limits::starting_now(None, Some(nodes.max(1))),
+            ),
+            None => SearchParameters::to_depth(depth),
+        };
+        engine.iterative_deepening_search(parameters, |_, _, _, _| {});
     }
     let mut sink = SINK
         .with(|s| s.borrow_mut().take())
@@ -747,8 +1060,11 @@ pub fn run(settings: &Settings) -> io::Result<Report> {
         return Err(e);
     }
     let settings_line = format!(
-        "depth {} every {} window {} cap {}{}",
-        depth,
+        "{} every {} window {} cap {}{}{}",
+        match settings.nodes {
+            Some(nodes) => format!("nodes {nodes}"),
+            None => format!("depth {depth}"),
+        },
         sink.every,
         sink.window,
         sink.cap,
@@ -756,6 +1072,11 @@ pub fn run(settings: &Settings) -> io::Result<Report> {
             .epd
             .as_ref()
             .map(|e| format!(" epd {e}"))
+            .unwrap_or_default(),
+        settings
+            .streams
+            .as_ref()
+            .map(|s| format!(" streams {}", s.join(",")))
             .unwrap_or_default()
     );
     write_manifest(
@@ -888,6 +1209,8 @@ mod tests {
         let dir = scratch("streams");
         let settings = Settings {
             depth: 4,
+            nodes: None,
+            streams: None,
             every: 4,
             window: 1,
             cap: DEFAULT_CAP,
