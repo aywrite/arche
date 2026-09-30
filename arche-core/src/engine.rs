@@ -256,12 +256,15 @@ impl Node {
     }
 }
 
-/// What the move loop does with one move.
+/// What the move loop does with one move, which is also how it asks for
+/// the child search.
 enum Decision {
     /// Not searched at all.
     Skip,
-    /// Searched, scouted `reduction` plies shallower first when that is not
-    /// zero, with the ledger's staging of the scout when one is armed.
+    /// The first move the node searches, at the window as it stands.
+    First,
+    /// A later move, scouted `reduction` plies shallower first when that is
+    /// not zero, with the ledger's staging of the scout when one is armed.
     Search {
         reduction: u8,
         staged: Option<reduction::Staged>,
@@ -1988,28 +1991,28 @@ impl AlphaBeta {
     /// One child of a full width node, or nothing when the move is not
     /// legal here. The undo comes before the abort propagates; propagating
     /// is what keeps an aborted frame's meaningless score away from every
-    /// store above. `reduction` is how many plies shallower the scout runs,
-    /// zero for no scout, and `staged` is what the ledger has about the
-    /// move, or nothing.
-    // two arguments past clippy's limit: the staging travelling as a
-    // parameter rather than as a field of the engine, and the root bounds.
+    /// store above. `decision` says whether the move is the node's first or
+    /// a later one, and a later one carries the scout's reduction and the
+    /// ledger's staging, which travels as a parameter rather than as a
+    /// field of the engine. A skipped move never reaches here.
     #[inline(always)]
-    #[allow(clippy::too_many_arguments)]
     fn search_child(
         &mut self,
         m: &Play,
         alpha: Score,
         beta: Score,
         depth: u8,
-        first: bool,
-        reduction: u8,
+        decision: &Decision,
         root_bounds: RootBounds,
-        staged: Option<&reduction::Staged>,
     ) -> Result<Option<Value>, Aborted> {
+        debug_assert!(
+            !matches!(decision, Decision::Skip),
+            "the loop searched a move it decided to skip"
+        );
         if !self.board.make_move(m) {
             return Ok(None);
         }
-        let result = self.windowed(alpha, beta, depth, first, reduction, root_bounds, staged);
+        let result = self.windowed(alpha, beta, depth, decision, root_bounds);
         self.board.undo_move();
         Ok(Some(result?))
     }
@@ -2029,27 +2032,27 @@ impl AlphaBeta {
     ///
     /// A body of its own rather than `search_child`'s so that an abort from
     /// any pass runs through the one undo there.
-    #[allow(clippy::too_many_arguments)]
     fn windowed(
         &mut self,
         alpha: Score,
         beta: Score,
         depth: u8,
-        first: bool,
-        reduction: u8,
+        decision: &Decision,
         root_bounds: RootBounds,
-        staged: Option<&reduction::Staged>,
     ) -> Result<Value, Aborted> {
-        if first {
-            debug_assert!(reduction == 0, "a node's first move is never reduced");
-            return Ok(-self.alpha_beta(
-                -beta,
-                -alpha,
-                depth - 1,
-                true,
-                root_bounds.child(ChildSearch::FirstMove),
-            )?);
-        }
+        let (reduction, staged) = match decision {
+            Decision::First => {
+                return Ok(-self.alpha_beta(
+                    -beta,
+                    -alpha,
+                    depth - 1,
+                    true,
+                    root_bounds.child(ChildSearch::FirstMove),
+                )?);
+            }
+            Decision::Search { reduction, staged } => (*reduction, staged.as_ref()),
+            Decision::Skip => unreachable!("a skipped move is never searched"),
+        };
         let mut tainted = false;
         if reduction > 0 {
             // `late_move::amount` clamps the reduction to `depth - 2`
@@ -2136,10 +2139,8 @@ impl AlphaBeta {
             node.alpha,
             node.beta,
             node.depth,
-            true,
-            0,
+            &Decision::First,
             node.root_bounds,
-            None,
         )?
         else {
             return Ok(None);
@@ -2250,7 +2251,9 @@ impl AlphaBeta {
     /// only where the node admits one. A move passed over is never made, so
     /// whether it was legal is never learned and nothing is taught about
     /// it. The ledger's staged half travels to the scout as a parameter,
-    /// so the reduced moves inside it cannot mistake it for their own.
+    /// so the reduced moves inside it cannot mistake it for their own. The
+    /// first move the node searches is no late move, and none of this is
+    /// asked of it.
     #[inline(always)]
     fn late_move_decision(
         &mut self,
@@ -2259,6 +2262,9 @@ impl AlphaBeta {
         moves: &[Play],
         m: &Play,
     ) -> Decision {
+        if node.searched == 0 {
+            return Decision::First;
+        }
         if rules.skips(&self.deciding(), node, m) {
             self.record_skip(node, rules, moves, m);
             return Decision::Skip;
@@ -2500,21 +2506,12 @@ impl AlphaBeta {
                 }
                 continue;
             }
-            let Decision::Search { reduction, staged } =
-                self.late_move_decision(&node, &mut rules, &moves, m)
-            else {
+            let decision = self.late_move_decision(&node, &mut rules, &moves, m);
+            if let Decision::Skip = decision {
                 continue;
-            };
-            let Some(value) = self.search_child(
-                m,
-                node.alpha,
-                node.beta,
-                depth,
-                node.searched == 0,
-                reduction,
-                node.root_bounds,
-                staged.as_ref(),
-            )?
+            }
+            let Some(value) =
+                self.search_child(m, node.alpha, node.beta, depth, &decision, node.root_bounds)?
             else {
                 continue;
             };
@@ -2523,7 +2520,7 @@ impl AlphaBeta {
                 Reached::Beta => {
                     let cutting = census::Cutting {
                         play: m,
-                        reduced: reduction > 0,
+                        reduced: matches!(decision, Decision::Search { reduction: 1.., .. }),
                         table: false,
                     };
                     self.record_node(&node, &moves, quiets.scored, Some(cutting));
@@ -2664,16 +2661,15 @@ impl AlphaBeta {
 
         // the root reduces nothing
         for m in &moves {
-            match self.search_child(
-                m,
-                alpha,
-                beta,
-                depth,
-                !found_legal_move,
-                0,
-                root_bounds,
-                None,
-            ) {
+            let decision = if found_legal_move {
+                Decision::Search {
+                    reduction: 0,
+                    staged: None,
+                }
+            } else {
+                Decision::First
+            };
+            match self.search_child(m, alpha, beta, depth, &decision, root_bounds) {
                 Err(Aborted) => {
                     // only a move that beat the opening alpha may be
                     // answered with
