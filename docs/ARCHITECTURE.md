@@ -32,7 +32,7 @@ term over every pair of pieces.
   array of what stands on each square, the zobrist key, a second key over the
   pawns alone, the evaluation's running totals (material, the piece square
   score and the pair term's sums), the pieces giving check, each side's king
-  square, and a ring of the last ~1024 plies (used by the repetition and fifty
+  square, and a ring of the last 256 plies (used by the repetition and fifty
   move rules, and to undo moves). A stack by ply holds the pawn key and the
   running totals as they stood before each move. A make places every piece
   through one function, which keeps the derived state in sync; the unmake
