@@ -792,7 +792,7 @@ Recording stops, and the search carries on, when a stream reaches `cap`
 records. Recording changes nothing: `recording_leaves_the_measured_search_where_it_was`
 in `arche-core/src/trace.rs` asserts the node counts.
 
-Nine streams are written to `out` (`trace` by default), each a file of fixed
+Eleven streams are written to `out` (`trace` by default), each a file of fixed
 width little endian records behind a 24 byte header, with `manifest.json`
 beside them:
 
@@ -841,6 +841,19 @@ beside them:
   whether or not the node is sampled; neither the upkeep's own reads nor the
   trace's are. It also says whether `gives_check` had been asked of the move
   at that node, and what it answered.
+- `orders`: for each sampled node's list, the moves as generated and the
+  generator that made them, quiescence's delta filter, what `order` reported
+  (the front, the losing captures, the table's place), the quiet run as keyed
+  (the two killers, each quiet's history entry and packed key), each `pick`,
+  `sort_rest` and `keep_unskippable`, and what the loop did with every move it
+  came to (searched, scouted and by how much, skipped by which rule, illegal,
+  the table's place), with the nodes entered below it and where the loop
+  stopped. The table's move tried before generation is recorded against the
+  node, and a count of history writes over the whole run is read at each
+  keying.
+- `calls`: every list of every node, sampled or not, as the position's key
+  and a hash of the moves (and of the quiet keys), so a repeat over the whole
+  run can be counted. It is written only when named.
 
 A call site is the line that made the call, found by `track_caller` through
 the board's helpers, so a probe `see` makes through `sliders_onto` is

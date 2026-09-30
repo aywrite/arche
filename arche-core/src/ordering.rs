@@ -190,8 +190,14 @@ impl MoveOrdering {
         // an entry past it. Only the rail plus a chain of check extensions
         // reaches such a depth, but both bands rest on the bound holding
         let bonus = (i32::from(depth) * i32::from(depth)).min(HISTORY_MAX);
+        #[cfg(feature = "trace")]
+        let mut writes = 1;
         for t in tried {
             if t.capture.is_none() {
+                #[cfg(feature = "trace")]
+                {
+                    writes += 1;
+                }
                 gravitate(
                     &mut self.history[color as usize][t.from as usize][t.to as usize],
                     -bonus,
@@ -202,6 +208,8 @@ impl MoveOrdering {
             &mut self.history[color as usize][m.from as usize][m.to as usize],
             bonus,
         );
+        #[cfg(feature = "trace")]
+        crate::trace::taught(writes);
     }
 
     /// Test-only. Signed, so a side taught nothing and a side whose
@@ -554,6 +562,14 @@ impl MoveOrdering {
             killers: self.killers[ply],
             history: &self.history[board.active_color as usize],
         };
+        #[cfg(feature = "trace")]
+        crate::trace::keyed(
+            quiet.killers,
+            quiets,
+            |m: &Play| quiet.history[(m.from & 63) as usize][(m.to & 63) as usize],
+            &[],
+            true,
+        );
         let keys = &mut self.keys;
         let sorted = &mut self.sorted;
         let mut front = 0;
@@ -638,6 +654,13 @@ impl MoveOrdering {
                 };
                 assert_eq!(keys[i], pack_quiet(bonus, i), "{m} at {i}");
             }
+        }
+        #[cfg(feature = "trace")]
+        {
+            let entry = |m: &Play| history[(m.from & 63) as usize][(m.to & 63) as usize];
+            let wide: Vec<i64> = keys[..run].iter().map(|&k| i64::from(k)).collect();
+            crate::trace::keyed(killers, &rest[..run], entry, &wide, false);
+            crate::trace::call(board, 4, crate::trace::Kind::Full, &rest[..run], &wide);
         }
         run
     }

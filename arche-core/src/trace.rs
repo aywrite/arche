@@ -73,10 +73,12 @@ enum Stream {
     Walks = 6,
     Bounds = 7,
     Makes = 8,
+    Orders = 9,
+    Calls = 10,
 }
 
 impl Stream {
-    const ALL: [Stream; 9] = [
+    const ALL: [Stream; 11] = [
         Stream::Nodes,
         Stream::Sliders,
         Stream::Attacks,
@@ -86,6 +88,8 @@ impl Stream {
         Stream::Walks,
         Stream::Bounds,
         Stream::Makes,
+        Stream::Orders,
+        Stream::Calls,
     ];
 
     fn name(self) -> &'static str {
@@ -99,6 +103,8 @@ impl Stream {
             Stream::Walks => "walks",
             Stream::Bounds => "bounds",
             Stream::Makes => "makes",
+            Stream::Orders => "orders",
+            Stream::Calls => "calls",
         }
     }
 
@@ -114,6 +120,8 @@ impl Stream {
             Stream::Walks => 24,
             Stream::Bounds => 32,
             Stream::Makes => MAKE_WIDTH,
+            Stream::Orders => 48,
+            Stream::Calls => 32,
         }
     }
 }
@@ -191,7 +199,11 @@ struct Sink {
     walked: u8,
     sampled: u64,
     /// Which streams are recorded; the others' files hold a header alone.
-    enabled: [bool; 9],
+    enabled: [bool; 11],
+    /// History entries written (one `gravitate` each) and quiet cutoffs
+    /// taught, sampled or not: the ordering's memories as a clock.
+    history_writes: u64,
+    history_cutoffs: u64,
     /// Moves made (and passes) so far, sampled or not.
     makes: u64,
     /// One frame a move made and not yet taken back, innermost last.
@@ -219,9 +231,13 @@ impl Sink {
         cap: u64,
         only: Option<&[String]>,
     ) -> io::Result<Self> {
+        // the calls stream records every node's lists, sampled or not, so it
+        // is written only when it is named
         let enabled = Stream::ALL.map(|stream| {
             stream == Stream::Nodes
-                || only.is_none_or(|names| names.iter().any(|n| n == stream.name()))
+                || only.map_or(stream != Stream::Calls, |names| {
+                    names.iter().any(|n| n == stream.name())
+                })
         });
         std::fs::create_dir_all(dir)?;
         let mut writers = Vec::new();
@@ -253,6 +269,8 @@ impl Sink {
             walked: 0,
             sampled: 0,
             enabled,
+            history_writes: 0,
+            history_cutoffs: 0,
             makes: 0,
             frames: Vec::new(),
             asked: HashMap::new(),
@@ -519,6 +537,319 @@ fn listed(what: Listed, index: usize, m: &Play, table: bool) {
         record[22] = promote_code(m);
         record[23] = u8::from(m.en_passant) | u8::from(m.castle) << 1 | u8::from(table) << 2;
         sink.write(Stream::Lists, &record);
+    });
+}
+
+/// What an `orders` record says. Each record carries the list's number, the
+/// node's, the event, the node's kind, an index, a move and three words.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub(crate) enum Order {
+    /// One generated move, in generation order: `a` is the generator (0
+    /// full, 1 captures, 2 evasions) and `b` the list's length.
+    Generated = 1,
+    /// Quiescence's delta filter before the order: `a` the moves kept,
+    /// `c` a mask of the generated places kept.
+    Filtered = 2,
+    /// `order` has returned: `a` the front, `b` the losing captures (-1
+    /// where the caller does not keep them), `c` the table's place (255 for
+    /// none, and for a caller that does not keep it) with 256 set when the list spilled
+    /// the buffer, and the index the memory ply (255 for none).
+    StageOne = 3,
+    /// The quiet run keyed, one record a quiet in the order `order` left
+    /// it: the index is its place in the run, `a` its history entry, `b`
+    /// which killer it is (0 none, 1 or 2), `c` the packed key the engine
+    /// made. The run's first record also carries, in the move columns of
+    /// a `Killers` record written before it, the two killers.
+    Keyed = 4,
+    /// The ply's two killers as the keying read them, one in the move
+    /// columns and the other packed into `a`; `b` the run's length, `c`
+    /// the history writes so far; the index is 1 when the ledger ordered
+    /// the run whole.
+    Killers = 5,
+    /// `pick` at run place `t` (the index): the move it put there.
+    Pick = 6,
+    /// `sort_rest` from run place `t`: `a` how many it sorted.
+    SortRest = 7,
+    /// `keep_unskippable` from run place `t`: `a` where the survivors end
+    /// (in run places), `b` how many it asked `gives_check` of.
+    Keep = 8,
+    /// What the loop did with the move at the index: `a` the outcome (see
+    /// `Outcome`), `b` the moves searched before it, `c` the nodes entered
+    /// below it.
+    Decided = 9,
+    /// The loop ended: `a` the index it stopped at, `b` the cutoff's index
+    /// or -1, `c` the history writes so far.
+    End = 10,
+    /// The table's move before generation, recorded against list zero: `a`
+    /// the outcome (0 not pseudo legal, 1 illegal, 2 searched, 3 cut), `c`
+    /// the nodes entered below it.
+    Table = 11,
+}
+
+/// What the loop did with a move it came to.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub(crate) enum Outcome {
+    /// Searched at the node's depth, no scout.
+    Searched = 0,
+    /// Scouted shallower first (`Decided`'s index carries the move; the
+    /// reduction is in the high byte of `a`).
+    Scouted = 1,
+    /// Dropped by the shallow rules (quiet futility or the late move count).
+    Shallow = 2,
+    /// Dropped by the late move gate.
+    Pruned = 3,
+    /// Made and found illegal.
+    Illegal = 4,
+    /// The table's move, searched before the list, passed over.
+    TablePlace = 5,
+    /// Behind the survivors `keep_unskippable` kept: never reached.
+    Dropped = 6,
+    /// Quiescence's delta test in the loop.
+    Delta = 7,
+    /// Quiescence's losing capture skip.
+    Losing = 8,
+}
+
+fn order_record(what: Order, index: usize, m: Option<&Play>, a: i64, b: i64, c: u64) {
+    let context = CONTEXT.with(Cell::get);
+    if !context.sampled || (context.list == 0 && what != Order::Table) {
+        return;
+    }
+    SINK.with(|sink| {
+        let mut sink = sink.borrow_mut();
+        let Some(sink) = sink.as_mut() else {
+            return;
+        };
+        let mut record = [0u8; 48];
+        let list = if what == Order::Table {
+            0
+        } else {
+            context.list
+        };
+        record[0..8].copy_from_slice(&list.to_le_bytes());
+        record[8..16].copy_from_slice(&context.node.to_le_bytes());
+        record[16] = what as u8;
+        record[17] = context.kind;
+        record[18] = u8::try_from(index).unwrap_or(u8::MAX);
+        if let Some(m) = m {
+            record[19] = m.from;
+            record[20] = m.to;
+            record[21] = piece_code(m.capture);
+            record[22] = promote_code(m);
+            record[23] = u8::from(m.en_passant) | u8::from(m.castle) << 1;
+        } else {
+            record[21] = 7;
+        }
+        record[24..32].copy_from_slice(&a.to_le_bytes());
+        record[32..40].copy_from_slice(&b.to_le_bytes());
+        record[40..48].copy_from_slice(&c.to_le_bytes());
+        sink.write(Stream::Orders, &record);
+    });
+}
+
+/// A move packed in sixteen bits for a record's word: from, to, and the
+/// flags above them. Zero for none.
+fn packed_play(m: Option<Play>) -> i64 {
+    m.map_or(0, |m| {
+        1 << 40
+            | i64::from(m.from)
+            | i64::from(m.to) << 8
+            | i64::from(piece_code(m.capture)) << 16
+            | i64::from(promote_code(&m)) << 24
+            | (i64::from(m.en_passant) | i64::from(m.castle) << 1) << 32
+    })
+}
+
+/// The list as generated, before anything reorders or filters it.
+pub(crate) fn generated(moves: &[Play], generator: u8) {
+    for (i, m) in moves.iter().enumerate() {
+        order_record(
+            Order::Generated,
+            i,
+            Some(m),
+            i64::from(generator),
+            moves.len() as i64,
+            0,
+        );
+    }
+}
+
+/// Quiescence's delta filter kept `kept` of `generated`.
+pub(crate) fn filtered(generated: &[Play], kept: &[Play]) {
+    let mut mask = 0u64;
+    let mut j = 0;
+    for (i, m) in generated.iter().enumerate() {
+        if j < kept.len() && kept[j] == *m {
+            mask |= 1 << i.min(63);
+            j += 1;
+        }
+    }
+    order_record(Order::Filtered, 0, None, kept.len() as i64, 0, mask);
+}
+
+/// What `order` reported.
+pub(crate) fn stage_one(
+    front: usize,
+    losing: usize,
+    table_at: Option<usize>,
+    spilled: bool,
+    ply: Option<usize>,
+) {
+    let place = table_at.map_or(255, |t| t as u64) | u64::from(spilled) << 8;
+    order_record(
+        Order::StageOne,
+        ply.unwrap_or(255),
+        None,
+        front as i64,
+        if losing == usize::MAX {
+            -1
+        } else {
+            losing as i64
+        },
+        place,
+    );
+}
+
+/// The quiet run keyed: the killers, then each quiet with its history
+/// entry, which killer it is, and its packed key.
+pub(crate) fn keyed(
+    killers: [Option<Play>; 2],
+    run: &[Play],
+    history: impl Fn(&Play) -> i32,
+    keys: &[i64],
+    whole: bool,
+) {
+    let writes = SINK.with(|sink| sink.borrow().as_ref().map_or(0, |s| s.history_writes));
+    order_record(
+        Order::Killers,
+        usize::from(whole),
+        killers[0].as_ref(),
+        packed_play(killers[1]),
+        run.len() as i64,
+        writes,
+    );
+    for (i, m) in run.iter().enumerate() {
+        let killer = if killers[0] == Some(*m) {
+            1
+        } else if killers[1] == Some(*m) {
+            2
+        } else {
+            0
+        };
+        order_record(
+            Order::Keyed,
+            i,
+            Some(m),
+            i64::from(history(m)),
+            killer,
+            keys.get(i).map_or(0, |&k| k as u64),
+        );
+    }
+}
+
+/// `pick` put `m` at run place `t`.
+pub(crate) fn picked(t: usize, m: &Play) {
+    order_record(Order::Pick, t, Some(m), 0, 0, 0);
+}
+
+/// `sort_rest` sorted `count` from run place `t`.
+pub(crate) fn sorted_rest(t: usize, count: usize) {
+    order_record(Order::SortRest, t, None, count as i64, 0, 0);
+}
+
+/// `keep_unskippable` from run place `t` kept up to `kept`, asking
+/// `asked` moves whether they give check.
+pub(crate) fn kept(t: usize, kept: usize, asked: usize) {
+    order_record(Order::Keep, t, None, kept as i64, asked as i64, 0);
+}
+
+/// The nodes entered so far, for a caller that wants the nodes below a move.
+pub(crate) fn entered() -> u64 {
+    SINK.with(|sink| sink.borrow().as_ref().map_or(0, |s| s.entered))
+}
+
+/// What the loop did with the move at `index`.
+pub(crate) fn decided(
+    index: usize,
+    m: &Play,
+    outcome: Outcome,
+    reduction: u8,
+    searched: usize,
+    below: u64,
+) {
+    order_record(
+        Order::Decided,
+        index,
+        Some(m),
+        outcome as i64 | i64::from(reduction) << 8,
+        searched as i64,
+        below,
+    );
+}
+
+/// The loop stopped at `index`, cut off there or at its end.
+pub(crate) fn ended(index: usize, cut: Option<usize>) {
+    let writes = SINK.with(|sink| sink.borrow().as_ref().map_or(0, |s| s.history_writes));
+    order_record(
+        Order::End,
+        index,
+        None,
+        index as i64,
+        cut.map_or(-1, |c| c as i64),
+        writes,
+    );
+}
+
+/// The table's move, tried before the list: 0 not pseudo legal, 1
+/// illegal, 2 searched, 3 cut.
+pub(crate) fn table_tried(m: &Play, outcome: u8, below: u64) {
+    order_record(Order::Table, 0, Some(m), i64::from(outcome), 0, below);
+}
+
+/// A cutoff taught the memories: `writes` history entries changed.
+pub(crate) fn taught(writes: usize) {
+    SINK.with(|sink| {
+        if let Some(sink) = sink.borrow_mut().as_mut() {
+            sink.history_writes += writes as u64;
+            sink.history_cutoffs += 1;
+        }
+    });
+}
+
+/// One list of any node, sampled or not, as the `calls` stream records it:
+/// the position's key, a hash of the moves in their order, what the list
+/// is (0 full, 1 captures, 2 evasions as generated, 3 the order `order`
+/// left, 4 the quiet run's keys), the node's kind and the length.
+pub(crate) fn call(board: &Board, what: u8, kind: Kind, moves: &[Play], keys: &[i64]) {
+    SINK.with(|sink| {
+        let mut sink = sink.borrow_mut();
+        let Some(sink) = sink.as_mut() else {
+            return;
+        };
+        if !sink.enabled[Stream::Calls as usize] {
+            return;
+        }
+        let mut h: u64 = 0xcbf2_9ce4_8422_2325;
+        let mut eat = |x: u64| {
+            h ^= x;
+            h = h.wrapping_mul(0x0100_0000_01b3);
+            h ^= h >> 29;
+        };
+        for m in moves {
+            eat(packed_play(Some(*m)) as u64);
+        }
+        for &k in keys {
+            eat(k as u64);
+        }
+        let mut record = [0u8; 32];
+        record[0..8].copy_from_slice(&board.key.to_le_bytes());
+        record[8..16].copy_from_slice(&h.to_le_bytes());
+        record[16] = what;
+        record[17] = kind as u8;
+        record[18] = u8::try_from(moves.len()).unwrap_or(u8::MAX);
+        record[20..22].copy_from_slice(&sink.position.to_le_bytes());
+        record[24..32].copy_from_slice(&sink.entered.to_le_bytes());
+        sink.write(Stream::Calls, &record);
     });
 }
 
@@ -1091,8 +1422,10 @@ pub fn run(settings: &Settings) -> io::Result<Report> {
         positions: settings.positions.len(),
         nodes: sink.entered,
         sampled: sink.sampled,
+        // the streams written: calls is left out unless it was named
         streams: Stream::ALL
             .iter()
+            .filter(|&&s| sink.enabled[s as usize])
             .map(|&s| {
                 let w = &sink.writers[s as usize];
                 (s.name(), w.records, w.dropped)
@@ -1137,6 +1470,8 @@ fn write_manifest(
     writeln!(out, "  \"positions\": {positions},")?;
     writeln!(out, "  \"entered\": {},", sink.entered)?;
     writeln!(out, "  \"sampled\": {},", sink.sampled)?;
+    writeln!(out, "  \"history_writes\": {},", sink.history_writes)?;
+    writeln!(out, "  \"history_cutoffs\": {},", sink.history_cutoffs)?;
     writeln!(out, "  \"streams\": [")?;
     for (i, stream) in Stream::ALL.iter().enumerate() {
         let w = &sink.writers[*stream as usize];
@@ -1205,7 +1540,7 @@ mod tests {
     }
 
     #[test]
-    fn a_run_writes_every_stream_and_a_manifest() {
+    fn a_run_writes_each_stream_it_records_and_a_manifest() {
         let dir = scratch("streams");
         let settings = Settings {
             depth: 4,

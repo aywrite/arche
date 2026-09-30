@@ -1803,6 +1803,20 @@ impl AlphaBeta {
         } else {
             self.board.generate_captures_into(&mut moves)
         };
+        #[cfg(feature = "trace")]
+        let generated_list = {
+            let generator = if in_check { 2 } else { 1 };
+            crate::trace::list_begin();
+            crate::trace::generated(&moves, generator);
+            crate::trace::call(
+                &self.board,
+                generator,
+                crate::trace::Kind::Quiescence,
+                &moves,
+                &[],
+            );
+            moves.clone()
+        };
         // the delta test at the starting alpha, before the order prices
         // each capture with the swap. Alpha only rises, so the loop would
         // skip every capture dropped here. Two cases are left to the loop
@@ -1845,14 +1859,27 @@ impl AlphaBeta {
                 }
             }
         }
-        // no memories here: they say nothing about captures or evasions
         #[cfg(feature = "trace")]
-        crate::trace::list_begin();
+        if generated_list.len() != moves.len() {
+            crate::trace::filtered(&generated_list, &moves);
+        }
+        // no memories here: they say nothing about captures or evasions
         let Ordered { front, .. } =
             self.ordering
                 .order_split(&self.board, &mut moves, captures, pv_play, None);
         #[cfg(feature = "trace")]
-        crate::trace::ordered(&moves, pv_play);
+        {
+            // quiescence keeps only the front; the rest is the reference's
+            crate::trace::ordered(&moves, pv_play);
+            crate::trace::stage_one(
+                front,
+                usize::MAX,
+                None,
+                moves.len() > MOVE_LIST_INLINE,
+                None,
+            );
+            crate::trace::call(&self.board, 3, crate::trace::Kind::Quiescence, &moves, &[]);
+        }
 
         // quiescence reads no draw by rule itself, but a probe trusting
         // tainted scores can cut on one inside a capture tree
@@ -1876,21 +1903,42 @@ impl AlphaBeta {
                         traced_delta(crate::trace::Bound::DeltaLoop, standing, captured, alpha);
                     }
                     if self.config.delta_margin && short_of_alpha(standing, captured, alpha) {
+                        #[cfg(feature = "trace")]
+                        crate::trace::decided(i, m, crate::trace::Outcome::Delta, 0, 0, 0);
                         continue;
                     }
                     // every capture behind the front is one the swap priced
                     // as losing
                     if self.config.see_pruning && i >= front {
+                        #[cfg(feature = "trace")]
+                        crate::trace::decided(i, m, crate::trace::Outcome::Losing, 0, 0, 0);
                         continue;
                     }
                 }
             }
+            #[cfg(feature = "trace")]
+            let below = crate::trace::entered();
+            #[cfg(feature = "trace")]
+            let mut legal = false;
             if self.board.make_move(m) {
+                #[cfg(feature = "trace")]
+                {
+                    legal = true;
+                }
                 found_legal_move = true;
                 // undo before an abort can propagate
                 let result = self.quiescence(-beta, -alpha);
                 self.board.undo_move();
                 let value = -result?;
+                #[cfg(feature = "trace")]
+                crate::trace::decided(
+                    i,
+                    m,
+                    crate::trace::Outcome::Searched,
+                    0,
+                    0,
+                    crate::trace::entered() - below,
+                );
                 taint.absorb(value);
                 let score = value.score;
                 if score > best {
@@ -1900,7 +1948,10 @@ impl AlphaBeta {
                 if score > alpha {
                     if score >= beta {
                         #[cfg(feature = "trace")]
-                        crate::trace::cutoff(i, m);
+                        {
+                            crate::trace::cutoff(i, m);
+                            crate::trace::ended(i, Some(i));
+                        }
                         let value = taint.stamp(score);
                         self.store_cutoff(m, value, 0);
                         return Ok(value);
@@ -1908,7 +1959,13 @@ impl AlphaBeta {
                     alpha = score;
                 }
             }
+            #[cfg(feature = "trace")]
+            if !legal {
+                crate::trace::decided(i, m, crate::trace::Outcome::Illegal, 0, 0, 0);
+            }
         }
+        #[cfg(feature = "trace")]
+        crate::trace::ended(moves.len(), None);
 
         if in_check && !found_legal_move {
             return Ok(Value::mated(self.board.line_ply));
@@ -2208,6 +2265,8 @@ impl AlphaBeta {
         facts: NodeFacts,
         answer: &mut NodeAnswer,
     ) -> Result<Option<Value>, Aborted> {
+        #[cfg(feature = "trace")]
+        let tt_below = crate::trace::entered();
         let Some(value) = self.search_child(
             &tt,
             answer.alpha,
@@ -2219,9 +2278,13 @@ impl AlphaBeta {
             None,
         )?
         else {
+            #[cfg(feature = "trace")]
+            crate::trace::table_tried(&tt, 1, crate::trace::entered() - tt_below);
             return Ok(None);
         };
         if answer.absorb(&tt, value) != Reached::Beta {
+            #[cfg(feature = "trace")]
+            crate::trace::table_tried(&tt, 2, crate::trace::entered() - tt_below);
             return Ok(None);
         }
         let cutting = census::Cutting {
@@ -2230,6 +2293,8 @@ impl AlphaBeta {
             table: true,
         };
         self.record_node(facts, &[], 1, false, Some(cutting));
+        #[cfg(feature = "trace")]
+        crate::trace::table_tried(&tt, 3, crate::trace::entered() - tt_below);
         Ok(Some(self.cutoff(
             &tt,
             &[],
@@ -2295,6 +2360,8 @@ impl AlphaBeta {
                     ply,
                     &mut node.check,
                 );
+                #[cfg(feature = "trace")]
+                crate::trace::kept(i - front, kept, end - i);
                 // a run whose every move survives drops none, and leaves
                 // no run to step past
                 if front + kept < end {
@@ -2305,9 +2372,13 @@ impl AlphaBeta {
             } else if *picks >= 4 {
                 self.ordering
                     .sort_rest(&mut moves[front..end], i - front, ply);
+                #[cfg(feature = "trace")]
+                crate::trace::sorted_rest(i - front, end - i);
                 quiets.lazy = None;
             } else {
                 self.ordering.pick(&mut moves[front..end], i - front, ply);
+                #[cfg(feature = "trace")]
+                crate::trace::picked(i - front, &moves[i]);
                 *picks += 1;
             }
         }
@@ -2315,6 +2386,12 @@ impl AlphaBeta {
             debug_assert!(i < quiets.dropped.end, "the dropped run is behind the loop");
             let past = quiets.dropped.end;
             quiets.dropped = usize::MAX..usize::MAX;
+            // the loop steps past the run whole; the trace still has a
+            // record for each place it passes
+            #[cfg(feature = "trace")]
+            for (j, m) in moves.iter().enumerate().take(past).skip(i) {
+                crate::trace::decided(j, m, crate::trace::Outcome::Dropped, 0, searched, 0);
+            }
             return Some(past);
         }
         None
@@ -2336,8 +2413,13 @@ impl AlphaBeta {
         m: &Play,
         searched: usize,
     ) -> Decision {
+        // the move's place, for the trace, which this function is not told
+        #[cfg(feature = "trace")]
+        let at = moves.iter().position(|x| std::ptr::eq(x, m)).unwrap_or(0);
         if node.skips(&self.deciding(), m, searched) {
             self.record_skip(node, moves, m, searched);
+            #[cfg(feature = "trace")]
+            crate::trace::decided(at, m, crate::trace::Outcome::Shallow, 0, searched, 0);
             return Decision::Skip;
         }
         if !node.admits(&self.deciding(), searched) || m.capture.is_some() || m.promote.is_some() {
@@ -2349,6 +2431,8 @@ impl AlphaBeta {
         match late_move::decide_admitted(&self.deciding(), node, moves, m, searched) {
             late_move::Verdict::Skip => {
                 self.record_skip(node, moves, m, searched);
+                #[cfg(feature = "trace")]
+                crate::trace::decided(at, m, crate::trace::Outcome::Pruned, 0, searched, 0);
                 Decision::Skip
             }
             late_move::Verdict::Scout(reduction) => Decision::Search {
@@ -2545,6 +2629,10 @@ impl AlphaBeta {
                 return Ok(value);
             }
         }
+        #[cfg(feature = "trace")]
+        if let (Some(tt), None) = (pv_play, table_move) {
+            crate::trace::table_tried(&tt, 0, 0);
+        }
         let tt_searched = answer.searched > 0;
 
         let mut moves = MoveList::new();
@@ -2554,12 +2642,33 @@ impl AlphaBeta {
             self.board.generate_moves_into(&mut moves)
         };
         #[cfg(feature = "trace")]
-        crate::trace::list_begin();
+        {
+            let generator = if in_check { 2 } else { 0 };
+            crate::trace::list_begin();
+            crate::trace::generated(&moves, generator);
+            crate::trace::call(
+                &self.board,
+                generator,
+                crate::trace::Kind::Full,
+                &moves,
+                &[],
+            );
+        }
         let ordered =
             self.ordering
                 .order_split(&self.board, &mut moves, captures, pv_play, facts.ply);
         #[cfg(feature = "trace")]
-        crate::trace::ordered(&moves, pv_play);
+        {
+            crate::trace::ordered(&moves, pv_play);
+            crate::trace::stage_one(
+                ordered.front,
+                ordered.losing,
+                ordered.table_at,
+                moves.len() > MOVE_LIST_INLINE,
+                facts.ply,
+            );
+            crate::trace::call(&self.board, 3, crate::trace::Kind::Full, &moves, &[]);
+        }
         // `order_split` sorts by `pv_play`, and the search played
         // `table_move`, which differ when `is_pseudo_legal` refused the move
         let tt_at = if table_move.is_some() {
@@ -2600,6 +2709,15 @@ impl AlphaBeta {
                 if tt_searched {
                     made.mark(i);
                 }
+                #[cfg(feature = "trace")]
+                crate::trace::decided(
+                    i,
+                    m,
+                    crate::trace::Outcome::TablePlace,
+                    0,
+                    answer.searched,
+                    0,
+                );
                 continue;
             }
             debug_assert_eq!(
@@ -2611,6 +2729,8 @@ impl AlphaBeta {
             else {
                 continue;
             };
+            #[cfg(feature = "trace")]
+            let below = crate::trace::entered();
             let Some(value) = self.search_child(
                 m,
                 answer.alpha,
@@ -2622,13 +2742,38 @@ impl AlphaBeta {
                 staged.as_ref(),
             )?
             else {
+                #[cfg(feature = "trace")]
+                crate::trace::decided(
+                    i,
+                    m,
+                    crate::trace::Outcome::Illegal,
+                    reduction,
+                    answer.searched,
+                    crate::trace::entered() - below,
+                );
                 continue;
             };
+            #[cfg(feature = "trace")]
+            crate::trace::decided(
+                i,
+                m,
+                if reduction > 0 {
+                    crate::trace::Outcome::Scouted
+                } else {
+                    crate::trace::Outcome::Searched
+                },
+                reduction,
+                answer.searched,
+                crate::trace::entered() - below,
+            );
             made.mark(i);
             match answer.absorb(m, value) {
                 Reached::Beta => {
                     #[cfg(feature = "trace")]
-                    crate::trace::cutoff(i, m);
+                    {
+                        crate::trace::cutoff(i, m);
+                        crate::trace::ended(i, Some(i));
+                    }
                     let cutting = census::Cutting {
                         play: m,
                         reduced: reduction > 0,
@@ -2665,6 +2810,8 @@ impl AlphaBeta {
                 "a bit for every move made and searched, and for no other"
             );
         }
+        #[cfg(feature = "trace")]
+        crate::trace::ended(moves.len(), None);
 
         // the held half, at the same rate: a cut-only stream would
         // reproduce the censoring the census measures, and a rule moves
@@ -2772,13 +2919,36 @@ impl AlphaBeta {
         let pv_play = self.transpositions.ordering_play(&self.board);
         let mut moves = self.board.generate_moves();
         #[cfg(feature = "trace")]
-        crate::trace::list_begin();
+        {
+            crate::trace::list_begin();
+            crate::trace::generated(&moves, 0);
+            crate::trace::call(&self.board, 0, crate::trace::Kind::Root, &moves, &[]);
+        }
+        #[cfg(not(feature = "trace"))]
         self.ordering.order(&self.board, &mut moves, pv_play, None);
         #[cfg(feature = "trace")]
-        crate::trace::ordered(&moves, pv_play);
+        {
+            let ordered = self.ordering.order(&self.board, &mut moves, pv_play, None);
+            crate::trace::ordered(&moves, pv_play);
+            crate::trace::stage_one(
+                ordered.front,
+                ordered.losing,
+                ordered.table_at,
+                moves.len() > MOVE_LIST_INLINE,
+                None,
+            );
+            crate::trace::call(&self.board, 3, crate::trace::Kind::Root, &moves, &[]);
+        }
+        #[cfg(feature = "trace")]
+        let mut root_cut = None;
 
         // the root reduces nothing
         for m in &moves {
+            #[cfg(feature = "trace")]
+            let (at, below) = (
+                moves.iter().position(|x| std::ptr::eq(x, m)).unwrap_or(0),
+                crate::trace::entered(),
+            );
             match self.search_child(
                 m,
                 alpha,
@@ -2797,8 +2967,32 @@ impl AlphaBeta {
                         answerable.map(|(play, score)| self.result_for(play, score)),
                     );
                 }
-                Ok(None) => {}
+                Ok(None) => {
+                    #[cfg(feature = "trace")]
+                    crate::trace::decided(
+                        at,
+                        m,
+                        crate::trace::Outcome::Illegal,
+                        0,
+                        0,
+                        crate::trace::entered() - below,
+                    );
+                }
                 Ok(Some(value)) => {
+                    #[cfg(feature = "trace")]
+                    {
+                        crate::trace::decided(
+                            at,
+                            m,
+                            crate::trace::Outcome::Searched,
+                            0,
+                            0,
+                            crate::trace::entered() - below,
+                        );
+                        if value.score >= beta {
+                            root_cut = Some(at);
+                        }
+                    }
                     found_legal_move = true;
                     taint.absorb(value);
                     let score = value.score;
@@ -2816,6 +3010,9 @@ impl AlphaBeta {
                 }
             }
         }
+
+        #[cfg(feature = "trace")]
+        crate::trace::ended(root_cut.unwrap_or(moves.len()), root_cut);
 
         if !found_legal_move {
             // checkmate or stalemate. An expired fifty move counter is not
