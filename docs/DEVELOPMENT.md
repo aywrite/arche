@@ -874,11 +874,10 @@ together.
 A release plays the gauntlet a second time against the ccrl 40/15 list (forty
 moves in fifteen minutes). It is the same workflow called with `list: 40/15`
 and nothing else of the match, so everything it plays comes from that list's
-block in `scripts/ladders.sh`. The block also names the words around the figure
-("on the ccrl 40/15 scale") and the artifact prefix `calibrate-ccrl-40-15`,
-which keeps the two gauntlets of one release run from reading each other's
-games. mache writes the blitz scale into the line whatever the ladder, so the
-workflow rewrites it and refuses to publish a line it cannot find the words in.
+block in `scripts/ladders.sh`. The block also names the artifact prefix
+`calibrate-ccrl-40-15`, which keeps the two gauntlets of one release run from
+reading each other's games. The workflow passes the list to mache as the scale,
+so the line says "on the ccrl 40/15 scale".
 
 It plays at 40/150, one sixth of 40/15 (as 20+0.2 is roughly a sixth of 2+1).
 The clock allows about twelve minutes a game, so sixteen games a rung two at a

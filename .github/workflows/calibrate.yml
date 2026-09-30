@@ -346,7 +346,7 @@ jobs:
       RATED_AT: ${{ needs.resolve.outputs.rated_at }}
       ARTIFACT: ${{ needs.resolve.outputs.artifact }}
     outputs:
-      line: ${{ steps.line.outputs.line }}
+      line: ${{ steps.estimate.outputs.line }}
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
 
@@ -374,6 +374,7 @@ jobs:
           rungs: ${{ needs.resolve.outputs.count }}
           time_control: ${{ env.TIME_CONTROL }}
           rating_list: "[ccrl](https://computerchess.org.uk/) ${{ env.LIST }}"
+          scale: ccrl ${{ env.LIST }}
           rating_time_control: ${{ env.RATED_AT }}
           provenance: >-
             The games of each rung are kept as the
@@ -381,23 +382,6 @@ jobs:
             artifacts, with a manifest saying what was played on what. The
             openings came from seed ${{ inputs.seed || github.run_id }}, which
             replays this schedule.
-
-      # mache writes the blitz scale into the line whatever the list. A
-      # line that no longer says so is refused rather than published under the
-      # wrong list
-      - name: Name the list in the line
-        id: line
-        env:
-          LINE: ${{ steps.estimate.outputs.line }}
-        run: |
-          if [ "$LIST" != blitz ]; then
-            case "$LINE" in
-              *"ccrl blitz scale"*) ;;
-              *) echo "::error::the line does not name the blitz scale to replace: ${LINE}"; exit 1 ;;
-            esac
-            LINE=${LINE/ccrl blitz scale/ccrl ${LIST} scale}
-          fi
-          echo "line=${LINE}" >> "$GITHUB_OUTPUT"
 
   release-notes:
     needs: estimate
