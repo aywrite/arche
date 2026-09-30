@@ -54,6 +54,8 @@ pub(crate) struct Row {
     /// White's diagonal less black's.
     pub(crate) diagonal: [i32; factors::LIVE],
     pub(crate) psqt: i32,
+    /// The piece's material, signed from white's side like `psqt`.
+    pub(crate) material: i32,
     pub(crate) key: u64,
 }
 
@@ -64,6 +66,7 @@ const fn rows() -> [Row; 768] {
         lanes: [[0; factors::RANK]; 2],
         diagonal: [0; factors::LIVE],
         psqt: 0,
+        material: 0,
         key: 0,
     };
     let mut out = [empty; 768];
@@ -105,6 +108,11 @@ const fn rows() -> [Row; 768] {
             row.psqt = match color {
                 Color::White => value,
                 Color::Black => -value,
+            };
+            let material = MATERIAL[piece as usize] as i32;
+            row.material = match color {
+                Color::White => material,
+                Color::Black => -material,
             };
             row.key = crate::zobrist::Zobrist::TABLE.piece_key_at(table, square);
             square += 1;
@@ -389,9 +397,8 @@ pub(crate) fn eval_cached(board: &Board, caches: &mut Caches) -> Score {
 /// copies back the state saved before the move.
 #[derive(Debug, Copy, Clone, PartialEq, Eq)]
 pub(crate) struct Accumulator {
-    /// Each side's material, indexed by `Color`'s discriminant: an index is a
-    /// load where a match on the colour was a branch.
-    material: [u32; 2],
+    /// White's material less black's, the one way the score reads it.
+    material: i32,
     /// Piece square score, as the packed pair of midgame and endgame halves
     /// the tables hold (`psqt::pack`), so carrying both phases costs one add.
     psqt: i32,
@@ -407,7 +414,7 @@ pub(crate) struct Accumulator {
 impl Accumulator {
     /// A board with nothing on it scores nothing.
     pub(crate) const EMPTY: Self = Self {
-        material: [0; 2],
+        material: 0,
         psqt: 0,
         phase: 0,
         machine: factors::Machine::EMPTY,
@@ -416,17 +423,16 @@ impl Accumulator {
     /// Count a piece on to or off of a square, from its row. The row's pair
     /// is negated whole for black, and negating the sum negates both halves.
     #[inline(always)]
-    pub(crate) fn count<const SET: bool>(&mut self, row: &Row, piece: Piece, color: Color) {
+    pub(crate) fn count<const SET: bool>(&mut self, row: &Row, piece: Piece) {
         let phase = PHASE_WEIGHTS[piece as usize];
-        let value = MATERIAL[piece as usize];
         if SET {
             self.psqt += row.psqt;
             self.phase += phase;
-            self.material[color as usize] += value;
+            self.material += row.material;
         } else {
             self.psqt -= row.psqt;
             self.phase -= phase;
-            self.material[color as usize] -= value;
+            self.material -= row.material;
         }
         self.machine.count::<SET>(row);
     }
@@ -458,7 +464,11 @@ impl Accumulator {
                     Color::White => recomputed.psqt += psqt,
                     Color::Black => recomputed.psqt -= psqt,
                 }
-                recomputed.material[color as usize] += MATERIAL[piece as usize];
+                let value = MATERIAL[piece as usize] as i32;
+                match color {
+                    Color::White => recomputed.material += value,
+                    Color::Black => recomputed.material -= value,
+                }
                 recomputed.phase += PHASE_WEIGHTS[piece as usize];
             }
         }
@@ -470,14 +480,12 @@ impl Accumulator {
     /// board in; the state check then compares the seeding against an
     /// implementation that did not do it.
     pub(crate) fn seed_material(&mut self, (white, black): (u32, u32)) {
-        self.material[Color::White as usize] = white;
-        self.material[Color::Black as usize] = black;
+        self.material = white as i32 - black as i32;
     }
 
     /// What white stands ahead by, for the board's debug print.
     pub(crate) fn material_difference(&self) -> i64 {
-        i64::from(self.material[Color::White as usize])
-            - i64::from(self.material[Color::Black as usize])
+        i64::from(self.material)
     }
 
     /// The score from `side`'s point of view.
@@ -503,10 +511,7 @@ impl Accumulator {
             (mg_value(tapered) * phase + eg_value(tapered) * (TOTAL_PHASE - phase)) / TOTAL_PHASE;
         // the pair term is not tapered, so it joins material outside the
         // divide
-        let eval = (self.material[Color::White as usize] as i32
-            - self.material[Color::Black as usize] as i32
-            + scaled
-            + self.machine.score()) as Score;
+        let eval = (self.material + scaled + self.machine.score()) as Score;
         match side {
             Color::White => eval,
             Color::Black => -eval,
@@ -573,12 +578,10 @@ mod evaluate {
             let mut board = Board::from_fen(fen).unwrap();
             for m in &board.generate_moves() {
                 if board.make_move(m) {
+                    let (white, black) = board.material_value();
                     assert_eq!(
-                        (
-                            board.eval.material[crate::misc::Color::White as usize],
-                            board.eval.material[crate::misc::Color::Black as usize]
-                        ),
-                        board.material_value(),
+                        board.eval.material,
+                        white as i32 - black as i32,
                         "{} in {}",
                         m,
                         fen
@@ -761,8 +764,7 @@ mod evaluate {
             inside, beside,
             "the two divides agree here, so this position says nothing"
         );
-        let material = accumulator.material[Color::White as usize] as i32
-            - accumulator.material[Color::Black as usize] as i32;
+        let material = accumulator.material;
         // the pair term is outside the divide, beside material
         assert_eq!(
             accumulator.score(Color::White, mobility),
