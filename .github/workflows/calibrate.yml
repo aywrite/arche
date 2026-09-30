@@ -166,7 +166,7 @@ jobs:
             echo "${key}=${given[$key]:-$value}"
           done < preset.txt | tee -a "$GITHUB_OUTPUT"
 
-      - uses: aywrite/mache/actions/resolve-ref@a429bcecb0b5718c0ef9fe8c02f0b360d986635b # v0.5.0
+      - uses: aywrite/mache/actions/resolve-ref@e3a59ce295c9dfabb62ddb077e88606d022cc55d # v0.7.1
         id: candidate
         with:
           ref: ${{ inputs.candidate }}
@@ -174,12 +174,13 @@ jobs:
           # nothing named means the commit this was dispatched on
           when_empty: head
 
-      - uses: aywrite/mache/actions/plan-ladder@a429bcecb0b5718c0ef9fe8c02f0b360d986635b # v0.5.0
+      - uses: aywrite/mache/actions/plan-ladder@e3a59ce295c9dfabb62ddb077e88606d022cc55d # v0.7.1
         id: plan
         with:
           games: ${{ steps.preset.outputs.games }}
           ladder: ${{ steps.preset.outputs.ladder }}
           book: ${{ inputs.book }}
+          book_table: scripts/book.sh
           max_match_minutes: ${{ steps.preset.outputs.max_match_minutes }}
 
   play:
@@ -219,8 +220,10 @@ jobs:
         with:
           fetch-depth: 0
 
-      - uses: aywrite/mache/actions/setup@a429bcecb0b5718c0ef9fe8c02f0b360d986635b # v0.5.0
+      - uses: aywrite/mache/actions/setup@e3a59ce295c9dfabb62ddb077e88606d022cc55d # v0.7.1
         id: tools
+        with:
+          book_table: scripts/book.sh
 
       # the cache keeps the dependencies; the engine is built from an export
       # of its commit
@@ -243,7 +246,7 @@ jobs:
             || { echo "::error::cannot build ${OPPONENT}"; exit 1; }
           ls -l "tools/${OPPONENT}"
 
-      - uses: aywrite/mache/actions/play-shard@a429bcecb0b5718c0ef9fe8c02f0b360d986635b # v0.5.0
+      - uses: aywrite/mache/actions/play-shard@e3a59ce295c9dfabb62ddb077e88606d022cc55d # v0.7.1
         id: play
         with:
           candidate: ${{ env.ENGINE_NAME }}
@@ -251,6 +254,7 @@ jobs:
           opponent: ${{ matrix.rung.engine }}-${{ matrix.rung.tag }}
           opponent_binary: ./${{ matrix.rung.engine }}-${{ matrix.rung.tag }}
           book: ${{ needs.resolve.outputs.book }}
+          book_table: scripts/book.sh
           pairs: ${{ needs.resolve.outputs.pairs }}
           # a rung takes its slice of the book the way a shard does: the
           # rungs are the shards of one pass over it
@@ -346,7 +350,7 @@ jobs:
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
 
-      - uses: aywrite/mache/actions/setup@a429bcecb0b5718c0ef9fe8c02f0b360d986635b # v0.5.0
+      - uses: aywrite/mache/actions/setup@e3a59ce295c9dfabb62ddb077e88606d022cc55d # v0.7.1
         with:
           estimator_only: true
 
@@ -360,7 +364,7 @@ jobs:
           pattern: ${{ env.ARTIFACT }}-${{ github.run_id }}-${{ github.run_attempt }}-*
           path: rungs
 
-      - uses: aywrite/mache/actions/summarise-gauntlet@a429bcecb0b5718c0ef9fe8c02f0b360d986635b # v0.5.0
+      - uses: aywrite/mache/actions/summarise-gauntlet@e3a59ce295c9dfabb62ddb077e88606d022cc55d # v0.7.1
         id: estimate
         with:
           games: rungs

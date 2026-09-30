@@ -185,7 +185,7 @@ jobs:
             exit 1
           }
 
-      - uses: aywrite/mache/actions/resolve-ref@a429bcecb0b5718c0ef9fe8c02f0b360d986635b # v0.5.0
+      - uses: aywrite/mache/actions/resolve-ref@e3a59ce295c9dfabb62ddb077e88606d022cc55d # v0.7.1
         id: candidate
         with:
           ref: ${{ inputs.candidate }}
@@ -193,7 +193,7 @@ jobs:
           # nothing named means the commit this was dispatched on
           when_empty: head
 
-      - uses: aywrite/mache/actions/resolve-ref@a429bcecb0b5718c0ef9fe8c02f0b360d986635b # v0.5.0
+      - uses: aywrite/mache/actions/resolve-ref@e3a59ce295c9dfabb62ddb077e88606d022cc55d # v0.7.1
         id: baseline
         with:
           ref: ${{ inputs.baseline }}
@@ -206,7 +206,7 @@ jobs:
         if: steps.baseline.outputs.sha == ''
         run: echo "::notice::No previous release to compare against, skipping"
 
-      - uses: aywrite/mache/actions/plan-shards@a429bcecb0b5718c0ef9fe8c02f0b360d986635b # v0.5.0
+      - uses: aywrite/mache/actions/plan-shards@e3a59ce295c9dfabb62ddb077e88606d022cc55d # v0.7.1
         id: plan
         with:
           games: ${{ inputs.games }}
@@ -216,6 +216,7 @@ jobs:
           elo1: ${{ inputs.elo1 }}
           prior_pairs: ${{ inputs.prior_pairs }}
           book: ${{ inputs.book }}
+          book_table: scripts/book.sh
           max_match_minutes: ${{ inputs.max_match_minutes || 150 }}
 
   # The batch ladder. Actions has no loop and `uses:` is not an expression, so
