@@ -140,8 +140,8 @@ pub struct Event {
     /// The nodes the scout spent: zero on a skipped row.
     pub cost: u64,
     /// How many plies shallower the scout ran: what the reduction table,
-    /// the model gate and the clamp under them settled on, and zero on a
-    /// skipped row. The label does not read it; the counterfactual is the
+    /// the gate's extra ply and the clamp under them settled on, and zero on
+    /// a skipped row. The label does not read it; the counterfactual is the
     /// full depth answer whichever was trusted.
     pub reduction: u8,
 }

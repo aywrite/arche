@@ -297,10 +297,9 @@ multiply, as rules on unrelated parts of the tree would, or whether the pair
 frees more or less than that. A keyword given twice is refused, so a pair is
 one word; the same switch twice and a third switch are refused too. Where one
 switch of a pair is only ever asked under the other (`adaptive_null_move` under
-`null_move`; `deep_reductions`, `late_move_pruning`, `reduction_table` and
-`deep_index_rule` under `late_move_reductions`; `deep_index_rule` under
-`deep_reductions`), the pair searches as many nodes as the outer single,
-position by position, which a test holds.
+`null_move`; `deep_reductions`, `late_move_pruning` and `reduction_table`
+under `late_move_reductions`), the pair searches as many nodes as the outer
+single, position by position, which a test holds.
 
 **`off` absent means both sides are the default**, which the header says as
 `off none`. That run is the null, and it is the one to take first (see the end

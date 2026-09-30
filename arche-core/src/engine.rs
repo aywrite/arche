@@ -425,8 +425,9 @@ pub struct SearchConfig {
     /// Whether a late quiet at a full width node is scouted shallower
     /// first and searched at full depth only when the scout beats alpha.
     pub late_move_reductions: bool,
-    /// Whether the scout of a late quiet the gate prices as dead runs a ply
-    /// shallower still. Rides on `late_move_reductions`.
+    /// Whether the scout of a late quiet whose index reaches a floor rising
+    /// with depth runs a ply shallower still. Rides on
+    /// `late_move_reductions`.
     pub deep_reductions: bool,
     /// Whether a late quiet the attention model prices in its deadest band
     /// is searched at all. Rides on `late_move_reductions`.
@@ -442,10 +443,6 @@ pub struct SearchConfig {
     /// depth and move index rather than being the flat ply. Rides on
     /// `late_move_reductions`.
     pub reduction_table: bool,
-    /// Whether the deep reduction's extra ply is decided by the move's
-    /// index against a floor that rises with depth rather than by the
-    /// attention model's threshold. Rides on `deep_reductions`.
-    pub deep_index_rule: bool,
     /// Whether a node orders its quiet moves by the killers and the history
     /// table. Off in the reference, which keeps the pinned reference tree
     /// the one alpha-beta and the capture ordering produce.
@@ -569,7 +566,7 @@ impl SearchConfig {
     ///
     /// `taint` is not among them: it is a policy with four values rather
     /// than a switch, and `residuals` already takes it.
-    pub const SWITCHES: [(&'static str, TurnOff); 14] = [
+    pub const SWITCHES: [(&'static str, TurnOff); 13] = [
         ("reverse_futility", |config| config.reverse_futility = false),
         ("null_move", |config| config.null_move = false),
         ("adaptive_null_move", |config| {
@@ -587,7 +584,6 @@ impl SearchConfig {
         ("quiet_futility", |config| config.quiet_futility = false),
         ("late_move_count", |config| config.late_move_count = false),
         ("reduction_table", |config| config.reduction_table = false),
-        ("deep_index_rule", |config| config.deep_index_rule = false),
         ("move_memory", |config| config.move_memory = false),
         ("aspiration", |config| config.aspiration = false),
     ];
@@ -623,7 +619,6 @@ impl SearchConfig {
             quiet_futility: false,
             late_move_count: false,
             reduction_table: false,
-            deep_index_rule: false,
             move_memory: false,
             aspiration: false,
         }
@@ -678,7 +673,6 @@ impl Default for SearchConfig {
             quiet_futility: true,
             late_move_count: true,
             reduction_table: true,
-            deep_index_rule: true,
             move_memory: true,
             aspiration: true,
         }
@@ -788,18 +782,15 @@ mod switches {
         };
         let one = |name| SearchConfig::without(name).expect(name);
         let default = nodes(SearchConfig::default());
-        let outers: Vec<(&str, Vec<u64>)> =
-            ["null_move", "late_move_reductions", "deep_reductions"]
-                .into_iter()
-                .map(|outer| (outer, nodes(one(outer).config())))
-                .collect();
+        let outers: Vec<(&str, Vec<u64>)> = ["null_move", "late_move_reductions"]
+            .into_iter()
+            .map(|outer| (outer, nodes(one(outer).config())))
+            .collect();
         for (outer, inner) in [
             ("null_move", "adaptive_null_move"),
             ("late_move_reductions", "deep_reductions"),
             ("late_move_reductions", "late_move_pruning"),
             ("late_move_reductions", "reduction_table"),
-            ("late_move_reductions", "deep_index_rule"),
-            ("deep_reductions", "deep_index_rule"),
         ] {
             assert_ne!(nodes(one(inner).config()), default, "{inner} did nothing");
             let pair = one(outer).and(one(inner)).expect("a pair");
