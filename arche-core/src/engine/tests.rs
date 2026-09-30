@@ -3157,9 +3157,10 @@ mod cutoffs {
     use super::taught::{quiets, unmade_journey};
     use crate::board::fens::SHARP_MIDDLEGAME;
     use crate::census::{self, Class, Cutting, Table};
-    use crate::engine::{AlphaBeta, Board, NodeFacts, Score, SearchConfig};
+    use crate::engine::{AlphaBeta, Board, Node, RootBounds, Score, SearchConfig};
     use crate::play::Play;
     use crate::recorder::{Sampler, Window};
+    use crate::value::{Taint, Value};
     use pretty_assertions::assert_eq;
 
     const TABLE_BYTES: usize = 1024 * 1024;
@@ -3168,6 +3169,31 @@ mod cutoffs {
         let mut e = AlphaBeta::with_table_bytes(Board::from_fen(fen).unwrap(), TABLE_BYTES);
         e.arm(Sampler::<census::Event>::every(1));
         e
+    }
+
+    /// A node as the loop hands it to the recorder: opened at these facts
+    /// with `searched` moves made and searched, out of check.
+    fn node(
+        depth: u8,
+        (alpha, beta): (Score, Score),
+        ply: Option<usize>,
+        tt: Table,
+        searched: usize,
+        entered_at: u64,
+    ) -> Node {
+        let mut node = Node::open(
+            depth,
+            alpha,
+            beta,
+            RootBounds::Neither,
+            false,
+            ply,
+            tt,
+            entered_at,
+            Taint::default(),
+        );
+        node.searched = searched;
+        node
     }
 
     /// An engine nobody asked a census of holds none.
@@ -3199,17 +3225,8 @@ mod cutoffs {
         let moves = e.board.generate_moves();
         let (alpha, beta): (Score, Score) = (10, 11);
         e.census_event(
-            NodeFacts {
-                depth: 3,
-                alpha,
-                beta,
-                in_check: false,
-                ply: Some(0),
-                tt: Table::Miss,
-                entered_at: e.nodes,
-            },
+            &node(3, (alpha, beta), Some(0), Table::Miss, 2, e.nodes),
             &moves,
-            2,
             true,
             Some(Cutting {
                 play: &killer,
@@ -3263,17 +3280,8 @@ mod cutoffs {
             .collect();
         e.ordering.cutoff(color, &elsewhere, &marked, 1, 4);
         e.census_event(
-            NodeFacts {
-                depth: 3,
-                alpha: 10,
-                beta: 11,
-                in_check: false,
-                ply: Some(0),
-                tt: Table::Miss,
-                entered_at: e.nodes,
-            },
+            &node(3, (10, 11), Some(0), Table::Miss, 2, e.nodes),
             &moves,
-            2,
             true,
             Some(Cutting {
                 play: &cut,
@@ -3306,17 +3314,8 @@ mod cutoffs {
             .find(|m| m.capture.is_some())
             .expect("a capture");
         e.census_event(
-            NodeFacts {
-                depth: 4,
-                alpha: 10,
-                beta: 11,
-                in_check: false,
-                ply: None,
-                tt: Table::Move,
-                entered_at: e.nodes,
-            },
+            &node(4, (10, 11), None, Table::Move, 1, e.nodes),
             &[],
-            1,
             false,
             Some(Cutting {
                 play: &take,
@@ -3340,6 +3339,26 @@ mod cutoffs {
         assert_eq!(row.tt, Table::Move);
     }
 
+    /// A node whose alpha rose records the window it opened with: an open
+    /// window stays open when a move raises alpha to a point under beta.
+    #[test]
+    fn a_row_records_the_window_the_node_opened_with() {
+        let mut e = engine(SHARP_MIDDLEGAME);
+        let (m, _) = quiets(&e);
+        let moves = e.board.generate_moves();
+        let mut node = node(2, (-50, 60), Some(0), Table::Miss, 0, e.nodes);
+        node.absorb(&m, Value::clean(59));
+        assert_eq!((node.alpha, node.beta), (59, 60));
+        e.census_event(&node, &moves, true, None);
+        let sampled = e
+            .disarm::<census::Event>()
+            .expect("a census was installed")
+            .drain();
+        let row = &sampled.taken[0];
+        assert_eq!(row.window, Window::Open);
+        assert_eq!(row.searched, 1);
+    }
+
     /// A node the loop finished: no cutting move, and the rest of the
     /// portrait still there, the quiets' largest history included.
     #[test]
@@ -3349,17 +3368,15 @@ mod cutoffs {
         e.ordering.cutoff(e.board.active_color, &taught, &[], 0, 3);
         let moves = e.board.generate_moves();
         e.census_event(
-            NodeFacts {
-                depth: 2,
-                alpha: -50,
-                beta: 60,
-                in_check: false,
-                ply: Some(0),
-                tt: Table::ScoreOnly,
-                entered_at: e.nodes,
-            },
+            &node(
+                2,
+                (-50, 60),
+                Some(0),
+                Table::ScoreOnly,
+                moves.len(),
+                e.nodes,
+            ),
             &moves,
-            moves.len(),
             true,
             None,
         );
@@ -3384,11 +3401,12 @@ mod reductions {
     use super::taught::{quiets, unmade_journey};
     use crate::board::fens::SHARP_MIDDLEGAME;
     use crate::census::Table;
-    use crate::engine::{AlphaBeta, Board, RootBounds, Score};
+    use crate::engine::{AlphaBeta, Board, Node, RootBounds, Score};
     use crate::late_move;
     use crate::play::Play;
     use crate::recorder::{Sampler, Window};
     use crate::reduction::{self, Scout};
+    use crate::value::{Taint, Value};
     use pretty_assertions::assert_eq;
 
     const TABLE_BYTES: usize = 1024 * 1024;
@@ -3403,8 +3421,7 @@ mod reductions {
     /// neither the depth nor the bounds, so both stand at nothing.
     fn staged(e: &AlphaBeta, m: &Play, searched: usize, ply: Option<usize>) -> reduction::Staged {
         let moves = e.board.generate_moves();
-        let mut node = late_move::Node::new(
-            &e.deciding(),
+        let mut node = Node::open(
             0,
             0,
             1,
@@ -3412,9 +3429,12 @@ mod reductions {
             false,
             ply,
             Table::Miss,
-            None,
+            0,
+            Taint::default(),
         );
-        e.staged_reduction(m, searched, &mut node, &moves)
+        node.searched = searched;
+        let mut rules = late_move::Rules::new(&e.deciding(), &node, None);
+        e.staged_reduction(m, &node, &mut rules, &moves)
     }
 
     /// An engine nobody asked a ledger of holds none.
@@ -3477,6 +3497,45 @@ mod reductions {
         assert_eq!(row.scout, Scout::Low);
         assert!(row.cost >= 1);
         assert_eq!(row.reduction, 1);
+    }
+
+    /// A skipped move is recorded against the bounds as the move is
+    /// reached: alpha as a move before it raised it, not the alpha the node
+    /// opened with.
+    #[test]
+    fn a_skipped_row_reads_the_alpha_standing() {
+        let mut e = engine(SHARP_MIDDLEGAME);
+        let (m, raiser) = quiets(&e);
+        let parent_eval = i32::from(crate::eval::eval(&e.board));
+        let staged = staged(&e, &m, 5, Some(0));
+        let mut node = Node::open(
+            3,
+            -50,
+            60,
+            RootBounds::Neither,
+            false,
+            Some(0),
+            Table::Miss,
+            e.nodes,
+            Taint::default(),
+        );
+        node.absorb(&raiser, Value::clean(10));
+        assert_eq!(node.alpha, 10);
+        let fen = e.board.to_fen();
+        e.ledger_skip(staged, &node);
+        assert_eq!(e.board.to_fen(), fen, "the board was not left as it was");
+        let sampled = e
+            .disarm::<reduction::Event>()
+            .expect("a ledger was installed")
+            .drain();
+        assert_eq!(sampled.taken.len(), 1);
+        let row = &sampled.taken[0];
+        assert_eq!(row.scout, Scout::Skipped);
+        assert_eq!(row.depth, 3);
+        assert_eq!(row.alpha, 10);
+        assert_eq!(row.window, Window::Open);
+        assert_eq!(row.alpha_gap, 10 - parent_eval);
+        assert_eq!(row.eval_beta, parent_eval - 60);
     }
 
     /// A reduced move the table has marked down stages the signed entry
@@ -3613,5 +3672,100 @@ mod reductions {
             "nothing reduced against that beta with neither bound marked, \
              so the count above was no claim"
         );
+    }
+}
+
+/// A full width node's answer as its moves come back, read off the node
+/// with no search behind it but the one the table's move asks for.
+mod node {
+    use crate::board::play_named;
+    use crate::census::Table;
+    use crate::engine::{AlphaBeta, Board, Node, Reached, RootBounds, Score};
+    use crate::play::Play;
+    use crate::value::{Taint, Value};
+    use pretty_assertions::assert_eq;
+
+    fn open(depth: u8, alpha: Score, beta: Score, root_bounds: RootBounds) -> Node {
+        Node::open(
+            depth,
+            alpha,
+            beta,
+            root_bounds,
+            false,
+            Some(0),
+            Table::Miss,
+            0,
+            Taint::default(),
+        )
+    }
+
+    /// A move for the answer to name. It reads the value and not the move.
+    fn any_move() -> Play {
+        Play::new(12, 28, None, None, false, false)
+    }
+
+    /// Alpha and the root bounds move together at a rise, and a later
+    /// move scoring less lowers neither. Started from the two states where
+    /// alpha is still the root's, so a rise that forgot the bounds shows.
+    #[test]
+    fn a_rise_moves_alpha_and_the_root_bounds_together_and_nothing_lowers_them() {
+        let m = any_move();
+        for (from, to) in [
+            (RootBounds::Both, RootBounds::Beta),
+            (RootBounds::Alpha, RootBounds::Neither),
+        ] {
+            let mut node = open(4, -100, 100, from);
+            // under alpha, and at it, raise nothing
+            assert_eq!(node.absorb(&m, Value::clean(-150)), Reached::Neither);
+            assert_eq!(node.absorb(&m, Value::clean(-100)), Reached::Neither);
+            assert_eq!((node.alpha, node.root_bounds), (-100, from));
+            assert_eq!(node.absorb(&m, Value::clean(20)), Reached::Alpha);
+            assert_eq!((node.alpha, node.root_bounds), (20, to));
+            assert_eq!(node.absorb(&m, Value::clean(10)), Reached::Neither);
+            assert_eq!((node.alpha, node.root_bounds), (20, to));
+            assert_eq!(node.absorb(&m, Value::clean(50)), Reached::Alpha);
+            assert_eq!((node.alpha, node.root_bounds), (50, to));
+            // a cutoff answers the node and leaves the bounds where they
+            // stood
+            assert_eq!(node.absorb(&m, Value::clean(100)), Reached::Beta);
+            assert_eq!((node.alpha, node.beta, node.root_bounds), (50, 100, to));
+            assert_eq!(node.searched, 6);
+        }
+    }
+
+    /// The answer is a ceiling until a move beats the alpha the node
+    /// opened with, and a score or a floor from then on.
+    #[test]
+    fn alpha_is_raised_after_a_rise_and_not_before() {
+        let m = any_move();
+        let mut node = open(4, -50, 50, RootBounds::Neither);
+        assert!(!node.raised_alpha());
+        node.absorb(&m, Value::clean(-60));
+        assert!(!node.raised_alpha(), "a move under alpha");
+        node.absorb(&m, Value::clean(-50));
+        assert!(!node.raised_alpha(), "a move at alpha");
+        node.absorb(&m, Value::clean(0));
+        assert!(node.raised_alpha());
+        node.absorb(&m, Value::clean(-60));
+        assert!(node.raised_alpha(), "a move after the rise");
+    }
+
+    /// The searched count is what the reductions read as a move's index:
+    /// the table's move is counted when it was made, and a table move that
+    /// turns out illegal is not. The knight is pinned to its king, so its
+    /// move is pseudo legal and refused when made.
+    #[test]
+    fn the_searched_count_takes_the_tables_move_and_not_an_illegal_one() {
+        let board = Board::from_fen("4r1k1/8/8/8/8/8/4N3/4K3 w - - 0 1").unwrap();
+        let mut e = AlphaBeta::with_table_bytes(board, 1024 * 1024);
+        let pinned = play_named(&e.board, "e2c3");
+        let step = play_named(&e.board, "e1d1");
+        assert!(e.board.is_pseudo_legal(&pinned) && e.board.is_pseudo_legal(&step));
+        let mut node = open(2, -20_000, 20_000, RootBounds::Neither);
+        assert!(matches!(e.search_table_move(pinned, &mut node), Ok(None)));
+        assert_eq!(node.searched, 0, "the illegal move was counted");
+        assert!(!node.raised_alpha());
+        assert!(matches!(e.search_table_move(step, &mut node), Ok(None)));
+        assert_eq!(node.searched, 1, "the table's move was not counted");
     }
 }
