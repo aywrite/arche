@@ -3157,7 +3157,7 @@ mod cutoffs {
     use super::taught::{quiets, unmade_journey};
     use crate::board::fens::SHARP_MIDDLEGAME;
     use crate::census::{self, Class, Cutting, Table};
-    use crate::engine::{AlphaBeta, Board, Score, SearchConfig};
+    use crate::engine::{AlphaBeta, Board, NodeFacts, Score, SearchConfig};
     use crate::play::Play;
     use crate::recorder::{Sampler, Window};
     use pretty_assertions::assert_eq;
@@ -3199,16 +3199,18 @@ mod cutoffs {
         let moves = e.board.generate_moves();
         let (alpha, beta): (Score, Score) = (10, 11);
         e.census_event(
-            3,
-            alpha,
-            beta,
-            false,
+            NodeFacts {
+                depth: 3,
+                alpha,
+                beta,
+                in_check: false,
+                ply: Some(0),
+                tt: Table::Miss,
+                entered_at: e.nodes,
+            },
             &moves,
             2,
             true,
-            Some(0),
-            Table::Miss,
-            e.nodes,
             Some(Cutting {
                 play: &killer,
                 reduced: false,
@@ -3261,16 +3263,18 @@ mod cutoffs {
             .collect();
         e.ordering.cutoff(color, &elsewhere, &marked, 1, 4);
         e.census_event(
-            3,
-            10,
-            11,
-            false,
+            NodeFacts {
+                depth: 3,
+                alpha: 10,
+                beta: 11,
+                in_check: false,
+                ply: Some(0),
+                tt: Table::Miss,
+                entered_at: e.nodes,
+            },
             &moves,
             2,
             true,
-            Some(0),
-            Table::Miss,
-            e.nodes,
             Some(Cutting {
                 play: &cut,
                 reduced: false,
@@ -3302,16 +3306,18 @@ mod cutoffs {
             .find(|m| m.capture.is_some())
             .expect("a capture");
         e.census_event(
-            4,
-            10,
-            11,
-            false,
+            NodeFacts {
+                depth: 4,
+                alpha: 10,
+                beta: 11,
+                in_check: false,
+                ply: None,
+                tt: Table::Move,
+                entered_at: e.nodes,
+            },
             &[],
             1,
             false,
-            None,
-            Table::Move,
-            e.nodes,
             Some(Cutting {
                 play: &take,
                 reduced: false,
@@ -3343,16 +3349,18 @@ mod cutoffs {
         e.ordering.cutoff(e.board.active_color, &taught, &[], 0, 3);
         let moves = e.board.generate_moves();
         e.census_event(
-            2,
-            -50,
-            60,
-            false,
+            NodeFacts {
+                depth: 2,
+                alpha: -50,
+                beta: 60,
+                in_check: false,
+                ply: Some(0),
+                tt: Table::ScoreOnly,
+                entered_at: e.nodes,
+            },
             &moves,
             moves.len(),
             true,
-            Some(0),
-            Table::ScoreOnly,
-            e.nodes,
             None,
         );
         let sampled = e
@@ -3395,22 +3403,18 @@ mod reductions {
     /// neither the depth nor the bounds, so both stand at nothing.
     fn staged(e: &AlphaBeta, m: &Play, searched: usize, ply: Option<usize>) -> reduction::Staged {
         let moves = e.board.generate_moves();
-        let mut eval = None;
-        let mut history_max = None;
-        let mut node = late_move::Node {
-            depth: 0,
-            alpha: 0,
-            beta: 1,
-            root_bounds: RootBounds::Neither,
-            in_check: false,
+        let mut node = late_move::Node::new(
+            &e.deciding(),
+            0,
+            0,
+            1,
+            RootBounds::Neither,
+            false,
             ply,
-            tt: Table::Miss,
-            moves: &moves,
-            eval: &mut eval,
-            history_max: &mut history_max,
-            check: &mut None,
-        };
-        e.staged_reduction(m, searched, &mut node)
+            Table::Miss,
+            None,
+        );
+        e.staged_reduction(m, searched, &mut node, &moves)
     }
 
     /// An engine nobody asked a ledger of holds none.
