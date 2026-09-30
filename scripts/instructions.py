@@ -136,6 +136,39 @@ def report(base: Counted, candidate: Counted) -> list[str]:
     ]
 
 
+# How far an edit not made for speed has moved the count. Over v0.4.6 to
+# ffdb1f0 (the Instruction history workflow), 34 such steps changed the
+# binary and left the node count alone. 30 moved the count by under 30,000
+# instructions, and four by 0.02%, 0.05%, 0.23% and 0.63%; whether those
+# four are the compiler placing code and registers differently or work
+# gained or lost by the way is not known. 0.7% sits just above the largest,
+# on few cases. Of the 17 steps made for speed, 13 moved the count by more
+# and four by 0.13% to 0.61%, so a change inside the band can still be a
+# real one; the band says only that the count cannot tell.
+INCIDENTAL = 0.7
+
+
+def verdict(base: Counted, candidate: Counted) -> str:
+    """What the count says, held against what an incidental edit moves it
+    by. It is about instructions only, and says nothing of the time."""
+    if base.nodes != candidate.nodes:
+        return (
+            "the trees differ, so the count moved with the search as well as "
+            "the code; the per node column is the nearer reading"
+        )
+    moved = 100.0 * (candidate.instructions - base.instructions) / base.instructions
+    if abs(moved) <= INCIDENTAL:
+        return (
+            f"within ±{INCIDENTAL}%, as far as edits not made for speed have "
+            "moved the count"
+        )
+    direction = "fewer" if moved < 0 else "more"
+    return (
+        f"{direction} instructions, beyond the ±{INCIDENTAL}% that edits not "
+        "made for speed have moved the count"
+    )
+
+
 def main(argv: list[str]) -> int:
     parser = argparse.ArgumentParser(description=__doc__.splitlines()[0])
     parser.add_argument("base")
@@ -154,6 +187,8 @@ def main(argv: list[str]) -> int:
     print()
     for line in report(base, candidate):
         print(line)
+    print()
+    print(verdict(base, candidate))
     return 0
 
 

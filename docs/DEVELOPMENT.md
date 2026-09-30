@@ -443,9 +443,17 @@ timing them and adds the count to its comment.
 
 Cache misses, mispredicted branches and code alignment cost time and no
 instructions, so a change that trades an instruction for a miss reads as a win
-here and a loss in the rate. Register allocation alone can move the count by a
-few tenths of a percent. Read the two together: a change the count shows and
-the rate cannot resolve is one in instructions only.
+here and a loss in the rate. Edits made for other reasons move the count too.
+Over v0.4.6 to ffdb1f0, 30 of the 34 such steps that changed the binary moved
+it by under 30,000 instructions and the other four by up to 0.63%, so the
+script's last line calls a change within ±0.7% one such an edit could have
+made. Four of the 17 steps made for speed fell inside that band as well, so
+inside it the count cannot tell, which is not the same as no change. Read the
+two together: a change the count shows and the rate cannot resolve is one in
+instructions only. How far apart they can be shows in the same range. Keying
+the quiet moves with SSE (8f9dafe) cut the instructions by 4.3% and the time
+by 0.3%, since each vector instruction does more, and generating captures
+first (376a2c5) cut the instructions by 1.3% and the time by 5.4%.
 
 Each pull request's count is read against its own base, so changes too small
 to notice one at a time can add up. The Instruction history workflow, run by
