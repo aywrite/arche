@@ -474,8 +474,8 @@ impl fmt::Display for Report {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::recorder::fixtures::{recording_leaves_the_search_where_it_was, suite};
-    use crate::recorder::{DEFAULT_CAP, Sampler};
+    use crate::recorder::DEFAULT_CAP;
+    use crate::recorder::fixtures::{reservoir_leaves_the_search_where_it_was, suite};
 
     /// Scores just inside the mate window, either side of it.
     const MATING: Score = crate::value::CHECKMATE_THRESHOLD + 1;
@@ -623,18 +623,7 @@ mod tests {
 
     #[test]
     fn recording_leaves_the_measured_search_where_it_was() {
-        recording_leaves_the_search_where_it_was(
-            4,
-            |engine| engine.arm(Sampler::<Sample>::with_cap(1, DEFAULT_CAP)),
-            |engine| {
-                engine
-                    .disarm::<Sample>()
-                    .expect("the sampler comes back")
-                    .drain()
-                    .taken
-                    .len()
-            },
-        );
+        reservoir_leaves_the_search_where_it_was::<Sample>(4, SearchConfig::default());
     }
 
     /// A run at rate seven records exactly the events of the rate one run
@@ -723,19 +712,6 @@ mod tests {
     }
 
     #[test]
-    fn a_row_can_cross_without_overstating_and_overstate_without_crossing() {
-        // beta is 100 in every made up row
-        let crossed_only = claiming(2, 70, 90);
-        let overstated_only = claiming(2, 150, 120);
-        let both = claiming(2, 100, 60);
-        let neither = claiming(2, 100, 140);
-        assert!(crossed_only.crossed() && !crossed_only.overstated());
-        assert!(!overstated_only.crossed() && overstated_only.overstated());
-        assert!(both.crossed() && both.overstated());
-        assert!(!neither.crossed() && !neither.overstated());
-    }
-
-    #[test]
     fn a_mate_reference_is_overstated_by_a_claim_above_it() {
         let over_a_mated = claiming(2, 100, MATED);
         let under_a_mating = claiming(2, 100, MATING);
@@ -811,26 +787,28 @@ mod tests {
 
     #[test]
     fn the_header_names_a_suite_that_is_not_the_benchs() {
+        // depth one with a cap of nothing: the name has to travel from the
+        // run to the header, and the search and the replay cost nothing
         let named = run(
             &suite(),
             Some("held_out.epd"),
-            2,
+            1,
+            1,
             0,
-            DEFAULT_CAP,
             SearchConfig::default(),
         );
         assert!(
             named
                 .to_string()
-                .starts_with("residuals depth 2 every 1 epd held_out.epd taint"),
+                .starts_with("residuals depth 1 every 1 cap 0 epd held_out.epd taint"),
             "{}",
             named
         );
-        let bench = run(&suite(), None, 2, 0, DEFAULT_CAP, SearchConfig::default());
+        let bench = report_of(Vec::new());
         assert!(
             bench
                 .to_string()
-                .starts_with("residuals depth 2 every 1 taint"),
+                .starts_with("residuals depth 4 every 1 taint"),
             "{}",
             bench
         );
@@ -911,16 +889,9 @@ mod tests {
     #[test]
     fn a_row_reads_left_to_right_with_the_fen_last() {
         let report = Report {
-            depth: 4,
             every: 10,
-            cap: DEFAULT_CAP,
-            suite: None,
-            config: SearchConfig::default(),
-            positions: 1,
             events: 40,
-            overflowed: 0,
-            unplayable: 0,
-            rows: vec![Row {
+            ..report_of(vec![Row {
                 kind: Shortcut::NullMove,
                 depth: 3,
                 window: Window::Zero,
@@ -931,7 +902,7 @@ mod tests {
                 claimed: 200,
                 reference: 150,
                 fen: "4k3/8/8/8/8/8/8/4K3 w - - 0 1".to_string(),
-            }],
+            }])
         };
         let text = report.to_string();
         let row = text.lines().nth(1).expect("a row");
@@ -1030,16 +1001,20 @@ mod tests {
         );
     }
 
+    /// The two labels are independent: a row can cross without overstating
+    /// and overstate without crossing, and the summary counts them apart.
     #[test]
     fn the_summary_counts_the_overstatements_apart_from_the_crossings() {
-        // one crossed and overstated, one overstated with beta cleared, one
-        // crossed with the claim under the reference, and one neither
-        let report = report_of(vec![
-            claiming(2, 100, 60),
-            claiming(2, 150, 120),
-            claiming(2, 70, 90),
-            claiming(2, 100, 140),
-        ]);
+        // beta is 100 in every made up row
+        let both = claiming(2, 100, 60);
+        let overstated_only = claiming(2, 150, 120);
+        let crossed_only = claiming(2, 70, 90);
+        let neither = claiming(2, 100, 140);
+        assert!(both.crossed() && both.overstated());
+        assert!(!overstated_only.crossed() && overstated_only.overstated());
+        assert!(crossed_only.crossed() && !crossed_only.overstated());
+        assert!(!neither.crossed() && !neither.overstated());
+        let report = report_of(vec![both, overstated_only, crossed_only, neither]);
         let summary = report
             .summary(Shortcut::ReverseFutility, 2)
             .expect("four rows of the pair");
@@ -1164,16 +1139,8 @@ mod tests {
     #[test]
     fn the_header_says_when_the_buffer_or_the_replay_dropped_something() {
         let mut report = Report {
-            depth: 4,
-            every: 1,
-            cap: DEFAULT_CAP,
-            suite: None,
-            config: SearchConfig::default(),
-            positions: 1,
             events: 0,
-            overflowed: 0,
-            unplayable: 0,
-            rows: Vec::new(),
+            ..report_of(Vec::new())
         };
         let quiet = report.to_string();
         assert!(!quiet.contains("overflow"), "{}", quiet);

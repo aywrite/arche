@@ -321,9 +321,12 @@ pub(crate) fn depths(reached: impl Iterator<Item = u8>) -> Vec<u8> {
 /// What the recorders' tests share.
 #[cfg(test)]
 pub(crate) mod fixtures {
+    use super::{DEFAULT_CAP, Sampler};
     use crate::bench::{self, Position};
     use crate::board::Board;
-    use crate::engine::{AlphaBeta, Engine, SearchConfig, SearchOutcome, SearchParameters};
+    use crate::engine::{
+        AlphaBeta, Engine, Recorded, SearchConfig, SearchOutcome, SearchParameters,
+    };
 
     /// Two positions: enough to record something, few enough for a replay
     /// to finish inside a test.
@@ -342,6 +345,38 @@ pub(crate) mod fixtures {
         arm: impl Fn(&mut AlphaBeta),
         take: impl Fn(&mut AlphaBeta) -> usize,
     ) {
+        recording_under(SearchConfig::default(), depth, arm, take);
+    }
+
+    /// The contract for a reservoir of one kind of record, armed through
+    /// `Engine::arm` at a rate of one with the default cap, which is how
+    /// every such recorder asks it. The configuration is the caller's, since
+    /// one instrument searches under a configuration its caller chose.
+    pub(crate) fn reservoir_leaves_the_search_where_it_was<T: Recorded>(
+        depth: u8,
+        config: SearchConfig,
+    ) {
+        recording_under(
+            config,
+            depth,
+            |engine| engine.arm(Sampler::<T>::with_cap(1, DEFAULT_CAP)),
+            |engine| {
+                engine
+                    .disarm::<T>()
+                    .expect("the reservoir comes back")
+                    .drain()
+                    .taken
+                    .len()
+            },
+        );
+    }
+
+    fn recording_under(
+        config: SearchConfig,
+        depth: u8,
+        arm: impl Fn(&mut AlphaBeta),
+        take: impl Fn(&mut AlphaBeta) -> usize,
+    ) {
         let searched_nodes = |engine: &mut AlphaBeta, id: &str| {
             let outcome = engine
                 .iterative_deepening_search(SearchParameters::to_depth(depth), |_, _, _, _| {});
@@ -353,11 +388,9 @@ pub(crate) mod fixtures {
         let mut kept = 0;
         for position in &suite() {
             let board = Board::from_fen(&position.fen).unwrap();
-            let mut plain =
-                AlphaBeta::with_config(board.clone(), bench::TABLE_BYTES, SearchConfig::default());
+            let mut plain = AlphaBeta::with_config(board.clone(), bench::TABLE_BYTES, config);
             let plain_nodes = searched_nodes(&mut plain, &position.id);
-            let mut armed =
-                AlphaBeta::with_config(board, bench::TABLE_BYTES, SearchConfig::default());
+            let mut armed = AlphaBeta::with_config(board, bench::TABLE_BYTES, config);
             arm(&mut armed);
             let armed_nodes = searched_nodes(&mut armed, &position.id);
             assert_eq!(armed_nodes, plain_nodes, "{}", position.id);

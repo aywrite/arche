@@ -695,6 +695,8 @@ mod tests {
         }
     }
 
+    /// Two audited runs of it count the same, since the audit reads the
+    /// search and nothing about the run.
     #[test]
     fn an_audited_run_searches_the_same_tree() {
         let suite = small_suite();
@@ -710,6 +712,9 @@ mod tests {
                 .collect::<Vec<_>>()
         };
         assert_eq!(played(&plain), played(&audited));
+        let again = run_audited_suite(&suite, Reach::Depth(4), 4 << 20, SearchConfig::default())
+            .expect("the keys");
+        assert_eq!(audited.signatures(), again.signatures());
     }
 
     /// The false accepts are pinned at zero rather than bounded. The
@@ -805,16 +810,6 @@ mod tests {
         let none = SignatureCounters::default();
         assert_eq!(none.expected_false_accepts(), 0.0);
         assert!(none.narrow().all(|(_, _, expected)| expected == 0.0));
-    }
-
-    #[test]
-    fn two_audited_runs_count_the_same() {
-        let suite = small_suite();
-        let first = run_audited_suite(&suite, Reach::Depth(4), 4 << 20, SearchConfig::default())
-            .expect("keys");
-        let second = run_audited_suite(&suite, Reach::Depth(4), 4 << 20, SearchConfig::default())
-            .expect("keys");
-        assert_eq!(first.signatures(), second.signatures());
     }
 
     /// A deliberate change to the search is expected to move these: update

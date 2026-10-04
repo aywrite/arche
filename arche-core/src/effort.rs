@@ -663,9 +663,8 @@ impl fmt::Display for Report {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::board::Board;
     use crate::recorder::DEFAULT_CAP;
-    use crate::recorder::fixtures::{recording_leaves_the_search_where_it_was, suite};
+    use crate::recorder::fixtures::{reservoir_leaves_the_search_where_it_was, suite};
     use pretty_assertions::assert_eq;
 
     #[test]
@@ -1046,14 +1045,13 @@ mod tests {
             report.positions.iter().any(|p| p.nodes_on < p.nodes_off),
             "the switch removed nothing"
         );
-        let mut outcomes = (0, 0, 0);
-        for row in &report.rows {
-            match row.outcome {
-                Outcome::Both => outcomes.0 += 1,
-                Outcome::OnlyOn => outcomes.1 += 1,
-                Outcome::OnlyOff => outcomes.2 += 1,
-            }
-        }
+        let summaries = report.summaries();
+        let counted = |of: fn(&Summary) -> usize| summaries.iter().map(of).sum::<usize>();
+        let outcomes = (
+            counted(|s| s.both),
+            counted(|s| s.only_on),
+            counted(|s| s.only_off),
+        );
         // all three, the created population included
         assert!(
             outcomes.0 > 0 && outcomes.1 > 0 && outcomes.2 > 0,
@@ -1144,18 +1142,7 @@ mod tests {
 
     #[test]
     fn recording_leaves_the_measured_search_where_it_was() {
-        recording_leaves_the_search_where_it_was(
-            4,
-            |engine| engine.arm(Sampler::<Event>::with_cap(1, DEFAULT_CAP)),
-            |engine| {
-                engine
-                    .disarm::<Event>()
-                    .expect("the reservoir comes back")
-                    .drain()
-                    .taken
-                    .len()
-            },
-        );
+        reservoir_leaves_the_search_where_it_was::<Event>(4, SearchConfig::default());
     }
 
     /// The same, under a baseline configuration: this is the one instrument
@@ -1163,31 +1150,12 @@ mod tests {
     /// pinned for a switch off, or every arm would edit it.
     #[test]
     fn recording_changes_nothing_under_the_baseline_configuration_either() {
-        let config = SearchConfig::without("quiet_futility")
-            .expect("a switch of the table")
-            .config();
-        let mut kept = 0;
-        for position in suite() {
-            let board = Board::from_fen(&position.fen).unwrap();
-            let searched = |engine: &mut AlphaBeta| match engine
-                .iterative_deepening_search(SearchParameters::to_depth(4), |_, _, _, _| {})
-            {
-                SearchOutcome::Complete(result, _) => result.nodes,
-                other => panic!("{}: {:?}", position.id, other),
-            };
-            let mut plain = AlphaBeta::with_config(board.clone(), bench::TABLE_BYTES, config);
-            let plain_nodes = searched(&mut plain);
-            let mut armed = AlphaBeta::with_config(board, bench::TABLE_BYTES, config);
-            armed.arm(Sampler::<Event>::with_cap(1, DEFAULT_CAP));
-            assert_eq!(searched(&mut armed), plain_nodes, "{}", position.id);
-            kept += armed
-                .disarm::<Event>()
-                .expect("the reservoir comes back")
-                .drain()
-                .taken
-                .len();
-        }
-        assert!(kept > 0, "the armed runs recorded nothing");
+        reservoir_leaves_the_search_where_it_was::<Event>(
+            4,
+            SearchConfig::without("quiet_futility")
+                .expect("a switch of the table")
+                .config(),
+        );
     }
 
     #[test]
