@@ -196,6 +196,10 @@ term over every pair of pieces.
   once with a named switch off, and joins the two runs by the node, so a
   row says whether each side reached it and what each spent under it.
   Driven by the `effort` argument.
+- **forced.rs**: What one shortcut decision cost the root. It samples the
+  decisions a default search takes, then searches each root again with one
+  of them inverted wherever the search meets it, and reports what the root
+  answered both times. Driven by the `forced` argument.
 - **tune.rs**: What a position's evaluation is made of. The evaluation is
   linear in its weights except where material cannot mate, and for the pair
   term, which a row carries as a number of its own. This writes down the

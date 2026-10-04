@@ -1,10 +1,10 @@
 # Instruments
 
 These measurements ask what the engine gave up rather than how large a tree it
-walked. `residuals`, `cutoffs`, `reductions` and `effort` are arguments of their
-own and measure the search, as does the bench's `audit` word. `terms` measures
-the evaluation, and the last section is the offline harness under `scripts/`
-that fits and scores the weights `terms` states.
+walked. `residuals`, `cutoffs`, `reductions`, `effort` and `forced` are
+arguments of their own and measure the search, as does the bench's `audit`
+word. `terms` measures the evaluation, and the last section is the offline
+harness under `scripts/` that fits and scores the weights `terms` states.
 
 [DEVELOPMENT.md](DEVELOPMENT.md) has the bench itself and everything else a
 change needs before it is committed. Nothing in this file is needed for that.
@@ -20,7 +20,7 @@ cap` is refused with `cap: no value`, and so is one named twice: a run takes
 minutes, and one started at a default nobody typed answers a question that was
 not asked.
 
-All of these print to standard output; redirect it to keep a run. The four
+All of these print to standard output; redirect it to keep a run. The five
 arguments and `terms` print a row per sample, whitespace separated with the fen
 last so a row parses left to right, under a header that states what the run
 used, so it can be rerun from what it printed.
@@ -375,6 +375,78 @@ same of a side with switches off, since this is the one instrument that
 searches under a configuration its caller chose. There is no pinned count for
 a configuration with a switch off, and there should not be one, since it would
 need rewriting whenever the search gained a rule.
+
+## What one decision cost the root
+
+The ledger and the residuals label a decision at its own node. Whether being
+wrong there cost the root anything is another question, and most such errors
+cost nothing: a re-search recovers them, or the root's move survives them.
+`arche forced` asks it:
+
+```
+target/release/arche forced [depth] [every <n>] [cap <n>] [epd <file>] [kinds <kind>[,<kind>]] [from <depth>]
+```
+
+It searches each root of the suite under the default, sampling the shortcut
+decisions taken, and then searches the root again once for each sampled
+decision with that one decision inverted. Four kinds can be inverted:
+
+| kind | taken | inverted |
+| --- | --- | --- |
+| `reverse_futility` | the margin answered the node | the node does not answer from the margin, and the null move then gets its turn |
+| `null_move` | the pass cleared beta | the node goes on to its moves |
+| `skip` | a late quiet was passed over, by the model at depth four and up or by a shallow rule below | the move is searched unreduced |
+| `trusted_scout` | a reduced scout came back at or below alpha | the move goes on to the probe and the proof, as if the scout had failed high |
+
+`kinds` narrows the sampling to the kinds named, and `from` to decisions at
+that depth and deeper. Shallow decisions are most of them, so a run after
+the model's decisions asks for `from 4`.
+
+A decision is addressed by its kind, a position key and the deciding node's
+depth. A node decision is keyed by the node's position; a move decision by
+the position the move leaves, as the ledger keys its rows. Two parents that
+reach one child at one depth therefore share an address, and a forced run
+inverts both. The inversion applies wherever the search meets the address:
+every visit, in every iteration of the deepening and every aspiration
+re-search, so a row is that decision forced wherever it comes up and not one
+occurrence of it. Each root starts from a fresh engine and table with no
+clock, so the two searches agree until the first such visit. The sampler
+keeps revisits of an address as separate records, and the row keeps the
+first visit's.
+
+An inverted skip is searched unreduced, where with the rule off it would
+usually have been scouted first. That is the depth the ledger's replay asks
+about, but the two still differ: the replay is the reference on a cold table
+over the full window, and a forced row is the default in the node's own
+window. The moves after an inverted skip read a searched count one higher.
+An inverted pass leaves its taint in the node, as a pass that fails does, and
+an inverted scout passes its taint on, as a scout that fails high does.
+
+While the instrument is armed the move loop asks the shallow rules move by
+move, as it does under the ledger, since a run that drops a whole run of
+quiets at once never meets the skips in it. The tests hold an armed search's
+move, score and node count to an unarmed one's.
+
+Each row is `kind depth index searched generated history history_max killer
+tt eval_beta alpha_gap attention answered visits root best_on best_forced
+score_on score_forced nodes_on nodes_forced fen`. The move columns are the
+ledger's, read at the first visit, and print `-` on a node decision.
+`attention` is the model's score where the gate reads one (a late quiet at
+depth four and up) and `-` elsewhere; every skip at those depths scores at
+or under the pruning threshold by construction, so the column is read within
+a kind. `answered` is, for a node decision, what answered the node once it
+was inverted. `visits` is how often the forced search met the address, and a
+row that reads zero is the instrument failing, not a finding. `root` is the
+root's place in the suite, and the fen is the deciding node's.
+
+The run ends, under `summary`, with a line per kind (rows forced, rows never
+met, rows whose root move changed) and a line per root with what the default
+answered there and the root's id last.
+
+Every kept decision costs a search of its root, so the default rate is one
+decision in 100,000. What a changed move cost is not here: a row whose root
+move did not change lost nothing to the decision, and one whose move did
+change needs its two moves valued by a deeper search, offline.
 
 ## What a position's evaluation is made of
 

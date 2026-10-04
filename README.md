@@ -54,7 +54,7 @@ The program starts in UCI mode immediately. `arche --help` lists the arguments t
 anything else. `bench` searches a fixed set of positions and prints what each search counted,
 for measuring a change to the search or the speed of a machine, and is a UCI command as well;
 [docs/DEVELOPMENT.md](docs/DEVELOPMENT.md) describes it. `residuals`, `cutoffs`, `reductions`,
-`effort` and `terms` measure the search and the evaluation, and
+`effort`, `forced` and `terms` measure the search and the evaluation, and
 [docs/INSTRUMENTS.md](docs/INSTRUMENTS.md) describes them.
 
 Binaries for linux, macos and windows are attached to each

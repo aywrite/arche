@@ -63,14 +63,18 @@ pub(crate) const CENSUS_LANE: u64 = 0xc5b9_128e_66d0_3a47;
 pub(crate) const LEDGER_LANE: u64 = 0x6d84_3b2f_51c9_07ea;
 /// Used on both of the effort instrument's sides, which join on the key.
 pub(crate) const EFFORT_LANE: u64 = 0xf3b7_0c95_a41e_d682;
+/// The forced decision instrument's, for the decisions its default run
+/// samples.
+pub(crate) const FORCED_LANE: u64 = 0x8a5d_e163_2f07_b94c;
 
-pub(crate) const LANES: [u64; 6] = [
+pub(crate) const LANES: [u64; 7] = [
     REVERSE_FUTILITY_LANE,
     NULL_MOVE_LANE,
     SHADOW_FUTILITY_LANE,
     CENSUS_LANE,
     LEDGER_LANE,
     EFFORT_LANE,
+    FORCED_LANE,
 ];
 
 /// The invariant, checked by the compiler: a lane copied from another would

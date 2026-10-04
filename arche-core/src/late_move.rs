@@ -223,6 +223,25 @@ fn attention_score(f: &AttentionFeatures) -> i64 {
         + ATTENTION_INTERCEPT
 }
 
+/// The model's score for a late quiet the gate would read it at, from what
+/// the node knew there, for the forced decision instrument's rows. None
+/// below the depth the gate reads the model at, where no decision of the
+/// move ever consulted it.
+pub(crate) fn attention(depth: u8, f: &Features, eval_beta: i64, alpha_gap: i64) -> Option<i64> {
+    (depth >= DEEP_REDUCTION_MIN_DEPTH).then(|| {
+        attention_score(&AttentionFeatures {
+            depth,
+            index: f.index,
+            hist_milli: f.hist_milli(),
+            killer: f.killer,
+            tt: f.tt,
+            eval_beta,
+            alpha_gap,
+            generated: f.generated,
+        })
+    })
+}
+
 /// A reduction ledger row scored as `scripts/fit_attention.py` reads it,
 /// with the searched column as printed rather than derived from the index.
 /// What holds the printed column to the one the gate read.
