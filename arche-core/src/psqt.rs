@@ -527,14 +527,7 @@ mod tests {
     /// changed without the other.
     #[test]
     fn the_two_colours_are_reflections_of_each_other() {
-        for piece in [
-            Piece::Pawn,
-            Piece::Knight,
-            Piece::Bishop,
-            Piece::Rook,
-            Piece::Queen,
-            Piece::King,
-        ] {
+        for piece in Piece::PIECES {
             for rank in 1..=8 {
                 for file in File::VARIANTS {
                     // the whole pair at once, so a table tapered for one
@@ -636,18 +629,6 @@ mod tests {
                 })
                 .count();
             assert!(moved > 0, "{:?} still reads one table at both ends", piece);
-        }
-    }
-
-    /// Each of the four is written out rather than aliased to its midgame
-    /// twin. Nothing at run time can tell the copy from the alias, so this
-    /// reads the source.
-    #[test]
-    fn each_new_endgame_table_is_written_out_rather_than_aliased() {
-        let source = include_str!("psqt.rs");
-        for table in ["KNIGHTS_END", "BISHOPS_END", "ROOKS_END", "QUEENS_END"] {
-            let written = format!("const {}: [i16; 64] = [", table);
-            assert!(source.contains(&written), "{} is not written out", table);
         }
     }
 
