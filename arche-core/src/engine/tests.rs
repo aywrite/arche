@@ -255,6 +255,18 @@ mod search {
     /// search can outrank it.
     const SEEDED_DEPTH: u8 = 5;
 
+    /// Plant `play` as the exact answer at `board`, at the seeded depth and
+    /// with no evaluation, and check that the entry landed.
+    fn seed(table: &mut crate::transposition::TranspositionTable, board: &Board, play: Play) {
+        assert!(table.record_best(
+            board,
+            play,
+            Value::clean(0),
+            SEEDED_DEPTH,
+            crate::transposition::NO_EVAL
+        ));
+    }
+
     #[test]
     fn a_losing_position_is_still_losing_with_a_warm_table() {
         // a search of another position first once left entries that made
@@ -334,26 +346,14 @@ mod search {
         let (best, best_score) = scored[2];
 
         let mut e = engine(Board::from_fen(FEN).unwrap());
-        assert!(e.transpositions.record_best(
-            &e.board,
-            middle,
-            Value::clean(0),
-            SEEDED_DEPTH,
-            crate::transposition::NO_EVAL
-        ));
+        seed(&mut e.transpositions, &e.board, middle);
         let result = completed(e.search(1));
         assert_eq!(result.best_move, best);
         assert_eq!(result.score, best_score);
         assert_eq!(e.nodes, 9);
 
         let mut e = engine(Board::from_fen(FEN).unwrap());
-        assert!(e.transpositions.record_best(
-            &e.board,
-            best,
-            Value::clean(0),
-            SEEDED_DEPTH,
-            crate::transposition::NO_EVAL
-        ));
+        seed(&mut e.transpositions, &e.board, best);
         let result = completed(e.search(1));
         assert_eq!(result.best_move, best);
         assert_eq!(result.score, best_score);
@@ -885,16 +885,6 @@ mod search {
         );
     }
 
-    #[test]
-    fn a_losing_side_plays_for_the_fifty_move_draw() {
-        // white is a bishop down, and every move but a pawn push or a
-        // capture takes the clock to a hundred
-        let game = Board::from_fen("5k2/1p3p1p/p3pK1P/P1P1P3/4bP2/8/8/8 w - - 99 112").unwrap();
-        let mut e = engine(game);
-        let result = completed(e.search(3));
-        assert_eq!(result.score, 0);
-    }
-
     /// A fifty move draw is claimable and not automatic (FIDE 9.3), so a
     /// root whose counter has expired still answers with a move rather
     /// than `bestmove 0000`. The score is zero because every move here
@@ -913,7 +903,9 @@ mod search {
     }
 
     /// The same position one ply before expiry, so the pair says the
-    /// counter is what changed and not the position.
+    /// counter is what changed and not the position. White is a bishop
+    /// down, and every move but a pawn push or a capture takes the clock
+    /// to a hundred, so the losing side plays for the draw.
     #[test]
     fn the_same_root_one_ply_before_expiry_answers_the_same_way() {
         let game = Board::from_fen("5k2/1p3p1p/p3pK1P/P1P1P3/4bP2/8/8/8 w - - 99 112").unwrap();
@@ -2653,13 +2645,7 @@ mod search {
         let mut board = e.board.clone();
         for name in cycle.iter().cycle().take(16) {
             let play = play_named(&board, name);
-            assert!(e.transpositions.record_best(
-                &board,
-                play,
-                Value::clean(0),
-                SEEDED_DEPTH,
-                crate::transposition::NO_EVAL
-            ));
+            seed(&mut e.transpositions, &board, play);
             assert!(board.make_move(&play), "failed to play {}", name);
         }
 
@@ -2673,13 +2659,7 @@ mod search {
         let mut board = e.board.clone();
         for name in ["c3d4", "f8g8"] {
             let play = play_named(&board, name);
-            assert!(e.transpositions.record_best(
-                &board,
-                play,
-                Value::clean(0),
-                SEEDED_DEPTH,
-                crate::transposition::NO_EVAL
-            ));
+            seed(&mut e.transpositions, &board, play);
             assert!(board.make_move(&play), "failed to play {}", name);
         }
         assert!(board.fifty_move_expired());
@@ -2694,13 +2674,7 @@ mod search {
         let a2 = 8;
         let a5 = 32;
         let colliding = Play::new(a2, a5, None, None, false, false);
-        assert!(e.transpositions.record_best(
-            &e.board,
-            colliding,
-            Value::clean(0),
-            SEEDED_DEPTH,
-            crate::transposition::NO_EVAL
-        ));
+        seed(&mut e.transpositions, &e.board, colliding);
 
         assert_eq!(format!("{}", e.pv_line()), "");
     }
@@ -2729,13 +2703,7 @@ mod search {
         let board = Board::from_fen("4r2k/8/8/8/8/8/4N3/4K3 w - - 0 1").unwrap();
         let mut e = engine(board);
         let pinned = play_named(&e.board, "e2d4");
-        assert!(e.transpositions.record_best(
-            &e.board,
-            pinned,
-            Value::clean(0),
-            SEEDED_DEPTH,
-            crate::transposition::NO_EVAL
-        ));
+        seed(&mut e.transpositions, &e.board, pinned);
 
         assert_eq!(format!("{}", e.pv_line()), "");
     }
@@ -2772,13 +2740,7 @@ mod search {
             }
             let play =
                 chosen.unwrap_or_else(|| panic!("nothing carries the line on at ply {}", ply));
-            assert!(e.transpositions.record_best(
-                &board,
-                play,
-                Value::clean(0),
-                SEEDED_DEPTH,
-                crate::transposition::NO_EVAL
-            ));
+            seed(&mut e.transpositions, &board, play);
             assert!(board.make_move(&play), "failed to play {}", play);
         }
 
