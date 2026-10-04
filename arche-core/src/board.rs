@@ -1639,7 +1639,7 @@ impl Board {
         } else {
             if MAINTAIN_CHECKERS {
                 let landed = match play.promote {
-                    Some(promote) => (&promote).into(),
+                    Some(promote) => promote.into(),
                     None => from_piece,
                 };
                 self.checkers = self.checkers_given(play, landed);
@@ -1674,7 +1674,7 @@ impl Board {
         }
 
         if let Some(promote) = play.promote {
-            self.place_bare::<false>(play.to, (&promote).into(), mover);
+            self.place_bare::<false>(play.to, promote.into(), mover);
             self.place_bare::<true>(play.from, Piece::Pawn, mover);
         } else {
             let from_piece = self
@@ -1822,7 +1822,7 @@ impl Board {
             // both change
             Some(promote) => {
                 self.clear_piece_index(from, piece, color);
-                self.set_piece_index(to, (&promote).into(), color);
+                self.set_piece_index(to, promote.into(), color);
             }
             None => self.relocate_piece_index(from, to, piece, color),
         }
@@ -2152,7 +2152,7 @@ impl Board {
         let mut straight = (self.rooks() | self.queens()) & ours & !from_bit;
 
         let landed = match m.promote {
-            Some(promote) => (&promote).into(),
+            Some(promote) => promote.into(),
             None => self
                 .get_piece_index(m.from)
                 .expect("a move moves a piece of ours"),

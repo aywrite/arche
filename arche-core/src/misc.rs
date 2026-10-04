@@ -258,8 +258,8 @@ impl PromotePiece {
     ];
 }
 
-impl From<&PromotePiece> for char {
-    fn from(c: &PromotePiece) -> Self {
+impl From<PromotePiece> for char {
+    fn from(c: PromotePiece) -> Self {
         match c {
             PromotePiece::Knight => 'n',
             PromotePiece::Bishop => 'b',
@@ -346,8 +346,8 @@ impl TryFrom<char> for Piece {
     }
 }
 
-impl From<&PromotePiece> for Piece {
-    fn from(c: &PromotePiece) -> Self {
+impl From<PromotePiece> for Piece {
+    fn from(c: PromotePiece) -> Self {
         match c {
             PromotePiece::Knight => Piece::Knight,
             PromotePiece::Bishop => Piece::Bishop,
@@ -420,17 +420,7 @@ impl File {
 
 impl fmt::Display for File {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
-        match self {
-            File::A => write!(f, "a")?,
-            File::B => write!(f, "b")?,
-            File::C => write!(f, "c")?,
-            File::D => write!(f, "d")?,
-            File::E => write!(f, "e")?,
-            File::F => write!(f, "f")?,
-            File::G => write!(f, "g")?,
-            File::H => write!(f, "h")?,
-        }
-        Ok(())
+        write!(f, "{}", (b'a' + *self as u8) as char)
     }
 }
 
@@ -438,20 +428,10 @@ impl TryFrom<u8> for File {
     type Error = String;
 
     fn try_from(i: u8) -> Result<Self, Self::Error> {
-        match i {
-            0 => Ok(File::A),
-            1 => Ok(File::B),
-            2 => Ok(File::C),
-            3 => Ok(File::D),
-            4 => Ok(File::E),
-            5 => Ok(File::F),
-            6 => Ok(File::G),
-            7 => Ok(File::H),
-            _ => Err(format!(
-                "{} is not a valid File value. File only has 8 variants.",
-                i
-            )),
-        }
+        File::VARIANTS
+            .get(usize::from(i))
+            .copied()
+            .ok_or_else(|| format!("{} is not a valid File value. File only has 8 variants.", i))
     }
 }
 
@@ -459,15 +439,8 @@ impl TryFrom<char> for File {
     type Error = String;
 
     fn try_from(c: char) -> Result<Self, Self::Error> {
-        match c {
-            'A' | 'a' => Ok(File::A),
-            'B' | 'b' => Ok(File::B),
-            'C' | 'c' => Ok(File::C),
-            'D' | 'd' => Ok(File::D),
-            'E' | 'e' => Ok(File::E),
-            'F' | 'f' => Ok(File::F),
-            'G' | 'g' => Ok(File::G),
-            'H' | 'h' => Ok(File::H),
+        match c.to_ascii_lowercase() {
+            lower @ 'a'..='h' => Ok(File::VARIANTS[(lower as u8 - b'a') as usize]),
             _ => Err(format!("{} is not a valid File token", c)),
         }
     }
