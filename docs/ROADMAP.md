@@ -540,3 +540,16 @@ of these again without saying what is different this time.
   Re-read at 8f9dafe, where the walk is shared with the king attack zone, a margin of a
   hundred fires at 22.3% of stand pats and could save at most 0.63% of the search before
   its own cost, and a cut exactly where the full score cuts at most 1.19%.
+- Beginning a deepening later in the clock share than 45%. The 45% was placed from the
+  time through one depth over the time through the next, which had a median of 0.29 on a
+  tree with no pruning but the transposition table. Read again at b26b9f0 over 80 self-play
+  games at 10+0.1, leaving out the depths after a mate score, the median is 0.51 for the
+  iterations that end at the shares where the bound decides, and an iteration begun at 45%
+  finishes inside the budget two times in three. The rule the 45% was placed by puts the
+  line near two thirds on that ratio. The games did not follow it. Against 9d09647, 55% lost
+  -16 ±15 over 1,000 games (sprt [0, 10] failed, LLR -3.31, branch tune/soft-bound-55) and
+  65% read -3 ±11 over 2,000 (inconclusive at four batches, LLR -2.57, branch
+  tune/soft-bound-65), so the ratio says the old reasoning is stale and not that the line is
+  in the wrong place. The 65% test resumes with `prior_pairs` 77,236,380,242,65. Re-ask at a
+  longer control, or beside a change to `ASSUMED_MOVES_TO_GO`, which was measured with 45%
+  in place.
