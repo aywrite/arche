@@ -48,8 +48,11 @@ const MATERIAL: [u32; 6] = [100, 310, 320, 500, 900, 10000];
 #[derive(Debug, Clone, Copy)]
 #[repr(C, align(32))]
 pub(crate) struct Row {
+    /// The piece's factors from white's side and black's, added and
+    /// subtracted, as `factors::Machine` keeps them.
     pub(crate) lanes: [[i16; factors::RANK]; 2],
-    pub(crate) diagonal: [[i32; factors::LIVE]; 2],
+    /// White's diagonal less black's.
+    pub(crate) diagonal: [i32; factors::LIVE],
     pub(crate) psqt: i32,
     pub(crate) key: u64,
 }
@@ -59,12 +62,11 @@ pub(crate) static ROWS: [Row; 768] = rows();
 const fn rows() -> [Row; 768] {
     let empty = Row {
         lanes: [[0; factors::RANK]; 2],
-        diagonal: [[0; factors::LIVE]; 2],
+        diagonal: [0; factors::LIVE],
         psqt: 0,
         key: 0,
     };
     let mut out = [empty; 768];
-    let colors = [Color::Black, Color::White];
     let pieces = [
         Piece::Pawn,
         Piece::Knight,
@@ -84,12 +86,20 @@ const fn rows() -> [Row; 768] {
         let mut square = 0;
         while square < 64 {
             let row = &mut out[table * 64 + square];
-            let mut at = 0;
-            while at < 2 {
-                let feature = factors::feature(colors[at], square as u8, piece, color);
-                row.lanes[at] = factors::FACTORS[feature];
-                row.diagonal[at] = factors::DIAGONAL[feature];
-                at += 1;
+            let white = factors::feature(Color::White, square as u8, piece, color);
+            let black = factors::feature(Color::Black, square as u8, piece, color);
+            let mut lane = 0;
+            while lane < factors::RANK {
+                let (w, b) = (factors::FACTORS[white][lane], factors::FACTORS[black][lane]);
+                row.lanes[0][lane] = w.wrapping_add(b);
+                row.lanes[1][lane] = w.wrapping_sub(b);
+                lane += 1;
+            }
+            let mut slot = 0;
+            while slot < factors::LIVE {
+                row.diagonal[slot] =
+                    factors::DIAGONAL[white][slot].wrapping_sub(factors::DIAGONAL[black][slot]);
+                slot += 1;
             }
             let value = PieceSquareTables::TABLES.value_at(table, square);
             row.psqt = match color {
