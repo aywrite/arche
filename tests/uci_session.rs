@@ -99,6 +99,12 @@ impl Session {
             thread::sleep(Duration::from_millis(10));
         }
     }
+
+    /// Says quit and checks the engine exits cleanly on it.
+    fn quit(mut self) {
+        self.say("quit");
+        assert!(self.finished().success());
+    }
 }
 
 impl Drop for Session {
@@ -106,6 +112,13 @@ impl Drop for Session {
         let _ = self.child.kill();
         let _ = self.child.wait();
     }
+}
+
+/// The move a bestmove line names.
+fn move_of(answer: &str) -> &str {
+    answer
+        .strip_prefix("bestmove ")
+        .unwrap_or_else(|| panic!("not a bestmove: {}", answer))
 }
 
 fn looks_like_a_move(line: &str) -> bool {
@@ -132,8 +145,7 @@ fn the_handshake_answers_the_way_the_smoke_test_expects() {
     s.say("go movetime 200");
     let best = s.wait_for(|l| l.starts_with("bestmove"));
     assert!(looks_like_a_move(&best), "not a move: {}", best);
-    s.say("quit");
-    assert!(s.finished().success());
+    s.quit();
 }
 
 #[test]
@@ -145,8 +157,7 @@ fn a_stop_ends_an_infinite_search_with_a_real_move() {
     s.say("stop");
     let best = s.wait_for(|l| l.starts_with("bestmove"));
     assert!(looks_like_a_move(&best), "a stopped search said: {}", best);
-    s.say("quit");
-    assert!(s.finished().success());
+    s.quit();
 }
 
 #[test]
@@ -159,8 +170,7 @@ fn an_infinite_search_holds_its_answer_for_the_stop() {
     s.stays_quiet_for(Duration::from_millis(400));
     s.say("stop");
     s.wait_for(|l| l == "bestmove 0000");
-    s.say("quit");
-    assert!(s.finished().success());
+    s.quit();
 }
 
 #[test]
@@ -187,8 +197,7 @@ fn a_stop_with_nothing_running_is_taken_in_silence() {
         "the stop was complained about: {:#?}",
         s.said
     );
-    s.say("quit");
-    assert!(s.finished().success());
+    s.quit();
 }
 
 #[test]
@@ -308,8 +317,7 @@ fn the_clear_hash_button_empties_the_table() {
         s.said
     );
 
-    s.say("quit");
-    assert!(s.finished().success());
+    s.quit();
 }
 
 /// A middlegame with enough going on at the root for a cut-short iteration
@@ -341,28 +349,19 @@ fn the_move_a_swap_answers_with_opens_the_last_line_said() {
     s.say(&format!("position fen {}", SHARP_MIDDLEGAME));
     s.say("go nodes 41000");
     let answer = s.wait_for(|l| l.starts_with("bestmove"));
-    let best = answer
-        .strip_prefix("bestmove ")
-        .unwrap_or_else(|| panic!("not a bestmove: {}", answer));
+    let best = move_of(&answer);
     let info = s
         .said
         .iter()
         .rfind(|l| l.starts_with("info depth "))
-        .unwrap_or_else(|| panic!("the search reported no depth: {:#?}", s.said))
-        .clone();
-    let first = info
-        .split(" pv ")
-        .nth(1)
-        .and_then(|line| line.split_whitespace().next())
-        .unwrap_or_else(|| panic!("no line in {}", info));
-    assert_eq!(first, best, "the last line said: {}", info);
+        .unwrap_or_else(|| panic!("the search reported no depth: {:#?}", s.said));
+    assert_eq!(line_opens_with(info), best, "the last line said: {}", info);
     assert!(
         info.contains(" lowerbound "),
         "a partial depth was reported as an exact score: {}",
         info
     );
-    s.say("quit");
-    assert!(s.finished().success());
+    s.quit();
 }
 
 fn score_of(info: &str) -> i32 {
@@ -397,9 +396,7 @@ fn an_iteration_no_root_move_reached_answers_with_the_depth_before_it() {
     s.say(&format!("position fen {}", KIWIPETE));
     s.say("go nodes 9700");
     let answer = s.wait_for(|l| l.starts_with("bestmove"));
-    let best = answer
-        .strip_prefix("bestmove ")
-        .unwrap_or_else(|| panic!("not a bestmove: {}", answer));
+    let best = move_of(&answer);
 
     let lines: Vec<&String> = s
         .said
@@ -455,8 +452,7 @@ fn an_iteration_no_root_move_reached_answers_with_the_depth_before_it() {
         "the ceiling already covered the whole search: {}",
         ceiling
     );
-    s.say("quit");
-    assert!(s.finished().success());
+    s.quit();
 }
 
 #[test]
@@ -476,9 +472,7 @@ fn a_root_move_that_reaches_beta_is_reported_as_a_floor_and_then_answered_with()
     s.say(&format!("position fen {}", ITALIAN));
     s.say("go depth 7");
     let answer = s.wait_for(|l| l.starts_with("bestmove"));
-    let best = answer
-        .strip_prefix("bestmove ")
-        .unwrap_or_else(|| panic!("not a bestmove: {}", answer));
+    let best = move_of(&answer);
 
     let deepest: Vec<&String> = s
         .said
@@ -500,8 +494,7 @@ fn a_root_move_that_reaches_beta_is_reported_as_a_floor_and_then_answered_with()
         "the wider search answered with another move: {}",
         exact
     );
-    s.say("quit");
-    assert!(s.finished().success());
+    s.quit();
 }
 
 #[test]
@@ -522,9 +515,7 @@ fn a_floor_answers_until_the_wider_search_replaces_it() {
     s.say(&format!("position fen {}", WAC_021));
     s.say("go nodes 110000");
     let answer = s.wait_for(|l| l.starts_with("bestmove"));
-    let best = answer
-        .strip_prefix("bestmove ")
-        .unwrap_or_else(|| panic!("not a bestmove: {}", answer));
+    let best = move_of(&answer);
 
     let lines: Vec<&String> = s
         .said
@@ -552,8 +543,7 @@ fn a_floor_answers_until_the_wider_search_replaces_it() {
         "the floor names what the last completed depth answered, so this \
          says nothing about which of the two was held"
     );
-    s.say("quit");
-    assert!(s.finished().success());
+    s.quit();
 }
 
 #[test]
