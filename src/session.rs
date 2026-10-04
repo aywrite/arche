@@ -326,14 +326,10 @@ pub(crate) fn report_panics_to<W: Write + Send + 'static>(out: SharedWriter<W>) 
             Err(std::sync::TryLockError::WouldBlock) => None,
         };
         if let Some(mut out) = held {
-            match panic.location() {
-                Some(at) => {
-                    let _ = writeln!(out, "info string panicked at {}: {}", at, message);
-                }
-                None => {
-                    let _ = writeln!(out, "info string panicked: {}", message);
-                }
-            }
+            let at = panic
+                .location()
+                .map_or(String::new(), |at| format!(" at {}", at));
+            let _ = writeln!(out, "info string panicked{}: {}", at, message);
         }
         previous(panic);
     }));
