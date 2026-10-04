@@ -3,8 +3,7 @@
 
 use super::bitboard::BitBoard;
 use super::misc::{
-    CastlePermissions, Color, Coordinate, File, Piece, PromotePiece, coordinate_to_index,
-    index_to_coordinate,
+    CastlePermissions, Color, Coordinate, File, Piece, PromotePiece, coordinate_to_index, rank_of,
 };
 use super::play::Play;
 use crate::eval::{self, Accumulator};
@@ -360,6 +359,39 @@ struct AttackMasks {
     kings: [u64; 64],
 }
 
+impl AttackMasks {
+    /// Where a pawn of `color` stands when it attacks `square`. The pawn
+    /// tables are laid out by the attacked square, which is why the squares
+    /// a pawn attacks are read from the other colour's table below.
+    #[inline(always)]
+    fn pawn_attackers_of(&self, square: u8, color: Color) -> u64 {
+        match color {
+            Color::White => self.white_pawns[square as usize],
+            Color::Black => self.black_pawns[square as usize],
+        }
+    }
+
+    /// The squares a pawn of `color` on `square` attacks.
+    #[inline(always)]
+    fn pawn_attacks_from(&self, square: u8, color: Color) -> u64 {
+        match color {
+            Color::White => self.black_pawns[square as usize],
+            Color::Black => self.white_pawns[square as usize],
+        }
+    }
+}
+
+/// The square behind `square` from `color`'s side of the board: the one a
+/// pawn of that colour has just stepped over on a double push, and where
+/// the pawn taken en passant stands when `square` is the capturer's landing.
+#[inline(always)]
+const fn behind(square: u8, color: Color) -> u8 {
+    match color {
+        Color::White => square - 8,
+        Color::Black => square + 8,
+    }
+}
+
 /// The squares one step from `from` in each of `steps`, a step that leaves
 /// the board dropped. Steps are a rank and a file, so a step off the side
 /// is caught by the file going out of range.
@@ -553,8 +585,7 @@ pub struct Board {
     pub(crate) pawn_key: u64,
 }
 
-/// Nothing calls this. Clippy asks for a `Default` beside a `new` taking no
-/// arguments.
+/// Clippy asks for a `Default` beside a `new` taking no arguments.
 impl Default for Board {
     fn default() -> Self {
         Board::new()
@@ -568,17 +599,6 @@ impl Board {
 
     pub fn active_color(&self) -> Color {
         self.active_color
-    }
-
-    /// The position key: the zobrist hash of the pieces, the side to move,
-    /// the castle rights and the en passant square.
-    pub fn key(&self) -> u64 {
-        self.key
-    }
-
-    /// Plies since the root of the current search.
-    pub fn line_ply(&self) -> usize {
-        self.line_ply
     }
 
     /// Make this position the root of a search: the line ply starts from
@@ -656,10 +676,7 @@ impl Board {
         // one a double push just passed over, which is empty, and the pawn
         // that takes has to attack it
         if m.en_passant {
-            let attacks = match self.active_color {
-                Color::White => attack_masks.black_pawns[m.from as usize],
-                Color::Black => attack_masks.white_pawns[m.from as usize],
-            };
+            let attacks = attack_masks.pawn_attacks_from(m.from, self.active_color);
             return piece == Piece::Pawn
                 && m.capture == Some(Piece::Pawn)
                 && m.promote.is_none()
@@ -688,7 +705,7 @@ impl Board {
                     || magic.get_diagonal_move(m.from, all_pieces).is_bit_set(m.to)
             }
             Piece::Pawn => {
-                let (rank, _) = index_to_coordinate(m.from);
+                let rank = rank_of(m.from);
                 // a pawn one step from the far rank only ever promotes, and
                 // no other pawn does
                 let promotes = match self.active_color {
@@ -699,10 +716,9 @@ impl Board {
                     return false;
                 }
                 if m.capture.is_some() {
-                    return match self.active_color {
-                        Color::White => attack_masks.black_pawns[m.from as usize].is_bit_set(m.to),
-                        Color::Black => attack_masks.white_pawns[m.from as usize].is_bit_set(m.to),
-                    };
+                    return attack_masks
+                        .pawn_attacks_from(m.from, self.active_color)
+                        .is_bit_set(m.to);
                 }
                 let one = match self.active_color {
                     Color::White => m.from as isize + 8,
@@ -892,11 +908,15 @@ impl Board {
         let mut pawns = self.pawns() & color_mask;
         while pawns != 0 {
             let from = pop_lsb(&mut pawns);
-            let (rank, _) = index_to_coordinate(from);
+            let rank = rank_of(from);
             let can_promote = match self.active_color {
                 Color::White => rank == 7,
                 Color::Black => rank == 2,
             };
+            // read off the table here rather than through `pawn_attacks_from`:
+            // through the helper the compiler laid this loop out differently
+            // and the full generator measured 7% more instructions over the
+            // bench (callgrind against 31eb33b), 0.25% of the whole run
             let pmoves: u64 = match self.active_color {
                 Color::White => attack_masks.black_pawns[from as usize] & capture_mask,
                 Color::Black => attack_masks.white_pawns[from as usize] & capture_mask,
@@ -955,10 +975,9 @@ impl Board {
             }
             if let Some(en_passant) = &self.en_passant {
                 let i = en_passant.as_index();
-                let can_en_passant = match self.active_color {
-                    Color::White => attack_masks.black_pawns[from as usize].is_bit_set(i),
-                    Color::Black => attack_masks.white_pawns[from as usize].is_bit_set(i),
-                };
+                let can_en_passant = attack_masks
+                    .pawn_attacks_from(from, self.active_color)
+                    .is_bit_set(i);
                 if can_en_passant {
                     moves.capture(Play::new(from, i, Some(Piece::Pawn), None, true, false));
                 }
@@ -1096,11 +1115,8 @@ impl Board {
     fn square_attacked_through(&self, index: u8, color: Color, all: u64) -> bool {
         let attack_masks = &ATTACK_MASKS;
         let magic = &MAGIC;
-        let (color_mask, pawn_masks) = match color {
-            Color::Black => (self.black, &attack_masks.black_pawns),
-            Color::White => (self.white, &attack_masks.white_pawns),
-        };
-        if (pawn_masks[index as usize] & self.pawns() & color_mask) > 0 {
+        let (color_mask, _) = self.sides(color);
+        if (attack_masks.pawn_attackers_of(index, color) & self.pawns() & color_mask) > 0 {
             return true;
         }
 
@@ -1222,14 +1238,10 @@ impl Board {
         let mut occupied = self.white | self.black;
         occupied &= !(1u64 << m.from);
         if m.en_passant {
-            let taken = match self.active_color {
-                Color::White => m.to - 8,
-                Color::Black => m.to + 8,
-            };
-            occupied &= !(1u64 << taken);
+            occupied &= !(1u64 << behind(m.to, self.active_color));
         }
         let (ours, theirs) = self.sides(self.active_color);
-        let bearing = (self.steppers_onto(m.to) | self.sliders_onto(m.to, occupied)) & occupied;
+        let bearing = self.attackers_to(m.to, occupied);
         let defenders = bearing & theirs;
         if defenders == 0 {
             debug_assert_eq!(won, self.swap_walk(m), "{m}: an undefended capture");
@@ -1304,11 +1316,7 @@ impl Board {
         let mut occupied = self.white | self.black;
         occupied &= !(1u64 << m.from);
         if m.en_passant {
-            let taken = match self.active_color {
-                Color::White => m.to - 8,
-                Color::Black => m.to + 8,
-            };
-            occupied &= !(1u64 << taken);
+            occupied &= !(1u64 << behind(m.to, self.active_color));
         }
         let mut on_square = self
             .get_piece_index(m.from)
@@ -1538,21 +1546,15 @@ impl Board {
                 // can take on it. Hashing it unconditionally makes one
                 // position hash two ways, which costs transposition hits and
                 // hides a repetition either side of a double push
-                let passed = match self.active_color {
-                    Color::White => play.to - 8,
-                    Color::Black => play.to + 8,
-                };
+                let passed = behind(play.to, self.active_color);
                 if self.pawn_can_capture_on(passed, opposing_color) {
                     self.en_passant = Some(Coordinate::from_index(passed));
                     self.key ^= ZOBRIST.en_passant_key(passed);
                 }
             }
             if play.en_passant {
-                let clear_index = match self.active_color {
-                    Color::White => play.to - 8,
-                    Color::Black => play.to + 8,
-                };
-                self.clear_piece_index(clear_index, Piece::Pawn, opposing_color);
+                let taken = behind(play.to, self.active_color);
+                self.clear_piece_index(taken, Piece::Pawn, opposing_color);
             }
         }
 
@@ -1659,7 +1661,7 @@ impl Board {
         self.history[previous] = None;
         let play = history.play;
 
-        let opposing_color = !self.active_color;
+        let mover = !self.active_color;
         self.castle = history.castle;
         self.en_passant = history.en_passant;
         self.fifty_move_rule = history.fifty_move_rule;
@@ -1667,21 +1669,18 @@ impl Board {
         self.line_ply -= 1;
 
         if play.en_passant {
-            let en_passant_index = match opposing_color {
-                Color::White => play.to - 8,
-                Color::Black => play.to + 8,
-            };
-            self.place_bare::<true>(en_passant_index, Piece::Pawn, self.active_color);
+            let taken = behind(play.to, mover);
+            self.place_bare::<true>(taken, Piece::Pawn, self.active_color);
         }
 
         if let Some(promote) = play.promote {
-            self.place_bare::<false>(play.to, (&promote).into(), opposing_color);
-            self.place_bare::<true>(play.from, Piece::Pawn, opposing_color);
+            self.place_bare::<false>(play.to, (&promote).into(), mover);
+            self.place_bare::<true>(play.from, Piece::Pawn, mover);
         } else {
             let from_piece = self
                 .get_piece_index(play.to)
                 .expect("The to square must always be occupied when undoing");
-            self.relocate_bare(play.to, play.from, from_piece, opposing_color);
+            self.relocate_bare(play.to, play.from, from_piece, mover);
         }
 
         if let Some(capture) = play.capture {
@@ -1691,15 +1690,15 @@ impl Board {
         }
         if play.castle {
             match play.to {
-                C1 => self.relocate_bare(D1, A1, Piece::Rook, opposing_color),
-                C8 => self.relocate_bare(D8, A8, Piece::Rook, opposing_color),
-                G1 => self.relocate_bare(F1, H1, Piece::Rook, opposing_color),
-                G8 => self.relocate_bare(F8, H8, Piece::Rook, opposing_color),
+                C1 => self.relocate_bare(D1, A1, Piece::Rook, mover),
+                C8 => self.relocate_bare(D8, A8, Piece::Rook, mover),
+                G1 => self.relocate_bare(F1, H1, Piece::Rook, mover),
+                G8 => self.relocate_bare(F8, H8, Piece::Rook, mover),
                 _ => unreachable!(),
             }
         }
 
-        self.active_color = opposing_color;
+        self.active_color = mover;
         // the key, the pawn key and the accumulator come back by copy rather
         // than being unfolded: the pieces are moved back on the boards alone
         let kept = &self.kept.0[self.ply % KEPT_PLIES];
@@ -1726,7 +1725,9 @@ impl Board {
         }
     }
 
-    /// Put down or pick up a piece on the boards and `squares` alone.
+    /// Put down or pick up a piece on the boards and `squares` alone. The
+    /// callers assert that a set lands on an empty square and a clear on an
+    /// occupied one, so this never asks what was standing there.
     #[inline(always)]
     fn place_bare<const SET: bool>(&mut self, index: u8, piece: Piece, color: Color) {
         let board = &mut self.pieces[piece as usize];
@@ -1877,7 +1878,7 @@ impl Board {
     /// clears a pawn from a square holding something else, or lands the
     /// capturer on top of a piece nothing took.
     fn en_passant_can_be_played(&self, index: u8) -> bool {
-        let (rank, _) = index_to_coordinate(index);
+        let rank = rank_of(index);
         let crossed = match self.active_color {
             Color::White => 6,
             Color::Black => 3,
@@ -1886,10 +1887,7 @@ impl Board {
             return false;
         }
         // the rank check above is what keeps this on the board
-        let taken = match self.active_color {
-            Color::White => index - 8,
-            Color::Black => index + 8,
-        };
+        let taken = behind(index, self.active_color);
         self.pawn_can_capture_on(index, self.active_color)
             && !(self.white | self.black).is_bit_set(index)
             && self.get_piece_and_color_index(taken) == Some((Piece::Pawn, !self.active_color))
@@ -1897,12 +1895,8 @@ impl Board {
 
     /// Whether a pawn of this colour is placed to take on this square.
     fn pawn_can_capture_on(&self, index: u8, capturer: Color) -> bool {
-        let attack_masks = &ATTACK_MASKS;
-        let (from, pawns) = match capturer {
-            Color::White => (attack_masks.white_pawns[index as usize], self.white),
-            Color::Black => (attack_masks.black_pawns[index as usize], self.black),
-        };
-        from & self.pawns() & pawns != 0
+        let (pawns, _) = self.sides(capturer);
+        ATTACK_MASKS.pawn_attackers_of(index, capturer) & self.pawns() & pawns != 0
     }
 
     #[inline]
@@ -2019,11 +2013,10 @@ impl Board {
 
         match landed {
             Piece::Pawn => {
-                let masks = match !defender {
-                    Color::White => &attack_masks.white_pawns,
-                    Color::Black => &attack_masks.black_pawns,
-                };
-                if masks[king as usize].is_bit_set(to) {
+                if attack_masks
+                    .pawn_attackers_of(king, !defender)
+                    .is_bit_set(to)
+                {
                     checkers.set_bit(to);
                 }
             }
@@ -2074,10 +2067,7 @@ impl Board {
         let magic = &MAGIC;
         let occupied = self.white | self.black;
         let (ours, _) = self.sides(self.active_color);
-        let pawns = match self.active_color {
-            Color::White => attack_masks.white_pawns[king as usize],
-            Color::Black => attack_masks.black_pawns[king as usize],
-        };
+        let pawns = attack_masks.pawn_attackers_of(king, self.active_color);
         let diagonal = magic.get_diagonal_move(king, occupied);
         let straight = magic.get_straight_move(king, occupied);
         let mut snipers = (attack_masks.diagonal[king as usize] & (self.bishops() | self.queens())
@@ -2169,11 +2159,10 @@ impl Board {
         };
         match landed {
             Piece::Pawn => {
-                let masks = match self.active_color {
-                    Color::White => &attack_masks.white_pawns,
-                    Color::Black => &attack_masks.black_pawns,
-                };
-                if masks[king as usize].is_bit_set(m.to) {
+                if attack_masks
+                    .pawn_attackers_of(king, self.active_color)
+                    .is_bit_set(m.to)
+                {
                     return true;
                 }
             }
@@ -2192,11 +2181,7 @@ impl Board {
         }
 
         if m.en_passant {
-            let taken = match self.active_color {
-                Color::White => m.to - 8,
-                Color::Black => m.to + 8,
-            };
-            occupied &= !(1u64 << taken);
+            occupied &= !(1u64 << behind(m.to, self.active_color));
         } else if m.castle {
             let (rook_from, rook_to) = match m.to {
                 C1 => (A1, D1),
@@ -2309,18 +2294,7 @@ impl Board {
             self.pawn_key ^= moved;
         }
         self.eval.relocate(left, arrived);
-
-        let both = (1u64 << from) | (1u64 << to);
-        self.pieces[piece as usize] ^= both;
-        match color {
-            Color::Black => self.black ^= both,
-            Color::White => self.white ^= both,
-        }
-        self.squares[(from & 63) as usize] = None;
-        self.squares[(to & 63) as usize] = Some(piece);
-        if piece == Piece::King {
-            self.king_squares[color as usize] = to;
-        }
+        self.relocate_bare(from, to, piece, color);
     }
 
     /// Take a piece off a square, undoing everything `set_piece_index` did.
@@ -2340,26 +2314,7 @@ impl Board {
             self.pawn_key ^= piece_key;
         }
         self.eval.count::<SET>(row, piece);
-
-        let board = &mut self.pieces[piece as usize];
-        if SET {
-            board.set_bit(index);
-        } else {
-            board.clear_bit(index);
-        }
-        // the callers assert that a set lands on an empty square and a clear
-        // on an occupied one, so this never asks what was standing there
-        self.squares[(index & 63) as usize] = if SET { Some(piece) } else { None };
-
-        let side = match color {
-            Color::Black => &mut self.black,
-            Color::White => &mut self.white,
-        };
-        if SET {
-            side.set_bit(index);
-        } else {
-            side.clear_bit(index);
-        }
+        self.place_bare::<SET>(index, piece, color);
     }
 
     /// What stands on a square, read rather than searched for.
@@ -4418,7 +4373,7 @@ mod between {
 
 #[cfg(test)]
 mod see {
-    use super::{Board, Color, Piece, Play, SEE_VALUES, play_named};
+    use super::{Board, Color, Piece, Play, SEE_VALUES, behind, play_named};
     use pretty_assertions::assert_eq;
 
     /// Every capture in every position of the three suites, and in every
@@ -4583,11 +4538,7 @@ mod see {
         let victim = m.capture.expect("only captures are priced");
         let mut occupied = (board.white | board.black) & !(1u64 << m.from);
         if m.en_passant {
-            let taken = match board.active_color {
-                Color::White => m.to - 8,
-                Color::Black => m.to + 8,
-            };
-            occupied &= !(1u64 << taken);
+            occupied &= !(1u64 << behind(m.to, board.active_color));
         }
         let mover = board
             .get_piece_index(m.from)

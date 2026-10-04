@@ -268,21 +268,12 @@ impl PieceSquareTables {
     /// The packed pair for a piece on a square, both phases at once.
     #[inline]
     pub fn get_value(&self, index: usize, piece: Piece, color: Color) -> i32 {
-        self.tables[Self::table_index(piece, color)][index]
+        self.tables[piece.table_index(color)][index]
     }
 
-    /// The same shape `Zobrist` indexes its piece keys by: white takes the
-    /// piece's own row, black the one six further on.
-    #[inline]
-    const fn table_index(piece: Piece, color: Color) -> usize {
-        match color {
-            Color::White => piece as usize,
-            Color::Black => piece as usize + 6,
-        }
-    }
-
-    /// Built at compile time, in the order `table_index` reads it: the six
-    /// pieces as `Piece` declares them for white, then the same six for black.
+    /// Built at compile time, in the order `Piece::table_index` reads it: the
+    /// six pieces as `Piece` declares them for white, then the same six for
+    /// black.
     pub const TABLES: PieceSquareTables = PieceSquareTables {
         tables: [
             packed(mirror(&PAWNS), mirror(&PAWNS_END)),
@@ -660,8 +651,8 @@ mod tests {
         }
     }
 
-    /// Every piece reads its own two tables, in the order `table_index` asks
-    /// for them.
+    /// Every piece reads its own two tables, in the order `Piece::table_index`
+    /// asks for them.
     ///
     /// The shape tests mostly cannot see one piece handed another's table: a
     /// bishop's and a queen's pass each other's, and so do three of the four

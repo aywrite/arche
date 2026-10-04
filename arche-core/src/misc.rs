@@ -217,9 +217,14 @@ pub const fn coordinate_to_large_index(rank: u8, file: File) -> u8 {
 }
 
 pub fn index_to_coordinate(index: u8) -> (u8, File) {
-    let rank = ((index) / 8) + 1;
     let file = File::try_from(index % 8).unwrap();
-    (rank, file)
+    (rank_of(index), file)
+}
+
+/// The rank a square stands on, one to eight.
+#[inline(always)]
+pub(crate) const fn rank_of(index: u8) -> u8 {
+    index / 8 + 1
 }
 
 #[cfg(test)]
@@ -275,6 +280,17 @@ pub enum Piece {
 }
 
 impl Piece {
+    /// This piece's row in a table laid out as the six pieces for white and
+    /// then the six for black: the zobrist keys, the piece square tables and
+    /// the evaluation's rows all read it.
+    #[inline(always)]
+    pub(crate) const fn table_index(self, color: Color) -> usize {
+        match color {
+            Color::White => self as usize,
+            Color::Black => self as usize + 6,
+        }
+    }
+
     /// The pieces in discriminant order, for walking something indexed the
     /// way `pieces` and the tables are. The assertion below holds the order
     /// to the discriminants.

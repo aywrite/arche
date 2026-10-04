@@ -78,11 +78,7 @@ impl Zobrist {
 
     #[inline]
     pub fn get_piece_key(&self, index: u8, piece: Piece, color: Color) -> u64 {
-        let piece_index = match color {
-            Color::White => piece as usize,
-            Color::Black => piece as usize + 6,
-        };
-        self.pieces[piece_index][index as usize]
+        self.pieces[piece.table_index(color)][index as usize]
     }
 
     /// A piece key by table row, for building tables at compile time.

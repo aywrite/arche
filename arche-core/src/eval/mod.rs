@@ -125,11 +125,7 @@ const fn rows() -> [Row; 768] {
 /// The row of a piece on a square.
 #[inline(always)]
 pub(crate) fn row(index: u8, piece: Piece, color: Color) -> &'static Row {
-    let table = match color {
-        Color::White => piece as usize,
-        Color::Black => piece as usize + 6,
-    };
-    &ROWS[table * 64 + (index & 63) as usize]
+    &ROWS[piece.table_index(color) * 64 + (index & 63) as usize]
 }
 
 /// The material weight of one piece, for the board's own seeding walk.
