@@ -607,6 +607,12 @@ its own. Both match workflows get them from its composite action, which also
 builds fastchess and fetches the books. What each tool computes, and why the
 pooling cannot be left to fastchess, is written there.
 
+The workflows pin mache's actions at a commit, and Dependabot moves the pins in
+a weekly pull request of their own. Read mache's changelog for a breaking line
+before merging one. A breaking release changes what a match plays or how it is
+read, and the bump then has to name the old behaviour where the workflows
+relied on it, as the `book_table` inputs did at v0.6.0.
+
 The release workflow calls Strength with five hundred games at 30+0.3 across
 five shards, about ninety minutes of wall clock, and that run is the only one
 that appends its result to the release notes. The slower control is the point:
