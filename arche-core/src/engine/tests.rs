@@ -11,9 +11,9 @@ mod search {
     use crate::engine::Board;
     use crate::engine::Engine;
     use crate::engine::{
-        Decision, Limits, MAX_PLY, NULL_MOVE_MIN_DEPTH, NULL_MOVE_REDUCTION, Play, RootBounds,
-        Score, ScoreBound, SearchConfig, SearchOutcome, SearchParameters, SearchResult,
-        TaintPolicy, Value, null_move_reduction,
+        ASPIRATION_MIN_DEPTH, Aspiration, Decision, Limits, MAX_PLY, NULL_MOVE_MIN_DEPTH,
+        NULL_MOVE_REDUCTION, Play, RootBounds, Score, ScoreBound, SearchConfig, SearchOutcome,
+        SearchParameters, SearchResult, TaintPolicy, Value, null_move_reduction,
     };
     use crate::late_move::{
         DEEP_REDUCTION, DEEP_REDUCTION_MIN_DEPTH, LATE_MOVE_MIN_DEPTH, LATE_MOVE_REDUCTION,
@@ -1212,6 +1212,51 @@ mod search {
             )
         };
         assert_eq!(result.best_move, previous);
+    }
+
+    /// A fresh engine's depth five search from the opening under `budget`
+    /// nodes, opened at a window far above what the position is worth, so
+    /// every root move fails low. The deepening never opens one that wide
+    /// of its last score, which is why this goes to the root directly.
+    fn failing_low(budget: u64) -> SearchOutcome {
+        let depth = ASPIRATION_MIN_DEPTH;
+        let window = Aspiration::open(Some(530), depth);
+        assert_eq!((window.alpha, window.beta), (500, 560));
+        engine(Board::new()).search_root(depth, nodes_only(budget), None, window)
+    }
+
+    #[test]
+    fn a_root_no_move_lifted_answers_a_ceiling_when_complete_and_nothing_when_aborted() {
+        let SearchOutcome::Complete(result, bound) = failing_low(u64::MAX) else {
+            panic!("an unlimited search did not complete");
+        };
+        assert!(result.score <= 500, "the opening is worth {}", result.score);
+        assert_eq!(bound, ScoreBound::Upper);
+        // one node short of the whole search stops in the last root move,
+        // with every move before it searched and none of them past alpha.
+        // The closest of them is never answered with
+        assert!(matches!(
+            failing_low(result.nodes - 1),
+            SearchOutcome::Aborted(None)
+        ));
+    }
+
+    #[test]
+    fn a_root_whose_best_move_only_meets_alpha_answers_a_ceiling() {
+        // one half move short of the fifty move draw with no capture on
+        // the board, so every move scores the draw, exactly the alpha of a
+        // window opened at thirty. Meeting alpha does not raise it
+        let fen = "4k3/8/8/8/8/8/8/R3K3 w - - 99 120";
+        let depth = ASPIRATION_MIN_DEPTH;
+        let window = Aspiration::open(Some(30), depth);
+        assert_eq!(window.alpha, 0);
+        let mut e = engine(Board::from_fen(fen).unwrap());
+        let SearchOutcome::Complete(result, bound) =
+            e.search_root(depth, Limits::unlimited(), None, window)
+        else {
+            panic!("an unlimited search did not complete");
+        };
+        assert_eq!((result.score, bound), (0, ScoreBound::Upper));
     }
 
     #[test]
@@ -2504,6 +2549,24 @@ mod search {
     }
 
     #[test]
+    fn the_root_stores_a_tainted_answer_under_the_skipping_policy() {
+        // one half move short of the fifty move draw with no capture on
+        // the board, so every reply is the tainted draw and nothing under
+        // the root stores. The root's answer is stored past the policy,
+        // since the reported line is read back from its slot
+        let fen = "4k3/8/8/8/8/8/8/R3K3 w - - 99 120";
+        let skipping = SearchConfig {
+            taint: TaintPolicy::Skip,
+            ..SearchConfig::reference()
+        };
+        let mut e = AlphaBeta::with_config(Board::from_fen(fen).unwrap(), TABLE_BYTES, skipping);
+        assert_eq!(completed(e.search(3)).score, 0);
+        let ghi = e.ghi();
+        assert_eq!((ghi.stores, ghi.tainted_stores), (1, 1));
+        assert_eq!(ghi.skipped_stores, 0, "a store under the root was offered");
+    }
+
+    #[test]
     fn a_warm_cache_matches_a_cold_search() {
         let fens = [
             "r3k2r/p1ppqpb1/bn2pnp1/3PN3/1p2P3/2N2Q1p/PPPBBPPP/R3K2R w KQkq - 0 1",
@@ -3228,7 +3291,7 @@ mod cutoffs {
     use super::taught::{quiets, unmade_journey};
     use crate::board::fens::SHARP_MIDDLEGAME;
     use crate::census::{self, Class, Cutting, Table};
-    use crate::engine::{AlphaBeta, Board, Node, RootBounds, Score, SearchConfig};
+    use crate::engine::{AlphaBeta, Board, FailSoft, Node, RootBounds, Score, SearchConfig};
     use crate::play::Play;
     use crate::recorder::{Sampler, Window};
     use crate::value::{Taint, Value};
@@ -3254,16 +3317,13 @@ mod cutoffs {
     ) -> Node {
         let mut node = Node::open(
             depth,
-            alpha,
-            beta,
-            RootBounds::Neither,
             false,
             ply,
             tt,
             entered_at,
-            Taint::default(),
+            FailSoft::open(alpha, beta, RootBounds::Neither, Taint::default()),
         );
-        node.searched = searched;
+        node.answer.searched = searched;
         node
     }
 
@@ -3418,8 +3478,8 @@ mod cutoffs {
         let (m, _) = quiets(&e);
         let moves = e.board.generate_moves();
         let mut node = node(2, (-50, 60), Some(0), Table::Miss, 0, e.nodes);
-        node.absorb(&m, Value::clean(59));
-        assert_eq!((node.alpha, node.beta), (59, 60));
+        node.answer.absorb(&m, Value::clean(59));
+        assert_eq!((node.answer.alpha, node.answer.beta), (59, 60));
         e.census_event(&node, &moves, true, None);
         let sampled = e
             .disarm::<census::Event>()
@@ -3472,7 +3532,7 @@ mod reductions {
     use super::taught::{quiets, unmade_journey};
     use crate::board::fens::SHARP_MIDDLEGAME;
     use crate::census::Table;
-    use crate::engine::{AlphaBeta, Board, Decision, Node, RootBounds, Score};
+    use crate::engine::{AlphaBeta, Board, Decision, FailSoft, Node, RootBounds, Score};
     use crate::late_move;
     use crate::play::Play;
     use crate::recorder::{Sampler, Window};
@@ -3494,16 +3554,13 @@ mod reductions {
         let moves = e.board.generate_moves();
         let mut node = Node::open(
             0,
-            0,
-            1,
-            RootBounds::Neither,
             false,
             ply,
             Table::Miss,
             0,
-            Taint::default(),
+            FailSoft::open(0, 1, RootBounds::Neither, Taint::default()),
         );
-        node.searched = searched;
+        node.answer.searched = searched;
         let mut rules = late_move::Rules::new(&e.deciding(), &node, None);
         e.staged_reduction(m, &node, &mut rules, &moves)
     }
@@ -3589,17 +3646,14 @@ mod reductions {
         let staged = staged(&e, &m, 5, Some(0));
         let mut node = Node::open(
             3,
-            -50,
-            60,
-            RootBounds::Neither,
             false,
             Some(0),
             Table::Miss,
             e.nodes,
-            Taint::default(),
+            FailSoft::open(-50, 60, RootBounds::Neither, Taint::default()),
         );
-        node.absorb(&raiser, Value::clean(10));
-        assert_eq!(node.alpha, 10);
+        node.answer.absorb(&raiser, Value::clean(10));
+        assert_eq!(node.answer.alpha, 10);
         let fen = e.board.to_fen();
         e.ledger_skip(staged, &node);
         assert_eq!(e.board.to_fen(), fen, "the board was not left as it was");
@@ -3753,28 +3807,15 @@ mod reductions {
     }
 }
 
-/// A full width node's answer as its moves come back, read off the node
-/// with no search behind it but the one the table's move asks for.
-mod node {
-    use crate::board::play_named;
-    use crate::census::Table;
-    use crate::engine::{AlphaBeta, Board, Node, Reached, RootBounds, Score};
+/// A search's fail soft answer as its moves come back, read with no board.
+mod fail_soft {
+    use crate::engine::{FailSoft, Reached, RootBounds, Score};
     use crate::play::Play;
     use crate::value::{Taint, Value};
     use pretty_assertions::assert_eq;
 
-    fn open(depth: u8, alpha: Score, beta: Score, root_bounds: RootBounds) -> Node {
-        Node::open(
-            depth,
-            alpha,
-            beta,
-            root_bounds,
-            false,
-            Some(0),
-            Table::Miss,
-            0,
-            Taint::default(),
-        )
+    fn open(alpha: Score, beta: Score, root_bounds: RootBounds) -> FailSoft {
+        FailSoft::open(alpha, beta, root_bounds, Taint::default())
     }
 
     /// A move for the answer to name. It reads the value and not the move.
@@ -3792,40 +3833,98 @@ mod node {
             (RootBounds::Both, RootBounds::Beta),
             (RootBounds::Alpha, RootBounds::Neither),
         ] {
-            let mut node = open(4, -100, 100, from);
+            let mut answer = open(-100, 100, from);
             // under alpha, and at it, raise nothing
-            assert_eq!(node.absorb(&m, Value::clean(-150)), Reached::Neither);
-            assert_eq!(node.absorb(&m, Value::clean(-100)), Reached::Neither);
-            assert_eq!((node.alpha, node.root_bounds), (-100, from));
-            assert_eq!(node.absorb(&m, Value::clean(20)), Reached::Alpha);
-            assert_eq!((node.alpha, node.root_bounds), (20, to));
-            assert_eq!(node.absorb(&m, Value::clean(10)), Reached::Neither);
-            assert_eq!((node.alpha, node.root_bounds), (20, to));
-            assert_eq!(node.absorb(&m, Value::clean(50)), Reached::Alpha);
-            assert_eq!((node.alpha, node.root_bounds), (50, to));
-            // a cutoff answers the node and leaves the bounds where they
+            assert_eq!(answer.absorb(&m, Value::clean(-150)), Reached::Neither);
+            assert_eq!(answer.absorb(&m, Value::clean(-100)), Reached::Neither);
+            assert_eq!((answer.alpha, answer.root_bounds), (-100, from));
+            assert_eq!(answer.absorb(&m, Value::clean(20)), Reached::Alpha);
+            assert_eq!((answer.alpha, answer.root_bounds), (20, to));
+            assert_eq!(answer.absorb(&m, Value::clean(10)), Reached::Neither);
+            assert_eq!((answer.alpha, answer.root_bounds), (20, to));
+            assert_eq!(answer.absorb(&m, Value::clean(50)), Reached::Alpha);
+            assert_eq!((answer.alpha, answer.root_bounds), (50, to));
+            // a cutoff answers the search and leaves the bounds where they
             // stood
-            assert_eq!(node.absorb(&m, Value::clean(100)), Reached::Beta);
-            assert_eq!((node.alpha, node.beta, node.root_bounds), (50, 100, to));
-            assert_eq!(node.searched, 6);
+            assert_eq!(answer.absorb(&m, Value::clean(100)), Reached::Beta);
+            assert_eq!(
+                (answer.alpha, answer.beta, answer.root_bounds),
+                (50, 100, to)
+            );
+            assert_eq!(answer.searched, 6);
         }
     }
 
-    /// The answer is a ceiling until a move beats the alpha the node
-    /// opened with, and a score or a floor from then on.
+    /// The answer is a ceiling until a move beats the alpha it opened
+    /// with, and a score or a floor from then on.
     #[test]
     fn alpha_is_raised_after_a_rise_and_not_before() {
         let m = any_move();
-        let mut node = open(4, -50, 50, RootBounds::Neither);
-        assert!(!node.raised_alpha());
-        node.absorb(&m, Value::clean(-60));
-        assert!(!node.raised_alpha(), "a move under alpha");
-        node.absorb(&m, Value::clean(-50));
-        assert!(!node.raised_alpha(), "a move at alpha");
-        node.absorb(&m, Value::clean(0));
-        assert!(node.raised_alpha());
-        node.absorb(&m, Value::clean(-60));
-        assert!(node.raised_alpha(), "a move after the rise");
+        let mut answer = open(-50, 50, RootBounds::Neither);
+        assert!(!answer.raised_alpha());
+        answer.absorb(&m, Value::clean(-60));
+        assert!(!answer.raised_alpha(), "a move under alpha");
+        answer.absorb(&m, Value::clean(-50));
+        assert!(!answer.raised_alpha(), "a move at alpha");
+        answer.absorb(&m, Value::clean(0));
+        assert!(answer.raised_alpha());
+        answer.absorb(&m, Value::clean(-60));
+        assert!(answer.raised_alpha(), "a move after the rise");
+    }
+
+    /// The stand pat is the best so far and a floor under alpha, with no
+    /// move and no count. It is not a rise: the answer stays a ceiling
+    /// until a capture beats it. A stand pat under alpha leaves alpha.
+    #[test]
+    fn the_stand_pat_sets_best_and_alpha_and_counts_no_move() {
+        let m = any_move();
+        let mut answer = open(-50, 50, RootBounds::Neither);
+        answer.stand_pat(20);
+        assert_eq!((answer.best, answer.alpha), (20, 20));
+        assert_eq!((answer.best_move, answer.searched), (None, 0));
+        assert!(!answer.raised_alpha(), "the stand pat read as a rise");
+        assert_eq!(answer.absorb(&m, Value::clean(10)), Reached::Neither);
+        assert_eq!((answer.best, answer.best_move), (20, None));
+        assert!(!answer.raised_alpha(), "a capture under the stand pat");
+        assert_eq!(answer.absorb(&m, Value::clean(30)), Reached::Alpha);
+        assert!(answer.raised_alpha());
+
+        let mut low = open(-50, 50, RootBounds::Neither);
+        low.stand_pat(-80);
+        assert_eq!((low.best, low.alpha, low.searched), (-80, -50, 0));
+        assert!(!low.raised_alpha());
+    }
+
+    /// A fresh answer has searched nothing until a move is absorbed, and
+    /// one move absorbed counts however badly it scored. Quiescence in
+    /// check and the root read a side with no legal move off that count.
+    #[test]
+    fn an_answer_counts_nothing_searched_until_a_move_is_absorbed() {
+        let mut answer = open(-50, 50, RootBounds::Neither);
+        assert_eq!((answer.searched, answer.best_move), (0, None));
+        answer.absorb(&any_move(), Value::mated(3));
+        assert_eq!(answer.searched, 1);
+    }
+}
+
+/// A full width node's answer as its moves come back, read off the node
+/// with no search behind it but the one the table's move asks for.
+mod node {
+    use crate::board::play_named;
+    use crate::census::Table;
+    use crate::engine::{AlphaBeta, Board, FailSoft, Node, RootBounds, Score};
+    use crate::value::Taint;
+    use pretty_assertions::assert_eq;
+
+    fn open(depth: u8, alpha: Score, beta: Score, root_bounds: RootBounds) -> Node {
+        Node::open(
+            depth,
+            false,
+            Some(0),
+            Table::Miss,
+            0,
+            FailSoft::open(alpha, beta, root_bounds, Taint::default()),
+        )
     }
 
     /// The searched count is what the reductions read as a move's index:
@@ -3844,12 +3943,12 @@ mod node {
             e.search_table_move(pinned, &mut node, crate::transposition::NO_EVAL),
             Ok(None)
         ));
-        assert_eq!(node.searched, 0, "the illegal move was counted");
-        assert!(!node.raised_alpha());
+        assert_eq!(node.answer.searched, 0, "the illegal move was counted");
+        assert!(!node.answer.raised_alpha());
         assert!(matches!(
             e.search_table_move(step, &mut node, crate::transposition::NO_EVAL),
             Ok(None)
         ));
-        assert_eq!(node.searched, 1, "the table's move was not counted");
+        assert_eq!(node.answer.searched, 1, "the table's move was not counted");
     }
 }

@@ -469,8 +469,8 @@ fn shallow(config: &SearchConfig, board: &Board, node: &Node) -> Shallow {
     let admits = (config.quiet_futility || config.late_move_count)
         && (1..=SHALLOW_MAX_DEPTH).contains(&node.depth)
         && !node.in_check
-        && !is_mate(node.beta)
-        && !node.root_bounds.beta_is_roots()
+        && !is_mate(node.answer.beta)
+        && !node.answer.root_bounds.beta_is_roots()
         && board.has_non_pawn_material();
     Shallow {
         from: if admits { 1 } else { usize::MAX },
@@ -514,11 +514,11 @@ impl Shallow {
         m: &Play,
         node: &Node,
     ) -> bool {
-        let searched = node.searched;
-        self.reached(searched, node.alpha)
+        let searched = node.answer.searched;
+        self.reached(searched, node.answer.alpha)
             && m.capture.is_none()
             && m.promote.is_none()
-            && (searched >= self.count || self.under_alpha(search, eval, node.alpha))
+            && (searched >= self.count || self.under_alpha(search, eval, node.answer.alpha))
             && !search
                 .board
                 .gives_check_with(check.get_or_insert_with(|| search.board.check_info()), m)
@@ -527,9 +527,9 @@ impl Shallow {
     /// The half of `skips` that does not read the move.
     #[inline]
     fn active(&mut self, search: &Search, eval: &mut Option<Score>, node: &Node) -> bool {
-        let searched = node.searched;
-        self.reached(searched, node.alpha)
-            && (searched >= self.count || self.under_alpha(search, eval, node.alpha))
+        let searched = node.answer.searched;
+        self.reached(searched, node.answer.alpha)
+            && (searched >= self.count || self.under_alpha(search, eval, node.answer.alpha))
     }
 
     #[inline]
@@ -565,8 +565,8 @@ fn admission(config: &SearchConfig, node: &Node) -> Admission {
     let admits = config.late_move_reductions
         && node.depth >= LATE_MOVE_MIN_DEPTH
         && !node.in_check
-        && !is_mate(node.beta)
-        && !node.root_bounds.beta_is_roots();
+        && !is_mate(node.answer.beta)
+        && !node.answer.root_bounds.beta_is_roots();
     Admission {
         from: if admits {
             LATE_MOVE_THRESHOLD
@@ -579,7 +579,7 @@ fn admission(config: &SearchConfig, node: &Node) -> Admission {
 impl Admission {
     #[inline]
     fn admits(&self, node: &Node) -> bool {
-        node.searched >= self.from && !is_mate(node.alpha)
+        node.answer.searched >= self.from && !is_mate(node.answer.alpha)
     }
 }
 
@@ -614,7 +614,7 @@ fn reduces(search: &Search, node: &Node, m: &Play) -> bool {
 fn admits(config: &SearchConfig, node: &Node) -> bool {
     config.late_move_reductions
         && node.depth >= LATE_MOVE_MIN_DEPTH
-        && node.searched >= LATE_MOVE_THRESHOLD
+        && node.answer.searched >= LATE_MOVE_THRESHOLD
         && node_admits(node)
 }
 
@@ -624,9 +624,9 @@ fn admits(config: &SearchConfig, node: &Node) -> bool {
 #[inline]
 fn node_admits(node: &Node) -> bool {
     !node.in_check
-        && !is_mate(node.alpha)
-        && !is_mate(node.beta)
-        && !node.root_bounds.beta_is_roots()
+        && !is_mate(node.answer.alpha)
+        && !is_mate(node.answer.beta)
+        && !node.answer.root_bounds.beta_is_roots()
 }
 
 /// Whether a move `reduces` already accepted is skipped, or scouted a ply
@@ -636,7 +636,7 @@ fn node_admits(node: &Node) -> bool {
 /// exemption arm measured checks as the scout's blind spot. The check test
 /// runs last because the slider probes cost more than everything before it.
 fn gate(search: &Search, node: &Node, rules: &mut Rules, moves: &[Play], m: &Play) -> Verdict {
-    let searched = node.searched;
+    let searched = node.answer.searched;
     if (!search.config.deep_reductions && !search.config.late_move_pruning)
         || node.depth < DEEP_REDUCTION_MIN_DEPTH
     {
@@ -650,8 +650,8 @@ fn gate(search: &Search, node: &Node, rules: &mut Rules, moves: &[Play], m: &Pla
         hist_milli: f.hist_milli(),
         killer: f.killer,
         tt: f.tt,
-        eval_beta: eval - i64::from(node.beta),
-        alpha_gap: i64::from(node.alpha) - eval,
+        eval_beta: eval - i64::from(node.answer.beta),
+        alpha_gap: i64::from(node.answer.alpha) - eval,
         generated: f.generated,
     });
     if search.config.late_move_pruning && score <= LATE_MOVE_PRUNING_THRESHOLD {
@@ -725,7 +725,7 @@ pub(crate) fn features(
         .ply
         .map_or([None, None], |ply| search.ordering.killers_at(ply));
     Features {
-        index: node.searched,
+        index: node.answer.searched,
         generated: moves.len(),
         history: search.ordering.history_score(search.board.active_color, m),
         // a fraction of a marked down largest would be on no scale
@@ -768,7 +768,7 @@ mod tests {
     };
     use crate::board::{Board, MoveList, fens, play_named};
     use crate::census::Table;
-    use crate::engine::{MAX_PLY, Node, RootBounds, SearchConfig};
+    use crate::engine::{FailSoft, MAX_PLY, Node, RootBounds, SearchConfig};
     use crate::misc::Score;
     use crate::ordering::MoveOrdering;
     use crate::play::Play;
@@ -897,14 +897,11 @@ mod tests {
         fn node(&self, depth: u8, alpha: Score, beta: Score) -> (Node, Rules) {
             let node = Node::open(
                 depth,
-                alpha,
-                beta,
-                self.root_bounds,
                 self.in_check,
                 self.ply,
                 self.tt,
                 0,
-                Taint::default(),
+                FailSoft::open(alpha, beta, self.root_bounds, Taint::default()),
             );
             let mut rules = Rules::new(&self.search(), &node, self.eval);
             rules.history_max = self.history_max;
@@ -931,7 +928,7 @@ mod tests {
             self.eval = None;
             self.history_max = None;
             let (mut node, mut rules) = self.node(depth, alpha, beta);
-            node.searched = searched;
+            node.answer.searched = searched;
             let verdict = decide(&self.search(), &node, &mut rules, &self.moves, m);
             self.keep(&rules);
             verdict
@@ -986,8 +983,8 @@ mod tests {
             searched: usize,
             alpha: Score,
         ) -> bool {
-            node.alpha = alpha;
-            node.searched = searched;
+            node.answer.alpha = alpha;
+            node.answer.searched = searched;
             let skips = rules.skips(&self.search(), node, m);
             self.keep(rules);
             skips
@@ -998,7 +995,7 @@ mod tests {
         /// bounds stand at nothing, since the features read neither.
         fn features(&mut self, m: &Play, searched: usize) -> Features {
             let (mut node, mut rules) = self.node(0, 0, 1);
-            node.searched = searched;
+            node.answer.searched = searched;
             let features = features(&self.search(), &node, &mut rules, &self.moves, m);
             self.keep(&rules);
             features
@@ -1091,18 +1088,15 @@ mod tests {
         let config = reducing();
         let mut node = Node::open(
             LATE_MOVE_MIN_DEPTH,
-            0,
-            100,
-            RootBounds::Neither,
             false,
             None,
             Table::Miss,
             0,
-            Taint::default(),
+            FailSoft::open(0, 100, RootBounds::Neither, Taint::default()),
         );
         let half = admission(&config, &node);
         for searched in 0..64 {
-            node.searched = searched;
+            node.answer.searched = searched;
             assert_eq!(
                 half.admits(&node),
                 searched >= LATE_MOVE_THRESHOLD,
@@ -1110,16 +1104,18 @@ mod tests {
             );
         }
         // alpha a mate against the side to move, under an ordinary beta
-        node.alpha = -29_500;
-        assert!(crate::value::is_mate(node.alpha) && !crate::value::is_mate(node.beta));
+        node.answer.alpha = -29_500;
+        assert!(
+            crate::value::is_mate(node.answer.alpha) && !crate::value::is_mate(node.answer.beta)
+        );
         for searched in 0..64 {
-            node.searched = searched;
+            node.answer.searched = searched;
             assert!(!half.admits(&node), "a mate alpha at {searched} searched");
         }
         // and a node that opened there admits nothing either
         let half = admission(&config, &node);
         for searched in 0..64 {
-            node.searched = searched;
+            node.answer.searched = searched;
             assert!(!half.admits(&node), "opened at a mate, {searched} searched");
         }
     }
