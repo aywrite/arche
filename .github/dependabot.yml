@@ -15,9 +15,18 @@ updates:
     schedule:
       interval: "weekly"
     groups:
+      # mache's thirteen pins move together in a pull request of their own.
+      # Its releases can change what a match plays: v0.6.0 moved the default
+      # book table, and the bump had to name scripts/book.sh to keep it. A
+      # bump grouped with the other actions would hide that line
+      mache:
+        patterns:
+          - "aywrite/mache*"
       actions:
         patterns:
           - "*"
+        exclude-patterns:
+          - "aywrite/mache*"
     # The workflows pin a commit sha with the version in a trailing comment,
     # because a tag is mutable and a release hands these actions a token that
     # can write to the repository and the package registry. Dependabot
