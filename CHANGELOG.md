@@ -2,7 +2,7 @@
 
 All notable changes to this project will be documented in this file.
 
-## [0.4.8-rc.1] - 2026-09-30
+## [0.4.8] - 2026-10-04
 
 ### Features
 
@@ -46,6 +46,7 @@ All notable changes to this project will be documented in this file.
 - *(search)* Name the four states of the root bounds [bench 5966188]
 - *(search)* Split alpha_beta into named steps and put each instrument behind one call [bench 5966188]
 - *(board)* Shrink the history ring from 1,024 plies to 256 [bench 5965973]
+- *(search)* Remove the deep reduction's model threshold and its switch [bench 5965973]
 
 ### Documentation
 
@@ -66,6 +67,11 @@ All notable changes to this project will be documented in this file.
 - *(board)* Check the static exchange's fast exits against the walk in debug builds [bench 5966188]
 - *(deps)* Bump the mache actions from v0.5.0 to v0.7.1
 - *(ci)* Name the 40/15 scale through mache rather than rewriting its line
+- *(workspace)* Remove the nix cross-compilation shell
+- *(ci)* Count the bench's instructions along master in one run
+- *(bench)* Add a verdict to the instruction count against a 0.7% band
+- *(deps)* Bump smallvec from 1.16.1 to 1.16.2 in the cargo group
+- *(deps)* Bump taiki-e/install-action
 
 ## [0.4.7] - 2026-09-27
 
