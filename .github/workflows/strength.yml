@@ -68,6 +68,10 @@ on:
       seed:
         description: Seed for the region of the book the shards play, an unsigned integer. Left empty it is the run id, and either way the manifest records it.
         type: string
+      hash_mb:
+        description: The table both sides are given, in MB. 256 is what the engine defaults to. A smaller table puts the replacement policy under the pressure a longer game would, and figures at different sizes are not comparable.
+        type: number
+        default: 256
   workflow_call:
     inputs:
       candidate:
@@ -105,16 +109,15 @@ on:
         default: ""
       seed:
         type: string
+      hash_mb:
+        type: number
+        default: 256
       publish:
         description: Append the result to the release notes for this tag
         type: boolean
         default: false
       # what the match is played on rather than what it plays, so not boxes
       # on the actions tab
-      hash_mb:
-        description: The table both sides are given, in MB. 256 is what the engine defaults to, and naming it holds both sides to the same table whatever a future default is.
-        type: number
-        default: 256
       concurrency:
         description: Games a shard plays at once
         type: number
@@ -161,6 +164,7 @@ jobs:
       sprt: ${{ inputs.sprt }}
       elo0: ${{ inputs.elo0 }}
       elo1: ${{ inputs.elo1 }}
+      hash_mb: ${{ inputs.hash_mb || 256 }}
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
@@ -259,7 +263,7 @@ jobs:
       sprt: ${{ fromJSON(needs.resolve.outputs.sprt) }}
       elo0: ${{ fromJSON(needs.resolve.outputs.elo0) }}
       elo1: ${{ fromJSON(needs.resolve.outputs.elo1) }}
-      hash_mb: ${{ inputs.hash_mb || 256 }}
+      hash_mb: ${{ fromJSON(needs.resolve.outputs.hash_mb) }}
       concurrency: ${{ inputs.concurrency || 2 }}
       max_match_minutes: ${{ inputs.max_match_minutes || 150 }}
       startup_ms: ${{ inputs.startup_ms || 20000 }}
@@ -289,7 +293,7 @@ jobs:
       sprt: ${{ fromJSON(needs.resolve.outputs.sprt) }}
       elo0: ${{ fromJSON(needs.resolve.outputs.elo0) }}
       elo1: ${{ fromJSON(needs.resolve.outputs.elo1) }}
-      hash_mb: ${{ inputs.hash_mb || 256 }}
+      hash_mb: ${{ fromJSON(needs.resolve.outputs.hash_mb) }}
       concurrency: ${{ inputs.concurrency || 2 }}
       max_match_minutes: ${{ inputs.max_match_minutes || 150 }}
       startup_ms: ${{ inputs.startup_ms || 20000 }}
@@ -319,7 +323,7 @@ jobs:
       sprt: ${{ fromJSON(needs.resolve.outputs.sprt) }}
       elo0: ${{ fromJSON(needs.resolve.outputs.elo0) }}
       elo1: ${{ fromJSON(needs.resolve.outputs.elo1) }}
-      hash_mb: ${{ inputs.hash_mb || 256 }}
+      hash_mb: ${{ fromJSON(needs.resolve.outputs.hash_mb) }}
       concurrency: ${{ inputs.concurrency || 2 }}
       max_match_minutes: ${{ inputs.max_match_minutes || 150 }}
       startup_ms: ${{ inputs.startup_ms || 20000 }}
@@ -349,7 +353,7 @@ jobs:
       sprt: ${{ fromJSON(needs.resolve.outputs.sprt) }}
       elo0: ${{ fromJSON(needs.resolve.outputs.elo0) }}
       elo1: ${{ fromJSON(needs.resolve.outputs.elo1) }}
-      hash_mb: ${{ inputs.hash_mb || 256 }}
+      hash_mb: ${{ fromJSON(needs.resolve.outputs.hash_mb) }}
       concurrency: ${{ inputs.concurrency || 2 }}
       max_match_minutes: ${{ inputs.max_match_minutes || 150 }}
       startup_ms: ${{ inputs.startup_ms || 20000 }}
