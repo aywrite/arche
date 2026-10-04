@@ -209,17 +209,8 @@ pub(crate) fn counts(board: &Board, color: Color, into: &mut [i32]) {
 /// the piece square pair is on.
 #[inline]
 pub(crate) fn fold(board: &Board) -> i32 {
-    fold_with(board, &SHELTER)
-}
-
-/// The same fold against weights named by the caller. The tests supply
-/// weights of their own because what they pin is the fold rather than the
-/// fit: a permuted [`SHELTER`] would be a different evaluation and not a
-/// wrong one.
-#[inline]
-fn fold_with(board: &Board, weights: &[i32; COUNTS]) -> i32 {
     weigh(
-        weights,
+        &SHELTER,
         counts_of(board, Color::White),
         counts_of(board, Color::Black),
     )
@@ -239,7 +230,6 @@ pub(super) const CACHE_BITS: usize = 13;
 #[cfg(test)]
 mod tests {
     use super::{Board, COUNTS, Color, MASKS, RANKS_AHEAD, counts_of, files_of, key, king_files};
-    use crate::psqt::{eg_value, mg_value, pack};
     use pretty_assertions::assert_eq;
 
     /// A piece that is neither a pawn nor a king leaves the key alone, and
@@ -485,41 +475,19 @@ mod tests {
     const WHITE_SHELTERS: [i32; COUNTS] = [2, 1, 0, 0, 1, 2, 3];
     const BLACK_SHELTERS: [i32; COUNTS] = [0, 0, 2, 1, 0, 0, 0];
 
-    /// Seven weights that differ from each other at both ends of the taper, so
-    /// that a pair read into the wrong count's slot lands on a different
-    /// number. The seven differences between the halves are 9, -20, 8, -12,
-    /// 20, -29 and -14, which differ from each other too, so a permutation of
-    /// either array shows.
-    const TRIAL: [i32; COUNTS] = [
-        pack(11, 2),
-        pack(-7, 13),
-        pack(3, -5),
-        pack(29, 41),
-        pack(17, -3),
-        pack(-23, 6),
-        pack(5, 19),
-    ];
-
-    /// What the fold does with weights that are not the shipped ones, which
-    /// are the fit's and will move again: white's count less black's, count
-    /// by count, each half of the pair summed on its own.
+    /// The fold is `weigh` (pinned in `eval/mod.rs`) over the two sides'
+    /// counts, white less black and against the live weights.
     #[test]
-    fn the_shelter_fold_reads_white_less_black_count_by_count() {
+    fn the_shelter_fold_weighs_white_less_black() {
         let board = Board::from_fen(SHELTERED).unwrap();
         assert_eq!(counts_of(&board, Color::White), WHITE_SHELTERS);
         assert_eq!(counts_of(&board, Color::Black), BLACK_SHELTERS);
-        let midgame: i32 = (0..COUNTS)
-            .map(|i| mg_value(TRIAL[i]) * (WHITE_SHELTERS[i] - BLACK_SHELTERS[i]))
-            .sum();
-        let endgame: i32 = (0..COUNTS)
-            .map(|i| eg_value(TRIAL[i]) * (WHITE_SHELTERS[i] - BLACK_SHELTERS[i]))
-            .sum();
+        let expected = super::weigh(&super::SHELTER, WHITE_SHELTERS, BLACK_SHELTERS);
         assert_ne!(
-            midgame, endgame,
-            "the two halves would not tell a swap apart"
+            expected, 0,
+            "the live weights level this position, so the fold's order would not show: \
+             pick another position"
         );
-        let packed = super::fold_with(&board, &TRIAL);
-        assert_ne!(midgame, 0, "black less white would answer the same here");
-        assert_eq!((mg_value(packed), eg_value(packed)), (midgame, endgame));
+        assert_eq!(super::fold(&board), expected);
     }
 }

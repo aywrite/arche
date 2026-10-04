@@ -14,7 +14,7 @@ use super::weigh;
 use crate::board::{Board, king_attacks, knight_attacks, pop_lsb};
 use crate::magic::MAGIC;
 use crate::misc::Color;
-use crate::psqt::{eg_value, mg_value, pack};
+use crate::psqt::pack;
 
 /// One count per piece kind, in the order [`mobility::PIECES`] names them,
 /// so one index in the shared walk in `eval/mod.rs` reads both terms'
@@ -31,9 +31,9 @@ pub(crate) const COUNTS: usize = mobility::PIECES.len();
 /// docs/ROADMAP.md has what the term leaves out. What counting the ring at
 /// every evaluation costs is there too, and in 7991f40.
 ///
-/// `bounds_hold` charges one piece of each kind two squares of the ring for a
-/// knight, three for a bishop, four for a rook and six for a queen, both sides
-/// counted. That puts this term at 624 in the midgame and the whole vector's
+/// `tune.py::bounds_hold` charges one piece of each kind two squares of the
+/// ring for a knight, three for a bishop, four for a rook and six for a queen,
+/// both sides counted. That puts this term at 624 in the midgame and the whole vector's
 /// boardful at 10,118, against the 32,767 a half has to stay inside.
 static KING_ATTACK: [i32; COUNTS] = [pack(11, 3), pack(22, -3), pack(29, -3), pack(18, 9)];
 
@@ -49,21 +49,7 @@ pub(crate) const fn weight(index: usize) -> i32 {
 ///
 /// A count at a zero weight is not folded away: llvm leaves the walk over
 /// the pieces standing, and 188297f measured what that cost over the bench.
-pub(crate) const SCORED: bool = scored(&KING_ATTACK);
-
-/// Whether `weights` prices anything, read at compile time. Both halves are
-/// asked about: a weight worth nothing in the midgame and something in the
-/// ending is still a weight and still has to be counted.
-const fn scored(weights: &[i32; COUNTS]) -> bool {
-    let mut index = 0;
-    while index < COUNTS {
-        if mg_value(weights[index]) != 0 || eg_value(weights[index]) != 0 {
-            return true;
-        }
-        index += 1;
-    }
-    false
-}
+pub(crate) const SCORED: bool = mobility::scored_kinds(&KING_ATTACK) != 0;
 
 /// How many squares of the other king's ring this side's knights, bishops,
 /// rooks and queens attack, a count per piece kind in the order
@@ -138,14 +124,8 @@ pub(crate) fn counts(board: &Board, color: Color, into: &mut [i32]) {
 /// it.
 #[cfg(test)]
 pub(crate) fn fold(board: &Board) -> i32 {
-    fold_with(board, &KING_ATTACK)
-}
-
-/// The same fold against weights named by the caller.
-#[cfg(test)]
-fn fold_with(board: &Board, weights: &[i32; COUNTS]) -> i32 {
     weigh(
-        weights,
+        &KING_ATTACK,
         counts_of(board, Color::White),
         counts_of(board, Color::Black),
     )
@@ -153,7 +133,8 @@ fn fold_with(board: &Board, weights: &[i32; COUNTS]) -> i32 {
 
 #[cfg(test)]
 mod tests {
-    use super::{Board, COUNTS, Color, SCORED, counts_of, king_attacks, scored};
+    use super::mobility::scored_kinds;
+    use super::{Board, COUNTS, Color, SCORED, counts_of, king_attacks, weigh};
     use crate::psqt::{eg_value, mg_value, pack};
     use pretty_assertions::assert_eq;
 
@@ -356,33 +337,20 @@ mod tests {
     const WHITE_BEARS: [i32; COUNTS] = [2, 1, 3, 4];
     const BLACK_BEARS: [i32; COUNTS] = [0, 2, 0, 3];
 
-    /// Four weights that differ from each other at both ends of the taper, so
-    /// that a pair read into the wrong piece's slot lands on a different
-    /// number. The four differences between the halves are 9, -20, 8 and -12,
-    /// which differ from each other too.
-    const TRIAL: [i32; COUNTS] = [pack(11, 2), pack(-7, 13), pack(3, -5), pack(29, 41)];
-
-    /// What the fold does with weights that are not the shipped ones, which
-    /// nothing holds apart from each other: white's count less black's, piece
-    /// by piece, each half of the pair summed on its own.
+    /// The fold is `weigh` (pinned in `eval/mod.rs`) over the two sides'
+    /// counts, white less black and against the live weights.
     #[test]
-    fn the_king_attack_fold_reads_white_less_black_piece_by_piece() {
+    fn the_king_attack_fold_weighs_white_less_black() {
         let board = Board::from_fen(BEARING).unwrap();
         assert_eq!(counts_of(&board, Color::White), WHITE_BEARS);
         assert_eq!(counts_of(&board, Color::Black), BLACK_BEARS);
-        let midgame: i32 = (0..COUNTS)
-            .map(|i| mg_value(TRIAL[i]) * (WHITE_BEARS[i] - BLACK_BEARS[i]))
-            .sum();
-        let endgame: i32 = (0..COUNTS)
-            .map(|i| eg_value(TRIAL[i]) * (WHITE_BEARS[i] - BLACK_BEARS[i]))
-            .sum();
+        let expected = weigh(&super::KING_ATTACK, WHITE_BEARS, BLACK_BEARS);
         assert_ne!(
-            midgame, endgame,
-            "the two halves would not tell a swap apart"
+            expected, 0,
+            "the live weights level this position, so the fold's order would not show: \
+             pick another position"
         );
-        let packed = super::fold_with(&board, &TRIAL);
-        assert_ne!(midgame, 0, "black less white would answer the same here");
-        assert_eq!((mg_value(packed), eg_value(packed)), (midgame, endgame));
+        assert_eq!(super::fold(&board), expected);
     }
 
     /// What the leaf is allowed to leave out, which is the whole of the
@@ -396,6 +364,7 @@ mod tests {
             mg_value(weight) != 0 || eg_value(weight) != 0
         });
         assert_eq!(SCORED, priced);
+        let scored = |weights: &[i32; COUNTS]| scored_kinds(weights) != 0;
         assert!(!scored(&[pack(0, 0); COUNTS]));
         for index in 0..COUNTS {
             let mut midgame = [pack(0, 0); COUNTS];

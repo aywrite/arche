@@ -26,8 +26,6 @@ use crate::magic::MAGIC;
 use crate::misc::{Color, Piece, Score};
 use crate::psqt::{PieceSquareTables, eg_value, mg_value};
 
-static PIECE_SQUARE_TABLES: PieceSquareTables = PieceSquareTables::TABLES;
-
 /// What each piece leaves on the board, in `Piece` order, on the scale the
 /// two halves of a tapered score are interpolated on: a queen four, a rook
 /// two and a minor one, so the opening's pieces come to `TOTAL_PHASE`. Pawns
@@ -70,14 +68,6 @@ const fn rows() -> [Row; 768] {
         key: 0,
     };
     let mut out = [empty; 768];
-    let pieces = [
-        Piece::Pawn,
-        Piece::Knight,
-        Piece::Bishop,
-        Piece::Rook,
-        Piece::Queen,
-        Piece::King,
-    ];
     let mut table = 0;
     while table < 12 {
         let color = if table < 6 {
@@ -85,7 +75,7 @@ const fn rows() -> [Row; 768] {
         } else {
             Color::Black
         };
-        let piece = pieces[table % 6];
+        let piece = Piece::PIECES[table % 6];
         let mut square = 0;
         while square < 64 {
             let row = &mut out[table * 64 + square];
@@ -128,7 +118,8 @@ pub(crate) fn row(index: u8, piece: Piece, color: Color) -> &'static Row {
     &ROWS[piece.table_index(color) * 64 + (index & 63) as usize]
 }
 
-/// The material weight of one piece, for the board's own seeding walk.
+/// The material weight of one piece, which the board's seeding walk, the
+/// delta margin in quiescence and the tuner read.
 pub(crate) fn material(piece: Piece) -> u32 {
     MATERIAL[piece as usize]
 }
@@ -450,23 +441,12 @@ impl Accumulator {
     /// and the check would still pass.
     pub(crate) fn recomputed(board: &Board) -> Self {
         let mut recomputed = Self::EMPTY;
-        let mut occupied = board.occupied();
-        while occupied != 0 {
-            let index = occupied.trailing_zeros() as u8;
-            occupied &= occupied - 1;
-            if let Some((piece, color)) = board.get_piece_and_color_index(index) {
-                let psqt = PIECE_SQUARE_TABLES.get_value(index as usize, piece, color);
-                match color {
-                    Color::White => recomputed.psqt += psqt,
-                    Color::Black => recomputed.psqt -= psqt,
-                }
-                let value = MATERIAL[piece as usize] as i32;
-                match color {
-                    Color::White => recomputed.material += value,
-                    Color::Black => recomputed.material -= value,
-                }
-                recomputed.phase += PHASE_WEIGHTS[piece as usize];
-            }
+        for (index, piece, color) in pieces_of(board) {
+            let sign = color.sign();
+            let psqt = PieceSquareTables::TABLES.get_value(index as usize, piece, color);
+            recomputed.psqt += sign * psqt;
+            recomputed.material += sign * MATERIAL[piece as usize] as i32;
+            recomputed.phase += PHASE_WEIGHTS[piece as usize];
         }
         recomputed.machine = factors::Machine::of(pieces_of(board));
         recomputed
@@ -530,17 +510,63 @@ fn pieces_of(board: &Board) -> impl Iterator<Item = (u8, Piece, Color)> + '_ {
     })
 }
 
+/// Every position of the core, bench, tactical and strategic suites, for a
+/// test that wants the whole of what the tree holds.
+#[cfg(test)]
+pub(crate) fn suite_fens() -> Vec<String> {
+    let mut fens: Vec<String> = crate::board::fens::CORE
+        .iter()
+        .map(|f| f.to_string())
+        .collect();
+    fens.extend(crate::bench::positions().into_iter().map(|p| p.fen));
+    fens.extend(crate::tactics::positions().into_iter().map(|p| p.fen));
+    fens.extend(crate::strategy::positions().into_iter().map(|p| p.fen));
+    fens
+}
+
 #[cfg(test)]
 mod evaluate {
     use super::{
         Board, Caches, Memo, PawnCache, ShelterCache, TERMS, TOTAL_PHASE, eval, eval_cached,
-        factors, king_attack, mobility, pawn_structure, pieces_of, shelter,
+        factors, king_attack, mobility, pawn_structure, pieces_of, shelter, suite_fens, weigh,
     };
     use crate::board::fens;
     use crate::misc::{Color, File, coordinate_to_index};
     use crate::psqt::{eg_value, mg_value, pack};
     use pretty_assertions::assert_eq;
     use std::collections::{HashMap, HashSet};
+
+    /// White's counts less black's, count by count, each half of the pair
+    /// summed on its own. Every term's fold is this over its own counts and
+    /// weights, and the terms' tests hold each fold to it, so the arithmetic
+    /// is pinned here once. The weights differ from each other at both ends
+    /// of the taper, so a count read into the wrong slot lands on a
+    /// different number: the four differences between the halves are 9, -20,
+    /// 8 and -12.
+    #[test]
+    fn weigh_reads_white_less_black_count_by_count() {
+        const TRIAL: [i32; 4] = [pack(11, 2), pack(-7, 13), pack(3, -5), pack(29, 41)];
+        const WHITE: [i32; 4] = [3, 2, 7, 10];
+        const BLACK: [i32; 4] = [0, 7, 9, 9];
+        let midgame: i32 = (0..4)
+            .map(|i| mg_value(TRIAL[i]) * (WHITE[i] - BLACK[i]))
+            .sum();
+        let endgame: i32 = (0..4)
+            .map(|i| eg_value(TRIAL[i]) * (WHITE[i] - BLACK[i]))
+            .sum();
+        assert_ne!(
+            midgame, endgame,
+            "the two halves would not tell a swap apart"
+        );
+        assert_ne!(midgame, 0, "black less white would answer the same here");
+        let packed = weigh(&TRIAL, WHITE, BLACK);
+        assert_eq!((mg_value(packed), eg_value(packed)), (midgame, endgame));
+        assert_ne!(
+            weigh(&TRIAL, [2, 3, 7, 10], BLACK),
+            packed,
+            "a permutation shows"
+        );
+    }
 
     /// Both the accumulator and its recompute read `PHASE_WEIGHTS`, so the
     /// state check holds them to each other and neither to what the weights
@@ -1062,10 +1088,7 @@ mod evaluate {
     /// own counts, and under the skips.
     #[test]
     fn the_shared_walk_counts_what_each_term_counts_alone() {
-        let mut fens: Vec<String> = fens::CORE.iter().map(|f| f.to_string()).collect();
-        fens.extend(crate::bench::positions().into_iter().map(|p| p.fen));
-        fens.extend(crate::tactics::positions().into_iter().map(|p| p.fen));
-        fens.extend(crate::strategy::positions().into_iter().map(|p| p.fen));
+        let fens = suite_fens();
         assert!(fens.len() > 1_500, "{} positions", fens.len());
         for fen in fens {
             let board = Board::from_fen(&fen).unwrap_or_else(|e| panic!("{}: {}", fen, e));
