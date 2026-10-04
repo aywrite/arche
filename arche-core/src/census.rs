@@ -374,8 +374,8 @@ mod tests {
     use super::*;
     use crate::board::Board;
     use crate::misc::Piece;
-    use crate::recorder::fixtures::{recording_leaves_the_search_where_it_was, suite};
-    use crate::recorder::{DEFAULT_CAP, Sampler};
+    use crate::recorder::DEFAULT_CAP;
+    use crate::recorder::fixtures::{reservoir_leaves_the_search_where_it_was, suite};
 
     fn quiet(from: u8, to: u8) -> Play {
         Play::new(from, to, None, None, false, false)
@@ -715,18 +715,7 @@ mod tests {
 
     #[test]
     fn recording_leaves_the_measured_search_where_it_was() {
-        recording_leaves_the_search_where_it_was(
-            4,
-            |engine| engine.arm(Sampler::<Event>::with_cap(1, DEFAULT_CAP)),
-            |engine| {
-                engine
-                    .disarm::<Event>()
-                    .expect("the sampler comes back")
-                    .drain()
-                    .taken
-                    .len()
-            },
-        );
+        reservoir_leaves_the_search_where_it_was::<Event>(4, SearchConfig::default());
     }
 
     #[test]

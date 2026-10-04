@@ -487,6 +487,70 @@ mod tests {
         panic!("no term is called {}", name)
     }
 
+    /// The coefficient a row carries on a slot, zero where it carries none.
+    fn coefficient(terms: &Terms, slot: usize) -> i32 {
+        terms
+            .coefficients
+            .iter()
+            .find(|(named, _)| usize::from(*named) == slot)
+            .map_or(0, |(_, coefficient)| *coefficient)
+    }
+
+    /// The phase a hand counted position was worked out at, and that it is
+    /// off the middle of the taper: where the two shares are equal, a
+    /// coefficient written to the wrong end is the same number.
+    fn phase_off_the_middle(terms: &Terms, phase: i32) {
+        assert_eq!(terms.phase, phase);
+        assert_ne!(
+            terms.phase,
+            TOTAL_PHASE - terms.phase,
+            "the two ends hold the same share here, so this test cannot tell them apart"
+        );
+    }
+
+    /// Each hand count of a term, as `(index, count, why)`, stands on its
+    /// slot at both ends of the taper: the midgame half scaled by the phase
+    /// and the endgame half by the rest.
+    fn both_ends_hold(terms: &Terms, name: &str, counts: &[(usize, i32, &str)]) {
+        let (start, width) = term(name);
+        for &(index, count, why) in counts {
+            assert_eq!(
+                coefficient(terms, start + index),
+                count * terms.phase,
+                "{} midgame",
+                why
+            );
+            assert_eq!(
+                coefficient(terms, start + width + index),
+                count * (TOTAL_PHASE - terms.phase),
+                "{} endgame",
+                why
+            );
+        }
+    }
+
+    /// A position and its reflection with the colours swapped state the same
+    /// row, coefficient for coefficient, so a term's counts are signed and
+    /// slotted the same way for both sides. The side to move is reflected
+    /// too, which is what makes the rows identical rather than opposite. The
+    /// row has to carry a coefficient of the term, or the test says nothing
+    /// about it.
+    fn mirrored_rows_agree(white: &str, black: &str, name: &str) {
+        let white = Board::from_fen(white).unwrap();
+        let black = Board::from_fen(black).unwrap();
+        let terms = Terms::of(&white);
+        assert!(
+            terms
+                .coefficients
+                .iter()
+                .any(|(slot, _)| usize::from(*slot) >= term(name).0),
+            "no {} coefficient here, so this test says nothing about one",
+            name
+        );
+        assert_eq!(terms, Terms::of(&black));
+        assert_eq!(eval::eval(&white), eval::eval(&black));
+    }
+
     fn every_shape() -> Vec<String> {
         let mut fens: Vec<String> = fens::CORE.iter().map(|f| f.to_string()).collect();
         fens.extend(bench::positions().into_iter().map(|p| p.fen));
@@ -494,26 +558,16 @@ mod tests {
         fens
     }
 
+    /// The row from the other side to move is its negative, so a row states
+    /// the evaluation from the side to move.
     #[test]
     fn a_positions_terms_reconstruct_its_evaluation() {
         let fens = every_shape();
         assert!(fens.len() > 1_500, "{} positions", fens.len());
         for fen in fens {
-            let board = Board::from_fen(&fen).unwrap_or_else(|e| panic!("{}: {}", fen, e));
-            assert_eq!(
-                reconstruct(&Terms::of(&board)),
-                eval::eval(&board),
-                "{}",
-                fen
-            );
-        }
-    }
-
-    #[test]
-    fn a_row_reconstructs_from_the_side_to_move() {
-        for fen in every_shape() {
-            let mut board = Board::from_fen(&fen).unwrap();
+            let mut board = Board::from_fen(&fen).unwrap_or_else(|e| panic!("{}: {}", fen, e));
             let ours = reconstruct(&Terms::of(&board));
+            assert_eq!(ours, eval::eval(&board), "{}", fen);
             board.active_color = !board.active_color;
             assert_eq!(reconstruct(&Terms::of(&board)), -ours, "{}", fen);
         }
@@ -535,19 +589,7 @@ mod tests {
         let terms = Terms::of(&board);
         // a knight and a bishop at one apiece, a rook at two and a queen at
         // four
-        assert_eq!(terms.phase, 8);
-        assert_ne!(
-            terms.phase,
-            TOTAL_PHASE - terms.phase,
-            "the two ends hold the same share here, so this test cannot tell them apart"
-        );
-        let coefficient = |slot: usize| {
-            terms
-                .coefficients
-                .iter()
-                .find(|(named, _)| usize::from(*named) == slot)
-                .map_or(0, |(_, coefficient)| *coefficient)
-        };
+        phase_off_the_middle(&terms, 8);
         for (piece, file, rank) in [
             (Piece::Pawn, File::E, 2),
             (Piece::Knight, File::B, 1),
@@ -560,9 +602,14 @@ mod tests {
             // named by the square black would be on
             let entry = usize::from(coordinate_to_index(rank, file) ^ 56);
             let slot = piece as usize * 64 + entry;
-            assert_eq!(coefficient(slot), terms.phase, "{:?} midgame", piece);
             assert_eq!(
-                coefficient(MIDGAME_SLOTS + slot),
+                coefficient(&terms, slot),
+                terms.phase,
+                "{:?} midgame",
+                piece
+            );
+            assert_eq!(
+                coefficient(&terms, MIDGAME_SLOTS + slot),
                 TOTAL_PHASE - terms.phase,
                 "{:?} endgame",
                 piece
@@ -579,70 +626,38 @@ mod tests {
     fn every_mobile_piece_writes_both_ends_of_the_taper() {
         // the piece square test's position, for the same reason: one white
         // piece of each mobile kind and no black piece to cancel it out
-        let fen = "7k/8/8/8/8/8/4P3/RNBQK3 w - - 0 1";
-        let board = Board::from_fen(fen).unwrap();
+        let board = Board::from_fen("7k/8/8/8/8/8/4P3/RNBQK3 w - - 0 1").unwrap();
         let terms = Terms::of(&board);
-        assert_eq!(terms.phase, 8);
-        assert_ne!(
-            terms.phase,
-            TOTAL_PHASE - terms.phase,
-            "the two ends hold the same share here, so this test cannot tell them apart"
+        phase_off_the_middle(&terms, 8);
+        both_ends_hold(
+            &terms,
+            "mobility",
+            &[
+                // the knight on b1 has a3, c3 and d2
+                (0, 3, "knight"),
+                // the bishop on c1 has b2 and a3 one way, and d2 out to h6
+                // the other
+                (1, 7, "bishop"),
+                // the rook on a1 has the a file, and the knight beside it is
+                // neither scope nor something to see through
+                (2, 7, "rook"),
+                // the queen on d1 has the d file, and c2, b3 and a4 the
+                // other way. The pawn on e2 blocks the diagonal beside that
+                // one
+                (3, 10, "queen"),
+            ],
         );
-        let coefficient = |slot: usize| {
-            terms
-                .coefficients
-                .iter()
-                .find(|(named, _)| usize::from(*named) == slot)
-                .map_or(0, |(_, coefficient)| *coefficient)
-        };
-        for (index, count, why) in [
-            // the knight on b1 has a3, c3 and d2
-            (0, 3, "knight"),
-            // the bishop on c1 has b2 and a3 one way, and d2 out to h6 the
-            // other
-            (1, 7, "bishop"),
-            // the rook on a1 has the a file, and the knight beside it is
-            // neither scope nor something to see through
-            (2, 7, "rook"),
-            // the queen on d1 has the d file, and c2, b3 and a4 the other
-            // way. The pawn on e2 blocks the diagonal beside that one
-            (3, 10, "queen"),
-        ] {
-            let (start, width) = term("mobility");
-            assert_eq!(
-                coefficient(start + index),
-                count * terms.phase,
-                "{} midgame",
-                why
-            );
-            assert_eq!(
-                coefficient(start + width + index),
-                count * (TOTAL_PHASE - terms.phase),
-                "{} endgame",
-                why
-            );
-        }
     }
 
-    /// A position and its reflection with the colours swapped state the same
-    /// row, coefficient for coefficient, so the mobility counts are signed
-    /// and slotted the same way for both sides. The side to move is
-    /// reflected too, which is what makes the rows identical rather than
-    /// opposite.
+    /// The mobility counts are signed and slotted the same way for both
+    /// sides.
     #[test]
     fn a_mirrored_position_states_the_same_row() {
-        let white = Board::from_fen("4k3/pp6/2n5/8/3B4/8/6PP/4K3 w - - 0 1").unwrap();
-        let black = Board::from_fen("4k3/6pp/8/3b4/8/2N5/PP6/4K3 b - - 0 1").unwrap();
-        let terms = Terms::of(&white);
-        assert!(
-            terms
-                .coefficients
-                .iter()
-                .any(|(slot, _)| usize::from(*slot) >= term("mobility").0),
-            "no mobility coefficient here, so this test says nothing about one"
+        mirrored_rows_agree(
+            "4k3/pp6/2n5/8/3B4/8/6PP/4K3 w - - 0 1",
+            "4k3/6pp/8/3b4/8/2N5/PP6/4K3 b - - 0 1",
+            "mobility",
         );
-        assert_eq!(terms, Terms::of(&black));
-        assert_eq!(eval::eval(&white), eval::eval(&black));
     }
 
     /// Every piece bearing on the enemy king's ring writes both ends of the
@@ -655,66 +670,35 @@ mod tests {
         // one white piece of each kind that carries a weight, and no black
         // piece of any of them to cancel a coefficient out. The black king on
         // g8 has the ring f7, g7, h7, f8 and h8
-        let fen = "6k1/R7/4N2Q/8/8/3B4/8/6K1 w - - 0 1";
-        let board = Board::from_fen(fen).unwrap();
+        let board = Board::from_fen("6k1/R7/4N2Q/8/8/3B4/8/6K1 w - - 0 1").unwrap();
         let terms = Terms::of(&board);
-        assert_eq!(terms.phase, 8);
-        assert_ne!(
-            terms.phase,
-            TOTAL_PHASE - terms.phase,
-            "the two ends hold the same share here, so this test cannot tell them apart"
+        phase_off_the_middle(&terms, 8);
+        both_ends_hold(
+            &terms,
+            "king_attack",
+            &[
+                // the knight on e6 has f8 and g7 of its eight
+                (0, 2, "knight"),
+                // the bishop on d3 has h7, up e4, f5 and g6
+                (1, 1, "bishop"),
+                // the rook on a7 has f7, g7 and h7 along the rank
+                (2, 3, "rook"),
+                // the queen on h6 has h7 and h8 up the file and g7 and f8 up
+                // the diagonal
+                (3, 4, "queen"),
+            ],
         );
-        let coefficient = |slot: usize| {
-            terms
-                .coefficients
-                .iter()
-                .find(|(named, _)| usize::from(*named) == slot)
-                .map_or(0, |(_, coefficient)| *coefficient)
-        };
-        for (index, count, why) in [
-            // the knight on e6 has f8 and g7 of its eight
-            (0, 2, "knight"),
-            // the bishop on d3 has h7, up e4, f5 and g6
-            (1, 1, "bishop"),
-            // the rook on a7 has f7, g7 and h7 along the rank
-            (2, 3, "rook"),
-            // the queen on h6 has h7 and h8 up the file and g7 and f8 up the
-            // diagonal
-            (3, 4, "queen"),
-        ] {
-            let (start, width) = term("king_attack");
-            assert_eq!(
-                coefficient(start + index),
-                count * terms.phase,
-                "{} midgame",
-                why
-            );
-            assert_eq!(
-                coefficient(start + width + index),
-                count * (TOTAL_PHASE - terms.phase),
-                "{} endgame",
-                why
-            );
-        }
     }
 
-    /// A position and its reflection with the colours swapped state the same
-    /// row here too, so the king attack counts are signed and slotted the same
-    /// way for both sides and each side reads the other king's ring.
+    /// The king attack counts are signed and slotted the same way for both
+    /// sides, and each side reads the other king's ring.
     #[test]
     fn a_mirrored_position_states_the_same_king_attack_row() {
-        let white = Board::from_fen("4k3/8/2N5/8/8/5b2/8/4K3 w - - 0 1").unwrap();
-        let black = Board::from_fen("4k3/8/5B2/8/8/2n5/8/4K3 b - - 0 1").unwrap();
-        let terms = Terms::of(&white);
-        assert!(
-            terms
-                .coefficients
-                .iter()
-                .any(|(slot, _)| usize::from(*slot) >= term("king_attack").0),
-            "no king attack coefficient here, so this test says nothing about one"
+        mirrored_rows_agree(
+            "4k3/8/2N5/8/8/5b2/8/4K3 w - - 0 1",
+            "4k3/8/5B2/8/8/2n5/8/4K3 b - - 0 1",
+            "king_attack",
         );
-        assert_eq!(terms, Terms::of(&black));
-        assert_eq!(eval::eval(&white), eval::eval(&black));
     }
 
     /// A position whose piece square numerator is negative and does not
@@ -1152,53 +1136,31 @@ mod tests {
     /// so that a coefficient written to the wrong end of it shows.
     #[test]
     fn every_shelter_count_writes_both_ends_of_the_taper() {
-        let fen = "1k6/8/8/8/P4ppp/5pPp/5PpP/R2Q2KR w - - 0 1";
-        let board = Board::from_fen(fen).unwrap();
+        let board = Board::from_fen("1k6/8/8/8/P4ppp/5pPp/5PpP/R2Q2KR w - - 0 1").unwrap();
         let terms = Terms::of(&board);
-        assert_eq!(terms.phase, 8);
-        assert_ne!(
-            terms.phase,
-            TOTAL_PHASE - terms.phase,
-            "the two ends hold the same share here, so this test cannot tell them apart"
+        phase_off_the_middle(&terms, 8);
+        both_ends_hold(
+            &terms,
+            "shelter",
+            &[
+                // f2 and h2, and black has nothing on the rank in front of
+                // b8
+                (0, 2, "the pawns one rank ahead"),
+                // g3, against nothing on a6, b6 or c6
+                (1, 1, "the pawns two ranks ahead"),
+                // the b and c files hold no pawn at all, and none of white's
+                // three is bare
+                (2, -2, "the open files"),
+                // the a file holds a white pawn and no black one
+                (3, -1, "the half open files"),
+                // g2, and no white pawn within three ranks of b8
+                (4, 1, "the storm one rank ahead"),
+                // f3 and h3
+                (5, 2, "the storm two ranks ahead"),
+                // f4, g4 and h4
+                (6, 3, "the storm three ranks ahead"),
+            ],
         );
-        let coefficient = |slot: usize| {
-            terms
-                .coefficients
-                .iter()
-                .find(|(named, _)| usize::from(*named) == slot)
-                .map_or(0, |(_, coefficient)| *coefficient)
-        };
-        for (index, count, why) in [
-            // f2 and h2, and black has nothing on the rank in front of b8
-            (0, 2, "the pawns one rank ahead"),
-            // g3, against nothing on a6, b6 or c6
-            (1, 1, "the pawns two ranks ahead"),
-            // the b and c files hold no pawn at all, and none of white's
-            // three is bare
-            (2, -2, "the open files"),
-            // the a file holds a white pawn and no black one
-            (3, -1, "the half open files"),
-            // g2, and no white pawn within three ranks of b8
-            (4, 1, "the storm one rank ahead"),
-            // f3 and h3
-            (5, 2, "the storm two ranks ahead"),
-            // f4, g4 and h4
-            (6, 3, "the storm three ranks ahead"),
-        ] {
-            let (start, width) = term("shelter");
-            assert_eq!(
-                coefficient(start + index),
-                count * terms.phase,
-                "{} midgame",
-                why
-            );
-            assert_eq!(
-                coefficient(start + width + index),
-                count * (TOTAL_PHASE - terms.phase),
-                "{} endgame",
-                why
-            );
-        }
     }
 
     /// Each of the eight pawn counts writes its own coefficient at both ends
@@ -1214,91 +1176,52 @@ mod tests {
     /// shows.
     #[test]
     fn every_pawn_count_writes_both_ends_of_the_taper() {
-        let fen = "3k4/P4p2/8/3P2p1/3P4/PP2p2p/1P6/QQ4KR w - - 0 1";
-        let board = Board::from_fen(fen).unwrap();
+        let board = Board::from_fen("3k4/P4p2/8/3P2p1/3P4/PP2p2p/1P6/QQ4KR w - - 0 1").unwrap();
         let terms = Terms::of(&board);
-        assert_eq!(terms.phase, 10);
-        assert_ne!(
-            terms.phase,
-            TOTAL_PHASE - terms.phase,
-            "the two ends hold the same share here, so this test cannot tell them apart"
+        phase_off_the_middle(&terms, 10);
+        both_ends_hold(
+            &terms,
+            "pawn_structure",
+            &[
+                // black's f7, against nothing of white's on its second
+                (0, -1, "the passers on the second"),
+                // white's b3, against nothing of black's
+                (1, 1, "the passers on the third"),
+                // black's g5
+                (2, -1, "the passers on the fourth"),
+                // white's d5
+                (3, 1, "the passers on the fifth"),
+                // black's e3 and h3
+                (4, -2, "the passers on the sixth"),
+                // white's a7
+                (5, 1, "the passers on the seventh"),
+                // white's d5 and d4, and no black pawn stands alone
+                (6, 2, "the isolated pawns"),
+                // white's a7, b3 and d5 each have one behind them
+                (7, 3, "the doubled pawns"),
+            ],
         );
-        let coefficient = |slot: usize| {
-            terms
-                .coefficients
-                .iter()
-                .find(|(named, _)| usize::from(*named) == slot)
-                .map_or(0, |(_, coefficient)| *coefficient)
-        };
-        for (index, count, why) in [
-            // black's f7, against nothing of white's on its second
-            (0, -1, "the passers on the second"),
-            // white's b3, against nothing of black's
-            (1, 1, "the passers on the third"),
-            // black's g5
-            (2, -1, "the passers on the fourth"),
-            // white's d5
-            (3, 1, "the passers on the fifth"),
-            // black's e3 and h3
-            (4, -2, "the passers on the sixth"),
-            // white's a7
-            (5, 1, "the passers on the seventh"),
-            // white's d5 and d4, and no black pawn stands alone
-            (6, 2, "the isolated pawns"),
-            // white's a7, b3 and d5 each have one behind them
-            (7, 3, "the doubled pawns"),
-        ] {
-            let (start, width) = term("pawn_structure");
-            assert_eq!(
-                coefficient(start + index),
-                count * terms.phase,
-                "{} midgame",
-                why
-            );
-            assert_eq!(
-                coefficient(start + width + index),
-                count * (TOTAL_PHASE - terms.phase),
-                "{} endgame",
-                why
-            );
-        }
     }
 
-    /// A position and its reflection with the colours swapped state the same
-    /// pawn row, so the eight counts are signed and slotted the same way for
-    /// both sides.
+    /// The eight pawn counts are signed and slotted the same way for both
+    /// sides.
     #[test]
     fn a_mirrored_position_states_the_same_pawn_row() {
-        let white = Board::from_fen("4k3/P4p2/8/3P2p1/3P4/PP2p2p/1P6/4K3 w - - 0 1").unwrap();
-        let black = Board::from_fen("4k3/1p6/pp2P2P/3p4/3p2P1/8/p4P2/4K3 b - - 0 1").unwrap();
-        let terms = Terms::of(&white);
-        assert!(
-            terms
-                .coefficients
-                .iter()
-                .any(|(slot, _)| usize::from(*slot) >= term("pawn_structure").0),
-            "no pawn structure coefficient here, so this test says nothing about one"
+        mirrored_rows_agree(
+            "4k3/P4p2/8/3P2p1/3P4/PP2p2p/1P6/4K3 w - - 0 1",
+            "4k3/1p6/pp2P2P/3p4/3p2P1/8/p4P2/4K3 b - - 0 1",
+            "pawn_structure",
         );
-        assert_eq!(terms, Terms::of(&black));
-        assert_eq!(eval::eval(&white), eval::eval(&black));
     }
 
-    /// A position and its reflection with the colours swapped state the same
-    /// shelter row, so the seven counts are signed and slotted the same way
-    /// for both sides.
+    /// The seven shelter counts are signed and slotted the same way for both
+    /// sides.
     #[test]
     fn a_mirrored_position_states_the_same_shelter_row() {
-        let white = Board::from_fen("4k3/pp6/8/8/8/8/3PPP2/4K3 w - - 0 1").unwrap();
-        let black = Board::from_fen("4k3/3ppp2/8/8/8/8/PP6/4K3 b - - 0 1").unwrap();
-        let terms = Terms::of(&white);
-        assert!(
-            terms
-                .coefficients
-                .iter()
-                .any(|(slot, _)| usize::from(*slot) >= term("shelter").0),
-            "no shelter coefficient here, so this test says nothing about one"
+        mirrored_rows_agree(
+            "4k3/pp6/8/8/8/8/3PPP2/4K3 w - - 0 1",
+            "4k3/3ppp2/8/8/8/8/PP6/4K3 b - - 0 1",
+            "shelter",
         );
-        assert_eq!(terms, Terms::of(&black));
-        assert_eq!(eval::eval(&white), eval::eval(&black));
     }
 }
