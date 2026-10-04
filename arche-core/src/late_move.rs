@@ -261,9 +261,10 @@ pub(crate) struct Search<'a> {
 /// alpha. The list is not held either, since the loop sorts it under the
 /// decision; the calls that read it are handed it.
 pub(crate) struct Rules {
-    /// The node's static evaluation: what the shortcuts read, or none
-    /// until the first move that needs it. The recorders take their own,
-    /// so a node the gate scores nothing at never computes one.
+    /// The node's static evaluation: what the table's entry held or the
+    /// shortcuts read, or none until the first move that needs it. The
+    /// recorders take their own, so a node the gate scores nothing at never
+    /// computes one.
     pub(crate) eval: Option<Score>,
     /// The node's history denominator. Held rather than walked again so
     /// that the row a staging records says what the gate scored: a child
@@ -277,8 +278,8 @@ pub(crate) struct Rules {
 
 impl Rules {
     /// The rules once the node's table move has been searched, with `eval`
-    /// as the shortcuts left it. The two rule halves are read off the
-    /// node's facts here.
+    /// as the table and the shortcuts left it. The two rule halves are read
+    /// off the node's facts here.
     pub(crate) fn new(search: &Search, node: &Node, eval: Option<Score>) -> Self {
         Self {
             eval,
