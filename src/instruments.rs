@@ -744,159 +744,147 @@ mod tests {
         assert!(!printed.ends_with("\n\n"), "{printed}");
     }
 
+    /// A sampling reader by name, as the depth, rate and cap it read off a
+    /// line or its refusal.
+    type SamplingReader = (&'static str, fn(&str) -> Result<(u8, u32, usize), String>);
+
+    /// The four share `sampling`, so what it reads is tested through this
+    /// table and each reader's own settings beside it.
+    fn sampling_readers() -> [SamplingReader; 4] {
+        [
+            ("residuals", |line| {
+                residual_settings(&Params::of(line)).map(|s| (s.depth, s.every, s.cap))
+            }),
+            ("cutoffs", |line| {
+                cutoff_settings(&Params::of(line)).map(|s| (s.depth, s.every, s.cap))
+            }),
+            ("reductions", |line| {
+                reduction_settings(&Params::of(line)).map(|s| (s.depth, s.every, s.cap))
+            }),
+            ("effort", |line| {
+                effort_settings(&Params::of(line)).map(|s| (s.depth, s.every, s.cap))
+            }),
+        ]
+    }
+
     /// The settings alone, not a run: the run costs minutes.
     #[test]
-    fn a_residuals_argument_reads_its_depth_rate_cap_and_policy() {
+    fn every_sampling_instrument_reads_its_depth_rate_and_cap() {
         const CAP: usize = recorder::DEFAULT_CAP;
-        let read = |line: &str| {
+        for (name, read) in sampling_readers() {
+            let settings = |rest: &str| {
+                let line = format!("{name} {rest}");
+                let line = line.trim_end();
+                read(line).expect(line)
+            };
+            assert_eq!(settings(""), (bench::DEPTH, 1000, CAP), "{name}");
+            assert_eq!(settings("4"), (4, 1000, CAP), "{name}");
+            assert_eq!(settings("4 every 50"), (4, 50, CAP), "{name}");
+            // a keyword where the depth would be means the depth was left out
+            assert_eq!(
+                settings("every 50 cap 500"),
+                (bench::DEPTH, 50, 500),
+                "{name}"
+            );
+            assert_eq!(settings("cap 500"), (bench::DEPTH, 1000, 500), "{name}");
+            // zero records every event, up to the cap
+            assert_eq!(settings("2 every 0"), (2, 0, CAP), "{name}");
+            assert_eq!(
+                settings("4 every 50 cap 200000"),
+                (4, 50, 200_000),
+                "{name}"
+            );
+        }
+    }
+
+    #[test]
+    fn an_unreadable_sampling_setting_is_named_rather_than_run() {
+        for (name, read) in sampling_readers() {
+            for (rest, what) in [
+                ("abc", "depth: abc"),
+                ("300", "depth: 300"),
+                ("4 every lots", "every: lots"),
+                ("4 cap lots", "cap: lots"),
+            ] {
+                let line = format!("{name} {rest}");
+                assert_eq!(read(&line).err(), Some(what.to_string()), "{line}");
+            }
+        }
+    }
+
+    /// The policy is the residuals argument's own, the bench's when absent.
+    #[test]
+    fn a_residuals_argument_reads_its_taint_policy() {
+        let policy = |line: &str| {
             let settings = residual_settings(&Params::of(line)).expect(line);
-            (
-                settings.depth,
-                settings.every,
-                settings.cap,
-                settings.config.taint_word().to_string(),
-            )
+            settings.config.taint_word().to_string()
         };
+        assert_eq!(policy("residuals"), "rule50");
+        assert_eq!(policy("residuals every 50 taint trust"), "trust");
         assert_eq!(
-            read("residuals"),
-            (bench::DEPTH, 1000, CAP, "rule50".to_string())
-        );
-        assert_eq!(read("residuals 4"), (4, 1000, CAP, "rule50".to_string()));
-        assert_eq!(
-            read("residuals 4 every 50"),
-            (4, 50, CAP, "rule50".to_string())
-        );
-        // a keyword where the depth would be means the depth was left out
-        assert_eq!(
-            read("residuals every 50 taint trust"),
-            (bench::DEPTH, 50, CAP, "trust".to_string())
-        );
-        assert_eq!(
-            read("residuals cap 500"),
-            (bench::DEPTH, 1000, 500, "rule50".to_string())
-        );
-        // zero records every event, up to the cap
-        assert_eq!(
-            read("residuals 2 every 0"),
-            (2, 0, CAP, "rule50".to_string())
-        );
-        assert_eq!(
-            read("residuals 4 every 50 cap 200000"),
-            (4, 50, 200_000, "rule50".to_string())
+            residual_settings(&Params::of("residuals 4 taint maybe")).err(),
+            Some("taint: maybe".to_string())
         );
     }
 
-    #[test]
-    fn a_residuals_argument_reads_the_suite_it_was_given() {
-        let bench = residual_settings(&Params::of("residuals")).expect("residuals");
-        assert_eq!(bench.epd, None);
-        assert_eq!(bench.positions, bench::positions());
+    /// What a reader that takes a suite read of one: the depth, where the
+    /// command takes one, the file named and its positions.
+    type ReadSuite = (Option<u8>, Option<String>, Vec<bench::Position>);
 
-        let path = SUITE;
-        let line = format!("residuals 4 epd {path}");
-        let named = residual_settings(&Params::of(&line)).expect(&line);
-        assert_eq!(named.depth, 4);
-        assert_eq!(named.epd.as_deref(), Some(path));
-        // a file other than the bench's, so handing back the bench's own
-        // positions is caught
-        assert_eq!(named.positions, from_file(path));
-        assert_ne!(named.positions, bench::positions());
-    }
+    /// A reader that takes a suite, with its command.
+    type SuiteReader = (&'static Command, fn(&str) -> ReadSuite);
 
     #[test]
-    fn an_unreadable_residuals_setting_is_named_rather_than_run() {
-        for (line, what) in [
-            ("residuals abc", "depth: abc"),
-            ("residuals 300", "depth: 300"),
-            ("residuals 4 every lots", "every: lots"),
-            ("residuals 4 cap lots", "cap: lots"),
-            ("residuals 4 taint maybe", "taint: maybe"),
-        ] {
-            assert_eq!(
-                residual_settings(&Params::of(line)).err(),
-                Some(what.to_string()),
-                "{line}"
-            );
+    fn every_instrument_that_takes_a_suite_reads_the_one_it_was_given() {
+        let readers: [SuiteReader; 5] = [
+            (&RESIDUALS, |line| {
+                let s = residual_settings(&Params::of(line)).expect(line);
+                (Some(s.depth), s.epd, s.positions)
+            }),
+            (&REDUCTIONS, |line| {
+                let s = reduction_settings(&Params::of(line)).expect(line);
+                (Some(s.depth), s.epd, s.positions)
+            }),
+            (&EFFORT, |line| {
+                let s = effort_settings(&Params::of(line)).expect(line);
+                (Some(s.depth), s.epd, s.positions)
+            }),
+            (&FORCED, |line| {
+                let s = forced_settings(&Params::of(line)).expect(line);
+                (Some(s.depth), s.epd, s.positions)
+            }),
+            (&TERMS, |line| {
+                let s = term_settings(&Params::of(line)).expect(line);
+                (None, s.epd, s.positions)
+            }),
+        ];
+        for (command, read) in readers {
+            let name = command.name;
+            let (_, epd, positions) = read(name);
+            assert_eq!(epd, None, "{name}");
+            assert_eq!(positions, bench::positions(), "{name}");
+
+            let path = SUITE;
+            // a depth before the file, where the command takes one, is read
+            // with it
+            let depth = command.depth.then_some(4);
+            let line = match depth {
+                Some(depth) => format!("{name} {depth} epd {path}"),
+                None => format!("{name} epd {path}"),
+            };
+            let (read_depth, epd, positions) = read(&line);
+            assert_eq!(read_depth, depth, "{line}");
+            assert_eq!(epd.as_deref(), Some(path), "{line}");
+            // a file other than the bench's, so handing back the bench's own
+            // positions is caught
+            assert_eq!(positions, from_file(path), "{line}");
+            assert_ne!(positions, bench::positions(), "{line}");
         }
     }
 
+    /// The switch and the budget are the effort argument's own.
     #[test]
-    fn a_cutoffs_argument_reads_its_depth_rate_and_cap() {
-        let read = |line: &str| {
-            let settings = cutoff_settings(&Params::of(line)).expect(line);
-            (settings.depth, settings.every, settings.cap)
-        };
-        const CAP: usize = recorder::DEFAULT_CAP;
-        assert_eq!(read("cutoffs"), (bench::DEPTH, 1000, CAP));
-        assert_eq!(read("cutoffs 4"), (4, 1000, CAP));
-        assert_eq!(read("cutoffs 4 every 50"), (4, 50, CAP));
-        assert_eq!(read("cutoffs every 50 cap 500"), (bench::DEPTH, 50, 500));
-        assert_eq!(read("cutoffs 2 every 0"), (2, 0, CAP));
-    }
-
-    #[test]
-    fn an_unreadable_cutoffs_setting_is_named_rather_than_run() {
-        for (line, what) in [
-            ("cutoffs abc", "depth: abc"),
-            ("cutoffs 300", "depth: 300"),
-            ("cutoffs 4 every lots", "every: lots"),
-            ("cutoffs 4 cap lots", "cap: lots"),
-        ] {
-            assert_eq!(
-                cutoff_settings(&Params::of(line)).err(),
-                Some(what.to_string()),
-                "{line}"
-            );
-        }
-    }
-
-    #[test]
-    fn a_reductions_argument_reads_its_depth_rate_and_cap() {
-        let read = |line: &str| {
-            let settings = reduction_settings(&Params::of(line)).expect(line);
-            (settings.depth, settings.every, settings.cap)
-        };
-        const CAP: usize = recorder::DEFAULT_CAP;
-        assert_eq!(read("reductions"), (bench::DEPTH, 1000, CAP));
-        assert_eq!(read("reductions 4"), (4, 1000, CAP));
-        assert_eq!(read("reductions 4 every 50"), (4, 50, CAP));
-        assert_eq!(read("reductions every 50 cap 500"), (bench::DEPTH, 50, 500));
-        assert_eq!(read("reductions 2 every 0"), (2, 0, CAP));
-    }
-
-    #[test]
-    fn a_reductions_argument_reads_the_suite_it_was_given() {
-        let bench = reduction_settings(&Params::of("reductions")).expect("reductions");
-        assert_eq!(bench.epd, None);
-        assert_eq!(bench.positions, bench::positions());
-
-        let path = SUITE;
-        let line = format!("reductions 4 epd {path}");
-        let named = reduction_settings(&Params::of(&line)).expect(&line);
-        assert_eq!(named.depth, 4);
-        assert_eq!(named.epd.as_deref(), Some(path));
-        assert_eq!(named.positions, from_file(path));
-        assert_ne!(named.positions, bench::positions());
-    }
-
-    #[test]
-    fn an_unreadable_reductions_setting_is_named_rather_than_run() {
-        for (line, what) in [
-            ("reductions abc", "depth: abc"),
-            ("reductions 300", "depth: 300"),
-            ("reductions 4 every lots", "every: lots"),
-            ("reductions 4 cap lots", "cap: lots"),
-        ] {
-            assert_eq!(
-                reduction_settings(&Params::of(line)).err(),
-                Some(what.to_string()),
-                "{line}"
-            );
-        }
-    }
-
-    #[test]
-    fn an_effort_argument_reads_its_depth_rate_cap_switch_and_budget() {
+    fn an_effort_argument_reads_its_switch_and_budget() {
         let read = |line: &str| {
             let settings = effort_settings(&Params::of(line)).expect(line);
             (
@@ -909,8 +897,6 @@ mod tests {
         };
         const CAP: usize = recorder::DEFAULT_CAP;
         assert_eq!(read("effort"), (bench::DEPTH, 1000, CAP, None, None));
-        assert_eq!(read("effort 4"), (4, 1000, CAP, None, None));
-        assert_eq!(read("effort 4 every 50"), (4, 50, CAP, None, None));
         // a keyword where the depth would be means the depth was left out
         assert_eq!(
             read("effort off null_move"),
@@ -946,27 +932,9 @@ mod tests {
     }
 
     #[test]
-    fn an_effort_argument_reads_the_suite_it_was_given() {
-        let bench = effort_settings(&Params::of("effort")).expect("effort");
-        assert_eq!(bench.epd, None);
-        assert_eq!(bench.positions, bench::positions());
-
-        let path = SUITE;
-        let line = format!("effort 4 epd {path}");
-        let named = effort_settings(&Params::of(&line)).expect(&line);
-        assert_eq!(named.depth, 4);
-        assert_eq!(named.epd.as_deref(), Some(path));
-        assert_eq!(named.positions, from_file(path));
-        assert_ne!(named.positions, bench::positions());
-    }
-
-    #[test]
-    fn an_unreadable_effort_setting_is_named_rather_than_run() {
+    fn an_unreadable_effort_switch_or_budget_is_named_rather_than_run() {
         let switches = SearchConfig::SWITCHES.map(|(name, _)| name).join(", ");
         for (line, what) in [
-            ("effort abc".to_string(), "depth: abc".to_string()),
-            ("effort 4 every lots".to_string(), "every: lots".to_string()),
-            ("effort 4 cap lots".to_string(), "cap: lots".to_string()),
             (
                 "effort 4 off quiet_futilty".to_string(),
                 format!("off: quiet_futilty (a switch is one of {switches})"),
@@ -1017,20 +985,6 @@ mod tests {
             effort_settings(&Params::of("effort 4 off")).err(),
             Some(format!("off: no value (a switch is one of {switches})"))
         );
-    }
-
-    #[test]
-    fn a_terms_argument_reads_the_suite_it_was_given() {
-        let bench = term_settings(&Params::of("terms")).expect("terms");
-        assert_eq!(bench.epd, None);
-        assert_eq!(bench.positions, bench::positions());
-
-        let path = SUITE;
-        let line = format!("terms epd {path}");
-        let named = term_settings(&Params::of(&line)).expect(&line);
-        assert_eq!(named.epd.as_deref(), Some(path));
-        assert_eq!(named.positions, from_file(path));
-        assert_ne!(named.positions, bench::positions());
     }
 
     /// This argument has no depth, so a number where one would stand is a

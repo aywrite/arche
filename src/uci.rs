@@ -787,12 +787,14 @@ mod tests {
     use std::thread;
     use std::time::{Duration, Instant};
 
-    /// A table small enough to afford one per case, speaking into a buffer.
+    /// A table small enough to afford one per case.
+    fn small_engine() -> AlphaBeta {
+        AlphaBeta::with_table_bytes(Board::new(), 8 * 1024)
+    }
+
+    /// A small engine speaking into a buffer.
     fn uci() -> UCI<AlphaBeta, Vec<u8>> {
-        UCI::with_output(
-            AlphaBeta::with_table_bytes(Board::new(), 8 * 1024),
-            Vec::new(),
-        )
+        UCI::with_output(small_engine(), Vec::new())
     }
 
     /// An engine that searches nothing and keeps what it was asked for, so a
@@ -846,6 +848,11 @@ mod tests {
         fn perft(&mut self, _depth: u8) -> u64 {
             0
         }
+    }
+
+    /// A recorder with white to move, speaking into a buffer.
+    fn recording() -> UCI<Recorder, Vec<u8>> {
+        UCI::with_output(Recorder::to_move(Color::White), Vec::new())
     }
 
     /// What a `go` line asks of the engine behind it.
@@ -1402,7 +1409,7 @@ go depth 3
             "setoption name Clear Hash",
             "setoption name Clear Hash value",
         ] {
-            let mut uci = UCI::with_output(Recorder::to_move(Color::White), Vec::new());
+            let mut uci = recording();
             uci.run(Cursor::new(format!("{}\n", line)));
             assert_eq!(uci.engine.cleared, 1, "{}", line);
             assert_eq!(uci.out.read_back(), "", "{} was answered", line);
@@ -1423,7 +1430,7 @@ go depth 3
             "info string Move Overhead 99999 is outside 0 to 5000, using 5000\n"
         );
 
-        let mut uci = UCI::with_output(Recorder::to_move(Color::White), Vec::new());
+        let mut uci = recording();
         uci.run(Cursor::new("setoption name clear hash\n"));
         assert_eq!(uci.engine.cleared, 1);
     }
@@ -2169,7 +2176,7 @@ go depth 3
     }
 
     fn run_session(lines: &[String]) -> String {
-        let mut uci = UCI::with_output(Recorder::to_move(Color::White), Vec::new());
+        let mut uci = recording();
         uci.run(Cursor::new(lines.join("\n") + "\n"));
         uci.out.read_back()
     }
@@ -2228,10 +2235,7 @@ go depth 3
                     _ => line,
                 })
                 .collect();
-            let mut uci = UCI::with_output(
-                AlphaBeta::with_table_bytes(Board::new(), 8 * 1024),
-                Vec::new(),
-            );
+            let mut uci = uci();
             uci.run(Cursor::new(lines.join("\n") + "\n"));
             let spoken = said(&uci);
 
@@ -2272,7 +2276,7 @@ go depth 3
         }
 
         fn searching() -> Self {
-            Self::of(AlphaBeta::with_table_bytes(Board::new(), 8 * 1024))
+            Self::of(small_engine())
         }
 
         /// An engine that answers at once, so a held answer can be tested
@@ -2293,16 +2297,24 @@ go depth 3
         /// was said instead. The deadline bounds a real search on any
         /// machine.
         fn wait_for(&self, what: &str) -> String {
+            self.wait_for_times(what, 1)
+        }
+
+        /// Everything said once `what` has been said `times` over.
+        fn wait_for_times(&self, what: &str, times: usize) -> String {
             let deadline = Instant::now() + Duration::from_secs(30);
             loop {
                 let said = self.said();
-                if said.contains(what) {
+                let count = said.matches(what).count();
+                if count >= times {
                     return said;
                 }
                 assert!(
                     Instant::now() < deadline,
-                    "nothing said {:?} in thirty seconds, only: {}",
+                    "{:?} was said {} times, not {}, in thirty seconds: {}",
                     what,
+                    count,
+                    times,
                     said
                 );
                 thread::sleep(Duration::from_millis(1));
@@ -2399,15 +2411,8 @@ go depth 3
         for line in ["go infinite", "stop", "go infinite", "stop"] {
             driven.type_line(line);
         }
-        let deadline = Instant::now() + Duration::from_secs(10);
-        while driven.said().matches("bestmove").count() < 2 {
-            assert!(
-                Instant::now() < deadline,
-                "the second search was never stopped: {}",
-                driven.said()
-            );
-            thread::sleep(Duration::from_millis(1));
-        }
+        // both answer, or the second search was never stopped
+        driven.wait_for_times("bestmove", 2);
         driven.finish();
     }
 
@@ -2422,15 +2427,8 @@ go depth 3
         for line in ["stop", "go infinite", "stop", "go infinite", "stop"] {
             driven.type_line(line);
         }
-        let deadline = Instant::now() + Duration::from_secs(10);
-        while driven.said().matches("bestmove").count() < 2 {
-            assert!(
-                Instant::now() < deadline,
-                "a search was never stopped: {}",
-                driven.said()
-            );
-            thread::sleep(Duration::from_millis(1));
-        }
+        // both answer, or a search was never stopped
+        driven.wait_for_times("bestmove", 2);
         driven.finish();
     }
 
