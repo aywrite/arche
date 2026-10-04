@@ -27,6 +27,17 @@ pub struct Play {
 }
 
 impl Play {
+    /// A move no generator produces: what a sort buffer holds before it is
+    /// written and what an empty table slot carries. Never read as a move.
+    pub(crate) const NOWHERE: Play = Play {
+        from: 0,
+        to: 0,
+        capture: None,
+        promote: None,
+        en_passant: false,
+        castle: false,
+    };
+
     pub(crate) fn new(
         from: u8,
         to: u8,

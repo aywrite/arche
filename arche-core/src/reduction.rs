@@ -147,6 +147,42 @@ pub struct Event {
 }
 
 impl Event {
+    /// A row from what the move loop staged and what the recorder read at
+    /// the node: the fen the move left, the node's depth, bounds and own
+    /// evaluation, and how the scout answered. `searched` is `index + 1`,
+    /// as every row prints it.
+    #[allow(clippy::too_many_arguments)]
+    pub(crate) fn recorded(
+        fen: String,
+        depth: u8,
+        alpha: Score,
+        beta: Score,
+        eval: i32,
+        features: &late_move::Features,
+        scout: Scout,
+        cost: u64,
+        reduction: u8,
+    ) -> Event {
+        Event {
+            fen,
+            depth,
+            window: Window::of(alpha, beta),
+            index: features.index,
+            searched: features.index + 1,
+            generated: features.generated,
+            history: features.history,
+            history_max: features.history_max,
+            killer: features.killer,
+            tt: features.tt,
+            eval_beta: eval - i32::from(beta),
+            alpha_gap: i32::from(alpha) - eval,
+            alpha,
+            scout,
+            cost,
+            reduction,
+        }
+    }
+
     /// The depth the reduced move was denied: what the replay searches the
     /// fen to. Floored at one, which is what a depth one skip asks for: the
     /// counterfactual is then a search of the same depth rather than

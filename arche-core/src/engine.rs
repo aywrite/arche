@@ -308,6 +308,15 @@ enum Decision {
     },
 }
 
+impl Decision {
+    /// A later move searched at the node's depth, with no scout and
+    /// nothing staged.
+    const UNREDUCED: Decision = Decision::Search {
+        reduction: 0,
+        staged: None,
+    };
+}
+
 /// The lazy ordering of a node's quiet run, as far as the loop has read
 /// it. `order_quiets_at` drives it a place at a time.
 struct QuietOrder {
@@ -1544,24 +1553,17 @@ impl AlphaBeta {
                 board.make_move(&staged.play),
                 "the skipped move was made once already"
             );
-            reduction::Event {
+            reduction::Event::recorded(
                 fen,
                 depth,
-                window: Window::of(alpha, beta),
-                index: staged.features.index,
-                searched: staged.features.index + 1,
-                generated: staged.features.generated,
-                history: staged.features.history,
-                history_max: staged.features.history_max,
-                killer: staged.features.killer,
-                tt: staged.features.tt,
-                eval_beta: eval - i32::from(beta),
-                alpha_gap: i32::from(alpha) - eval,
                 alpha,
-                scout: reduction::Scout::Skipped,
-                cost: 0,
-                reduction: 0,
-            }
+                beta,
+                eval,
+                &staged.features,
+                reduction::Scout::Skipped,
+                0,
+                0,
+            )
         });
         board.undo_move();
     }
@@ -1598,28 +1600,22 @@ impl AlphaBeta {
                 board.make_move(&staged.play),
                 "the staged move was made once already"
             );
-            reduction::Event {
+            let scout = if scout <= alpha {
+                reduction::Scout::Low
+            } else {
+                reduction::Scout::High
+            };
+            reduction::Event::recorded(
                 fen,
                 depth,
-                window: Window::of(alpha, beta),
-                index: staged.features.index,
-                searched: staged.features.index + 1,
-                generated: staged.features.generated,
-                history: staged.features.history,
-                history_max: staged.features.history_max,
-                killer: staged.features.killer,
-                tt: staged.features.tt,
-                eval_beta: eval - i32::from(beta),
-                alpha_gap: i32::from(alpha) - eval,
                 alpha,
-                scout: if scout <= alpha {
-                    reduction::Scout::Low
-                } else {
-                    reduction::Scout::High
-                },
+                beta,
+                eval,
+                &staged.features,
+                scout,
                 cost,
                 reduction,
-            }
+            )
         });
     }
 
@@ -1665,13 +1661,7 @@ impl AlphaBeta {
         census.event(key, || {
             // the memories score quiet moves alone, so a capture or a
             // promotion reads 0 here and is priced by its class instead
-            let quiet_history = |m: &Play| {
-                if m.capture.is_none() && m.promote.is_none() {
-                    Some(ordering.history_score(board.active_color, m))
-                } else {
-                    None
-                }
-            };
+            let quiet_history = |m: &Play| ordering.quiet_history(board.active_color, m);
             let killers = ply.map_or([None, None], |ply| ordering.killers_at(ply));
             census::Event {
                 fen: board.to_fen(),
@@ -1918,17 +1908,24 @@ impl AlphaBeta {
         }
     }
 
+    /// What every search entry writes before its first node: the limits
+    /// and the stop the deadline poll reads, the counters and the board's
+    /// line.
+    fn begin(&mut self, limits: Limits, stop: Option<Arc<AtomicBool>>) {
+        self.limits = limits;
+        self.stop = stop;
+        self.next_check = 0;
+        self.nodes = 0;
+        self.board.start_line();
+    }
+
     /// What a capture search makes of the position this engine holds, over
     /// the open window and under no limits, so what comes back is a value.
     /// For the tuner's quiet test. `quiescence` itself stays private,
     /// because a caller free to choose the window could read a bound as a
     /// value.
     pub(crate) fn quiescence_value(&mut self) -> Score {
-        self.limits = Limits::unlimited();
-        self.stop = None;
-        self.next_check = 0;
-        self.nodes = 0;
-        self.board.start_line();
+        self.begin(Limits::unlimited(), None);
         match self.quiescence(Score::MIN + 1, Score::MAX - 1) {
             Ok(value) => value.score,
             Err(Aborted) => unreachable!("an unlimited capture search runs to the end"),
@@ -2506,27 +2503,18 @@ impl AlphaBeta {
         }
         if rules.skips(&self.deciding(), node, m) {
             if self.forced.is_some() && self.forced_skip(node, rules, moves, m) {
-                return Decision::Search {
-                    reduction: 0,
-                    staged: None,
-                };
+                return Decision::UNREDUCED;
             }
             self.record_skip(node, rules, moves, m);
             return Decision::Skip;
         }
         if !rules.admits(node) || m.capture.is_some() || m.promote.is_some() {
-            return Decision::Search {
-                reduction: 0,
-                staged: None,
-            };
+            return Decision::UNREDUCED;
         }
         match late_move::decide_admitted(&self.deciding(), node, rules, moves, m) {
             late_move::Verdict::Skip => {
                 if self.forced.is_some() && self.forced_skip(node, rules, moves, m) {
-                    return Decision::Search {
-                        reduction: 0,
-                        staged: None,
-                    };
+                    return Decision::UNREDUCED;
                 }
                 self.record_skip(node, rules, moves, m);
                 Decision::Skip
@@ -2899,12 +2887,8 @@ impl AlphaBeta {
     ) -> SearchOutcome {
         // held to the rail here too, so the check extension cannot overflow
         depth = depth.min(MAX_PLY);
-        self.limits = limits;
-        self.stop = stop;
-        self.next_check = 0;
-        self.nodes = 0;
+        self.begin(limits, stop);
         self.selective_depth = depth;
-        self.board.start_line();
 
         if self.poll_deadline().is_err() {
             return SearchOutcome::Aborted(None);
@@ -2932,10 +2916,7 @@ impl AlphaBeta {
         // the root reduces nothing
         for m in &moves {
             let decision = if answer.searched > 0 {
-                Decision::Search {
-                    reduction: 0,
-                    staged: None,
-                }
+                Decision::UNREDUCED
             } else {
                 Decision::First
             };

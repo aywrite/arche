@@ -80,17 +80,6 @@ const _: () = assert!(MOVE_LIST_INLINE <= 1 << PLACE_BITS);
 /// not widen that.
 const _: () = assert!(MOVE_LIST_INLINE <= u64::BITS as usize);
 
-/// What the scratch buffers hold before a sort has written to them: a
-/// move no generator produces, never read.
-const NOWHERE: Play = Play {
-    from: 0,
-    to: 0,
-    capture: None,
-    promote: None,
-    en_passant: false,
-    castle: false,
-};
-
 /// Cutoffs against tries for each quiet move, by the side that played it
 /// and the from and to squares (a butterfly table: the piece is not part
 /// of the index, so two pieces that can make the same journey share an
@@ -137,11 +126,11 @@ impl MoveOrdering {
     pub(crate) fn new() -> Self {
         Self {
             keys: [0; MOVE_LIST_INLINE],
-            sorted: [NOWHERE; MOVE_LIST_INLINE],
+            sorted: [Play::NOWHERE; MOVE_LIST_INLINE],
             killers: [[None; 2]; MAX_PLY as usize],
             history: [[[0; 64]; 64]; 2],
             quiet_keys: Box::new([[0; QUIET_KEYS]; MAX_PLY as usize]),
-            quiet_orig: Box::new([[NOWHERE; MOVE_LIST_INLINE]; MAX_PLY as usize]),
+            quiet_orig: Box::new([[Play::NOWHERE; MOVE_LIST_INLINE]; MAX_PLY as usize]),
         }
     }
 
@@ -247,6 +236,13 @@ impl MoveOrdering {
     /// anything.
     pub(crate) fn history_score(&self, color: Color, m: &Play) -> i32 {
         self.history[color as usize][m.from as usize][m.to as usize]
+    }
+
+    /// The history score of a quiet move, and none for a capture or a
+    /// promotion: the memories score quiet moves alone.
+    #[inline]
+    pub(crate) fn quiet_history(&self, color: Color, m: &Play) -> Option<i32> {
+        (m.capture.is_none() && m.promote.is_none()).then(|| self.history_score(color, m))
     }
 
     /// The first stage: the table's move, if there is one, then the
@@ -467,7 +463,7 @@ impl MoveOrdering {
                 killers: self.killers[ply],
                 history: &self.history[board.active_color as usize],
             });
-            moves.sort_by_cached_key(|m| ordering_key(board, m, table_move, quiet.as_ref()));
+            moves.sort_by_cached_key(|m| keyed(board, m, table_move == Some(*m), quiet.as_ref()));
             // the same key orders this path, so the table's move is at
             // the head here too. It is rare enough to read the place off
             // the sorted list rather than carry it out of the closure
@@ -1055,19 +1051,8 @@ fn gravitate(entry: &mut i32, bonus: i32) {
 }
 
 /// What a move sorts by, smallest first: a capture by the swap, a quiet
-/// move by the memories, and the table's move ahead of everything.
-#[inline(always)]
-fn ordering_key(
-    board: &Board,
-    m: &Play,
-    table_move: Option<Play>,
-    quiet: Option<&Quiet<'_>>,
-) -> i64 {
-    keyed(board, m, table_move == Some(*m), quiet)
-}
-
-/// The same, for a caller that has already compared the move with the
-/// table's.
+/// move by the memories, and the table's move ahead of everything. The
+/// caller says whether the move is the table's, having compared already.
 #[inline(always)]
 fn keyed(board: &Board, m: &Play, is_table_move: bool, quiet: Option<&Quiet<'_>>) -> i64 {
     let mut score = match m.capture {
@@ -1680,8 +1665,8 @@ mod memory {
 #[cfg(test)]
 mod stack_sort {
     use super::{
-        KILLER_BONUS, MOVE_LIST_INLINE, NOWHERE, SEE_UNIT, TABLE_MOVE_BONUS, WINNING_CAPTURE_BASE,
-        pack, sort_on_the_stack,
+        KILLER_BONUS, MOVE_LIST_INLINE, SEE_UNIT, TABLE_MOVE_BONUS, WINNING_CAPTURE_BASE, pack,
+        sort_on_the_stack,
     };
     use crate::play::Play;
     use proptest::prelude::*;
@@ -1712,7 +1697,7 @@ mod stack_sort {
                 scored += 1;
             }
         }
-        let mut scratch = [NOWHERE; MOVE_LIST_INLINE];
+        let mut scratch = [Play::NOWHERE; MOVE_LIST_INLINE];
         let mut sorted = moves;
         sort_on_the_stack(&mut sorted, &mut keys[..scored], plain, front, &mut scratch);
         (sorted, expected)

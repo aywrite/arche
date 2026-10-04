@@ -228,17 +228,22 @@ fn attention_score(f: &AttentionFeatures) -> i64 {
 /// below the depth the gate reads the model at, where no decision of the
 /// move ever consulted it.
 pub(crate) fn attention(depth: u8, f: &Features, eval_beta: i64, alpha_gap: i64) -> Option<i64> {
-    (depth >= DEEP_REDUCTION_MIN_DEPTH).then(|| {
-        attention_score(&AttentionFeatures {
-            depth,
-            index: f.index,
-            hist_milli: f.hist_milli(),
-            killer: f.killer,
-            tt: f.tt,
-            eval_beta,
-            alpha_gap,
-            generated: f.generated,
-        })
+    (depth >= DEEP_REDUCTION_MIN_DEPTH).then(|| model_score(depth, f, eval_beta, alpha_gap))
+}
+
+/// The model's score from the ledger's features, the node's depth and the
+/// two evaluation terms: what the gate and `attention` both read it at.
+#[inline]
+fn model_score(depth: u8, f: &Features, eval_beta: i64, alpha_gap: i64) -> i64 {
+    attention_score(&AttentionFeatures {
+        depth,
+        index: f.index,
+        hist_milli: f.hist_milli(),
+        killer: f.killer,
+        tt: f.tt,
+        eval_beta,
+        alpha_gap,
+        generated: f.generated,
     })
 }
 
@@ -250,11 +255,7 @@ pub(crate) fn ledger_row_score(e: &crate::reduction::Event) -> i64 {
     let f = AttentionFeatures {
         depth: e.depth,
         index: e.index,
-        hist_milli: if e.history_max > 0 {
-            i64::from(e.history.max(0)) * 1000 / i64::from(e.history_max)
-        } else {
-            0
-        },
+        hist_milli: hist_milli(e.history, e.history_max),
         killer: e.killer,
         tt: e.tt,
         eval_beta: i64::from(e.eval_beta),
@@ -365,16 +366,20 @@ pub(crate) struct Features {
 }
 
 impl Features {
-    /// The history feature the weights were fitted on, zero to a
-    /// thousand. A marked down move reads as one the history knows nothing
-    /// about, rather than pushing the score where the fit never saw, and a
-    /// denominator at or under zero reads as nothing known.
     fn hist_milli(&self) -> i64 {
-        if self.history_max > 0 {
-            i64::from(self.history.max(0)) * 1000 / i64::from(self.history_max)
-        } else {
-            0
-        }
+        hist_milli(self.history, self.history_max)
+    }
+}
+
+/// The history feature the weights were fitted on, zero to a thousand. A
+/// marked down move reads as one the history knows nothing about, rather
+/// than pushing the score where the fit never saw, and a denominator at or
+/// under zero reads as nothing known.
+fn hist_milli(history: i32, history_max: i32) -> i64 {
+    if history_max > 0 {
+        i64::from(history.max(0)) * 1000 / i64::from(history_max)
+    } else {
+        0
     }
 }
 
@@ -637,27 +642,24 @@ fn node_admits(node: &Node) -> bool {
 /// runs last because the slider probes cost more than everything before it.
 fn gate(search: &Search, node: &Node, rules: &mut Rules, moves: &[Play], m: &Play) -> Verdict {
     let searched = node.answer.searched;
+    let plain = || Verdict::Scout(amount(search.config, node.depth, searched, 0));
     if (!search.config.deep_reductions && !search.config.late_move_pruning)
         || node.depth < DEEP_REDUCTION_MIN_DEPTH
     {
-        return Verdict::Scout(amount(search.config, node.depth, searched, 0));
+        return plain();
     }
     let eval = i64::from(eval_memo(search.board, &mut rules.eval));
     let f = features(search, node, rules, moves, m);
-    let score = attention_score(&AttentionFeatures {
-        depth: node.depth,
-        index: f.index,
-        hist_milli: f.hist_milli(),
-        killer: f.killer,
-        tt: f.tt,
-        eval_beta: eval - i64::from(node.answer.beta),
-        alpha_gap: i64::from(node.answer.alpha) - eval,
-        generated: f.generated,
-    });
+    let score = model_score(
+        node.depth,
+        &f,
+        eval - i64::from(node.answer.beta),
+        i64::from(node.answer.alpha) - eval,
+    );
     if search.config.late_move_pruning && score <= LATE_MOVE_PRUNING_THRESHOLD {
         let info = rules.check.get_or_insert_with(|| search.board.check_info());
         return if search.board.gives_check_with(info, m) {
-            Verdict::Scout(amount(search.config, node.depth, searched, 0))
+            plain()
         } else {
             Verdict::Skip
         };
@@ -676,7 +678,7 @@ fn gate(search: &Search, node: &Node, rules: &mut Rules, moves: &[Play], m: &Pla
             DEEP_REDUCTION_BONUS,
         ));
     }
-    Verdict::Scout(amount(search.config, node.depth, searched, 0))
+    plain()
 }
 
 /// Whether the gate gives a move the deeper scout's extra ply: by depth
@@ -745,14 +747,12 @@ fn eval_memo(board: &Board, eval: &mut Option<Score>) -> Score {
 /// `Features` does the clamping.
 fn denominator(search: &Search, rules: &mut Rules, moves: &[Play]) -> i32 {
     *rules.history_max.get_or_insert_with(|| {
-        let quiet_history = |m: &Play| {
-            if m.capture.is_none() && m.promote.is_none() {
-                Some(search.ordering.history_score(search.board.active_color, m))
-            } else {
-                None
-            }
-        };
-        moves.iter().filter_map(quiet_history).max().unwrap_or(0)
+        let color = search.board.active_color;
+        moves
+            .iter()
+            .filter_map(|m| search.ordering.quiet_history(color, m))
+            .max()
+            .unwrap_or(0)
     })
 }
 
