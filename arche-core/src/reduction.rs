@@ -618,30 +618,46 @@ mod tests {
     /// The sign every label rests on: the replay's answer is from the side
     /// the move was played against, so it is negated before it meets
     /// alpha. A side left facing a bare queen is lost, so the scout that
-    /// wrote the move off threw a winning move away. This fen and the
-    /// next differ only in which side holds the queen.
+    /// wrote the move off threw a winning move away; where the side to
+    /// move holds the queen the full search agrees with the scout. The two
+    /// fens differ only in which side holds the queen. A skipped move is
+    /// replayed on the fail low's terms, and its labels land the same way.
     #[test]
-    fn a_fail_low_the_full_search_would_raise_alpha_on_is_harmful() {
-        let events = vec![made_up("7k/8/8/8/8/8/8/1Q5K b - - 0 1", 3, 0, Scout::Low)];
-        let (rows, unplayable) = replay(&events);
-        assert_eq!(unplayable, 0);
-        assert_eq!(rows.len(), 1);
-        let reference = rows[0].reference.expect("a fail low is replayed");
-        assert!(reference < 0, "the side to move is lost: {}", reference);
-        assert_eq!(rows[0].harmful(), Some(true));
-        assert_eq!(rows[0].label_word(), "harmful");
-    }
+    fn a_fail_low_or_a_skip_is_harmful_only_where_the_full_search_would_raise_alpha() {
+        for (kind, scout, depth) in [("fail low", Scout::Low, 3), ("skip", Scout::Skipped, 4)] {
+            let mut lost = made_up("7k/8/8/8/8/8/8/1Q5K b - - 0 1", depth, 0, scout);
+            let mut winning = made_up("7k/8/8/8/8/8/1q6/7K b - - 0 1", depth, 0, scout);
+            if scout == Scout::Skipped {
+                for event in [&mut lost, &mut winning] {
+                    event.cost = 0;
+                    event.reduction = 0;
+                }
+            }
 
-    /// The same ask where the side to move holds the queen: the full search
-    /// agrees with the scout.
-    #[test]
-    fn a_fail_low_the_full_search_agrees_with_is_harmless() {
-        let events = vec![made_up("7k/8/8/8/8/8/1q6/7K b - - 0 1", 3, 0, Scout::Low)];
-        let (rows, _) = replay(&events);
-        let reference = rows[0].reference.expect("a fail low is replayed");
-        assert!(reference > 0, "the side to move is winning: {}", reference);
-        assert_eq!(rows[0].harmful(), Some(false));
-        assert_eq!(rows[0].label_word(), "harmless");
+            let (rows, unplayable) = replay(&[lost]);
+            assert_eq!(unplayable, 0, "{}", kind);
+            assert_eq!(rows.len(), 1, "{}", kind);
+            let reference = rows[0].reference.expect("a fail low or a skip is replayed");
+            assert!(
+                reference < 0,
+                "{}: the side to move is lost: {}",
+                kind,
+                reference
+            );
+            assert_eq!(rows[0].harmful(), Some(true), "{}", kind);
+            assert_eq!(rows[0].label_word(), "harmful", "{}", kind);
+
+            let (rows, _) = replay(&[winning]);
+            let reference = rows[0].reference.expect("a fail low or a skip is replayed");
+            assert!(
+                reference > 0,
+                "{}: the side to move is winning: {}",
+                kind,
+                reference
+            );
+            assert_eq!(rows[0].harmful(), Some(false), "{}", kind);
+            assert_eq!(rows[0].label_word(), "harmless", "{}", kind);
+        }
     }
 
     /// An answer exactly at alpha raises nothing: the label is strict.
@@ -657,38 +673,6 @@ mod tests {
             reference: Some(-25),
         };
         assert_eq!(raised.harmful(), Some(true));
-    }
-
-    /// A skipped move is replayed on the fail low's terms. The bare queen
-    /// fens are the two fail low tests', and the labels land the same way.
-    #[test]
-    fn a_skipped_move_the_full_search_would_raise_alpha_on_is_harmful() {
-        let mut event = made_up("7k/8/8/8/8/8/8/1Q5K b - - 0 1", 4, 0, Scout::Skipped);
-        event.cost = 0;
-        event.reduction = 0;
-        let (rows, unplayable) = replay(&[event]);
-        assert_eq!(unplayable, 0);
-        assert_eq!(rows.len(), 1);
-        let reference = rows[0].reference.expect("a skip is replayed");
-        assert!(reference < 0, "the side to move is lost: {}", reference);
-        assert_eq!(rows[0].harmful(), Some(true));
-        assert_eq!(rows[0].label_word(), "harmful");
-    }
-
-    /// The same ask where the skip was right.
-    #[test]
-    fn a_skipped_move_the_full_search_agrees_with_is_harmless() {
-        let events = vec![made_up(
-            "7k/8/8/8/8/8/1q6/7K b - - 0 1",
-            4,
-            0,
-            Scout::Skipped,
-        )];
-        let (rows, _) = replay(&events);
-        let reference = rows[0].reference.expect("a skip is replayed");
-        assert!(reference > 0, "the side to move is winning: {}", reference);
-        assert_eq!(rows[0].harmful(), Some(false));
-        assert_eq!(rows[0].label_word(), "harmless");
     }
 
     /// A fail high is kept and never replayed: its fen is unreadable, so a
