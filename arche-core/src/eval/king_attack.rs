@@ -8,13 +8,13 @@
 //! position, so the only key a score could sit behind is the position key,
 //! which the mobility cache was measured on and turned down.
 
-use super::mobility;
 #[cfg(test)]
 use super::weigh;
+use super::{mobility, scored};
 use crate::board::{Board, king_attacks, knight_attacks, pop_lsb};
 use crate::magic::MAGIC;
 use crate::misc::Color;
-use crate::psqt::{eg_value, mg_value, pack};
+use crate::psqt::pack;
 
 /// One count per piece kind, in the order [`mobility::PIECES`] names them,
 /// so one index in the shared walk in `eval/mod.rs` reads both terms'
@@ -50,20 +50,6 @@ pub(crate) const fn weight(index: usize) -> i32 {
 /// A count at a zero weight is not folded away: llvm leaves the walk over
 /// the pieces standing, and 188297f measured what that cost over the bench.
 pub(crate) const SCORED: bool = scored(&KING_ATTACK);
-
-/// Whether `weights` prices anything, read at compile time. Both halves are
-/// asked about: a weight worth nothing in the midgame and something in the
-/// ending is still a weight and still has to be counted.
-const fn scored(weights: &[i32; COUNTS]) -> bool {
-    let mut index = 0;
-    while index < COUNTS {
-        if mg_value(weights[index]) != 0 || eg_value(weights[index]) != 0 {
-            return true;
-        }
-        index += 1;
-    }
-    false
-}
 
 /// How many squares of the other king's ring this side's knights, bishops,
 /// rooks and queens attack, a count per piece kind in the order

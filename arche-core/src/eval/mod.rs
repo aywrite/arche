@@ -16,7 +16,9 @@ mod cache;
 pub(crate) mod factors;
 mod king_attack;
 mod mobility;
+mod pawn_links;
 mod pawn_structure;
+mod rook_files;
 mod shelter;
 
 use cache::Cache;
@@ -193,6 +195,18 @@ pub(crate) const TERMS: &[Term] = &[
         weight: king_attack::weight,
         counts: king_attack::counts,
     },
+    Term {
+        name: "pawn_links",
+        width: pawn_links::COUNTS,
+        weight: pawn_links::weight,
+        counts: pawn_links::counts,
+    },
+    Term {
+        name: "rook_files",
+        width: rook_files::COUNTS,
+        weight: rook_files::weight,
+        counts: rook_files::counts,
+    },
 ];
 
 /// The widest term, which is how long a buffer the tuner's walk needs to ask
@@ -210,6 +224,21 @@ fn weigh<const N: usize>(weights: &[i32; N], white: [i32; N], black: [i32; N]) -
         packed += weight * (white - black);
     }
     packed
+}
+
+/// Whether `weights` prices anything, read at compile time, which is what a
+/// term's `SCORED` flag is. Both halves are asked about: a weight worth
+/// nothing in the midgame and something in the ending is still a weight and
+/// still has to be counted.
+const fn scored<const N: usize>(weights: &[i32; N]) -> bool {
+    let mut index = 0;
+    while index < N {
+        if mg_value(weights[index]) != 0 || eg_value(weights[index]) != 0 {
+            return true;
+        }
+        index += 1;
+    }
+    false
 }
 
 const fn widest() -> usize {
@@ -283,7 +312,8 @@ impl Memo for Caches {
 ///
 /// The king attack zone is behind [`king_attack::SCORED`]. llvm does not take
 /// the walk out for a zero weight, so at a constant false the walk neither
-/// counts nor weighs the ring.
+/// counts nor weighs the ring. The linked pawns and the rooks on open files
+/// stand behind their own flags for the same reason.
 ///
 /// Material that cannot mate reads zero before any of it, which is why
 /// `tune::run` turns such a position away rather than fitting it. The check
@@ -298,7 +328,19 @@ fn sum(board: &Board, memo: &mut impl Memo) -> Score {
     let tables = memo.tables(board);
     let walk =
         |color| attack_score::<{ mobility::SCORED_KINDS }, { king_attack::SCORED }>(board, color);
-    let leaf = walk(Color::White) - walk(Color::Black) + tables;
+    // the linked pawns read the pawns alone, so once priced they can join the
+    // pawn structure in the pawn table's entry
+    let links = if pawn_links::SCORED {
+        pawn_links::fold(board)
+    } else {
+        0
+    };
+    let files = if rook_files::SCORED {
+        rook_files::fold(board)
+    } else {
+        0
+    };
+    let leaf = walk(Color::White) - walk(Color::Black) + tables + links + files;
     board.eval.score(board.active_color, leaf)
 }
 
@@ -538,7 +580,7 @@ fn pieces_of(board: &Board) -> impl Iterator<Item = (u8, Piece, Color)> + '_ {
 mod evaluate {
     use super::{
         Board, Caches, Memo, PawnCache, ShelterCache, TERMS, TOTAL_PHASE, eval, eval_cached,
-        factors, king_attack, mobility, pawn_structure, pieces_of, shelter,
+        factors, king_attack, mobility, pawn_links, pawn_structure, pieces_of, rook_files, shelter,
     };
     use crate::board::fens;
     use crate::misc::{Color, File, coordinate_to_index};
@@ -980,39 +1022,72 @@ mod evaluate {
             let priced = (0..term.width).any(|index| {
                 mg_value((term.weight)(index)) != 0 || eg_value((term.weight)(index)) != 0
             });
-            assert!(priced, "{} is worth nothing at either end", term.name);
+            // every term is priced but the linked pawns and the rooks on open
+            // files, which ship at zero weight until their fit. Written as an
+            // equality rather than an exemption, so the fit that prices them
+            // fails here until this line goes with it
+            assert_eq!(
+                priced,
+                !["pawn_links", "rook_files"].contains(&term.name),
+                "{} is worth {} at either end",
+                term.name,
+                if priced { "something" } else { "nothing" }
+            );
         }
     }
 
-    /// The table names the four leaf terms the sum adds. The sum is hand
+    /// The table names the six leaf terms the sum adds. The sum is hand
     /// written rather than a walk over the table, so this is the one place
     /// the two lists are held against each other; a priced term in the table
     /// and not the sum would fail the tuner's identity, and this says which
     /// of the two is wrong.
+    ///
+    /// An unpriced term stands outside that guard until its fit: the sum
+    /// skips it, so a sum that dropped it would add up the same. What this
+    /// can say meanwhile is that its counts are not level here, read against
+    /// weights of its own.
     #[test]
     fn the_table_names_the_terms_the_sum_adds() {
         let names: Vec<&str> = TERMS.iter().map(|term| term.name).collect();
         assert_eq!(
             names,
-            ["mobility", "shelter", "pawn_structure", "king_attack"]
+            [
+                "mobility",
+                "shelter",
+                "pawn_structure",
+                "king_attack",
+                "pawn_links",
+                "rook_files"
+            ]
         );
         // two queens and a rook against none, a king in each corner and pawns
-        // of both colours on six files, so that no one of the four folds to
+        // of both colours on six files, so that no one of the six folds to
         // nothing. The queen on a4 bears on d7 and e8 of the black king's
-        // ring
+        // ring, a3 and b3 stand side by side with b2 behind a3, and the rook
+        // on h1 faces the black pawn on h3
         let board = Board::from_fen("3k4/P4p2/8/3P2p1/Q2P4/PP2p2p/1P6/1Q4KR w - - 0 1").unwrap();
         for (name, term) in [
             ("mobility", mobility::fold(&board)),
             ("shelter", shelter::fold(&board)),
             ("pawn structure", pawn_structure::fold(&board)),
             ("king attack", king_attack::fold(&board)),
+            (
+                "pawn links",
+                pawn_links::fold_with(&board, &[pack(3, 5), pack(-7, 2), pack(11, -4)]),
+            ),
+            (
+                "rook files",
+                rook_files::fold_with(&board, &[pack(9, 1), pack(-2, 6)]),
+            ),
         ] {
             assert_ne!(term, 0, "{} is level here, so it says nothing", name);
         }
         let leaf = mobility::fold(&board)
             + shelter::fold(&board)
             + pawn_structure::fold(&board)
-            + king_attack::fold(&board);
+            + king_attack::fold(&board)
+            + pawn_links::fold(&board)
+            + rook_files::fold(&board);
         assert_eq!(eval(&board), board.eval.score(board.active_color, leaf));
     }
 

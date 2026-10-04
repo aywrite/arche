@@ -29,7 +29,9 @@
 //! the king attack zone `eval` reads a shared walk that
 //! `the_shared_walk_counts_what_each_term_counts_alone` holds to these
 //! functions, and neither can see a count wrong the same way in both. The
-//! hand counts beside each term in `eval/` pin those.
+//! linked pawns and the rooks on open files are not read by `eval` while
+//! their weights are zero, so the identity sees nothing of them. The hand
+//! counts beside each term in `eval/` pin those.
 //!
 //! Where a term stands in the vector, its weights and its width come off
 //! `eval::TERMS`, so a term added there needs no edit here, and the layout
@@ -723,6 +725,54 @@ mod tests {
         );
         assert_eq!(terms, Terms::of(&black));
         assert_eq!(eval::eval(&white), eval::eval(&black));
+    }
+
+    /// The linked pawns and the rooks on open files write both ends of the
+    /// taper, against a count worked out by hand. Their weights are zero, so
+    /// the identity says nothing about these slots at all: a coefficient on
+    /// the wrong one, or missing, reconstructs every row the same.
+    ///
+    /// The reflection with the colours swapped states the same row, so the
+    /// counts are signed and slotted the same way for both sides.
+    #[test]
+    fn every_pawn_link_and_rook_file_count_writes_both_ends_of_the_taper() {
+        // c3 and d3 side by side and e4 in front of d3. The rook on a1 has no
+        // pawn on its file and the two on f1 and h1 face f7 and h7. Black has
+        // no rook and its two pawns are not linked, so nothing cancels
+        let fen = "4k3/5p1p/8/8/4P3/2PP4/8/R4RKR w - - 0 1";
+        let board = Board::from_fen(fen).unwrap();
+        let terms = Terms::of(&board);
+        assert_eq!(terms.phase, 6);
+        let coefficient = |slot: usize| {
+            terms
+                .coefficients
+                .iter()
+                .find(|(named, _)| usize::from(*named) == slot)
+                .map_or(0, |(_, coefficient)| *coefficient)
+        };
+        for (name, index, count, why) in [
+            ("pawn_links", 0, 2, "phalanx"),
+            ("pawn_links", 1, 1, "supported"),
+            ("pawn_links", 2, 3, "connected"),
+            ("rook_files", 0, 1, "open"),
+            ("rook_files", 1, 2, "half open"),
+        ] {
+            let (start, width) = term(name);
+            assert_eq!(
+                coefficient(start + index),
+                count * terms.phase,
+                "{} midgame",
+                why
+            );
+            assert_eq!(
+                coefficient(start + width + index),
+                count * (TOTAL_PHASE - terms.phase),
+                "{} endgame",
+                why
+            );
+        }
+        let black = Board::from_fen("r4rkr/8/2pp4/4p3/8/8/5P1P/4K3 b - - 0 1").unwrap();
+        assert_eq!(terms, Terms::of(&black));
     }
 
     /// A position whose piece square numerator is negative and does not

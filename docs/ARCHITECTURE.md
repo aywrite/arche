@@ -165,6 +165,12 @@ term over every pair of pieces.
     knights, bishops, rooks and queens attack, off the same attack sets
     mobility walks but with nothing taken out of them. Read at every leaf and
     not remembered, for mobility's reason.
+  - **pawn_links.rs**: Each side's pawns that stand beside another of their
+    own on the same rank, that one of their own attacks, and that are
+    either. At zero weight, so the leaf does not count it.
+  - **rook_files.rs**: Each side's rooks on a file with no pawn of either
+    colour, and on one with an enemy pawn and none of their own. At zero
+    weight, so the leaf does not count it.
 - **psqt.rs**: The piece square tables. Every piece has a second table
   for the endgame; both phases are packed into one integer so the taper
   costs one multiply.

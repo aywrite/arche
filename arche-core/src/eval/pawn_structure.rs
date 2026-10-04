@@ -88,7 +88,7 @@ static MASKS: Masks = Masks::new();
 /// A set of files put back on the board, every square on every file the byte
 /// names: what [`files_of`] undoes. One multiply by the a file lands a copy of
 /// the byte on each rank.
-const fn spread(files: u8) -> u64 {
+pub(super) const fn spread(files: u8) -> u64 {
     (files as u64) * 0x0101_0101_0101_0101
 }
 

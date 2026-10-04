@@ -24,7 +24,7 @@ import tune
 # asked of tune.py, which would agree with itself whatever it said.
 LAYOUT_LINE = (
     "layout midgame 384 endgame 384 material 6 mobility 4 shelter 7 "
-    "pawn_structure 8 king_attack 4"
+    "pawn_structure 8 king_attack 4 pawn_links 3 rook_files 2"
 )
 LAYOUT = tune.Layout.of(LAYOUT_LINE)
 
@@ -171,17 +171,18 @@ def test_a_header_without_the_drawn_count_is_refused():
             tune.parse_terms([header, *lines[1:]])
 
 
-@pytest.mark.parametrize("count", [518, 774, 782, 790, 796, 812])
+@pytest.mark.parametrize("count", [518, 774, 782, 790, 796, 812, 820])
 def test_a_vector_of_an_earlier_layout_is_refused(tmp_path, count):
     """The lengths the vector had before the endgame tables, before mobility,
-    before the shelter, before the pawn storm, before the pawn structure and
-    before the king attack zone. Every slot any of them names exists in the
+    before the shelter, before the pawn storm, before the pawn structure,
+    before the king attack zone and before the linked pawns and the rooks on
+    open files. Every slot any of them names exists in the
     layout that replaced it, so their numbers would land on the wrong weights
     rather than failing to parse. Both doors a vector comes through refuse
     them."""
-    assert LAYOUT.slots == 820
+    assert LAYOUT.slots == 830
     old = [0] * count
-    with pytest.raises(ValueError, match=f"of {count}, expected 820"):
+    with pytest.raises(ValueError, match=f"of {count}, expected 830"):
         tune.parse_terms(
             [
                 LAYOUT_LINE,
@@ -190,7 +191,7 @@ def test_a_vector_of_an_earlier_layout_is_refused(tmp_path, count):
         )
     written = tmp_path / "fitted.json"
     written.write_text(json.dumps(old), encoding="utf-8")
-    with pytest.raises(ValueError, match=f"of {count}, expected 820"):
+    with pytest.raises(ValueError, match=f"of {count}, expected 830"):
         tune.read_weights(written, LAYOUT)
 
 
@@ -703,7 +704,7 @@ def test_the_pawn_structure_weights_are_priced_too():
 
 
 def test_the_king_attack_weights_are_priced_too():
-    """And the last block of the four. What one knight, one bishop, one rook
+    """And the block after that. What one knight, one bishop, one rook
     and one queen can show of the ring, a side, both colours, at the larger of
     the two halves, which here is the endgame one at seven a count."""
     vector = weights(
@@ -720,8 +721,33 @@ def test_the_king_attack_weights_are_priced_too():
     assert inside
     assert worst == 2 * int(np.array(tune.BOUNDS["king_attack"]).sum()) * 7
     huge = weights(
-        {slot: 5000 for slot in range(LAYOUT.start["king_attack"], LAYOUT.slots)}
+        {
+            slot: 5000
+            for slot in range(LAYOUT.start["king_attack"], LAYOUT.start["pawn_links"])
+        }
     )
+    assert not tune.bounds_hold(np.array(huge), LAYOUT)[0]
+
+
+@pytest.mark.parametrize("name, most", [("pawn_links", 8), ("rook_files", 10)])
+def test_the_last_two_blocks_are_priced_too(name, most):
+    """Eight of each pawn link a side, since a side has eight pawns, and ten
+    of each rook file count, two rooks and eight promotions. Both colours, at
+    the larger of the two halves, which here is the endgame one at six a
+    count."""
+    vector = weights(
+        {LAYOUT.start[name] + index: 2 for index in range(LAYOUT.widths[name])}
+        | {
+            LAYOUT.start[name] + LAYOUT.widths[name] + index: 6
+            for index in range(LAYOUT.widths[name])
+        }
+    )
+    inside, worst = tune.bounds_hold(np.array(vector), LAYOUT)
+    assert inside
+    assert tune.BOUNDS[name] == (most,) * LAYOUT.widths[name]
+    assert worst == 2 * most * LAYOUT.widths[name] * 6
+    block = LAYOUT.block(name)
+    huge = weights({slot: 5000 for slot in range(block.start, block.stop)})
     assert not tune.bounds_hold(np.array(huge), LAYOUT)[0]
 
 
@@ -778,13 +804,21 @@ def test_a_term_is_fitted_with_every_earlier_term_held():
 
 
 def test_a_refit_holds_the_terms_above_it_as_well_as_the_ones_below():
-    """A mobility refit holds the tables below it and the shelter, the pawn
-    structure and the king attack zone above, so the mobility weights are the
-    only thing that moves. Without the pawn structure hold the pawn weights
+    """A mobility refit holds the tables below it and every term above, so the
+    mobility weights are the only thing that moves. Without the pawn structure hold the pawn weights
     move too, which is the confound `1b0862a` found the first time a hold was
     missing."""
     refit = tune.frozen_slots(
-        LAYOUT, False, ["tables", "shelter", "pawn_structure", "king_attack"]
+        LAYOUT,
+        False,
+        [
+            "tables",
+            "shelter",
+            "pawn_structure",
+            "king_attack",
+            "pawn_links",
+            "rook_files",
+        ],
     )
     assert refit[: LAYOUT.start["mobility"]].all()
     assert not refit[LAYOUT.start["mobility"] : LAYOUT.start["shelter"]].any()

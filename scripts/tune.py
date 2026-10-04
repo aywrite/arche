@@ -90,12 +90,16 @@ FIXED_BLOCKS = ("midgame", "endgame", "material")
 # loose on the safe side. King attack zone: the most one piece of each kind
 # can show on the eight squares round a centred king (a knight reaches two, a
 # bishop two and is given three, a rook four, a queen five and is given six).
-# A side with two knights shows more, as it does for mobility.
+# A side with two knights shows more, as it does for mobility. Pawn links:
+# eight pawns a side, on each count. Rook files: two rooks and eight
+# promotions, on each count.
 BOUNDS = {
     "mobility": (8, 13, 14, 27),
     "shelter": (3,) * 7,
     "pawn_structure": (8,) * 8,
     "king_attack": (2, 3, 4, 6),
+    "pawn_links": (8,) * 3,
+    "rook_files": (10,) * 2,
 }
 
 
