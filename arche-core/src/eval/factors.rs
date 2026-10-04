@@ -327,19 +327,11 @@ impl Machine {
 #[cfg(test)]
 mod features {
     use super::{Machine, RANK, feature};
+    use crate::bench;
     use crate::board::{Board, fens};
-    use crate::eval::eval;
+    use crate::eval::{eval, pieces_of, suite_fens};
     use crate::misc::{Color, Piece};
-    use crate::{bench, strategy, tactics};
     use pretty_assertions::assert_eq;
-
-    fn suites() -> Vec<String> {
-        let mut fens: Vec<String> = fens::CORE.iter().map(|f| f.to_string()).collect();
-        fens.extend(bench::positions().into_iter().map(|p| p.fen));
-        fens.extend(tactics::positions().into_iter().map(|p| p.fen));
-        fens.extend(strategy::positions().into_iter().map(|p| p.fen));
-        fens
-    }
 
     /// The colour mirror of a fen.
     fn mirrored(fen: &str) -> String {
@@ -378,7 +370,7 @@ mod features {
     /// position, which needs the divide to truncate toward zero.
     #[test]
     fn a_mirrored_position_scores_the_same_across_the_suites() {
-        for fen in suites() {
+        for fen in suite_fens() {
             let board = Board::from_fen(&fen).unwrap();
             let mirror = Board::from_fen(&mirrored(&fen)).unwrap();
             assert_eq!(eval(&board), eval(&mirror), "{}", fen);
@@ -419,16 +411,11 @@ mod features {
         if RANK == 0 {
             return;
         }
-        let scored = suites()
+        let scored = suite_fens()
             .iter()
             .map(|fen| {
                 let board = Board::from_fen(fen).unwrap();
-                let pieces = (0..64).filter_map(|index| {
-                    board
-                        .get_piece_and_color_index(index)
-                        .map(|(piece, color)| (index, piece, color))
-                });
-                Machine::of(pieces).score()
+                Machine::of(pieces_of(&board)).score()
             })
             .filter(|&score| score != 0)
             .count();

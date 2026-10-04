@@ -143,8 +143,8 @@ pub(super) const fn files_of(pawns: u64) -> u8 {
 ///
 /// One pawn can be passed, isolated and doubled at once, but no count exceeds
 /// eight and the six passed counts share the eight pawns, so this term stays
-/// far inside the 32,767 a half has to stay inside. `bounds_hold` charges
-/// eight of every count, which is the looser screen.
+/// far inside the 32,767 a half has to stay inside. `tune.py::bounds_hold`
+/// charges eight of every count, which is the looser screen.
 static PAWN_STRUCTURE: [i32; COUNTS] = [
     pack(-20, 20),
     pack(-27, 18),
@@ -231,17 +231,8 @@ pub(crate) fn counts(board: &Board, color: Color, into: &mut [i32]) {
 /// the piece square pair is on.
 #[inline]
 pub(crate) fn fold(board: &Board) -> i32 {
-    fold_with(board, &PAWN_STRUCTURE)
-}
-
-/// The same fold against weights named by the caller. The tests supply
-/// weights of their own because what they pin is the fold rather than the
-/// fit: a permuted [`PAWN_STRUCTURE`] would be a different evaluation and not
-/// a wrong one.
-#[inline]
-fn fold_with(board: &Board, weights: &[i32; COUNTS]) -> i32 {
     weigh(
-        weights,
+        &PAWN_STRUCTURE,
         counts_of(board, Color::White),
         counts_of(board, Color::Black),
     )
@@ -265,7 +256,6 @@ pub(super) const CACHE_BITS: usize = 12;
 #[cfg(test)]
 mod tests {
     use super::{Board, COUNTS, Color, MASKS, ahead_of, counts_of, files_of, pawn_files, spread};
-    use crate::psqt::{eg_value, mg_value, pack};
     use pretty_assertions::assert_eq;
 
     /// The counts by hand, because nothing else pins them: `eval` and the
@@ -612,42 +602,19 @@ mod tests {
     const WHITE_STRUCTURE: [i32; COUNTS] = [0, 1, 0, 1, 0, 1, 2, 3];
     const BLACK_STRUCTURE: [i32; COUNTS] = [1, 0, 1, 0, 2, 0, 0, 0];
 
-    /// Eight weights that differ from each other at both ends of the taper,
-    /// so that a pair read into the wrong count's slot lands on a different
-    /// number. The eight differences between the halves are 38, 20, -24, -30,
-    /// 36, 25, -26 and -28, which differ from each other too, so a
-    /// permutation of either array shows.
-    const TRIAL: [i32; COUNTS] = [
-        pack(3, 41),
-        pack(-7, 13),
-        pack(29, 5),
-        pack(11, -19),
-        pack(17, 53),
-        pack(-23, 2),
-        pack(-5, -31),
-        pack(37, 9),
-    ];
-
-    /// What the fold does with weights that are not the shipped ones, which
-    /// are the fit's and will move again: white's count less black's, count
-    /// by count, each half of the pair summed on its own.
+    /// The fold is `weigh` (pinned in `eval/mod.rs`) over the two sides'
+    /// counts, white less black and against the live weights.
     #[test]
-    fn the_pawn_structure_fold_reads_white_less_black_count_by_count() {
+    fn the_pawn_structure_fold_weighs_white_less_black() {
         let board = Board::from_fen(STRUCTURED).unwrap();
         assert_eq!(counts_of(&board, Color::White), WHITE_STRUCTURE);
         assert_eq!(counts_of(&board, Color::Black), BLACK_STRUCTURE);
-        let midgame: i32 = (0..COUNTS)
-            .map(|i| mg_value(TRIAL[i]) * (WHITE_STRUCTURE[i] - BLACK_STRUCTURE[i]))
-            .sum();
-        let endgame: i32 = (0..COUNTS)
-            .map(|i| eg_value(TRIAL[i]) * (WHITE_STRUCTURE[i] - BLACK_STRUCTURE[i]))
-            .sum();
+        let expected = super::weigh(&super::PAWN_STRUCTURE, WHITE_STRUCTURE, BLACK_STRUCTURE);
         assert_ne!(
-            midgame, endgame,
-            "the two halves would not tell a swap apart"
+            expected, 0,
+            "the live weights level this position, so the fold's order would not show: \
+             pick another position"
         );
-        let packed = super::fold_with(&board, &TRIAL);
-        assert_ne!(midgame, 0, "black less white would answer the same here");
-        assert_eq!((mg_value(packed), eg_value(packed)), (midgame, endgame));
+        assert_eq!(super::fold(&board), expected);
     }
 }

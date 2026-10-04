@@ -364,6 +364,15 @@ pub enum Color {
 }
 
 impl Color {
+    /// Plus one for white and minus one for black: the sign a white relative
+    /// sum applies to this side's share.
+    pub(crate) const fn sign(self) -> i32 {
+        match self {
+            Color::White => 1,
+            Color::Black => -1,
+        }
+    }
+
     pub fn from_char(c: char) -> Option<Color> {
         match c {
             'b' | 'B' => Some(Color::Black),

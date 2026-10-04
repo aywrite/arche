@@ -55,22 +55,22 @@ pub(crate) const ALL_KINDS: u8 = (1 << COUNTS) - 1;
 /// refit changes the set with nothing else edited. When the first fit left
 /// six of the eight weights at zero, leaving three kinds out took a bit over
 /// a third off what the term cost (7b0f38b).
-pub(crate) const SCORED_KINDS: u8 = scored_kinds();
+pub(crate) const SCORED_KINDS: u8 = scored_kinds(&MOBILITY);
 
 /// Whether `kinds` names the piece at `index` in [`PIECES`].
 pub(crate) const fn counted(kinds: u8, index: usize) -> bool {
     kinds & (1 << index) != 0
 }
 
-/// [`SCORED_KINDS`], read off the weights at compile time. Both halves are
-/// asked about: a weight worth nothing in the midgame and something in the
-/// ending is still a weight and still has to be counted.
-const fn scored_kinds() -> u8 {
+/// The kinds `weights` prices, read at compile time; [`SCORED_KINDS`] here
+/// and [`super::king_attack::SCORED`] are read off it. Both halves are asked
+/// about: a weight worth nothing in the midgame and something in the ending
+/// is still a weight and still has to be counted.
+pub(crate) const fn scored_kinds(weights: &[i32; COUNTS]) -> u8 {
     let mut kinds = 0;
     let mut index = 0;
     while index < COUNTS {
-        let weight = weight(index);
-        if mg_value(weight) != 0 || eg_value(weight) != 0 {
+        if mg_value(weights[index]) != 0 || eg_value(weights[index]) != 0 {
             kinds |= 1 << index;
         }
         index += 1;
@@ -153,28 +153,20 @@ pub(crate) fn counts(board: &Board, color: Color, into: &mut [i32]) {
 /// attack zone. The tests hold the sum to it.
 #[cfg(test)]
 pub(crate) fn fold(board: &Board) -> i32 {
-    fold_with::<SCORED_KINDS>(board, &MOBILITY)
-}
-
-/// The same fold over the kinds `KINDS` names, against weights named by the
-/// caller. A kind outside `KINDS` counts zero and so has to be worth zero.
-/// The tests supply weights of their own because what they pin is the fold
-/// rather than the fit: a permuted [`MOBILITY`] would be a different
-/// evaluation and not a wrong one.
-#[cfg(test)]
-fn fold_with<const KINDS: u8>(board: &Board, weights: &[i32; COUNTS]) -> i32 {
     weigh(
-        weights,
-        counts_of::<KINDS>(board, Color::White),
-        counts_of::<KINDS>(board, Color::Black),
+        &MOBILITY,
+        counts_of::<SCORED_KINDS>(board, Color::White),
+        counts_of::<SCORED_KINDS>(board, Color::Black),
     )
 }
 
 #[cfg(test)]
 mod tests {
-    use super::{ALL_KINDS, Board, COUNTS, Color, MOBILITY, PIECES, SCORED_KINDS, counts_of, fold};
+    use super::{
+        ALL_KINDS, Board, COUNTS, Color, MOBILITY, PIECES, SCORED_KINDS, counts_of, fold, weigh,
+    };
     use crate::board::fens;
-    use crate::psqt::{eg_value, mg_value, pack};
+    use crate::psqt::{eg_value, mg_value};
     use pretty_assertions::assert_eq;
 
     /// The counts by hand, because nothing else pins them: the tuner reads
@@ -269,7 +261,7 @@ mod tests {
         );
     }
 
-    /// The position the two tests below are read against, and what each side
+    /// The position the fold test below is read against, and what each side
     /// covers in it, worked out square by square rather than read back off
     /// [`counts_of`].
     ///
@@ -288,17 +280,12 @@ mod tests {
     const WHITE_COVERS: [i32; COUNTS] = [3, 2, 7, 10];
     const BLACK_COVERS: [i32; COUNTS] = [0, 7, 9, 9];
 
-    /// Four weights that differ from each other at both ends of the taper, so
-    /// that a pair read into the wrong piece's slot lands on a different
-    /// number. The four differences are 3, -5, -2 and 1, which differ from
-    /// each other too, so a permutation of either array shows.
-    const TRIAL: [i32; COUNTS] = [pack(11, 2), pack(-7, 13), pack(3, -5), pack(29, 41)];
-
-    /// What the fold does with weights that are not the shipped ones, which
-    /// are the fit's and will move again: white's count less black's, piece
-    /// by piece, each half of the pair summed on its own.
+    /// The fold is `weigh` (pinned in `eval/mod.rs`) over the two sides'
+    /// counts, white less black and against the live weights. A kind the
+    /// fold skips is one whose weight is zero, so the hand counts of all four
+    /// weigh the same.
     #[test]
-    fn the_mobility_fold_reads_white_less_black_piece_by_piece() {
+    fn the_mobility_fold_weighs_white_less_black() {
         let board = Board::from_fen(COUNTED).unwrap();
         assert_eq!(
             counts_of::<{ ALL_KINDS }>(&board, Color::White),
@@ -308,19 +295,13 @@ mod tests {
             counts_of::<{ ALL_KINDS }>(&board, Color::Black),
             BLACK_COVERS
         );
-        let midgame: i32 = (0..COUNTS)
-            .map(|i| mg_value(TRIAL[i]) * (WHITE_COVERS[i] - BLACK_COVERS[i]))
-            .sum();
-        let endgame: i32 = (0..COUNTS)
-            .map(|i| eg_value(TRIAL[i]) * (WHITE_COVERS[i] - BLACK_COVERS[i]))
-            .sum();
+        let expected = weigh(&MOBILITY, WHITE_COVERS, BLACK_COVERS);
         assert_ne!(
-            midgame, endgame,
-            "the two halves would not tell a swap apart"
+            expected, 0,
+            "the live weights level this position, so the fold's order would not show: \
+             pick another position"
         );
-        let packed = super::fold_with::<{ ALL_KINDS }>(&board, &TRIAL);
-        assert_ne!(midgame, 0, "black less white would answer the same here");
-        assert_eq!((mg_value(packed), eg_value(packed)), (midgame, endgame));
+        assert_eq!(fold(&board), expected);
     }
 
     /// What the evaluation is allowed to leave out, which is the whole of the
@@ -361,7 +342,11 @@ mod tests {
                 );
             }
         }
-        let whole = super::fold_with::<{ ALL_KINDS }>(&board, &MOBILITY);
+        let whole = weigh(
+            &MOBILITY,
+            counts_of::<{ ALL_KINDS }>(&board, Color::White),
+            counts_of::<{ ALL_KINDS }>(&board, Color::Black),
+        );
         assert_ne!(
             whole, 0,
             "mobility is level here, so this position says nothing about the fold"
