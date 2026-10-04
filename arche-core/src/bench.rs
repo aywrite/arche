@@ -56,6 +56,16 @@ pub struct Position {
     pub operations: HashMap<String, String>,
 }
 
+impl Position {
+    /// The position as a board. A suite is read from a committed file, so a
+    /// fen that does not parse is a broken suite and panics, naming the
+    /// instrument that was reading it.
+    pub fn board(&self, instrument: &str) -> Board {
+        Board::from_fen(&self.fen)
+            .unwrap_or_else(|e| panic!("{} position {} does not parse: {}", instrument, self.id, e))
+    }
+}
+
 pub fn positions() -> Vec<Position> {
     parse_epd(SUITE)
 }
@@ -245,9 +255,7 @@ fn run(
     let positions = positions
         .iter()
         .map(|position| {
-            let board = Board::from_fen(&position.fen)
-                .unwrap_or_else(|e| panic!("bench position {} does not parse: {}", position.id, e));
-            let mut engine = AlphaBeta::with_config(board, table_bytes, config);
+            let mut engine = AlphaBeta::with_config(position.board("bench"), table_bytes, config);
             if audit && !engine.audit_signatures() {
                 return None;
             }
@@ -294,7 +302,9 @@ fn run(
     })
 }
 
-fn share(part: u64, whole: u64) -> f64 {
+/// A part as a percentage of the whole, and zero where there is no whole.
+/// The strategic suite's shares are taken the same way.
+pub(crate) fn share(part: u64, whole: u64) -> f64 {
     if whole == 0 {
         0.0
     } else {

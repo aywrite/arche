@@ -11,7 +11,7 @@
 //! points. A fixed depth and a fixed table make the total exact and the same
 //! on any machine, which is what lets it gate rather than only report.
 
-use crate::bench::{Position, parse_epd};
+use crate::bench::{Position, parse_epd, share};
 use crate::engine::SearchConfig;
 use crate::tactics;
 use std::fmt;
@@ -93,11 +93,7 @@ pub struct ThemeReport {
 impl ThemeReport {
     /// The share of the theme's points taken, as a percentage.
     pub fn share(&self) -> f64 {
-        if self.available == 0 {
-            0.0
-        } else {
-            100.0 * f64::from(self.scored) / f64::from(self.available)
-        }
+        share(u64::from(self.scored), u64::from(self.available))
     }
 }
 
@@ -128,11 +124,7 @@ impl Report {
     }
 
     pub fn share(&self) -> f64 {
-        if self.available() == 0 {
-            0.0
-        } else {
-            100.0 * f64::from(self.scored()) / f64::from(self.available())
-        }
+        share(u64::from(self.scored()), u64::from(self.available()))
     }
 }
 

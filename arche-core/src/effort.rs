@@ -22,7 +22,6 @@
 //! measure.
 
 use crate::bench::{self, Position};
-use crate::board::Board;
 use crate::engine::{
     Ablation, AlphaBeta, Engine, ScoreBound, SearchConfig, SearchOutcome, SearchParameters,
 };
@@ -273,9 +272,8 @@ fn side(
     let mut depths = Depths::default();
     let mut answered = Vec::with_capacity(positions.len());
     for position in positions {
-        let board = Board::from_fen(&position.fen)
-            .unwrap_or_else(|e| panic!("effort position {} does not parse: {}", position.id, e));
-        let mut engine = AlphaBeta::with_config(board, bench::TABLE_BYTES, config);
+        let mut engine =
+            AlphaBeta::with_config(position.board("effort"), bench::TABLE_BYTES, config);
         engine.arm(sampler);
         let mut reached = 0;
         let outcome = engine.iterative_deepening_search(
@@ -525,15 +523,16 @@ impl Report {
     /// Shallowest depth first. A depth either side reached has a line even
     /// where the sampling kept no row of it.
     pub fn summaries(&self) -> Vec<Summary> {
-        let mut depths = self.nodes_on.reached();
-        depths.extend(self.nodes_off.reached());
-        depths.extend(self.rows.iter().map(|row| row.depth));
-        depths.sort_unstable();
-        depths.dedup();
-        depths
-            .into_iter()
-            .filter_map(|depth| self.summary(depth))
-            .collect()
+        recorder::depths(
+            self.nodes_on
+                .reached()
+                .into_iter()
+                .chain(self.nodes_off.reached())
+                .chain(self.rows.iter().map(|row| row.depth)),
+        )
+        .into_iter()
+        .filter_map(|depth| self.summary(depth))
+        .collect()
     }
 }
 
@@ -558,13 +557,14 @@ fn signed_share(delta: i64, of: u64) -> String {
 /// collision guard dropped.
 impl fmt::Display for Report {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
-        write!(f, "effort depth {} every {}", self.depth, self.every)?;
-        if self.cap != recorder::DEFAULT_CAP {
-            write!(f, " cap {}", self.cap)?;
-        }
-        if let Some(suite) = &self.suite {
-            write!(f, " epd {}", suite)?;
-        }
+        recorder::write_settings(
+            f,
+            "effort",
+            self.depth,
+            self.every,
+            self.cap,
+            self.suite.as_deref(),
+        )?;
         // stated either way, since the null run is a reading
         write!(f, " off {}", self.off.as_deref().unwrap_or("none"))?;
         if let Some(budget) = self.budget {
@@ -663,6 +663,7 @@ impl fmt::Display for Report {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::board::Board;
     use crate::recorder::DEFAULT_CAP;
     use crate::recorder::fixtures::{recording_leaves_the_search_where_it_was, suite};
     use pretty_assertions::assert_eq;

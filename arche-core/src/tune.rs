@@ -140,10 +140,7 @@ impl Terms {
         // the sign the evaluation applies at the end is folded into every
         // coefficient. The divide truncates toward zero, which is odd, so a
         // sign inside it and a sign outside it give the same integer
-        let mover = match board.active_color {
-            Color::White => 1,
-            Color::Black => -1,
-        };
+        let mover = board.active_color.sign();
         let mut coefficients = [0_i32; SLOTS];
         let mut occupied = board.occupied();
         while occupied != 0 {
@@ -152,11 +149,7 @@ impl Terms {
             let Some((piece, color)) = board.get_piece_and_color_index(index) else {
                 continue;
             };
-            let sign = mover
-                * match color {
-                    Color::White => 1,
-                    Color::Black => -1,
-                };
+            let sign = mover * color.sign();
             coefficients[MATERIAL_SLOT + piece as usize] += sign;
             // white reads the tables mirrored and black as written, so the
             // slot is named by the table's own index
@@ -362,8 +355,7 @@ pub fn run(positions: &[Position], suite: Option<&str>) -> Report {
         rows: Vec::new(),
     };
     for position in positions {
-        let board = Board::from_fen(&position.fen)
-            .unwrap_or_else(|e| panic!("terms position {} does not parse: {}", position.id, e));
+        let board = position.board("terms");
         if board.in_check() {
             report.in_check += 1;
             continue;

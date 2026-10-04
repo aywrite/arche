@@ -9,10 +9,10 @@
 //! there was a reservoir at all, which the pinned bench counts stand behind.
 
 use crate::bench::{self, Position};
-use crate::board::Board;
 use crate::engine::{AlphaBeta, Engine, Recorded, SearchConfig, SearchParameters};
 use crate::misc::Score;
 use std::collections::BinaryHeap;
+use std::fmt;
 
 /// The window a node was searched with, read from alpha and beta alone.
 ///
@@ -277,10 +277,8 @@ pub(crate) fn record<T: Recorded>(
 ) -> Sampled<T> {
     let mut sampler = Sampler::with_cap(every, cap);
     for position in positions {
-        let board = Board::from_fen(&position.fen).unwrap_or_else(|e| {
-            panic!("{} position {} does not parse: {}", T::WHAT, position.id, e)
-        });
-        let mut engine = AlphaBeta::with_config(board, bench::TABLE_BYTES, config);
+        let mut engine =
+            AlphaBeta::with_config(position.board(T::WHAT), bench::TABLE_BYTES, config);
         engine.arm(sampler);
         engine.iterative_deepening_search(SearchParameters::to_depth(depth), |_, _, _, _| {});
         sampler = engine
@@ -288,6 +286,36 @@ pub(crate) fn record<T: Recorded>(
             .expect("the sampler just handed to the engine comes back");
     }
     sampler.drain()
+}
+
+/// The opening of a sampling instrument's header: the instrument's name,
+/// the depth and the rate, then the cap and the suite where they are not
+/// the defaults. The default cap and the bench's own suite are left out, so
+/// the header says how to rerun the run it heads and no more.
+pub(crate) fn write_settings(
+    f: &mut fmt::Formatter<'_>,
+    instrument: &str,
+    depth: u8,
+    every: u32,
+    cap: usize,
+    suite: Option<&str>,
+) -> fmt::Result {
+    write!(f, "{} depth {} every {}", instrument, depth, every)?;
+    if cap != DEFAULT_CAP {
+        write!(f, " cap {}", cap)?;
+    }
+    if let Some(suite) = suite {
+        write!(f, " epd {}", suite)?;
+    }
+    Ok(())
+}
+
+/// The depths a report summarises, each once, shallowest first.
+pub(crate) fn depths(reached: impl Iterator<Item = u8>) -> Vec<u8> {
+    let mut depths: Vec<u8> = reached.collect();
+    depths.sort_unstable();
+    depths.dedup();
+    depths
 }
 
 /// What the recorders' tests share.
