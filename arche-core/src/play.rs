@@ -63,7 +63,7 @@ impl fmt::Display for Play {
         let (to_rank, to_file) = index_to_coordinate(self.to);
         write!(f, "{}{}", from_file, from_rank)?;
         write!(f, "{}{}", to_file, to_rank)?;
-        if let Some(promote) = &self.promote {
+        if let Some(promote) = self.promote {
             write!(f, "{}", char::from(promote))?;
         }
         Ok(())
