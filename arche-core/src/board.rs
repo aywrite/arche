@@ -1433,8 +1433,29 @@ impl Board {
     /// draw no rule grants. The real entries either side of a pass still
     /// compare, since the window is a range of plies. Engines that let a
     /// repetition be claimed through a pass differ here.
+    ///
+    /// An occurrence from before the root counts only once the position has
+    /// stood there twice, since the opponent helped choose those moves and
+    /// need not choose them again. One at or after the root is enough.
     pub fn has_repeated(&self) -> bool {
-        self.prior_occurrences(1) >= 1
+        let window = self.fifty_move_rule.min(self.ply).min(HISTORY_PLIES - 1);
+        let mut before_root = 0;
+        let mut back = 2;
+        while back <= window {
+            if let Some(state) = self.history[history_index(self.ply - back)] {
+                if state.position_key == self.key {
+                    if back <= self.line_ply {
+                        return true;
+                    }
+                    before_root += 1;
+                    if before_root >= 2 {
+                        return true;
+                    }
+                }
+            }
+            back += 2;
+        }
+        false
     }
 
     /// Whether the side to move has a legal move at all. Asked where a draw
@@ -2884,6 +2905,23 @@ mod make_move {
         // second repeat: the game is actually drawn
         assert_eq!(board.has_repeated(), true);
         assert_eq!(board.is_repetition(), true);
+    }
+
+    #[test]
+    fn a_position_that_stood_once_before_the_root_is_not_yet_a_draw() {
+        let mut board = Board::from_fen(fens::SHUFFLE).unwrap();
+        let cycle = [(A8, B8), (A1, B1), (B8, A8), (B1, A1)];
+        for (from, to) in cycle {
+            board.make_move(&Play::new(from, to, None, None, false, false));
+        }
+        // a search rooted here: the one earlier occurrence is pre-root
+        board.line_ply = 0;
+        assert_eq!(board.has_repeated(), false);
+        for (from, to) in cycle {
+            board.make_move(&Play::new(from, to, None, None, false, false));
+        }
+        board.line_ply = 0;
+        assert_eq!(board.has_repeated(), true);
     }
 }
 
