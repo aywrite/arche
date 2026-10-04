@@ -17,6 +17,7 @@ use arche_core::SearchConfig;
 use arche_core::bench;
 use arche_core::census;
 use arche_core::effort;
+use arche_core::forced;
 use arche_core::recorder;
 use arche_core::reduction;
 use arche_core::residual;
@@ -37,7 +38,7 @@ pub struct Instrument {
 
 /// Every command the binary takes, in usage order. The dispatch and the
 /// usage both walk it, so a command cannot be listed without being taken.
-pub const INSTRUMENTS: [Instrument; 6] = [
+pub const INSTRUMENTS: [Instrument; 7] = [
     Instrument {
         command: &uci::BENCH,
         read: read_bench,
@@ -57,6 +58,10 @@ pub const INSTRUMENTS: [Instrument; 6] = [
     Instrument {
         command: &EFFORT,
         read: |params| report(effort_settings(params)?, EffortSettings::run),
+    },
+    Instrument {
+        command: &FORCED,
+        read: |params| report(forced_settings(params)?, ForcedSettings::run),
     },
     Instrument {
         command: &TERMS,
@@ -206,6 +211,39 @@ pub const EFFORT: Command = Command {
         "search the bench's suite, or the one named, twice, the",
         "second time with one search switch off or two, and print",
         "what the rules removed and where the effort they freed went",
+    ],
+};
+
+pub const FORCED: Command = Command {
+    name: "forced",
+    depth: true,
+    keywords: &[
+        Keyword {
+            word: "every",
+            value: "<n>",
+        },
+        Keyword {
+            word: "cap",
+            value: "<n>",
+        },
+        Keyword {
+            word: "epd",
+            value: "<file>",
+        },
+        Keyword {
+            word: "kinds",
+            value: "<kind>[,<kind>]",
+        },
+        Keyword {
+            word: "from",
+            value: "<depth>",
+        },
+    ],
+    flags: &[],
+    summary: &[
+        "search the bench's suite, or the one named, sample the",
+        "shortcut decisions taken, and search each root again with",
+        "one of them inverted",
     ],
 };
 
@@ -456,6 +494,75 @@ impl EffortSettings {
     }
 }
 
+/// What a forced argument asked for. `kinds` narrows the decisions sampled
+/// to those named, comma separated, and is absent for all four. `from` is
+/// the shallowest depth a decision is sampled at, since the shallow ones
+/// are most of them and a run may be after the deep.
+pub struct ForcedSettings {
+    pub depth: u8,
+    pub every: u32,
+    pub cap: usize,
+    pub kinds: forced::Kinds,
+    pub from: u8,
+    pub epd: Option<String>,
+    pub positions: Vec<bench::Position>,
+}
+
+/// The refusal for a `kinds` that names no kind, listing them.
+fn no_such_kind(word: &str) -> String {
+    let kinds = forced::Kind::ALL.map(forced::Kind::word).join(", ");
+    format!("kinds: {word} (a kind is one of {kinds})")
+}
+
+/// The kinds `kinds` names. A refusal echoes the whole word, and a kind
+/// named twice is refused, since it is a word the reader did not mean.
+fn kinds(word: &str) -> Result<forced::Kinds, String> {
+    let mut named = Vec::new();
+    for part in word.split(',') {
+        let kind = forced::Kind::of_word(part).ok_or_else(|| no_such_kind(word))?;
+        if named.contains(&kind) {
+            return Err(format!("kinds: {word} (a kind named twice)"));
+        }
+        named.push(kind);
+    }
+    Ok(forced::Kinds::of(&named))
+}
+
+pub fn forced_settings(params: &Params) -> Result<ForcedSettings, String> {
+    let Sampling { depth, every, cap } = sampling(params, &FORCED, forced::DEFAULT_EVERY)?;
+    let kinds = match params.value("kinds") {
+        Param::Absent => forced::Kinds::ALL,
+        Param::Read(word) => kinds(word)?,
+        Param::Bare => return Err(no_such_kind(NO_VALUE)),
+        Param::Unreadable(word) => return Err(no_such_kind(word)),
+    };
+    let from = params.parse::<u8>("from").or_refuse("from")?.unwrap_or(0);
+    let (epd, positions) = suite(params)?;
+    Ok(ForcedSettings {
+        depth,
+        every,
+        cap,
+        kinds,
+        from,
+        epd,
+        positions,
+    })
+}
+
+impl ForcedSettings {
+    pub fn run(&self) -> forced::Report {
+        forced::run(
+            &self.positions,
+            self.epd.as_deref(),
+            self.depth,
+            self.every,
+            self.cap,
+            self.kinds,
+            self.from,
+        )
+    }
+}
+
 /// What a terms argument asked for. No depth, rate or cap: a run states
 /// every quiet position of the suite, because the corpus is what is being
 /// built.
@@ -531,6 +638,8 @@ mod tests {
             "epd" => SUITE,
             "taint" => "trust",
             "off" => "null_move",
+            "kinds" => "skip",
+            "from" => "1",
             _ => panic!("no value to give {keyword}"),
         }
     }
@@ -947,6 +1056,32 @@ mod tests {
         }
     }
 
+    #[test]
+    fn forced_reads_the_kinds_named_and_refuses_the_rest() {
+        let read = |line: &str| forced_settings(&Params::of(line)).map(|s| s.kinds);
+        assert_eq!(
+            read("forced kinds skip,trusted_scout"),
+            Ok(forced::Kinds::of(&[
+                forced::Kind::Skip,
+                forced::Kind::TrustedScout
+            ]))
+        );
+        let listed = "(a kind is one of reverse_futility, null_move, skip, trusted_scout)";
+        for (line, refused) in [
+            ("forced kinds skips", format!("kinds: skips {listed}")),
+            (
+                "forced kinds skip,nul_move",
+                format!("kinds: skip,nul_move {listed}"),
+            ),
+            (
+                "forced kinds skip,skip",
+                "kinds: skip,skip (a kind named twice)".to_string(),
+            ),
+        ] {
+            assert_eq!(read(line).err(), Some(refused), "{line}");
+        }
+    }
+
     /// The four rate defaults are the same number today, so the assertions
     /// on them cannot tell which one a reader passed. The loop only shows
     /// that `sampling` uses the rate it is handed.
@@ -956,18 +1091,33 @@ mod tests {
         let cutoffs = cutoff_settings(&Params::of("cutoffs")).unwrap();
         let reductions = reduction_settings(&Params::of("reductions")).unwrap();
         let effort = effort_settings(&Params::of("effort")).unwrap();
+        let forced = forced_settings(&Params::of("forced")).unwrap();
 
         for depth in [
             residuals.depth,
             cutoffs.depth,
             reductions.depth,
             effort.depth,
+            forced.depth,
         ] {
             assert_eq!(depth, bench::DEPTH);
         }
-        for cap in [residuals.cap, cutoffs.cap, reductions.cap, effort.cap] {
+        for cap in [
+            residuals.cap,
+            cutoffs.cap,
+            reductions.cap,
+            effort.cap,
+            forced.cap,
+        ] {
             assert_eq!(cap, DEFAULT_CAP);
         }
+        assert_eq!(forced.every, forced::DEFAULT_EVERY);
+        assert_eq!(forced.kinds, forced::Kinds::ALL);
+        assert_eq!(forced.from, 0);
+        assert_eq!(
+            forced_settings(&Params::of("forced from 4")).map(|s| s.from),
+            Ok(4)
+        );
         assert_eq!(residuals.every, residual::DEFAULT_EVERY);
         assert_eq!(cutoffs.every, census::DEFAULT_EVERY);
         assert_eq!(reductions.every, reduction::DEFAULT_EVERY);
@@ -978,6 +1128,7 @@ mod tests {
             (&CUTOFFS, "cutoffs", 22),
             (&REDUCTIONS, "reductions", 33),
             (&EFFORT, "effort", 44),
+            (&FORCED, "forced", 55),
         ] {
             let read = sampling(&Params::of(word), command, default).expect(word);
             assert_eq!(read.every, default, "{word} took a rate not its own");

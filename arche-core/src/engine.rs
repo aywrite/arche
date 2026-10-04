@@ -5,6 +5,7 @@ use crate::board::{Board, MOVE_LIST_INLINE, MoveList, Unplayable};
 use crate::census;
 use crate::effort;
 use crate::eval;
+use crate::forced;
 use crate::ghi::GhiCounters;
 use crate::late_move;
 use crate::limits::Limits;
@@ -1193,6 +1194,10 @@ pub struct AlphaBeta {
     /// population its reservoir samples. Bumped only when the reservoir is
     /// armed.
     effort_depths: effort::Depths,
+    /// The forced decision instrument's arm, or none, on the sampler's
+    /// terms: read behind a bare check where each decision it can invert
+    /// is taken, and nowhere else.
+    forced: Option<Box<forced::Arm>>,
 }
 
 /// What a search can be armed to record. Implemented here rather than
@@ -1266,6 +1271,7 @@ impl AlphaBeta {
             ledger: None,
             effort: None,
             effort_depths: effort::Depths::default(),
+            forced: None,
         }
     }
 
@@ -1282,6 +1288,167 @@ impl AlphaBeta {
     /// its cap describing the whole run.
     pub(crate) fn disarm<T: Recorded>(&mut self) -> Option<Sampler<T>> {
         T::slot(self).take()
+    }
+
+    /// Arm the forced decision instrument, to sample the decisions taken
+    /// or to invert one.
+    pub(crate) fn arm_forced(&mut self, arm: forced::Arm) {
+        self.forced = Some(Box::new(arm));
+    }
+
+    /// The arm back, with what it sampled or counted.
+    pub(crate) fn disarm_forced(&mut self) -> Option<forced::Arm> {
+        self.forced.take().map(|arm| *arm)
+    }
+
+    /// A node decision just taken, the margin's or the pass's, offered to
+    /// the forced decision instrument. True when it is the decision being
+    /// inverted, which the caller then does not take.
+    // cold and out of line behind a bare is_some, for `sample`'s reason
+    #[cold]
+    #[inline(never)]
+    fn forced_node(
+        &mut self,
+        kind: forced::Kind,
+        depth: u8,
+        eval: Score,
+        alpha: Score,
+        beta: Score,
+    ) -> bool {
+        let address = forced::Address {
+            kind,
+            key: self.board.key,
+            depth,
+        };
+        let board = &self.board;
+        let Some(arm) = self.forced.as_mut() else {
+            return false;
+        };
+        if arm.inverts(address) {
+            return true;
+        }
+        arm.offer(address, |root, at| forced::Event {
+            address,
+            root,
+            at,
+            features: None,
+            eval_beta: i32::from(eval) - i32::from(beta),
+            alpha_gap: i32::from(alpha) - i32::from(eval),
+            attention: None,
+            fen: board.to_fen(),
+        });
+        false
+    }
+
+    /// What answered a node whose margin was inverted, kept from the first
+    /// such visit.
+    #[cold]
+    #[inline(never)]
+    fn forced_answered(&mut self, answered: forced::Answered) {
+        if let Some(arm) = self.forced.as_mut() {
+            arm.answered.get_or_insert(answered);
+        }
+    }
+
+    /// A late quiet a rule just passed over, offered to the forced decision
+    /// instrument. True when it is the decision being inverted. The move is
+    /// made and unmade to read the key of the position it leaves, which is
+    /// the address; one that turns out illegal denied nothing.
+    #[cold]
+    #[inline(never)]
+    fn forced_skip(
+        &mut self,
+        node: &Node,
+        rules: &mut late_move::Rules,
+        moves: &[Play],
+        m: &Play,
+    ) -> bool {
+        let features = late_move::features(&self.deciding(), node, rules, moves, m);
+        if !self.board.make_move(m) {
+            return false;
+        }
+        let key = self.board.key;
+        self.board.undo_move();
+        let address = forced::Address {
+            kind: forced::Kind::Skip,
+            key,
+            depth: node.depth,
+        };
+        let board = &self.board;
+        let Some(arm) = self.forced.as_mut() else {
+            return false;
+        };
+        if arm.inverts(address) {
+            return true;
+        }
+        arm.offer(address, |root, at| {
+            let eval = i64::from(crate::eval::eval(board));
+            let (eval_beta, alpha_gap) =
+                (eval - i64::from(node.beta), i64::from(node.alpha) - eval);
+            forced::Event {
+                address,
+                root,
+                at,
+                features: Some(features),
+                eval_beta: eval_beta as i32,
+                alpha_gap: alpha_gap as i32,
+                attention: late_move::attention(node.depth, &features, eval_beta, alpha_gap),
+                fen: board.to_fen(),
+            }
+        });
+        false
+    }
+
+    /// A reduced scout that came back at or below alpha, offered to the
+    /// forced decision instrument before it answers for its move. True when
+    /// it is the decision being inverted. The board is the position the
+    /// move left, which is the address, and the node's own evaluation is
+    /// read by stepping the move back, for kept events alone.
+    #[cold]
+    #[inline(never)]
+    fn forced_scout(
+        &mut self,
+        staged: Option<&reduction::Staged>,
+        depth: u8,
+        alpha: Score,
+        beta: Score,
+    ) -> bool {
+        let address = forced::Address {
+            kind: forced::Kind::TrustedScout,
+            key: self.board.key,
+            depth,
+        };
+        let board = &mut self.board;
+        let Some(arm) = self.forced.as_mut() else {
+            return false;
+        };
+        if arm.inverts(address) {
+            return true;
+        }
+        let Some(staged) = staged else {
+            return false;
+        };
+        arm.offer(address, |root, at| {
+            board.undo_move();
+            let eval = i64::from(crate::eval::eval(board));
+            let fen = board.to_fen();
+            assert!(
+                board.make_move(&staged.play),
+                "the scouted move was made once already"
+            );
+            let (eval_beta, alpha_gap) = (eval - i64::from(beta), i64::from(alpha) - eval);
+            forced::Event {
+                address,
+                root,
+                at,
+                features: Some(staged.features),
+                eval_beta: eval_beta as i32,
+                alpha_gap: alpha_gap as i32,
+                attention: late_move::attention(depth, &staged.features, eval_beta, alpha_gap),
+                fen,
+            }
+        });
+        false
     }
 
     /// What the node knew about a move at the gate, gathered for a
@@ -1954,6 +2121,9 @@ impl AlphaBeta {
             None => self.eval(),
         };
         *eval_memo = Some(eval);
+        // set only by the forced decision instrument, which then wants to
+        // know what answered the node instead
+        let mut margin_inverted = false;
 
         // the margin proves `eval - margin` as a lower bound, and fail soft
         // returns that. Clean: a static eval consulted no path
@@ -1965,10 +2135,16 @@ impl AlphaBeta {
                 self.sample(Shortcut::ShadowFutility, depth, floor, alpha, beta, eval);
             }
             if floor >= beta {
-                if self.sampler.is_some() {
-                    self.sample(Shortcut::ReverseFutility, depth, floor, alpha, beta, eval);
+                if self.forced.is_some()
+                    && self.forced_node(forced::Kind::ReverseFutility, depth, eval, alpha, beta)
+                {
+                    margin_inverted = true;
+                } else {
+                    if self.sampler.is_some() {
+                        self.sample(Shortcut::ReverseFutility, depth, floor, alpha, beta, eval);
+                    }
+                    return Ok(Some(Value::clean(floor)));
                 }
-                return Ok(Some(Value::clean(floor)));
             }
         }
 
@@ -1986,7 +2162,10 @@ impl AlphaBeta {
             // undo before an abort can propagate
             self.board.undo_null_move();
             let value = -result?;
-            if value.score >= beta {
+            if value.score >= beta
+                && !(self.forced.is_some()
+                    && self.forced_node(forced::Kind::NullMove, depth, eval, alpha, beta))
+            {
                 // a mate found through a pass is not a mate, since the pass
                 // is not a legal move, so the score is held under the window
                 // a caller reads mates in
@@ -1994,9 +2173,15 @@ impl AlphaBeta {
                 if self.sampler.is_some() {
                     self.sample(Shortcut::NullMove, depth, score, alpha, beta, eval);
                 }
+                if margin_inverted {
+                    self.forced_answered(forced::Answered::NullMove);
+                }
                 return Ok(Some(Value::with_taint(score, value.tainted)));
             }
             taint.absorb(value);
+        }
+        if margin_inverted {
+            self.forced_answered(forced::Answered::Moves);
         }
         Ok(None)
     }
@@ -2089,11 +2274,14 @@ impl AlphaBeta {
                     entered_at,
                 );
             }
-            if scout.score <= alpha {
+            if scout.score <= alpha
+                && !(self.forced.is_some() && self.forced_scout(staged, depth, alpha, beta))
+            {
                 return Ok(scout);
             }
             // the scout's fail high asked for the searches below, so they
-            // carry its taint
+            // carry its taint, as does a trusted fail low the forced
+            // decision instrument inverted
             tainted = scout.tainted;
         }
         let probe = -self.alpha_beta(
@@ -2205,7 +2393,10 @@ impl AlphaBeta {
         let front = quiets.front;
         if i == front {
             if let Some(ply) = quiets.ply {
-                if self.ledger.is_some() {
+                // the forced decision instrument asks the shallow rules
+                // move by move as the ledger does, since it has to see
+                // every skip it may invert
+                if self.ledger.is_some() || self.forced.is_some() {
                     self.ordering.order_quiets(
                         &self.board,
                         &mut moves[front..],
@@ -2286,6 +2477,12 @@ impl AlphaBeta {
             return Decision::First;
         }
         if rules.skips(&self.deciding(), node, m) {
+            if self.forced.is_some() && self.forced_skip(node, rules, moves, m) {
+                return Decision::Search {
+                    reduction: 0,
+                    staged: None,
+                };
+            }
             self.record_skip(node, rules, moves, m);
             return Decision::Skip;
         }
@@ -2297,6 +2494,12 @@ impl AlphaBeta {
         }
         match late_move::decide_admitted(&self.deciding(), node, rules, moves, m) {
             late_move::Verdict::Skip => {
+                if self.forced.is_some() && self.forced_skip(node, rules, moves, m) {
+                    return Decision::Search {
+                        reduction: 0,
+                        staged: None,
+                    };
+                }
                 self.record_skip(node, rules, moves, m);
                 Decision::Skip
             }
@@ -2413,7 +2616,7 @@ impl AlphaBeta {
         m: &Play,
         reduction: u8,
     ) -> Option<reduction::Staged> {
-        if reduction > 0 && self.ledger.is_some() {
+        if reduction > 0 && (self.ledger.is_some() || self.forced.is_some()) {
             Some(self.staged_reduction(m, node, rules, moves))
         } else {
             None
