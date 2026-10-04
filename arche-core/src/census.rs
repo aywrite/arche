@@ -262,10 +262,7 @@ impl Report {
 
     /// Shallowest depth first.
     pub fn summaries(&self) -> Vec<Summary> {
-        let mut depths: Vec<u8> = self.rows.iter().map(|row| row.depth).collect();
-        depths.sort_unstable();
-        depths.dedup();
-        depths
+        recorder::depths(self.rows.iter().map(|row| row.depth))
             .into_iter()
             .filter_map(|depth| self.summary(depth))
             .collect()
@@ -289,10 +286,7 @@ fn mean(total: usize, over: usize) -> String {
 /// print `-` rather than moving the columns.
 impl fmt::Display for Report {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
-        write!(f, "cutoffs depth {} every {}", self.depth, self.every)?;
-        if self.cap != recorder::DEFAULT_CAP {
-            write!(f, " cap {}", self.cap)?;
-        }
+        recorder::write_settings(f, "cutoffs", self.depth, self.every, self.cap, None)?;
         write!(
             f,
             " positions {} events {} records {}",

@@ -19,7 +19,6 @@
 //! fresh engine and table with no clock.
 
 use crate::bench::{self, Position};
-use crate::board::Board;
 use crate::engine::{AlphaBeta, Engine, SearchOutcome, SearchParameters};
 use crate::late_move::Features;
 use crate::misc::Score;
@@ -260,9 +259,7 @@ pub struct Answer {
 /// bench's and there is no clock, so two searches of a root agree until
 /// the arm makes them differ.
 fn search(position: &Position, depth: u8, arm: Arm) -> (Answer, Arm) {
-    let board = Board::from_fen(&position.fen)
-        .unwrap_or_else(|e| panic!("forced position {} does not parse: {}", position.id, e));
-    let mut engine = AlphaBeta::with_table_bytes(board, bench::TABLE_BYTES);
+    let mut engine = AlphaBeta::with_table_bytes(position.board("forced"), bench::TABLE_BYTES);
     engine.arm_forced(arm);
     let outcome =
         engine.iterative_deepening_search(SearchParameters::to_depth(depth), |_, _, _, _| {});
@@ -385,11 +382,6 @@ pub fn run(
     }
 }
 
-/// A count and a share, or a `-` with nothing under it.
-fn count_share(part: usize, of: usize) -> String {
-    format!("{} {}", part, recorder::share(part, of))
-}
-
 /// A header and the rows, then under `summary` the tallies for each kind
 /// and what the default answered at each root.
 ///
@@ -419,7 +411,6 @@ impl fmt::Display for Report {
         )?;
         for row in &self.rows {
             let e = &row.event;
-            let dash = || "-".to_string();
             let features = match &e.features {
                 Some(m) => format!(
                     "{} {} {} {} {} {} {}",
@@ -441,7 +432,8 @@ impl fmt::Display for Report {
                 features,
                 e.eval_beta,
                 e.alpha_gap,
-                e.attention.map_or_else(dash, |score| score.to_string()),
+                e.attention
+                    .map_or_else(|| "-".to_string(), |score| score.to_string()),
                 row.answered.map_or("-", Answered::word),
                 row.visits,
                 e.root,
@@ -467,13 +459,15 @@ impl fmt::Display for Report {
                 .collect();
             let unmet = rows.iter().filter(|row| row.visits == 0).count();
             let flipped = rows.iter().filter(|row| row.flipped()).count();
+            // the count and its share, which is `-` with nothing under it
             writeln!(
                 f,
-                "kind {} forced {} unmet {} flipped {}",
+                "kind {} forced {} unmet {} flipped {} {}",
                 kind.word(),
                 rows.len(),
                 unmet,
-                count_share(flipped, rows.len()),
+                flipped,
+                recorder::share(flipped, rows.len()),
             )?;
         }
         for (root, (id, answer)) in self.roots.iter().enumerate() {
@@ -490,6 +484,7 @@ impl fmt::Display for Report {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::board::Board;
     use crate::recorder::DEFAULT_CAP;
     use crate::recorder::fixtures::{recording_leaves_the_search_where_it_was, suite};
     use pretty_assertions::assert_eq;

@@ -11,7 +11,6 @@
 //! than only report.
 
 use crate::bench::{Position, parse_epd};
-use crate::board::Board;
 use crate::engine::{AlphaBeta, Engine, SearchConfig, SearchOutcome, SearchParameters};
 
 /// The depth every position is searched to, chosen from a measurement and
@@ -216,8 +215,7 @@ pub fn run_suite(
     let positions = positions
         .iter()
         .map(|position| {
-            let board = Board::from_fen(&position.fen)
-                .unwrap_or_else(|e| panic!("suite position {} does not parse: {}", position.id, e));
+            let board = position.board("suite");
             // whole tokens rather than a fixed width: a promotion is five
             // characters, and a matcher that sliced four would call a queen
             // and a knight the same move
@@ -255,6 +253,7 @@ pub fn run_suite(
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::board::Board;
 
     #[test]
     fn every_position_parses_and_names_a_move() {

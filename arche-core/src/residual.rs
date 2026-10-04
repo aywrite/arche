@@ -20,7 +20,7 @@ use crate::bench::Position;
 use crate::board::Board;
 use crate::engine::{AlphaBeta, Engine, SearchConfig, SearchOutcome, SearchParameters};
 use crate::misc::Score;
-use crate::recorder::{self, DEFAULT_CAP, Window};
+use crate::recorder::{self, Window};
 use crate::value::Value;
 use std::fmt;
 
@@ -371,18 +371,15 @@ impl Report {
 
     /// Every summary of one kind, shallowest depth first.
     pub fn summaries(&self, kind: Shortcut) -> Vec<Summary> {
-        let mut depths: Vec<u8> = self
-            .rows
-            .iter()
-            .filter(|row| row.kind == kind)
-            .map(|row| row.depth)
-            .collect();
-        depths.sort_unstable();
-        depths.dedup();
-        depths
-            .into_iter()
-            .filter_map(|depth| self.summary(kind, depth))
-            .collect()
+        recorder::depths(
+            self.rows
+                .iter()
+                .filter(|row| row.kind == kind)
+                .map(|row| row.depth),
+        )
+        .into_iter()
+        .filter_map(|depth| self.summary(kind, depth))
+        .collect()
     }
 }
 
@@ -400,15 +397,14 @@ impl Report {
 /// node, and whether the node stood on the line to the root.
 impl fmt::Display for Report {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
-        write!(f, "residuals depth {} every {}", self.depth, self.every)?;
-        // the default cap and the bench's own suite are left out, so the
-        // header says how to rerun the run it heads
-        if self.cap != DEFAULT_CAP {
-            write!(f, " cap {}", self.cap)?;
-        }
-        if let Some(suite) = &self.suite {
-            write!(f, " epd {}", suite)?;
-        }
+        recorder::write_settings(
+            f,
+            "residuals",
+            self.depth,
+            self.every,
+            self.cap,
+            self.suite.as_deref(),
+        )?;
         write!(
             f,
             " taint {} positions {} events {} records {}",
@@ -478,8 +474,8 @@ impl fmt::Display for Report {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::recorder::Sampler;
     use crate::recorder::fixtures::{recording_leaves_the_search_where_it_was, suite};
+    use crate::recorder::{DEFAULT_CAP, Sampler};
 
     /// Scores just inside the mate window, either side of it.
     const MATING: Score = crate::value::CHECKMATE_THRESHOLD + 1;
