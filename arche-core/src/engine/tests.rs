@@ -292,12 +292,13 @@ mod search {
     #[test]
     fn the_reported_line_opens_with_the_move_actually_answered() {
         // A deeper entry for the root position, left by an earlier search of
-        // it, used to win the depth contest against the root's own store:
-        // the table then told a line opening with the leftover's move while
-        // bestmove answered the fresh one, and the two disagreed in front of
-        // whatever was relaying the search. Here the queen hangs, so a fresh
-        // search must answer with the capture, while the planted leftover
-        // claims a quiet king move from a depth no shallow search can beat.
+        // it, used to win the replacement contest against the root's own
+        // store: the table then told a line opening with the leftover's move
+        // while bestmove answered the fresh one, and the two disagreed in
+        // front of whatever was relaying the search. Here the queen hangs, so
+        // a fresh search must answer with the capture, while the planted
+        // leftover claims a quiet king move from a depth no shallow search
+        // can beat.
         let game = Board::from_fen("k7/8/8/3q4/8/8/3R4/K7 w - - 0 1").unwrap();
         let mut e = engine(game);
         let quiet = play_named(&e.board, "a1b1");

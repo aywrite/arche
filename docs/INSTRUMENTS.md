@@ -792,9 +792,9 @@ evictions count stores. A comparison is one live entry a probe really compared
 its signature against whose full key belonged to another position, so each is
 one chance in two to the signature's width, and every expectation is drawn from
 that total. An aliased eviction is a store that landed in a slot the signature
-said was its own and replaced another position's entry. A store the depth
-contest turned away after comparing itself with a foreign entry is a related
-cost but evicted nothing, so it is not counted.
+said was its own and replaced another position's entry. A store the
+replacement contest turned away after comparing itself with a foreign entry
+is a related cost but evicted nothing, so it is not counted.
 
 The thirty two bit count cannot say anything on its own: a run of this size
 expects a few thousandths of a false accept, so a zero is what a working

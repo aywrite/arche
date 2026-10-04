@@ -96,8 +96,8 @@ pub struct SignatureCounters {
     pub narrow_accepts: [u64; NARROW_WIDTHS.len()],
     /// Stores whose slice matched a foreign full key, so the store replaced
     /// another position's entry as this position's. Landed stores only: a
-    /// store the depth contest turns away after comparing against a foreign
-    /// entry's depth is a related cost, but nothing was evicted.
+    /// store the contest in `set` turns away after comparing against a
+    /// foreign entry's worth is a related cost, but nothing was evicted.
     pub aliased_evictions: u64,
 }
 
@@ -294,9 +294,17 @@ const STALE_AFTER_SEARCHES: u8 = 12;
 /// The generations run from one to this and round again, so generation
 /// zero reads as empty. Ages are taken modulo this, so an entry from
 /// thirty one searches ago or more reads as recent again and holds its slot
-/// by depth until it ages out again. Nothing wrong is read, since a hit is
-/// keyed; a slot is only held longer than it should be.
+/// by its worth until it ages out again. Nothing wrong is read, since a hit
+/// is keyed; a slot is only held longer than it should be.
 const GENERATIONS: u8 = 31;
+
+/// The plies of depth an entry is worth less for each search since it was
+/// stored. A search on, the game has moved two plies and has usually left
+/// the line the entry was searched for, so an entry from this search
+/// outranks an older one unless the older is deeper by eight plies a
+/// search. Stockfish 16 and its current master choose their victim with
+/// the same weight (Stockfish 17 used sixteen).
+const AGE_WEIGHT: i16 = 8;
 
 impl Entry {
     const EMPTY: Entry = Entry {
@@ -782,6 +790,14 @@ impl TranspositionTable {
         self.replaceable = replaceable_under(self.generation);
     }
 
+    /// What an entry is worth keeping: its depth, less `AGE_WEIGHT` plies
+    /// for each search since it was stored. An entry from this search is
+    /// worth its depth.
+    #[inline(always)]
+    fn worth(&self, entry: Entry) -> i16 {
+        i16::from(entry.depth) - AGE_WEIGHT * i16::from(self.age(entry))
+    }
+
     /// How many searches ago an entry was stored.
     #[inline]
     fn age(&self, entry: Entry) -> u8 {
@@ -908,8 +924,8 @@ impl TranspositionTable {
     }
 
     /// Where in its bucket a position goes: its own entry if it has one,
-    /// else an empty one, else a stale one, else the shallowest. This and
-    /// the depth contest in `set` are the whole replacement policy. The
+    /// else an empty one, else a stale one, else the one worth least. This
+    /// and the contest in `set` are the whole replacement policy. The
     /// third field says the slot was found replaceable, so the contest need
     /// not ask again.
     #[inline(always)]
@@ -922,30 +938,35 @@ impl TranspositionTable {
         }
         let bucket = self.bucket(index);
         let mut victim = 0;
+        let mut least = i16::MAX;
         for i in 0..BUCKET {
             let entry = bucket.entry(i);
             if self.replaceable(entry) {
                 return (index, i, true);
             }
-            if entry.depth < bucket.rest[victim].depth {
+            let worth = self.worth(entry);
+            if worth < least {
+                least = worth;
                 victim = i;
             }
         }
         (index, victim, false)
     }
 
-    /// Store unless the slot holds something worth more. Reports whether
-    /// the entry landed.
+    /// Store unless the slot holds something worth more: an entry whose
+    /// worth is above the new store's depth, or an exact entry of the same
+    /// position whose worth equals that depth where the new store is not
+    /// exact. Reports whether the entry landed.
     #[inline(always)]
     fn set(&mut self, key: u64, pv: Pv) -> bool {
         let (index, i, free) = self.slot_for(key);
         let old = self.bucket(index).entry(i);
         debug_assert!(!free || self.replaceable(old));
         if !free && !self.replaceable(old) {
-            if pv.depth < old.depth {
+            if i16::from(pv.depth) < self.worth(old) {
                 return false;
             }
-            if pv.depth == old.depth
+            if i16::from(pv.depth) == self.worth(old)
                 && old.key == Entry::slice(key)
                 && matches!(old.bound(), Bound::Exact)
                 && !matches!(pv.bound, Bound::Exact)
@@ -977,7 +998,7 @@ impl TranspositionTable {
         audit.keys[at] = key;
     }
 
-    /// Store without the depth contest. For the root's end-of-iteration
+    /// Store without the contest. For the root's end-of-iteration
     /// entry: it names the move about to be answered with, and the reported
     /// line is read back from its slot, so an entry a deeper search left
     /// there earlier in the game must not outrank it. When one did, the
@@ -1033,7 +1054,7 @@ impl TranspositionTable {
     }
 
     /// What the three `record_` methods share: the entry, offered to the
-    /// depth contest.
+    /// replacement contest.
     #[inline(always)]
     fn record(
         &mut self,
@@ -1050,8 +1071,9 @@ impl TranspositionTable {
         )
     }
 
-    /// The move the engine is about to answer with, stored past the depth
-    /// contest for the reason `set_always` gives, so it always lands.
+    /// The move the engine is about to answer with, stored past the
+    /// replacement contest for the reason `set_always` gives, so it always
+    /// lands.
     #[must_use]
     pub fn record_answer(&mut self, board: &Board, play: Play, score: Value, depth: u8) -> bool {
         self.set_always(
@@ -1061,9 +1083,9 @@ impl TranspositionTable {
         true
     }
 
-    /// The move a root iteration failed high on, stored past the depth
-    /// contest as the floor it is, so the wider re-search orders it first.
-    /// It always lands.
+    /// The move a root iteration failed high on, stored past the
+    /// replacement contest as the floor it is, so the wider re-search orders
+    /// it first. It always lands.
     #[must_use]
     pub fn record_floor_answer(
         &mut self,
@@ -1374,8 +1396,8 @@ mod tests {
 
     #[test]
     fn a_quiescence_entry_does_not_evict_a_searched_entry() {
-        // quiescence writes at depth zero, so the depth contest is what
-        // keeps its entries from displacing a searched position's
+        // quiescence writes at depth zero, so within a search the contest is
+        // what keeps its entries from displacing a searched position's
         let mut table = full_bucket(5);
         table.set(5, new_pv(Bound::Lower, 0));
         assert!(table.get(5).is_none());
@@ -1534,7 +1556,8 @@ mod tests {
 
     #[test]
     fn an_entry_from_searches_ago_is_replaced_regardless_of_depth() {
-        let mut table = full_bucket(8);
+        // deep enough that its worth holds the slot until the window ends
+        let mut table = full_bucket(MAX_PLY);
         for _ in 0..STALE_AFTER_SEARCHES - 1 {
             table.new_search();
         }
@@ -1544,6 +1567,61 @@ mod tests {
         table.set(5, new_pv(Bound::Lower, 1));
         assert!(table.get(5).is_some());
         assert_eq!(kept(&table, 1..=4), 3);
+    }
+
+    #[test]
+    fn an_entry_from_the_last_search_is_worth_eight_plies_less() {
+        let mut table = full_bucket(12);
+        table.new_search();
+        table.set(5, new_pv(Bound::Lower, 3));
+        assert!(table.get(5).is_none(), "worth four, deeper than three");
+        table.set(5, new_pv(Bound::Lower, 4));
+        assert!(table.get(5).is_some(), "worth four, no deeper than four");
+        assert_eq!(kept(&table, 1..=4), 3);
+    }
+
+    #[test]
+    fn a_positions_own_entry_from_the_last_search_takes_a_shallower_store() {
+        let mut table = TranspositionTable::with_capacity(4).expect("a table of a few buckets");
+        table.set(1, new_pv(Bound::Lower, 10));
+        table.set(1, new_pv(Bound::Lower, 9));
+        assert_eq!(table.get(1).unwrap().depth, 10, "this search's, kept");
+        table.new_search();
+        table.set(1, new_pv(Bound::Lower, 2));
+        assert_eq!(table.get(1).unwrap().depth, 2, "worth two, replaced");
+    }
+
+    #[test]
+    fn an_exact_entry_from_the_last_search_is_held_at_its_worth() {
+        let mut table = TranspositionTable::with_capacity(4).expect("a table of a few buckets");
+        table.set(1, new_pv(Bound::Exact, 10));
+        table.new_search();
+        table.set(1, new_pv(Bound::Lower, 2));
+        assert!(
+            matches!(table.get(1).unwrap().bound, Bound::Exact),
+            "worth two, exact, holds against a bound of two"
+        );
+        table.set(1, new_pv(Bound::Exact, 2));
+        assert_eq!(table.get(1).unwrap().depth, 2);
+    }
+
+    #[test]
+    fn the_victim_is_the_entry_worth_least_not_the_shallowest() {
+        let mut table = TranspositionTable::with_capacity(4).expect("a table of a few buckets");
+        table.set(1, new_pv(Bound::Exact, 10));
+        table.set(2, new_pv(Bound::Exact, 9));
+        table.new_search();
+        table.set(3, new_pv(Bound::Exact, 3));
+        table.set(4, new_pv(Bound::Exact, 3));
+        // worth 2, 1, 3 and 3: the depth nine entry from the last search goes
+        table.set(5, new_pv(Bound::Lower, 3));
+        assert!(
+            table.get(2).is_none(),
+            "the entry worth least should have gone"
+        );
+        for key in [1, 3, 4, 5] {
+            assert!(table.get(key).is_some(), "key {key} should be there");
+        }
     }
 
     #[test]
@@ -1563,11 +1641,11 @@ mod tests {
             table.new_search();
         }
         for key in 1..=4 {
-            table.set(key, new_pv(Bound::Exact, 8));
+            table.set(key, new_pv(Bound::Exact, MAX_PLY));
         }
         table.new_search();
         table.set(5, new_pv(Bound::Lower, 1));
-        assert!(table.get(5).is_none(), "one search old, kept by depth");
+        assert!(table.get(5).is_none(), "one search old, kept by its worth");
         for _ in 0..STALE_AFTER_SEARCHES - 1 {
             table.new_search();
         }
