@@ -2968,10 +2968,10 @@ impl AlphaBeta {
         SearchOutcome::Complete(self.result_for(play, score), bound)
     }
 
-    /// The root's answer to the table, past the taint policy and the depth
-    /// contest, because the reported line is read back from this slot.
-    /// Under `Skip` a tainted root answer is stored too, and the rare
-    /// tainted cutoff it then offers is refused as under `Refuse`. A
+    /// The root's answer to the table, past the taint policy and the
+    /// replacement contest, because the reported line is read back from
+    /// this slot. Under `Skip` a tainted root answer is stored too, and the
+    /// rare tainted cutoff it then offers is refused as under `Refuse`. A
     /// ceiling is not stored, so the closest move is never promoted over a
     /// move it was not shown to beat.
     fn store_root_answer(&mut self, play: Play, value: Value, depth: u8, bound: ScoreBound) {
