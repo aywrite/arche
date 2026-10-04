@@ -2776,6 +2776,9 @@ mod make_move {
     const NEAR_THE_WRAP: &str =
         "r4rk1/1pp1qppp/p1np1n2/2b1p1B1/2B1P1b1/P1NP1N2/1PP1QPPP/R4RK1 b - - 3 127";
 
+    /// Four rook moves that bring the shuffle position back to itself.
+    const CYCLE: [(u8, u8); 4] = [(A8, B8), (A1, B1), (B8, A8), (B1, A1)];
+
     #[test]
     fn a_repetition_is_still_seen_when_the_history_wraps() {
         let mut board = Board::from_fen(NEAR_THE_WRAP).unwrap();
@@ -2785,12 +2788,11 @@ mod make_move {
             "the cycle must cross the wrap"
         );
 
-        let cycle = [(A8, B8), (A1, B1), (B8, A8), (B1, A1)];
-        for (from, to) in cycle {
+        for (from, to) in CYCLE {
             assert!(board.make_move(&Play::new(from, to, None, None, false, false)));
         }
         assert!(board.has_repeated());
-        for (from, to) in cycle {
+        for (from, to) in CYCLE {
             assert!(board.make_move(&Play::new(from, to, None, None, false, false)));
         }
         assert!(board.is_repetition());
@@ -2800,11 +2802,10 @@ mod make_move {
     fn moves_can_be_unmade_across_the_wrap() {
         let start = Board::from_fen(NEAR_THE_WRAP).unwrap();
         let mut board = start.clone();
-        let cycle = [(A8, B8), (A1, B1), (B8, A8), (B1, A1)];
-        for (from, to) in cycle {
+        for (from, to) in CYCLE {
             assert!(board.make_move(&Play::new(from, to, None, None, false, false)));
         }
-        for _ in cycle {
+        for _ in CYCLE {
             board.undo_move();
         }
         assert_eq!(board, start);
@@ -2820,10 +2821,9 @@ mod make_move {
     #[test]
     fn has_repeated_fires_a_cycle_before_is_repetition() {
         let mut board = Board::from_fen(fens::SHUFFLE).unwrap();
-        let cycle = [(A8, B8), (A1, B1), (B8, A8), (B1, A1)];
         assert_eq!(board.has_repeated(), false);
 
-        for (from, to) in cycle {
+        for (from, to) in CYCLE {
             // and no false positives anywhere on the way round
             assert_eq!(board.is_repetition(), false);
             board.make_move(&Play::new(from, to, None, None, false, false));
@@ -2832,7 +2832,7 @@ mod make_move {
         assert_eq!(board.has_repeated(), true);
         assert_eq!(board.is_repetition(), false);
 
-        for (from, to) in cycle {
+        for (from, to) in CYCLE {
             assert_eq!(board.is_repetition(), false);
             board.make_move(&Play::new(from, to, None, None, false, false));
         }
@@ -3287,57 +3287,40 @@ mod perft {
         ),
     ];
 
-    #[test]
-    fn the_standard_positions_count_exactly() {
+    /// Every case at every depth through one of the three walks, `how`
+    /// naming the walk in the failure.
+    fn counts_exactly(perft: fn(&mut Board, u8) -> u64, how: &str) {
         for (description, fen, counts) in CASES {
             let mut board = Board::from_fen(fen).unwrap();
             for (i, &expected) in counts.iter().enumerate() {
                 let depth = i as u8 + 1;
                 assert_eq!(
-                    board.perft(depth),
+                    perft(&mut board, depth),
                     expected,
-                    "{} at depth {}",
+                    "{} at depth {}{}",
                     description,
-                    depth
+                    depth,
+                    how
                 );
             }
         }
+    }
+
+    #[test]
+    fn the_standard_positions_count_exactly() {
+        counts_exactly(Board::perft, "");
     }
 
     /// See `perft_through_evasions`.
     #[test]
     fn the_standard_positions_count_the_same_through_evasions() {
-        for (description, fen, counts) in CASES {
-            let mut board = Board::from_fen(fen).unwrap();
-            for (i, &expected) in counts.iter().enumerate() {
-                let depth = i as u8 + 1;
-                assert_eq!(
-                    board.perft_through_evasions(depth),
-                    expected,
-                    "{} at depth {}, through evasions",
-                    description,
-                    depth
-                );
-            }
-        }
+        counts_exactly(Board::perft_through_evasions, ", through evasions");
     }
 
     /// See `perft_as_played`.
     #[test]
     fn the_standard_positions_count_the_same_as_played() {
-        for (description, fen, counts) in CASES {
-            let mut board = Board::from_fen(fen).unwrap();
-            for (i, &expected) in counts.iter().enumerate() {
-                let depth = i as u8 + 1;
-                assert_eq!(
-                    board.perft_as_played(depth),
-                    expected,
-                    "{} at depth {}, as played",
-                    description,
-                    depth
-                );
-            }
-        }
+        counts_exactly(Board::perft_as_played, ", as played");
     }
 }
 
@@ -4037,19 +4020,26 @@ mod perft_edge_cases {
         ),
     ];
 
-    #[test]
-    fn every_edge_case_counts_exactly() {
+    /// Every case through one of the three walks, `how` naming the walk in
+    /// the failure.
+    fn counts_exactly(perft: fn(&mut Board, u8) -> u64, how: &str) {
         for (fen, depth, expected, description) in CASES {
             let mut board = Board::from_fen(fen).unwrap();
             assert_eq!(
-                board.perft(depth),
+                perft(&mut board, depth),
                 expected,
-                "{} ({} at depth {})",
+                "{} ({} at depth {}){}",
                 description,
                 fen,
-                depth
+                depth,
+                how
             );
         }
+    }
+
+    #[test]
+    fn every_edge_case_counts_exactly() {
+        counts_exactly(Board::perft, "");
     }
 
     /// The shapes most likely to catch the evasion mask out: promotions that
@@ -4057,33 +4047,13 @@ mod perft_edge_cases {
     /// and pins that leave a move looking like an answer.
     #[test]
     fn every_edge_case_counts_the_same_through_evasions() {
-        for (fen, depth, expected, description) in CASES {
-            let mut board = Board::from_fen(fen).unwrap();
-            assert_eq!(
-                board.perft_through_evasions(depth),
-                expected,
-                "{} ({} at depth {}), through evasions",
-                description,
-                fen,
-                depth
-            );
-        }
+        counts_exactly(Board::perft_through_evasions, ", through evasions");
     }
 
     /// The shapes most likely to catch checkers maintenance out.
     #[test]
     fn every_edge_case_counts_the_same_as_played() {
-        for (fen, depth, expected, description) in CASES {
-            let mut board = Board::from_fen(fen).unwrap();
-            assert_eq!(
-                board.perft_as_played(depth),
-                expected,
-                "{} ({} at depth {}), as played",
-                description,
-                fen,
-                depth
-            );
-        }
+        counts_exactly(Board::perft_as_played, ", as played");
     }
 }
 
