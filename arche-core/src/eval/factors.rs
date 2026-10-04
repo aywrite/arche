@@ -14,9 +14,12 @@
 //!  i < j
 //! ```
 //!
-//! so the board keeps `s` and `D` for each perspective and the leaf reads two
-//! sums of squares. White's perspective less black's is the term, which makes
-//! it white relative like the rest of the accumulator. It is not tapered.
+//! White's perspective less black's is the term, which makes it white
+//! relative like the rest of the accumulator. It is not tapered. The two sums
+//! of squares are read as one product, `‖s_w‖² - ‖s_b‖² = (s_w + s_b)·(s_w -
+//! s_b)`, so the board keeps the sum and the difference of the two
+//! perspectives' `s`, and `D_w - D_b`, and the leaf reads one dot product
+//! where it read two.
 //!
 //! At a `RANK` of 0 every array here has no length and [`Machine::score`]
 //! answers 0 before reading anything, so the term compiles away. The shipped
@@ -151,15 +154,18 @@ const fn lane_bounds() -> [i64; RANK] {
     bounds
 }
 
-/// Whether no legal position can overflow the arithmetic: every lane fits
-/// i16, and a perspective's sum of squares fits i32. `D` fits with it, since
-/// `Σ_i q_i,r²` is at most `(Σ_i |q_i,r|)²` in every lane.
+/// Whether no legal position can overflow the arithmetic: every lane of the
+/// two perspectives' sum and difference fits i16 (each is at most twice a
+/// perspective's lane), and a perspective's sum of squares fits i32. `D` fits
+/// with it, since `Σ_i q_i,r²` is at most `(Σ_i |q_i,r|)²` in every lane. The
+/// product of the sum and the difference is the difference of two sums of
+/// squares that each fit i32, so it fits i32 too, and so does `D_w - D_b`.
 const fn in_range() -> bool {
     let bounds = lane_bounds();
     let mut squares = 0;
     let mut lane = 0;
     while lane != RANK {
-        if bounds[lane] > i16::MAX as i64 {
+        if 2 * bounds[lane] > i16::MAX as i64 {
             return false;
         }
         squares += bounds[lane] * bounds[lane];
@@ -190,7 +196,9 @@ pub(crate) fn row(feature: usize) -> &'static [i16; RANK] {
     &FACTORS[feature]
 }
 
-/// The term's incremental state, one per perspective, indexed by `Color`.
+/// The term's incremental state: the two perspectives' sums added and
+/// subtracted (white's less black's), and their diagonals subtracted the
+/// same way.
 ///
 /// The lanes wrap rather than check: a position with more pieces than a
 /// legal one can stand (a fen can state one) scores wrongly rather than
@@ -198,17 +206,16 @@ pub(crate) fn row(feature: usize) -> &'static [i16; RANK] {
 #[derive(Debug, Copy, Clone, PartialEq, Eq)]
 pub(crate) struct Machine {
     sums: [[i16; RANK]; 2],
-    diagonal: [[i32; LIVE]; 2],
+    diagonal: [i32; LIVE],
 }
 
 impl Machine {
     pub(crate) const EMPTY: Self = Self {
         sums: [[0; RANK]; 2],
-        diagonal: [[0; LIVE]; 2],
+        diagonal: [0; LIVE],
     };
 
-    /// A piece counted on to or off of a square, both perspectives read from
-    /// the piece's one row.
+    /// A piece counted on to or off of a square, from the piece's one row.
     #[inline(always)]
     pub(crate) fn count<const SET: bool>(&mut self, row: &super::Row) {
         // at rank 0 a row holds no lanes and the loops below walk nothing;
@@ -224,13 +231,13 @@ impl Machine {
                     sum.wrapping_sub(factor)
                 };
             }
-            for (sum, &diagonal) in self.diagonal[at].iter_mut().zip(&row.diagonal[at]) {
-                *sum = if SET {
-                    sum.wrapping_add(diagonal)
-                } else {
-                    sum.wrapping_sub(diagonal)
-                };
-            }
+        }
+        for (sum, &diagonal) in self.diagonal.iter_mut().zip(&row.diagonal) {
+            *sum = if SET {
+                sum.wrapping_add(diagonal)
+            } else {
+                sum.wrapping_sub(diagonal)
+            };
         }
     }
 
@@ -249,18 +256,22 @@ impl Machine {
             {
                 *sum = sum.wrapping_add(on.wrapping_sub(off));
             }
-            for ((sum, &off), &on) in self.diagonal[at]
-                .iter_mut()
-                .zip(&left.diagonal[at])
-                .zip(&arrived.diagonal[at])
-            {
-                *sum = sum.wrapping_add(on.wrapping_sub(off));
-            }
+        }
+        for ((sum, &off), &on) in self
+            .diagonal
+            .iter_mut()
+            .zip(&left.diagonal)
+            .zip(&arrived.diagonal)
+        {
+            *sum = sum.wrapping_add(on.wrapping_sub(off));
         }
     }
 
     /// The state the pieces deserve, summed from the table directly rather
     /// than through `count`, for `Accumulator::recomputed`.
+    // index loops on purpose: the iterator form clippy asks for changed
+    // how llvm compiled the search, 0.2% to 0.8% more of its instructions
+    #[allow(clippy::needless_range_loop)]
     pub(crate) fn of(pieces: impl Iterator<Item = (u8, Piece, Color)>) -> Self {
         let mut sums = [[0_i16; RANK]; 2];
         let mut diagonal = [[0_i32; LIVE]; 2];
@@ -280,7 +291,16 @@ impl Machine {
                 }
             }
         }
-        Self { sums, diagonal }
+        let (white, black) = (Color::White as usize, Color::Black as usize);
+        let mut kept = Self::EMPTY;
+        for lane in 0..RANK {
+            kept.sums[0][lane] = sums[white][lane].wrapping_add(sums[black][lane]);
+            kept.sums[1][lane] = sums[white][lane].wrapping_sub(sums[black][lane]);
+        }
+        for slot in 0..LIVE {
+            kept.diagonal[slot] = diagonal[white][slot].wrapping_sub(diagonal[black][slot]);
+        }
+        kept
     }
 
     /// The term, white relative, in centipawns.
@@ -289,16 +309,18 @@ impl Machine {
         if RANK == 0 {
             return 0;
         }
-        let doubled = |at: usize| {
-            let squares = self.sums[at].iter().fold(0_i32, |total, &sum| {
-                total.wrapping_add(i32::from(sum) * i32::from(sum))
+        // `‖s_w‖² - ‖s_b‖²`, which fits i32 (see `in_range`), so the wrapping
+        // sum lands on it
+        let squares = self.sums[0]
+            .iter()
+            .zip(&self.sums[1])
+            .fold(0_i32, |total, (&sum, &difference)| {
+                total.wrapping_add(i32::from(sum) * i32::from(difference))
             });
-            let diagonal: i32 = self.diagonal[at].iter().sum();
-            i64::from(squares) - i64::from(diagonal)
-        };
+        let diagonal: i32 = self.diagonal.iter().sum();
         // truncated toward zero, so a mirrored position scores the exact
         // negation of its mirror
-        ((doubled(Color::White as usize) - doubled(Color::Black as usize)) / (2 * Q * Q)) as i32
+        ((i64::from(squares) - i64::from(diagonal)) / (2 * Q * Q)) as i32
     }
 }
 
