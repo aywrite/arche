@@ -301,14 +301,7 @@ const GENERATIONS: u8 = 31;
 impl Entry {
     const EMPTY: Entry = Entry {
         key: 0,
-        play: Play {
-            from: 0,
-            to: 0,
-            capture: None,
-            promote: None,
-            en_passant: false,
-            castle: false,
-        },
+        play: Play::NOWHERE,
         score: 0,
         depth: 0,
         flags: 0,
@@ -1007,11 +1000,7 @@ impl TranspositionTable {
         depth: u8,
         static_eval: Score,
     ) -> bool {
-        let pv = Pv {
-            static_eval,
-            ..entry(board, play, floor, depth, Bound::Lower)
-        };
-        self.set(board.key, pv)
+        self.record(board, play, floor, depth, Bound::Lower, static_eval)
     }
 
     /// Every move here fell short of the window: the score is a ceiling,
@@ -1026,11 +1015,7 @@ impl TranspositionTable {
         depth: u8,
         static_eval: Score,
     ) -> bool {
-        let pv = Pv {
-            static_eval,
-            ..entry(board, play, ceiling, depth, Bound::Upper)
-        };
-        self.set(board.key, pv)
+        self.record(board, play, ceiling, depth, Bound::Upper, static_eval)
     }
 
     /// The best move found by searching all of them here, with its exact
@@ -1044,18 +1029,35 @@ impl TranspositionTable {
         depth: u8,
         static_eval: Score,
     ) -> bool {
-        let pv = Pv {
-            static_eval,
-            ..entry(board, play, score, depth, Bound::Exact)
-        };
-        self.set(board.key, pv)
+        self.record(board, play, score, depth, Bound::Exact, static_eval)
+    }
+
+    /// What the three `record_` methods share: the entry, offered to the
+    /// depth contest.
+    #[inline(always)]
+    fn record(
+        &mut self,
+        board: &Board,
+        play: Play,
+        value: Value,
+        depth: u8,
+        bound: Bound,
+        static_eval: Score,
+    ) -> bool {
+        self.set(
+            board.key,
+            entry(board, play, value, depth, bound, static_eval),
+        )
     }
 
     /// The move the engine is about to answer with, stored past the depth
     /// contest for the reason `set_always` gives, so it always lands.
     #[must_use]
     pub fn record_answer(&mut self, board: &Board, play: Play, score: Value, depth: u8) -> bool {
-        self.set_always(board.key, entry(board, play, score, depth, Bound::Exact));
+        self.set_always(
+            board.key,
+            entry(board, play, score, depth, Bound::Exact, NO_EVAL),
+        );
         true
     }
 
@@ -1070,7 +1072,10 @@ impl TranspositionTable {
         floor: Value,
         depth: u8,
     ) -> bool {
-        self.set_always(board.key, entry(board, play, floor, depth, Bound::Lower));
+        self.set_always(
+            board.key,
+            entry(board, play, floor, depth, Bound::Lower, NO_EVAL),
+        );
         true
     }
 
@@ -1106,16 +1111,16 @@ impl TranspositionTable {
                 Bound::Lower => score >= beta,
                 Bound::Ordering => false,
             };
-            if cuts && guard_rule50 && board.fifty_move_near_expiry() {
-                // near the horizon every stored score is suspect, tainted
-                // or not
-                return Probe::Refused(pv.play);
-            }
-            if cuts && refuse_tainted && pv.tainted {
-                // the stored draw may not be reachable by this path
-                return Probe::Refused(pv.play);
-            }
             if cuts {
+                if guard_rule50 && board.fifty_move_near_expiry() {
+                    // near the horizon every stored score is suspect,
+                    // tainted or not
+                    return Probe::Refused(pv.play);
+                }
+                if refuse_tainted && pv.tainted {
+                    // the stored draw may not be reachable by this path
+                    return Probe::Refused(pv.play);
+                }
                 self.count_false_accept_cutoff(foreign);
                 return Probe::Cut(Value::with_taint(score, pv.tainted));
             }
@@ -1155,11 +1160,18 @@ impl TranspositionTable {
 /// Fold a position and a result into an entry, converting the score to the
 /// table's form so no caller has to.
 #[inline]
-fn entry(board: &Board, play: Play, value: Value, depth: u8, bound: Bound) -> Pv {
+fn entry(
+    board: &Board,
+    play: Play,
+    value: Value,
+    depth: u8,
+    bound: Bound,
+    static_eval: Score,
+) -> Pv {
     Pv {
         play,
         depth,
-        static_eval: NO_EVAL,
+        static_eval,
         score: score_to_tt(value.score, board.line_ply),
         bound,
         tainted: value.tainted,
