@@ -20,11 +20,14 @@ use crate::psqt::pack;
 pub(crate) const COUNTS: usize = 2;
 
 /// What one rook on such a file is worth, as the packed pairs the taper is
-/// read from. All zero until a fit prices them.
+/// read from: an open file, then a half open one.
+///
+/// Fitted 2026-10-04 with the pawn links, as their comment says. The fit
+/// puts the open file slightly below nothing in the ending.
 ///
 /// A side has two rooks and eight pawns that could promote, so no count
 /// exceeds ten, and `bounds_hold` charges ten of each.
-static ROOK_FILES: [i32; COUNTS] = [pack(0, 0); COUNTS];
+static ROOK_FILES: [i32; COUNTS] = [pack(7, -2), pack(6, 3)];
 
 /// The weight of one count, as the packed pair, read through
 /// [`super::TERMS`] so that a slot names the live weight rather than a copy.

@@ -572,7 +572,7 @@ against the games the positions came from and fits a new one. Its docstring,
 and those of `scripts/build_corpus.py` and `scripts/groups.py`, carry the
 reasoning behind the rules below. A fit moves the linear weights around the
 pair term, which each row carries as a constant; nothing here refits the
-factors, and the program that fitted `factors16.rs` is not in the repository.
+factors, and the program that fitted `factors8.rs` is not in the repository.
 
 ```
 python3 scripts/tune.py loss --terms rows.txt --corpus corpus.epd

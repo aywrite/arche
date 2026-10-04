@@ -719,9 +719,9 @@ mod evaluate {
     #[test]
     fn a_king_is_worth_more_in_the_middle_the_emptier_the_board() {
         // two king squares, e4 and g1, at three phases. The fitted pair term
-        // prefers e4 behind a full board by about eighty centipawns, which
-        // hid the opening's sign; it is white relative, as these scores are
-        // with white to move
+        // prefers e4 behind a full board by 88 centipawns, which hid the
+        // opening's sign; it is white relative, as these scores are with
+        // white to move
         fn tapered(fen: &str) -> i32 {
             let board = Board::from_fen(fen).unwrap();
             i32::from(eval(&board)) - factors::Machine::of(pieces_of(&board)).score()
@@ -1022,17 +1022,7 @@ mod evaluate {
             let priced = (0..term.width).any(|index| {
                 mg_value((term.weight)(index)) != 0 || eg_value((term.weight)(index)) != 0
             });
-            // every term is priced but the linked pawns and the rooks on open
-            // files, which ship at zero weight until their fit. Written as an
-            // equality rather than an exemption, so the fit that prices them
-            // fails here until this line goes with it
-            assert_eq!(
-                priced,
-                !["pawn_links", "rook_files"].contains(&term.name),
-                "{} is worth {} at either end",
-                term.name,
-                if priced { "something" } else { "nothing" }
-            );
+            assert!(priced, "{} is worth nothing at either end", term.name);
         }
     }
 
@@ -1041,11 +1031,6 @@ mod evaluate {
     /// the two lists are held against each other; a priced term in the table
     /// and not the sum would fail the tuner's identity, and this says which
     /// of the two is wrong.
-    ///
-    /// An unpriced term stands outside that guard until its fit: the sum
-    /// skips it, so a sum that dropped it would add up the same. What this
-    /// can say meanwhile is that its counts are not level here, read against
-    /// weights of its own.
     #[test]
     fn the_table_names_the_terms_the_sum_adds() {
         let names: Vec<&str> = TERMS.iter().map(|term| term.name).collect();
@@ -1071,14 +1056,8 @@ mod evaluate {
             ("shelter", shelter::fold(&board)),
             ("pawn structure", pawn_structure::fold(&board)),
             ("king attack", king_attack::fold(&board)),
-            (
-                "pawn links",
-                pawn_links::fold_with(&board, &[pack(3, 5), pack(-7, 2), pack(11, -4)]),
-            ),
-            (
-                "rook files",
-                rook_files::fold_with(&board, &[pack(9, 1), pack(-2, 6)]),
-            ),
+            ("pawn links", pawn_links::fold(&board)),
+            ("rook files", rook_files::fold(&board)),
         ] {
             assert_ne!(term, 0, "{} is level here, so it says nothing", name);
         }

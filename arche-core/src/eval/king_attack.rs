@@ -34,7 +34,7 @@ pub(crate) const COUNTS: usize = mobility::PIECES.len();
 /// `bounds_hold` charges one piece of each kind two squares of the ring for a
 /// knight, three for a bishop, four for a rook and six for a queen, both sides
 /// counted. That puts this term at 624 in the midgame and the whole vector's
-/// boardful at 10,118, against the 32,767 a half has to stay inside.
+/// boardful at 10,570, against the 32,767 a half has to stay inside.
 static KING_ATTACK: [i32; COUNTS] = [pack(11, 3), pack(22, -3), pack(29, -3), pack(18, 9)];
 
 /// The weight of one piece's count, as the packed pair, read through

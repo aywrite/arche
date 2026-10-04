@@ -87,8 +87,9 @@ pub struct AcceptedLoss {
 ///
 /// A position the suite misses and this list does not name was not
 /// accepted: the pair term lost five the joint refit had won back
-/// (6ce33d3), and its refit at a ridge of 3e-7 lost seven, and they were
-/// left off.
+/// (6ce33d3), its refit at a ridge of 3e-7 lost seven, and its rank 8
+/// table beside the pawn links and rook files lost seven more, and they
+/// were left off.
 pub const ACCEPTED_LOSSES: &[AcceptedLoss] = &[
     AcceptedLoss {
         id: "WAC.242",

@@ -18,11 +18,16 @@ use crate::psqt::pack;
 pub(crate) const COUNTS: usize = 3;
 
 /// What one linked pawn is worth, as the packed pairs the taper is read
-/// from. All zero until a fit prices them.
+/// from: phalanx, supported, connected.
+///
+/// Fitted 2026-10-04 on 59,049 games beside the rank 8 pair term, with the
+/// linear weights held at the joint refit's, and rounded to whole
+/// centipawns. A connected pawn that is also a phalanx or supported pawn
+/// is paid both ways, which is how the fit priced it.
 ///
 /// No count exceeds eight, the pawns a side has, and `bounds_hold` charges
 /// eight of each.
-static PAWN_LINKS: [i32; COUNTS] = [pack(0, 0); COUNTS];
+static PAWN_LINKS: [i32; COUNTS] = [pack(1, 3), pack(6, 5), pack(3, 4)];
 
 /// The weight of one count, as the packed pair, read through
 /// [`super::TERMS`] so that a slot names the live weight rather than a copy.

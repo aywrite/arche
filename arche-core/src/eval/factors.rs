@@ -23,17 +23,18 @@
 //!
 //! At a `RANK` of 0 every array here has no length and [`Machine::score`]
 //! answers 0 before reading anything, so the term compiles away. The shipped
-//! table is sixteen wide, so turning the term off takes an empty table in
-//! place of `factors16.rs` as well as the rank.
+//! table is eight wide, so turning the term off takes an empty table in
+//! place of `factors8.rs` as well as the rank.
 
 use crate::misc::{Color, Piece};
 
-/// How many factors a feature has. 16 is the rank chosen on 2026-09-26
-/// against a cost bar fixed before it was measured: ranks 8, 16 and 32 cost
-/// 6.2%, 4.4% and 8.2% of the bench's nodes a second, and 16 bought the most
-/// held out loss for what it cost.
+/// How many factors a feature has. 8 since 2026-10-05: fitted beside the
+/// pawn links and rook files terms at a factor ridge of 3e-7, rank 8 reads
+/// the held out loss of the rank 16 table it replaces to within a third of a
+/// pair standard error, at half the lanes. Without those two terms it fell
+/// short of rank 16 by three standard errors.
 #[cfg(not(feature = "machine-test"))]
-pub(crate) const RANK: usize = 16;
+pub(crate) const RANK: usize = 8;
 
 /// The table's scale: a factor of `v` is stored as `v × Q`, so a product of
 /// two is `Q²` too large and the term divides by it. 128 is the largest power
@@ -62,7 +63,7 @@ pub(crate) const LIVE: usize = (RANK != 0) as usize;
 
 /// Each feature's factors, at scale `Q`.
 #[cfg(not(feature = "machine-test"))]
-pub(crate) static FACTORS: [[i16; RANK]; FEATURES] = include!("factors16.rs");
+pub(crate) static FACTORS: [[i16; RANK]; FEATURES] = include!("factors8.rs");
 
 #[cfg(feature = "machine-test")]
 pub(crate) static FACTORS: [[i16; RANK]; FEATURES] = seeded();

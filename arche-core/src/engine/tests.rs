@@ -1084,9 +1084,12 @@ mod search {
     #[test]
     fn an_aborted_iteration_still_counts_the_whole_deepening() {
         // wherever the root finished a move before the budget ran out, that
-        // move answers, and its count is the budget to the node
+        // move answers, and its count is the budget to the node. The sweep
+        // runs to 15,000 because with the test rank's table the first budget
+        // that aborts with a root move in hand is 9,944; with the fitted one
+        // it is 535
         let mut deeper = 0;
-        for limit in (50..6_000).step_by(97) {
+        for limit in (50..15_000).step_by(97) {
             let mut e = engine(Board::new());
             let options = SearchParameters::new(None, nodes_only(limit));
             let mut reported = 0;
