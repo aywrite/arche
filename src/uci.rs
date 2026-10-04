@@ -5,16 +5,10 @@ use crate::command::{Command, Keyword};
 use crate::params::{Param, Params};
 use crate::session::{self, SessionControl, SharedWriter, first_word, report_panics_to};
 use crate::time_control::{DEFAULT_MOVE_OVERHEAD_MS, TimeControl};
-use arche_core::Color;
-use arche_core::Engine;
-use arche_core::Limits;
-use arche_core::ScoreBound;
-use arche_core::SearchConfig;
-use arche_core::SearchOutcome;
-use arche_core::SearchParameters;
-use arche_core::SearchResult;
-use arche_core::bench;
-use arche_core::{Play, Score};
+use arche_core::{
+    Color, Engine, Limits, Play, Score, ScoreBound, SearchConfig, SearchOutcome, SearchParameters,
+    SearchResult, bench,
+};
 use std::fmt;
 use std::io::{BufRead, Stdout, Write};
 use std::ops::RangeInclusive;
@@ -154,13 +148,12 @@ struct Held {
 /// missing one: either way there is nothing to apply. The range is one
 /// argument so that its two ends cannot be swapped.
 fn read_spin(name: &str, range: RangeInclusive<u64>, params: &Params) -> Result<Held, String> {
-    let (word, value) = match (params.value("value"), params.parse::<u64>("value")) {
-        (Param::Read(word), Param::Read(value)) => (word, value),
-        (_, Param::Unreadable(word)) => {
-            return Err(format!("unrecognised {} value: {}", name, word));
-        }
-        _ => return Err(format!("{} was sent without a value", name)),
+    let Param::Read(word) = params.value("value") else {
+        return Err(format!("{} was sent without a value", name));
     };
+    let value = word
+        .parse::<u64>()
+        .map_err(|_| format!("unrecognised {} value: {}", name, word))?;
     let held = value.clamp(*range.start(), *range.end());
     let said = (held != value).then(|| {
         format!(
@@ -773,16 +766,14 @@ fn format_info(
         ScoreBound::Lower => " lowerbound",
         ScoreBound::Upper => " upperbound",
     };
-    match result.checkmate_in() {
-        Some(mate_in) => format!(
-            "info depth {} seldepth {} nodes {} time {} nps {} score mate {}{} pv {}",
-            depth, result.selective_depth, result.nodes, millis, nps, mate_in, qualifier, pv
-        ),
-        None => format!(
-            "info depth {} seldepth {} nodes {} time {} nps {} score cp {}{} pv {}",
-            depth, result.selective_depth, result.nodes, millis, nps, result.score, qualifier, pv
-        ),
-    }
+    let score = match result.checkmate_in() {
+        Some(mate_in) => format!("mate {}", mate_in),
+        None => format!("cp {}", result.score),
+    };
+    format!(
+        "info depth {} seldepth {} nodes {} time {} nps {} score {}{} pv {}",
+        depth, result.selective_depth, result.nodes, millis, nps, score, qualifier, pv
+    )
 }
 
 #[cfg(test)]

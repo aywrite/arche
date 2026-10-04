@@ -11,17 +11,10 @@
 use crate::command::{Command, Keyword};
 use crate::params::{NO_VALUE, Param, Params};
 use crate::uci;
-use arche_core::Ablation;
-use arche_core::Board;
-use arche_core::SearchConfig;
-use arche_core::bench;
-use arche_core::census;
-use arche_core::effort;
-use arche_core::forced;
-use arche_core::recorder;
-use arche_core::reduction;
-use arche_core::residual;
-use arche_core::tune;
+use arche_core::{
+    Ablation, Board, SearchConfig, bench, census, effort, forced, recorder, reduction, residual,
+    tune,
+};
 use std::fmt;
 
 /// A line that has been read and not yet run. Running it does the work and
@@ -334,12 +327,10 @@ fn read_epd(path: &str) -> Result<Vec<bench::Position>, String> {
     let refused = || format!("epd: {path}");
     let text = std::fs::read_to_string(path).map_err(|_| refused())?;
     let positions = bench::parse_epd(&text);
-    if positions.is_empty() {
-        return Err(refused());
-    }
-    if positions
-        .iter()
-        .any(|position| Board::from_fen(&position.fen).is_err())
+    if positions.is_empty()
+        || positions
+            .iter()
+            .any(|position| Board::from_fen(&position.fen).is_err())
     {
         return Err(refused());
     }
@@ -464,8 +455,8 @@ pub fn effort_settings(params: &Params) -> Result<EffortSettings, String> {
     let off = match params.value("off") {
         Param::Absent => None,
         Param::Read(word) => Some(ablation(word)?),
-        Param::Bare => return Err(no_such_switch(NO_VALUE)),
-        Param::Unreadable(word) => return Err(no_such_switch(word)),
+        // `value` never reads Unreadable, since any word is a word
+        Param::Bare | Param::Unreadable(_) => return Err(no_such_switch(NO_VALUE)),
     };
     let budget = params.parse::<u64>("budget").or_refuse("budget")?;
     let (epd, positions) = suite(params)?;
@@ -533,8 +524,7 @@ pub fn forced_settings(params: &Params) -> Result<ForcedSettings, String> {
     let kinds = match params.value("kinds") {
         Param::Absent => forced::Kinds::ALL,
         Param::Read(word) => kinds(word)?,
-        Param::Bare => return Err(no_such_kind(NO_VALUE)),
-        Param::Unreadable(word) => return Err(no_such_kind(word)),
+        Param::Bare | Param::Unreadable(_) => return Err(no_such_kind(NO_VALUE)),
     };
     let from = params.parse::<u8>("from").or_refuse("from")?.unwrap_or(0);
     let (epd, positions) = suite(params)?;
