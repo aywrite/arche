@@ -219,10 +219,11 @@ const fn widest() -> usize {
 /// What the two remembered terms answer, asked of whatever the caller is
 /// carrying, so the cached evaluation and the uncached one are one [`sum`]
 /// rather than two kept saying the same thing. A term that learns to remember
-/// itself adds a method here and an implementation in each of the two below.
+/// itself is added into `tables` in each of the two below, and can share the
+/// shelter's entry only if the shelter's key covers everything it reads.
 trait Memo {
-    fn shelter(&mut self, board: &Board) -> i32;
-    fn pawn_structure(&mut self, board: &Board) -> i32;
+    /// The shelter and the pawn structure, added.
+    fn tables(&mut self, board: &Board) -> i32;
 }
 
 /// The memo that remembers nothing, which is what [`eval`] hands the sum.
@@ -230,13 +231,8 @@ struct NoMemo;
 
 impl Memo for NoMemo {
     #[inline]
-    fn shelter(&mut self, board: &Board) -> i32 {
-        shelter::fold(board)
-    }
-
-    #[inline]
-    fn pawn_structure(&mut self, board: &Board) -> i32 {
-        pawn_structure::fold(board)
+    fn tables(&mut self, board: &Board) -> i32 {
+        shelter::fold(board) + pawn_structure::fold(board)
     }
 }
 
@@ -244,9 +240,11 @@ impl Memo for NoMemo {
 /// again at every leaf. One value, so a term that learns to remember itself
 /// is a field here rather than a parameter everywhere a score is asked for.
 ///
-/// Two tables rather than one wider entry under the shelter's key: one probe
-/// for both would recompute the pawn structure on every king move, the half
-/// of the shelter's key that term does not need. Measured on the fitted build.
+/// The shelter's table holds the two terms added, under the shelter's key,
+/// which covers everything either reads, so a hit there is the one probe.
+/// The pawn table stays behind it: a key of the shelter's alone would
+/// recompute the pawn structure on every king move, the half of the
+/// shelter's key that term does not need. Measured on the fitted build.
 #[derive(Default)]
 pub(crate) struct Caches {
     shelter: ShelterCache,
@@ -254,21 +252,17 @@ pub(crate) struct Caches {
 }
 
 /// The shelter's table, as wide as that term measured it wants.
-type ShelterCache = Cache<{ shelter::CACHE_BITS }>;
+type ShelterCache = Cache<{ 1 << shelter::CACHE_BITS }>;
 /// The pawn structure's, on its own key and its own measurement.
-type PawnCache = Cache<{ pawn_structure::CACHE_BITS }>;
+type PawnCache = Cache<{ 1 << pawn_structure::CACHE_BITS }>;
 
 impl Memo for Caches {
     #[inline]
-    fn shelter(&mut self, board: &Board) -> i32 {
-        self.shelter
-            .get(shelter::key(board), || shelter::fold(board))
-    }
-
-    #[inline]
-    fn pawn_structure(&mut self, board: &Board) -> i32 {
-        self.pawns
-            .get(board.pawn_key, || pawn_structure::fold(board))
+    fn tables(&mut self, board: &Board) -> i32 {
+        let pawns = &mut self.pawns;
+        self.shelter.get(shelter::key(board), || {
+            shelter::fold(board) + pawns.get(board.pawn_key, || pawn_structure::fold(board))
+        })
     }
 }
 
@@ -292,10 +286,11 @@ fn sum(board: &Board, memo: &mut impl Memo) -> Score {
     if board.drawn_by_material() {
         return 0;
     }
+    // probed before the walk, where llvm had held the tables across it
+    let tables = memo.tables(board);
     let walk =
         |color| attack_score::<{ mobility::SCORED_KINDS }, { king_attack::SCORED }>(board, color);
-    let leaf =
-        walk(Color::White) - walk(Color::Black) + memo.shelter(board) + memo.pawn_structure(board);
+    let leaf = walk(Color::White) - walk(Color::Black) + tables;
     board.eval.score(board.active_color, leaf)
 }
 
@@ -899,9 +894,10 @@ mod evaluate {
     /// is the difference between the two caches and why the pawn structure
     /// could be cached in the commit that introduced it.
     ///
-    /// Each table is then read under its own term's key. Both hold the
-    /// position before the move. After it the pawn table still answers, and
-    /// the shelter table has to fold again.
+    /// The shelter's table holds the two terms added and the pawn table the
+    /// pawn structure, each under its own key. Both hold the position before
+    /// the move. After it the pawn table still answers, and the shelter's
+    /// table has to fold the shelter again.
     #[test]
     fn a_king_move_keeps_the_pawn_entry_and_loses_the_shelter_one() {
         let board = Board::from_fen("4k3/pppppppp/8/8/8/8/PPPPPPPP/4K3 w - - 0 1").unwrap();
@@ -920,18 +916,15 @@ mod evaluate {
         // would read as a hit wherever it landed
         assert_ne!(board.pawn_key, 0);
         let mut caches = Caches::default();
+        let both = |board: &Board| shelter::fold(board) + pawn_structure::fold(board);
         assert_eq!(
-            Memo::shelter(&mut caches, &board),
-            shelter::fold(&board),
+            Memo::tables(&mut caches, &board),
+            both(&board),
             "the first probe folds"
         );
         assert_eq!(
-            Memo::pawn_structure(&mut caches, &board),
-            pawn_structure::fold(&board)
-        );
-        assert_eq!(
             caches.shelter.stored(shelter::key(&board)),
-            Some(shelter::fold(&board))
+            Some(both(&board))
         );
         assert_eq!(
             caches.pawns.stored(board.pawn_key),
@@ -948,10 +941,10 @@ mod evaluate {
             None,
             "and the shelter table does not"
         );
-        assert_eq!(Memo::shelter(&mut caches, &moved), shelter::fold(&moved));
+        assert_eq!(Memo::tables(&mut caches, &moved), both(&moved));
         assert_eq!(
             caches.shelter.stored(shelter::key(&moved)),
-            Some(shelter::fold(&moved))
+            Some(both(&moved))
         );
     }
 
