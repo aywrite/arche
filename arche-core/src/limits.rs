@@ -19,15 +19,14 @@ const POLL_INTERVAL: u64 = 3000;
 /// The share of a budget past which another iteration is not begun, as a
 /// percentage.
 ///
-/// Over nine positions searched from cold, the time through depth d over
-/// the time through d+1 had a median of 0.29 and quartiles of 0.21 and
-/// 0.33, measured before any pruning beyond the transposition table. So an
-/// iteration cost about two and a half times the deepening before it. An
-/// iteration cut short still answers with the root moves it got through,
-/// and at the median an iteration begun at share f gets (1-f)·0.29 /
-/// (f·0.71) of itself done: three quarters at 0.35, half at 0.45, two
-/// fifths at 0.5. The line goes where the iteration given up would have
-/// searched less than half of itself.
+/// An iteration cut short still answers with the root moves it got through,
+/// so with r the time through depth d over the time through d+1, an
+/// iteration begun at share f gets (1-f)·r / (f·(1-r)) of itself done. The
+/// line was put where that is a half, at a median r of 0.29 measured before
+/// any pruning beyond the transposition table. The pruning since has raised
+/// the median to 0.51 in games at 10+0.1, where the same rule would put the
+/// line near two thirds, but the games keep it here: 55% lost and 65%
+/// measured nothing (the roadmap has both).
 const SOFT_LIMIT_PERCENT: u128 = 45;
 
 /// The clock a search runs under, and what the caller meant by it. A share
