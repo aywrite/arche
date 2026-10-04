@@ -2339,7 +2339,7 @@ impl Board {
         if piece == Piece::Pawn {
             self.pawn_key ^= piece_key;
         }
-        self.eval.count::<SET>(row, piece, color);
+        self.eval.count::<SET>(row, piece);
 
         let board = &mut self.pieces[piece as usize];
         if SET {
