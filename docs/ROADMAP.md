@@ -515,20 +515,12 @@ of these again without saying what is different this time.
   the whole saving is bounded at 0.385% of the run and writing the sets costs 0.781%,
   because the stand pat cuts three quarters of quiescence evaluations before they generate
   anything at all.
-- Storing the static evaluation in the table entry's two reserved bytes, so a node whose
-  probe hits reads it rather than scoring the position again. Not built: counted over the
-  bench before anything was written. 2,116,844 evaluations, 1,892,140 of them quiescence's
-  stand pat, which probes the table after the stand pat because three quarters of those
-  nodes cut off on it and never probe, and a probe moved in front of it would pay a table
-  line at 1.4 million nodes that mostly store nothing. Of the 224,704 evaluations at the
-  full width shortcuts, 32,807 stood at a node whose probe had hit, so the stored value
-  could spare at most 1.5% of the evaluations, about 0.3% of the run, before the layout
-  change every pinned count is counted against. The same count found the late move gate
-  scoring 884 nodes the shortcuts had already scored, through the uncached `eval::eval`;
-  `shortcuts` now hands back the evaluation it read and the move loop seeds the decision's
-  memo with it. On the bench at `54d85b9` the gate then asked for an evaluation at
-  2,515,532 decisions and used the uncached door 671 times, against 23,717,724
-  evaluations over the run; the tree has moved since and these have not been taken again.
+- The late move gate scoring nodes the shortcuts had already scored. A count over the bench
+  found it scoring 884 such nodes through the uncached `eval::eval`; `shortcuts` now hands
+  back the evaluation it read and the move loop seeds the decision's memo with it. On the
+  bench at `54d85b9` the gate then asked for an evaluation at 2,515,532 decisions and used
+  the uncached door 671 times, against 23,717,724 evaluations over the run; the tree has
+  moved since and these have not been taken again.
 - Lazy mobility, leaving the term out at the quiescence stand pat when the rest of the
   score already clears beta by a margin. Built and played at three margins, 6,000 games at
   10+0.1 under sprt [0, 10]: +1 ±8 over 4,000 games at a margin of a hundred, and nothing

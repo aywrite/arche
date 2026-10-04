@@ -48,9 +48,14 @@ const MATERIAL: [u32; 6] = [100, 310, 320, 500, 900, 10000];
 #[derive(Debug, Clone, Copy)]
 #[repr(C, align(32))]
 pub(crate) struct Row {
+    /// The piece's factors from white's side and black's, added and
+    /// subtracted, as `factors::Machine` keeps them.
     pub(crate) lanes: [[i16; factors::RANK]; 2],
-    pub(crate) diagonal: [[i32; factors::LIVE]; 2],
+    /// White's diagonal less black's.
+    pub(crate) diagonal: [i32; factors::LIVE],
     pub(crate) psqt: i32,
+    /// The piece's material, signed from white's side like `psqt`.
+    pub(crate) material: i32,
     pub(crate) key: u64,
 }
 
@@ -59,12 +64,12 @@ pub(crate) static ROWS: [Row; 768] = rows();
 const fn rows() -> [Row; 768] {
     let empty = Row {
         lanes: [[0; factors::RANK]; 2],
-        diagonal: [[0; factors::LIVE]; 2],
+        diagonal: [0; factors::LIVE],
         psqt: 0,
+        material: 0,
         key: 0,
     };
     let mut out = [empty; 768];
-    let colors = [Color::Black, Color::White];
     let pieces = [
         Piece::Pawn,
         Piece::Knight,
@@ -84,17 +89,30 @@ const fn rows() -> [Row; 768] {
         let mut square = 0;
         while square < 64 {
             let row = &mut out[table * 64 + square];
-            let mut at = 0;
-            while at < 2 {
-                let feature = factors::feature(colors[at], square as u8, piece, color);
-                row.lanes[at] = factors::FACTORS[feature];
-                row.diagonal[at] = factors::DIAGONAL[feature];
-                at += 1;
+            let white = factors::feature(Color::White, square as u8, piece, color);
+            let black = factors::feature(Color::Black, square as u8, piece, color);
+            let mut lane = 0;
+            while lane < factors::RANK {
+                let (w, b) = (factors::FACTORS[white][lane], factors::FACTORS[black][lane]);
+                row.lanes[0][lane] = w.wrapping_add(b);
+                row.lanes[1][lane] = w.wrapping_sub(b);
+                lane += 1;
+            }
+            let mut slot = 0;
+            while slot < factors::LIVE {
+                row.diagonal[slot] =
+                    factors::DIAGONAL[white][slot].wrapping_sub(factors::DIAGONAL[black][slot]);
+                slot += 1;
             }
             let value = PieceSquareTables::TABLES.value_at(table, square);
             row.psqt = match color {
                 Color::White => value,
                 Color::Black => -value,
+            };
+            let material = MATERIAL[piece as usize] as i32;
+            row.material = match color {
+                Color::White => material,
+                Color::Black => -material,
             };
             row.key = crate::zobrist::Zobrist::TABLE.piece_key_at(table, square);
             square += 1;
@@ -209,10 +227,11 @@ const fn widest() -> usize {
 /// What the two remembered terms answer, asked of whatever the caller is
 /// carrying, so the cached evaluation and the uncached one are one [`sum`]
 /// rather than two kept saying the same thing. A term that learns to remember
-/// itself adds a method here and an implementation in each of the two below.
+/// itself is added into `tables` in each of the two below, and can share the
+/// shelter's entry only if the shelter's key covers everything it reads.
 trait Memo {
-    fn shelter(&mut self, board: &Board) -> i32;
-    fn pawn_structure(&mut self, board: &Board) -> i32;
+    /// The shelter and the pawn structure, added.
+    fn tables(&mut self, board: &Board) -> i32;
 }
 
 /// The memo that remembers nothing, which is what [`eval`] hands the sum.
@@ -220,13 +239,8 @@ struct NoMemo;
 
 impl Memo for NoMemo {
     #[inline]
-    fn shelter(&mut self, board: &Board) -> i32 {
-        shelter::fold(board)
-    }
-
-    #[inline]
-    fn pawn_structure(&mut self, board: &Board) -> i32 {
-        pawn_structure::fold(board)
+    fn tables(&mut self, board: &Board) -> i32 {
+        shelter::fold(board) + pawn_structure::fold(board)
     }
 }
 
@@ -234,9 +248,11 @@ impl Memo for NoMemo {
 /// again at every leaf. One value, so a term that learns to remember itself
 /// is a field here rather than a parameter everywhere a score is asked for.
 ///
-/// Two tables rather than one wider entry under the shelter's key: one probe
-/// for both would recompute the pawn structure on every king move, the half
-/// of the shelter's key that term does not need. Measured on the fitted build.
+/// The shelter's table holds the two terms added, under the shelter's key,
+/// which covers everything either reads, so a hit there is the one probe.
+/// The pawn table stays behind it: a key of the shelter's alone would
+/// recompute the pawn structure on every king move, the half of the
+/// shelter's key that term does not need. Measured on the fitted build.
 #[derive(Default)]
 pub(crate) struct Caches {
     shelter: ShelterCache,
@@ -244,21 +260,17 @@ pub(crate) struct Caches {
 }
 
 /// The shelter's table, as wide as that term measured it wants.
-type ShelterCache = Cache<{ shelter::CACHE_BITS }>;
+type ShelterCache = Cache<{ 1 << shelter::CACHE_BITS }>;
 /// The pawn structure's, on its own key and its own measurement.
-type PawnCache = Cache<{ pawn_structure::CACHE_BITS }>;
+type PawnCache = Cache<{ 1 << pawn_structure::CACHE_BITS }>;
 
 impl Memo for Caches {
     #[inline]
-    fn shelter(&mut self, board: &Board) -> i32 {
-        self.shelter
-            .get(shelter::key(board), || shelter::fold(board))
-    }
-
-    #[inline]
-    fn pawn_structure(&mut self, board: &Board) -> i32 {
-        self.pawns
-            .get(board.pawn_key, || pawn_structure::fold(board))
+    fn tables(&mut self, board: &Board) -> i32 {
+        let pawns = &mut self.pawns;
+        self.shelter.get(shelter::key(board), || {
+            shelter::fold(board) + pawns.get(board.pawn_key, || pawn_structure::fold(board))
+        })
     }
 }
 
@@ -282,10 +294,11 @@ fn sum(board: &Board, memo: &mut impl Memo) -> Score {
     if board.drawn_by_material() {
         return 0;
     }
+    // probed before the walk, where llvm had held the tables across it
+    let tables = memo.tables(board);
     let walk =
         |color| attack_score::<{ mobility::SCORED_KINDS }, { king_attack::SCORED }>(board, color);
-    let leaf =
-        walk(Color::White) - walk(Color::Black) + memo.shelter(board) + memo.pawn_structure(board);
+    let leaf = walk(Color::White) - walk(Color::Black) + tables;
     board.eval.score(board.active_color, leaf)
 }
 
@@ -384,9 +397,8 @@ pub(crate) fn eval_cached(board: &Board, caches: &mut Caches) -> Score {
 /// copies back the state saved before the move.
 #[derive(Debug, Copy, Clone, PartialEq, Eq)]
 pub(crate) struct Accumulator {
-    /// Each side's material, indexed by `Color`'s discriminant: an index is a
-    /// load where a match on the colour was a branch.
-    material: [u32; 2],
+    /// White's material less black's, the one way the score reads it.
+    material: i32,
     /// Piece square score, as the packed pair of midgame and endgame halves
     /// the tables hold (`psqt::pack`), so carrying both phases costs one add.
     psqt: i32,
@@ -402,7 +414,7 @@ pub(crate) struct Accumulator {
 impl Accumulator {
     /// A board with nothing on it scores nothing.
     pub(crate) const EMPTY: Self = Self {
-        material: [0; 2],
+        material: 0,
         psqt: 0,
         phase: 0,
         machine: factors::Machine::EMPTY,
@@ -411,17 +423,16 @@ impl Accumulator {
     /// Count a piece on to or off of a square, from its row. The row's pair
     /// is negated whole for black, and negating the sum negates both halves.
     #[inline(always)]
-    pub(crate) fn count<const SET: bool>(&mut self, row: &Row, piece: Piece, color: Color) {
+    pub(crate) fn count<const SET: bool>(&mut self, row: &Row, piece: Piece) {
         let phase = PHASE_WEIGHTS[piece as usize];
-        let value = MATERIAL[piece as usize];
         if SET {
             self.psqt += row.psqt;
             self.phase += phase;
-            self.material[color as usize] += value;
+            self.material += row.material;
         } else {
             self.psqt -= row.psqt;
             self.phase -= phase;
-            self.material[color as usize] -= value;
+            self.material -= row.material;
         }
         self.machine.count::<SET>(row);
     }
@@ -453,7 +464,11 @@ impl Accumulator {
                     Color::White => recomputed.psqt += psqt,
                     Color::Black => recomputed.psqt -= psqt,
                 }
-                recomputed.material[color as usize] += MATERIAL[piece as usize];
+                let value = MATERIAL[piece as usize] as i32;
+                match color {
+                    Color::White => recomputed.material += value,
+                    Color::Black => recomputed.material -= value,
+                }
                 recomputed.phase += PHASE_WEIGHTS[piece as usize];
             }
         }
@@ -465,14 +480,12 @@ impl Accumulator {
     /// board in; the state check then compares the seeding against an
     /// implementation that did not do it.
     pub(crate) fn seed_material(&mut self, (white, black): (u32, u32)) {
-        self.material[Color::White as usize] = white;
-        self.material[Color::Black as usize] = black;
+        self.material = white as i32 - black as i32;
     }
 
     /// What white stands ahead by, for the board's debug print.
     pub(crate) fn material_difference(&self) -> i64 {
-        i64::from(self.material[Color::White as usize])
-            - i64::from(self.material[Color::Black as usize])
+        i64::from(self.material)
     }
 
     /// The score from `side`'s point of view.
@@ -498,10 +511,7 @@ impl Accumulator {
             (mg_value(tapered) * phase + eg_value(tapered) * (TOTAL_PHASE - phase)) / TOTAL_PHASE;
         // the pair term is not tapered, so it joins material outside the
         // divide
-        let eval = (self.material[Color::White as usize] as i32
-            - self.material[Color::Black as usize] as i32
-            + scaled
-            + self.machine.score()) as Score;
+        let eval = (self.material + scaled + self.machine.score()) as Score;
         match side {
             Color::White => eval,
             Color::Black => -eval,
@@ -568,12 +578,10 @@ mod evaluate {
             let mut board = Board::from_fen(fen).unwrap();
             for m in &board.generate_moves() {
                 if board.make_move(m) {
+                    let (white, black) = board.material_value();
                     assert_eq!(
-                        (
-                            board.eval.material[crate::misc::Color::White as usize],
-                            board.eval.material[crate::misc::Color::Black as usize]
-                        ),
-                        board.material_value(),
+                        board.eval.material,
+                        white as i32 - black as i32,
                         "{} in {}",
                         m,
                         fen
@@ -756,8 +764,7 @@ mod evaluate {
             inside, beside,
             "the two divides agree here, so this position says nothing"
         );
-        let material = accumulator.material[Color::White as usize] as i32
-            - accumulator.material[Color::Black as usize] as i32;
+        let material = accumulator.material;
         // the pair term is outside the divide, beside material
         assert_eq!(
             accumulator.score(Color::White, mobility),
@@ -889,9 +896,10 @@ mod evaluate {
     /// is the difference between the two caches and why the pawn structure
     /// could be cached in the commit that introduced it.
     ///
-    /// Each table is then read under its own term's key. Both hold the
-    /// position before the move. After it the pawn table still answers, and
-    /// the shelter table has to fold again.
+    /// The shelter's table holds the two terms added and the pawn table the
+    /// pawn structure, each under its own key. Both hold the position before
+    /// the move. After it the pawn table still answers, and the shelter's
+    /// table has to fold the shelter again.
     #[test]
     fn a_king_move_keeps_the_pawn_entry_and_loses_the_shelter_one() {
         let board = Board::from_fen("4k3/pppppppp/8/8/8/8/PPPPPPPP/4K3 w - - 0 1").unwrap();
@@ -910,18 +918,15 @@ mod evaluate {
         // would read as a hit wherever it landed
         assert_ne!(board.pawn_key, 0);
         let mut caches = Caches::default();
+        let both = |board: &Board| shelter::fold(board) + pawn_structure::fold(board);
         assert_eq!(
-            Memo::shelter(&mut caches, &board),
-            shelter::fold(&board),
+            Memo::tables(&mut caches, &board),
+            both(&board),
             "the first probe folds"
         );
         assert_eq!(
-            Memo::pawn_structure(&mut caches, &board),
-            pawn_structure::fold(&board)
-        );
-        assert_eq!(
             caches.shelter.stored(shelter::key(&board)),
-            Some(shelter::fold(&board))
+            Some(both(&board))
         );
         assert_eq!(
             caches.pawns.stored(board.pawn_key),
@@ -938,10 +943,10 @@ mod evaluate {
             None,
             "and the shelter table does not"
         );
-        assert_eq!(Memo::shelter(&mut caches, &moved), shelter::fold(&moved));
+        assert_eq!(Memo::tables(&mut caches, &moved), both(&moved));
         assert_eq!(
             caches.shelter.stored(shelter::key(&moved)),
-            Some(shelter::fold(&moved))
+            Some(both(&moved))
         );
     }
 

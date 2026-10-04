@@ -15,7 +15,9 @@ struct Entry {
     packed: i32,
 }
 
-/// What one term has already worked out, `1 << BITS` scores of it.
+/// What one term has already worked out, `SLOTS` scores of it, in an array of
+/// that length rather than a slice, so the slot's mask bounds its index and a
+/// probe carries no bounds check.
 ///
 /// Direct mapped and never cleared. An entry is only ever read against the
 /// key that wrote it, so a stale one is a miss rather than a wrong answer.
@@ -24,26 +26,30 @@ struct Entry {
 ///
 /// Owned by the searcher rather than by the board, because it is scratch and
 /// not position.
-pub(super) struct Cache<const BITS: usize> {
-    entries: Box<[Entry]>,
+pub(super) struct Cache<const SLOTS: usize> {
+    entries: Box<[Entry; SLOTS]>,
 }
 
-impl<const BITS: usize> Default for Cache<BITS> {
+impl<const SLOTS: usize> Default for Cache<SLOTS> {
     fn default() -> Self {
         // an empty entry is key zero holding zero. A pawnless board's pawn
         // key is zero and its pawn structure scores zero, so it reads the
         // entry correctly; any other key of zero is the same sixty four bit
         // coincidence a wrong hit needs anywhere else in the table
+        let entries = vec![Entry { key: 0, packed: 0 }; Self::SLOTS].into_boxed_slice();
         Cache {
-            entries: vec![Entry { key: 0, packed: 0 }; Self::SLOTS].into_boxed_slice(),
+            entries: entries.try_into().unwrap_or_else(|_| unreachable!()),
         }
     }
 }
 
-impl<const BITS: usize> Cache<BITS> {
+impl<const SLOTS: usize> Cache<SLOTS> {
     /// How many scores the table holds. A power of two, so the index is a
     /// mask rather than a remainder.
-    pub(super) const SLOTS: usize = 1 << BITS;
+    pub(super) const SLOTS: usize = {
+        assert!(SLOTS.is_power_of_two());
+        SLOTS
+    };
 
     /// What `key` stands for, read back where the table holds it and folded
     /// where it does not.
@@ -87,13 +93,13 @@ mod tests {
     /// with no pawns, whose key is zero and whose counts are zero.
     #[test]
     fn a_score_is_folded_once_and_read_back_under_the_key_that_wrote_it() {
-        const BITS: usize = 4;
-        let mut cache: Cache<BITS> = Cache::default();
-        assert_eq!(cache.entries.len(), Cache::<BITS>::SLOTS);
+        const SLOTS: usize = 16;
+        let mut cache: Cache<SLOTS> = Cache::default();
+        assert_eq!(cache.entries.len(), Cache::<SLOTS>::SLOTS);
         let key = 0x0123_4567_89ab_cdefu64;
         let shares = key ^ (1 << 63);
-        let slot = (key as usize) & (Cache::<BITS>::SLOTS - 1);
-        assert_eq!((shares as usize) & (Cache::<BITS>::SLOTS - 1), slot);
+        let slot = (key as usize) & (Cache::<SLOTS>::SLOTS - 1);
+        assert_eq!((shares as usize) & (Cache::<SLOTS>::SLOTS - 1), slot);
 
         assert_eq!(cache.entries[slot].key, 0, "the slot starts empty");
         assert_eq!(cache.entries[slot].packed, 0, "holding nothing");

@@ -154,9 +154,9 @@ impl SignatureCounters {
 /// The ground truth the table does not keep: the full key of every entry,
 /// written whenever one lands. Allocated only when the bench asks for the
 /// audit, so an ordinary search carries a null pointer and one predictable
-/// branch a probe. The unused `static_eval` bytes are no use for this:
-/// sixteen more bits of signature would still alias where sixty four
-/// cannot.
+/// branch a probe. The `static_eval` bytes would be no use for this even if
+/// they were free: sixteen more bits of signature would still alias where
+/// sixty four cannot.
 #[derive(Debug)]
 struct Audit {
     /// One key an entry, at the bucket's index times four plus the entry
@@ -196,6 +196,9 @@ impl Audit {
 struct Pv {
     play: Play,
     score: Score,
+    /// The static evaluation of the position the entry is for, or
+    /// `NO_EVAL` when the node that stored it did not evaluate.
+    static_eval: Score,
     /// True if the score flowed from a repetition or fifty move draw below
     /// it, so it describes the path taken to this position and not the
     /// position. What the flag does not cover is under known limitations in
@@ -255,9 +258,10 @@ pub enum Probe {
 ///
 /// The flags byte holds the bound in its low two bits, the taint in the
 /// third and the generation in the top five; generation zero is a slot
-/// never written. Two bytes are set aside for the static evaluation, which
-/// the shelved correction history arm (docs/ROADMAP.md) would store, so the
-/// layout and every node count change once rather than twice.
+/// never written. The last two bytes are the static evaluation of the
+/// position, or `NO_EVAL` where the node that stored the entry did not
+/// evaluate, so a full width node that finds its entry need not evaluate
+/// again.
 #[derive(Copy, Clone, Debug)]
 #[repr(C)]
 struct Entry {
@@ -266,8 +270,7 @@ struct Entry {
     score: Score,
     depth: u8,
     flags: u8,
-    #[allow(dead_code)]
-    static_eval: i16,
+    static_eval: Score,
 }
 
 // A probe reads one cache line for all four entries, and every pinned node
@@ -325,7 +328,7 @@ impl Entry {
             score: pv.score,
             depth: pv.depth,
             flags: (pv.bound as u8) | (u8::from(pv.tainted) << 2) | (generation << 3),
-            static_eval: 0,
+            static_eval: pv.static_eval,
         }
     }
 
@@ -334,6 +337,7 @@ impl Entry {
         Pv {
             play: self.play,
             score: self.score,
+            static_eval: self.static_eval,
             depth: self.depth,
             bound: Bound::from_bits(self.flags),
             tainted: self.flags & 0b100 != 0,
@@ -371,7 +375,7 @@ struct Rest {
     score: Score,
     depth: u8,
     flags: u8,
-    static_eval: i16,
+    static_eval: Score,
 }
 
 const _: () = assert!(mem::size_of::<Rest>() == 12);
@@ -641,7 +645,24 @@ pub struct TranspositionTable {
     /// The full keys of the entries, or none, which is what every table an
     /// engine plays with holds. `audit_signatures` fills it in.
     audit: Option<Box<Audit>>,
+    /// The static evaluation the last probe found in its entry, or
+    /// `NO_EVAL` on a miss. A cell, since the probe reads the table.
+    probed_eval: Cell<Score>,
+    /// The key the last probe asked for, so a debug build can tell a read
+    /// of `probed_eval` that another probe came between.
+    #[cfg(debug_assertions)]
+    probed_key: Cell<u64>,
 }
+
+/// What an entry holds for the static evaluation when the node that stored
+/// it did not evaluate: a node in check, one the shortcuts' gates turned
+/// away before they evaluated, and the root's own stores. No evaluation
+/// comes near it.
+///
+/// An entry holds the raw evaluation, which is a function of the position
+/// alone. A correction that reads anything else (the line, the history, the
+/// fifty move counter) is applied after the read and never stored.
+pub(crate) const NO_EVAL: Score = Score::MIN;
 
 /// The sizes `up_to_bytes` tries, largest first: the size asked for, then
 /// half of it each time, ending at one bucket, since `with_capacity` rounds
@@ -686,6 +707,9 @@ impl TranspositionTable {
             generation: 1,
             replaceable: replaceable_under(1),
             audit: None,
+            probed_eval: Cell::new(NO_EVAL),
+            #[cfg(debug_assertions)]
+            probed_key: Cell::new(0),
         })
     }
 
@@ -975,23 +999,56 @@ impl TranspositionTable {
     /// crossed. Each `record_` method reports whether the entry landed.
     #[must_use]
     #[inline(always)]
-    pub fn record_cutoff(&mut self, board: &Board, play: Play, floor: Value, depth: u8) -> bool {
-        self.set(board.key, entry(board, play, floor, depth, Bound::Lower))
+    pub fn record_cutoff(
+        &mut self,
+        board: &Board,
+        play: Play,
+        floor: Value,
+        depth: u8,
+        static_eval: Score,
+    ) -> bool {
+        let pv = Pv {
+            static_eval,
+            ..entry(board, play, floor, depth, Bound::Lower)
+        };
+        self.set(board.key, pv)
     }
 
     /// Every move here fell short of the window: the score is a ceiling,
     /// and the move is the one that came closest, worth trying first next
     /// time though it proved nothing.
     #[must_use]
-    pub fn record_ceiling(&mut self, board: &Board, play: Play, ceiling: Value, depth: u8) -> bool {
-        self.set(board.key, entry(board, play, ceiling, depth, Bound::Upper))
+    pub fn record_ceiling(
+        &mut self,
+        board: &Board,
+        play: Play,
+        ceiling: Value,
+        depth: u8,
+        static_eval: Score,
+    ) -> bool {
+        let pv = Pv {
+            static_eval,
+            ..entry(board, play, ceiling, depth, Bound::Upper)
+        };
+        self.set(board.key, pv)
     }
 
     /// The best move found by searching all of them here, with its exact
     /// score.
     #[must_use]
-    pub fn record_best(&mut self, board: &Board, play: Play, score: Value, depth: u8) -> bool {
-        self.set(board.key, entry(board, play, score, depth, Bound::Exact))
+    pub fn record_best(
+        &mut self,
+        board: &Board,
+        play: Play,
+        score: Value,
+        depth: u8,
+        static_eval: Score,
+    ) -> bool {
+        let pv = Pv {
+            static_eval,
+            ..entry(board, play, score, depth, Bound::Exact)
+        };
+        self.set(board.key, pv)
     }
 
     /// The move the engine is about to answer with, stored past the depth
@@ -1034,9 +1091,13 @@ impl TranspositionTable {
         guard_rule50: bool,
     ) -> Probe {
         let (found, foreign) = self.get_audited(board.key);
+        #[cfg(debug_assertions)]
+        self.probed_key.set(board.key);
         let Some(pv) = found else {
+            self.probed_eval.set(NO_EVAL);
             return Probe::Miss;
         };
+        self.probed_eval.set(pv.static_eval);
         if pv.depth >= depth {
             let score = score_from_tt(pv.score, board.line_ply);
             let cuts = match pv.bound {
@@ -1062,6 +1123,19 @@ impl TranspositionTable {
         Probe::Order(pv.play)
     }
 
+    /// The static evaluation the last probe found in the entry of the
+    /// position `key` names, or `NO_EVAL` where it found none or the entry
+    /// holds none. The last probe must have been of `key`: a search between
+    /// the two would leave its own evaluation here.
+    #[inline(always)]
+    pub(crate) fn probed_eval(&self, key: u64) -> Score {
+        #[cfg(debug_assertions)]
+        assert_eq!(self.probed_key.get(), key, "another probe came between");
+        #[cfg(not(debug_assertions))]
+        let _ = key;
+        self.probed_eval.get()
+    }
+
     /// The move to try first here, whatever wrote it, quiescence included.
     #[inline]
     pub fn ordering_play(&self, board: &Board) -> Option<Play> {
@@ -1085,6 +1159,7 @@ fn entry(board: &Board, play: Play, value: Value, depth: u8, bound: Bound) -> Pv
     Pv {
         play,
         depth,
+        static_eval: NO_EVAL,
         score: score_to_tt(value.score, board.line_ply),
         bound,
         tainted: value.tainted,
@@ -1105,6 +1180,7 @@ mod tests {
     fn new_pv(bound: Bound, depth: u8) -> Pv {
         Pv {
             play: Play::new(0, 1, None, None, false, false),
+            static_eval: super::NO_EVAL,
             score: 0,
             depth,
             bound,
@@ -1202,6 +1278,7 @@ mod tests {
             (4, Bound::Ordering),
         ] {
             let pv = Pv {
+                static_eval: super::NO_EVAL,
                 play: Play::new(
                     63,
                     7,
@@ -1301,7 +1378,7 @@ mod tests {
         let mut table = TranspositionTable::with_capacity(4).expect("a table of a few buckets");
         let board = crate::board::Board::new();
         let play = Play::new(0, 1, None, None, false, false);
-        assert!(table.record_ceiling(&board, play, Value::clean(-50), 5));
+        assert!(table.record_ceiling(&board, play, Value::clean(-50), 5, super::NO_EVAL));
         match table.probe(&board, -10, 10, 5, true, false) {
             Probe::Cut(value) => assert_eq!(value, Value::clean(-50)),
             other => panic!("a ceiling under alpha did not cut: {other:?}"),
@@ -1347,7 +1424,7 @@ mod tests {
             let mut board = crate::board::Board::new();
 
             board.line_ply = STORED_AT;
-            assert!(table.record_best(&board, play, stored, 5));
+            assert!(table.record_best(&board, play, stored, 5, super::NO_EVAL));
 
             board.line_ply = PROBED_AT;
             match table.probe(&board, Score::MIN + 1, Score::MAX - 1, 5, false, false) {
@@ -1367,7 +1444,7 @@ mod tests {
         let fresh = crate::board::Board::from_fen("4k3/8/8/8/8/8/8/4K3 w - - 0 1").unwrap();
         let near = crate::board::Board::from_fen("4k3/8/8/8/8/8/8/4K3 w - - 96 112").unwrap();
         let play = Play::new(0, 1, None, None, false, false);
-        assert!(table.record_best(&fresh, play, Value::clean(0), 5));
+        assert!(table.record_best(&fresh, play, Value::clean(0), 5, super::NO_EVAL));
         assert!(matches!(
             table.probe(&fresh, -10, 10, 5, false, true),
             Probe::Cut(_)
@@ -1386,7 +1463,7 @@ mod tests {
         let mut table = TranspositionTable::with_capacity(4).expect("a table of a few buckets");
         let board = crate::board::Board::new();
         let play = Play::new(0, 1, None, None, false, false);
-        assert!(table.record_best(&board, play, Value::tainted(0), 5));
+        assert!(table.record_best(&board, play, Value::tainted(0), 5, super::NO_EVAL));
         match table.probe(&board, -10, 10, 5, false, false) {
             Probe::Cut(value) => assert_eq!(value, Value::tainted(0)),
             other => panic!("a trusting probe did not cut: {other:?}"),
@@ -1408,7 +1485,7 @@ mod tests {
         let mut table = TranspositionTable::with_capacity(4).expect("a table of a few buckets");
         let board = crate::board::Board::new();
         let play = Play::new(0, 1, None, None, false, false);
-        assert!(table.record_best(&board, play, Value::clean(20), 5));
+        assert!(table.record_best(&board, play, Value::clean(20), 5, super::NO_EVAL));
         let shared = &table;
         assert!(matches!(
             shared.probe(&board, -10, 10, 5, true, false),
@@ -1433,10 +1510,10 @@ mod tests {
         let board = crate::board::Board::new();
         let play = Play::new(0, 1, None, None, false, false);
         assert!(
-            !table.record_cutoff(&board, play, Value::tainted(0), 1),
+            !table.record_cutoff(&board, play, Value::tainted(0), 1, super::NO_EVAL),
             "a turned away store said it landed"
         );
-        assert!(table.record_cutoff(&board, play, Value::tainted(0), 9));
+        assert!(table.record_cutoff(&board, play, Value::tainted(0), 9, super::NO_EVAL));
         // the root's stores go past the contest, so they always land
         let mut table = full_bucket(20);
         assert!(table.record_answer(&board, play, Value::clean(0), 1));
@@ -1705,7 +1782,7 @@ mod tests {
         assert!(table.audit_signatures());
         let board = crate::board::Board::new();
         let play = Play::new(0, 1, None, None, false, false);
-        assert!(table.record_best(&board, play, Value::clean(20), 5));
+        assert!(table.record_best(&board, play, Value::clean(20), 5, super::NO_EVAL));
         // a key differing above the slice, sharing the one bucket's index
         let mut twin = board.clone();
         twin.key ^= 1 << 63;
