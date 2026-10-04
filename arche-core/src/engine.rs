@@ -158,82 +158,78 @@ impl Searched {
     }
 }
 
-/// A full width node: what it settled before its move loop, and its answer
-/// as its moves come back. The late move rules, the census, the effort
-/// instrument and the ledger all read it. Fail soft, as in quiescence: the
-/// best score is kept whether or not it reached alpha, and the move that
-/// scored it is what the table remembers.
-pub(crate) struct Node {
-    /// The node's depth, the check extension included.
-    pub(crate) depth: u8,
+/// A search's fail soft answer as its moves come back: the window as it
+/// stands, the best score whether or not it reached alpha, the move that
+/// scored it, which is what the table remembers, the taint of every value
+/// it took, and how many moves it searched. A full width node holds one,
+/// and quiescence and the root each open their own.
+pub(crate) struct FailSoft {
     /// The bounds as they stand, alpha raised by every move that beat it.
     pub(crate) alpha: Score,
     pub(crate) beta: Score,
     /// Which of the two bounds are still the root's, moved with alpha.
     pub(crate) root_bounds: RootBounds,
-    pub(crate) in_check: bool,
-    /// The ply the quiet memories are read at, or none.
-    pub(crate) ply: Option<usize>,
-    pub(crate) tt: census::Table,
-    /// How many moves the node has made and searched: the table's move
-    /// when it was legal, and never a move that turned out illegal.
+    /// How many moves have been made and searched: at a full width node
+    /// the table's move when it was legal, and never a move that turned out
+    /// illegal. A stand pat is not a move.
     pub(crate) searched: usize,
-    /// The alpha the node opened with, which says whether the answer is a
-    /// ceiling and is the window the census records.
+    /// The alpha the search opened with, which says whether the answer is
+    /// a ceiling and is the window the census records.
     opening_alpha: Score,
-    /// The node count on entry, which prices what the node cost.
-    entered_at: u64,
     best: Score,
     best_move: Option<Play>,
     taint: Taint,
 }
 
-/// What a searched move did to the node's bounds.
+/// What a searched move did to the bounds.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 enum Reached {
-    /// At or above beta: the node is cut off.
+    /// At or above beta: the search is cut off.
     Beta,
     /// Above alpha and under beta: alpha is raised to it.
     Alpha,
     Neither,
 }
 
-impl Node {
-    /// The node before its first move, with the taint the shortcuts left.
-    // two past clippy's limit: every fact the node settles before its
-    // moves, once
-    #[allow(clippy::too_many_arguments)]
-    pub(crate) fn open(
-        depth: u8,
-        alpha: Score,
-        beta: Score,
-        root_bounds: RootBounds,
-        in_check: bool,
-        ply: Option<usize>,
-        tt: census::Table,
-        entered_at: u64,
-        taint: Taint,
-    ) -> Self {
+impl FailSoft {
+    /// The answer before its first move, with whatever taint the search
+    /// read on the way to it.
+    #[inline(always)]
+    pub(crate) fn open(alpha: Score, beta: Score, root_bounds: RootBounds, taint: Taint) -> Self {
         Self {
-            depth,
             alpha,
             beta,
             root_bounds,
-            in_check,
-            ply,
-            tt,
             searched: 0,
             opening_alpha: alpha,
-            entered_at,
             best: Score::MIN + 1,
             best_move: None,
             taint,
         }
     }
 
-    /// One searched move's value, absorbed into the answer.
+    /// Quiescence's stand pat: the static score, already under beta, taken
+    /// as the best so far and as a floor under alpha, with no move and no
+    /// count. It is a floor the search stands on rather than a move that
+    /// beat alpha, so the alpha the answer opened with rises with it, and
+    /// the answer is a ceiling until a capture beats it.
+    #[inline(always)]
+    fn stand_pat(&mut self, score: Score) {
+        debug_assert!(score < self.beta, "a stand pat at beta answers alone");
+        debug_assert_eq!(self.searched, 0, "the stand pat comes before every move");
+        self.best = score;
+        self.alpha = self.alpha.max(score);
+        self.opening_alpha = self.alpha;
+    }
+
+    /// One searched move's value, absorbed into the answer. Beta is asked
+    /// only of a score above alpha, which with alpha under beta is every
+    /// score at or above it, so most moves (which fail low) ask one
+    /// question. Asking beta first measured 0.1% more instructions over
+    /// the bench, most of it in quiescence.
     #[inline(always)]
     fn absorb(&mut self, m: &Play, value: Value) -> Reached {
+        debug_assert!(self.alpha < self.beta, "an empty window");
         self.searched += 1;
         self.taint.absorb(value);
         let score = value.score;
@@ -241,10 +237,10 @@ impl Node {
             self.best = score;
             self.best_move = Some(*m);
         }
-        if score >= self.beta {
-            return Reached::Beta;
-        }
         if score > self.alpha {
+            if score >= self.beta {
+                return Reached::Beta;
+            }
             self.alpha = score;
             self.root_bounds = self.root_bounds.alpha_raised();
             return Reached::Alpha;
@@ -254,8 +250,46 @@ impl Node {
 
     /// Whether a move raised alpha: the answer is then a score or a floor
     /// rather than a ceiling.
+    #[inline(always)]
     fn raised_alpha(&self) -> bool {
         self.alpha != self.opening_alpha
+    }
+}
+
+/// A full width node: what it settled before its move loop, and its answer
+/// as its moves come back. The late move rules, the census, the effort
+/// instrument and the ledger all read it.
+pub(crate) struct Node {
+    /// The node's depth, the check extension included.
+    pub(crate) depth: u8,
+    pub(crate) in_check: bool,
+    /// The ply the quiet memories are read at, or none.
+    pub(crate) ply: Option<usize>,
+    pub(crate) tt: census::Table,
+    /// The node count on entry, which prices what the node cost.
+    entered_at: u64,
+    pub(crate) answer: FailSoft,
+}
+
+impl Node {
+    /// The node before its first move, its answer opened with the taint
+    /// the shortcuts left.
+    pub(crate) fn open(
+        depth: u8,
+        in_check: bool,
+        ply: Option<usize>,
+        tt: census::Table,
+        entered_at: u64,
+        answer: FailSoft,
+    ) -> Self {
+        Self {
+            depth,
+            in_check,
+            ply,
+            tt,
+            entered_at,
+            answer,
+        }
     }
 }
 
@@ -1383,8 +1417,10 @@ impl AlphaBeta {
         }
         arm.offer(address, |root, at| {
             let eval = i64::from(crate::eval::eval(board));
-            let (eval_beta, alpha_gap) =
-                (eval - i64::from(node.beta), i64::from(node.alpha) - eval);
+            let (eval_beta, alpha_gap) = (
+                eval - i64::from(node.answer.beta),
+                i64::from(node.answer.alpha) - eval,
+            );
             forced::Event {
                 address,
                 root,
@@ -1490,7 +1526,7 @@ impl AlphaBeta {
     #[cold]
     #[inline(never)]
     fn ledger_skip(&mut self, staged: reduction::Staged, node: &Node) {
-        let (depth, alpha, beta) = (node.depth, node.alpha, node.beta);
+        let (depth, alpha, beta) = (node.depth, node.answer.alpha, node.answer.beta);
         let board = &mut self.board;
         let Some(ledger) = self.ledger.as_mut() else {
             return;
@@ -1607,15 +1643,18 @@ impl AlphaBeta {
     ) {
         let Node {
             depth,
-            opening_alpha: alpha,
-            beta,
             in_check,
             ply,
             tt,
-            searched,
             entered_at,
             ..
         } = *node;
+        let FailSoft {
+            opening_alpha: alpha,
+            beta,
+            searched,
+            ..
+        } = node.answer;
         let board = &self.board;
         let ordering = &self.ordering;
         let cost = self.nodes - entered_at;
@@ -1896,7 +1935,7 @@ impl AlphaBeta {
         }
     }
 
-    fn quiescence(&mut self, mut alpha: Score, beta: Score) -> Result<Value, Aborted> {
+    fn quiescence(&mut self, alpha: Score, beta: Score) -> Result<Value, Aborted> {
         // no repetition check: a capture cannot repeat a position and the
         // only quiet moves here are evasions, so a cycle needs a line of
         // nothing but mutual quiet checks, which the rail bounds
@@ -1913,7 +1952,6 @@ impl AlphaBeta {
         // The full search never enters here in check (the extension
         // searches those nodes full width), so a check seen here was
         // delivered by a capture searched here. Fail soft.
-        let mut best = Score::MIN + 1;
         let in_check = self.board.in_check();
         // a stalemate is not in check, so standing pat would read it as the
         // eval. Only a side with nothing but pawns and a king is asked: a
@@ -1926,20 +1964,19 @@ impl AlphaBeta {
             return Ok(Value::clean(0));
         }
         let standing = if in_check { None } else { Some(self.eval()) };
+        // quiescence reads no draw by rule itself, but a probe trusting
+        // tainted scores can cut on one inside a capture tree. The root
+        // bounds are read by no rule here
+        let mut answer = FailSoft::open(alpha, beta, RootBounds::Neither, Taint::default());
         if let Some(score) = standing {
             if score >= beta {
                 return Ok(Value::clean(score));
             }
-            best = score;
-            if score >= alpha {
-                alpha = score;
-            }
+            answer.stand_pat(score);
         }
 
-        let mut best_move: Option<Play> = None;
-        let old_alpha = alpha;
         // a probe at depth zero: any stored bound is deep enough here
-        let pv_play = match self.probe(alpha, beta, 0) {
+        let pv_play = match self.probe(answer.alpha, beta, 0) {
             Probe::Cut(value) => return Ok(value),
             Probe::Order(play) | Probe::Refused(play) => Some(play),
             Probe::Miss => None,
@@ -1960,7 +1997,7 @@ impl AlphaBeta {
         // buffer is ordered with no losing band (`MoveOrdering::order_split`)
         if let Some(standing) = standing {
             if self.config.delta_margin
-                && !is_mate(alpha)
+                && !is_mate(answer.alpha)
                 && !is_mate(beta)
                 && moves.len() <= MOVE_LIST_INLINE
             {
@@ -1971,7 +2008,7 @@ impl AlphaBeta {
                     let m = moves[j];
                     let keep = match m.capture {
                         Some(captured) if m.promote.is_none() => {
-                            !short_of_alpha(standing, captured, alpha)
+                            !short_of_alpha(standing, captured, answer.alpha)
                         }
                         _ => true,
                     };
@@ -1991,10 +2028,6 @@ impl AlphaBeta {
             self.ordering
                 .order_split(&self.board, &mut moves, captures, pv_play, None);
 
-        // quiescence reads no draw by rule itself, but a probe trusting
-        // tainted scores can cut on one inside a capture tree
-        let mut taint = Taint::default();
-        let mut found_legal_move = false;
         for (i, m) in moves.iter().enumerate() {
             // two skips the reference does not make. A promotion is exempt
             // because the swap prices the arriving piece as the pawn that
@@ -2005,8 +2038,9 @@ impl AlphaBeta {
             // already in hand. A sacrifice that would find a first mate is
             // skipped like any other losing capture
             if let (Some(standing), Some(captured)) = (standing, m.capture) {
-                if !is_mate(alpha) && m.promote.is_none() {
-                    if self.config.delta_margin && short_of_alpha(standing, captured, alpha) {
+                if !is_mate(answer.alpha) && m.promote.is_none() {
+                    if self.config.delta_margin && short_of_alpha(standing, captured, answer.alpha)
+                    {
                         continue;
                     }
                     // every capture behind the front is one the swap priced
@@ -2017,39 +2051,33 @@ impl AlphaBeta {
                 }
             }
             if self.board.make_move(m) {
-                found_legal_move = true;
                 // undo before an abort can propagate
-                let result = self.quiescence(-beta, -alpha);
+                let result = self.quiescence(-beta, -answer.alpha);
                 self.board.undo_move();
                 let value = -result?;
-                taint.absorb(value);
-                let score = value.score;
-                if score > best {
-                    best = score;
-                    best_move = Some(*m);
-                }
-                if score > alpha {
-                    if score >= beta {
-                        let value = taint.stamp(score);
-                        self.store_cutoff(m, value, 0, standing.unwrap_or(NO_EVAL));
-                        return Ok(value);
-                    }
-                    alpha = score;
+                if answer.absorb(m, value) == Reached::Beta {
+                    let value = answer.taint.stamp(value.score);
+                    self.store_cutoff(m, value, 0, standing.unwrap_or(NO_EVAL));
+                    return Ok(value);
                 }
             }
         }
 
-        if in_check && !found_legal_move {
+        // in check there is no stand pat, so nothing searched is no legal
+        // move. The count is asked first: written the other way round, the
+        // compiler kept the check flag on the stack rather than in a
+        // register and quiescence ran more instructions
+        if answer.searched == 0 && in_check {
             return Ok(Value::mated(self.board.line_ply));
         }
 
-        let value = taint.stamp(best);
-        if let Some(play) = best_move {
+        let value = answer.taint.stamp(answer.best);
+        if let Some(play) = answer.best_move {
             self.store_answer(
                 play,
                 value,
                 0,
-                alpha != old_alpha,
+                answer.raised_alpha(),
                 standing.unwrap_or(NO_EVAL),
             );
         }
@@ -2343,16 +2371,16 @@ impl AlphaBeta {
     ) -> Result<Option<Value>, Aborted> {
         let Some(value) = self.search_child(
             &tt,
-            node.alpha,
-            node.beta,
+            node.answer.alpha,
+            node.answer.beta,
             node.depth,
             &Decision::First,
-            node.root_bounds,
+            node.answer.root_bounds,
         )?
         else {
             return Ok(None);
         };
-        if node.absorb(&tt, value) != Reached::Beta {
+        if node.answer.absorb(&tt, value) != Reached::Beta {
             return Ok(None);
         }
         let cutting = census::Cutting {
@@ -2364,7 +2392,7 @@ impl AlphaBeta {
         Ok(Some(self.cutoff(
             &tt,
             &[],
-            node.taint,
+            node.answer.taint,
             value.score,
             node.depth,
             static_eval,
@@ -2473,7 +2501,7 @@ impl AlphaBeta {
         moves: &[Play],
         m: &Play,
     ) -> Decision {
-        if node.searched == 0 {
+        if node.answer.searched == 0 {
             return Decision::First;
         }
         if rules.skips(&self.deciding(), node, m) {
@@ -2685,21 +2713,18 @@ impl AlphaBeta {
         let table_move = pv_play.filter(|tt| self.board.is_pseudo_legal(tt));
         let mut node = Node::open(
             depth,
-            alpha,
-            beta,
-            root_bounds,
             in_check,
             self.memory_ply(),
             census::Table::of(pv_play.is_some(), table_move.is_some()),
             entered_at,
-            taint,
+            FailSoft::open(alpha, beta, root_bounds, taint),
         );
         if let Some(tt) = table_move {
             if let Some(value) = self.search_table_move(tt, &mut node, static_eval)? {
                 return Ok(value);
             }
         }
-        let tt_searched = node.searched > 0;
+        let tt_searched = node.answer.searched > 0;
 
         let mut moves = MoveList::new();
         let captures = if in_check {
@@ -2743,13 +2768,19 @@ impl AlphaBeta {
             if let Decision::Skip = decision {
                 continue;
             }
-            let Some(value) =
-                self.search_child(m, node.alpha, node.beta, depth, &decision, node.root_bounds)?
+            let Some(value) = self.search_child(
+                m,
+                node.answer.alpha,
+                node.answer.beta,
+                depth,
+                &decision,
+                node.answer.root_bounds,
+            )?
             else {
                 continue;
             };
             made.mark(i);
-            match node.absorb(m, value) {
+            match node.answer.absorb(m, value) {
                 Reached::Beta => {
                     let cutting = census::Cutting {
                         play: m,
@@ -2765,7 +2796,14 @@ impl AlphaBeta {
                         .enumerate()
                         .filter(|(place, _)| made.holds(*place))
                         .map(|(_, tried)| tried);
-                    return Ok(self.cutoff(m, tried, node.taint, value.score, depth, static_eval));
+                    return Ok(self.cutoff(
+                        m,
+                        tried,
+                        node.answer.taint,
+                        value.score,
+                        depth,
+                        static_eval,
+                    ));
                 }
                 Reached::Alpha => {
                     // the dropped moves stay dropped only while alpha is
@@ -2774,7 +2812,7 @@ impl AlphaBeta {
                     // or above beta and has cut the node off before
                     // reaching here
                     debug_assert!(
-                        !(quiets.filtered && is_mate(node.alpha)),
+                        !(quiets.filtered && is_mate(node.answer.alpha)),
                         "a filtered node raised alpha to a mate without cutting off"
                     );
                 }
@@ -2782,7 +2820,7 @@ impl AlphaBeta {
             }
             debug_assert_eq!(
                 made.count(),
-                node.searched,
+                node.answer.searched,
                 "a bit for every move made and searched, and for no other"
             );
         }
@@ -2792,7 +2830,7 @@ impl AlphaBeta {
         // effort between held nodes and cut ones as well as away from both
         self.record_node(&node, &moves, quiets.scored, None);
 
-        if node.searched == 0 {
+        if node.answer.searched == 0 {
             // clean: mate and stalemate are properties of the position
             if in_check {
                 return Ok(Value::mated(self.board.line_ply));
@@ -2800,10 +2838,11 @@ impl AlphaBeta {
             return Ok(Value::clean(0));
         }
         let play = node
+            .answer
             .best_move
             .expect("a legal move was found, so one of them is best");
-        let value = node.taint.stamp(node.best);
-        self.store_answer(play, value, depth, node.raised_alpha(), static_eval);
+        let value = node.answer.taint.stamp(node.answer.best);
+        self.store_answer(play, value, depth, node.answer.raised_alpha(), static_eval);
         Ok(value)
     }
 
@@ -2876,14 +2915,12 @@ impl AlphaBeta {
             depth += 1;
         }
 
-        let opening_alpha = window.alpha;
-        let beta = window.beta;
-        let mut alpha = opening_alpha;
-        let mut root_bounds = RootBounds::Both;
-        // the fail soft answer, whether or not anything reached alpha
-        let mut top: Option<(Play, Score)> = None;
-        let mut found_legal_move = false;
-        let mut taint = Taint::default();
+        let mut answer = FailSoft::open(
+            window.alpha,
+            window.beta,
+            RootBounds::Both,
+            Taint::default(),
+        );
 
         // the previous depth's answer is tried first, which the aborted
         // iteration's swap in `iterative_deepening_search` rests on. The
@@ -2894,7 +2931,7 @@ impl AlphaBeta {
 
         // the root reduces nothing
         for m in &moves {
-            let decision = if found_legal_move {
+            let decision = if answer.searched > 0 {
                 Decision::Search {
                     reduction: 0,
                     staged: None,
@@ -2902,28 +2939,25 @@ impl AlphaBeta {
             } else {
                 Decision::First
             };
-            match self.search_child(m, alpha, beta, depth, &decision, root_bounds) {
+            match self.search_child(
+                m,
+                answer.alpha,
+                answer.beta,
+                depth,
+                &decision,
+                answer.root_bounds,
+            ) {
                 Err(Aborted) => {
                     // only a move that beat the opening alpha may be
                     // answered with
-                    let answerable = (alpha != opening_alpha).then_some(top).flatten();
+                    let answerable = answer.best_move.filter(|_| answer.raised_alpha());
                     return SearchOutcome::Aborted(
-                        answerable.map(|(play, score)| self.result_for(play, score)),
+                        answerable.map(|play| self.result_for(play, answer.best)),
                     );
                 }
                 Ok(None) => {}
                 Ok(Some(value)) => {
-                    found_legal_move = true;
-                    taint.absorb(value);
-                    let score = value.score;
-                    if top.is_none_or(|(_, best)| score > best) {
-                        top = Some((*m, score));
-                    }
-                    if score > alpha {
-                        alpha = score;
-                        root_bounds = root_bounds.alpha_raised();
-                    }
-                    if score >= beta {
+                    if answer.absorb(m, value) == Reached::Beta {
                         // the rest are the wider re-search's to ask
                         break;
                     }
@@ -2931,35 +2965,46 @@ impl AlphaBeta {
             }
         }
 
-        if !found_legal_move {
+        if answer.searched == 0 {
             // checkmate or stalemate. An expired fifty move counter is not
             // a way out: that draw is claimable and not automatic (FIDE
             // 9.3), so the side to move may still play
             return SearchOutcome::GameOver;
         }
 
-        let (play, score) = top.expect("a legal move was found, so one of them scored best");
-        let value = taint.stamp(score);
-        // the answer and the floor are stored past the depth contest,
-        // because the reported line is read back from this slot. A ceiling
-        // is not stored, so the closest move is never promoted over a move
-        // it was not shown to beat
-        let bound = if score >= beta {
-            let landed = self
-                .transpositions
-                .record_floor_answer(&self.board, play, value, depth);
-            self.ghi.count_store(landed, value);
+        let play = answer
+            .best_move
+            .expect("a legal move was found, so one of them scored best");
+        let score = answer.best;
+        let bound = if score >= answer.beta {
             ScoreBound::Lower
-        } else if score <= opening_alpha {
-            ScoreBound::Upper
-        } else {
-            let landed = self
-                .transpositions
-                .record_answer(&self.board, play, value, depth);
-            self.ghi.count_store(landed, value);
+        } else if answer.raised_alpha() {
             ScoreBound::Exact
+        } else {
+            ScoreBound::Upper
         };
+        self.store_root_answer(play, answer.taint.stamp(score), depth, bound);
         SearchOutcome::Complete(self.result_for(play, score), bound)
+    }
+
+    /// The root's answer to the table, past the taint policy and the depth
+    /// contest, because the reported line is read back from this slot.
+    /// Under `Skip` a tainted root answer is stored too, and the rare
+    /// tainted cutoff it then offers is refused as under `Refuse`. A
+    /// ceiling is not stored, so the closest move is never promoted over a
+    /// move it was not shown to beat.
+    fn store_root_answer(&mut self, play: Play, value: Value, depth: u8, bound: ScoreBound) {
+        let landed = match bound {
+            ScoreBound::Lower => {
+                self.transpositions
+                    .record_floor_answer(&self.board, play, value, depth)
+            }
+            ScoreBound::Exact => self
+                .transpositions
+                .record_answer(&self.board, play, value, depth),
+            ScoreBound::Upper => return,
+        };
+        self.ghi.count_store(landed, value);
     }
 
     /// Replay the line the table holds on a copy of the board, checking
