@@ -696,33 +696,30 @@ impl MoveOrdering {
         }
     }
 
-    /// With the shallow rules on for the rest of the node, only a move that
-    /// gives check or promotes will be searched: those go first from `t`
-    /// in key order, and the rest behind them in any order. Returns where
-    /// the survivors end.
+    /// Move the moves of the run from `t` on that `survives` accepts to the
+    /// front of that part, in key order, and the rest behind them in any
+    /// order. Returns where the survivors end.
     #[inline(never)]
     pub(crate) fn keep_unskippable(
         &mut self,
-        board: &Position,
         run: &mut [Play],
         t: usize,
         ply: usize,
-        check: &mut Option<crate::board::CheckInfo>,
+        survives: impl Fn(&Play) -> bool,
     ) -> usize {
-        let info = *check.get_or_insert_with(|| board.check_info());
         let keys = &mut self.quiet_keys[ply];
         let len = run.len();
         // survivors to the front of [t..), carrying their keys
         let mut kept = t;
         for j in t..len {
             let m = run[j];
-            if m.promote.is_some() || board.gives_check_with(&info, &m) {
+            if survives(&m) {
                 keys.swap(kept, j);
                 run.swap(kept, j);
                 kept += 1;
             }
         }
-        // the survivors in key order, a handful at most
+        // the survivors in key order
         for i in t + 1..kept {
             let k = keys[i];
             let m = run[i];
