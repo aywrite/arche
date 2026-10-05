@@ -24,7 +24,7 @@ import tune
 # asked of tune.py, which would agree with itself whatever it said.
 LAYOUT_LINE = (
     "layout midgame 384 endgame 384 material 6 mobility 4 shelter 7 "
-    "pawn_structure 8 king_attack 4"
+    "pawn_structure 8 king_attack 4 tempo 1"
 )
 LAYOUT = tune.Layout.of(LAYOUT_LINE)
 
@@ -171,17 +171,17 @@ def test_a_header_without_the_drawn_count_is_refused():
             tune.parse_terms([header, *lines[1:]])
 
 
-@pytest.mark.parametrize("count", [518, 774, 782, 790, 796, 812])
+@pytest.mark.parametrize("count", [518, 774, 782, 790, 796, 812, 820])
 def test_a_vector_of_an_earlier_layout_is_refused(tmp_path, count):
     """The lengths the vector had before the endgame tables, before mobility,
-    before the shelter, before the pawn storm, before the pawn structure and
-    before the king attack zone. Every slot any of them names exists in the
-    layout that replaced it, so their numbers would land on the wrong weights
-    rather than failing to parse. Both doors a vector comes through refuse
+    before the shelter, before the pawn storm, before the pawn structure,
+    before the king attack zone and before the tempo. Every slot any of them
+    names exists in the layout that replaced it, so their numbers would land
+    on the wrong weights rather than failing to parse. Both doors a vector comes through refuse
     them."""
-    assert LAYOUT.slots == 820
+    assert LAYOUT.slots == 822
     old = [0] * count
-    with pytest.raises(ValueError, match=f"of {count}, expected 820"):
+    with pytest.raises(ValueError, match=f"of {count}, expected 822"):
         tune.parse_terms(
             [
                 LAYOUT_LINE,
@@ -190,7 +190,7 @@ def test_a_vector_of_an_earlier_layout_is_refused(tmp_path, count):
         )
     written = tmp_path / "fitted.json"
     written.write_text(json.dumps(old), encoding="utf-8")
-    with pytest.raises(ValueError, match=f"of {count}, expected 820"):
+    with pytest.raises(ValueError, match=f"of {count}, expected 822"):
         tune.read_weights(written, LAYOUT)
 
 
@@ -541,15 +541,17 @@ def test_the_interval_is_taken_over_the_games():
 
 def test_the_optimiser_finds_the_bottom_of_a_bowl():
     """The bowl is scaled so the useful step is many times longer than one,
-    as on the real loss, where a search that only backtracked would stall."""
+    as on the real loss, where a search that only backtracked would stall.
+    It has the 820 dimensions the vector had when this was written; its size
+    changes the path, and the stop on this one is what is pinned."""
 
-    centre = np.arange(LAYOUT.slots, dtype=float)
+    centre = np.arange(820, dtype=float)
 
     def objective(x):
         slack = (x - centre) * 1e-4
         return float(slack @ slack), 2e-8 * (x - centre)
 
-    found, value, stop = tune.lbfgs(objective, np.zeros(LAYOUT.slots))
+    found, value, stop = tune.lbfgs(objective, np.zeros(820))
     assert value < 1e-12
     assert np.max(np.abs(found - centre)) < 1e-3
     assert stop["reason"] == "tolerance"
@@ -779,12 +781,12 @@ def test_a_term_is_fitted_with_every_earlier_term_held():
 
 def test_a_refit_holds_the_terms_above_it_as_well_as_the_ones_below():
     """A mobility refit holds the tables below it and the shelter, the pawn
-    structure and the king attack zone above, so the mobility weights are the
-    only thing that moves. Without the pawn structure hold the pawn weights
-    move too, which is the confound `1b0862a` found the first time a hold was
-    missing."""
+    structure, the king attack zone and the tempo above, so the mobility
+    weights are the only thing that moves. Without the pawn structure hold
+    the pawn weights move too, which is the confound `1b0862a` found the
+    first time a hold was missing."""
     refit = tune.frozen_slots(
-        LAYOUT, False, ["tables", "shelter", "pawn_structure", "king_attack"]
+        LAYOUT, False, ["tables", "shelter", "pawn_structure", "king_attack", "tempo"]
     )
     assert refit[: LAYOUT.start["mobility"]].all()
     assert not refit[LAYOUT.start["mobility"] : LAYOUT.start["shelter"]].any()
