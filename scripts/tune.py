@@ -90,12 +90,14 @@ FIXED_BLOCKS = ("midgame", "endgame", "material")
 # loose on the safe side. King attack zone: the most one piece of each kind
 # can show on the eight squares round a centred king (a knight reaches two, a
 # bishop two and is given three, a rook four, a queen five and is given six).
-# A side with two knights shows more, as it does for mobility.
+# A side with two knights shows more, as it does for mobility. Tempo: one,
+# the side that has the move.
 BOUNDS = {
     "mobility": (8, 13, 14, 27),
     "shelter": (3,) * 7,
     "pawn_structure": (8,) * 8,
     "king_attack": (2, 3, 4, 6),
+    "tempo": (1,),
 }
 
 
@@ -1482,7 +1484,8 @@ def frozen_slots(layout, free_material, held=()):
     Each term earns a hold as it is fitted, and nothing is held that the caller
     did not name. A fit of the newest term names every hold below it, so a
     shelter fit passes `--hold tables --hold mobility`, a pawn structure fit
-    adds `--hold shelter` and a king attack fit adds `--hold pawn_structure`.
+    adds `--hold shelter`, a king attack fit adds `--hold pawn_structure` and
+    a tempo fit adds `--hold king_attack`.
     Holding the tables but not mobility through a shelter fit refits mobility
     beside the shelter: `1b0862a` found half of the king safety fit's apparent
     gain to be that. A refit of an older term holds the newer terms too, which

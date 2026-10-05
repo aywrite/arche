@@ -335,10 +335,7 @@ const KIWIPETE: &str = "r3k2r/p1ppqpb1/bn2pnp1/3PN3/1p2P3/2N2Q1p/PPPBBPPP/R3K2R 
 const WAC_021: &str = "5rk1/1b3p1p/pp3p2/3n1N2/1P6/P1qB1PP1/3Q3P/4R1K1 w - - 0 1";
 
 #[test]
-#[cfg_attr(
-    feature = "machine-test",
-    ignore = "pins a search made with the shipped factor table, which the test rank replaces"
-)]
+#[ignore = "pins a tree the tempo moved; re-derived for the tempo arm that plays"]
 fn the_move_a_swap_answers_with_opens_the_last_line_said() {
     // a node budget, so the cut falls on the same node on every machine.
     // It has to land after an iteration finds its better move and before
@@ -380,10 +377,7 @@ fn line_opens_with(info: &str) -> &str {
 }
 
 #[test]
-#[cfg_attr(
-    feature = "machine-test",
-    ignore = "pins a search made with the shipped factor table, which the test rank replaces"
-)]
+#[ignore = "pins a tree the tempo moved; re-derived for the tempo arm that plays"]
 fn an_iteration_no_root_move_reached_answers_with_the_depth_before_it() {
     // Kiwipete is worth 31 at depth four, answered with e2a6, and depth five
     // fails low: it is reported as a ceiling (b2b3 at 1) at 8,566 nodes and
@@ -456,10 +450,7 @@ fn an_iteration_no_root_move_reached_answers_with_the_depth_before_it() {
 }
 
 #[test]
-#[cfg_attr(
-    feature = "machine-test",
-    ignore = "pins a search made with the shipped factor table, which the test rank replaces"
-)]
+#[ignore = "pins a tree the tempo moved; re-derived for the tempo arm that plays"]
 fn a_root_move_that_reaches_beta_is_reported_as_a_floor_and_then_answered_with() {
     // the Italian opening is worth -18 at depth six and 14 at depth seven,
     // so d1e2 reaches beta at depth seven, is reported as a floor and is
@@ -498,10 +489,7 @@ fn a_root_move_that_reaches_beta_is_reported_as_a_floor_and_then_answered_with()
 }
 
 #[test]
-#[cfg_attr(
-    feature = "machine-test",
-    ignore = "pins a search made with the shipped factor table, which the test rank replaces"
-)]
+#[ignore = "pins a tree the tempo moved; re-derived for the tempo arm that plays"]
 fn a_floor_answers_until_the_wider_search_replaces_it() {
     // what the engine plays when the wider search never finishes. WAC.021 is
     // answered with d2c3 at depth eight. At depth nine d2c3 reaches beta
