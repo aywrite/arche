@@ -21,9 +21,9 @@ The board is represented using bitboards: one 64 bit integer per piece type
 and one per colour, with one bit per square. The search is alpha beta with
 iterative deepening, quiescence search and a transposition table. Evaluation
 is material plus piece square tables, tapered between middlegame and endgame,
-plus four terms counted at the leaf (piece mobility, king safety, pawn
-structure and the king attack zone), plus an untapered factorization machine
-term over every pair of pieces.
+plus five terms counted at the leaf (piece mobility, king safety, pawn
+structure, the king attack zone and the tempo), plus an untapered
+factorization machine term over every pair of pieces.
 
 ## Code map: arche-core
 
@@ -165,6 +165,8 @@ term over every pair of pieces.
     knights, bishops, rooks and queens attack, off the same attack sets
     mobility walks but with nothing taken out of them. Read at every leaf and
     not remembered, for mobility's reason.
+  - **tempo.rs**: A weight for the side to move, tapered like the rest, so
+    the same position scores differently by whose turn it is.
 - **psqt.rs**: The piece square tables. Every piece has a second table
   for the endgame; both phases are packed into one integer so the taper
   costs one multiply.

@@ -18,6 +18,7 @@ mod king_attack;
 mod mobility;
 mod pawn_structure;
 mod shelter;
+mod tempo;
 
 use cache::Cache;
 
@@ -180,6 +181,12 @@ pub(crate) const TERMS: &[Term] = &[
         weight: king_attack::weight,
         counts: king_attack::counts,
     },
+    Term {
+        name: "tempo",
+        width: tempo::COUNTS,
+        weight: tempo::weight,
+        counts: tempo::counts,
+    },
 ];
 
 /// The widest term, which is how long a buffer the tuner's walk needs to ask
@@ -285,7 +292,7 @@ fn sum(board: &Board, memo: &mut impl Memo) -> Score {
     let tables = memo.tables(board);
     let walk =
         |color| attack_score::<{ mobility::SCORED_KINDS }, { king_attack::SCORED }>(board, color);
-    let leaf = walk(Color::White) - walk(Color::Black) + tables;
+    let leaf = walk(Color::White) - walk(Color::Black) + tables + tempo::fold(board);
     board.eval.score(board.active_color, leaf)
 }
 
@@ -533,7 +540,8 @@ pub(crate) fn suite_fens() -> Vec<String> {
 mod evaluate {
     use super::{
         Board, Caches, Memo, PawnCache, ShelterCache, TERMS, TOTAL_PHASE, eval, eval_cached,
-        factors, king_attack, mobility, pawn_structure, pieces_of, shelter, suite_fens, weigh,
+        factors, king_attack, mobility, pawn_structure, pieces_of, shelter, suite_fens, tempo,
+        weigh,
     };
     use crate::board::fens;
     use crate::misc::{Color, File, coordinate_to_index};
@@ -597,8 +605,11 @@ mod evaluate {
     }
 
     /// After every legal move in the shared positions, the material
-    /// accumulators must equal a recount, and the score must be the exact
-    /// negative of the opponent's view of it.
+    /// accumulators must equal a recount, and the score must be the negative
+    /// of the opponent's view of it but for the tempo. Handing over the move
+    /// hands over the tempo, so the two views differ by twice its weight at
+    /// the position's phase, and by a centipawn either way where the one
+    /// divide truncates the two numerators differently.
     #[test]
     fn material_stays_counted_and_the_eval_stays_antisymmetric() {
         for fen in fens::CORE {
@@ -613,10 +624,26 @@ mod evaluate {
                         m,
                         fen
                     );
-                    let score = eval(&board);
+                    let score = i32::from(eval(&board));
                     board.active_color = !board.active_color;
-                    assert_eq!(score, -eval(&board), "{} in {}", m, fen);
+                    let passed = i32::from(eval(&board));
                     board.active_color = !board.active_color;
+                    let phase = board.eval.phase.min(TOTAL_PHASE);
+                    let tempo = tempo::weight(0);
+                    let twice = 2
+                        * (mg_value(tempo) * phase + eg_value(tempo) * (TOTAL_PHASE - phase))
+                        / TOTAL_PHASE;
+                    let handed = score + passed;
+                    // material that cannot mate scores zero from both sides
+                    let expected = if board.drawn_by_material() { 0 } else { twice };
+                    assert!(
+                        (handed - expected).abs() <= 1,
+                        "{} in {}: {} and {} from the other side",
+                        m,
+                        fen,
+                        score,
+                        passed
+                    );
                     board.undo_move();
                 }
             }
@@ -1011,7 +1038,7 @@ mod evaluate {
         }
     }
 
-    /// The table names the four leaf terms the sum adds. The sum is hand
+    /// The table names the five leaf terms the sum adds. The sum is hand
     /// written rather than a walk over the table, so this is the one place
     /// the two lists are held against each other; a priced term in the table
     /// and not the sum would fail the tuner's identity, and this says which
@@ -1021,10 +1048,16 @@ mod evaluate {
         let names: Vec<&str> = TERMS.iter().map(|term| term.name).collect();
         assert_eq!(
             names,
-            ["mobility", "shelter", "pawn_structure", "king_attack"]
+            [
+                "mobility",
+                "shelter",
+                "pawn_structure",
+                "king_attack",
+                "tempo"
+            ]
         );
         // two queens and a rook against none, a king in each corner and pawns
-        // of both colours on six files, so that no one of the four folds to
+        // of both colours on six files, so that no one of the five folds to
         // nothing. The queen on a4 bears on d7 and e8 of the black king's
         // ring
         let board = Board::from_fen("3k4/P4p2/8/3P2p1/Q2P4/PP2p2p/1P6/1Q4KR w - - 0 1").unwrap();
@@ -1033,13 +1066,15 @@ mod evaluate {
             ("shelter", shelter::fold(&board)),
             ("pawn structure", pawn_structure::fold(&board)),
             ("king attack", king_attack::fold(&board)),
+            ("tempo", tempo::fold(&board)),
         ] {
             assert_ne!(term, 0, "{} is level here, so it says nothing", name);
         }
         let leaf = mobility::fold(&board)
             + shelter::fold(&board)
             + pawn_structure::fold(&board)
-            + king_attack::fold(&board);
+            + king_attack::fold(&board)
+            + tempo::fold(&board);
         assert_eq!(eval(&board), board.eval.score(board.active_color, leaf));
     }
 

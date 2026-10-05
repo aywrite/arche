@@ -483,7 +483,7 @@ The line after the header states the layout, so that what reads these rows
 holds no copy of it:
 
 ```
-layout midgame 384 endgame 384 material 6 mobility 4 shelter 7 pawn_structure 8 king_attack 4
+layout midgame 384 endgame 384 material 6 mobility 4 shelter 7 pawn_structure 8 king_attack 4 tempo 1
 ```
 
 The first three are runs of slots. The names after them are the leaf terms in
@@ -513,7 +513,8 @@ evaluation:
 ```
 eval = mat . w_mat + trunc((psqt . w_psqt + mobility . w_mobility
                             + shelter . w_shelter + pawns . w_pawns
-                            + king_attack . w_king_attack) / 24)
+                            + king_attack . w_king_attack
+                            + tempo . w_tempo) / 24)
        + machine
 ```
 

@@ -44,14 +44,14 @@ const _: () = assert!(MAX_PLY < u8::MAX);
 // search, for a node to be answered from it: a pawn a ply. The bench
 // prefers a little less (sixty to a hundred and twenty span about five
 // percent of the count, not monotone). The figure is held above the margin
-// at which a depth four mate in two is lost. On the default search that
-// boundary read between eighty five and ninety one while it could be read
-// there; the default's other shortcuts now lose the mate at every margin
-// from sixty to a hundred. With this shortcut alone on the reference the
-// boundary is seventy seven, which
-// the_reverse_futility_margin_keeps_the_depth_four_mate pins. That test
-// guards only a cut below seventy seven, so re-measure before moving the
-// figure. docs/ROADMAP.md has the shadow lane's reading.
+// at which a mate in two is lost. With this shortcut alone on the reference
+// that mate is lost at depth five at seventy one or less, which
+// the_reverse_futility_margin_keeps_the_depth_five_mate pins. That test
+// guards only a cut below seventy two, so re-measure before moving the
+// figure. At depth four the boundary is a hundred and one, above this
+// figure, since the tempo; the default search loses that one at every
+// margin from sixty to a hundred. docs/ROADMAP.md has the shadow lane's
+// reading.
 const REVERSE_FUTILITY_MARGIN: Score = 100;
 // The deepest node the margin may answer. Four, six and eight give the
 // same bench count to a tenth of a percent.
@@ -2126,9 +2126,12 @@ impl AlphaBeta {
     ) -> Result<Option<Value>, Aborted> {
         let margin = self.config.reverse_futility && depth <= REVERSE_FUTILITY_MAX_DEPTH;
         // no pass directly under a pass, or the search would answer a
-        // position from a line neither side moved in. Unreachable while the
-        // eval gate below stands (the window and the eval turn round under a
-        // pass), and kept for the day that gate is dropped or given a margin
+        // position from a line neither side moved in. The eval gate below
+        // does not hold it: the window turns round under a pass but the
+        // tempo goes to the other side, so a parent whose eval stood less
+        // than twice the tempo above its beta has a child that passes the
+        // gate too. `can_null` holds it, since a pass's child is searched
+        // with it false
         let pass = self.config.null_move && can_null && depth >= NULL_MOVE_MIN_DEPTH;
         if (!margin && !pass)
             || in_check

@@ -460,13 +460,15 @@ mod search {
 
     /// What holds `REVERSE_FUTILITY_MARGIN` above the boundary its comment
     /// gives: with the shortcut the only thing added to the reference, a
-    /// margin of seventy six or less cuts off the line this mate is found
-    /// in. Cold, so no table decides it.
+    /// margin of seventy one or less cuts off the line this mate is found in
+    /// at depth five. Cold, so no table decides it. It was the depth four
+    /// mate, lost at seventy six or less, until the tempo moved that
+    /// boundary to a hundred and one.
     #[test]
-    fn the_reverse_futility_margin_keeps_the_depth_four_mate() {
+    fn the_reverse_futility_margin_keeps_the_depth_five_mate() {
         let game =
             Board::from_fen("2rr3k/pp3pp1/1nnqbN1p/3pN3/2pP4/2P3Q1/PPB4P/R4RK1 w - - 0 0").unwrap();
-        let result = completed(shortcut(game).search(4));
+        let result = completed(shortcut(game).search(5));
         assert_eq!(result.checkmate_in(), Some(2));
         assert_eq!(format!("{}", result.best_move), "g3g6");
     }

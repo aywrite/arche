@@ -558,18 +558,29 @@ mod tests {
         fens
     }
 
-    /// The row from the other side to move is its negative, so a row states
-    /// the evaluation from the side to move.
+    /// The row from the other side to move is its negative but for the
+    /// tempo, whose coefficients go with the move and so keep their sign:
+    /// a row states the evaluation from the side to move.
     #[test]
     fn a_positions_terms_reconstruct_its_evaluation() {
         let fens = every_shape();
         assert!(fens.len() > 1_500, "{} positions", fens.len());
+        let (tempo, width) = term("tempo");
+        let moves = |slot: u16| [tempo, tempo + width].contains(&usize::from(slot));
         for fen in fens {
             let mut board = Board::from_fen(&fen).unwrap_or_else(|e| panic!("{}: {}", fen, e));
-            let ours = reconstruct(&Terms::of(&board));
-            assert_eq!(ours, eval::eval(&board), "{}", fen);
+            let ours = Terms::of(&board);
+            assert_eq!(reconstruct(&ours), eval::eval(&board), "{}", fen);
             board.active_color = !board.active_color;
-            assert_eq!(reconstruct(&Terms::of(&board)), -ours, "{}", fen);
+            let theirs = Terms::of(&board);
+            assert_eq!(reconstruct(&theirs), eval::eval(&board), "{}", fen);
+            let handed: Vec<(u16, i32)> = ours
+                .coefficients
+                .iter()
+                .map(|&(slot, c)| (slot, if moves(slot) { c } else { -c }))
+                .collect();
+            assert_eq!(theirs.coefficients, handed, "{}", fen);
+            assert_eq!(theirs.machine, -ours.machine, "{}", fen);
         }
     }
 
