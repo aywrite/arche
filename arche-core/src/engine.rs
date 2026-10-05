@@ -2581,12 +2581,16 @@ impl AlphaBeta {
             if i + 1 >= end {
                 quiets.lazy = None;
             } else if rules.shallow_active(&self.deciding(), node) {
+                let board = &self.board;
+                let info = *rules.check.get_or_insert_with(|| board.check_info());
+                // the promotions and the checks, a handful at most, which
+                // `keep_unskippable` sorts by insertion
+                let survives = |m: &Play| late_move::survives_shallow(board, &info, m);
                 let kept = self.ordering.keep_unskippable(
-                    &self.board,
                     &mut moves[front..end],
                     i - front,
                     ply,
-                    &mut rules.check,
+                    survives,
                 );
                 // a run whose every move survives drops none, and leaves
                 // no run to step past
@@ -2641,7 +2645,7 @@ impl AlphaBeta {
             self.record_skip(node, rules, moves, m);
             return Decision::Skip;
         }
-        if !rules.admits(node) || m.capture.is_some() || m.promote.is_some() {
+        if !rules.reduces(node, m) {
             return Decision::UNREDUCED;
         }
         match late_move::decide_admitted(&self.deciding(), node, rules, moves, m) {

@@ -4107,9 +4107,11 @@ mod fail_soft {
 /// A full width node's answer as its moves come back, read off the node
 /// with no search behind it but the one the table's move asks for.
 mod node {
-    use crate::board::play_named;
+    use crate::board::{MoveList, play_named};
     use crate::census::Table;
-    use crate::engine::{AlphaBeta, Board, FailSoft, Node, RootBounds, Score};
+    use crate::engine::{AlphaBeta, Board, FailSoft, Node, QuietOrder, RootBounds, Score};
+    use crate::late_move;
+    use crate::play::Play;
     use crate::value::Taint;
     use pretty_assertions::assert_eq;
 
@@ -4148,5 +4150,47 @@ mod node {
             Ok(None)
         ));
         assert_eq!(node.answer.searched, 1, "the table's move was not counted");
+    }
+
+    /// Once a shallow rule is on for the rest of the node, the lazy quiet
+    /// ordering keeps the moves that promote or give check and drops the
+    /// rest of the run whole. The loop would skip a kept move the rules
+    /// drop, so the tree cannot show a predicate that keeps too much; this
+    /// reads the cut itself. White has no capture, so the run is the list.
+    #[test]
+    fn the_lazy_ordering_drops_the_quiets_the_shallow_rules_skip() {
+        let board = Board::from_fen("7k/1P6/8/8/R7/8/8/7K w - - 0 1").unwrap();
+        let mut e = AlphaBeta::with_table_bytes(board, 1024 * 1024);
+        let mut moves = MoveList::new();
+        let captures = e.board.generate_moves_into(&mut moves);
+        assert_eq!(captures, 0);
+        // depth one past the count's line, with alpha far over the
+        // evaluation, so both rules are on
+        let alpha = crate::eval::eval(&e.board) + 10_000;
+        let mut node = open(1, alpha, alpha + 1, RootBounds::Neither);
+        node.answer.searched = 12;
+        let ordered = e
+            .ordering
+            .order_split(&e.board, &mut moves, captures, None, node.ply);
+        let mut quiets = QuietOrder::new(&ordered, node.ply);
+        let mut rules = late_move::Rules::new(&e.deciding(), &node, None);
+        let front = ordered.front;
+        assert_eq!(
+            e.order_quiets_at(&mut moves, front, &mut quiets, &node, &mut rules),
+            None
+        );
+        assert!(quiets.filtered);
+        let kept = quiets.dropped.start;
+        assert!(front < kept && kept < quiets.dropped.end);
+        assert_eq!(quiets.dropped.end, moves.len());
+        let survives = |m: &Play| m.promote.is_some() || e.board.gives_check(m);
+        for m in &moves[front..kept] {
+            assert!(survives(m), "{m} kept");
+        }
+        for m in &moves[kept..] {
+            assert!(!survives(m), "{m} dropped");
+        }
+        // four promotions, the rook to the eighth and the rook to the h file
+        assert_eq!(kept - front, 6);
     }
 }
