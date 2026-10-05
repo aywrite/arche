@@ -15,6 +15,7 @@ use crate::play::Play;
 use crate::recorder::{Sampler, Window};
 use crate::reduction;
 use crate::residual::{Sample, Shortcut};
+use crate::risk;
 use crate::transposition::{
     DEFAULT_TABLE_BYTES, NO_EVAL, Probe, SignatureCounters, TranspositionTable,
 };
@@ -56,6 +57,8 @@ const REVERSE_FUTILITY_MARGIN: Score = 100;
 // The deepest node the margin may answer. Four, six and eight give the
 // same bench count to a tenth of a percent.
 const REVERSE_FUTILITY_MAX_DEPTH: u8 = 4;
+// the guard holds one weight a depth the margin may answer
+const _: () = assert!(risk::MAX_DEPTH == REVERSE_FUTILITY_MAX_DEPTH as usize);
 // How many plies shallower than the node the pass is searched. An opening
 // value; what moves it is a match, not the bench.
 const NULL_MOVE_REDUCTION: u8 = 2;
@@ -464,6 +467,10 @@ pub struct SearchConfig {
     /// Whether a node near the leaves may answer from its static evaluation
     /// alone when that stands far enough above beta.
     pub reverse_futility: bool,
+    /// Whether the margin declines the cuts a fitted score prices as the
+    /// likeliest to be wrong (`risk.rs`), searching those nodes instead.
+    /// Rides on `reverse_futility`.
+    pub reverse_futility_guard: bool,
     /// Whether a node whose eval already stands above beta may hand the
     /// move to the other side and answer from a reduced search of that.
     pub null_move: bool,
@@ -621,8 +628,11 @@ impl SearchConfig {
     ///
     /// `taint` is not among them: it is a policy with four values rather
     /// than a switch, and `residuals` already takes it.
-    pub const SWITCHES: [(&'static str, TurnOff); 13] = [
+    pub const SWITCHES: [(&'static str, TurnOff); 14] = [
         ("reverse_futility", |config| config.reverse_futility = false),
+        ("reverse_futility_guard", |config| {
+            config.reverse_futility_guard = false
+        }),
         ("null_move", |config| config.null_move = false),
         ("adaptive_null_move", |config| {
             config.adaptive_null_move = false
@@ -664,6 +674,7 @@ impl SearchConfig {
         Self {
             taint: TaintPolicy::Refuse,
             reverse_futility: false,
+            reverse_futility_guard: false,
             null_move: false,
             adaptive_null_move: false,
             delta_margin: false,
@@ -718,6 +729,7 @@ impl Default for SearchConfig {
         Self {
             taint: TaintPolicy::Rule50,
             reverse_futility: true,
+            reverse_futility_guard: true,
             null_move: true,
             adaptive_null_move: true,
             delta_margin: true,
@@ -837,11 +849,13 @@ mod switches {
         };
         let one = |name| SearchConfig::without(name).expect(name);
         let default = nodes(SearchConfig::default());
-        let outers: Vec<(&str, Vec<u64>)> = ["null_move", "late_move_reductions"]
-            .into_iter()
-            .map(|outer| (outer, nodes(one(outer).config())))
-            .collect();
+        let outers: Vec<(&str, Vec<u64>)> =
+            ["reverse_futility", "null_move", "late_move_reductions"]
+                .into_iter()
+                .map(|outer| (outer, nodes(one(outer).config())))
+                .collect();
         for (outer, inner) in [
+            ("reverse_futility", "reverse_futility_guard"),
             ("null_move", "adaptive_null_move"),
             ("late_move_reductions", "deep_reductions"),
             ("late_move_reductions", "late_move_pruning"),
@@ -2162,7 +2176,10 @@ impl AlphaBeta {
             if self.sampler.is_some() && eval >= beta {
                 self.sample(Shortcut::ShadowFutility, depth, floor, alpha, beta, eval);
             }
-            if floor >= beta {
+            // a cut the guard declines is searched as if the margin had not
+            // cleared beta, so it is neither sampled nor offered to the
+            // forced decision instrument
+            if floor >= beta && !self.guard_declines(eval, beta, depth) {
                 if self.forced.is_some()
                     && self.forced_node(forced::Kind::ReverseFutility, depth, eval, alpha, beta)
                 {
@@ -2212,6 +2229,30 @@ impl AlphaBeta {
             self.forced_answered(forced::Answered::Moves);
         }
         Ok(None)
+    }
+
+    /// Whether the reverse futility guard declines the cut the margin would
+    /// make at this node. `eval` is the node's static evaluation from the
+    /// side to move, the one the margin read, and the pair term is read off
+    /// the same position's accumulator, turned to the side to move as the
+    /// evaluation turns it.
+    fn guard_declines(&self, eval: Score, beta: Score, depth: u8) -> bool {
+        if !self.config.reverse_futility_guard {
+            return false;
+        }
+        let accumulator = &self.board.eval;
+        let pair = match self.board.active_color {
+            Color::White => accumulator.pair(),
+            Color::Black => -accumulator.pair(),
+        };
+        risk::declines(
+            depth,
+            accumulator.phase(),
+            eval,
+            beta,
+            REVERSE_FUTILITY_MARGIN,
+            pair,
+        )
     }
 
     /// One child of a full width node, or nothing when the move is not

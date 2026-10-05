@@ -20,6 +20,7 @@ mod psqt;
 pub mod recorder;
 pub mod reduction;
 pub mod residual;
+mod risk;
 pub mod strategy;
 mod swap_table;
 pub mod tactics;

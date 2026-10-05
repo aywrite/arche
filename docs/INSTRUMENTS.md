@@ -296,8 +296,9 @@ against the two singles and the null, a pair says whether two rules' savings
 multiply, as rules on unrelated parts of the tree would, or whether the pair
 frees more or less than that. A keyword given twice is refused, so a pair is
 one word; the same switch twice and a third switch are refused too. Where one
-switch of a pair is only ever asked under the other (`adaptive_null_move` under
-`null_move`; `deep_reductions`, `late_move_pruning` and `reduction_table`
+switch of a pair is only ever asked under the other (`reverse_futility_guard`
+under `reverse_futility`; `adaptive_null_move` under `null_move`;
+`deep_reductions`, `late_move_pruning` and `reduction_table`
 under `late_move_reductions`), the pair searches as many nodes as the outer
 single, position by position, which a test holds.
 

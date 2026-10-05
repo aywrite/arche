@@ -488,6 +488,21 @@ impl Accumulator {
         i64::from(self.material)
     }
 
+    /// The phase the piece square half is read at: what is left on the
+    /// board, capped at `TOTAL_PHASE`.
+    #[inline(always)]
+    pub(crate) fn phase(&self) -> i32 {
+        // promotions can leave more on the board than the opening had, so the
+        // phase is capped. It cannot go the other way: no weight is negative.
+        self.phase.min(TOTAL_PHASE)
+    }
+
+    /// The pair term, white relative, as `score` adds it.
+    #[inline(always)]
+    pub(crate) fn pair(&self) -> i32 {
+        self.machine.score()
+    }
+
     /// The score from `side`'s point of view.
     ///
     /// The piece square half is read at the phase the position is in, so a
@@ -503,15 +518,13 @@ impl Accumulator {
     /// `tune::reconstruct` folds a whole row with one.
     #[inline]
     fn score(&self, side: Color, leaf: i32) -> Score {
-        // promotions can leave more on the board than the opening had, so the
-        // phase is capped. It cannot go the other way: no weight is negative.
-        let phase = self.phase.min(TOTAL_PHASE);
+        let phase = self.phase();
         let tapered = self.psqt + leaf;
         let scaled =
             (mg_value(tapered) * phase + eg_value(tapered) * (TOTAL_PHASE - phase)) / TOTAL_PHASE;
         // the pair term is not tapered, so it joins material outside the
         // divide
-        let eval = (self.material + scaled + self.machine.score()) as Score;
+        let eval = (self.material + scaled + self.pair()) as Score;
         match side {
             Color::White => eval,
             Color::Black => -eval,

@@ -3144,6 +3144,64 @@ mod sampling {
         assert_eq!(eval, Some(direct));
     }
 
+    /// A cut the guard declines is searched instead. At depth four with the
+    /// eval exactly the margin above beta the guard declines the cut, so the
+    /// pass is searched in its place and no reverse futility row is taken.
+    /// With the guard off the margin answers the same node and searches
+    /// nothing.
+    #[test]
+    fn a_cut_the_guard_declines_goes_on_to_the_pass() {
+        let eval = engine(SHARP_MIDDLEGAME).eval();
+        let depth = REVERSE_FUTILITY_MAX_DEPTH;
+        let beta = eval - REVERSE_FUTILITY_MARGIN * depth as Score;
+        let run = |config: SearchConfig| {
+            let mut e = AlphaBeta::with_config(
+                Board::from_fen(SHARP_MIDDLEGAME).unwrap(),
+                TABLE_BYTES,
+                config,
+            );
+            let declines = e.guard_declines(eval, beta, depth);
+            e.arm(Sampler::<Sample>::every(1));
+            let mut taint = Taint::default();
+            let Ok(answered) = e.shortcuts(
+                beta - 1,
+                beta,
+                depth,
+                false,
+                true,
+                RootBounds::Neither,
+                &mut taint,
+                &mut None,
+            ) else {
+                panic!("nothing here searches under a limit, so nothing can abort");
+            };
+            (declines, answered, e.nodes, collected(&mut e).taken)
+        };
+
+        let unguarded = SearchConfig {
+            reverse_futility_guard: false,
+            ..SearchConfig::default()
+        };
+        let (declines, answered, nodes, taken) = run(unguarded);
+        assert!(!declines, "the guard declined with the switch off");
+        assert_eq!(answered.map(|value| value.score), Some(beta));
+        assert_eq!(nodes, 0, "the margin's answer searched something");
+        assert_eq!(one_of(&taken, Shortcut::ReverseFutility).claimed, beta);
+
+        let (declines, answered, nodes, taken) = run(SearchConfig::default());
+        assert!(declines, "the guard kept the cut");
+        assert!(nodes > 0, "the declined cut was not searched");
+        assert!(
+            taken.iter().all(|s| s.kind != Shortcut::ReverseFutility),
+            "a declined cut was sampled as a cut: {taken:?}"
+        );
+        one_of(&taken, Shortcut::ShadowFutility);
+        // what answers now is the pass or, when it fails, the node's moves
+        // (which the frame hands back to the loop as no answer)
+        let passed = taken.iter().any(|s| s.kind == Shortcut::NullMove);
+        assert_eq!(answered.is_some(), passed, "{taken:?}");
+    }
+
     /// A fired candidate is two rows, the live kind's and the shadow's,
     /// claiming the same number against the same beta.
     #[test]

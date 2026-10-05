@@ -334,9 +334,9 @@ const WAC_021: &str = "5rk1/1b3p1p/pp3p2/3n1N2/1P6/P1qB1PP1/3Q3P/4R1K1 w - - 0 1
 fn the_move_a_swap_answers_with_opens_the_last_line_said() {
     // a node budget, so the cut falls on the same node on every machine.
     // It has to land after an iteration finds its better move and before
-    // that iteration ends: depth six answers d3e2 and finishes at 22,149
-    // nodes, and depth seven reports d3b1 from 39,917 nodes on and finishes
-    // at 42,904. The budget moves with the tree, in the commit that moved it
+    // that iteration ends: depth six answers d3e2 and finishes at 22,162
+    // nodes, and depth seven reports d3b1 from 39,963 nodes on and finishes
+    // at 42,965. The budget moves with the tree, in the commit that moved it
     let mut s = Session::start(&[]);
     s.say(&format!("position fen {}", SHARP_MIDDLEGAME));
     s.say("go nodes 41000");
@@ -387,8 +387,8 @@ fn line_opens_with(info: &str) -> &str {
 )]
 fn an_iteration_no_root_move_reached_answers_with_the_depth_before_it() {
     // Kiwipete is worth 31 at depth four, answered with e2a6, and depth five
-    // fails low: it is reported as a ceiling (b2b3 at 1) at 8,566 nodes and
-    // searched again wider, finishing at 10,820. The budget lands inside
+    // fails low: it is reported as a ceiling (c3a4 at 0) at 8,693 nodes and
+    // searched again wider, finishing at 10,831. The budget lands inside
     // that second search, which also reaches nothing above alpha, so depth
     // four's move still answers. The Italian opening was this fixture until
     // the pair term's refit at a ridge of 3e-7, under which it fails low at
@@ -511,16 +511,16 @@ fn a_root_move_that_reaches_beta_is_reported_as_a_floor_and_then_answered_with()
 )]
 fn a_floor_answers_until_the_wider_search_replaces_it() {
     // what the engine plays when the wider search never finishes. WAC.021 is
-    // answered with d2c3 at depth eight. At depth nine d2c3 reaches beta
-    // first, at 71,058 nodes. Then d2h6 does and is reported as a floor at
-    // 97,896, and again at 100,437 as the window widens, and the search
-    // finishes at 125,615. A budget after d2h6's floor and inside that is
+    // answered with e1d1 at depth eight. At depth nine d2c3 reaches beta
+    // first, at 67,138 nodes. Then d2h6 does and is reported as a floor at
+    // 88,273, and again at 90,956 as the window widens, and the search
+    // finishes at 106,277. A budget after d2h6's floor and inside that is
     // interrupted before anything beats alpha, so the floor is what is left
-    // to answer with; with the floor not held it answers d2c3, the move the
+    // to answer with; with the floor not held it answers e1d1, the move the
     // search has just shown worse
     let mut s = Session::start(&[]);
     s.say(&format!("position fen {}", WAC_021));
-    s.say("go nodes 110000");
+    s.say("go nodes 98000");
     let answer = s.wait_for(|l| l.starts_with("bestmove"));
     let best = answer
         .strip_prefix("bestmove ")

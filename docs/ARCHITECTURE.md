@@ -75,6 +75,11 @@ term over every pair of pieces.
   when that is already far above what the opponent can accept), null move
   pruning (answer it from a reduced search of the position left by passing
   the move) and the check extension.
+- **risk.rs**: Which reverse futility cuts the search declines. A logistic
+  model of whether the reference search disagrees with a cut, over the
+  node's depth, the phase, how far the evaluation clears the margin and the
+  pair term, fitted offline and carried as integers with its log as a
+  table. A declined node is searched as if the margin had not cleared beta.
 - **late_move.rs**: What a node does with a quiet move its ordering put
   late. The late move reduction scouts such a move shallower, by plies read
   off a table by the node's depth and the move's index, and trusts the
