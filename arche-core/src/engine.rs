@@ -41,18 +41,21 @@ pub const MAX_PLY: u8 = 128;
 // rail has to leave room for that inside a byte
 const _: () = assert!(MAX_PLY < u8::MAX);
 // How far above beta the static eval has to stand, per ply still to
-// search, for a node to be answered from it: a pawn a ply. The bench
-// prefers a little less (sixty to a hundred and twenty span about five
-// percent of the count, not monotone). The figure was held above the margin
-// at which a depth four mate in two is lost. On the default search that
+// search, for a node to be answered from it: a pawn and a quarter a ply.
+// Before the tempo the bench preferred a little under a pawn (sixty to a
+// hundred and twenty spanned about five percent of the count, not
+// monotone). The figure is held above the margin at which a depth four
+// mate in two is lost. On the default search that
 // boundary read between eighty five and ninety one while it could be read
 // there; the default's other shortcuts now lose the mate at every margin
 // from sixty to a hundred. With this shortcut alone on the reference the
-// boundary was seventy seven. The tempo moved it to a hundred and one,
-// above this figure, so the_reverse_futility_margin_keeps_the_depth_four_mate
-// no longer holds here and is ignored. docs/ROADMAP.md has the shadow lane's
-// reading.
-const REVERSE_FUTILITY_MARGIN: Score = 100;
+// boundary was seventy seven and the figure a hundred. The tempo moved the
+// boundary to a hundred and one, and the figure went to a hundred and
+// twenty five, which keeps the twenty four it stood above it.
+// the_reverse_futility_margin_keeps_the_depth_four_mate pins that, and
+// guards only a cut below a hundred and one, so re-measure before moving
+// the figure. docs/ROADMAP.md has the shadow lane's reading.
+const REVERSE_FUTILITY_MARGIN: Score = 125;
 // The deepest node the margin may answer. Four, six and eight give the
 // same bench count to a tenth of a percent.
 const REVERSE_FUTILITY_MAX_DEPTH: u8 = 4;

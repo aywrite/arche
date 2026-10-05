@@ -33,7 +33,7 @@ pub const TABLE_BYTES: usize = 16 * 1024 * 1024;
 /// is the gate. A change that moves it in either direction updates this
 /// number in the same commit, and a change that lowers it says what the
 /// positions were spent on.
-pub const EXPECTED_PASSES: usize = 231;
+pub const EXPECTED_PASSES: usize = 227;
 
 /// The count the suite may not go under, whatever a commit says it meant to
 /// spend.
