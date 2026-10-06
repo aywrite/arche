@@ -83,10 +83,14 @@ const NULL_MOVE_EVAL_CAP: u8 = 3;
 // quiescence. The conventional figure for conventional piece values.
 const DELTA_MARGIN: Score = 200;
 // How far either side of the previous iteration's score the root opens.
-// Chosen by a bench sweep of ten to forty at depth nine as the widest
-// width within a percent of the cheapest that also cost less than opening
-// full (5902681 has the table).
-const ASPIRATION_WIDTH: Score = 30;
+// Thirty was chosen by a bench sweep of ten to forty at depth nine as the
+// widest width within a percent of the cheapest that also cost less than
+// opening full (5902681 has the table), and never played against another
+// width. Fifteen read above thirty in fixed node self play on three draws
+// of openings at 40,000 and 200,000 nodes a move (+24 ±23, +31 ±25 and
+// +36 ±28), where twenty read +27 ±23 and ten +7 ±23, and passed sprt
+// [0, 10] at 10+0.1 by +13 ±9 over 3,400 games.
+const ASPIRATION_WIDTH: Score = 15;
 // The first depth the root opens narrow at. Below it the whole iteration
 // costs less than one re-search deeper down. A judgment rather than a
 // swept figure.

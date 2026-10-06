@@ -1216,7 +1216,7 @@ mod search {
     fn failing_low(budget: u64) -> SearchOutcome {
         let depth = ASPIRATION_MIN_DEPTH;
         let window = Aspiration::open(Some(530), depth);
-        assert_eq!((window.alpha, window.beta), (500, 560));
+        assert_eq!((window.alpha, window.beta), (515, 545));
         engine(Board::new()).search_root(depth, nodes_only(budget), None, window)
     }
 
@@ -1240,10 +1240,10 @@ mod search {
     fn a_root_whose_best_move_only_meets_alpha_answers_a_ceiling() {
         // one half move short of the fifty move draw with no capture on
         // the board, so every move scores the draw, exactly the alpha of a
-        // window opened at thirty. Meeting alpha does not raise it
+        // window opened at fifteen. Meeting alpha does not raise it
         let fen = "4k3/8/8/8/8/8/8/R3K3 w - - 99 120";
         let depth = ASPIRATION_MIN_DEPTH;
-        let window = Aspiration::open(Some(30), depth);
+        let window = Aspiration::open(Some(15), depth);
         assert_eq!(window.alpha, 0);
         let mut e = engine(Board::from_fen(fen).unwrap());
         let SearchOutcome::Complete(result, bound) =
