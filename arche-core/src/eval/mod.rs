@@ -399,6 +399,11 @@ pub(crate) struct Accumulator {
 }
 
 impl Accumulator {
+    /// What is left on the board, capped where the evaluation caps it.
+    pub(crate) fn phase(&self) -> i32 {
+        self.phase.min(TOTAL_PHASE)
+    }
+
     /// A board with nothing on it scores nothing.
     pub(crate) const EMPTY: Self = Self {
         material: 0,
