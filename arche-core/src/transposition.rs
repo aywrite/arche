@@ -16,6 +16,7 @@
 //! came closest (`record_ceiling`).
 
 use crate::board::Board;
+use crate::eval::TOTAL_PHASE;
 use crate::misc::Score;
 use crate::play::Play;
 use crate::value::{Value, is_mate};
@@ -299,12 +300,26 @@ const STALE_AFTER_SEARCHES: u8 = 12;
 const GENERATIONS: u8 = 31;
 
 /// The plies of depth an entry is worth less for each search since it was
-/// stored. A search on, the game has moved two plies and has usually left
-/// the line the entry was searched for, so an entry from this search
-/// outranks an older one unless the older is deeper by eight plies a
-/// search. Stockfish 16 and its current master choose their victim with
-/// the same weight (Stockfish 17 used sixteen).
+/// stored, at full material. A search on, the game has moved two plies and
+/// has usually left the line the entry was searched for, so an entry from
+/// this search outranks an older one unless the older is deeper by eight
+/// plies a search. Stockfish 16 and its current master choose their victim
+/// with the same weight (Stockfish 17 used sixteen).
 const AGE_WEIGHT: i16 = 8;
+
+/// The weight with no pieces left but kings and pawns. Between the two it
+/// moves linearly with the root's phase, rounding half up. An endgame
+/// searches deeper from one move to the next, and charging its old entries
+/// more played stronger than the full material weight did; a lighter one
+/// cost depth there and played no better.
+const ENDGAME_AGE_WEIGHT: i16 = 16;
+
+/// The age weight for a search whose root has this phase.
+fn age_weight(phase: i32) -> i16 {
+    let phase = phase.clamp(0, TOTAL_PHASE) as i16;
+    let total = TOTAL_PHASE as i16;
+    (ENDGAME_AGE_WEIGHT * total + (AGE_WEIGHT - ENDGAME_AGE_WEIGHT) * phase + total / 2) / total
+}
 
 impl Entry {
     const EMPTY: Entry = Entry {
@@ -643,6 +658,8 @@ pub struct TranspositionTable {
     generation: u8,
     /// `replaceable_under(generation)`, kept beside it.
     replaceable: u32,
+    /// `age_weight` of the search under way's root.
+    age_weight: i16,
     /// The full keys of the entries, or none, which is what every table an
     /// engine plays with holds. `audit_signatures` fills it in.
     audit: Option<Box<Audit>>,
@@ -707,6 +724,7 @@ impl TranspositionTable {
             table,
             generation: 1,
             replaceable: replaceable_under(1),
+            age_weight: AGE_WEIGHT,
             audit: None,
             probed_eval: Cell::new(NO_EVAL),
             #[cfg(debug_assertions)]
@@ -783,19 +801,20 @@ impl TranspositionTable {
         self.table.len() * mem::size_of::<Bucket>()
     }
 
-    /// A search is beginning: what it stores is marked as its own, and what
-    /// earlier searches stored ages by one.
-    pub fn new_search(&mut self) {
+    /// A search is beginning from a root of this phase: what it stores is
+    /// marked as its own, and what earlier searches stored ages by one.
+    pub fn new_search(&mut self, phase: i32) {
         self.generation = self.generation % GENERATIONS + 1;
         self.replaceable = replaceable_under(self.generation);
+        self.age_weight = age_weight(phase);
     }
 
-    /// What an entry is worth keeping: its depth, less `AGE_WEIGHT` plies
-    /// for each search since it was stored. An entry from this search is
-    /// worth its depth.
+    /// What an entry is worth keeping: its depth, less the search's age
+    /// weight for each search since it was stored. An entry from this
+    /// search is worth its depth.
     #[inline(always)]
     fn worth(&self, entry: Entry) -> i16 {
-        i16::from(entry.depth) - AGE_WEIGHT * i16::from(self.age(entry))
+        i16::from(entry.depth) - self.age_weight * i16::from(self.age(entry))
     }
 
     /// How many searches ago an entry was stored.
@@ -1203,8 +1222,9 @@ fn entry(
 #[cfg(test)]
 mod tests {
     use super::{
-        Bound, Bucket, DEFAULT_TABLE_BYTES, NARROW_WIDTHS, Play, Pv, STALE_AFTER_SEARCHES, Score,
-        TranspositionTable, Value, halving, largest,
+        AGE_WEIGHT, Bound, Bucket, DEFAULT_TABLE_BYTES, ENDGAME_AGE_WEIGHT, NARROW_WIDTHS, Play,
+        Pv, STALE_AFTER_SEARCHES, Score, TOTAL_PHASE, TranspositionTable, Value, age_weight,
+        halving, largest,
     };
     use crate::engine::MAX_PLY;
     use crate::misc::{Piece, PromotePiece};
@@ -1559,11 +1579,11 @@ mod tests {
         // deep enough that its worth holds the slot until the window ends
         let mut table = full_bucket(MAX_PLY);
         for _ in 0..STALE_AFTER_SEARCHES - 1 {
-            table.new_search();
+            table.new_search(TOTAL_PHASE);
         }
         table.set(5, new_pv(Bound::Lower, 1));
         assert!(table.get(5).is_none(), "still recent enough to keep");
-        table.new_search();
+        table.new_search(TOTAL_PHASE);
         table.set(5, new_pv(Bound::Lower, 1));
         assert!(table.get(5).is_some());
         assert_eq!(kept(&table, 1..=4), 3);
@@ -1572,7 +1592,7 @@ mod tests {
     #[test]
     fn an_entry_from_the_last_search_is_worth_eight_plies_less() {
         let mut table = full_bucket(12);
-        table.new_search();
+        table.new_search(TOTAL_PHASE);
         table.set(5, new_pv(Bound::Lower, 3));
         assert!(table.get(5).is_none(), "worth four, deeper than three");
         table.set(5, new_pv(Bound::Lower, 4));
@@ -1586,7 +1606,7 @@ mod tests {
         table.set(1, new_pv(Bound::Lower, 10));
         table.set(1, new_pv(Bound::Lower, 9));
         assert_eq!(table.get(1).unwrap().depth, 10, "this search's, kept");
-        table.new_search();
+        table.new_search(TOTAL_PHASE);
         table.set(1, new_pv(Bound::Lower, 2));
         assert_eq!(table.get(1).unwrap().depth, 2, "worth two, replaced");
     }
@@ -1595,7 +1615,7 @@ mod tests {
     fn an_exact_entry_from_the_last_search_is_held_at_its_worth() {
         let mut table = TranspositionTable::with_capacity(4).expect("a table of a few buckets");
         table.set(1, new_pv(Bound::Exact, 10));
-        table.new_search();
+        table.new_search(TOTAL_PHASE);
         table.set(1, new_pv(Bound::Lower, 2));
         assert!(
             matches!(table.get(1).unwrap().bound, Bound::Exact),
@@ -1606,11 +1626,45 @@ mod tests {
     }
 
     #[test]
+    fn the_age_weight_runs_from_the_endgame_weight_to_the_full_one() {
+        assert_eq!(age_weight(0), ENDGAME_AGE_WEIGHT);
+        assert_eq!(age_weight(TOTAL_PHASE), AGE_WEIGHT);
+        // a promotion can take the phase past the opening's
+        assert_eq!(age_weight(TOTAL_PHASE + 8), AGE_WEIGHT);
+        for phase in 0..=TOTAL_PHASE {
+            // the linear weight, in twenty fourths, rounded half up
+            let exact = i32::from(ENDGAME_AGE_WEIGHT) * TOTAL_PHASE
+                + i32::from(AGE_WEIGHT - ENDGAME_AGE_WEIGHT) * phase;
+            let weight = i32::from(age_weight(phase)) * TOTAL_PHASE;
+            assert!(
+                exact - TOTAL_PHASE / 2 < weight && weight <= exact + TOTAL_PHASE / 2,
+                "phase {phase}"
+            );
+        }
+    }
+
+    #[test]
+    fn a_bare_root_ages_entries_at_the_endgame_weight() {
+        let deep = i16::from(MAX_PLY);
+        let mut table = full_bucket(MAX_PLY);
+        table.new_search(0);
+        let worth = deep - ENDGAME_AGE_WEIGHT;
+        let below = u8::try_from(worth - 1).expect("a depth");
+        table.set(5, new_pv(Bound::Lower, below));
+        assert!(table.get(5).is_none(), "worth {worth}, deeper than {below}");
+        table.set(5, new_pv(Bound::Lower, below + 1));
+        assert!(
+            table.get(5).is_some(),
+            "worth {worth}, no deeper than the store"
+        );
+    }
+
+    #[test]
     fn the_victim_is_the_entry_worth_least_not_the_shallowest() {
         let mut table = TranspositionTable::with_capacity(4).expect("a table of a few buckets");
         table.set(1, new_pv(Bound::Exact, 10));
         table.set(2, new_pv(Bound::Exact, 9));
-        table.new_search();
+        table.new_search(TOTAL_PHASE);
         table.set(3, new_pv(Bound::Exact, 3));
         table.set(4, new_pv(Bound::Exact, 3));
         // worth 2, 1, 3 and 3: the depth nine entry from the last search goes
@@ -1638,16 +1692,16 @@ mod tests {
         // search old in the first after it, not thirty
         let mut table = TranspositionTable::with_capacity(4).expect("a table of a few buckets");
         for _ in 0..30 {
-            table.new_search();
+            table.new_search(TOTAL_PHASE);
         }
         for key in 1..=4 {
             table.set(key, new_pv(Bound::Exact, MAX_PLY));
         }
-        table.new_search();
+        table.new_search(TOTAL_PHASE);
         table.set(5, new_pv(Bound::Lower, 1));
         assert!(table.get(5).is_none(), "one search old, kept by its worth");
         for _ in 0..STALE_AFTER_SEARCHES - 1 {
-            table.new_search();
+            table.new_search(TOTAL_PHASE);
         }
         table.set(5, new_pv(Bound::Lower, 1));
         assert!(table.get(5).is_some(), "twelve searches old, replaced");

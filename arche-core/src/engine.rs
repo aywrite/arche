@@ -2852,7 +2852,7 @@ impl AlphaBeta {
     /// searching: a stored score can come from a line whose repetition and
     /// fifty move context differ from the game being played.
     pub fn search(&mut self, depth: u8) -> SearchOutcome {
-        self.transpositions.new_search();
+        self.transpositions.new_search(self.board.eval.phase());
         self.ordering.forget();
         self.search_within(depth, Limits::unlimited())
     }
@@ -3076,7 +3076,7 @@ impl Engine for AlphaBeta {
         };
         // one generation for every iteration, and the memories kept from
         // one iteration to the next
-        self.transpositions.new_search();
+        self.transpositions.new_search(self.board.eval.phase());
         self.ordering.forget();
 
         for depth in 1..=max_depth {
