@@ -175,9 +175,11 @@ worth doing.
   its third batch at -11 ±12 over 1,500 games, which only says the games did not favour
   ten elo over nothing. The second asked [-5, 0] and carried the first's pairs in. It
   played all four of its batches and reached neither bound, ending at a log likelihood
-  ratio of -1.81 against ±2.94. Over all 1,750 pairs the difference is -8 ±8, so the
-  change costs somewhere between about eight elo and nothing. Zero sits at the edge of
-  that interval and the last batch was +1. Carrying the test on wants `prior_pairs`
+  ratio of -1.81 against ±2.94. Over all 1,750 pairs, read as a fixed sample, the
+  difference is -8.3 with a 95% interval of -16.2 to -0.5. That interval only just
+  excludes zero, and not robustly: the first run stopped on a failure bound and the second
+  was chosen after it. So the change likely costs a little, and that it costs anything is
+  not established. The last batch was +1. Carrying the test on wants `prior_pairs`
   109,440,722,384,95, and halving the interval wants about ten thousand further games, so
   it is not cheap to settle. It was landed for what the bullet above describes rather
   than for strength
@@ -255,7 +257,7 @@ of these again without saying what is different this time.
   error, which the residual harness exists to do. Refining the null move gate
   the same way was rejected inside the same arm: it grew the tree and changed
   nothing the tactical suite could see.
-- Tightening the reverse futility margin under a hundred centipawns a ply. The
+- Moving the reverse futility pruning margin away from a hundred centipawns a ply. The
   shadow lane prices a margin with no game played: a rule with margin `m` fires
   on a candidate row exactly when the evaluation's clearance of beta is at least
   `m` times the depth, and whether the reference came back under beta does not
@@ -281,10 +283,20 @@ of these again without saying what is different this time.
   nine runs 227 to 229, unordered as well: 227 at ninety nine and 229 at ninety
   five. A count at any one of them is the tree being reshuffled rather than the
   search answering better. Under ninety one the depth four mate in two goes.
-  Nothing was played, since there is no margin in the range to put in front of
-  an sprt. Re-ask this with the correction history, which is what would move the
-  clearance the rows are read by; against a raw evaluation the margin is where
-  it should be.
+  Games were played afterwards, at 10+0.1 under sprt [0, 10]. Ninety five, on
+  the evaluation before the joint refit, read -12 ±23 over 500 games (95% -35
+  to +12, LLR -1.19) and was stopped after one batch by its registered futility
+  rule, so it is unresolved rather than rejected. On the refitted evaluation the
+  margin's answers cross 1.72 times as often, and the depth four mate in two
+  holds down to a margin of 84. A hundred and twenty read -3 ±10 over 2,500
+  games (95% -12 to +7) and failed at an LLR of -3.05, which closes that
+  widening. A probe of 1,000 games a point with no sprt read sixty at +9.7 ±16
+  and two hundred at -4.5 ±16, and sixty sits under the mate boundary. A
+  hundred and twenty five, played together with a tempo term for the side to
+  move, read +0 ±8 over 4,000 games and failed at -3.19. None of these points
+  resolves from zero, so nothing played supports a narrower margin or a wider
+  one, and a hundred stays. Re-ask with the correction history, which is what
+  would move the clearance the rows are read by.
 - The delta margin in quiescence, measured on its own. It landed in one pair
   with principal variation search, and the pair's +50 ±24 over 530 games at
   10+0.1 (sprt [0, 10] passed, PR #171) sits on the margin's commit. Turning
@@ -292,8 +304,11 @@ of these again without saying what is different this time.
   (sprt [-10, 0] inconclusive at the time cap, final LLR 1.47, branch
   ablate/delta-off): the games could not see the margin at all, and the pair's
   gain is principal variation search's. The margin stays on its switch because
-  it costs nothing measurable. The lesson is one guess per run, unless two
-  parts cannot be measured apart.
+  it costs nothing measurable. Taking it out again on the refitted evaluation,
+  which moves the matching margin only from 200 to 215, read -13 ±21 over 500
+  games at 10+0.1 (sprt [-10, 0], LLR -0.73) and was stopped after one batch by
+  its registered futility rule, so the rule stays. The lesson is one guess
+  per run, unless two parts cannot be measured apart.
 - Exempting quiet moves that give check from the late move reduction. Lost
   -18 ±18 over 860 games at 10+0.1 (sprt [0, 10] stopped at the time cap with
   the likelihood ratio at -2.72, a fraction from accepting H0, PR #185). The
@@ -545,3 +560,77 @@ of these again without saying what is different this time.
   in the wrong place. The 65% test resumes with `prior_pairs` 77,236,380,242,65. Re-ask at a
   longer control, or beside a change to `ASSUMED_MOVES_TO_GO`, which was measured with 45%
   in place.
+- Declining the reverse futility cuts the pair term marks as riskiest. On 4.0 million fresh
+  cuts from `arche residuals`, a model reading the pair term put 1,078 of 5,674 crossings in
+  its riskiest 5%, against 929 for depth, phase and slack alone, +149 (95% +92 to +232).
+  Risk fell as the pair term grew. Played as a guard declining that 5%, it lost -9 ±11 over
+  2,000 games at 10+0.1 (sprt [0, 10] failed at LLR -4.41) at master's node rate. Two
+  variations then screened negative offline, a license for near misses and the same model
+  on null move cuts, so the direction is closed and the constant margin stays.
+- Moving the quiet futility margin or the null move pruning evaluation unit after the joint
+  refit. Quiet futility at ninety centipawns a ply in place of a hundred read -10 ±21 over
+  500 games at 10+0.1 (95% -30 to +11, LLR -1.31) and was stopped after one batch by its
+  registered futility rule. The ninety was read off the refitted evaluation's error at the
+  rule's nodes (84 at search depth seven, 95 at nine), and the bench tree's 10.7% fall did
+  not reach the games, where the candidate searched 0.998 times the baseline's nodes. The
+  null move's evaluation unit at 150 in place of 200 read +4 ±8 over 4,000 games (sprt
+  [0, 10] unresolved at the cap, LLR -0.55). A probe at half and double, 1,000 games a
+  point with no sprt, read 100 at -14.3 ±17 (95% -31 to +2) and 400 at -2.4 ±15, which does
+  not locate the unit's best value. Both constants stay where they were.
+- SEE pruning in the main search at depths one to three. A quiet losing more than
+  50 × depth² on its square went unsearched: -3 ±10 over 2,500 games at 10+0.1 (sprt
+  [0, 10] failed at LLR -3.28). Built as first specified it grew the bench tree 15.2%,
+  because the late move count searched another quiet in place of each one dropped, and
+  counting the drops as searched cut that to 4.7%. A capture whose swap loses more than
+  100 × depth went unsearched in a second arm: +7 ±8 over 4,000 games, unresolved at the
+  cap at LLR 1.32 after reaching 2.88 of 2.94 at its second batch, with the candidate at
+  0.96 to 0.97 times the baseline's nodes in level time. A study of what the two rules drop
+  found them dropping the right moves (0.4% and 0.1% of those would have beaten alpha), but
+  those moves cost only 3.1% and 7.7% of the bench, because the other rules already refute
+  them nearly for free. The form not tried is a floor that eases with depth at every depth,
+  and that is the re-ask.
+- Extending the deadline for the re-search of a root that failed low, to three shares capped
+  at 33% of the clock. +4 ±8 over 3,000 games at 10+0.1 (sprt [0, 10] unresolved at the cap,
+  LLR -0.32). The population is small: 3.0% of master's moves stop at the deadline with a
+  fail low open, and 2.56% of the candidate's moves ran past their share. The registration
+  said before play that 3,000 games could not resolve +10, so this is unresolved rather than
+  rejected.
+- Halving the history table at each `go` instead of clearing it, the killers still cleared.
+  +1 ±9 over 3,000 games at 10+0.1 (sprt [0, 10] unresolved at the cap, LLR -1.85), under
+  the +3 the registration named as falsifying it. Time, nodes and rate were level with the
+  baseline in every batch. Offline the carried history visited 0.812 times the nodes to
+  depth ten summed over a game, but 0.981 at the typical position, and the games agreed with
+  the second. Halving is closed as the decay. Keeping the whole table, or another divisor,
+  is its own arm.
+- Trying the quiet moves the ordering scores at zero in an order drawn from a seed rather
+  than in generation order. An offline gain of 0.177 points of policy value did not play:
+  -14 ±15 over 1,000 games at 10+0.1 against `251179a` (sprt [0, 10] failed at LLR -3.00),
+  with the candidate at 0.97 to 0.98 times the baseline's node rate.
+- Replacing the late move pruning skip's attention model with a rule on depth and move
+  index, `index >= 12 + 2 (depth - 4)`. Against the model's older weights it read -4 ±7 over
+  6,000 games (sprt [-10, 0] unresolved at the cap). Against the refitted model it lost
+  -43 ±16 over 1,000 games at 10+0.1 (sprt [-5, 0] failed at LLR -3.04), where 5 elo was the
+  most deleting the model's code was allowed to cost. Offline the rule read 41.3 times the
+  refitted model's attention rate at 3.5 points less coverage. The -43 is a stopped
+  estimate, and the model stays.
+- Replacing the pair term's table with one the held out loss prefers. Two tables that read
+  level or better on that loss lost their matches. Fitted at a factor ridge of 3e-8, the rank
+  sixteen term widens from 36 to 125 centipawns and gains 0.001962 of cross validated loss
+  over the table then shipped, at 13.3 pair standard errors. It lost -80 ±26 over 500 games
+  at 10+0.1 (sprt [0, 10] failed at LLR -4.52), and -112 ±26 with the reverse futility
+  margin at 175 (LLR -5.53), both at level node rates. The 3e-7 table between them (57
+  centipawns) passed and is the one shipped. A rank eight table with five named features
+  (phalanx, supported and connected pawns, rooks on open and half open files), refitted at
+  3e-7, matched the shipped table's held out loss (+0.000012, 0.3 pair standard errors) and
+  then failed non-regression: -21 ±14 over 1,500 games at 10+0.1 (sprt [-10, 0] failed at
+  LLR -3.27) at 0.997 times master's rate. The rank eight control without the names was not
+  played, so the loss is not divided between the narrower table and the names. Somewhere
+  between 57 and 125 centipawns the held out loss stopped being a guide to play.
+- Tapering the transposition table's aging by the root's phase, from eight plies a search at
+  full material down to an endgame weight with only kings and pawns left. A screen at two
+  million nodes a move over 53,658 positions from games that reach ply 100 found every lower
+  weight dearer in nodes to the depth eight reaches, on the moves whose root phase is six or
+  less: 1.047 times at four (98.3% bounds 0.982 to 1.115), 1.147 at two and 1.526 at zero.
+  A match of four against master at 30+0.3 with a 256 MB table then lost -10 ±14 over 1,000
+  games (sprt [0, 10] accepted H0 at LLR -3.02). The reverse, sixteen plies a search in the
+  endgame, is a separate test, dispatched on 2026-10-06 as run 37431969608 and still open.
