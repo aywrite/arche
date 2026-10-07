@@ -284,11 +284,51 @@ pub fn reconstruct(terms: &Terms) -> Score {
 /// positions asked about before it.
 const FILTER_TABLE_BYTES: usize = 64 * 1024;
 
-/// The reference, not the default: the default's quiescence skips captures
-/// on guesses, and a corpus whose quietness was decided by a guess would
-/// carry it into every weight fitted on it.
-fn filter_engine() -> AlphaBeta {
-    AlphaBeta::with_config(Board::new(), FILTER_TABLE_BYTES, SearchConfig::reference())
+/// What the quiet test made of a position: kept, or the first of the three
+/// reasons it was turned away.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub(crate) enum Quiet {
+    /// A checked position's static evaluation is not a thing to fit.
+    InCheck,
+    /// A capture search moved the evaluation for one side or the other.
+    Unsettled,
+    /// The material cannot mate, so `eval` answers a hard zero while the
+    /// coefficients state the pieces.
+    Drawn,
+    Kept,
+}
+
+/// The quiet test the corpus is built under, here and in the positions
+/// lane, so the two cannot keep different positions.
+pub(crate) struct Filter {
+    engine: AlphaBeta,
+}
+
+impl Filter {
+    /// The reference, not the default: the default's quiescence skips
+    /// captures on guesses, and a corpus whose quietness was decided by a
+    /// guess would carry it into every weight fitted on it.
+    pub(crate) fn new() -> Self {
+        Self {
+            engine: AlphaBeta::with_config(
+                Board::new(),
+                FILTER_TABLE_BYTES,
+                SearchConfig::reference(),
+            ),
+        }
+    }
+
+    pub(crate) fn judge(&mut self, board: &Board) -> Quiet {
+        if board.in_check() {
+            Quiet::InCheck
+        } else if !settled(&mut self.engine, board) {
+            Quiet::Unsettled
+        } else if board.drawn_by_material() {
+            Quiet::Drawn
+        } else {
+            Quiet::Kept
+        }
+    }
 }
 
 /// Whether neither side has anything to win by capturing. A one sided test
@@ -345,7 +385,7 @@ pub struct Report {
 /// row whose identity fails rather than dropping it. `suite` is for the
 /// header alone.
 pub fn run(positions: &[Position], suite: Option<&str>) -> Report {
-    let mut engine = filter_engine();
+    let mut filter = Filter::new();
     let mut report = Report {
         suite: suite.map(str::to_string),
         positions: positions.len(),
@@ -356,17 +396,14 @@ pub fn run(positions: &[Position], suite: Option<&str>) -> Report {
     };
     for position in positions {
         let board = position.board("terms");
-        if board.in_check() {
-            report.in_check += 1;
-            continue;
-        }
-        if !settled(&mut engine, &board) {
-            report.unsettled += 1;
-            continue;
-        }
-        // `eval` answers a hard zero while the coefficients state the pieces
-        if board.drawn_by_material() {
-            report.drawn += 1;
+        let turned_away = match filter.judge(&board) {
+            Quiet::Kept => None,
+            Quiet::InCheck => Some(&mut report.in_check),
+            Quiet::Unsettled => Some(&mut report.unsettled),
+            Quiet::Drawn => Some(&mut report.drawn),
+        };
+        if let Some(count) = turned_away {
+            *count += 1;
             continue;
         }
         let terms = Terms::of(&board);
@@ -916,16 +953,20 @@ mod tests {
         let ours = "4k3/8/8/8/8/3n4/4P3/6K1 w - - 0 1";
         // a white knight the black rook can take, with white to move
         let theirs = "r3k3/8/8/N7/8/8/8/4K3 w - - 0 1";
-        let mut engine = filter_engine();
-        for (fen, expected) in [(quiet, true), (ours, false), (theirs, false)] {
+        let mut filter = Filter::new();
+        for (fen, expected) in [
+            (quiet, Quiet::Kept),
+            (ours, Quiet::Unsettled),
+            (theirs, Quiet::Unsettled),
+        ] {
             let board = Board::from_fen(fen).unwrap();
-            assert_eq!(settled(&mut engine, &board), expected, "{}", fen);
+            assert_eq!(filter.judge(&board), expected, "{}", fen);
         }
     }
 
     #[test]
     fn the_filter_searches_the_reference_and_not_the_default() {
-        assert_eq!(filter_engine().config(), SearchConfig::reference());
+        assert_eq!(Filter::new().engine.config(), SearchConfig::reference());
         assert_ne!(SearchConfig::reference(), SearchConfig::default());
     }
 

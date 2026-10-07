@@ -12,6 +12,7 @@ use crate::limits::Limits;
 use crate::misc::{Color, Piece, Score};
 use crate::ordering::{MoveOrdering, Ordered};
 use crate::play::Play;
+use crate::positions;
 use crate::recorder::{Sampler, Window};
 use crate::reduction;
 use crate::residual::{Sample, Shortcut};
@@ -1241,6 +1242,8 @@ pub struct AlphaBeta {
     /// terms: read behind a bare check where each decision it can invert
     /// is taken, and nowhere else.
     forced: Option<Box<forced::Arm>>,
+    /// The positions lane's arm, or none, on the sampler's terms.
+    positions: Option<Box<positions::Arm>>,
 }
 
 /// What a search can be armed to record. Implemented here rather than
@@ -1315,6 +1318,7 @@ impl AlphaBeta {
             effort: None,
             effort_depths: effort::Depths::default(),
             forced: None,
+            positions: None,
         }
     }
 
@@ -1342,6 +1346,27 @@ impl AlphaBeta {
     /// The arm back, with what it sampled or counted.
     pub(crate) fn disarm_forced(&mut self) -> Option<forced::Arm> {
         self.forced.take().map(|arm| *arm)
+    }
+
+    /// Arm the positions lane, to sample the nodes whose evaluation the
+    /// search reads.
+    pub(crate) fn arm_positions(&mut self, arm: positions::Arm) {
+        self.positions = Some(Box::new(arm));
+    }
+
+    /// The lane back with what it sampled.
+    pub(crate) fn disarm_positions(&mut self) -> Option<positions::Arm> {
+        self.positions.take().map(|arm| *arm)
+    }
+
+    /// A node offered to the positions lane.
+    // cold and out of line behind a bare is_some, for `sample`'s reason
+    #[cold]
+    #[inline(never)]
+    fn offer_position(&mut self, kind: positions::Kind, depth: u8) {
+        if let Some(arm) = self.positions.as_mut() {
+            arm.offer(kind, depth, &self.board);
+        }
     }
 
     /// A node decision just taken, the margin's or the pass's, offered to
@@ -1966,6 +1991,9 @@ impl AlphaBeta {
         // bounds are read by no rule here
         let mut answer = FailSoft::open(alpha, beta, RootBounds::Neither, Taint::default());
         if let Some(score) = standing {
+            if self.positions.is_some() {
+                self.offer_position(positions::Kind::Quiescence, 0);
+            }
             if score >= beta {
                 return Ok(Value::clean(score));
             }
@@ -2681,6 +2709,9 @@ impl AlphaBeta {
             Probe::Order(play) | Probe::Refused(play) => Some(play),
             Probe::Miss => None,
         };
+        if self.positions.is_some() {
+            self.offer_position(positions::Kind::Full, depth);
+        }
         let mut taint = Taint::default();
         // the node's static evaluation, filled by the shortcuts and read by
         // the late move decision, or found in the table's entry

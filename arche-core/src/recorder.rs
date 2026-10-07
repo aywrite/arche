@@ -66,8 +66,11 @@ pub(crate) const EFFORT_LANE: u64 = 0xf3b7_0c95_a41e_d682;
 /// The forced decision instrument's, for the decisions its default run
 /// samples.
 pub(crate) const FORCED_LANE: u64 = 0x8a5d_e163_2f07_b94c;
+/// The positions lane's. It takes the last free top three bit pattern, so
+/// a lane after it has to share one and say what that costs.
+pub(crate) const POSITIONS_LANE: u64 = 0x1c4f_7a92_d06b_35e8;
 
-pub(crate) const LANES: [u64; 7] = [
+pub(crate) const LANES: [u64; 8] = [
     REVERSE_FUTILITY_LANE,
     NULL_MOVE_LANE,
     SHADOW_FUTILITY_LANE,
@@ -75,6 +78,7 @@ pub(crate) const LANES: [u64; 7] = [
     LEDGER_LANE,
     EFFORT_LANE,
     FORCED_LANE,
+    POSITIONS_LANE,
 ];
 
 /// The invariant, checked by the compiler: a lane copied from another would

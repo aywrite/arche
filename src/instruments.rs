@@ -12,8 +12,8 @@ use crate::command::{Command, Keyword};
 use crate::params::{NO_VALUE, Param, Params};
 use crate::uci;
 use arche_core::{
-    Ablation, Board, SearchConfig, bench, census, effort, forced, recorder, reduction, residual,
-    tune,
+    Ablation, Board, SearchConfig, bench, census, effort, forced, positions, recorder, reduction,
+    residual, tune,
 };
 use std::fmt;
 
@@ -31,7 +31,7 @@ pub struct Instrument {
 
 /// Every command the binary takes, in usage order. The dispatch and the
 /// usage both walk it, so a command cannot be listed without being taken.
-pub const INSTRUMENTS: [Instrument; 7] = [
+pub const INSTRUMENTS: [Instrument; 8] = [
     Instrument {
         command: &uci::BENCH,
         read: read_bench,
@@ -55,6 +55,10 @@ pub const INSTRUMENTS: [Instrument; 7] = [
     Instrument {
         command: &FORCED,
         read: |params| report(forced_settings(params)?, ForcedSettings::run),
+    },
+    Instrument {
+        command: &POSITIONS,
+        read: |params| report(position_settings(params)?, PositionSettings::run),
     },
     Instrument {
         command: &TERMS,
@@ -237,6 +241,39 @@ pub const FORCED: Command = Command {
         "search the bench's suite, or the one named, sample the",
         "shortcut decisions taken, and search each root again with",
         "one of them inverted",
+    ],
+};
+
+pub const POSITIONS: Command = Command {
+    name: "positions",
+    depth: true,
+    keywords: &[
+        Keyword {
+            word: "every",
+            value: "<n>",
+        },
+        Keyword {
+            word: "cap",
+            value: "<n>",
+        },
+        Keyword {
+            word: "epd",
+            value: "<file>",
+        },
+        Keyword {
+            word: "budget",
+            value: "<n>",
+        },
+        Keyword {
+            word: "label",
+            value: "<depth>",
+        },
+    ],
+    flags: &[],
+    summary: &[
+        "search the bench's suite, or the one named, sample the",
+        "quiet positions whose evaluation it read, and label each",
+        "with the reference search's score to a depth",
     ],
 };
 
@@ -553,6 +590,49 @@ impl ForcedSettings {
     }
 }
 
+/// What a positions argument asked for. `budget` stops each root at a node
+/// count before its depth, and `label` is the depth the reference searches
+/// each kept position to, absent for a run that only samples.
+pub struct PositionSettings {
+    pub depth: u8,
+    pub every: u32,
+    pub cap: usize,
+    pub budget: Option<u64>,
+    pub label: Option<u8>,
+    pub epd: Option<String>,
+    pub positions: Vec<bench::Position>,
+}
+
+pub fn position_settings(params: &Params) -> Result<PositionSettings, String> {
+    let Sampling { depth, every, cap } = sampling(params, &POSITIONS, positions::DEFAULT_EVERY)?;
+    let budget = params.parse::<u64>("budget").or_refuse("budget")?;
+    let label = params.parse::<u8>("label").or_refuse("label")?;
+    let (epd, positions) = suite(params)?;
+    Ok(PositionSettings {
+        depth,
+        every,
+        cap,
+        budget,
+        label,
+        epd,
+        positions,
+    })
+}
+
+impl PositionSettings {
+    pub fn run(&self) -> positions::Report {
+        positions::run(
+            &self.positions,
+            self.epd.as_deref(),
+            self.depth,
+            self.every,
+            self.cap,
+            self.budget,
+            self.label,
+        )
+    }
+}
+
 /// What a terms argument asked for. No depth, rate or cap: a run states
 /// every quiet position of the suite, because the corpus is what is being
 /// built.
@@ -629,7 +709,7 @@ mod tests {
             "taint" => "trust",
             "off" => "null_move",
             "kinds" => "skip",
-            "from" => "1",
+            "from" | "label" => "1",
             _ => panic!("no value to give {keyword}"),
         }
     }
@@ -748,9 +828,9 @@ mod tests {
     /// line or its refusal.
     type SamplingReader = (&'static str, fn(&str) -> Result<(u8, u32, usize), String>);
 
-    /// The four share `sampling`, so what it reads is tested through this
+    /// The five share `sampling`, so what it reads is tested through this
     /// table and each reader's own settings beside it.
-    fn sampling_readers() -> [SamplingReader; 4] {
+    fn sampling_readers() -> [SamplingReader; 5] {
         [
             ("residuals", |line| {
                 residual_settings(&Params::of(line)).map(|s| (s.depth, s.every, s.cap))
@@ -764,7 +844,28 @@ mod tests {
             ("effort", |line| {
                 effort_settings(&Params::of(line)).map(|s| (s.depth, s.every, s.cap))
             }),
+            ("positions", |line| {
+                position_settings(&Params::of(line)).map(|s| (s.depth, s.every, s.cap))
+            }),
         ]
+    }
+
+    #[test]
+    fn a_positions_argument_reads_its_budget_and_label() {
+        let read = |line: &str| position_settings(&Params::of(line)).map(|s| (s.budget, s.label));
+        assert_eq!(read("positions"), Ok((None, None)));
+        assert_eq!(
+            read("positions 9 budget 20000 label 6"),
+            Ok((Some(20_000), Some(6)))
+        );
+        assert_eq!(
+            read("positions label six").err(),
+            Some("label: six".to_string())
+        );
+        assert_eq!(
+            read("positions budget -1").err(),
+            Some("budget: -1".to_string())
+        );
     }
 
     /// The settings alone, not a run: the run costs minutes.
@@ -1036,6 +1137,7 @@ mod tests {
         let reductions = reduction_settings(&Params::of("reductions")).unwrap();
         let effort = effort_settings(&Params::of("effort")).unwrap();
         let forced = forced_settings(&Params::of("forced")).unwrap();
+        let positions = position_settings(&Params::of("positions")).unwrap();
 
         for depth in [
             residuals.depth,
@@ -1043,6 +1145,7 @@ mod tests {
             reductions.depth,
             effort.depth,
             forced.depth,
+            positions.depth,
         ] {
             assert_eq!(depth, bench::DEPTH);
         }
@@ -1052,6 +1155,7 @@ mod tests {
             reductions.cap,
             effort.cap,
             forced.cap,
+            positions.cap,
         ] {
             assert_eq!(cap, DEFAULT_CAP);
         }
@@ -1066,6 +1170,7 @@ mod tests {
         assert_eq!(cutoffs.every, census::DEFAULT_EVERY);
         assert_eq!(reductions.every, reduction::DEFAULT_EVERY);
         assert_eq!(effort.every, effort::DEFAULT_EVERY);
+        assert_eq!(positions.every, positions::DEFAULT_EVERY);
 
         for (command, word, default) in [
             (&RESIDUALS, "residuals", 11),
@@ -1073,6 +1178,7 @@ mod tests {
             (&REDUCTIONS, "reductions", 33),
             (&EFFORT, "effort", 44),
             (&FORCED, "forced", 55),
+            (&POSITIONS, "positions", 66),
         ] {
             let read = sampling(&Params::of(word), command, default).expect(word);
             assert_eq!(read.every, default, "{word} took a rate not its own");

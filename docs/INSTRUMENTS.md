@@ -3,13 +3,14 @@
 These measurements ask what the engine gave up rather than how large a tree it
 walked. `residuals`, `cutoffs`, `reductions`, `effort` and `forced` are
 arguments of their own and measure the search, as does the bench's `audit`
-word. `terms` measures the evaluation, and the last section is the offline
-harness under `scripts/` that fits and scores the weights `terms` states.
+word. `positions` samples what the search evaluates, for a corpus. `terms`
+measures the evaluation, and the last section is the offline harness under
+`scripts/` that fits and scores the weights `terms` states.
 
 [DEVELOPMENT.md](DEVELOPMENT.md) has the bench itself and everything else a
 change needs before it is committed. Nothing in this file is needed for that.
 
-`residuals` and `reductions` label what they sample by asking the reference,
+`residuals`, `reductions` and `positions` label what they sample by asking the reference,
 `SearchConfig::reference()`, which is alpha-beta with every shortcut off, and
 `terms` uses the reference's quiescence. DEVELOPMENT.md says where the default
 parts company with it.
@@ -20,7 +21,7 @@ cap` is refused with `cap: no value`, and so is one named twice: a run takes
 minutes, and one started at a default nobody typed answers a question that was
 not asked.
 
-All of these print to standard output; redirect it to keep a run. The five
+All of these print to standard output; redirect it to keep a run. The six
 arguments and `terms` print a row per sample, whitespace separated with the fen
 last so a row parses left to right, under a header that states what the run
 used, so it can be rerun from what it printed.
@@ -447,6 +448,56 @@ Every kept decision costs a search of its root, so the default rate is one
 decision in 100,000. What a changed move cost is not here: a row whose root
 move did not change lost nothing to the decision, and one whose move did
 change needs its two moves valued by a deeper search, offline.
+
+## Where the evaluation is read
+
+The tuner's corpus is the positions games reached. The evaluation is read
+mostly elsewhere: at the stand pat of a capture search, and at the nodes of a
+full width search below the root, which no game plays into. `arche positions`
+samples those:
+
+```
+target/release/arche positions [depth] [every <n>] [cap <n>] [epd <file>] [budget <n>] [label <depth>]
+```
+
+It searches each root of the suite under the default to the depth, or until
+`budget` nodes have been spent, whichever comes first, on a fresh engine and
+the bench's table. A root always finishes its first iteration, so a budget
+smaller than that stops nothing. Two kinds of node are offered to the sampler. A `full`
+node is one of the full width search that the table did not answer, offered
+before the shortcuts are asked, so a node the margin or the pass then
+answers is in the population. A `quiescence` node is one of the capture
+search where the side to move is not in check and stands pat. The rate is a
+hash of the position, the depth and the lane, as for the other recorders, so
+a position revisited at one depth is offered again under the same key and
+two runs of a command keep the same nodes.
+
+When the search is done, each kept node goes through the quiet test `terms`
+builds the corpus under (not in check, nothing to win by capturing for
+either side, material that can mate), so every row is a position `terms`
+would keep. With `label`, the reference then searches each kept position to
+that depth on a cleared table, as the residual replay does, and its score is
+the row's label. A label at depth 6 takes about 26 ms.
+
+Each row is `kind depth root key reference fen`. `depth` is the depth left
+at the node, zero in quiescence, and after the check extension at a full
+node in check (such a node is turned away by the quiet test and counted
+under `in_check`). `root` is the root's place in the suite,
+counted from zero, which a script joins back to the root's epd line for its
+game and result. `key` is the sampling key in hex, so the rows of runs over
+different roots can be merged and cut at a count by key, the way the cap
+cuts one run. `reference` is the label, from the side to move, or `-` on a
+run without one. A quiet position can still be a forced mate, so a label can
+be a mate score (29,000 and more from the winner's side), and a fit that maps
+labels through a sigmoid reads it as a certain result. The header states `events` and `records` as the others do,
+then how many records the quiet test turned away and why.
+
+The fen carries no path, so a label is the position's value as a diagram,
+as the residual's is. A position revisited at one depth is kept once per
+visit, and labelled once per visit, and one reached from two roots is kept
+from each, so a corpus built from the rows dedupes by fen and says which
+root it kept. `cap` bounds the records before the quiet test, not the rows
+after it: a third or so of the records survive it.
 
 ## What a position's evaluation is made of
 

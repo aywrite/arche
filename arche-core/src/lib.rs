@@ -16,6 +16,7 @@ mod magic;
 mod misc;
 mod ordering;
 mod play;
+pub mod positions;
 mod psqt;
 pub mod recorder;
 pub mod reduction;
