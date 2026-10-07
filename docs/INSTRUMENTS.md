@@ -38,7 +38,9 @@ target/release/arche residuals [depth] [every <n>] [cap <n>] [epd <file>] [taint
 It searches the bench's suite, or the one `epd` names, samples the nodes
 reverse futility and the null move pass answered, and then asks the reference
 what each of those positions is really worth. Those are the two shortcuts that
-answer a whole node, which is what leaves the reference something to be asked.
+answer a whole node from above beta, which is what leaves the reference
+something to be asked. Razoring answers a node from under alpha and is not
+sampled, so it is in neither the rows nor the counts.
 The quiescence skips pass over a move rather than answering a node, and what
 the late move reduction and pruning write off is the reduction ledger's
 question further down.
@@ -97,8 +99,8 @@ membership in ways that read as a shift in the distribution. Two runs of the
 same command print the same rows. Rows from before hash sampling landed sample
 different nodes and are not a baseline for rows from after it.
 
-The header states `events`, every node the shortcuts answered, beside
-`records`, the ones kept. A crossing rate cannot be read without that
+The header states `events`, every node the two sampled shortcuts answered,
+beside `records`, the ones kept. A crossing rate cannot be read without that
 denominator: a zero over four hundred records is not a zero over four hundred
 thousand events. Raise the rate, or say from the events how small a rate the
 run could have seen.
@@ -389,7 +391,8 @@ target/release/arche forced [depth] [every <n>] [cap <n>] [epd <file>] [kinds <k
 
 It searches each root of the suite under the default, sampling the shortcut
 decisions taken, and then searches the root again once for each sampled
-decision with that one decision inverted. Four kinds can be inverted:
+decision with that one decision inverted. Four kinds can be inverted
+(razoring is not one of them):
 
 | kind | taken | inverted |
 | --- | --- | --- |

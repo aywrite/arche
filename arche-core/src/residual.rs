@@ -27,7 +27,9 @@ use std::fmt;
 /// The shortcut that answered a node, or the shadow lane that watched one
 /// it could have.
 ///
-/// Only shortcuts that answer a whole node are here. The delta margin and
+/// Only shortcuts that answer a whole node from above beta are here.
+/// Razoring answers one from under alpha, which the crossing label does not
+/// fit, and is left out. The delta margin and
 /// the losing capture skip pass over a move in quiescence, and the late move
 /// reduction's scout is the reduction ledger's question.
 ///
