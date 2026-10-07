@@ -12,9 +12,9 @@ The board is bitboards, with magic bitboards for move generation of sliding piec
 array beside them so that asking what stands on a square is a load rather than a walk down the
 boards. The search is alpha beta with a transposition table, iterative deepening, quiescence
 search, principal variation search, aspiration windows at the root, reverse futility pruning, a
-null move pass, late move reductions and pruning off an attention model, and quiet futility
-pruning and a late move count at the shallowest three depths. Captures are ordered by what a
-static exchange evaluation says the swap wins, with
+null move pass, late move reductions and pruning off an attention model, quiet futility pruning
+at the shallowest six depths, and a late move count at the shallowest three. Captures are
+ordered by what a static exchange evaluation says the swap wins, with
 MVV-LVA breaking the ties between the ones it prices alike, and the quiet moves by the ones that
 have cut off before. Evaluation is material, piece square tables, piece mobility, the
 pawns standing in front of each king, pawn structure, and the squares around each king the

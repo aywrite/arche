@@ -41,8 +41,9 @@ pub enum Kind {
     /// The pass cleared beta and answered the node. Inverted, the node goes
     /// on to its moves.
     NullMove,
-    /// A late quiet was passed over, by the model at depth four and up or
-    /// by either shallow rule below. Inverted, it is searched unreduced.
+    /// A late quiet was passed over, by the model at depth four and up, by
+    /// quiet futility at depth six and under, or by the late move count at
+    /// three and under. Inverted, it is searched unreduced.
     Skip,
     /// A reduced scout came back at or below alpha and answered for its
     /// move. Inverted, the move goes on to the probe and the proof as if

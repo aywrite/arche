@@ -33,7 +33,7 @@ pub const TABLE_BYTES: usize = 16 * 1024 * 1024;
 /// is the gate. A change that moves it in either direction updates this
 /// number in the same commit, and a change that lowers it says what the
 /// positions were spent on.
-pub const EXPECTED_PASSES: usize = 228;
+pub const EXPECTED_PASSES: usize = 231;
 
 /// The count the suite may not go under, whatever a commit says it meant to
 /// spend.
@@ -82,26 +82,18 @@ pub struct AcceptedLoss {
 /// what depth six answers with instead and the depth the suite's move comes
 /// back at, read one position at a time on that commit. Two more stood here,
 /// WAC.232 and WAC.239, until the pair term's refit at a ridge of 3e-7 found
-/// both.
+/// both, and WAC.266 until quiet futility reached depth six.
 ///
 /// A position the suite misses and this list does not name was not
 /// accepted: the pair term lost five the joint refit had won back
 /// (6ce33d3), and its refit at a ridge of 3e-7 lost seven, and they were
 /// left off.
-pub const ACCEPTED_LOSSES: &[AcceptedLoss] = &[
-    AcceptedLoss {
-        id: "WAC.242",
-        why: "depth six answers b1a2 at 33 and the rook to the seventh \
+pub const ACCEPTED_LOSSES: &[AcceptedLoss] = &[AcceptedLoss {
+    id: "WAC.242",
+    why: "depth six answers b1a2 at 33 and the rook to the seventh \
               comes back at depth seven at 353",
-        until: "0.6.0",
-    },
-    AcceptedLoss {
-        id: "WAC.266",
-        why: "depth six answers f2g3 at 11 and depth seven answers h8h2 \
-              with a mate in six",
-        until: "0.6.0",
-    },
-];
+    until: "0.6.0",
+}];
 
 const SUITE: &str = include_str!("../tactics.epd");
 

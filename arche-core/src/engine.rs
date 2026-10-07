@@ -500,7 +500,7 @@ pub struct SearchConfig {
     /// Whether a late quiet the attention model prices in its deadest band
     /// is searched at all. Rides on `late_move_reductions`.
     pub late_move_pruning: bool,
-    /// Whether a quiet move at depths one to three is dropped when the
+    /// Whether a quiet move at depths one to six is dropped when the
     /// static evaluation plus a margin a ply cannot reach alpha.
     pub quiet_futility: bool,
     /// Whether a quiet move at depths one to three is dropped once the node

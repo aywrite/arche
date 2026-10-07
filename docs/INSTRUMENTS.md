@@ -230,8 +230,9 @@ and `cost` is the nodes the scout spent. A fail high prints `-` in the
 `reference` and `label` columns.
 
 `skipped` is the pruning rules'. A move the attention model prices in its
-deadest band at depth four and up, and a quiet at depth one to three that
-either shallow rule drops, are never scouted, so a sampled skip is recorded
+deadest band at depth four and up, a quiet at depth one to six that quiet
+futility drops, and one at depth one to three that the late move count
+drops, are never scouted, so a sampled skip is recorded
 where the loop passes it over, with a cost and a reduction of zero, and
 replayed as a fail low would be. Its `searched` count stands one past the
 index, as a scouted row's does, because that is the model's feature (ledgers
@@ -239,10 +240,11 @@ printed before 25 September 2026 have the index there instead). The recorder
 makes and unmakes the skipped move around the record, and a move that turns
 out illegal is not recorded, because the skip denied it nothing.
 
-A skipped row at depth one to three is a shallow rule's and one at four or more
-is the model's, since the model decides from four and both shallow rules stop at
-three. The ledger does not say which shallow rule took a row, and the two
-overlap on the same moves, so an ablation (`effort`) is what separates them.
+A skipped row at depth one to three is a shallow rule's and one at seven or
+more is the model's. At depths four to six it may be either, since the model
+decides from four and quiet futility reaches six, and quiet futility is asked
+first. The ledger does not say which rule took a row, and the rules overlap
+on the same moves, so an ablation (`effort`) is what separates them.
 
 A depth one row is labelled against a deeper search than the skip denied.
 `Event::replay_depth` in `arche-core/src/reduction.rs` floors `depth - 1` at
@@ -395,12 +397,13 @@ decision with that one decision inverted. Four kinds can be inverted:
 | --- | --- | --- |
 | `reverse_futility` | the margin answered the node | the node does not answer from the margin, and the null move then gets its turn |
 | `null_move` | the pass cleared beta | the node goes on to its moves |
-| `skip` | a late quiet was passed over, by the model at depth four and up or by a shallow rule below | the move is searched unreduced |
+| `skip` | a late quiet was passed over, by the model at depth four and up, by quiet futility at depth six and under, or by the count at three and under | the move is searched unreduced |
 | `trusted_scout` | a reduced scout came back at or below alpha | the move goes on to the probe and the proof, as if the scout had failed high |
 
 `kinds` narrows the sampling to the kinds named, and `from` to decisions at
 that depth and deeper. Shallow decisions are most of them, so a run after
-the model's decisions asks for `from 4`.
+the model's decisions asks for `from 4`, which still takes quiet futility's
+skips at depths four to six, or `from 7` for the model's alone.
 
 A decision is addressed by its kind, a position key and the deciding node's
 depth. A node decision is keyed by the node's position; a move decision by
@@ -432,9 +435,11 @@ tt eval_beta alpha_gap attention answered visits root best_on best_forced
 score_on score_forced nodes_on nodes_forced fen`. The move columns are the
 ledger's, read at the first visit, and print `-` on a node decision.
 `attention` is the model's score where the gate reads one (a late quiet at
-depth four and up) and `-` elsewhere; every skip at those depths scores at
-or under the pruning threshold by construction, so the column is read within
-a kind. `answered` is, for a node decision, what answered the node once it
+depth four and up) and `-` elsewhere. A skip the model took scores at or
+under the pruning threshold by construction, so the column is read within a
+kind. At depths four to six a skip may be quiet futility's instead, which is
+asked before the model; the column then says what the model would have
+scored, and a score over the threshold marks the skip as the margin's. `answered` is, for a node decision, what answered the node once it
 was inverted. `visits` is how often the forced search met the address, and a
 row that reads zero is the instrument failing, not a finding. `root` is the
 root's place in the suite, and the fen is the deciding node's.

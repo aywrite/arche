@@ -1061,11 +1061,12 @@ mod tests {
     }
 
     /// Why the cost columns are not derivable from the outcome. Quiet
-    /// futility decides at `SHALLOW_MAX_DEPTH` and under, so above that the
-    /// two sides hold the same nodes and the tree the rule removed sits
-    /// under them: those rows read `both` and the effort still moved. Only
-    /// those depths are read, since below them a parted side is the
-    /// instrument working.
+    /// futility never decides at a node whose beta is the root's, which in
+    /// a search of depth four is every node above `SHALLOW_MAX_DEPTH` that
+    /// is not in check, so there the two sides hold the same nodes and the
+    /// tree the rule removed sits under them: those rows read `both` and
+    /// the effort still moved. Only those depths are read, since below them
+    /// a parted side is the instrument working.
     #[test]
     fn a_rule_can_move_effort_without_moving_a_node() {
         let report = run(

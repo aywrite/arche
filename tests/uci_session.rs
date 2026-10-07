@@ -337,9 +337,9 @@ const WAC_021: &str = "5rk1/1b3p1p/pp3p2/3n1N2/1P6/P1qB1PP1/3Q3P/4R1K1 w - - 0 1
 fn the_move_a_swap_answers_with_opens_the_last_line_said() {
     // a node budget, so the cut falls on the same node on every machine.
     // It has to land after an iteration reports its floor and before that
-    // iteration ends: depth seven answers d3e2 and finishes at 41,237
-    // nodes, and depth eight reports d3e2 as a floor from 58,527 nodes on
-    // and finishes at 90,907. The floor names the move depth seven
+    // iteration ends: depth seven answers d3e2 and finishes at 41,140
+    // nodes, and depth eight reports d3e2 as a floor from 58,408 nodes on
+    // and finishes at 90,571. The floor names the move depth seven
     // answered, so the swap is to the same move. The budget moves with the
     // tree, in the commit that moved it
     let mut s = Session::start(&[]);
@@ -503,8 +503,8 @@ fn a_root_move_that_reaches_beta_is_reported_as_a_floor_and_then_answered_with()
 fn a_floor_answers_until_the_wider_search_replaces_it() {
     // what the engine plays when the wider search never finishes. WAC.021 is
     // answered with d2c3 at depth eight. At depth nine d2h6 reaches beta and
-    // is reported as a floor at 59,682 nodes, and again at 61,000 and 63,114
-    // as the window widens, and the search finishes at 78,638. A budget after
+    // is reported as a floor at 59,303 nodes, and again at 60,661 and 62,741
+    // as the window widens, and the search finishes at 77,081. A budget after
     // d2h6's last floor and inside that is interrupted before anything beats
     // alpha, so the floor is what is left to answer with; with the floor not
     // held it answers d2c3, the move the search has just shown worse

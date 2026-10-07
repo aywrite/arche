@@ -559,7 +559,7 @@ mod tests {
     use crate::board::Board;
     use crate::late_move::{
         DEEP_REDUCTION_MIN_DEPTH, LATE_MOVE_MIN_DEPTH, LATE_MOVE_PRUNING_THRESHOLD,
-        LATE_MOVE_THRESHOLD, SHALLOW_MAX_DEPTH, ledger_row_score,
+        LATE_MOVE_THRESHOLD, QUIET_FUTILITY_MAX_DEPTH, ledger_row_score,
     };
     use crate::recorder::fixtures::{recording_leaves_the_search_where_it_was, suite};
     use crate::recorder::{DEFAULT_CAP, Sampler};
@@ -1083,23 +1083,22 @@ mod tests {
             assert!(e.history <= e.history_max, "{:?}", row);
             assert!(e.depth >= 1, "{:?}", row);
             if e.scout == Scout::Skipped {
-                // three rules skip, and the model's never shares a depth
-                // with the two shallow ones. The row does not say which
-                // shallow rule took it
+                // three rules skip. The count never shares a depth with
+                // the model, but quiet futility reaches into the model's
+                // depths, and the row does not say which rule took it. A
+                // row the model would have skipped is counted as the
+                // model's; any other is the shallow rules', so it sits at
+                // their depths
                 assert_eq!(e.cost, 0, "{:?}", row);
                 assert_eq!(e.reduction, 0, "{:?}", row);
-                if e.depth >= DEEP_REDUCTION_MIN_DEPTH {
-                    assert!(e.index >= LATE_MOVE_THRESHOLD, "{:?}", row);
-                    // rescored from the printed columns, the model's skip
-                    // is still one
-                    assert!(
-                        ledger_row_score(e) <= LATE_MOVE_PRUNING_THRESHOLD,
-                        "{:?}",
-                        row
-                    );
+                let models = e.depth >= DEEP_REDUCTION_MIN_DEPTH
+                    && e.index >= LATE_MOVE_THRESHOLD
+                    // rescored from the printed columns
+                    && ledger_row_score(e) <= LATE_MOVE_PRUNING_THRESHOLD;
+                if models {
                     model_skips += 1;
                 } else {
-                    assert!(e.depth <= SHALLOW_MAX_DEPTH, "{:?}", row);
+                    assert!(e.depth <= QUIET_FUTILITY_MAX_DEPTH, "{:?}", row);
                     assert!(e.index >= 1, "{:?}", row);
                 }
             } else {

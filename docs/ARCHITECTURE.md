@@ -82,10 +82,10 @@ factorization machine term over every pair of pieces.
   move's index passes a floor that rises with the node's depth. The
   attention model, a logistic regression over what the node knows about the
   move, fitted offline and carried as integers, decides which moves are not
-  searched at all. At depths one to three, below the model's floor, two
-  rules drop a quiet move after the node's first: quiet futility, where the
-  static evaluation plus a pawn a ply cannot reach alpha, and a count, once
-  the node has searched four moves a ply. The features the model scores are
+  searched at all. Two rules drop a quiet move after the node's first:
+  quiet futility at depths one to six, where the static evaluation plus a
+  pawn a ply cannot reach alpha, and at depths one to three, below the
+  model's floor, a count, once the node has searched four moves a ply. The features the model scores are
   the ones the reduction ledger records.
 - **ordering.rs**: The order moves are tried in. The transposition table's
   move first, then the captures the swap prices as winning or even, by

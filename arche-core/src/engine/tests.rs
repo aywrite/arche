@@ -1522,7 +1522,7 @@ mod search {
         assert!(eval > 100, "the side to move is a piece up twice: {eval}");
         let alpha = eval + 10_000;
         assert!(!crate::value::is_mate(alpha));
-        for depth in 1..=crate::late_move::SHALLOW_MAX_DEPTH {
+        for depth in 1..=crate::late_move::QUIET_FUTILITY_MAX_DEPTH {
             let Ok(value) = e.alpha_beta(alpha, alpha + 1, depth, true, RootBounds::Neither) else {
                 panic!("nothing was armed to abort this search");
             };

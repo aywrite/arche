@@ -6,14 +6,15 @@
 //! at all. `decide_admitted` answers with a `Verdict`; the scout itself
 //! is `windowed`'s, in `engine.rs`.
 //!
-//! At depths one to three `Rules::skips` asks two pruning rules of a quiet
-//! move after the node's first: quiet futility, when the evaluation plus a
-//! margin a ply cannot reach alpha, and the late move count, when the node
-//! has searched `LATE_MOVE_COUNT` moves a ply. Everything in them but the
-//! alpha and the searched count is settled by the node before its moves,
-//! so `Rules` holds it and reads those two off the engine's `Node` per
-//! move. They stop a ply under the model's floor, so a shallow rule and
-//! the model never decide at one depth.
+//! `Rules::skips` asks two pruning rules of a quiet move after the node's
+//! first: quiet futility at depths one to six, when the evaluation plus a
+//! margin a ply cannot reach alpha, and the late move count at depths one
+//! to three, when the node has searched `LATE_MOVE_COUNT` moves a ply.
+//! Everything in them but the alpha and the searched count is settled by
+//! the node before its moves, so `Rules` holds it and reads those two off
+//! the engine's `Node` per move. The count stops a ply under the model's
+//! floor, so the count and the model never decide at one depth; quiet
+//! futility is asked before the model at depths four to six.
 //!
 //! `Rules::admits` and `decide_admitted` cover the rest. The late move
 //! reduction scouts a quiet move searched after the fourth, with the
@@ -72,10 +73,16 @@ pub(crate) const DEEP_REDUCTION_MIN_DEPTH: u8 = DEEP_REDUCTION + 2;
 // The gate's extra ply over the flat amount, written as the difference so
 // the table cannot drift from the pair of constants it replaced.
 const DEEP_REDUCTION_BONUS: u8 = DEEP_REDUCTION - LATE_MOVE_REDUCTION;
-// The deepest node either shallow rule decides: a ply under the model's
-// floor, so the two never decide at one depth.
+// The deepest node the late move count decides: a ply under the model's
+// floor, so the count and the model never decide at one depth.
 pub(crate) const SHALLOW_MAX_DEPTH: u8 = DEEP_REDUCTION_MIN_DEPTH - 1;
 const _: () = assert!(SHALLOW_MAX_DEPTH < DEEP_REDUCTION_MIN_DEPTH);
+// The deepest node quiet futility decides. It reaches past the count into
+// the model's depths, where a move the margin drops is never scored. Six
+// against three, where the rule started, read +9 ±21 at 40,000 nodes a
+// move and +20 ±36 at 200,000.
+pub(crate) const QUIET_FUTILITY_MAX_DEPTH: u8 = 6;
+const _: () = assert!(QUIET_FUTILITY_MAX_DEPTH >= SHALLOW_MAX_DEPTH);
 // ln(x) at a scale of 1024 for each index of the table below, as integers
 // so the table is built at compile time and no two targets disagree. ln 0
 // is taken as zero, which with ln 1 puts the first row and column on the
@@ -472,7 +479,7 @@ enum Under {
 /// node's facts.
 fn shallow(config: &SearchConfig, board: &Board, node: &Node) -> Shallow {
     let admits = (config.quiet_futility || config.late_move_count)
-        && (1..=SHALLOW_MAX_DEPTH).contains(&node.depth)
+        && (1..=QUIET_FUTILITY_MAX_DEPTH).contains(&node.depth)
         && !node.in_check
         && !is_mate(node.answer.beta)
         && !node.answer.root_bounds.beta_is_roots()
@@ -480,7 +487,7 @@ fn shallow(config: &SearchConfig, board: &Board, node: &Node) -> Shallow {
     Shallow {
         from: if admits { 1 } else { usize::MAX },
         margin: i32::from(QUIET_FUTILITY_MARGIN) * i32::from(node.depth),
-        count: if admits && config.late_move_count {
+        count: if admits && config.late_move_count && node.depth <= SHALLOW_MAX_DEPTH {
             LATE_MOVE_COUNT * usize::from(node.depth)
         } else {
             usize::MAX
@@ -763,8 +770,8 @@ mod tests {
         DEEP_INDEX_FLOOR, DEEP_INDEX_SLOPE, DEEP_REDUCTION, DEEP_REDUCTION_BONUS,
         DEEP_REDUCTION_MIN_DEPTH, Features, LATE_MOVE_COUNT, LATE_MOVE_MIN_DEPTH,
         LATE_MOVE_PRUNING_THRESHOLD, LATE_MOVE_REDUCTION, LATE_MOVE_THRESHOLD,
-        QUIET_FUTILITY_MARGIN, REDUCTION, Rules, SHALLOW_MAX_DEPTH, Search, Verdict, admission,
-        amount, attention_score, decide, features,
+        QUIET_FUTILITY_MARGIN, QUIET_FUTILITY_MAX_DEPTH, REDUCTION, Rules, SHALLOW_MAX_DEPTH,
+        Search, Verdict, admission, amount, attention_score, decide, features,
     };
     use crate::board::{Board, MoveList, fens, play_named};
     use crate::census::Table;
@@ -1778,7 +1785,7 @@ mod tests {
         let mut s = Stand::new(fens::A_CAPTURE_AND_QUIETS, futility());
         let quiet = play_named(&s.board, "a4a5");
         let eval = s.eval();
-        for depth in [1, SHALLOW_MAX_DEPTH] {
+        for depth in [1, QUIET_FUTILITY_MAX_DEPTH] {
             // the node's second move, which is the first the rule may
             // reach at all
             let searched = 1;
@@ -1817,6 +1824,10 @@ mod tests {
         // every depth without the exemption the margin needs
         assert_eq!(LATE_MOVE_COUNT, LATE_MOVE_THRESHOLD);
         assert!(!s.skips(&quiet, 0, 1, -100, 100));
+        // and a ply past its depths it never fires, where quiet futility
+        // still may
+        let past = SHALLOW_MAX_DEPTH + 1;
+        assert!(!s.skips(&quiet, 64, past, -100, 100));
     }
 
     /// A node the count decides never evaluates and never walks the
@@ -1866,13 +1877,15 @@ mod tests {
         }
     }
 
-    /// At the model's floor both shallow rules are silent and the model's
-    /// verdict stands. The row is solved onto the pruning threshold and one
-    /// over it, with an alpha the margin would fire on and a searched count
-    /// past the count's line, so a ceiling that leaked a ply would skip the
-    /// move the model let through.
+    /// At the model's floor the count is silent, and so is the margin
+    /// wherever it falls short, and the model's verdict stands. The row is
+    /// solved onto the pruning threshold and one over it, with an alpha
+    /// under what the margin reaches at the floor and a searched count past
+    /// the count's line, so a count that leaked a ply would skip the move
+    /// the model let through. The margin firing at the floor is the margin
+    /// test's.
     #[test]
-    fn neither_shallow_rule_decides_at_the_models_floor() {
+    fn the_count_does_not_decide_at_the_models_floor() {
         const DEPTH: u8 = DEEP_REDUCTION_MIN_DEPTH;
         const SEARCHED: usize = 20;
         assert!(
@@ -1898,8 +1911,9 @@ mod tests {
         };
         let (alpha, beta) = solved(score_at, LATE_MOVE_PRUNING_THRESHOLD);
         assert_eq!(score_at(alpha, beta), LATE_MOVE_PRUNING_THRESHOLD);
-        // the row's alpha stands over the evaluation by more than the
-        // margin reaches a ply lower, so a ceiling that leaked would skip
+        // the count fires a ply lower, and the margin falls short here
+        let reach = eval + i64::from(QUIET_FUTILITY_MARGIN) * i64::from(DEPTH);
+        assert!(i64::from(alpha) < reach);
         assert!(with.skips(&quiet, SEARCHED, SHALLOW_MAX_DEPTH, alpha, beta));
         assert!(!with.skips(&quiet, SEARCHED, DEPTH, alpha, beta));
         // and neither rule on its own reaches it either
