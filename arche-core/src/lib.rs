@@ -33,7 +33,7 @@ pub use engine::{
     Ablation, AlphaBeta, Engine, MAX_PLY, PvLine, ScoreBound, SearchConfig, SearchOutcome,
     SearchParameters, SearchResult,
 };
-pub use limits::{Clock, Limits};
+pub use limits::{Clock, Limits, RootNodes};
 pub use misc::{Color, Score};
 pub use play::Play;
 pub use transposition::DEFAULT_TABLE_BYTES;

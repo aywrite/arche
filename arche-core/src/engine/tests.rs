@@ -1572,6 +1572,34 @@ mod search {
     }
 
     #[test]
+    fn the_soft_line_moves_with_how_the_root_spent_its_nodes() {
+        // 38% of a second gone: under the line before the root is read and
+        // over a settled root's. 52%: over the first and under a contested
+        // root's. A root with one legal move spends every node on it, and
+        // the king and pawn ending's first depth gives its move 4 of 18
+        let only_move = "kr6/8/8/8/8/8/8/K6r w - - 0 1";
+        let contested = "4k3/8/8/8/8/8/4P3/4K3 w - - 0 1";
+        for (fen, gone, depths) in [
+            (only_move, 380, vec![1]),
+            (contested, 380, vec![1, 2]),
+            (contested, 520, vec![1, 2]),
+        ] {
+            let mut e = engine(Board::from_fen(fen).unwrap());
+            let params = SearchParameters::new(
+                Some(2),
+                Limits::starting_at(
+                    time::Instant::now() - time::Duration::from_millis(gone),
+                    Some(Clock::Share(time::Duration::from_secs(1))),
+                    u64::MAX,
+                ),
+            );
+            let mut reached = Vec::new();
+            e.iterative_deepening_search(params, |depth, _, _, _| reached.push(depth));
+            assert_eq!(reached, depths, "{fen} with {gone} ms gone");
+        }
+    }
+
+    #[test]
     fn deepening_to_depth_zero_finds_nothing() {
         let mut e = engine(Board::new());
         let outcome = e.iterative_deepening_search(SearchParameters::to_depth(0), |_, _, _, _| {});
