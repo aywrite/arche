@@ -976,6 +976,13 @@ impl TranspositionTable {
     /// worth is above the new store's depth, or an exact entry of the same
     /// position whose worth equals that depth where the new store is not
     /// exact. Reports whether the entry landed.
+    ///
+    /// Where the position's own entry turns a full width store away on its
+    /// worth, it still takes the store's move and keeps the rest. The move
+    /// is what the next visit tries first, and the latest search to end
+    /// here is the better guess at it; the depth and score stay with the
+    /// search that earned them. A quiescence store's move never replaces a
+    /// full width one.
     #[inline(always)]
     fn set(&mut self, key: u64, pv: Pv) -> bool {
         let (index, i, free) = self.slot_for(key);
@@ -983,6 +990,9 @@ impl TranspositionTable {
         debug_assert!(!free || self.replaceable(old));
         if !free && !self.replaceable(old) {
             if i16::from(pv.depth) < self.worth(old) {
+                if old.key == Entry::slice(key) && pv.depth > 0 {
+                    self.bucket_mut(index).rest[i].play = pv.play;
+                }
                 return false;
             }
             if i16::from(pv.depth) == self.worth(old)
@@ -1609,6 +1619,45 @@ mod tests {
         table.new_search(TOTAL_PHASE);
         table.set(1, new_pv(Bound::Lower, 2));
         assert_eq!(table.get(1).unwrap().depth, 2, "worth two, replaced");
+    }
+
+    #[test]
+    fn a_positions_own_deeper_entry_takes_a_shallower_full_width_move() {
+        let mut table = TranspositionTable::with_capacity(4).expect("a table of a few buckets");
+        let later = Play::new(8, 16, None, None, false, false);
+        table.set(1, new_pv(Bound::Lower, 10));
+        let refused = Pv {
+            play: later,
+            score: 77,
+            ..new_pv(Bound::Upper, 5)
+        };
+        assert!(!table.set(1, refused), "worth ten, deeper than five");
+        let held = table.get(1).unwrap();
+        assert_eq!(held.play, later, "the newest full width move");
+        assert_eq!((held.depth, held.score), (10, 0), "the deeper search's");
+        assert!(matches!(held.bound, Bound::Lower), "the deeper search's");
+        let quiet = Pv {
+            play: Play::new(9, 17, None, None, false, false),
+            ..new_pv(Bound::Lower, 0)
+        };
+        table.set(1, quiet);
+        assert_eq!(table.get(1).unwrap().play, later, "quiescence leaves it");
+    }
+
+    #[test]
+    fn another_positions_deeper_entry_keeps_its_move() {
+        let mut table = full_bucket(10);
+        let before: Vec<_> = (1..=4).map(|key| table.get(key).unwrap().play).collect();
+        table.set(
+            5,
+            Pv {
+                play: Play::new(8, 16, None, None, false, false),
+                ..new_pv(Bound::Lower, 5)
+            },
+        );
+        assert!(table.get(5).is_none());
+        let after: Vec<_> = (1..=4).map(|key| table.get(key).unwrap().play).collect();
+        assert_eq!(before, after);
     }
 
     #[test]
