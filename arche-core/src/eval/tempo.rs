@@ -21,7 +21,7 @@ pub(crate) const COUNTS: usize = 1;
 /// within half a centipawn of each other, rounded here. `tune.py::bounds_hold`
 /// charges it for both colours as it charges every term, which is loose on
 /// the safe side, since only one side has the move.
-static TEMPO: [i32; COUNTS] = [pack(10, 8)];
+static TEMPO: [i32; COUNTS] = [pack(0, 0)];
 
 /// The weight of the count, as the packed pair, read through
 /// [`super::TERMS`] so that a slot names the live weight rather than a copy.
