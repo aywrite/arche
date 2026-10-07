@@ -457,7 +457,7 @@ full width search below the root, which no game plays into. `arche positions`
 samples those:
 
 ```
-target/release/arche positions [depth] [every <n>] [cap <n>] [epd <file>] [budget <n>] [label <depth>]
+target/release/arche positions [depth] [every <n>] [cap <n>] [epd <file>] [budget <n>] [label <depth>] [given]
 ```
 
 It searches each root of the suite under the default to the depth, or until
@@ -491,6 +491,12 @@ run without one. A quiet position can still be a forced mate, so a label can
 be a mate score (29,000 and more from the winner's side), and a fit that maps
 labels through a sigmoid reads it as a certain result. The header states `events` and `records` as the others do,
 then how many records the quiet test turned away and why.
+
+`given` skips the search and offers the suite's own positions instead, each
+once at depth zero under the same key, as kind `given`. The rate, the cap,
+the quiet test and the label then apply to them as to sampled nodes, which is
+how a corpus of game positions gets the same label as one drawn from the
+tree. The depth and the budget are read and not used.
 
 The fen carries no path, so a label is the position's value as a diagram,
 as the residual's is. A position revisited at one depth is kept once per

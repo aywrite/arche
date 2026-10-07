@@ -269,11 +269,12 @@ pub const POSITIONS: Command = Command {
             value: "<depth>",
         },
     ],
-    flags: &[],
+    flags: &["given"],
     summary: &[
         "search the bench's suite, or the one named, sample the",
         "quiet positions whose evaluation it read, and label each",
-        "with the reference search's score to a depth",
+        "with the reference search's score to a depth; given takes",
+        "the suite's own positions instead of searching them",
     ],
 };
 
@@ -599,6 +600,7 @@ pub struct PositionSettings {
     pub cap: usize,
     pub budget: Option<u64>,
     pub label: Option<u8>,
+    pub given: bool,
     pub epd: Option<String>,
     pub positions: Vec<bench::Position>,
 }
@@ -607,6 +609,7 @@ pub fn position_settings(params: &Params) -> Result<PositionSettings, String> {
     let Sampling { depth, every, cap } = sampling(params, &POSITIONS, positions::DEFAULT_EVERY)?;
     let budget = params.parse::<u64>("budget").or_refuse("budget")?;
     let label = params.parse::<u8>("label").or_refuse("label")?;
+    let given = params.flag("given");
     let (epd, positions) = suite(params)?;
     Ok(PositionSettings {
         depth,
@@ -614,6 +617,7 @@ pub fn position_settings(params: &Params) -> Result<PositionSettings, String> {
         cap,
         budget,
         label,
+        given,
         epd,
         positions,
     })
@@ -629,6 +633,7 @@ impl PositionSettings {
             self.cap,
             self.budget,
             self.label,
+            self.given,
         )
     }
 }
@@ -854,6 +859,9 @@ mod tests {
     fn a_positions_argument_reads_its_budget_and_label() {
         let read = |line: &str| position_settings(&Params::of(line)).map(|s| (s.budget, s.label));
         assert_eq!(read("positions"), Ok((None, None)));
+        let given = |line: &str| position_settings(&Params::of(line)).map(|s| s.given);
+        assert_eq!(given("positions label 6"), Ok(false));
+        assert_eq!(given("positions given label 6"), Ok(true));
         assert_eq!(
             read("positions 9 budget 20000 label 6"),
             Ok((Some(20_000), Some(6)))

@@ -36,6 +36,9 @@ pub enum Kind {
     /// A capture search node not in check, where the side to move stands
     /// pat.
     Quiescence,
+    /// A position of the suite itself, offered without a search, for a run
+    /// that labels positions it was handed.
+    Given,
 }
 
 impl Kind {
@@ -43,6 +46,7 @@ impl Kind {
         match self {
             Kind::Full => "full",
             Kind::Quiescence => "quiescence",
+            Kind::Given => "given",
         }
     }
 }
@@ -102,6 +106,9 @@ pub struct Report {
     /// The depth the reference labels to, or none for a run that only
     /// samples.
     pub label: Option<u8>,
+    /// Whether the suite's positions were offered as given rather than
+    /// searched.
+    pub given: bool,
     pub roots: usize,
     pub events: u64,
     pub overflowed: u64,
@@ -115,6 +122,8 @@ pub struct Report {
 /// Search every root with the lane armed, then judge what it kept and
 /// label what survives. Never both at once: the filter and the reference
 /// run on engines and tables of their own.
+// one argument past clippy's limit: each is a setting the line names
+#[allow(clippy::too_many_arguments)]
 pub fn run(
     positions: &[Position],
     suite: Option<&str>,
@@ -123,10 +132,15 @@ pub fn run(
     cap: usize,
     budget: Option<u64>,
     label: Option<u8>,
+    given: bool,
 ) -> Report {
     let depth = depth.max(1);
     let every = every.max(1);
-    let sampled = record(positions, depth, every, cap, budget);
+    let sampled = if given {
+        offer_given(positions, every, cap)
+    } else {
+        record(positions, depth, every, cap, budget)
+    };
     let mut report = Report {
         depth,
         every,
@@ -134,6 +148,7 @@ pub fn run(
         suite: suite.map(str::to_string),
         budget,
         label: label.map(|depth| depth.max(1)),
+        given,
         roots: positions.len(),
         events: sampled.events,
         overflowed: sampled.overflowed,
@@ -163,6 +178,25 @@ pub fn run(
         report.rows.push(Row { event, reference });
     }
     report
+}
+
+/// The suite's own positions, each offered once at depth zero under the
+/// lane's key, so `every` and `cap` keep a share of the suite as they keep
+/// a share of a tree.
+fn offer_given(positions: &[Position], every: u32, cap: usize) -> Sampled<Event> {
+    let mut sampler = Sampler::with_cap(every, cap);
+    for (root, position) in positions.iter().enumerate() {
+        let board = position.board("positions");
+        let key = recorder::sample_key(board.key, POSITIONS_LANE, 0);
+        sampler.event(key, || Event {
+            kind: Kind::Given,
+            depth: 0,
+            root,
+            key,
+            fen: board.to_fen(),
+        });
+    }
+    sampler.drain()
 }
 
 /// The roots searched one after another with one reservoir, so the cap
@@ -220,6 +254,9 @@ impl fmt::Display for Report {
         if let Some(label) = self.label {
             write!(f, " label {}", label)?;
         }
+        if self.given {
+            write!(f, " given")?;
+        }
         let records = self.in_check + self.unsettled + self.drawn + self.rows.len();
         writeln!(
             f,
@@ -259,7 +296,7 @@ mod tests {
 
     #[test]
     fn a_run_keeps_both_kinds_and_states_what_it_turned_away() {
-        let report = run(&suite(), None, 4, 20, 1_000, None, None);
+        let report = run(&suite(), None, 4, 20, 1_000, None, None, false);
         let kinds = |kind| {
             report
                 .rows
@@ -275,7 +312,7 @@ mod tests {
 
     #[test]
     fn every_kept_rows_fen_reads_back_as_a_position_terms_keeps() {
-        let report = run(&suite(), None, 4, 20, 1_000, None, None);
+        let report = run(&suite(), None, 4, 20, 1_000, None, None, false);
         let positions: Vec<Position> = report
             .rows
             .iter()
@@ -291,7 +328,7 @@ mod tests {
 
     #[test]
     fn a_label_is_the_reference_answer_to_its_depth() {
-        let report = run(&suite(), None, 3, 50, 20, None, Some(3));
+        let report = run(&suite(), None, 3, 50, 20, None, Some(3), false);
         assert!(!report.rows.is_empty());
         // each on an engine of its own and in the other order, so a label
         // that leaned on what the run's shared engine searched before it
@@ -310,7 +347,7 @@ mod tests {
     fn a_row_names_its_root_by_place_and_its_key_is_the_lane_key() {
         let roots = suite();
         // dense, since the sharp root's nodes are mostly unsettled
-        let report = run(&roots, None, 4, 2, 1_000_000, None, None);
+        let report = run(&roots, None, 4, 2, 1_000_000, None, None, false);
         for row in &report.rows {
             assert!(row.event.root < roots.len());
             let board = Board::from_fen(&row.event.fen).unwrap();
@@ -326,14 +363,23 @@ mod tests {
 
     #[test]
     fn a_budget_stops_a_root_before_its_depth() {
-        let deep = run(&suite(), None, 8, 1, 1_000_000, None, None);
-        let budgeted = run(&suite(), None, 8, 1, 1_000_000, Some(5_000), None);
+        let deep = run(&suite(), None, 8, 1, 1_000_000, None, None, false);
+        let budgeted = run(&suite(), None, 8, 1, 1_000_000, Some(5_000), None, false);
         assert!(budgeted.events < deep.events);
     }
 
     #[test]
     fn the_header_states_the_run_and_a_row_reads_left_to_right() {
-        let report = run(&suite(), Some("roots.epd"), 3, 50, 20, Some(9_000), Some(2));
+        let report = run(
+            &suite(),
+            Some("roots.epd"),
+            3,
+            50,
+            20,
+            Some(9_000),
+            Some(2),
+            false,
+        );
         let text = report.to_string();
         let mut lines = text.lines();
         let header = lines.next().unwrap();
@@ -348,6 +394,32 @@ mod tests {
         assert_eq!(words[3].len(), 16, "{}", row);
         assert!(words[4].parse::<Score>().is_ok(), "{}", row);
         assert_eq!(words.len(), 5 + 6, "{}", row);
+    }
+
+    #[test]
+    fn a_given_run_offers_each_position_of_the_suite_and_labels_it() {
+        let roots = suite();
+        let report = run(&roots, None, 9, 1, 1_000, None, Some(3), true);
+        assert_eq!(report.events, roots.len() as u64);
+        let records = report.in_check + report.unsettled + report.drawn + report.rows.len();
+        assert_eq!(records, roots.len());
+        let mut engine = residual::replay_engine();
+        for row in &report.rows {
+            assert_eq!(row.event.kind, Kind::Given);
+            assert_eq!(row.event.fen, roots[row.event.root].board("test").to_fen());
+            assert_eq!(
+                row.reference,
+                residual::reference_answer(&mut engine, &row.event.fen, 3)
+            );
+        }
+        assert!(
+            report
+                .to_string()
+                .lines()
+                .next()
+                .unwrap()
+                .contains(" label 3 given roots 2 ")
+        );
     }
 
     #[test]
