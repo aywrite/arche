@@ -8,7 +8,7 @@ use crate::eval;
 use crate::forced;
 use crate::ghi::GhiCounters;
 use crate::late_move;
-use crate::limits::Limits;
+use crate::limits::{Limits, RootNodes};
 use crate::misc::{Color, Piece, Score};
 use crate::ordering::{MoveOrdering, Ordered};
 use crate::play::Play;
@@ -1245,6 +1245,11 @@ pub struct AlphaBeta {
     /// terms: read behind a bare check where each decision it can invert
     /// is taken, and nowhere else.
     forced: Option<Box<forced::Arm>>,
+    /// The nodes searched under each root move over every search of the
+    /// depth under way, which the soft line reads once the depth completes.
+    /// Cleared by the deepening loop at each depth and by a fixed depth
+    /// search.
+    root_nodes: Vec<(Play, u64)>,
 }
 
 /// What a search can be armed to record. Implemented here rather than
@@ -1319,6 +1324,7 @@ impl AlphaBeta {
             effort: None,
             effort_depths: effort::Depths::default(),
             forced: None,
+            root_nodes: Vec::new(),
         }
     }
 
@@ -2872,6 +2878,7 @@ impl AlphaBeta {
     /// given up. A search through here keeps whatever the memories learned
     /// before it.
     pub fn search_within(&mut self, depth: u8, limits: Limits) -> SearchOutcome {
+        self.root_nodes.clear();
         self.search_root(depth, limits, None, Aspiration::open(None, depth))
     }
 
@@ -2927,14 +2934,17 @@ impl AlphaBeta {
             } else {
                 Decision::First
             };
-            match self.search_child(
+            let before = self.nodes;
+            let child = self.search_child(
                 m,
                 answer.alpha,
                 answer.beta,
                 depth,
                 &decision,
                 answer.root_bounds,
-            ) {
+            );
+            self.count_root_nodes(*m, self.nodes - before);
+            match child {
                 Err(Aborted) => {
                     // only a move that beat the opening alpha may be
                     // answered with
@@ -2973,6 +2983,28 @@ impl AlphaBeta {
         };
         self.store_root_answer(play, answer.taint.stamp(score), depth, bound);
         SearchOutcome::Complete(self.result_for(play, score), bound)
+    }
+
+    /// Add a root move's nodes to the depth's count.
+    fn count_root_nodes(&mut self, play: Play, nodes: u64) {
+        match self.root_nodes.iter_mut().find(|(seen, _)| *seen == play) {
+            Some((_, counted)) => *counted += nodes,
+            None => self.root_nodes.push((play, nodes)),
+        }
+    }
+
+    /// How the depth just completed spent its nodes at the root, for the
+    /// move it chose and the move the depth before chose.
+    fn root_nodes_for(&self, chosen: Play, before: Option<Play>) -> RootNodes {
+        RootNodes {
+            chosen: self
+                .root_nodes
+                .iter()
+                .find(|(play, _)| *play == chosen)
+                .map_or(0, |(_, nodes)| *nodes),
+            total: self.root_nodes.iter().map(|(_, nodes)| nodes).sum(),
+            changed: before.is_some_and(|before| before != chosen),
+        }
     }
 
     /// The root's answer to the table, past the taint policy and the
@@ -3076,6 +3108,12 @@ impl Engine for AlphaBeta {
         // bound and not a score
         let mut exact: Option<Score> = None;
         let mut total_nodes: u64 = 0;
+        // how the last completed depth spent its nodes at the root, which
+        // sets the soft line for the next
+        let mut last: Option<RootNodes> = None;
+        // the move the last completed depth chose. Not `best`, which a
+        // floor in the depth under way can have replaced
+        let mut chosen: Option<Play> = None;
         let max_depth = match search_options.depth {
             // held to the rail, or the depths past it would each rerun it
             Some(depth) => depth.min(MAX_PLY),
@@ -3091,14 +3129,12 @@ impl Engine for AlphaBeta {
             // re-search: giving up inside a fail low would answer with the
             // move the search has just found worse than it believed. The
             // deadline stays as the backstop
-            if !search_options
-                .limits
-                .worth_another_iteration(best.is_some())
-            {
+            if !search_options.limits.worth_another_iteration(last) {
                 return SearchOutcome::Aborted(best);
             }
             let mut window =
                 Aspiration::open(self.config.aspiration.then_some(exact).flatten(), depth);
+            self.root_nodes.clear();
             loop {
                 let (limits, stop) = search_options.for_iteration(best.is_some(), total_nodes);
                 match self.search_root(depth, limits, stop, window) {
@@ -3168,6 +3204,8 @@ impl Engine for AlphaBeta {
                         );
                         on_depth(depth, &result, pv, bound);
                         if bound == ScoreBound::Exact {
+                            last = Some(self.root_nodes_for(result.best_move, chosen));
+                            chosen = Some(result.best_move);
                             exact = Some(result.score);
                             best = Some(result);
                             break;

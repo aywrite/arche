@@ -17,7 +17,7 @@ use std::time::{Duration, Instant};
 const POLL_INTERVAL: u64 = 3000;
 
 /// The share of a budget past which another iteration is not begun, as a
-/// percentage.
+/// percentage, before the root has said how settled it is.
 ///
 /// An iteration cut short still answers with the root moves it got through,
 /// so with r the time through depth d over the time through d+1, an
@@ -26,8 +26,72 @@ const POLL_INTERVAL: u64 = 3000;
 /// any pruning beyond the transposition table. The pruning since has raised
 /// the median to 0.51 in games at 10+0.1, where the same rule would put the
 /// line near two thirds, but the games keep it here: 55% lost and 65%
-/// measured nothing (the roadmap has both).
+/// measured nothing (the roadmap has both). Those moved the line for every
+/// move. The constants below move it a depth at a time, on what the root
+/// says, and leave it here where the root says nothing.
 const SOFT_LIMIT_PERCENT: u128 = 45;
+
+/// Once a depth has been answered the line moves with how much of that
+/// depth's nodes went to the move it chose: down to `SETTLED_PERCENT` when
+/// the move took `SETTLED_PERMILLE` of them or more, up to
+/// `UNSETTLED_PERCENT` when it took `UNSETTLED_PERMILLE` or less (down to
+/// `TABLE_ANSWERED_PERMILLE`), and on a straight line between, which crosses `SOFT_LIMIT_PERCENT` at 700. A
+/// move that took most of the tree has had its alternatives refuted
+/// cheaply and seldom changes at the next depth; one that took a minority
+/// has rivals that cost as much as it did.
+const SETTLED_PERCENT: u128 = 30;
+const SETTLED_PERMILLE: u128 = 900;
+const UNSETTLED_PERCENT: u128 = 60;
+const UNSETTLED_PERMILLE: u128 = 500;
+
+/// Under this many thousandths the chosen move's nodes say nothing either
+/// way and the line stays at `SOFT_LIMIT_PERCENT`. The table takes cutoffs
+/// at open windows, so a move it answered from an entry costs a handful of
+/// nodes while its rivals cost a search: cheap to confirm, not contested.
+/// In 200 games of a 10+0.1 match replayed at a node budget, over the
+/// depths ending where the line decides, a move under a tenth kept its
+/// answer at the next depth 96% of the time, one over nine tenths 98.5%,
+/// and one between a tenth and a half 80% to 85%.
+const TABLE_ANSWERED_PERMILLE: u128 = 100;
+
+/// The line after a depth that chose another move than the depth before
+/// it, whatever its nodes say. Still under the deadline, which stays the
+/// share.
+const CHANGED_PERCENT: u128 = 65;
+
+/// How a completed depth spent its nodes at the root, which is what the
+/// soft line reads.
+#[derive(Copy, Clone, Debug, PartialEq, Eq)]
+pub struct RootNodes {
+    /// The nodes searched under the move the depth chose, over every
+    /// search of the depth (the aspiration re-searches included).
+    pub chosen: u64,
+    /// The nodes searched under every root move, over the same searches.
+    pub total: u64,
+    /// Whether the move chosen differs from the one the depth before chose.
+    pub changed: bool,
+}
+
+impl RootNodes {
+    /// The soft line this depth sets for the next, as a percentage of the
+    /// share.
+    pub fn soft_line_percent(self) -> u128 {
+        if self.changed {
+            return CHANGED_PERCENT;
+        }
+        if self.total == 0 {
+            return SOFT_LIMIT_PERCENT;
+        }
+        let permille = self.chosen as u128 * 1000 / self.total as u128;
+        if permille < TABLE_ANSWERED_PERMILLE {
+            return SOFT_LIMIT_PERCENT;
+        }
+        let permille = permille.clamp(UNSETTLED_PERMILLE, SETTLED_PERMILLE);
+        SETTLED_PERCENT
+            + (UNSETTLED_PERCENT - SETTLED_PERCENT) * (SETTLED_PERMILLE - permille)
+                / (SETTLED_PERMILLE - UNSETTLED_PERMILLE)
+    }
+}
 
 /// The clock a search runs under, and what the caller meant by it. A share
 /// of a game clock is this side's guess at what the move is worth, so time
@@ -96,19 +160,21 @@ impl Limits {
     }
 
     /// Whether another iteration of a deepening search is worth beginning,
-    /// with `expired` as the backstop. Only a share of a game clock is
-    /// given up early (at `SOFT_LIMIT_PERCENT`), since only that leaves the
-    /// rest for the moves after this one. Nothing is given up before a
-    /// depth has been answered.
-    pub fn worth_another_iteration(&self, answered: bool) -> bool {
-        if !answered {
+    /// with `expired` as the backstop, given how the last completed depth
+    /// spent its nodes at the root. Only a share of a game clock is given
+    /// up early, at the line `RootNodes::soft_line_percent` reads, since
+    /// only that leaves the rest for the moves after this one. Nothing is
+    /// given up before a depth has been answered, which is `None`.
+    pub fn worth_another_iteration(&self, last: Option<RootNodes>) -> bool {
+        let Some(last) = last else {
             return true;
-        }
+        };
         match self.clock {
             // nanoseconds in a u128: multiplying the durations themselves
             // panics on a clock large enough to overflow
             Some(Clock::Share(budget)) => {
-                self.started.elapsed().as_nanos() * 100 < budget.as_nanos() * SOFT_LIMIT_PERCENT
+                self.started.elapsed().as_nanos() * 100
+                    < budget.as_nanos() * last.soft_line_percent()
             }
             _ => true,
         }
@@ -159,9 +225,24 @@ impl Limits {
 
 #[cfg(test)]
 mod tests {
-    use super::{Clock, Limits, POLL_INTERVAL, SOFT_LIMIT_PERCENT};
+    use super::{Clock, Limits, POLL_INTERVAL, RootNodes, SOFT_LIMIT_PERCENT};
     use pretty_assertions::assert_eq;
     use std::time::{Duration, Instant};
+
+    /// A depth whose chosen move took this many of its thousand nodes.
+    fn took(chosen: u64) -> RootNodes {
+        RootNodes {
+            chosen,
+            total: 1000,
+            changed: false,
+        }
+    }
+
+    /// A depth answered with the line where it stood before the root was
+    /// read.
+    fn answered() -> Option<RootNodes> {
+        Some(took(700))
+    }
 
     /// A search whose clock ran out before it started.
     fn already_spent() -> Limits {
@@ -252,35 +333,94 @@ mod tests {
         let soft = Duration::from_millis(SOFT_LIMIT_PERCENT as u64 * 10);
         assert!(
             a_second_of(Clock::Share, soft - Duration::from_millis(50))
-                .worth_another_iteration(true)
+                .worth_another_iteration(answered())
         );
         assert!(
             !a_second_of(Clock::Share, soft + Duration::from_millis(50))
-                .worth_another_iteration(true)
+                .worth_another_iteration(answered())
         );
+    }
+
+    #[test]
+    fn the_line_falls_as_the_chosen_move_takes_more_of_the_depth() {
+        // written out rather than computed, so moving a constant fails here
+        let lines: Vec<u128> = [100, 500, 600, 700, 800, 900, 1000]
+            .into_iter()
+            .map(|chosen| took(chosen).soft_line_percent())
+            .collect();
+        assert_eq!(lines, vec![60, 60, 52, 45, 37, 30, 30]);
+    }
+
+    #[test]
+    fn a_move_the_table_answered_leaves_the_line_where_it_was() {
+        for chosen in [0, 1, 99] {
+            assert_eq!(took(chosen).soft_line_percent(), SOFT_LIMIT_PERCENT);
+        }
+    }
+
+    #[test]
+    fn a_depth_that_changed_its_move_sets_the_highest_line() {
+        for chosen in [0, 50, 700, 1000] {
+            let changed = RootNodes {
+                changed: true,
+                ..took(chosen)
+            };
+            assert_eq!(changed.soft_line_percent(), 65);
+        }
+    }
+
+    #[test]
+    fn a_depth_with_no_root_nodes_keeps_the_line_where_it_was() {
+        let empty = RootNodes {
+            chosen: 0,
+            total: 0,
+            changed: false,
+        };
+        assert_eq!(empty.soft_line_percent(), SOFT_LIMIT_PERCENT);
+    }
+
+    #[test]
+    fn the_root_moves_the_line_an_iteration_is_begun_under() {
+        // each elapsed share sits at least five points from every line it
+        // is read against, since the call reads the clock again
+        let at = |percent: u64| a_second_of(Clock::Share, Duration::from_millis(percent * 10));
+        // a settled root gives up where the line before it did not
+        assert!(at(38).worth_another_iteration(answered()));
+        assert!(!at(38).worth_another_iteration(Some(took(950))));
+        // a contested root carries on where the line before it gave up
+        assert!(!at(52).worth_another_iteration(answered()));
+        assert!(at(52).worth_another_iteration(Some(took(400))));
+        assert!(!at(52).worth_another_iteration(Some(took(50))));
+        // and a changed move further still, short of the deadline
+        let changed = RootNodes {
+            changed: true,
+            ..took(950)
+        };
+        assert!(at(60).worth_another_iteration(Some(changed)));
+        assert!(!at(70).worth_another_iteration(Some(changed)));
     }
 
     #[test]
     fn a_named_move_time_is_spent_to_its_deadline() {
         // an elapsed share that a clock budget would refuse is still begun
         let late = Duration::from_millis(990);
-        assert!(a_second_of(Clock::Fixed, late).worth_another_iteration(true));
-        assert!(!a_second_of(Clock::Share, late).worth_another_iteration(true));
+        assert!(a_second_of(Clock::Fixed, late).worth_another_iteration(answered()));
+        assert!(!a_second_of(Clock::Share, late).worth_another_iteration(answered()));
     }
 
     #[test]
     fn a_search_on_no_clock_begins_every_iteration_it_is_asked_for() {
         assert!(
-            Limits::starting_at(Instant::now(), None, 1_000).worth_another_iteration(true),
+            Limits::starting_at(Instant::now(), None, 1_000).worth_another_iteration(answered()),
             "a node budget was cut short by the clock"
         );
-        assert!(Limits::unlimited().worth_another_iteration(true));
+        assert!(Limits::unlimited().worth_another_iteration(answered()));
     }
 
     #[test]
     fn the_first_iteration_is_begun_whatever_the_clock_says() {
-        assert!(already_spent().worth_another_iteration(false));
-        assert!(!already_spent().worth_another_iteration(true));
+        assert!(already_spent().worth_another_iteration(None));
+        assert!(!already_spent().worth_another_iteration(answered()));
     }
 
     #[test]
