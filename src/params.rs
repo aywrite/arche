@@ -45,9 +45,20 @@ impl<'a> Params<'a> {
         &self.words
     }
 
+    /// The words of a protocol line, split on whitespace.
     pub fn of(line: &'a str) -> Self {
         Self {
             words: line.split_whitespace().collect(),
+        }
+    }
+
+    /// The words as the shell split them, for the binary's arguments. Each
+    /// argument is one word whatever it holds, so a quoted path with a space
+    /// in it reaches its setting whole. Joined on spaces and split again, it
+    /// used to arrive as two words and be refused on the second.
+    pub fn of_words<S: AsRef<str>>(words: &'a [S]) -> Self {
+        Self {
+            words: words.iter().map(AsRef::as_ref).collect(),
         }
     }
 
@@ -297,6 +308,28 @@ mod tests {
         assert_eq!(params.value("wtime"), Param::Absent);
         assert_eq!(params.count("wtime"), Param::Absent);
         assert!(!params.flag("infinite"));
+    }
+
+    #[test]
+    fn a_word_given_as_the_shell_split_it_keeps_its_spaces() {
+        // the shape main hands over, an owned argument list
+        let args: Vec<String> = ["terms", "epd", "/dir with space/suite.epd"]
+            .map(String::from)
+            .to_vec();
+        let params = Params::of_words(&args);
+        assert_eq!(params.words().len(), 3);
+        assert_eq!(
+            params.value("epd"),
+            Param::Read("/dir with space/suite.epd")
+        );
+        assert!(!params.flag("with"));
+        // the same words as one line split at the space
+        let joined = Params::of("terms epd /dir with space/suite.epd");
+        assert_eq!(joined.value("epd"), Param::Read("/dir"));
+        assert!(joined.flag("with"));
+        // and no arguments at all is no parameters
+        let none: [&str; 0] = [];
+        assert_eq!(Params::of_words(&none).value("epd"), Param::Absent);
     }
 
     #[test]

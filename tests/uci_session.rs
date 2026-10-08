@@ -583,6 +583,34 @@ fn run_to_end(args: &[&str]) -> std::process::Output {
         .expect("the binary runs")
 }
 
+/// The arguments used to be joined on spaces and split again, so a path
+/// with a space in it arrived as two words and was refused on the second
+/// (`unrecognised terms word: with`). A directory of this test's own, so
+/// parallel tests do not share it, removed after.
+#[test]
+fn an_epd_path_with_a_space_in_it_reaches_the_setting_whole() {
+    let dir = std::env::temp_dir().join(format!("arche-{} dir with space", std::process::id()));
+    std::fs::create_dir_all(&dir).expect("the temp dir takes a directory");
+    let path = dir.join("suite.epd");
+    std::fs::write(
+        &path,
+        "2rr3k/pp3pp1/1nnqbN1p/3pN3/2pP4/2P3Q1/PPB4P/R4RK1 w - - bm g3g6; id \"WAC.001\";\n",
+    )
+    .expect("the directory takes a file");
+    let path = path.to_str().expect("the temp dir is utf-8");
+    let out = run_to_end(&["terms", "epd", path]);
+    let _ = std::fs::remove_dir_all(&dir);
+    let stderr = String::from_utf8(out.stderr).unwrap();
+    assert_eq!(out.status.code(), Some(0), "stderr said: {}", stderr);
+    let stdout = String::from_utf8(out.stdout).unwrap();
+    let header = stdout.lines().next().unwrap_or("");
+    assert!(
+        header.starts_with(&format!("terms epd {} positions 1 ", path)),
+        "header: {}",
+        header
+    );
+}
+
 /// Names the commands by hand on purpose, rather than walking the array the
 /// binary dispatches from: a command dropped from that array fails here,
 /// where a loop over the shorter array would pass.

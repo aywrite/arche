@@ -62,8 +62,9 @@ fn measure(instrument: &Instrument, params: &Params) -> ExitCode {
 
 fn main() -> ExitCode {
     let args: Vec<String> = std::env::args().skip(1).collect();
-    let line = args.join(" ");
-    let params = Params::of(&line);
+    // as the shell split them: joined and split again, a path with a space
+    // in it was refused on its second word
+    let params = Params::of_words(&args);
     match args.first().map(String::as_str) {
         None => {
             let game = Board::new();
