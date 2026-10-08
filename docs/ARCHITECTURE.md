@@ -74,7 +74,9 @@ factorization machine term over every pair of pieces.
   properly), reverse futility pruning (answer a node from its evaluation
   when that is already far above what the opponent can accept), null move
   pruning (answer it from a reduced search of the position left by passing
-  the move) and the check extension.
+  the move), the check extension and the singular extension (search a deep
+  node's table move a ply deeper when a half depth search with that move
+  excluded shows nothing else comes close).
 - **late_move.rs**: What a node does with a quiet move its ordering put
   late. The late move reduction scouts such a move shallower, by plies read
   off a table by the node's depth and the move's index, and trusts the

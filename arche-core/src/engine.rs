@@ -16,7 +16,7 @@ use crate::recorder::{Sampler, Window};
 use crate::reduction;
 use crate::residual::{Sample, Shortcut};
 use crate::transposition::{
-    DEFAULT_TABLE_BYTES, NO_EVAL, Probe, SignatureCounters, TranspositionTable,
+    DEFAULT_TABLE_BYTES, Floor, NO_EVAL, Probe, SignatureCounters, TranspositionTable,
 };
 use crate::value::{
     MateDistanceWindow, Taint, Value, below_the_mate_window, is_mate, mate_distance_window,
@@ -99,6 +99,19 @@ const ASPIRATION_MIN_DEPTH: u8 = 5;
 // the edge. The width doubles each time, so the sides tried are the width,
 // twice it, four times it, and then the edge.
 const ASPIRATION_FAILURES: u8 = 3;
+// The shallowest node that asks whether its table move is singular. The
+// excluded search at `(depth - 1) / 2` is depth three here, the shallowest
+// at which it is a search rather than a capture tree. The conventional
+// trigger; not swept.
+const SINGULAR_MIN_DEPTH: u8 = 8;
+// How many plies shallower than the node its entry may be and still be
+// asked about: the floor is usually the table move's own cutoff a depth
+// or two back. The conventional slack; not swept.
+const SINGULAR_ENTRY_SLACK: u8 = 3;
+// How far under the table move's floor, per ply of depth, the excluded
+// search is held to. A second move that comes within it is close enough
+// that the table move is not singular. An opening value; not swept.
+const SINGULAR_MARGIN: Score = 2;
 
 /// How many plies shallower than the node a pass at `depth` is searched.
 /// `eval_beta` is how far the static evaluation stands above beta at the
@@ -272,6 +285,10 @@ pub(crate) struct Node {
     pub(crate) tt: census::Table,
     /// The node count on entry, which prices what the node cost.
     entered_at: u64,
+    /// The move the node is searched without, or none: a node asking
+    /// whether its table move is singular searches itself again with that
+    /// move left out, and that search stores nothing under the node's key.
+    excluded: Option<Play>,
     pub(crate) answer: FailSoft,
 }
 
@@ -284,6 +301,7 @@ impl Node {
         ply: Option<usize>,
         tt: census::Table,
         entered_at: u64,
+        excluded: Option<Play>,
         answer: FailSoft,
     ) -> Self {
         Self {
@@ -292,6 +310,7 @@ impl Node {
             ply,
             tt,
             entered_at,
+            excluded,
             answer,
         }
     }
@@ -529,6 +548,10 @@ pub struct SearchConfig {
     /// the control. Only the deepening loop reads it, so a search asked for
     /// a fixed depth opens full.
     pub aspiration: bool,
+    /// Whether a deep node whose table move stands a margin above every
+    /// other move, shown by a half depth search with that move excluded,
+    /// searches the table move a ply deeper.
+    pub singular_extensions: bool,
 }
 
 /// What to do with a draw tainted score: one stored by a search that read
@@ -634,7 +657,7 @@ impl SearchConfig {
     ///
     /// `taint` is not among them: it is a policy with four values rather
     /// than a switch, and `residuals` already takes it.
-    pub const SWITCHES: [(&'static str, TurnOff); 13] = [
+    pub const SWITCHES: [(&'static str, TurnOff); 14] = [
         ("reverse_futility", |config| config.reverse_futility = false),
         ("null_move", |config| config.null_move = false),
         ("adaptive_null_move", |config| {
@@ -654,6 +677,9 @@ impl SearchConfig {
         ("reduction_table", |config| config.reduction_table = false),
         ("move_memory", |config| config.move_memory = false),
         ("aspiration", |config| config.aspiration = false),
+        ("singular_extensions", |config| {
+            config.singular_extensions = false
+        }),
     ];
 
     /// The default with one switch off, or none for a name the table does
@@ -689,6 +715,7 @@ impl SearchConfig {
             reduction_table: false,
             move_memory: false,
             aspiration: false,
+            singular_extensions: false,
         }
     }
 
@@ -743,6 +770,7 @@ impl Default for SearchConfig {
             reduction_table: true,
             move_memory: true,
             aspiration: true,
+            singular_extensions: true,
         }
     }
 }
@@ -1250,6 +1278,23 @@ pub struct AlphaBeta {
     /// Cleared by the deepening loop at each depth and by a fixed depth
     /// search.
     root_nodes: Vec<(Play, u64)>,
+    /// What the singular test did. Never reset, as `quiescence_nodes`.
+    singular: SingularCounts,
+}
+
+/// How often the singular test was reached, run and answered yes, which
+/// prices the extension offline: a test that is rarely run or rarely fires
+/// cannot be worth much, and one that fires everywhere is a reduction's
+/// price for an extension's name.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub struct SingularCounts {
+    /// Nodes that could ask: a table move at a depth the test reads.
+    pub asked: u64,
+    /// Nodes that ran the excluded search: the entry was deep enough and
+    /// its score a floor.
+    pub tested: u64,
+    /// Nodes whose table move proved singular and was searched deeper.
+    pub extended: u64,
 }
 
 /// What a search can be armed to record. Implemented here rather than
@@ -1325,6 +1370,7 @@ impl AlphaBeta {
             effort_depths: effort::Depths::default(),
             forced: None,
             root_nodes: Vec::new(),
+            singular: SingularCounts::default(),
         }
     }
 
@@ -1827,6 +1873,16 @@ impl AlphaBeta {
         probe
     }
 
+    /// The table's move for ordering and never its cutoff, counted: what a
+    /// search with a move excluded asks, since the entry's score is the
+    /// excluded move's.
+    #[inline(always)]
+    fn probe_for_ordering(&mut self) -> Probe {
+        let probe = self.transpositions.probe_for_ordering(&self.board);
+        self.ghi.count_probe(probe);
+        probe
+    }
+
     /// Whether a result may be stored under the taint policy. A refused
     /// store is counted as skipped.
     fn keeps(&mut self, value: Value) -> bool {
@@ -1875,6 +1931,11 @@ impl AlphaBeta {
     /// search this engine has run.
     pub fn quiescence_nodes(&self) -> u64 {
         self.quiescence_nodes
+    }
+
+    /// What the singular test has done over every search this engine ran.
+    pub fn singular_counts(&self) -> SingularCounts {
+        self.singular
     }
 
     /// Cooperative limit check. The limits say when to look at them again.
@@ -2196,6 +2257,7 @@ impl AlphaBeta {
                 depth - 1 - reduction,
                 false,
                 root_bounds.child(ChildSearch::Pass),
+                None,
             );
             // undo before an abort can propagate
             self.board.undo_null_move();
@@ -2284,6 +2346,7 @@ impl AlphaBeta {
                     depth - 1,
                     true,
                     root_bounds.child(ChildSearch::FirstMove),
+                    None,
                 )?);
             }
             Decision::Search { reduction, staged } => (*reduction, staged.as_ref()),
@@ -2300,6 +2363,7 @@ impl AlphaBeta {
                 depth - 1 - reduction,
                 true,
                 root_bounds.child(ChildSearch::Scout),
+                None,
             )?;
             if let Some(staged) = staged {
                 self.ledger_event(
@@ -2328,6 +2392,7 @@ impl AlphaBeta {
             depth - 1,
             true,
             root_bounds.child(ChildSearch::Probe),
+            None,
         )?;
         // `alpha + 1 >= beta` is the zero window, spelt without the
         // subtraction: `beta - alpha` overflows a Score at the full window
@@ -2340,6 +2405,7 @@ impl AlphaBeta {
             depth - 1,
             true,
             root_bounds.child(ChildSearch::Proof),
+            None,
         )?;
         Ok(Value::with_taint(
             proof.score,
@@ -2349,7 +2415,9 @@ impl AlphaBeta {
 
     /// A fail high at a full width node: the move that proved it goes to
     /// the quiet memories with the moves the node searched before it and,
-    /// when the taint policy allows, to the table.
+    /// when the taint policy allows, to the table. A node searched with a
+    /// move excluded stores nothing: its answer is about the rest of the
+    /// moves, and the entry holds the excluded one.
     ///
     /// `tried` is the moves the node searched, not the whole list: the
     /// history marks down what the node asked and got nothing from.
@@ -2357,14 +2425,15 @@ impl AlphaBeta {
         &mut self,
         m: &Play,
         tried: impl IntoIterator<Item = &'a Play>,
-        taint: Taint,
+        node: &Node,
         score: Score,
-        depth: u8,
         static_eval: Score,
     ) -> Value {
-        self.remember_cutoff(m, tried, depth);
-        let value = taint.stamp(score);
-        self.store_cutoff(m, value, depth, static_eval);
+        self.remember_cutoff(m, tried, node.depth);
+        let value = node.answer.taint.stamp(score);
+        if node.excluded.is_none() {
+            self.store_cutoff(m, value, node.depth, static_eval);
+        }
         value
     }
 
@@ -2372,18 +2441,21 @@ impl AlphaBeta {
     /// ahead of everything else, so the nodes it cuts never generate or
     /// sort at all, and the tree searched is unchanged. A cutoff answers
     /// the node. Otherwise the node absorbs what the move scored, or
-    /// nothing when the move was not legal here.
+    /// nothing when the move was not legal here. `extension` is the plies
+    /// the singular test added to this move alone; the rest of the node,
+    /// its stores included, keeps the node's depth.
     fn search_table_move(
         &mut self,
         tt: Play,
         node: &mut Node,
         static_eval: Score,
+        extension: u8,
     ) -> Result<Option<Value>, Aborted> {
         let Some(value) = self.search_child(
             &tt,
             node.answer.alpha,
             node.answer.beta,
-            node.depth,
+            node.depth + extension,
             &Decision::First,
             node.answer.root_bounds,
         )?
@@ -2399,14 +2471,61 @@ impl AlphaBeta {
             table: true,
         };
         self.record_node(node, &[], false, Some(cutting));
-        Ok(Some(self.cutoff(
-            &tt,
-            &[],
-            node.answer.taint,
-            value.score,
-            node.depth,
-            static_eval,
-        )))
+        Ok(Some(self.cutoff(&tt, &[], node, value.score, static_eval)))
+    }
+
+    /// Whether the table move is singular: whether a search of this node
+    /// with that move excluded, at half the depth and over a zero window a
+    /// margin under the move's floor, fails low, so that no other move
+    /// comes close. Asked only of a node deep enough, under the rail, that
+    /// is not itself such a search, whose entry names the table move from
+    /// near the node's depth with a floor that is no mate. The floor is
+    /// read whatever the taint policy made of the entry, since nothing of
+    /// the excluded search is stored and the extended move's answer is
+    /// stamped as any other. The excluded search's own taint is dropped
+    /// for the same reason: its result is a decision about depth, not a
+    /// score the node answers with. `depth` is the node's, check extension
+    /// included, and the excluded search of a node in check extends itself
+    /// again, so there it runs a ply over the half.
+    fn table_move_is_singular(
+        &mut self,
+        tt: Play,
+        floor: Option<Floor>,
+        depth: u8,
+        excluded: Option<Play>,
+    ) -> Result<bool, Aborted> {
+        if !self.config.singular_extensions
+            || excluded.is_some()
+            || !(SINGULAR_MIN_DEPTH..MAX_PLY).contains(&depth)
+        {
+            return Ok(false);
+        }
+        self.singular.asked += 1;
+        let Some(floor) = floor.filter(|floor| {
+            floor.play == tt
+                && depth.saturating_sub(floor.depth) <= SINGULAR_ENTRY_SLACK
+                && !is_mate(floor.score)
+        }) else {
+            return Ok(false);
+        };
+        self.singular.tested += 1;
+        // a floor just under the mate threshold puts the window inside the
+        // mate band, which the mate distance window and the shortcuts'
+        // gates treat as any other mate window; the arithmetic stays in
+        // range, the margin being at most two plies a byte
+        let singular_beta = floor.score - SINGULAR_MARGIN * Score::from(depth);
+        // no pass under the excluded search, which the frame refuses too
+        let rest = self.alpha_beta(
+            singular_beta - 1,
+            singular_beta,
+            (depth - 1) / 2,
+            false,
+            RootBounds::Neither,
+            Some(tt),
+        )?;
+        let singular = rest.score < singular_beta;
+        self.singular.extended += u64::from(singular);
+        Ok(singular)
     }
 
     /// The quiet moves put in order as far as the loop reads them, asked
@@ -2654,7 +2773,10 @@ impl AlphaBeta {
 
     /// One full width node. `can_null` is false only directly under a
     /// pass. `root_bounds` says which of the two bounds handed in is still
-    /// the root's own.
+    /// the root's own. `excluded` is the move the node is searched without,
+    /// which only the singular test passes: such a node takes no cutoff
+    /// from its entry, passes no null move, asks no singular test of its
+    /// own and stores nothing.
     fn alpha_beta(
         &mut self,
         alpha: Score,
@@ -2662,6 +2784,7 @@ impl AlphaBeta {
         mut depth: u8,
         can_null: bool,
         root_bounds: RootBounds,
+        excluded: Option<Play>,
     ) -> Result<Value, Aborted> {
         self.poll_deadline()?;
         self.selective_depth = self.selective_depth.max(self.board.line_ply as u8);
@@ -2686,22 +2809,33 @@ impl AlphaBeta {
             return self.quiescence(alpha, beta);
         }
 
-        let pv_play = match self.probe(alpha, beta, depth) {
+        let probe = match excluded {
+            None => self.probe(alpha, beta, depth),
+            Some(_) => self.probe_for_ordering(),
+        };
+        let pv_play = match probe {
             Probe::Cut(value) => return Ok(value),
             Probe::Order(play) | Probe::Refused(play) => Some(play),
             Probe::Miss => None,
         };
         let mut taint = Taint::default();
         // the node's static evaluation, filled by the shortcuts and read by
-        // the late move decision, or found in the table's entry
+        // the late move decision, or found in the table's entry. The entry's
+        // floor is read here too, before the shortcuts' searches probe
+        // other keys
         let table_eval = self.transpositions.probed_eval(self.board.key);
         let mut eval: Option<Score> = (table_eval != NO_EVAL).then_some(table_eval);
+        let floor = self
+            .transpositions
+            .probed_floor(self.board.key, self.board.line_ply);
         if let Some(value) = self.shortcuts(
             alpha,
             beta,
             depth,
             in_check,
-            can_null,
+            // a node searched without a move passes no null move: the pass
+            // would answer for the excluded move too
+            can_null && excluded.is_none(),
             root_bounds,
             &mut taint,
             &mut eval,
@@ -2711,17 +2845,21 @@ impl AlphaBeta {
         // what the node's stores carry into the table
         let static_eval = eval.unwrap_or(NO_EVAL);
 
-        let table_move = pv_play.filter(|tt| self.board.is_pseudo_legal(tt));
+        let table_move = pv_play
+            .filter(|tt| Some(*tt) != excluded)
+            .filter(|tt| self.board.is_pseudo_legal(tt));
         let mut node = Node::open(
             depth,
             in_check,
             self.memory_ply(),
             census::Table::of(pv_play.is_some(), table_move.is_some()),
             entered_at,
+            excluded,
             FailSoft::open(alpha, beta, root_bounds, taint),
         );
         if let Some(tt) = table_move {
-            if let Some(value) = self.search_table_move(tt, &mut node, static_eval)? {
+            let extension = u8::from(self.table_move_is_singular(tt, floor, depth, excluded)?);
+            if let Some(value) = self.search_table_move(tt, &mut node, static_eval, extension)? {
                 return Ok(value);
             }
         }
@@ -2765,6 +2903,9 @@ impl AlphaBeta {
                 }
                 continue;
             }
+            if Some(*m) == excluded {
+                continue;
+            }
             let decision = self.late_move_decision(&node, &mut rules, &moves, m);
             if let Decision::Skip = decision {
                 continue;
@@ -2797,14 +2938,7 @@ impl AlphaBeta {
                         .enumerate()
                         .filter(|(place, _)| made.holds(*place))
                         .map(|(_, tried)| tried);
-                    return Ok(self.cutoff(
-                        m,
-                        tried,
-                        node.answer.taint,
-                        value.score,
-                        depth,
-                        static_eval,
-                    ));
+                    return Ok(self.cutoff(m, tried, &node, value.score, static_eval));
                 }
                 Reached::Alpha => {
                     // the dropped moves stay dropped only while alpha is
@@ -2843,7 +2977,9 @@ impl AlphaBeta {
             .best_move
             .expect("a legal move was found, so one of them is best");
         let value = node.answer.taint.stamp(node.answer.best);
-        self.store_answer(play, value, depth, node.answer.raised_alpha(), static_eval);
+        if excluded.is_none() {
+            self.store_answer(play, value, depth, node.answer.raised_alpha(), static_eval);
+        }
         Ok(value)
     }
 

@@ -12,8 +12,9 @@ mod search {
     use crate::engine::Engine;
     use crate::engine::{
         ASPIRATION_MIN_DEPTH, Aspiration, Decision, Limits, MAX_PLY, NULL_MOVE_MIN_DEPTH,
-        NULL_MOVE_REDUCTION, Play, RootBounds, Score, ScoreBound, SearchConfig, SearchOutcome,
-        SearchParameters, SearchResult, TaintPolicy, Value, null_move_reduction,
+        NULL_MOVE_REDUCTION, Play, RootBounds, SINGULAR_ENTRY_SLACK, SINGULAR_MARGIN,
+        SINGULAR_MIN_DEPTH, Score, ScoreBound, SearchConfig, SearchOutcome, SearchParameters,
+        SearchResult, TaintPolicy, Value, null_move_reduction,
     };
     use crate::late_move::{
         DEEP_REDUCTION, DEEP_REDUCTION_MIN_DEPTH, LATE_MOVE_MIN_DEPTH, LATE_MOVE_REDUCTION,
@@ -21,6 +22,7 @@ mod search {
     };
     use crate::limits::Clock;
     use crate::misc::{Color, Piece};
+    use crate::transposition::Floor;
     use crate::value::CHECKMATE_THRESHOLD;
     use pretty_assertions::assert_eq;
     use std::sync::Arc;
@@ -265,6 +267,106 @@ mod search {
             SEEDED_DEPTH,
             crate::transposition::NO_EVAL
         ));
+    }
+
+    /// The singular test's two shapes. Here the rook takes a hanging queen
+    /// and every other move leaves a rook against a queen, so the search
+    /// with the capture excluded comes back far under the planted floor and
+    /// the capture is searched a ply deeper. In the starting position
+    /// several moves sit within the margin of the best, so the excluded
+    /// search comes back level with the floor and nothing is extended.
+    const SINGULAR: &str = "4k3/8/8/3q4/8/8/8/3RK3 w - - 0 1";
+
+    /// The move a depth three search chooses, planted as a floor at its
+    /// score from the shallowest depth the singular test reads, and the
+    /// node searched at the test's depth over the open window.
+    fn singular_search(fen: &str) -> AlphaBeta {
+        let mut e = engine(Board::from_fen(fen).unwrap());
+        let worth = completed(e.search(3));
+        assert!(e.transpositions.record_cutoff(
+            &e.board,
+            worth.best_move,
+            Value::clean(worth.score),
+            SINGULAR_MIN_DEPTH - SINGULAR_ENTRY_SLACK,
+            crate::transposition::NO_EVAL
+        ));
+        assert!(
+            e.alpha_beta(
+                Score::MIN + 1,
+                Score::MAX - 1,
+                SINGULAR_MIN_DEPTH,
+                true,
+                RootBounds::Both,
+                None
+            )
+            .is_ok(),
+            "an unlimited search aborted"
+        );
+        e
+    }
+
+    #[test]
+    fn a_table_move_nothing_comes_near_is_searched_a_ply_deeper() {
+        let e = singular_search(SINGULAR);
+        assert_eq!(
+            e.transpositions.ordering_play(&e.board),
+            Some(play_named(&e.board, "d1d5"))
+        );
+        let counts = e.singular_counts();
+        assert_eq!((counts.tested, counts.extended), (1, 1), "{counts:?}");
+    }
+
+    #[test]
+    fn a_table_move_with_a_close_second_is_not_extended() {
+        let counts = singular_search(fens::START).singular_counts();
+        assert_eq!((counts.tested, counts.extended), (1, 0), "{counts:?}");
+    }
+
+    /// The excluded search at the planted entry's own depth would store a
+    /// ceiling over the planted floor if it stored at all. Run at the
+    /// depth the singular test reads from, it also asks no singular test
+    /// of its own, and the excluded move is not what it answers with.
+    #[test]
+    fn a_search_with_a_move_excluded_leaves_the_nodes_entry_as_it_found_it() {
+        let mut e = engine(Board::from_fen(SINGULAR).unwrap());
+        let take = play_named(&e.board, "d1d5");
+        let planted = Floor {
+            play: take,
+            score: 500,
+            depth: SINGULAR_MIN_DEPTH,
+        };
+        assert!(e.transpositions.record_cutoff(
+            &e.board,
+            take,
+            Value::clean(planted.score),
+            planted.depth,
+            crate::transposition::NO_EVAL
+        ));
+        let beta = planted.score - SINGULAR_MARGIN * Score::from(SINGULAR_MIN_DEPTH);
+        let Ok(rest) = e.alpha_beta(
+            beta - 1,
+            beta,
+            planted.depth,
+            true,
+            RootBounds::Neither,
+            Some(take),
+        ) else {
+            panic!("an unlimited search aborted");
+        };
+        assert!(
+            rest.score < beta,
+            "the rest reached the floor: {}",
+            rest.score
+        );
+        assert_eq!(e.singular_counts().asked, 0, "the excluded search asked");
+        let _ = e
+            .transpositions
+            .probe(&e.board, Score::MIN + 1, Score::MAX - 1, 0, false, false);
+        assert_eq!(
+            e.transpositions.probed_floor(e.board.key, 0),
+            Some(planted),
+            "the excluded search stored over the entry"
+        );
     }
 
     #[test]
@@ -963,8 +1065,14 @@ mod search {
         assert!(e.board.in_check());
         e.board.line_ply = MAX_PLY as usize;
 
-        let Ok(railed) = e.alpha_beta(Score::MIN + 1, Score::MAX - 1, 4, true, RootBounds::Both)
-        else {
+        let Ok(railed) = e.alpha_beta(
+            Score::MIN + 1,
+            Score::MAX - 1,
+            4,
+            true,
+            RootBounds::Both,
+            None,
+        ) else {
             panic!("an unlimited search aborted");
         };
         assert_eq!(e.nodes, 1, "the node on the rail searched on");
@@ -980,8 +1088,15 @@ mod search {
         e.board.line_ply = MAX_PLY as usize - 1;
 
         assert!(
-            e.alpha_beta(Score::MIN + 1, Score::MAX - 1, 4, true, RootBounds::Both)
-                .is_ok(),
+            e.alpha_beta(
+                Score::MIN + 1,
+                Score::MAX - 1,
+                4,
+                true,
+                RootBounds::Both,
+                None
+            )
+            .is_ok(),
             "an unlimited search aborted"
         );
         assert_eq!(e.nodes, 2, "the ply under the rail and the one it rails");
@@ -1523,7 +1638,8 @@ mod search {
         let alpha = eval + 10_000;
         assert!(!crate::value::is_mate(alpha));
         for depth in 1..=crate::late_move::SHALLOW_MAX_DEPTH {
-            let Ok(value) = e.alpha_beta(alpha, alpha + 1, depth, true, RootBounds::Neither) else {
+            let Ok(value) = e.alpha_beta(alpha, alpha + 1, depth, true, RootBounds::Neither, None)
+            else {
                 panic!("nothing was armed to abort this search");
             };
             assert!(
@@ -1970,7 +2086,7 @@ mod search {
         let board = Board::from_fen("7k/5K1N/8/8/8/8/Q7/8 w - - 0 1").unwrap();
         let mut e = passing_adaptively(board);
         let beta = e.eval();
-        let Ok(value) = e.alpha_beta(beta - 1, beta, 6, true, RootBounds::Neither) else {
+        let Ok(value) = e.alpha_beta(beta - 1, beta, 6, true, RootBounds::Neither, None) else {
             panic!("nothing was armed to abort this search");
         };
         assert!(
@@ -2030,7 +2146,7 @@ mod search {
         let board = Board::from_fen("7k/5K1N/8/8/8/8/Q7/8 w - - 0 1").unwrap();
         let mut e = passing(board);
         let beta = e.eval();
-        let Ok(value) = e.alpha_beta(beta - 1, beta, 5, true, RootBounds::Neither) else {
+        let Ok(value) = e.alpha_beta(beta - 1, beta, 5, true, RootBounds::Neither, None) else {
             panic!("nothing was armed to abort this search");
         };
         assert!(
@@ -2055,7 +2171,7 @@ mod search {
         // the pass reads the draw, which clears a beta of zero
         let board = Board::from_fen(ONLY_A_PASS_READS_THE_DRAW).unwrap();
         let mut e = passing(board);
-        let Ok(value) = e.alpha_beta(-1, 0, 3, true, RootBounds::Neither) else {
+        let Ok(value) = e.alpha_beta(-1, 0, 3, true, RootBounds::Neither, None) else {
             panic!("nothing was armed to abort this search");
         };
         assert_eq!(value, Value::tainted(0));
@@ -2069,7 +2185,7 @@ mod search {
         let mut e = passing(board);
         let beta = e.eval();
         assert!(beta > 0, "the pass has to fail, so beta must beat a draw");
-        let Ok(value) = e.alpha_beta(beta - 1, beta, 3, true, RootBounds::Neither) else {
+        let Ok(value) = e.alpha_beta(beta - 1, beta, 3, true, RootBounds::Neither, None) else {
             panic!("nothing was armed to abort this search");
         };
         assert!(value.tainted, "the failed pass left no taint behind it");
@@ -2101,6 +2217,7 @@ mod search {
             depth - 1 - LATE_MOVE_REDUCTION,
             true,
             RootBounds::Neither,
+            None,
         ) else {
             panic!("an unlimited search aborted");
         };
@@ -2229,6 +2346,7 @@ mod search {
             LATE_MOVE_MIN_DEPTH - 1,
             true,
             RootBounds::Neither,
+            None,
         ) else {
             panic!("an unlimited search aborted");
         };
@@ -2239,6 +2357,7 @@ mod search {
             LATE_MOVE_MIN_DEPTH - 1,
             true,
             RootBounds::Neither,
+            None,
         ) else {
             panic!("an unlimited search aborted");
         };
@@ -2254,20 +2373,27 @@ mod search {
         // mate in hand (`late_move::tests::the_mate_window_stands_the_reduction_down`)
         let fen = SHARP_MIDDLEGAME;
         let mut e = reducing(Board::from_fen(fen).unwrap());
-        let Ok(value) = e.alpha_beta(29_500, 29_501, 5, true, RootBounds::Neither) else {
+        let Ok(value) = e.alpha_beta(29_500, 29_501, 5, true, RootBounds::Neither, None) else {
             panic!("an unlimited search aborted");
         };
         let mut cold = reference(Board::from_fen(fen).unwrap());
-        let Ok(expected) = cold.alpha_beta(29_500, 29_501, 5, true, RootBounds::Neither) else {
+        let Ok(expected) = cold.alpha_beta(29_500, 29_501, 5, true, RootBounds::Neither, None)
+        else {
             panic!("an unlimited search aborted");
         };
         assert_eq!(e.nodes, cold.nodes);
         assert_eq!(value, expected);
 
         let mut e = reducing(Board::from_fen(fen).unwrap());
-        assert!(e.alpha_beta(-1, 0, 5, true, RootBounds::Neither).is_ok());
+        assert!(
+            e.alpha_beta(-1, 0, 5, true, RootBounds::Neither, None)
+                .is_ok()
+        );
         let mut cold = reference(Board::from_fen(fen).unwrap());
-        assert!(cold.alpha_beta(-1, 0, 5, true, RootBounds::Neither).is_ok());
+        assert!(
+            cold.alpha_beta(-1, 0, 5, true, RootBounds::Neither, None)
+                .is_ok()
+        );
         assert!(
             e.nodes < cold.nodes,
             "nothing was reduced outside the mate window: {} against {}",
@@ -2316,6 +2442,7 @@ mod search {
             DEPTH - 1 - DEEP_REDUCTION,
             true,
             RootBounds::Neither,
+            None,
         ) else {
             panic!("an unlimited search aborted");
         };
@@ -3314,6 +3441,7 @@ mod cutoffs {
             ply,
             tt,
             entered_at,
+            None,
             FailSoft::open(alpha, beta, RootBounds::Neither, Taint::default()),
         );
         node.answer.searched = searched;
@@ -3551,6 +3679,7 @@ mod reductions {
             ply,
             Table::Miss,
             0,
+            None,
             FailSoft::open(0, 1, RootBounds::Neither, Taint::default()),
         );
         node.answer.searched = searched;
@@ -3643,6 +3772,7 @@ mod reductions {
             Some(0),
             Table::Miss,
             e.nodes,
+            None,
             FailSoft::open(-50, 60, RootBounds::Neither, Taint::default()),
         );
         node.answer.absorb(&raiser, Value::clean(10));
@@ -3768,7 +3898,7 @@ mod reductions {
                 TABLE_BYTES,
             );
             e.arm(Sampler::<reduction::Event>::with_cap(1, usize::MAX));
-            let Ok(_) = e.alpha_beta(ALPHA, BETA, 6, true, root_bounds) else {
+            let Ok(_) = e.alpha_beta(ALPHA, BETA, 6, true, root_bounds, None) else {
                 panic!("an unlimited search aborted");
             };
             let sampled = e
@@ -3916,6 +4046,7 @@ mod node {
             Some(0),
             Table::Miss,
             0,
+            None,
             FailSoft::open(alpha, beta, root_bounds, Taint::default()),
         )
     }
@@ -3933,13 +4064,13 @@ mod node {
         assert!(e.board.is_pseudo_legal(&pinned) && e.board.is_pseudo_legal(&step));
         let mut node = open(2, -20_000, 20_000, RootBounds::Neither);
         assert!(matches!(
-            e.search_table_move(pinned, &mut node, crate::transposition::NO_EVAL),
+            e.search_table_move(pinned, &mut node, crate::transposition::NO_EVAL, 0),
             Ok(None)
         ));
         assert_eq!(node.answer.searched, 0, "the illegal move was counted");
         assert!(!node.answer.raised_alpha());
         assert!(matches!(
-            e.search_table_move(step, &mut node, crate::transposition::NO_EVAL),
+            e.search_table_move(step, &mut node, crate::transposition::NO_EVAL, 0),
             Ok(None)
         ));
         assert_eq!(node.answer.searched, 1, "the table's move was not counted");
