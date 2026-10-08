@@ -312,7 +312,7 @@ const AGE_WEIGHT: i16 = 8;
 /// searches deeper from one move to the next, and charging its old entries
 /// more played stronger than the full material weight did; a lighter one
 /// cost depth there and played no better.
-const ENDGAME_AGE_WEIGHT: i16 = 16;
+const ENDGAME_AGE_WEIGHT: i16 = 8;
 
 /// The age weight for a search whose root has this phase.
 fn age_weight(phase: i32) -> i16 {
