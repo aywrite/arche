@@ -902,6 +902,7 @@ mod tests {
                 self.ply,
                 self.tt,
                 0,
+                None,
                 FailSoft::open(alpha, beta, self.root_bounds, Taint::default()),
             );
             let mut rules = Rules::new(&self.search(), &node, self.eval);
@@ -1093,6 +1094,7 @@ mod tests {
             None,
             Table::Miss,
             0,
+            None,
             FailSoft::open(0, 100, RootBounds::Neither, Taint::default()),
         );
         let half = admission(&config, &node);

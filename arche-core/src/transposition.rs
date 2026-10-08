@@ -233,6 +233,16 @@ impl Bound {
     }
 }
 
+/// What the last probe's entry says the position is worth at least, for
+/// the singular test: the move that proved it, the score made relative to
+/// the root, and the depth it was searched to.
+#[derive(Copy, Clone, Debug, PartialEq, Eq)]
+pub(crate) struct Floor {
+    pub(crate) play: Play,
+    pub(crate) score: Score,
+    pub(crate) depth: u8,
+}
+
 /// What a probe found.
 #[derive(Copy, Clone, Debug)]
 pub enum Probe {
@@ -663,11 +673,12 @@ pub struct TranspositionTable {
     /// The full keys of the entries, or none, which is what every table an
     /// engine plays with holds. `audit_signatures` fills it in.
     audit: Option<Box<Audit>>,
-    /// The static evaluation the last probe found in its entry, or
-    /// `NO_EVAL` on a miss. A cell, since the probe reads the table.
-    probed_eval: Cell<Score>,
+    /// The entry the last probe found, or none on a miss, for the node to
+    /// read its static evaluation and its floor back from. A cell, since
+    /// the probe reads the table.
+    probed: Cell<Option<Pv>>,
     /// The key the last probe asked for, so a debug build can tell a read
-    /// of `probed_eval` that another probe came between.
+    /// of `probed` that another probe came between.
     #[cfg(debug_assertions)]
     probed_key: Cell<u64>,
 }
@@ -726,7 +737,7 @@ impl TranspositionTable {
             replaceable: replaceable_under(1),
             age_weight: AGE_WEIGHT,
             audit: None,
-            probed_eval: Cell::new(NO_EVAL),
+            probed: Cell::new(None),
             #[cfg(debug_assertions)]
             probed_key: Cell::new(0),
         })
@@ -1139,11 +1150,10 @@ impl TranspositionTable {
         let (found, foreign) = self.get_audited(board.key);
         #[cfg(debug_assertions)]
         self.probed_key.set(board.key);
+        self.probed.set(found);
         let Some(pv) = found else {
-            self.probed_eval.set(NO_EVAL);
             return Probe::Miss;
         };
-        self.probed_eval.set(pv.static_eval);
         if pv.depth >= depth {
             let score = score_from_tt(pv.score, board.line_ply);
             let cuts = match pv.bound {
@@ -1169,17 +1179,56 @@ impl TranspositionTable {
         Probe::Order(pv.play)
     }
 
-    /// The static evaluation the last probe found in the entry of the
-    /// position `key` names, or `NO_EVAL` where it found none or the entry
-    /// holds none. The last probe must have been of `key`: a search between
-    /// the two would leave its own evaluation here.
+    /// The entry's move for ordering and never its cutoff, with the entry
+    /// kept for the node to read back as `probe` keeps it. For a search
+    /// with a move excluded: the entry's score is the excluded move's, so
+    /// it answers nothing about the rest.
     #[inline(always)]
-    pub(crate) fn probed_eval(&self, key: u64) -> Score {
+    pub(crate) fn probe_for_ordering(&self, board: &Board) -> Probe {
+        let (found, _) = self.get_audited(board.key);
+        #[cfg(debug_assertions)]
+        self.probed_key.set(board.key);
+        self.probed.set(found);
+        match found {
+            Some(pv) => Probe::Order(pv.play),
+            None => Probe::Miss,
+        }
+    }
+
+    /// The entry the last probe found for the position `key` names, or
+    /// none. The last probe must have been of `key`: a search between the
+    /// two would leave its own entry here.
+    #[inline(always)]
+    fn probed(&self, key: u64) -> Option<Pv> {
         #[cfg(debug_assertions)]
         assert_eq!(self.probed_key.get(), key, "another probe came between");
         #[cfg(not(debug_assertions))]
         let _ = key;
-        self.probed_eval.get()
+        self.probed.get()
+    }
+
+    /// The static evaluation the last probe found in the entry of the
+    /// position `key` names, or `NO_EVAL` where it found none or the entry
+    /// holds none.
+    #[inline(always)]
+    pub(crate) fn probed_eval(&self, key: u64) -> Score {
+        self.probed(key).map_or(NO_EVAL, |pv| pv.static_eval)
+    }
+
+    /// The floor the last probe's entry puts under the position `key`
+    /// names, where its bound is a floor or the truth, or none on a miss or
+    /// a ceiling. The score is made relative to the root at `line_ply`.
+    #[inline(always)]
+    pub(crate) fn probed_floor(&self, key: u64, line_ply: usize) -> Option<Floor> {
+        let pv = self.probed(key)?;
+        match pv.bound {
+            Bound::Exact | Bound::Lower => Some(Floor {
+                play: pv.play,
+                score: score_from_tt(pv.score, line_ply),
+                depth: pv.depth,
+            }),
+            Bound::Upper | Bound::Ordering => None,
+        }
     }
 
     /// The move to try first here, whatever wrote it, quiescence included.
@@ -1441,6 +1490,36 @@ mod tests {
             table.probe(&board, -100, 10, 5, true, false),
             Probe::Order(_)
         ));
+    }
+
+    /// The ordering probe hands back the move of an entry that would have
+    /// cut, and keeps the entry for the floor read as the probe does; a
+    /// ceiling is no floor under either probe.
+    #[test]
+    fn an_ordering_probe_never_cuts_and_a_floor_is_read_from_either() {
+        use super::{Floor, Probe};
+        let mut table = TranspositionTable::with_capacity(4).expect("a table of a few buckets");
+        let board = crate::board::Board::new();
+        let play = Play::new(0, 1, None, None, false, false);
+        assert!(table.record_cutoff(&board, play, Value::clean(50), 5, super::NO_EVAL));
+        assert!(matches!(
+            table.probe(&board, -10, 10, 5, true, false),
+            Probe::Cut(_)
+        ));
+        let floor = Some(Floor {
+            play,
+            score: 50,
+            depth: 5,
+        });
+        assert_eq!(table.probed_floor(board.key, 0), floor);
+        assert!(matches!(
+            table.probe_for_ordering(&board),
+            Probe::Order(found) if found == play
+        ));
+        assert_eq!(table.probed_floor(board.key, 0), floor);
+        assert!(table.record_ceiling(&board, play, Value::clean(-50), 6, super::NO_EVAL));
+        let _ = table.probe_for_ordering(&board);
+        assert_eq!(table.probed_floor(board.key, 0), None);
     }
 
     #[test]
