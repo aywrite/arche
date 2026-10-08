@@ -546,6 +546,13 @@ struct Go {
     /// inside a byte (`depth 255` in check used to overflow). Held to one
     /// from below as well: a depth of zero, which a negative count reads as,
     /// would run no iteration and answer with no move.
+    ///
+    /// `mate N` asks for a mate in N moves, which is 2N-1 plies deep, and is
+    /// read as that depth. It used to be ignored, so `go mate 3` on its own
+    /// had nothing to bound it and held its answer for a `stop` that a GUI
+    /// sending the word does not send. Given with `depth`, the smaller of
+    /// the two bounds the search, as every other pair of bounds on a line
+    /// does.
     depth: Option<u8>,
     /// The node budget. An unreadable one is ignored rather than obeyed as
     /// zero, which would stop the search before it had a move to report.
@@ -557,9 +564,20 @@ struct Go {
 
 impl Go {
     fn of(params: &Params, color: Color, overhead: u64) -> Self {
+        let depth = params.count("depth").read();
+        // a mate in zero or below, which a negative count reads as, lands on
+        // the rail's floor like a depth of zero
+        let mate = params
+            .count("mate")
+            .read()
+            .map(|moves| moves.saturating_mul(2).saturating_sub(1));
+        let plies = match (depth, mate) {
+            (Some(depth), Some(mate)) => Some(depth.min(mate)),
+            (depth, mate) => depth.or(mate),
+        };
         Go {
-            depth: params.count("depth").read().map(|depth| {
-                depth
+            depth: plies.map(|plies| {
+                plies
                     .try_into()
                     .unwrap_or(u8::MAX)
                     .clamp(1, arche_core::MAX_PLY)
@@ -1631,6 +1649,21 @@ go depth 3
             // and a depth word with nothing after it is no depth either
             ("go depth", None),
             ("go infinite", None),
+            // a mate in N moves is 2N-1 plies, read through the same rail
+            ("go mate 1", Some(1)),
+            ("go mate 3", Some(5)),
+            ("go mate 0", Some(1)),
+            ("go mate -1", Some(1)),
+            ("go mate 999", Some(arche_core::MAX_PLY)),
+            ("go mate 99999999999999999999999", Some(arche_core::MAX_PLY)),
+            ("go mate abc", None),
+            ("go mate", None),
+            // beside a depth, the smaller of the two bounds the search
+            ("go depth 3 mate 4", Some(3)),
+            ("go depth 9 mate 2", Some(3)),
+            ("go mate 2 depth 9", Some(3)),
+            ("go depth 4 mate abc", Some(4)),
+            ("go depth abc mate 2", Some(3)),
         ] {
             assert_eq!(
                 Go::of(&Params::of(line), Color::White, DEFAULT_MOVE_OVERHEAD_MS).depth,
@@ -1676,6 +1709,8 @@ go depth 3
             // the root deepens by one more in check, so the largest depth a
             // byte holds used to overflow it; the rail leaves room
             ("go depth 255", Some(arche_core::MAX_PLY), None, u64::MAX),
+            // a mate in two is three plies deep
+            ("go mate 2", Some(3), None, u64::MAX),
         ] {
             let asked = asked_of_engine(line);
             assert_eq!(asked.depth, depth, "{}: depth", line);
@@ -2123,6 +2158,7 @@ go depth 3
                 "infinite",
                 "depth",
                 "nodes",
+                "mate",
                 "hash",
                 "taint",
             ])
@@ -2540,6 +2576,22 @@ go depth 3
         assert_eq!(bestmoves[1], "bestmove 0000", "{}", said);
     }
 
+    /// On the production wiring, since a held answer only shows with a
+    /// reader attending: the line used to be read as a `go` with no bound,
+    /// which searched to the ply rail and then waited for a stop.
+    #[test]
+    fn a_go_mate_answers_with_the_mate_and_without_a_stop() {
+        let driven = Driven::searching();
+        driven.type_line("position fen 6k1/5ppp/8/8/8/8/8/R5K1 w - - 0 1");
+        driven.type_line("go mate 1");
+        let said = driven.wait_for("bestmove");
+        assert_eq!(last_line(&said), "bestmove a1a8", "{}", said);
+        assert!(said.contains(" score mate 1 pv a1a8"), "{}", said);
+        // one ply, so the second depth was never begun
+        assert!(!said.contains("info depth 2 "), "{}", said);
+        driven.finish();
+    }
+
     #[test]
     fn a_quit_during_a_search_answers_before_it_exits() {
         // every go gets a bestmove, a quit included
@@ -2563,6 +2615,9 @@ go depth 3
         // infinite outranks anything sent beside it, as the protocol says
         assert!(holds("go infinite depth 2"));
         assert!(!holds("go depth 2"));
+        // a mate in N is a depth, so it bounds the search as one does
+        assert!(!holds("go mate 2"));
+        assert!(holds("go infinite mate 2"));
         assert!(!holds("go nodes 5000"));
         // too large to hold reads as no budget
         assert!(holds("go nodes 99999999999999999999999"));
