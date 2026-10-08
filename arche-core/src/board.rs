@@ -1517,14 +1517,20 @@ impl Board {
         // A king step is legal exactly when its landing square is unattacked
         // with the king lifted off its own square, so it is settled from the
         // boards before anything moves. An illegal one (most illegal moves
-        // are king steps) then costs no copy. A castle keeps the probe after
-        // the move, since its rook changes the lines, and so does a walk that
-        // keeps no checkers: it is the old path, which the debug build checks
-        // every refused step against.
+        // are king steps) then costs no copy. A walk that keeps no checkers
+        // takes the probe after the move instead: it is the old path, which
+        // the debug build checks every refused step against.
+        //
+        // The guard compares the from square with the kept king square, so a
+        // castle takes the test too, and the probe after the move as before,
+        // since its rook changes the lines. The test cannot refuse a castle
+        // the generator offers, which it offers only over unattacked squares,
+        // and its answer would be right if it did: the rook's move can only
+        // block a line through the king's own square, where an attack is a
+        // check that no castle may leave.
         let here = self.ply % STACK_PLIES;
         if MAINTAIN_CHECKERS
-            && !play.castle
-            && self.slot(here).kings().is_bit_set(play.from)
+            && play.from == self.slot(here).king_squares[self.slot(here).active_color as usize]
             && self
                 .slot(here)
                 .king_step_attacked(play.from, play.to, !self.slot(here).active_color)
