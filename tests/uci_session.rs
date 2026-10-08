@@ -324,10 +324,13 @@ fn the_clear_hash_button_empties_the_table() {
 /// to change its mind.
 const SHARP_MIDDLEGAME: &str = "r1b2rk1/ppp1qppp/4pn2/6N1/Qn1P4/2NBP3/PP3PPP/R3K2R w KQ - 9 12";
 
-/// WAC.021 of the tactical suite. Its depth five fails low, its depth eight
-/// fails high, and its depth nine changes the root move and reports the new
-/// move as a floor first.
+/// WAC.021 of the tactical suite. Its depth five fails low and its depth
+/// eight fails high.
 const WAC_021: &str = "5rk1/1b3p1p/pp3p2/3n1N2/1P6/P1qB1PP1/3Q3P/4R1K1 w - - 0 1";
+
+/// A rook ending where depth seven changes the root move from c6c5 to d3d1
+/// and reports the new move as a floor well before the depth completes.
+const WAC_058: &str = "8/8/2R5/1p2qp1k/1P2r3/2PQ2P1/5K2/8 w - - 0 1";
 
 #[test]
 #[cfg_attr(
@@ -501,16 +504,18 @@ fn a_root_move_that_reaches_beta_is_reported_as_a_floor_and_then_answered_with()
     ignore = "pins a search made with the shipped factor table, which the test rank replaces"
 )]
 fn a_floor_answers_until_the_wider_search_replaces_it() {
-    // what the engine plays when the wider search never finishes. WAC.021 is
-    // answered with d2c3 at depth eight. At depth nine d2h6 reaches beta and
-    // is reported as a floor at 59,682 nodes, and again at 61,000 and 63,114
-    // as the window widens, and the search finishes at 78,638. A budget after
-    // d2h6's last floor and inside that is interrupted before anything beats
-    // alpha, so the floor is what is left to answer with; with the floor not
-    // held it answers d2c3, the move the search has just shown worse
+    // what the engine plays when the wider search never finishes. WAC.058
+    // is answered with c6c5 at depth six. At depth seven c6c5 reaches beta
+    // and is reported as a floor at 31,088 nodes and 36,884, then d3d1
+    // replaces it as the floor at 43,963 as the window widens, and the
+    // search finishes at 84,805. A budget after d3d1's floor and inside that
+    // is interrupted before anything beats alpha, so the floor is what is
+    // left to answer with; with the floor not held it answers c6c5, the move
+    // the search has just shown worse. WAC.021 was this fixture until the
+    // losing capture guard, under which its depth nine fails low instead
     let mut s = Session::start(&[]);
-    s.say(&format!("position fen {}", WAC_021));
-    s.say("go nodes 75000");
+    s.say(&format!("position fen {}", WAC_058));
+    s.say("go nodes 60000");
     let answer = s.wait_for(|l| l.starts_with("bestmove"));
     let best = move_of(&answer);
 

@@ -529,6 +529,13 @@ pub struct SearchConfig {
     /// the control. Only the deepening loop reads it, so a search asked for
     /// a fixed depth opens full.
     pub aspiration: bool,
+    /// Whether a node whose previous move was a capture the swap prices as
+    /// losing for its mover refuses its shortcuts and its move rules and
+    /// searches every move whole. A sacrifice leaves the side to move with
+    /// an evaluation the shortcuts trust and the attacker with quiet
+    /// follow-ups the move rules drop, and the two compound along the
+    /// line. Off in the reference, which has nothing to refuse.
+    pub losing_capture_guard: bool,
 }
 
 /// What to do with a draw tainted score: one stored by a search that read
@@ -634,7 +641,7 @@ impl SearchConfig {
     ///
     /// `taint` is not among them: it is a policy with four values rather
     /// than a switch, and `residuals` already takes it.
-    pub const SWITCHES: [(&'static str, TurnOff); 13] = [
+    pub const SWITCHES: [(&'static str, TurnOff); 14] = [
         ("reverse_futility", |config| config.reverse_futility = false),
         ("null_move", |config| config.null_move = false),
         ("adaptive_null_move", |config| {
@@ -654,7 +661,25 @@ impl SearchConfig {
         ("reduction_table", |config| config.reduction_table = false),
         ("move_memory", |config| config.move_memory = false),
         ("aspiration", |config| config.aspiration = false),
+        ("losing_capture_guard", |config| {
+            config.losing_capture_guard = false
+        }),
     ];
+
+    /// This configuration with the move rules off: no quiet futility, no
+    /// late move count, no reduction and nothing the reduction carries.
+    /// What a guarded node's move loop decides by.
+    pub const fn with_move_rules_off(self) -> Self {
+        Self {
+            late_move_reductions: false,
+            deep_reductions: false,
+            late_move_pruning: false,
+            quiet_futility: false,
+            late_move_count: false,
+            reduction_table: false,
+            ..self
+        }
+    }
 
     /// The default with one switch off, or none for a name the table does
     /// not carry.
@@ -689,6 +714,7 @@ impl SearchConfig {
             reduction_table: false,
             move_memory: false,
             aspiration: false,
+            losing_capture_guard: false,
         }
     }
 
@@ -743,6 +769,7 @@ impl Default for SearchConfig {
             reduction_table: true,
             move_memory: true,
             aspiration: true,
+            losing_capture_guard: true,
         }
     }
 }
@@ -1210,6 +1237,10 @@ pub struct AlphaBeta {
     transpositions: TranspositionTable,
     ghi: GhiCounters,
     selective_depth: u8,
+    /// Whether the move into each ply was a capture the swap priced as
+    /// losing for its mover, written as the move is made and read by the
+    /// node it leads to. The root has no move into it and reads false.
+    sacrificed: [bool; MAX_PLY as usize + 2],
     // search state
     /// What the search call under way may spend. The deepening loop hands
     /// each iteration its own.
@@ -1312,6 +1343,7 @@ impl AlphaBeta {
             transpositions,
             ghi: GhiCounters::default(),
             selective_depth: 0,
+            sacrificed: [false; MAX_PLY as usize + 2],
             limits: Limits::unlimited(),
             next_check: 0,
             stop: None,
@@ -2120,6 +2152,9 @@ impl AlphaBeta {
     /// arrives filled where the node's table entry held the evaluation, and
     /// is then read rather than computed.
     /// Alpha is read only for the open window and by the sampler.
+    ///
+    /// `guarded` is the losing capture guard's verdict on the node: a node a
+    /// sacrifice led to refuses both, before the evaluation is read.
     // two arguments past clippy's limit: the root bounds and the evaluation
     // handed back to the loop.
     #[allow(clippy::too_many_arguments)]
@@ -2130,6 +2165,7 @@ impl AlphaBeta {
         depth: u8,
         in_check: bool,
         can_null: bool,
+        guarded: bool,
         root_bounds: RootBounds,
         taint: &mut Taint,
         eval_memo: &mut Option<Score>,
@@ -2144,6 +2180,7 @@ impl AlphaBeta {
         // with it false
         let pass = self.config.null_move && can_null && depth >= NULL_MOVE_MIN_DEPTH;
         if (!margin && !pass)
+            || guarded
             || in_check
             || !self.board.has_non_pawn_material()
             || is_mate(beta)
@@ -2190,6 +2227,7 @@ impl AlphaBeta {
         if pass && eval >= beta {
             let reduction = null_move_reduction(self.config, depth, eval - beta);
             self.board.make_null_move();
+            self.sacrificed[self.board.line_ply] = false;
             let result = self.alpha_beta(
                 -beta,
                 -beta + 1,
@@ -2245,9 +2283,12 @@ impl AlphaBeta {
             !matches!(decision, Decision::Skip),
             "the loop searched a move it decided to skip"
         );
+        let losing =
+            self.config.losing_capture_guard && m.capture.is_some() && self.board.see(m) < 0;
         if !self.board.make_move(m) {
             return Ok(None);
         }
+        self.sacrificed[self.board.line_ply] = losing;
         let result = self.windowed(alpha, beta, depth, decision, root_bounds);
         self.board.undo_move();
         Ok(Some(result?))
@@ -2696,12 +2737,17 @@ impl AlphaBeta {
         // the late move decision, or found in the table's entry
         let table_eval = self.transpositions.probed_eval(self.board.key);
         let mut eval: Option<Score> = (table_eval != NO_EVAL).then_some(table_eval);
+        // a node a losing capture led to searches whole: the shortcuts
+        // would answer it from an evaluation the sacrifice inflated, and
+        // the move rules would drop the follow-ups the sacrifice was for
+        let guarded = self.config.losing_capture_guard && self.sacrificed[self.board.line_ply];
         if let Some(value) = self.shortcuts(
             alpha,
             beta,
             depth,
             in_check,
             can_null,
+            guarded,
             root_bounds,
             &mut taint,
             &mut eval,
@@ -2744,7 +2790,17 @@ impl AlphaBeta {
             None
         };
         let mut quiets = QuietOrder::new(&ordered, node.ply);
-        let mut rules = late_move::Rules::new(&self.deciding(), &node, eval);
+        let mut rules = if guarded {
+            let config = self.config.with_move_rules_off();
+            let deciding = late_move::Search {
+                board: &self.board,
+                ordering: &self.ordering,
+                config: &config,
+            };
+            late_move::Rules::new(&deciding, &node, eval)
+        } else {
+            late_move::Rules::new(&self.deciding(), &node, eval)
+        };
         // a skipped move has no bit, and nor has one that turned out illegal
         let mut made = Searched::default();
         let len = moves.len();

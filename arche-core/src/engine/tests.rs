@@ -2820,8 +2820,8 @@ mod search {
 mod sampling {
     use crate::board::fens::SHARP_MIDDLEGAME;
     use crate::engine::{
-        AlphaBeta, Board, Engine, REVERSE_FUTILITY_MARGIN, REVERSE_FUTILITY_MAX_DEPTH, RootBounds,
-        Score, SearchConfig, SearchParameters, Taint,
+        AlphaBeta, Board, Decision, Engine, Limits, REVERSE_FUTILITY_MARGIN,
+        REVERSE_FUTILITY_MAX_DEPTH, RootBounds, Score, SearchConfig, SearchParameters, Taint,
     };
     use crate::recorder::{Sampled, Sampler, Window};
     use crate::residual::{Sample, Shortcut, sample_key};
@@ -2852,6 +2852,7 @@ mod sampling {
             depth,
             false,
             true,
+            false,
             RootBounds::Neither,
             &mut taint,
             &mut None,
@@ -2878,6 +2879,107 @@ mod sampling {
         e.disarm::<Sample>()
             .expect("a sampler was installed")
             .drain()
+    }
+
+    /// White is in check from the rook on f1 and has two evasions: the
+    /// king's step to g2, and the queen taking the rook, which the bishop
+    /// on c4 wins back. The second is a capture the swap prices as losing.
+    const TWO_EVASIONS: &str = "6k1/8/8/8/2b5/8/P6P/1Q3rK1 w - - 0 1";
+
+    /// The samples the shortcuts leave under one root move, searched as a
+    /// later move at a zero window a ply short of the margin's ceiling, so
+    /// that the child answers from its evaluation unless something refuses.
+    fn under_move(config: SearchConfig, name: &str) -> (String, Vec<Sample>) {
+        let board = Board::from_fen(TWO_EVASIONS).unwrap();
+        let mut legal: Vec<String> = board
+            .generate_moves()
+            .iter()
+            .filter(|m| board.clone().make_move(m))
+            .map(|m| m.to_string())
+            .collect();
+        legal.sort();
+        assert_eq!(legal, ["b1f1", "g1g2"]);
+        let play = *board
+            .generate_moves()
+            .iter()
+            .find(|m| m.to_string() == name)
+            .expect("one of the two");
+        let mut child = board.clone();
+        assert!(child.make_move(&play));
+        let mut e = AlphaBeta::with_config(board, TABLE_BYTES, config);
+        e.arm(Sampler::<Sample>::every(1));
+        e.begin(Limits::unlimited(), None);
+        // the window says white already has 9998, so the child's beta is
+        // what any evaluation clears
+        let searched = e.search_child(
+            &play,
+            9998,
+            9999,
+            REVERSE_FUTILITY_MAX_DEPTH + 1,
+            &Decision::UNREDUCED,
+            RootBounds::Neither,
+        );
+        assert!(searched.is_ok_and(|value| value.is_some()));
+        (child.to_fen(), collected(&mut e).taken)
+    }
+
+    /// The node a losing capture led to takes no shortcut while the guard
+    /// is on, and the node a quiet move led to still does.
+    #[test]
+    fn a_losing_capture_guards_the_node_it_leads_to() {
+        let board = Board::from_fen(TWO_EVASIONS).unwrap();
+        let capture = board
+            .generate_moves()
+            .iter()
+            .find(|m| m.to_string() == "b1f1")
+            .copied()
+            .unwrap();
+        assert!(board.see(&capture) < 0, "the queen takes a defended rook");
+
+        let (after_capture, taken) = under_move(SearchConfig::default(), "b1f1");
+        assert!(
+            taken.iter().all(|sample| sample.fen != after_capture),
+            "the guard let a shortcut answer the node the sacrifice led to"
+        );
+        let (after_step, taken) = under_move(SearchConfig::default(), "g1g2");
+        assert!(
+            taken.iter().any(|sample| sample.fen == after_step),
+            "a quiet move's child is not guarded, so the margin answers it"
+        );
+
+        let off = SearchConfig {
+            losing_capture_guard: false,
+            ..SearchConfig::default()
+        };
+        let (after_capture, taken) = under_move(off, "b1f1");
+        assert!(
+            taken
+                .iter()
+                .any(|sample| sample.fen == after_capture
+                    && sample.kind == Shortcut::ReverseFutility),
+            "with the guard off the margin answers the node the sacrifice led to"
+        );
+    }
+
+    /// The guarded node's move loop decides by the default with the move
+    /// rules off and nothing else touched.
+    #[test]
+    fn the_move_rules_off_is_the_six_rules_and_nothing_else() {
+        let off = SearchConfig::default().with_move_rules_off();
+        assert_eq!(
+            off,
+            SearchConfig {
+                late_move_reductions: false,
+                deep_reductions: false,
+                late_move_pruning: false,
+                quiet_futility: false,
+                late_move_count: false,
+                reduction_table: false,
+                ..SearchConfig::default()
+            }
+        );
+        assert!(off.reverse_futility && off.null_move && off.move_memory && off.aspiration);
+        assert!(off.losing_capture_guard);
     }
 
     /// The one sample of a kind in what was taken.
@@ -3033,6 +3135,7 @@ mod sampling {
                 5,
                 false,
                 true,
+                false,
                 root_bounds,
                 &mut taint,
                 &mut None,
@@ -3065,6 +3168,7 @@ mod sampling {
             1,
             false,
             true,
+            false,
             RootBounds::Neither,
             &mut taint,
             &mut None,
@@ -3096,6 +3200,7 @@ mod sampling {
             1,
             false,
             true,
+            false,
             RootBounds::Neither,
             &mut taint,
             &mut None,
@@ -3127,6 +3232,7 @@ mod sampling {
             1,
             false,
             true,
+            false,
             RootBounds::Neither,
             &mut taint,
             &mut eval,
