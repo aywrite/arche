@@ -22,7 +22,9 @@ mod tempo;
 
 use cache::Cache;
 
-use crate::board::{Board, king_attacks, knight_attacks, pawn_attacks, pop_lsb};
+#[cfg(test)]
+use crate::board::Board;
+use crate::board::{Position, king_attacks, knight_attacks, pawn_attacks, pop_lsb};
 use crate::magic::MAGIC;
 use crate::misc::{Color, Piece, Score};
 use crate::psqt::{PieceSquareTables, eg_value, mg_value};
@@ -148,7 +150,7 @@ pub(crate) struct Term {
     pub(crate) weight: fn(usize) -> i32,
     /// One side's counts, written into the first `width` entries of the
     /// slice.
-    pub(crate) counts: fn(&Board, Color, &mut [i32]),
+    pub(crate) counts: fn(&Position, Color, &mut [i32]),
 }
 
 /// The leaf terms, in the order the weight vector holds them.
@@ -225,7 +227,7 @@ const fn widest() -> usize {
 /// shelter's entry only if the shelter's key covers everything it reads.
 trait Memo {
     /// The shelter and the pawn structure, added.
-    fn tables(&mut self, board: &Board) -> i32;
+    fn tables(&mut self, board: &Position) -> i32;
 }
 
 /// The memo that remembers nothing, which is what [`eval`] hands the sum.
@@ -233,7 +235,7 @@ struct NoMemo;
 
 impl Memo for NoMemo {
     #[inline]
-    fn tables(&mut self, board: &Board) -> i32 {
+    fn tables(&mut self, board: &Position) -> i32 {
         shelter::fold(board) + pawn_structure::fold(board)
     }
 }
@@ -260,7 +262,7 @@ type PawnCache = Cache<{ 1 << pawn_structure::CACHE_BITS }>;
 
 impl Memo for Caches {
     #[inline]
-    fn tables(&mut self, board: &Board) -> i32 {
+    fn tables(&mut self, board: &Position) -> i32 {
         let pawns = &mut self.pawns;
         self.shelter.get(shelter::key(board), || {
             shelter::fold(board) + pawns.get(board.pawn_key, || pawn_structure::fold(board))
@@ -284,7 +286,7 @@ impl Memo for Caches {
 /// sits here rather than at the node because the model gate, the tuner's
 /// walk and the instruments all read this function.
 #[inline]
-fn sum(board: &Board, memo: &mut impl Memo) -> Score {
+fn sum(board: &Position, memo: &mut impl Memo) -> Score {
     if board.drawn_by_material() {
         return 0;
     }
@@ -313,7 +315,7 @@ fn sum(board: &Board, memo: &mut impl Memo) -> Score {
 ///
 /// Inlined by force, for the reason `mobility::counts_of` gives.
 #[inline(always)]
-fn attack_score<const KINDS: u8, const RING: bool>(board: &Board, color: Color) -> i32 {
+fn attack_score<const KINDS: u8, const RING: bool>(board: &Position, color: Color) -> i32 {
     let occupied = board.occupied();
     let (ours, theirs) = board.sides(color);
     let scope = !(ours | pawn_attacks(board.pawns() & theirs, !color));
@@ -372,7 +374,7 @@ fn attack_score<const KINDS: u8, const RING: bool>(board: &Board, color: Color) 
 /// score of the position alone. None is hot enough for the difference between
 /// the two doors to matter.
 #[inline]
-pub(crate) fn eval(board: &Board) -> Score {
+pub(crate) fn eval(board: &Position) -> Score {
     sum(board, &mut NoMemo)
 }
 
@@ -382,7 +384,7 @@ pub(crate) fn eval(board: &Board) -> Score {
 /// `the_cache_answers_what_the_full_evaluation_does` holds the two to, so the
 /// node counts do not move when the search calls this instead.
 #[inline]
-pub(crate) fn eval_cached(board: &Board, caches: &mut Caches) -> Score {
+pub(crate) fn eval_cached(board: &Position, caches: &mut Caches) -> Score {
     sum(board, caches)
 }
 
@@ -448,10 +450,10 @@ impl Accumulator {
     }
 
     /// The accumulator the position deserves, computed from the board, for
-    /// `Board::debug_assert_state_in_step`. A second implementation on
+    /// `Position::debug_assert_state_in_step`. A second implementation on
     /// purpose: code shared with `count` would be wrong on both sides at once
     /// and the check would still pass.
-    pub(crate) fn recomputed(board: &Board) -> Self {
+    pub(crate) fn recomputed(board: &Position) -> Self {
         let mut recomputed = Self::EMPTY;
         for (index, piece, color) in pieces_of(board) {
             let sign = color.sign();
@@ -508,7 +510,7 @@ impl Accumulator {
 }
 
 /// Every piece on the board as the square, the piece and its colour.
-fn pieces_of(board: &Board) -> impl Iterator<Item = (u8, Piece, Color)> + '_ {
+fn pieces_of(board: &Position) -> impl Iterator<Item = (u8, Piece, Color)> + '_ {
     let mut occupied = board.occupied();
     std::iter::from_fn(move || {
         while occupied != 0 {

@@ -10,7 +10,9 @@
 //! built on.
 
 use super::weigh;
+#[cfg(test)]
 use crate::board::Board;
+use crate::board::Position;
 use crate::misc::Color;
 use crate::psqt::pack;
 
@@ -186,7 +188,7 @@ pub(crate) fn weight(index: usize) -> i32 {
 /// evaluation and the tuner's walk both read this, so the hand counts in the
 /// tests below are what pin it.
 #[inline]
-pub(crate) fn counts_of(board: &Board, color: Color) -> [i32; COUNTS] {
+pub(crate) fn counts_of(board: &Position, color: Color) -> [i32; COUNTS] {
     let masks = &MASKS;
     let side = color as usize;
     let (ours, theirs) = board.sides(color);
@@ -223,14 +225,14 @@ pub(crate) fn counts_of(board: &Board, color: Color) -> [i32; COUNTS] {
 
 /// The eight counts, written into `into`, which is what [`super::TERMS`] hands
 /// the tuner's walk.
-pub(crate) fn counts(board: &Board, color: Color, into: &mut [i32]) {
+pub(crate) fn counts(board: &Position, color: Color, into: &mut [i32]) {
     into.copy_from_slice(&counts_of(board, color));
 }
 
 /// What white's pawn structure stands ahead by, as a packed pair on the scale
 /// the piece square pair is on.
 #[inline]
-pub(crate) fn fold(board: &Board) -> i32 {
+pub(crate) fn fold(board: &Position) -> i32 {
     weigh(
         &PAWN_STRUCTURE,
         counts_of(board, Color::White),

@@ -15,7 +15,7 @@
 //! nowhere to go yet; a node no move raised alpha at names the move that
 //! came closest (`record_ceiling`).
 
-use crate::board::Board;
+use crate::board::{Board, Position};
 use crate::eval::TOTAL_PHASE;
 use crate::misc::Score;
 use crate::play::Play;
@@ -1192,7 +1192,7 @@ impl TranspositionTable {
     /// `ordering_play` this refuses a depth zero entry: quiescence wrote it
     /// from a tree of captures alone, and it does not say what the engine
     /// intends to play.
-    pub fn intended_play(&self, board: &Board) -> Option<Play> {
+    pub fn intended_play(&self, board: &Position) -> Option<Play> {
         let pv = self.get(board.key)?;
         (pv.depth > 0 && !matches!(pv.bound, Bound::Ordering)).then_some(pv.play)
     }

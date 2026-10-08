@@ -11,7 +11,9 @@
 use super::mobility;
 #[cfg(test)]
 use super::weigh;
-use crate::board::{Board, king_attacks, knight_attacks, pop_lsb};
+#[cfg(test)]
+use crate::board::Board;
+use crate::board::{Position, king_attacks, knight_attacks, pop_lsb};
 use crate::magic::MAGIC;
 use crate::misc::Color;
 use crate::psqt::pack;
@@ -83,7 +85,7 @@ pub(crate) const SCORED: bool = mobility::scored_kinds(&KING_ATTACK) != 0;
 ///
 /// Inlined by force, for the reason `mobility::counts_of` gives.
 #[inline(always)]
-pub(crate) fn counts_of(board: &Board, color: Color) -> [i32; COUNTS] {
+pub(crate) fn counts_of(board: &Position, color: Color) -> [i32; COUNTS] {
     let occupied = board.occupied();
     let (ours, _) = board.sides(color);
     let ring = king_attacks(board.king_index(!color));
@@ -116,7 +118,7 @@ pub(crate) fn counts_of(board: &Board, color: Color) -> [i32; COUNTS] {
 
 /// The four counts, written into `into`, which is what [`super::TERMS`] hands
 /// the tuner's walk.
-pub(crate) fn counts(board: &Board, color: Color, into: &mut [i32]) {
+pub(crate) fn counts(board: &Position, color: Color, into: &mut [i32]) {
     into.copy_from_slice(&counts_of(board, color));
 }
 
@@ -124,7 +126,7 @@ pub(crate) fn counts(board: &Board, color: Color, into: &mut [i32]) {
 /// answered before it shared a walk with mobility. The tests hold the sum to
 /// it.
 #[cfg(test)]
-pub(crate) fn fold(board: &Board) -> i32 {
+pub(crate) fn fold(board: &Position) -> i32 {
     weigh(
         &KING_ATTACK,
         counts_of(board, Color::White),

@@ -3038,7 +3038,7 @@ impl AlphaBeta {
     /// iteration's swap, or a ceiling).
     fn pv_line_from(&self, first: Option<Play>) -> PvLine {
         let mut line = Vec::new();
-        let mut board = self.board.clone();
+        let mut board = self.board.detached();
         let mut next = first;
         while line.len() < MAX_PLY as usize {
             let Some(play) = next else {

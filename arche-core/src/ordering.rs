@@ -30,7 +30,7 @@
 //! so nothing may outrank that bonus at the root; the deepening loop says
 //! why.
 
-use crate::board::{Board, MOVE_LIST_INLINE, MoveList};
+use crate::board::{MOVE_LIST_INLINE, MoveList, Position};
 use crate::engine::MAX_PLY;
 use crate::misc::{Color, Piece};
 use crate::play::Play;
@@ -272,7 +272,7 @@ impl MoveOrdering {
     /// count given.
     pub(crate) fn order(
         &mut self,
-        board: &Board,
+        board: &Position,
         moves: &mut MoveList,
         table_move: Option<Play>,
         ply: Option<usize>,
@@ -291,7 +291,7 @@ impl MoveOrdering {
     #[inline(always)]
     pub(crate) fn order_split(
         &mut self,
-        board: &Board,
+        board: &Position,
         moves: &mut MoveList,
         captures: usize,
         table_move: Option<Play>,
@@ -322,7 +322,7 @@ impl MoveOrdering {
     #[inline(never)]
     fn order_keyed(
         &mut self,
-        board: &Board,
+        board: &Position,
         moves: &mut MoveList,
         captures: usize,
         table_move: Option<Play>,
@@ -348,7 +348,7 @@ impl MoveOrdering {
     #[inline(always)]
     fn order_split_inner(
         &mut self,
-        board: &Board,
+        board: &Position,
         moves: &mut MoveList,
         captures: usize,
         table_move: Option<Play>,
@@ -448,7 +448,7 @@ impl MoveOrdering {
     #[inline(never)]
     fn order_by_sort(
         &mut self,
-        board: &Board,
+        board: &Position,
         moves: &mut MoveList,
         table_move: Option<Play>,
         ply: Option<usize>,
@@ -527,7 +527,7 @@ impl MoveOrdering {
     /// known about and still ahead of every losing capture.
     pub(crate) fn order_quiets(
         &mut self,
-        board: &Board,
+        board: &Position,
         rest: &mut [Play],
         losing: usize,
         ply: usize,
@@ -580,7 +580,7 @@ impl MoveOrdering {
     #[inline]
     pub(crate) fn key_quiets(
         &mut self,
-        board: &Board,
+        board: &Position,
         rest: &mut [Play],
         losing: usize,
         ply: usize,
@@ -703,7 +703,7 @@ impl MoveOrdering {
     #[inline(never)]
     pub(crate) fn keep_unskippable(
         &mut self,
-        board: &Board,
+        board: &Position,
         run: &mut [Play],
         t: usize,
         ply: usize,
@@ -1054,7 +1054,7 @@ fn gravitate(entry: &mut i32, bonus: i32) {
 /// move by the memories, and the table's move ahead of everything. The
 /// caller says whether the move is the table's, having compared already.
 #[inline(always)]
-fn keyed(board: &Board, m: &Play, is_table_move: bool, quiet: Option<&Quiet<'_>>) -> i64 {
+fn keyed(board: &Position, m: &Play, is_table_move: bool, quiet: Option<&Quiet<'_>>) -> i64 {
     let mut score = match m.capture {
         Some(victim) => capture_score(board, m, victim),
         None => match quiet {
@@ -1072,7 +1072,7 @@ fn keyed(board: &Board, m: &Play, is_table_move: bool, quiet: Option<&Quiet<'_>>
 /// orders within it, and MVV-LVA breaks ties between captures the swap
 /// prices alike.
 #[inline]
-fn capture_score(board: &Board, m: &Play, victim: Piece) -> i64 {
+fn capture_score(board: &Position, m: &Play, victim: Piece) -> i64 {
     let see = i64::from(board.see(m));
     let score = see * SEE_UNIT + mvv_lva(board, m, victim);
     if see >= 0 {
@@ -1087,7 +1087,7 @@ fn capture_score(board: &Board, m: &Play, victim: Piece) -> i64 {
 /// matching on it: a match compiled to an indirect jump per capture
 /// scored, and the pieces arrive in no order a predictor can learn.
 #[inline]
-fn mvv_lva(board: &Board, m: &Play, victim: Piece) -> i64 {
+fn mvv_lva(board: &Position, m: &Play, victim: Piece) -> i64 {
     let Some(attacker) = board.get_piece_index(m.from) else {
         return 0;
     };

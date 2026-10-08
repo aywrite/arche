@@ -10,7 +10,9 @@
 
 #[cfg(test)]
 use super::weigh;
-use crate::board::{Board, knight_attacks, pawn_attacks, pop_lsb};
+#[cfg(test)]
+use crate::board::Board;
+use crate::board::{Position, knight_attacks, pawn_attacks, pop_lsb};
 use crate::magic::MAGIC;
 use crate::misc::{Color, Piece};
 use crate::psqt::{eg_value, mg_value, pack};
@@ -103,7 +105,7 @@ pub(crate) const fn scored_kinds(weights: &[i32; COUNTS]) -> u8 {
 /// 4.30 billion instructions without the attribute against 3.76 billion with
 /// it. The shared walk is inlined by force for the same reason.
 #[inline(always)]
-pub(crate) fn counts_of<const KINDS: u8>(board: &Board, color: Color) -> [i32; COUNTS] {
+pub(crate) fn counts_of<const KINDS: u8>(board: &Position, color: Color) -> [i32; COUNTS] {
     let occupied = board.occupied();
     let (ours, theirs) = board.sides(color);
     let scope = !(ours | pawn_attacks(board.pawns() & theirs, !color));
@@ -144,7 +146,7 @@ pub(crate) fn counts_of<const KINDS: u8>(board: &Board, color: Color) -> [i32; C
 
 /// All four counts, written into `into`, which is what [`super::TERMS`] hands
 /// the tuner's walk.
-pub(crate) fn counts(board: &Board, color: Color, into: &mut [i32]) {
+pub(crate) fn counts(board: &Position, color: Color, into: &mut [i32]) {
     into.copy_from_slice(&counts_of::<ALL_KINDS>(board, color));
 }
 
@@ -152,7 +154,7 @@ pub(crate) fn counts(board: &Board, color: Color, into: &mut [i32]) {
 /// which is what the sum answered before it shared a walk with the king
 /// attack zone. The tests hold the sum to it.
 #[cfg(test)]
-pub(crate) fn fold(board: &Board) -> i32 {
+pub(crate) fn fold(board: &Position) -> i32 {
     weigh(
         &MOBILITY,
         counts_of::<SCORED_KINDS>(board, Color::White),
