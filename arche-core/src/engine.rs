@@ -3114,6 +3114,8 @@ impl Engine for AlphaBeta {
         // the move the last completed depth chose. Not `best`, which a
         // floor in the depth under way can have replaced
         let mut chosen: Option<Play> = None;
+        // how long the last completed depth took, its report included
+        let mut took = time::Duration::ZERO;
         let max_depth = match search_options.depth {
             // held to the rail, or the depths past it would each rerun it
             Some(depth) => depth.min(MAX_PLY),
@@ -3125,13 +3127,17 @@ impl Engine for AlphaBeta {
         self.ordering.forget();
 
         for depth in 1..=max_depth {
-            // the soft bound, asked once a depth rather than before each
-            // re-search: giving up inside a fail low would answer with the
-            // move the search has just found worse than it believed. The
-            // deadline stays as the backstop
-            if !search_options.limits.worth_another_iteration(last) {
+            // the soft bound and whether the share can pay for another depth,
+            // asked once a depth rather than before each re-search: giving
+            // up inside a fail low would answer with the move the search has
+            // just found worse than it believed. The deadline stays as the
+            // backstop
+            if !search_options.limits.worth_another_iteration(last)
+                || last.is_some() && !search_options.limits.can_pay_for_another_depth(took)
+            {
                 return SearchOutcome::Aborted(best);
             }
+            let begun = search_options.limits.elapsed();
             let mut window =
                 Aspiration::open(self.config.aspiration.then_some(exact).flatten(), depth);
             self.root_nodes.clear();
@@ -3206,6 +3212,7 @@ impl Engine for AlphaBeta {
                         if bound == ScoreBound::Exact {
                             last = Some(self.root_nodes_for(result.best_move, chosen));
                             chosen = Some(result.best_move);
+                            took = search_options.limits.elapsed().saturating_sub(begun);
                             exact = Some(result.score);
                             best = Some(result);
                             break;

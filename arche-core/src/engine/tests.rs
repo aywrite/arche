@@ -1600,6 +1600,31 @@ mod search {
     }
 
     #[test]
+    fn a_depth_the_share_cannot_pay_for_is_not_begun() {
+        // depth one's report sleeps, so the depth takes that long. The king
+        // and pawn ending's first depth sets the soft line at 60%. Twice
+        // 200 ms fits the 800 left of a second with 200 to spare; twice
+        // 360 ms does not fit the 640 left, and 360 stays under any line
+        // depth one could set above a third, which is where the veto binds
+        let contested = "4k3/8/8/8/8/8/4P3/4K3 w - - 0 1";
+        for (sleep, depths) in [(200, vec![1, 2]), (360, vec![1])] {
+            let mut e = engine(Board::from_fen(contested).unwrap());
+            let params = SearchParameters::new(
+                Some(2),
+                Limits::starting_now(Some(Clock::Share(time::Duration::from_secs(1))), None),
+            );
+            let mut reached = Vec::new();
+            e.iterative_deepening_search(params, |depth, _, _, _| {
+                reached.push(depth);
+                if depth == 1 {
+                    std::thread::sleep(time::Duration::from_millis(sleep));
+                }
+            });
+            assert_eq!(reached, depths, "depth one took {sleep} ms");
+        }
+    }
+
+    #[test]
     fn deepening_to_depth_zero_finds_nothing() {
         let mut e = engine(Board::new());
         let outcome = e.iterative_deepening_search(SearchParameters::to_depth(0), |_, _, _, _| {});

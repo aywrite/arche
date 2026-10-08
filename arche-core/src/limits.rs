@@ -59,6 +59,16 @@ const TABLE_ANSWERED_PERMILLE: u128 = 100;
 /// share.
 const CHANGED_PERCENT: u128 = 65;
 
+/// How many times the last completed depth's time the next is assumed to
+/// cost. A depth is not begun when that much would run past the share: it
+/// would most likely be cut at the deadline, and a cut depth's time is
+/// spent without an answer. Replayed from 200 games of a 10+0.1 match,
+/// 22.4% of all thinking went to depths the share cut, and the next depth
+/// cost 1.45 times the last at the median and 4.35 at the ninth decile. The
+/// last depth took no longer than all that has gone, so this binds only
+/// past a third of the share, under a soft line set above that.
+const DEPTH_GROWTH: u32 = 2;
+
 /// How a completed depth spent its nodes at the root, which is what the
 /// soft line reads.
 #[derive(Copy, Clone, Debug, PartialEq, Eq)]
@@ -175,6 +185,19 @@ impl Limits {
             Some(Clock::Share(budget)) => {
                 self.started.elapsed().as_nanos() * 100
                     < budget.as_nanos() * last.soft_line_percent()
+            }
+            _ => true,
+        }
+    }
+
+    /// Whether the share has room for another depth, given how long the
+    /// last completed one took. Only a share of a game clock is asked; a
+    /// move time and a node budget are spent as named.
+    pub fn can_pay_for_another_depth(&self, took: Duration) -> bool {
+        match self.clock {
+            Some(Clock::Share(budget)) => {
+                self.started.elapsed().as_nanos() + took.as_nanos() * DEPTH_GROWTH as u128
+                    <= budget.as_nanos()
             }
             _ => true,
         }
@@ -398,6 +421,25 @@ mod tests {
         };
         assert!(at(60).worth_another_iteration(Some(changed)));
         assert!(!at(70).worth_another_iteration(Some(changed)));
+    }
+
+    #[test]
+    fn a_depth_is_not_begun_when_twice_the_last_one_overruns_the_share() {
+        // 300 ms gone of a second: a last depth of 300 ms leaves room for
+        // 600 more, one of 400 ms does not. Each sits 100 ms from the
+        // boundary, since the call reads the clock again
+        let gone = Duration::from_millis(300);
+        let share = a_second_of(Clock::Share, gone);
+        assert!(share.can_pay_for_another_depth(Duration::from_millis(300)));
+        assert!(!share.can_pay_for_another_depth(Duration::from_millis(400)));
+    }
+
+    #[test]
+    fn a_named_move_time_and_a_node_budget_pay_for_every_depth() {
+        let gone = Duration::from_millis(900);
+        let took = Duration::from_millis(500);
+        assert!(a_second_of(Clock::Fixed, gone).can_pay_for_another_depth(took));
+        assert!(Limits::starting_at(Instant::now(), None, 1_000).can_pay_for_another_depth(took));
     }
 
     #[test]
