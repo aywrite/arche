@@ -76,6 +76,12 @@ on:
         description: Passed to fastchess as tc.
         type: string
         required: true
+      candidate_time_control:
+        description: >
+          A clock for the candidate alone, which makes this a time odds match.
+          Empty gives both sides time_control.
+        type: string
+        default: ""
       sprt:
         description: Judge a sequential test over the pooled pairs.
         type: boolean
@@ -144,6 +150,7 @@ jobs:
       BATCH: ${{ inputs.batch }}
       BATCHES: ${{ inputs.batches }}
       TIME_CONTROL: ${{ inputs.time_control }}
+      CANDIDATE_TIME_CONTROL: ${{ inputs.candidate_time_control }}
       BOOK: ${{ inputs.book }}
       SPRT: ${{ inputs.sprt }}
       ELO0: ${{ inputs.elo0 }}
@@ -184,7 +191,7 @@ jobs:
           scripts/build_at.sh "$CANDIDATE_SHA" tools/new
           scripts/build_at.sh "$BASELINE_SHA" tools/old
 
-      - uses: aywrite/mache/actions/play-shard@e3a59ce295c9dfabb62ddb077e88606d022cc55d # v0.7.1
+      - uses: aywrite/mache/actions/play-shard@10f17c5120bb58dfacf2304532bbc63aef86fabe # unreleased, aywrite/mache#35
         id: play
         with:
           candidate: ${{ inputs.candidate_name }}
@@ -200,6 +207,7 @@ jobs:
           batch: ${{ inputs.batch }}
           batches: ${{ inputs.batches }}
           time_control: ${{ inputs.time_control }}
+          candidate_time_control: ${{ inputs.candidate_time_control }}
           hash_mb: ${{ inputs.hash_mb }}
           concurrency: ${{ inputs.concurrency }}
           startup_ms: ${{ inputs.startup_ms }}
@@ -241,7 +249,11 @@ jobs:
             echo "shard: ${SHARD}"
             echo "start: ${START:-not chosen, the shard did not get that far}"
             echo "pairs: ${PAIRS}"
-            echo "time_control: ${TIME_CONTROL}"
+            if [ -n "$CANDIDATE_TIME_CONTROL" ]; then
+              echo "time_control: ${TIME_CONTROL} for the baseline, ${CANDIDATE_TIME_CONTROL} for the candidate"
+            else
+              echo "time_control: ${TIME_CONTROL}"
+            fi
             echo "hash_mb: ${HASH}"
             echo "concurrency: ${CONCURRENCY}"
             echo "startup_ms: ${STARTUP_MS}"
@@ -319,7 +331,8 @@ jobs:
           baseline: ${{ inputs.baseline_name }}
           baseline_sha: ${{ inputs.baseline_sha }}
           shards: ${{ inputs.count }}
-          time_control: ${{ inputs.time_control }}
+          # what the summary prints, so a time odds match says so
+          time_control: ${{ inputs.candidate_time_control && format('{0} against {1}', inputs.candidate_time_control, inputs.time_control) || inputs.time_control }}
           sprt: ${{ inputs.sprt }}
           elo0: ${{ inputs.elo0 }}
           elo1: ${{ inputs.elo1 }}
