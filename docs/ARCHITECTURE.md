@@ -31,12 +31,12 @@ factorization machine term over every pair of pieces.
   some state that could be recomputed from them but would be too slow to: an
   array of what stands on each square, the zobrist key, a second key over the
   pawns alone, the evaluation's running totals (material, the piece square
-  score and the pair term's sums), the pieces giving check, each side's king
-  square, and a ring of the last 256 plies (used by the repetition and fifty
-  move rules, and to undo moves). A stack by ply holds the pawn key and the
-  running totals as they stood before each move. A make places every piece
-  through one function, which keeps the derived state in sync; the unmake
-  moves the pieces back on the boards alone and copies the rest back. Debug
+  score and the pair term's sums), the pieces giving check and each side's
+  king square. That is the position, 256 bytes, and the board is a stack of
+  256 of them by ply with a ring of the keys before each (read by the
+  repetition rule). A make copies the current position into the next slot
+  and plays the move there, placing every piece through one function that
+  keeps the derived state in sync; the unmake steps the ply back. Debug
   builds recompute the derived state from scratch after every make and unmake
   and assert it matches, so a bug in an incremental update fails tests instead
   of misevaluating quietly. It names no evaluation term: each one reads the
@@ -127,7 +127,7 @@ factorization machine term over every pair of pieces.
   - **mod.rs**: The material values, the phase weights the taper is read at,
     the accumulator, and the sum the search asks for. The board's make tells
     the accumulator about every piece placed, removed and moved, and its
-    unmake copies the accumulator back, so material and the piece square
+    unmake steps back to the parent's copy, so material and the piece square
     score are carried rather than counted; the leaf terms are computed at the
     leaf. Material that cannot mate is answered with a hard zero, which with
     the pair term below is where the score is not a sum over the weights.

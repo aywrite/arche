@@ -10,7 +10,9 @@
 //! centipawns, a little more with the pieces on than off.
 
 use super::weigh;
+#[cfg(test)]
 use crate::board::Board;
+use crate::board::Position;
 use crate::misc::Color;
 use crate::psqt::pack;
 
@@ -29,20 +31,20 @@ pub(crate) const fn weight(index: usize) -> i32 {
     TEMPO[index]
 }
 
-fn counts_of(board: &Board, color: Color) -> [i32; COUNTS] {
+fn counts_of(board: &Position, color: Color) -> [i32; COUNTS] {
     [i32::from(board.active_color == color)]
 }
 
 /// The count, written into `into`, which is what [`super::TERMS`] hands the
 /// tuner's walk.
-pub(crate) fn counts(board: &Board, color: Color, into: &mut [i32]) {
+pub(crate) fn counts(board: &Position, color: Color, into: &mut [i32]) {
     into.copy_from_slice(&counts_of(board, color));
 }
 
 /// White's tempo less black's, as a packed pair: the weight for white to
 /// move and its negative for black, before the score turns to the mover.
 #[inline]
-pub(crate) fn fold(board: &Board) -> i32 {
+pub(crate) fn fold(board: &Position) -> i32 {
     weigh(
         &TEMPO,
         counts_of(board, Color::White),

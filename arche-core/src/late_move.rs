@@ -30,6 +30,7 @@
 //! that says why cannot disagree.
 
 use crate::board::Board;
+use crate::board::Position;
 use crate::census;
 use crate::engine::{Node, SearchConfig};
 use crate::misc::Score;
@@ -470,7 +471,7 @@ enum Under {
 
 /// The node's half of the two rules, read once before the loop off the
 /// node's facts.
-fn shallow(config: &SearchConfig, board: &Board, node: &Node) -> Shallow {
+fn shallow(config: &SearchConfig, board: &Position, node: &Node) -> Shallow {
     let admits = (config.quiet_futility || config.late_move_count)
         && (1..=SHALLOW_MAX_DEPTH).contains(&node.depth)
         && !node.in_check
@@ -739,7 +740,7 @@ pub(crate) fn features(
 
 /// The node's static evaluation, computed by the first call and read back
 /// by the rest.
-fn eval_memo(board: &Board, eval: &mut Option<Score>) -> Score {
+fn eval_memo(board: &Position, eval: &mut Option<Score>) -> Score {
     *eval.get_or_insert_with(|| crate::eval::eval(board))
 }
 

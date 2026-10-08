@@ -131,33 +131,10 @@ enum Exposure {
     Whole,
 }
 
-/// One ply of history: what `undo_move` needs that the move itself does not
-/// carry.
-#[derive(Debug, Copy, Clone, PartialEq, Eq)]
-struct PlayState {
-    play: Play,
-
-    en_passant: Option<Coordinate>,
-    castle: CastlePermissions,
-    fifty_move_rule: usize,
-    position_key: u64,
-    checkers: u64,
-}
-
-/// The play a pass records in the history. Nothing plays it back; it only
-/// lets a debug build check that the ply being taken back was a pass.
-const NULL_PLAY: Play = Play {
-    from: 0,
-    to: 0,
-    capture: None,
-    promote: None,
-    en_passant: false,
-    castle: false,
-};
-
-// Plies of history the board records, as a ring. Only the fifty move window
-// is ever read back, so this has to cover that plus the depth of a search,
-// not the whole game. Every board carries it, so it is no longer than that.
+// Plies of keys the board records for the repetition test, as a ring. Only
+// the fifty move window is ever read back, so this has to cover that plus the
+// depth of a search, not the whole game. Every board carries it, so it is no
+// longer than that.
 const HISTORY_PLIES: usize = 256;
 const _: () = assert!(HISTORY_PLIES > 100 + crate::engine::MAX_PLY as usize + 1);
 
@@ -170,51 +147,14 @@ fn history_index(ply: usize) -> usize {
 /// The value a position key starts from, before any piece or right is folded
 /// into it. Arbitrary, it only has to be the same everywhere.
 const INITIAL_KEY: u64 = 2_340_980_257_093;
-static EMPTY_HISTORY: [Option<PlayState>; HISTORY_PLIES] = [None; HISTORY_PLIES];
 
-/// What a move changes that the unmake restores by copy rather than by
-/// reverse update: the pawn key and the accumulator, as they stood before
-/// the move.
-#[derive(Debug, Copy, Clone)]
-struct Kept {
-    pawn_key: u64,
-    eval: Accumulator,
-}
-
-impl Kept {
-    const EMPTY: Self = Self {
-        pawn_key: 0,
-        eval: Accumulator::EMPTY,
-    };
-}
-
-/// Plies of `Kept` the board holds, as a ring indexed by ply. A slot is
-/// written over once this many later moves are made, so a move can be taken
-/// back only within that many plies: the depth of a search (`MAX_PLY`), not
-/// the fifty move window the history covers. Only the debug state check
-/// would see a slot read after it was written over.
-const KEPT_PLIES: usize = 256;
-const _: () = assert!(KEPT_PLIES > crate::engine::MAX_PLY as usize + 1);
-
-/// The saved state a make leaves for its unmake. Scratch rather than
-/// position: two boards standing on the same position are equal whatever
-/// their stacks hold, and printing one leaves it out.
-#[derive(Clone)]
-struct KeptStack([Kept; KEPT_PLIES]);
-
-impl PartialEq for KeptStack {
-    fn eq(&self, _: &Self) -> bool {
-        true
-    }
-}
-
-impl Eq for KeptStack {}
-
-impl fmt::Debug for KeptStack {
-    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
-        f.write_str("KeptStack")
-    }
-}
+/// Plies of position the board holds, as a ring indexed by ply. A make writes
+/// the child into the next slot and the unmake steps back, so a move can be
+/// taken back only within this many plies: the depth of a search
+/// (`MAX_PLY`), not the fifty move window the keys cover.
+const STACK_PLIES: usize = 256;
+const _: () = assert!(STACK_PLIES > crate::engine::MAX_PLY as usize + 1);
+const _: () = assert!(std::mem::size_of::<Position>() == 256);
 
 const A1: u8 = 0;
 const B1: u8 = 1;
@@ -268,7 +208,7 @@ const fn castle_masks(leaving: bool) -> [u8; 64] {
     masks
 }
 
-/// Folded into the key a pass records in the history, so the entry matches
+/// Folded into the key a pass records for its ply, so the entry matches
 /// nothing: `has_repeated` says why a pass must never answer a repetition
 /// test. Odd, so it changes every key, and otherwise arbitrary.
 const NULL_HISTORY_SALT: u64 = 0x9e37_79b9_7f4a_7c15;
@@ -525,20 +465,18 @@ impl fmt::Display for Unplayable {
     }
 }
 
-/// The whole position with its history, about thirty five kilobytes. The
-/// search makes and unmakes moves on the one board and never clones it; the
-/// type is not `Copy`, so a copy has to be written as a clone.
+/// One position, 256 bytes aligned to a cache line: what `Board` holds a
+/// slot of for each ply, and what the evaluation and the ordering read.
 ///
 /// `squares`, `king_squares`, `key`, `pawn_key`, `eval` and `checkers`
 /// restate the piece boards and are kept in step with them by every move
-/// made and unmade. `key` also folds in the side to move, the castle rights
-/// and the en passant square. In a debug build `debug_assert_state_in_step`
-/// recomputes the first five after every move made and taken back, and
-/// `make_move` checks `checkers` beside it. Outside the crate the position is
-/// read through the accessors and moved on through `play_by_name`, which has
-/// no counterpart that takes a move back.
-#[derive(Debug, PartialEq, Clone, Eq)]
-pub struct Board {
+/// made. `key` also folds in the side to move, the castle rights and the en
+/// passant square. In a debug build `debug_assert_state_in_step` recomputes
+/// the first five after every move made and taken back, and `make_move`
+/// checks `checkers` beside it.
+#[derive(Debug, PartialEq, Clone, Copy, Eq)]
+#[repr(align(64))]
+pub struct Position {
     // Indexed by `Piece` rather than a field each: as fields, the pick in
     // `move_accumulators` was a six way jump table the branch predictor
     // missed a quarter of the time.
@@ -554,8 +492,8 @@ pub struct Board {
 
     pub(crate) active_color: Color,
     // each side's king square, indexed by `Color`: set by `from_fen` and
-    // kept by `relocate_piece_index` and the unmake's `relocate_bare`, the
-    // only things that move a king
+    // kept by `relocate_piece_index` through `relocate_bare`, the only thing
+    // that moves a king
     king_squares: [u8; 2],
     castle: CastlePermissions,
     en_passant: Option<Coordinate>,
@@ -564,18 +502,12 @@ pub struct Board {
     // drop moves that cannot answer one
     checkers: u64,
 
-    ply: usize,
-    // plies since the root of the search, zeroed by `start_line`: what a
-    // mate score's distance is measured in
-    pub(crate) line_ply: usize,
     fifty_move_rule: usize,
 
     // the evaluation's incremental state. The eval module owns what it
     // means; the board only keeps it in step
     pub(crate) eval: Accumulator,
 
-    history: [Option<PlayState>; HISTORY_PLIES],
-    kept: KeptStack,
     pub(crate) key: u64,
     /// The zobrist key over both sides' pawns alone: no side to move, castle
     /// rights or en passant square, so two positions with the same pawns
@@ -583,6 +515,95 @@ pub struct Board {
     /// moves a pawn or takes one off; a promotion takes a pawn out and puts
     /// nothing back.
     pub(crate) pawn_key: u64,
+}
+
+/// The position stack with the keys before it, about 66 kilobytes. The
+/// current position is the slot at the ply, which the board derefs to; a make
+/// copies it into the next slot and plays the move there, and the unmake
+/// steps the ply back. The search makes and unmakes moves on the one board,
+/// and `pv_line_from` plays its line on a `detached` copy. Outside the crate
+/// the position is read through the accessors and moved on through
+/// `play_by_name`, which has no counterpart that takes a move back. A
+/// position written through `DerefMut` would leave the keys before it
+/// behind.
+#[derive(Clone)]
+pub struct Board {
+    // the slot at the ply and those below it back to where the board was
+    // parsed or detached are written; a slot above the ply is scratch until
+    // a make copies into it
+    stack: [MaybeUninit<Position>; STACK_PLIES],
+    ply: usize,
+    // plies since the root of the search, zeroed by `start_line`: what a
+    // mate score's distance is measured in
+    pub(crate) line_ply: usize,
+    // the key of the position at each ply before the current one, for the
+    // repetition test; a pass records it salted
+    keys: [u64; HISTORY_PLIES],
+}
+
+impl std::ops::Deref for Board {
+    type Target = Position;
+    #[inline(always)]
+    fn deref(&self) -> &Position {
+        self.slot(self.ply % STACK_PLIES)
+    }
+}
+
+impl std::ops::DerefMut for Board {
+    #[inline(always)]
+    fn deref_mut(&mut self) -> &mut Position {
+        self.slot_mut(self.ply % STACK_PLIES)
+    }
+}
+
+/// A board made by `Board::detached`: it holds its root's position and the
+/// keys before it, and the slots below the root were never written. It
+/// makes moves and cannot take one back, so nothing reads those slots.
+pub(crate) struct Detached(Box<Board>);
+
+impl Detached {
+    pub(crate) fn make_move(&mut self, play: &Play) -> bool {
+        self.0.make_move(play)
+    }
+
+    pub(crate) fn has_repeated(&self) -> bool {
+        self.0.has_repeated()
+    }
+}
+
+impl std::ops::Deref for Detached {
+    type Target = Position;
+    #[inline(always)]
+    fn deref(&self) -> &Position {
+        &self.0
+    }
+}
+
+impl PartialEq for Board {
+    // the keys compared are the ones the repetition test can read: those
+    // further back, or past the ply, are stale slots of the ring
+    fn eq(&self, other: &Self) -> bool {
+        let window = self.fifty_move_rule.min(self.ply).min(HISTORY_PLIES - 1);
+        **self == **other
+            && self.ply == other.ply
+            && self.line_ply == other.line_ply
+            && (1..=window).all(|back| {
+                let at = history_index(self.ply - back);
+                self.keys[at] == other.keys[at]
+            })
+    }
+}
+
+impl Eq for Board {}
+
+impl fmt::Debug for Board {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        f.debug_struct("Board")
+            .field("position", &**self)
+            .field("ply", &self.ply)
+            .field("line_ply", &self.line_ply)
+            .finish()
+    }
 }
 
 /// Clippy asks for a `Default` beside a `new` taking no arguments.
@@ -637,6 +658,29 @@ impl Board {
         } else {
             Err(Unplayable::LeavesKingInCheck)
         }
+    }
+}
+
+impl Position {
+    /// The fifty move counter, as the fen prints it.
+    pub fn halfmove_clock(&self) -> usize {
+        self.fifty_move_rule
+    }
+
+    /// Whether the fifty move counter has run out. Not the same as drawn: a
+    /// mate delivered on the hundredth half move ends the game before the
+    /// side mated has a move to claim the draw with, so a caller that can
+    /// tell a mate asks `has_legal_move` as well.
+    pub fn fifty_move_expired(&self) -> bool {
+        self.fifty_move_rule >= 100
+    }
+
+    /// Whether the fifty move counter stands within four plies of expiry:
+    /// the horizon behind which the rule50 taint policy refuses every
+    /// transposition cutoff, as Stockfish does in its main search, and here
+    /// in quiescence besides.
+    pub fn fifty_move_near_expiry(&self) -> bool {
+        self.fifty_move_rule >= 96
     }
 
     /// Whether this move is one `generate_moves` would produce here.
@@ -1365,7 +1409,9 @@ impl Board {
         // SAFETY: slot zero was written before the swap began
         unsafe { gain[0].assume_init() }
     }
+}
 
+impl Board {
     /// How many times this position has already appeared, not counting the
     /// position itself, stopping once `enough` have been found.
     ///
@@ -1380,12 +1426,10 @@ impl Board {
         let mut found = 0;
         let mut back = 2;
         while back <= window {
-            if let Some(state) = self.history[history_index(self.ply - back)] {
-                if state.position_key == self.key {
-                    found += 1;
-                    if found >= enough {
-                        return found;
-                    }
+            if self.keys[history_index(self.ply - back)] == self.key {
+                found += 1;
+                if found >= enough {
+                    return found;
                 }
             }
             back += 2;
@@ -1393,32 +1437,11 @@ impl Board {
         found
     }
 
-    /// The fifty move counter, as the fen prints it.
-    pub fn halfmove_clock(&self) -> usize {
-        self.fifty_move_rule
-    }
-
     /// The move number, as the fen prints it: `from_fen` starts the ply at
     /// twice the number it read, one more with black to move, so the number
     /// is the ply halved and needs no keeping.
     fn move_number(&self) -> usize {
         self.ply / 2
-    }
-
-    /// Whether the fifty move counter has run out. Not the same as drawn: a
-    /// mate delivered on the hundredth half move ends the game before the
-    /// side mated has a move to claim the draw with, so a caller that can
-    /// tell a mate asks `has_legal_move` as well.
-    pub fn fifty_move_expired(&self) -> bool {
-        self.fifty_move_rule >= 100
-    }
-
-    /// Whether the fifty move counter stands within four plies of expiry:
-    /// the horizon behind which the rule50 taint policy refuses every
-    /// transposition cutoff, as Stockfish does in its main search, and here
-    /// in quiescence besides.
-    pub fn fifty_move_near_expiry(&self) -> bool {
-        self.fifty_move_rule >= 96
     }
 
     /// True on the third occurrence, which is when a game is actually drawn.
@@ -1488,41 +1511,161 @@ impl Board {
 
     /// Perft counts with MAINTAIN_CHECKERS off: the legality probe then runs
     /// unconditionally, since the stale checkers cannot be consulted, and
-    /// `checkers_given` is skipped. History still saves and restores the
-    /// field, so the board's checkers are intact once the walk unwinds.
+    /// `checkers_given` is skipped. The walk's moves are played on copies,
+    /// so the board's checkers are intact once it unwinds.
     fn make_move_impl<const MAINTAIN_CHECKERS: bool>(&mut self, play: &Play) -> bool {
         // A king step is legal exactly when its landing square is unattacked
         // with the king lifted off its own square, so it is settled from the
         // boards before anything moves. An illegal one (most illegal moves
-        // are king steps) then costs no make and no unmake. A castle keeps
-        // the probe after the move, since its rook changes the lines, and so
-        // does a walk that keeps no checkers: it is the old path, which the
-        // debug build checks every refused step against.
+        // are king steps) then costs no copy. A castle keeps the probe after
+        // the move, since its rook changes the lines, and so does a walk that
+        // keeps no checkers: it is the old path, which the debug build checks
+        // every refused step against.
+        let here = self.ply % STACK_PLIES;
         if MAINTAIN_CHECKERS
             && !play.castle
-            && self.kings().is_bit_set(play.from)
-            && self.king_step_attacked(play.from, play.to, !self.active_color)
+            && self.slot(here).kings().is_bit_set(play.from)
+            && self
+                .slot(here)
+                .king_step_attacked(play.from, play.to, !self.slot(here).active_color)
         {
             debug_assert!(
-                !self.clone().make_move_impl::<false>(play),
+                !{ *self.slot(here) }.play_in_place::<false>(play),
                 "the king step test refused a legal {}",
                 play
             );
             return false;
         }
-        self.history[history_index(self.ply)] = Some(PlayState {
-            play: *play,
-            en_passant: self.en_passant,
-            castle: self.castle,
-            fifty_move_rule: self.fifty_move_rule,
-            position_key: self.key,
-            checkers: self.checkers,
-        });
-        self.kept.0[self.ply % KEPT_PLIES] = Kept {
-            pawn_key: self.pawn_key,
-            eval: self.eval,
-        };
+        self.keys[history_index(self.ply)] = self.slot(here).key;
+        let next = (self.ply + 1) % STACK_PLIES;
+        self.copy_slot(here, next);
+        if self.slot_mut(next).play_in_place::<MAINTAIN_CHECKERS>(play) {
+            self.ply += 1;
+            self.line_ply += 1;
+            true
+        } else {
+            false
+        }
+    }
 
+    #[inline(always)]
+    fn slot(&self, index: usize) -> &Position {
+        // SAFETY: every caller names the slot at the ply, or one a make has
+        // just copied into. Both are written: a parse writes every slot, a
+        // make writes the one it steps onto, and a detached board, which
+        // writes only the slot at its root, cannot take a move back
+        // (`Detached`), so its ply never falls below that slot
+        unsafe { self.stack[index].assume_init_ref() }
+    }
+
+    #[inline(always)]
+    fn slot_mut(&mut self, index: usize) -> &mut Position {
+        // SAFETY: as `slot`
+        unsafe { self.stack[index].assume_init_mut() }
+    }
+
+    /// A copy of the board that holds the current position and the keys
+    /// before it, and none of the positions below it. A whole clone copies
+    /// the stack, 64 KB, where this copies 256 bytes and the keys, and
+    /// allocates rather than moving a board through the stack.
+    pub(crate) fn detached(&self) -> Detached {
+        let mut board = Box::<Board>::new_uninit();
+        let at = board.as_mut_ptr();
+        // SAFETY: the stack's slots are `MaybeUninit`, so a board is valid
+        // with the other three fields written and one slot, the one at its
+        // ply, which every read of a slot names
+        unsafe {
+            std::ptr::addr_of_mut!((*at).stack[self.ply % STACK_PLIES])
+                .write(MaybeUninit::new(**self));
+            std::ptr::addr_of_mut!((*at).ply).write(self.ply);
+            std::ptr::addr_of_mut!((*at).line_ply).write(self.line_ply);
+            std::ptr::addr_of_mut!((*at).keys).write(self.keys);
+            Detached(board.assume_init())
+        }
+    }
+
+    /// One slot of the stack copied into another, sixteen aligned loads and
+    /// stores. An assignment compiles to a call to `memmove`, since the
+    /// compiler cannot tell the two slots apart.
+    #[inline(always)]
+    fn copy_slot(&mut self, from: usize, to: usize) {
+        debug_assert!(from < STACK_PLIES && to < STACK_PLIES);
+        #[cfg(target_arch = "x86_64")]
+        // SAFETY: both callers reduce the indices modulo the stack's length,
+        // so both pointers fall inside the array, and a slot is 256 bytes
+        // aligned to 64, so each covers sixteen aligned lanes of it. Each
+        // lane is read before it is written.
+        unsafe {
+            use std::arch::x86_64::__m128i;
+            let base = self.stack.as_mut_ptr();
+            let src = base.add(from) as *const MaybeUninit<__m128i>;
+            let dst = base.add(to) as *mut MaybeUninit<__m128i>;
+            for lane in 0..16 {
+                dst.add(lane).write(src.add(lane).read());
+            }
+        }
+        #[cfg(not(target_arch = "x86_64"))]
+        {
+            self.stack[to] = self.stack[from];
+        }
+    }
+
+    #[inline(always)]
+    pub(crate) fn undo_move(&mut self) {
+        self.ply -= 1;
+        self.line_ply -= 1;
+        self.debug_assert_state_in_step();
+    }
+
+    /// Hand the move to the other side without touching a piece. Not a
+    /// chess move: the search passes to ask what a position is worth to a
+    /// side that does nothing.
+    ///
+    /// The fifty move counter runs on, so near the horizon passing does not
+    /// buy the side to move its way out of a draw. The key recorded for the
+    /// ply is salted to keep the pass out of the repetition arithmetic;
+    /// `has_repeated` has the reasoning.
+    pub(crate) fn make_null_move(&mut self) {
+        debug_assert!(!self.in_check(), "a side in check cannot pass");
+        let here = self.ply % STACK_PLIES;
+        self.keys[history_index(self.ply)] = self.slot(here).key ^ NULL_HISTORY_SALT;
+        let next = (self.ply + 1) % STACK_PLIES;
+        self.copy_slot(here, next);
+        self.ply += 1;
+        self.line_ply += 1;
+        let child = self.slot_mut(next);
+        if let Some(en_passant) = child.en_passant {
+            child.key ^= ZOBRIST.en_passant_key(en_passant.as_index());
+            child.en_passant = None;
+        }
+        child.active_color = !child.active_color;
+        child.key ^= ZOBRIST.side;
+        child.fifty_move_rule += 1;
+        child.checkers = 0;
+
+        self.debug_assert_state_in_step();
+        debug_assert_eq!(
+            self.checkers,
+            self.recompute_checkers(),
+            "checkers out of step after a pass"
+        );
+    }
+
+    /// Take the pass back. The mirror of `make_null_move`, and the only thing
+    /// that may follow one.
+    pub(crate) fn undo_null_move(&mut self) {
+        self.ply -= 1;
+        self.line_ply -= 1;
+        self.debug_assert_state_in_step();
+    }
+}
+
+impl Position {
+    /// The move played on this position where it stands, the child's slot
+    /// already holding a copy of its parent. False if the move exposes its
+    /// own king, and the slot is then left as scratch.
+    #[inline(always)]
+    fn play_in_place<const MAINTAIN_CHECKERS: bool>(&mut self, play: &Play) -> bool {
         let opposing_color = !self.active_color;
         let old_castle = self.castle;
         let bits = old_castle.bits()
@@ -1585,9 +1728,6 @@ impl Board {
             }
         }
 
-        self.ply += 1;
-        self.line_ply += 1;
-
         let king_index = self.king_index(self.active_color);
         // A move can only expose its own king when there was a check to walk
         // back into, the king itself moved, en passant emptied a second
@@ -1634,7 +1774,6 @@ impl Board {
             play
         );
         if exposed {
-            self.undo_move();
             false
         } else {
             if MAINTAIN_CHECKERS {
@@ -1653,63 +1792,11 @@ impl Board {
             true
         }
     }
+}
 
-    #[inline(always)]
-    pub(crate) fn undo_move(&mut self) {
-        let previous = history_index(self.ply - 1);
-        let history = self.history[previous].unwrap();
-        self.history[previous] = None;
-        let play = history.play;
-
-        let mover = !self.active_color;
-        self.castle = history.castle;
-        self.en_passant = history.en_passant;
-        self.fifty_move_rule = history.fifty_move_rule;
-        self.ply -= 1;
-        self.line_ply -= 1;
-
-        if play.en_passant {
-            let taken = behind(play.to, mover);
-            self.place_bare::<true>(taken, Piece::Pawn, self.active_color);
-        }
-
-        if let Some(promote) = play.promote {
-            self.place_bare::<false>(play.to, promote.into(), mover);
-            self.place_bare::<true>(play.from, Piece::Pawn, mover);
-        } else {
-            let from_piece = self
-                .get_piece_index(play.to)
-                .expect("The to square must always be occupied when undoing");
-            self.relocate_bare(play.to, play.from, from_piece, mover);
-        }
-
-        if let Some(capture) = play.capture {
-            if !play.en_passant {
-                self.place_bare::<true>(play.to, capture, self.active_color);
-            }
-        }
-        if play.castle {
-            match play.to {
-                C1 => self.relocate_bare(D1, A1, Piece::Rook, mover),
-                C8 => self.relocate_bare(D8, A8, Piece::Rook, mover),
-                G1 => self.relocate_bare(F1, H1, Piece::Rook, mover),
-                G8 => self.relocate_bare(F8, H8, Piece::Rook, mover),
-                _ => unreachable!(),
-            }
-        }
-
-        self.active_color = mover;
-        // the key, the pawn key and the accumulator come back by copy rather
-        // than being unfolded: the pieces are moved back on the boards alone
-        let kept = &self.kept.0[self.ply % KEPT_PLIES];
-        self.pawn_key = kept.pawn_key;
-        self.eval = kept.eval;
-        self.key = history.position_key;
-        self.checkers = history.checkers;
-        self.debug_assert_state_in_step();
-    }
-
-    /// Move a piece on the boards and `squares` alone, for the unmake.
+impl Position {
+    /// Move a piece on the boards and `squares` alone, under the make's
+    /// relocation, which keeps the keys and the accumulator.
     #[inline(always)]
     fn relocate_bare(&mut self, from: u8, to: u8, piece: Piece, color: Color) {
         let both = (1u64 << from) | (1u64 << to);
@@ -1746,64 +1833,6 @@ impl Board {
         } else {
             side.clear_bit(index);
         }
-    }
-
-    /// Hand the move to the other side without touching a piece. Not a
-    /// chess move: the search passes to ask what a position is worth to a
-    /// side that does nothing.
-    ///
-    /// The fifty move counter runs on, so near the horizon passing does not
-    /// buy the side to move its way out of a draw. The history entry's key is
-    /// salted to keep the pass out of the repetition arithmetic;
-    /// `has_repeated` has the reasoning.
-    pub(crate) fn make_null_move(&mut self) {
-        debug_assert!(!self.in_check(), "a side in check cannot pass");
-        self.history[history_index(self.ply)] = Some(PlayState {
-            play: NULL_PLAY,
-            en_passant: self.en_passant,
-            castle: self.castle,
-            fifty_move_rule: self.fifty_move_rule,
-            position_key: self.key ^ NULL_HISTORY_SALT,
-            checkers: self.checkers,
-        });
-
-        if let Some(en_passant) = self.en_passant {
-            self.key ^= ZOBRIST.en_passant_key(en_passant.as_index());
-            self.en_passant = None;
-        }
-        self.active_color = !self.active_color;
-        self.key ^= ZOBRIST.side;
-        self.fifty_move_rule += 1;
-        self.ply += 1;
-        self.line_ply += 1;
-        self.checkers = 0;
-
-        self.debug_assert_state_in_step();
-        debug_assert_eq!(
-            self.checkers,
-            self.recompute_checkers(),
-            "checkers out of step after a pass"
-        );
-    }
-
-    /// Take the pass back. The mirror of `make_null_move`, and the only thing
-    /// that may follow one.
-    pub(crate) fn undo_null_move(&mut self) {
-        let previous = history_index(self.ply - 1);
-        let history = self.history[previous].unwrap();
-        self.history[previous] = None;
-        debug_assert_eq!(history.play, NULL_PLAY, "the last ply was not a pass");
-
-        self.castle = history.castle;
-        self.en_passant = history.en_passant;
-        self.fifty_move_rule = history.fifty_move_rule;
-        self.ply -= 1;
-        self.line_ply -= 1;
-        self.active_color = !self.active_color;
-        self.key = history.position_key ^ NULL_HISTORY_SALT;
-        self.checkers = history.checkers;
-
-        self.debug_assert_state_in_step();
     }
 
     #[inline(always)]
@@ -2376,7 +2405,9 @@ impl Board {
         }
         (white_value, black_value)
     }
+}
 
+impl Board {
     /// Count the legal moves to a depth, the standard measure of whether
     /// move generation is right.
     pub fn perft(&mut self, depth: u8) -> u64 {
@@ -2464,7 +2495,8 @@ impl Board {
             .parse::<usize>()
             .map_err(|e| e.to_string())?;
 
-        let mut board = Board {
+        let mut ply = move_number * 2;
+        let mut board = Position {
             pieces: [0; 6],
             white: 0,
             black: 0,
@@ -2475,8 +2507,6 @@ impl Board {
             king_squares: [64; 2],
             castle: CastlePermissions::from_fen(castle)?,
 
-            ply: move_number * 2,
-            line_ply: 0,
             en_passant: Coordinate::from_string(en_passant)?,
             checkers: 0,
             fifty_move_rule: half_move_clock
@@ -2484,13 +2514,11 @@ impl Board {
                 .map_err(|e| e.to_string())?,
             eval: Accumulator::EMPTY,
 
-            history: EMPTY_HISTORY,
-            kept: KeptStack([Kept::EMPTY; KEPT_PLIES]),
             key: INITIAL_KEY,
             pawn_key: 0,
         };
         if board.active_color == Color::Black {
-            board.ply += 1;
+            ply += 1;
         }
 
         let mut rank = 8;
@@ -2566,7 +2594,12 @@ impl Board {
         board.eval.seed_material(board.material_value());
         board.checkers = board.recompute_checkers();
         board.debug_assert_state_in_step();
-        Ok(board)
+        Ok(Board {
+            stack: [MaybeUninit::new(board); STACK_PLIES],
+            ply,
+            line_ply: 0,
+            keys: [0; HISTORY_PLIES],
+        })
     }
 
     /// The position as a fen, all six fields, which `from_fen` reads back.

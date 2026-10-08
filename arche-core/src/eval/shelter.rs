@@ -10,7 +10,9 @@
 
 use super::pawn_structure::files_of;
 use super::weigh;
-use crate::board::{Board, ZOBRIST};
+#[cfg(test)]
+use crate::board::Board;
+use crate::board::{Position, ZOBRIST};
 use crate::misc::{Color, Piece};
 use crate::psqt::pack;
 
@@ -144,7 +146,7 @@ pub(crate) fn weight(index: usize) -> i32 {
 /// king move would then have to write it, and this costs two loads and two
 /// xors at the one place that asks.
 #[inline]
-pub(crate) fn key(board: &Board) -> u64 {
+pub(crate) fn key(board: &Position) -> u64 {
     board.pawn_key
         ^ ZOBRIST.get_piece_key(board.king_index(Color::White), Piece::King, Color::White)
         ^ ZOBRIST.get_piece_key(board.king_index(Color::Black), Piece::King, Color::Black)
@@ -172,7 +174,7 @@ pub(crate) fn key(board: &Board) -> u64 {
 /// The evaluation and the tuner's walk both read this, so the hand counts in
 /// the tests below are what pin it.
 #[inline]
-pub(crate) fn counts_of(board: &Board, color: Color) -> [i32; COUNTS] {
+pub(crate) fn counts_of(board: &Position, color: Color) -> [i32; COUNTS] {
     let masks = &MASKS;
     let square = board.king_index(color) as usize;
     let side = color as usize;
@@ -201,14 +203,14 @@ pub(crate) fn counts_of(board: &Board, color: Color) -> [i32; COUNTS] {
 
 /// The seven counts, written into `into`, which is what [`super::TERMS`] hands
 /// the tuner's walk.
-pub(crate) fn counts(board: &Board, color: Color, into: &mut [i32]) {
+pub(crate) fn counts(board: &Position, color: Color, into: &mut [i32]) {
     into.copy_from_slice(&counts_of(board, color));
 }
 
 /// What white's king shelter stands ahead by, as a packed pair on the scale
 /// the piece square pair is on.
 #[inline]
-pub(crate) fn fold(board: &Board) -> i32 {
+pub(crate) fn fold(board: &Position) -> i32 {
     weigh(
         &SHELTER,
         counts_of(board, Color::White),
