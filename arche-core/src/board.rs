@@ -113,6 +113,13 @@ impl Building {
     }
 }
 
+const FILE_A: u64 = 0x0101_0101_0101_0101;
+const FILE_H: u64 = FILE_A << 7;
+const RANK_2: u64 = 0xFF << 8;
+const RANK_3: u64 = 0xFF << 16;
+const RANK_6: u64 = 0xFF << 40;
+const RANK_7: u64 = 0xFF << 48;
+
 /// Pop the lowest set bit and return its index.
 #[inline(always)]
 pub(crate) fn pop_lsb(bb: &mut u64) -> u8 {
@@ -949,81 +956,110 @@ impl Position {
                 }
             }
         }
-        let mut pawns = self.pawns() & color_mask;
-        while pawns != 0 {
-            let from = pop_lsb(&mut pawns);
-            let rank = rank_of(from);
-            let can_promote = match self.active_color {
-                Color::White => rank == 7,
-                Color::Black => rank == 2,
+        // The pawns are walked as sets: the pawns with a capture or an en
+        // passant capture, and then the pawns with a push, each from its
+        // lowest square. A pawn with nothing to give is never visited. The
+        // two walks write to the two parts of the list, so each part holds
+        // the pawns in square order, each pawn's captures before its en
+        // passant capture and its single push before its double push.
+        let pawns = self.pawns() & color_mask;
+        let taken = capture_mask & evasion_filter;
+        let empty = !all_pieces;
+        // `seventh` is the rank a pawn promotes from, `takers` the pawns
+        // with a capture, `singles` and `doubles` the pawns whose single or
+        // double push is open (and, in check, blocks)
+        let (seventh, takers, singles, doubles, en_passant_from) = match self.active_color {
+            Color::White => {
+                let one = (pawns << 8) & empty;
+                let two = ((one & RANK_3) << 8) & empty & evasion_filter;
+                (
+                    RANK_7,
+                    (((taken & !FILE_H) >> 7) | ((taken & !FILE_A) >> 9)) & pawns,
+                    (one & evasion_filter) >> 8,
+                    two >> 16,
+                    self.en_passant
+                        .map_or(0, |s| attack_masks.white_pawns[s.as_index() as usize]),
+                )
+            }
+            Color::Black => {
+                let one = (pawns >> 8) & empty;
+                let two = ((one & RANK_6) >> 8) & empty & evasion_filter;
+                (
+                    RANK_2,
+                    (((taken & !FILE_A) << 7) | ((taken & !FILE_H) << 9)) & pawns,
+                    (one & evasion_filter) << 8,
+                    two << 16,
+                    self.en_passant
+                        .map_or(0, |s| attack_masks.black_pawns[s.as_index() as usize]),
+                )
+            }
+        };
+        let en_passant_from = en_passant_from & pawns;
+        let mut capturing = takers | en_passant_from;
+        while capturing != 0 {
+            let from = pop_lsb(&mut capturing);
+            let attacks = match self.active_color {
+                Color::White => attack_masks.black_pawns[from as usize],
+                Color::Black => attack_masks.white_pawns[from as usize],
             };
-            // read off the table here rather than through `pawn_attacks_from`:
-            // through the helper the compiler laid this loop out differently
-            // and the full generator measured 7% more instructions over the
-            // bench (callgrind against 31eb33b), 0.25% of the whole run
-            let pmoves: u64 = match self.active_color {
-                Color::White => attack_masks.black_pawns[from as usize] & capture_mask,
-                Color::Black => attack_masks.white_pawns[from as usize] & capture_mask,
-            };
-            let mut targets = pmoves & evasion_filter;
-            while targets != 0 {
-                let to = pop_lsb(&mut targets);
-                let capture = self.get_piece_index(to);
-                if can_promote {
+            let mut targets = attacks & taken;
+            if seventh.is_bit_set(from) {
+                while targets != 0 {
+                    let to = pop_lsb(&mut targets);
+                    let capture = self.get_piece_index(to);
                     for p in PromotePiece::VARIANTS {
                         moves.capture(Play::new(from, to, capture, Some(p), false, false));
                     }
-                } else {
-                    moves.capture(Play::new(from, to, capture, None, false, false));
+                }
+            } else {
+                while targets != 0 {
+                    let to = pop_lsb(&mut targets);
+                    moves.capture(Play::new(
+                        from,
+                        to,
+                        self.get_piece_index(to),
+                        None,
+                        false,
+                        false,
+                    ));
                 }
             }
-            // the captures list keeps the promoting pushes: quiescence would
-            // otherwise stand a pawn on the seventh and score it as a pawn
-            if !CAPTURES_ONLY || can_promote {
-                let to = match self.active_color {
-                    Color::White => from as isize + 8,
-                    Color::Black => from as isize - 8,
-                };
+            if en_passant_from.is_bit_set(from) {
+                let to = self.en_passant.map_or(0, |s| s.as_index());
+                moves.capture(Play::new(from, to, Some(Piece::Pawn), None, true, false));
+            }
+        }
+        // the captures list keeps the promoting pushes: quiescence would
+        // otherwise stand a pawn on the seventh and score it as a pawn
+        let mut pushing = if CAPTURES_ONLY {
+            singles & seventh
+        } else {
+            singles | doubles
+        };
+        while pushing != 0 {
+            let from = pop_lsb(&mut pushing);
+            let to = match self.active_color {
+                Color::White => from + 8,
+                Color::Black => from - 8,
+            };
+            if seventh.is_bit_set(from) {
+                for p in PromotePiece::VARIANTS {
+                    let play = Play::new(from, to, None, Some(p), false, false);
+                    moves.quiet(play);
+                }
+            } else if !CAPTURES_ONLY {
                 // the evasion mask is asked of each push and not of the step
                 // they share: a double push can block a check the single
                 // push does not reach
-                if (0..64).contains(&to) && !all_pieces.is_bit_set(to as u8) {
-                    let to = to as u8;
-                    let blocks = evasion_filter.is_bit_set(to);
-                    if can_promote {
-                        if blocks {
-                            for p in PromotePiece::VARIANTS {
-                                moves.quiet(Play::new(from, to, None, Some(p), false, false));
-                            }
-                        }
-                    } else {
-                        if blocks {
-                            moves.quiet(Play::new(from, to, None, None, false, false));
-                        }
-                        if match self.active_color {
-                            Color::White => rank == 2,
-                            Color::Black => rank == 7,
-                        } {
-                            let to = match self.active_color {
-                                Color::White => to as isize + 8,
-                                Color::Black => to as isize - 8,
-                            };
-                            if !all_pieces.is_bit_set(to as u8)
-                                && evasion_filter.is_bit_set(to as u8)
-                            {
-                                moves.quiet(Play::new(from, to as u8, None, None, false, false));
-                            }
-                        }
-                    }
+                if singles.is_bit_set(from) {
+                    moves.quiet(Play::new(from, to, None, None, false, false));
                 }
-            }
-            if let Some(en_passant) = &self.en_passant {
-                let i = en_passant.as_index();
-                let can_en_passant = attack_masks
-                    .pawn_attacks_from(from, self.active_color)
-                    .is_bit_set(i);
-                if can_en_passant {
-                    moves.capture(Play::new(from, i, Some(Piece::Pawn), None, true, false));
+                if doubles.is_bit_set(from) {
+                    let to = match self.active_color {
+                        Color::White => to + 8,
+                        Color::Black => to - 8,
+                    };
+                    moves.quiet(Play::new(from, to, None, None, false, false));
                 }
             }
         }
@@ -2781,6 +2817,62 @@ mod make_move {
                 .copied()
                 .collect();
             assert_eq!(board.generate_captures(), filtered, "in {}", fen);
+        }
+    }
+
+    /// The order the pawns' moves are listed in, pinned by the lists the
+    /// generator gave when it walked one pawn at a time: promotions with and
+    /// without a capture, en passant for either side, single and double
+    /// pushes, and pawns on the back ranks, which `from_fen` accepts.
+    #[test]
+    fn the_pawns_moves_keep_the_one_pawn_at_a_time_order() {
+        let cases = [
+            (
+                "r3k2r/1P4P1/8/2pP4/8/8/P1P1P1P1/R3K2R w KQkq c6 0 1",
+                "h1h8 d5c6 b7a8n b7a8b b7a8r b7a8q g7h8n g7h8b g7h8r g7h8q a1b1 a1c1 a1d1 h1f1 \
+                 h1g1 h1h2 h1h3 h1h4 h1h5 h1h6 h1h7 e1d1 e1f1 e1d2 e1f2 e1c1 e1g1 a2a3 a2a4 c2c3 \
+                 c2c4 e2e3 e2e4 g2g3 g2g4 d5d6 b7b8n b7b8b b7b8r b7b8q g7g8n g7g8b g7g8r g7g8q",
+            ),
+            (
+                "r3k2r/p1p1p1p1/8/8/3pP3/8/1p4p1/R3K2R b KQkq e3 0 1",
+                "h8h1 b2a1n b2a1b b2a1r b2a1q g2h1n g2h1b g2h1r g2h1q d4e3 a8b8 a8c8 a8d8 h8h2 \
+                 h8h3 h8h4 h8h5 h8h6 h8h7 h8f8 h8g8 e8d7 e8f7 e8d8 e8f8 e8c8 e8g8 b2b1n b2b1b \
+                 b2b1r b2b1q g2g1n g2g1b g2g1r g2g1q d4d3 a7a6 a7a5 c7c6 c7c5 e7e6 e7e5 g7g6 g7g5",
+            ),
+            (
+                "P3k3/8/8/8/8/8/8/p3K2P w - - 0 1",
+                "e1d1 e1f1 e1d2 e1e2 e1f2 h1h2",
+            ),
+            (
+                "P3k3/8/8/8/8/8/8/p3K2P b - - 0 1",
+                "e8d7 e8e7 e8f7 e8d8 e8f8",
+            ),
+        ];
+        for (fen, expected) in cases {
+            let board = Board::from_fen(fen).unwrap();
+            let names = |list: super::MoveList| -> Vec<String> {
+                list.iter().map(|m| m.to_string()).collect()
+            };
+            let full: Vec<&str> = expected.split_whitespace().collect();
+            assert_eq!(
+                names(board.generate_moves()),
+                full,
+                "the full list in {fen}"
+            );
+            let material: Vec<&str> = full
+                .iter()
+                .copied()
+                .filter(|name| {
+                    board.generate_moves().iter().any(|m| {
+                        m.to_string() == *name && (m.capture.is_some() || m.promote.is_some())
+                    })
+                })
+                .collect();
+            assert_eq!(
+                names(board.generate_captures()),
+                material,
+                "the captures list in {fen}"
+            );
         }
     }
 
