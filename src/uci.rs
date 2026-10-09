@@ -173,6 +173,10 @@ pub struct UCI<T: Engine, W: Write> {
     /// since it describes the connection rather than the game.
     move_overhead: u64,
 
+    /// Whether the last position sent was refused. A `go` is then answered
+    /// with the null move rather than searched on the board left behind.
+    position_refused: bool,
+
     engine: T,
     out: SharedWriter<W>,
 }
@@ -215,6 +219,7 @@ impl<T: Engine, W: Write> UCI<T, W> {
     fn with_writer(engine: T, out: SharedWriter<W>) -> Self {
         Self {
             move_overhead: DEFAULT_MOVE_OVERHEAD_MS,
+            position_refused: false,
             engine,
             out,
         }
@@ -402,8 +407,11 @@ impl<T: Engine, W: Write> UCI<T, W> {
     /// A position that cannot be read keeps the one before it, and a move
     /// that cannot be played leaves the position at the last one that could
     /// be. The interface is expected to send the whole line again rather than
-    /// carry on from a position we rejected.
+    /// carry on from a position we rejected, and a `go` is refused until it
+    /// does.
     fn parse_position(&mut self, line: &str) -> Result<(), String> {
+        // cleared only once the whole line has been set
+        self.position_refused = true;
         // trimmed first, as the dispatcher reads the line
         let position_string = line
             .trim_start()
@@ -434,17 +442,23 @@ impl<T: Engine, W: Write> UCI<T, W> {
                 }
             }
         }
+        self.position_refused = false;
         Ok(())
     }
 
     /// A `go`. The reader thread's stop flag rides into the search, and a go
     /// that holds its answer waits here for the stop.
     fn parse_go(&mut self, line: &str, control: &SessionControl) {
-        let go = Go::of(
-            &Params::of(line),
-            self.engine.active_color(),
-            self.move_overhead,
-        );
+        // answered at once, held or not: there is no search to stop
+        let go = match self.read_go(line) {
+            Ok(go) => go,
+            Err(why) => {
+                control.answered();
+                self.say(format_args!("info string {}", why));
+                self.say(format_args!("bestmove 0000"));
+                return;
+            }
+        };
         let sp = SearchParameters::stoppable(go.depth, go.limits(), control.handle());
 
         // the closure writes while the engine is borrowed for the search, so
@@ -488,6 +502,18 @@ impl<T: Engine, W: Write> UCI<T, W> {
             }
             SearchOutcome::Aborted(None) => self.say(format_args!("bestmove 0000")),
         }
+    }
+
+    /// What a `go` asks for, or why it cannot be searched.
+    fn read_go(&self, line: &str) -> Result<Go, String> {
+        if self.position_refused {
+            return Err("no position to search: the last one sent was refused".to_string());
+        }
+        Ok(Go::of(
+            &Params::of(line),
+            self.engine.active_color(),
+            self.move_overhead,
+        ))
     }
 
     /// The last info line, said for the whole search rather than an iteration.
@@ -938,6 +964,37 @@ mod tests {
             let mut uci = uci();
             uci.handle(line);
             assert_eq!(said(&uci).trim_end(), expected, "{}", line);
+        }
+    }
+
+    #[test]
+    fn a_go_after_a_refused_position_answers_the_null_move_until_one_is_set() {
+        const REFUSED: &str = "info string no position to search: the last one sent was refused";
+        for refused in [
+            "position fen not a fen at all",
+            // the moves before the bad one are played, which is not the
+            // position sent either
+            "position startpos moves e2e4 zzzz",
+        ] {
+            let mut uci = uci();
+            uci.run(Cursor::new(format!(
+                "position startpos\n{}\ngo depth 1\ngo nodes 500\n\
+                 position startpos moves e2e4\ngo depth 1\n",
+                refused
+            )));
+            let spoken = said(&uci);
+            let lines: Vec<&str> = spoken.lines().collect();
+            // the first line says why the position was refused
+            assert_eq!(
+                lines[1..5],
+                [REFUSED, "bestmove 0000", REFUSED, "bestmove 0000"],
+                "{}: {}",
+                refused,
+                spoken
+            );
+            let last = lines.last().unwrap_or(&"");
+            assert!(last.starts_with("bestmove "), "{}: {}", refused, spoken);
+            assert_ne!(*last, "bestmove 0000", "{}: {}", refused, spoken);
         }
     }
 
