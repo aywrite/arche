@@ -123,8 +123,9 @@ worth doing.
   5.6 standard errors, but of fourteen weights rather than 768, so it says the corpus was
   small for that question as well as the question hard. The tables were refitted jointly
   with every other weight but material on 59,049 games in September 2026, which five fold
-  cross validation with whole pairs held out reads 0.000832 better than the weights they
-  replaced, against a standard error of 0.000040
+  cross validation with whole pairs held out, in a harness outside the tree (the tuner here
+  folds by game), reads 0.000832 better than the weights they replaced, against a standard
+  error of 0.000040
 - the harness said otherwise until 2026-09-10, and why is worth keeping. It split the
   corpus on the fen, and 1,805 of the corpus's 1,809 games had rows on both sides: 53.1% of
   the held-out rows had the position a ply away, from the same game and carrying the same
