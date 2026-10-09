@@ -566,7 +566,9 @@ commit or a pull request number:
 - `shards` is how many jobs it is split across
 
 So a change can be measured before it merges by setting `candidate` to its pull
-request number and leaving the rest alone.
+request number and leaving the rest alone. Every arm runs with a 256MB table a
+side unless `hash_mb` says otherwise. The size is part of a figure: the table
+aging arm (`813803e`) passed sprt [0, 10] at 16MB and read +4 ±9 at 256MB.
 
 A runner plays about three and a third games a minute at 10+0.1 and one and a
 tenth at 30+0.3, and play is capped at 150 minutes, so a match worth reading is
