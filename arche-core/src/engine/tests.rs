@@ -11,10 +11,10 @@ mod search {
     use crate::engine::Board;
     use crate::engine::Engine;
     use crate::engine::{
-        ASPIRATION_MIN_DEPTH, Aspiration, Decision, Limits, MAX_PLY, NULL_MOVE_MIN_DEPTH,
-        NULL_MOVE_REDUCTION, Play, RootBounds, SINGULAR_ENTRY_SLACK, SINGULAR_MARGIN,
-        SINGULAR_MIN_DEPTH, Score, ScoreBound, SearchConfig, SearchOutcome, SearchParameters,
-        SearchResult, TaintPolicy, Value, null_move_reduction,
+        ASPIRATION_MIN_DEPTH, ASPIRATION_WIDTH, Aspiration, Decision, Limits, MAX_PLY,
+        NULL_MOVE_MIN_DEPTH, NULL_MOVE_REDUCTION, Play, RootBounds, SINGULAR_ENTRY_SLACK,
+        SINGULAR_MARGIN, SINGULAR_MIN_DEPTH, Score, ScoreBound, SearchConfig, SearchOutcome,
+        SearchParameters, SearchResult, TaintPolicy, Value, null_move_reduction,
     };
     use crate::late_move::{
         DEEP_REDUCTION, DEEP_REDUCTION_MIN_DEPTH, LATE_MOVE_MIN_DEPTH, LATE_MOVE_REDUCTION,
@@ -1331,7 +1331,10 @@ mod search {
     fn failing_low(budget: u64) -> SearchOutcome {
         let depth = ASPIRATION_MIN_DEPTH;
         let window = Aspiration::open(Some(530), depth);
-        assert_eq!((window.alpha, window.beta), (515, 545));
+        assert_eq!(
+            (window.alpha, window.beta),
+            (530 - ASPIRATION_WIDTH, 530 + ASPIRATION_WIDTH)
+        );
         engine(Board::new()).search_root(depth, nodes_only(budget), None, window)
     }
 
@@ -1355,10 +1358,10 @@ mod search {
     fn a_root_whose_best_move_only_meets_alpha_answers_a_ceiling() {
         // one half move short of the fifty move draw with no capture on
         // the board, so every move scores the draw, exactly the alpha of a
-        // window opened at fifteen. Meeting alpha does not raise it
+        // window opened one width above it. Meeting alpha does not raise it
         let fen = "4k3/8/8/8/8/8/8/R3K3 w - - 99 120";
         let depth = ASPIRATION_MIN_DEPTH;
-        let window = Aspiration::open(Some(15), depth);
+        let window = Aspiration::open(Some(ASPIRATION_WIDTH), depth);
         assert_eq!(window.alpha, 0);
         let mut e = engine(Board::from_fen(fen).unwrap());
         let SearchOutcome::Complete(result, bound) =
