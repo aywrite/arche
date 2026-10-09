@@ -783,8 +783,9 @@ fn format_info(
     bound: ScoreBound,
 ) -> String {
     let millis = result.elapsed.as_millis();
-    // a search faster than a millisecond is measured as one
-    let nps = (result.nodes as u128 * 1000 / millis.max(1)) as u64;
+    // over microseconds, so a search under a millisecond (a time of zero)
+    // still has its own rate
+    let nps = (result.nodes as u128 * 1_000_000 / result.elapsed.as_micros().max(1)) as u64;
     let qualifier = match bound {
         ScoreBound::Exact => "",
         ScoreBound::Lower => " lowerbound",
@@ -1935,13 +1936,16 @@ go depth 3
                 ScoreBound::Exact,
                 "info depth 4 seldepth 4 nodes 1500 time 20 nps 75000 score mate 2 pv e2e4",
             ),
-            // under a millisecond
+            // under a millisecond: 673 nodes in 673 microseconds
             (
                 1,
-                result(300, 0, 1, 0),
+                SearchResult {
+                    elapsed: Duration::from_micros(673),
+                    ..result(673, 0, 1, 0)
+                },
                 vec![],
                 ScoreBound::Exact,
-                "info depth 1 seldepth 1 nodes 300 time 0 nps 300000 score cp 0 pv ",
+                "info depth 1 seldepth 1 nodes 673 time 0 nps 1000000 score cp 0 pv ",
             ),
             // the qualifier goes after the score, where the protocol has it
             (
