@@ -457,13 +457,13 @@ generated lines below are left as they were published.
   measurements stating no claim. Three of the 22 (`66aa260`, `594366a`
   and `911eaeb`) were measured across trees counting different benches,
   where a rate is not a like for like comparison either. The trailers in
-  `git log` carry the spread, and sections from 0.5.0 on print it.
+  `git log` carry the spread, and sections from 0.4.3 on print it.
 - Two entries here print `[bench 4395471]` and their trees pin 4162584:
   "Let the residuals argument search a suite of its own" (`ac47935`) and
   "Record that the reverse futility margin is where it should be"
   (`a0bf845`). Both were rebased after the bench workflow built them, and
   the trees they landed on count 4162584. `scripts/check_bench_pins.py`
-  reads a message against its own pins and the release runs it from 0.5.0
+  reads a message against its own pins and the release runs it from 0.4.3
   on, with these two on its acknowledgement list.
 - Three entries here print `vs master` in their `[elo ...]`, which names
   whatever master was on the day the trailer was written rather than what
@@ -480,7 +480,7 @@ generated lines below are left as they were published.
 
   Run 33964436951 kept no artifacts, expired or otherwise. It ran before
   the workflow began keeping a manifest, so its bases come from its job
-  logs, which are held for ninety days as the artifacts are. From 0.5.0 on
+  logs, which are held for ninety days as the artifacts are. From 0.4.3 on
   `scripts/check_trailers.py` refuses a base that is not a commit or a
   release tag.
 
