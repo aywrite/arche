@@ -420,8 +420,11 @@ of these again without saying what is different this time.
   while the harmful fail lows, the moves written off wrongly, move 0.995
   times (95% [0.962, 1.030]); decomposed on the quantity the bar read, 90.7%
   of the gain is those fail highs and 11.5% is late move pruning's own
-  region, where every attention row is a harmful fail low. So about a ninth
-  of it is a real reduction in errors, at the gate whose rate that corpus
+  region, where every attention row is a harmful fail low. The two shares
+  sum to 102.2% because the rest of the quantity moved against the gain,
+  and the record does not break that part out. So about a ninth of it is a
+  real reduction in errors, at the gate
+  whose rate that corpus
   resolves worst. The label these weights are fitted on adds a wasted scout
   to a wrong answer, and an objective over it moves mostly the cheaper one,
   because that is where the rows are. Two grouped refits and this search
