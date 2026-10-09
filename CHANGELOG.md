@@ -259,6 +259,15 @@ generated lines below are left as they were published.
 
 ## [0.4.5] - 2026-09-19
 
+Corrections to this section, written by hand after it was generated. The
+generated lines below are left as they were published.
+
+- "Put the transposition table on huge pages" (`28fe822`) prints -1.1%,
+  which is the bench's 16MB table. The advice is given only to a table
+  over 32MB, so there the two builds are the same program. The commit's
+  own figure at 256MB is +10.6% over five interleaved rounds on a four
+  core container.
+
 ### Features
 
 - *(eval)* Count the enemy pieces bearing on the king's ring, at zero weight [bench 3868987] [elo not measured]
