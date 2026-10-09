@@ -201,6 +201,24 @@ fn a_stop_with_nothing_running_is_taken_in_silence() {
 }
 
 #[test]
+fn a_fen_without_its_counters_is_the_position_searched() {
+    // the rook mates on a8, which is no move from the start position the
+    // session held before
+    let mut s = Session::start(&[]);
+    s.say("position startpos");
+    s.say("position fen 6k1/5ppp/8/8/8/8/8/R5K1 w - -");
+    s.say("go depth 2");
+    let best = s.wait_for(|l| l.starts_with("bestmove"));
+    assert_eq!(move_of(&best), "a1a8", "said: {:#?}", s.said);
+    assert!(
+        !s.said.iter().any(|l| l.starts_with("info string")),
+        "the fen was refused: {:#?}",
+        s.said
+    );
+    s.quit();
+}
+
+#[test]
 fn the_debug_log_holds_every_line_read_and_said_in_order() {
     let log = std::env::temp_dir().join(format!("arche-session-{}.log", std::process::id()));
     let _ = std::fs::remove_file(&log);
