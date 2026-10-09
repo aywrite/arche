@@ -77,7 +77,7 @@ impl Kind {
         (self as u64 + 1).wrapping_mul(0xd6e8_feb8_6659_fd93)
     }
 
-    fn bit(self) -> u8 {
+    const fn bit(self) -> u8 {
         1 << self as u8
     }
 }
@@ -87,7 +87,15 @@ impl Kind {
 pub struct Kinds(u8);
 
 impl Kinds {
-    pub const ALL: Kinds = Kinds(0b1111);
+    pub const ALL: Kinds = {
+        let mut set = 0;
+        let mut i = 0;
+        while i < Kind::ALL.len() {
+            set |= Kind::ALL[i].bit();
+            i += 1;
+        }
+        Kinds(set)
+    };
 
     pub fn of(kinds: &[Kind]) -> Kinds {
         Kinds(kinds.iter().fold(0, |set, kind| set | kind.bit()))
@@ -307,7 +315,8 @@ pub struct Report {
     pub kinds: Kinds,
     pub from: u8,
     pub positions: usize,
-    /// Every decision offered, kept or not.
+    /// Every decision of the sampled kinds, from the first sampled depth,
+    /// that the reservoir was offered, kept or not.
     pub events: u64,
     pub overflowed: u64,
     /// Kept records, before the revisits of an address were folded.
@@ -459,7 +468,6 @@ impl fmt::Display for Report {
                 .collect();
             let unmet = rows.iter().filter(|row| row.visits == 0).count();
             let flipped = rows.iter().filter(|row| row.flipped()).count();
-            // the count and its share, which is `-` with nothing under it
             writeln!(
                 f,
                 "kind {} forced {} unmet {} flipped {} {}",

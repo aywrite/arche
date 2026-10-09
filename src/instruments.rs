@@ -92,7 +92,7 @@ impl fmt::Display for Line {
     }
 }
 
-/// The settings the four searching instruments share.
+/// The settings the searching instruments share.
 struct Sampling {
     depth: u8,
     every: u32,
@@ -1026,9 +1026,9 @@ mod tests {
         }
     }
 
-    /// The four rate defaults are the same number today, so the assertions
-    /// on them cannot tell which one a reader passed. The loop only shows
-    /// that `sampling` uses the rate it is handed.
+    /// Every rate default but forced's is the same number today, so the
+    /// assertions on those cannot tell which one a reader passed. The loop
+    /// shows that `sampling` uses the rate it is handed.
     #[test]
     fn every_instrument_defaults_to_the_benchs_depth_and_its_own_rate() {
         let residuals = residual_settings(&Params::of("residuals")).unwrap();
