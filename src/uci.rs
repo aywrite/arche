@@ -507,11 +507,11 @@ impl<T: Engine, W: Write> UCI<T, W> {
         if self.position_refused {
             return Err("no position to search: the last one sent was refused".to_string());
         }
-        Ok(Go::of(
+        Go::of(
             &Params::of(line),
             self.engine.active_color(),
             self.move_overhead,
-        ))
+        )
     }
 
     /// The last info line, said for the whole search rather than an iteration.
@@ -571,17 +571,39 @@ struct Go {
     /// from below as well: a depth of zero, which a negative count reads as,
     /// would run no iteration and answer with no move.
     depth: Option<u8>,
-    /// The node budget. An unreadable one is ignored rather than obeyed as
-    /// zero, which would stop the search before it had a move to report.
+    /// The node budget.
     nodes: Option<u64>,
     time: TimeControl,
     /// The session's `Move Overhead` when the `go` arrived.
     overhead: u64,
 }
 
+/// The words a `go` reads a number after. A line where one is followed by
+/// something that is not a number, or by nothing, is refused. Read as
+/// absent, a depth or a node budget leaves nothing to bound the search; a
+/// clock read as spent answers in a millisecond where the interface meant
+/// to give time.
+const GO_COUNTS: [&str; 8] = [
+    "depth",
+    "nodes",
+    "wtime",
+    "btime",
+    "winc",
+    "binc",
+    "movestogo",
+    "movetime",
+];
+
 impl Go {
-    fn of(params: &Params, color: Color, overhead: u64) -> Self {
-        Go {
+    /// What the line asks for, or why it cannot be read.
+    fn of(params: &Params, color: Color, overhead: u64) -> Result<Self, String> {
+        for keyword in GO_COUNTS {
+            params
+                .count(keyword)
+                .or_refuse(keyword)
+                .map_err(|why| format!("unrecognised go {why}"))?;
+        }
+        Ok(Go {
             depth: params.count("depth").read().map(|depth| {
                 depth
                     .try_into()
@@ -591,7 +613,7 @@ impl Go {
             nodes: params.count("nodes").read(),
             time: TimeControl::of(params, color),
             overhead,
-        }
+        })
     }
 
     /// The clock starts here, as the command arrives, and the search reports
@@ -1663,42 +1685,19 @@ go depth 3
     }
 
     #[test]
-    fn a_clock_that_cannot_be_read_is_a_spent_one_rather_than_no_clock() {
-        // a word with nothing after it was sent too, so it reads the same way
-        for (line, increment) in [
-            ("go wtime abc winc x", Some(0)),
-            ("go winc x wtime", Some(0)),
-            ("go wtime", None),
-        ] {
-            let control = TimeControl::of(&Params::of(line), Color::White);
-            assert_eq!(control.time, Some(0), "{}: clock", line);
-            assert_eq!(control.increment, increment, "{}: increment", line);
-            assert!(
-                control.budget(DEFAULT_MOVE_OVERHEAD_MS).is_some(),
-                "{}: a clock that cannot be read must still bound the search",
-                line
-            );
-        }
-    }
-
-    #[test]
     fn a_depth_is_read_as_far_as_the_ply_rail_and_no_further() {
-        // an unreadable depth is dropped rather than read as zero, which
-        // would come back without a move
         for (line, depth) in [
             ("go depth 5", Some(5)),
             ("go depth 999", Some(arche_core::MAX_PLY)),
             // zero and below would run no iteration, so they read as one
             ("go depth 0", Some(1)),
             ("go depth -1", Some(1)),
-            ("go depth abc", None),
-            // and a depth word with nothing after it is no depth either
-            ("go depth", None),
             ("go infinite", None),
         ] {
             assert_eq!(
-                Go::of(&Params::of(line), Color::White, DEFAULT_MOVE_OVERHEAD_MS).depth,
-                depth,
+                Go::of(&Params::of(line), Color::White, DEFAULT_MOVE_OVERHEAD_MS)
+                    .map(|go| go.depth),
+                Ok(depth),
                 "{}",
                 line
             );
@@ -1735,8 +1734,6 @@ go depth 3
             ("go depth 3", Some(3), None, u64::MAX),
             ("go", None, None, u64::MAX),
             ("go movetime 500 nodes 5000", None, fixed(450), 5000),
-            // a limit read as zero would stop the search before it had a move
-            ("go nodes abc", None, None, u64::MAX),
             // the root deepens by one more in check, so the largest depth a
             // byte holds used to overflow it; the rail leaves room
             ("go depth 255", Some(arche_core::MAX_PLY), None, u64::MAX),
@@ -1745,6 +1742,32 @@ go depth 3
             assert_eq!(asked.depth, depth, "{}: depth", line);
             assert_eq!(asked.limits.clock(), clock, "{}: clock", line);
             assert_eq!(asked.limits.node_budget(), nodes, "{}: nodes", line);
+        }
+    }
+
+    #[test]
+    fn a_go_whose_numbers_cannot_be_read_is_refused_without_a_search() {
+        for (line, why) in [
+            ("go depth abc", "depth: abc"),
+            ("go depth", "depth: no value"),
+            ("go nodes 3.5", "nodes: 3.5"),
+            ("go wtime abc", "wtime: abc"),
+            // the other side's clock too: the line is wrong whoever moves
+            ("go btime abc", "btime: abc"),
+            ("go wtime 1000 winc", "winc: no value"),
+            ("go movestogo -", "movestogo: -"),
+            ("go movetime x", "movetime: x"),
+            ("go infinite depth abc", "depth: abc"),
+        ] {
+            let mut uci = recording();
+            uci.run(Cursor::new(format!("{}\n", line)));
+            assert!(uci.engine.asked.is_none(), "{} was searched", line);
+            assert_eq!(
+                uci.out.read_back(),
+                format!("info string unrecognised go {}\nbestmove 0000\n", why),
+                "{}",
+                line
+            );
         }
     }
 
@@ -2564,6 +2587,18 @@ go depth 3
     }
 
     #[test]
+    fn a_go_that_cannot_be_read_answers_without_waiting_for_a_stop() {
+        // a depth or a clock that cannot be read used to leave the go with
+        // nothing to bound it, holding its answer for a stop
+        for line in ["go depth abc", "go btime abc", "go infinite nodes x"] {
+            let driven = Driven::instant();
+            driven.type_line(line);
+            driven.wait_for("bestmove 0000");
+            driven.finish();
+        }
+    }
+
+    #[test]
     fn the_interface_leaving_ends_a_held_answer() {
         // a pipe that closes without a quit is an interface that has gone;
         // the hold used to park on a stop that could no longer come
@@ -2623,7 +2658,9 @@ go depth 3
     #[test]
     fn what_holds_its_answer_is_what_nothing_bounds() {
         let holds = |line: &str| {
-            Go::of(&Params::of(line), Color::White, DEFAULT_MOVE_OVERHEAD_MS).holds_its_answer()
+            Go::of(&Params::of(line), Color::White, DEFAULT_MOVE_OVERHEAD_MS)
+                .expect(line)
+                .holds_its_answer()
         };
         assert!(holds("go infinite"));
         assert!(holds("go"));
@@ -2635,13 +2672,11 @@ go depth 3
         assert!(holds("go nodes 99999999999999999999999"));
         assert!(!holds("go movetime 500"));
         assert!(!holds("go wtime 1000"));
-        // a time word with nothing after it is one that was sent, so it
-        // bounds the search rather than leaving it to be stopped
-        assert!(!holds("go wtime"));
-        assert!(!holds("go movetime"));
         // the overhead shrinks a budget and never takes one away
         let held_back = |line: &str| {
-            Go::of(&Params::of(line), Color::White, OVERHEAD_MAX_MS).holds_its_answer()
+            Go::of(&Params::of(line), Color::White, OVERHEAD_MAX_MS)
+                .expect(line)
+                .holds_its_answer()
         };
         assert!(!held_back("go movetime 500"));
         assert!(!held_back("go wtime 1000"));

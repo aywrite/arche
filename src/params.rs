@@ -7,8 +7,8 @@
 //!
 //! A keyword with nothing after it is `Bare`, not absent. The binary's
 //! arguments refuse it, since a measurement at a default nobody asked for
-//! takes as long and answers a different question. The protocol carries on:
-//! a bare clock or move time reads as spent.
+//! takes as long and answers a different question. A `go` that carries one
+//! is refused as well.
 
 use std::num::IntErrorKind;
 use std::str::FromStr;
@@ -19,9 +19,7 @@ pub struct Params<'a> {
     words: Vec<&'a str>,
 }
 
-/// What reading one parameter found, left to the caller to judge: an
-/// unreadable clock is safest read as spent, an unreadable depth better
-/// ignored than obeyed as zero.
+/// What reading one parameter found, left to the caller to judge.
 #[derive(Debug, PartialEq, Eq)]
 pub(crate) enum Param<'a, T> {
     /// The keyword is not among the words.
@@ -138,18 +136,6 @@ impl<'a, T> Param<'a, T> {
         match self {
             Param::Read(value) => Some(value),
             Param::Absent | Param::Bare | Param::Unreadable(_) => None,
-        }
-    }
-
-    /// The value read, or `instead` for a keyword sent without a readable
-    /// value; none only when the keyword is absent. Every caller reads a
-    /// clock or a move time, and a clock that was sent is safer read as spent
-    /// than as missing: a `go` with no time searches without a limit.
-    pub(crate) fn read_or(self, instead: T) -> Option<T> {
-        match self {
-            Param::Read(value) => Some(value),
-            Param::Bare | Param::Unreadable(_) => Some(instead),
-            Param::Absent => None,
         }
     }
 
@@ -272,14 +258,6 @@ mod tests {
         assert_eq!(Params::of("go wtime").count("wtime").read(), None);
         assert_eq!(Params::of("go wtime x").count("wtime").read(), None);
         assert_eq!(Params::of("go wtime 5").count("wtime").read(), Some(5));
-    }
-
-    #[test]
-    fn read_or_stands_in_for_a_keyword_that_was_sent_but_not_for_an_absent_one() {
-        assert_eq!(Params::of("go").count("wtime").read_or(0), None);
-        assert_eq!(Params::of("go wtime").count("wtime").read_or(0), Some(0));
-        assert_eq!(Params::of("go wtime x").count("wtime").read_or(0), Some(0));
-        assert_eq!(Params::of("go wtime 5").count("wtime").read_or(0), Some(5));
     }
 
     #[test]
