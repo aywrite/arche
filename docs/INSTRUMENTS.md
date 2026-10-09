@@ -229,8 +229,9 @@ is the bound the scout was asked about, `scout` is `low`, `high` or `skipped`,
 and `cost` is the nodes the scout spent. A fail high prints `-` in the
 `reference` and `label` columns.
 
-`skipped` is the pruning rules'. A move the attention model prices in its
-deadest band at depth four and up, and a quiet at depth one to three that
+`skipped` is the pruning rules'. A move at depth four and up whose node's
+evaluation stands the skip's margin under beta (or, with `skip_margin` off,
+that the attention model prices in its deadest band), and a quiet at depth one to three that
 either shallow rule drops, are never scouted, so a sampled skip is recorded
 where the loop passes it over, with a cost and a reduction of zero, and
 replayed as a fail low would be. Its `searched` count stands one past the
@@ -240,7 +241,7 @@ makes and unmakes the skipped move around the record, and a move that turns
 out illegal is not recorded, because the skip denied it nothing.
 
 A skipped row at depth one to three is a shallow rule's and one at four or more
-is the model's, since the model decides from four and both shallow rules stop at
+is the deep skip's, since that decides from four and both shallow rules stop at
 three. The ledger does not say which shallow rule took a row, and the two
 overlap on the same moves, so an ablation (`effort`) is what separates them.
 
@@ -297,9 +298,9 @@ multiply, as rules on unrelated parts of the tree would, or whether the pair
 frees more or less than that. A keyword given twice is refused, so a pair is
 one word; the same switch twice and a third switch are refused too. Where one
 switch of a pair is only ever asked under the other (`adaptive_null_move` under
-`null_move`; `deep_reductions`, `late_move_pruning` and `reduction_table`
-under `late_move_reductions`), the pair searches as many nodes as the outer
-single, position by position, which a test holds.
+`null_move`; `deep_reductions`, `late_move_pruning`, `skip_margin` and
+`reduction_table` under `late_move_reductions`), the pair searches as many
+nodes as the outer single, position by position, which a test holds.
 
 **`off` absent means both sides are the default**, which the header says as
 `off none`. That run is the null, and it is the one to take first (see the end
@@ -432,9 +433,9 @@ tt eval_beta alpha_gap attention answered visits root best_on best_forced
 score_on score_forced nodes_on nodes_forced fen`. The move columns are the
 ledger's, read at the first visit, and print `-` on a node decision.
 `attention` is the model's score where the gate reads one (a late quiet at
-depth four and up) and `-` elsewhere; every skip at those depths scores at
-or under the pruning threshold by construction, so the column is read within
-a kind. `answered` is, for a node decision, what answered the node once it
+depth four and up) and `-` elsewhere. The default skips on the margin, so a
+skip there need not score under the model's threshold; with `skip_margin` off
+every one does. The column is read within a kind. `answered` is, for a node decision, what answered the node once it
 was inverted. `visits` is how often the forced search met the address, and a
 row that reads zero is the instrument failing, not a finding. `root` is the
 root's place in the suite, and the fen is the deciding node's.

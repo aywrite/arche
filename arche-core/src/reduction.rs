@@ -559,7 +559,7 @@ mod tests {
     use crate::board::Board;
     use crate::late_move::{
         DEEP_REDUCTION_MIN_DEPTH, LATE_MOVE_MIN_DEPTH, LATE_MOVE_PRUNING_THRESHOLD,
-        LATE_MOVE_THRESHOLD, SHALLOW_MAX_DEPTH, ledger_row_score,
+        LATE_MOVE_THRESHOLD, SHALLOW_MAX_DEPTH, ledger_row_score, under_skip_margin,
     };
     use crate::recorder::fixtures::{recording_leaves_the_search_where_it_was, suite};
     use crate::recorder::{DEFAULT_CAP, Sampler};
@@ -1090,13 +1090,15 @@ mod tests {
                 assert_eq!(e.reduction, 0, "{:?}", row);
                 if e.depth >= DEEP_REDUCTION_MIN_DEPTH {
                     assert!(e.index >= LATE_MOVE_THRESHOLD, "{:?}", row);
-                    // rescored from the printed columns, the model's skip
-                    // is still one
-                    assert!(
-                        ledger_row_score(e) <= LATE_MOVE_PRUNING_THRESHOLD,
-                        "{:?}",
-                        row
-                    );
+                    // read from the printed columns, the skip is still
+                    // one: the margin's under `skip_margin`, the model's
+                    // without it
+                    let skips = if SearchConfig::default().skip_margin {
+                        under_skip_margin(e.depth, i64::from(e.eval_beta))
+                    } else {
+                        ledger_row_score(e) <= LATE_MOVE_PRUNING_THRESHOLD
+                    };
+                    assert!(skips, "{:?}", row);
                     model_skips += 1;
                 } else {
                     assert!(e.depth <= SHALLOW_MAX_DEPTH, "{:?}", row);

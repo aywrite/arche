@@ -666,8 +666,8 @@ mod tests {
     }
 
     /// The model's score is printed where the gate reads one, depth four
-    /// and up, and nowhere else. A skip there scores at or under the
-    /// pruning threshold.
+    /// and up, and nowhere else. A skip there stands at least the skip's
+    /// margin under beta, since the default reads the margin.
     #[test]
     fn attention_is_read_where_the_gate_reads_it() {
         let report = run(&suite(), None, 7, 20, 2000, Kinds::ALL, 0);
@@ -680,10 +680,10 @@ mod tests {
             // a skip there is the pruning rule's, which skips on the score
             if gated && e.address.kind == Kind::Skip {
                 assert!(
-                    e.attention <= Some(crate::late_move::LATE_MOVE_PRUNING_THRESHOLD),
-                    "{:?} scored {:?}",
+                    crate::late_move::under_skip_margin(e.address.depth, i64::from(e.eval_beta)),
+                    "{:?} stood {} from beta",
                     e.address,
-                    e.attention
+                    e.eval_beta
                 );
                 skips += 1;
             }

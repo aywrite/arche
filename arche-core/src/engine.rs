@@ -511,9 +511,14 @@ pub struct SearchConfig {
     /// with depth runs a ply shallower still. Rides on
     /// `late_move_reductions`.
     pub deep_reductions: bool,
-    /// Whether a late quiet the attention model prices in its deadest band
-    /// is searched at all. Rides on `late_move_reductions`.
+    /// Whether a late quiet at depth four and up that the skip rules out
+    /// (`skip_margin` says by what) is searched at all. Rides on
+    /// `late_move_reductions`.
     pub late_move_pruning: bool,
+    /// Whether that skip reads a margin on the static evaluation under beta
+    /// in place of the attention model's score. Rides on
+    /// `late_move_pruning`.
+    pub skip_margin: bool,
     /// Whether a quiet move at depths one to three is dropped when the
     /// static evaluation plus a margin a ply cannot reach alpha.
     pub quiet_futility: bool,
@@ -652,7 +657,7 @@ impl SearchConfig {
     ///
     /// `taint` is not among them: it is a policy with four values rather
     /// than a switch, and `residuals` already takes it.
-    pub const SWITCHES: [(&'static str, TurnOff); 14] = [
+    pub const SWITCHES: [(&'static str, TurnOff); 15] = [
         ("reverse_futility", |config| config.reverse_futility = false),
         ("null_move", |config| config.null_move = false),
         ("adaptive_null_move", |config| {
@@ -667,6 +672,7 @@ impl SearchConfig {
         ("late_move_pruning", |config| {
             config.late_move_pruning = false
         }),
+        ("skip_margin", |config| config.skip_margin = false),
         ("quiet_futility", |config| config.quiet_futility = false),
         ("late_move_count", |config| config.late_move_count = false),
         ("reduction_table", |config| config.reduction_table = false),
@@ -705,6 +711,7 @@ impl SearchConfig {
             late_move_reductions: false,
             deep_reductions: false,
             late_move_pruning: false,
+            skip_margin: false,
             quiet_futility: false,
             late_move_count: false,
             reduction_table: false,
@@ -760,6 +767,7 @@ impl Default for SearchConfig {
             late_move_reductions: true,
             deep_reductions: true,
             late_move_pruning: true,
+            skip_margin: true,
             quiet_futility: true,
             late_move_count: true,
             reduction_table: true,
@@ -881,6 +889,7 @@ mod switches {
             ("null_move", "adaptive_null_move"),
             ("late_move_reductions", "deep_reductions"),
             ("late_move_reductions", "late_move_pruning"),
+            ("late_move_reductions", "skip_margin"),
             ("late_move_reductions", "reduction_table"),
         ] {
             assert_ne!(nodes(one(inner).config()), default, "{inner} did nothing");
