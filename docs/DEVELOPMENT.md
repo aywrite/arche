@@ -274,6 +274,13 @@ whatever master is when the trailer is read, and the run's own artifacts are
 gone after ninety days. The changelog prints all three trailers after the
 entry.
 
+An `Elo:` figure from an sprt is a stopped estimate and leans high, because
+the test stops on the batch where the games ran ahead. One that passes [0, 10]
+on its first batch of 500 reads about +45 whatever the true effect between 0
+and 20. Where a fixed sample was also played, it is the figure to quote: the
+singular extensions (b61acfa) passed at +44 ±22 at 10+0.1 and read +28 ±15
+over a fixed 1,000 games at 30+0.3.
+
 ## The bench and speed
 
 What holds search behaviour still is the bench:
