@@ -2,9 +2,10 @@
 // Copyright (C) 2022-2026 Andrew Wright
 
 //! A cache of already-searched positions, used to order moves and to skip
-//! re-searching interior nodes. Under the reference configuration it is an
-//! accelerator: deleting it may slow the search but never changes the
-//! answer. Under the default it can change the answer, since the default
+//! re-searching interior nodes. Under the reference configuration it never
+//! introduces a pruning error, though a cutoff taken from a deeper entry can
+//! return a different fail-soft value than the search it replaces would
+//! have. Under the default it can change the answer, since the default
 //! taint policy takes the cutoffs a draw tainted entry offers everywhere
 //! short of the fifty move horizon (see `TaintPolicy`), and the move it
 //! suggests changes the order the shortcuts prune against.

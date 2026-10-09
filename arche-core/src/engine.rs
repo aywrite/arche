@@ -474,10 +474,11 @@ impl SearchParameters {
 /// bench.
 ///
 /// Two configurations are named. The reference has every shortcut off and
-/// every refusal on: alpha-beta with a table that only speeds it up, so a
-/// position searched warm answers as it does cold, deepened as it does
-/// direct, and with a small table as with a large one. The exactness tests
-/// hold the reference to that. The default is what the engine plays with.
+/// every refusal on: alpha-beta with a table that never introduces a pruning
+/// error, though a cutoff from a deeper entry can return a different
+/// fail-soft value. The exactness tests check that a position searched warm
+/// answers as it does cold, deepened as it does direct, and with a small
+/// table as with a large one. The default is what the engine plays with.
 ///
 /// A switch that rides on another is never asked with that one off, which
 /// `a_rule_asked_only_under_another_has_no_site_with_that_one_off` holds.
