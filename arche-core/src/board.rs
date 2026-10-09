@@ -2746,7 +2746,7 @@ pub(crate) fn play_named(board: &Board, name: &str) -> Play {
 #[cfg(test)]
 mod make_move {
     use super::fens;
-    use super::{A1, A8, B1, B8, HISTORY_PLIES};
+    use super::{A1, A8, B1, B8, HISTORY_PLIES, STACK_PLIES};
     use super::{Board, Play};
     use pretty_assertions::{assert_eq, assert_ne};
 
@@ -2839,6 +2839,11 @@ mod make_move {
     #[test]
     fn moves_can_be_unmade_across_the_wrap() {
         let start = Board::from_fen(NEAR_THE_WRAP).unwrap();
+        assert_eq!(
+            start.ply % STACK_PLIES,
+            STACK_PLIES - 1,
+            "the cycle must cross the stack's wrap"
+        );
         let mut board = start.clone();
         for (from, to) in CYCLE {
             assert!(board.make_move(&Play::new(from, to, None, None, false, false)));
@@ -2847,6 +2852,24 @@ mod make_move {
             board.undo_move();
         }
         assert_eq!(board, start);
+    }
+
+    /// A detached board carries the keys from before its root, so a line
+    /// played on it sees a position the game reached before the root.
+    #[test]
+    fn a_detached_board_sees_a_repetition_of_the_game_before_it() {
+        let mut board = Board::from_fen(fens::SHUFFLE).unwrap();
+        let (game, line) = CYCLE.split_at(2);
+        for &(from, to) in game {
+            assert!(board.make_move(&Play::new(from, to, None, None, false, false)));
+        }
+        let mut detached = board.detached();
+        assert_eq!(detached.has_repeated(), false);
+        for &(from, to) in line {
+            assert!(detached.make_move(&Play::new(from, to, None, None, false, false)));
+        }
+        // back where the game started, two plies before the root
+        assert_eq!(detached.has_repeated(), true);
     }
 
     #[test]
