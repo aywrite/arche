@@ -312,9 +312,9 @@ const GENERATIONS: u8 = 31;
 /// The plies of depth an entry is worth less for each search since it was
 /// stored, at full material. A search on, the game has moved two plies and
 /// has usually left the line the entry was searched for, so an entry from
-/// this search outranks an older one unless the older is deeper by eight
-/// plies a search. Stockfish 16 and its current master choose their victim
-/// with the same weight (Stockfish 17 used sixteen).
+/// this search outranks an older one unless the older is deeper by this
+/// many plies a search. Stockfish 16 chooses its victim with the same
+/// weight (Stockfish 17 used sixteen).
 const AGE_WEIGHT: i16 = 8;
 
 /// The weight with no pieces left but kings and pawns. Between the two it
