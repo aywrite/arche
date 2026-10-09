@@ -2,7 +2,7 @@
 
 All notable changes to this project will be documented in this file.
 
-## [0.4.9-rc.1] - 2026-10-09
+## [0.4.9] - 2026-10-09
 
 ### Features
 
@@ -11,6 +11,7 @@ All notable changes to this project will be documented in this file.
 - *(eval)* Add a tempo term for the side to move, tapered from 10 to 8 [bench 5312244] [elo +10 ±7 (sprt [0, 10] passed, 5500 games, 10+0.1, vs ec2abac)]
 - *(search)* Open the aspiration window at 15 rather than 30 [bench 5355551] [elo +13 ±9 (sprt [0, 10] passed, 3400 games, 10+0.1, vs ec2abac)]
 - *(uci)* Scale the soft time line by the best move's share of the root's nodes [bench 5355551] [elo +11 ±9 (sprt [0, 10] passed, 3000 games, 10+0.1, vs 36ecabc)]
+- *(search)* Add singular extensions from the table move's floor [bench 9939754] [elo +44 ±22 (sprt [0, 10] passed, 500 games, 10+0.1, vs 621ecab)]
 
 ### Performance
 
@@ -31,6 +32,10 @@ All notable changes to this project will be documented in this file.
 - *(uci)* Remove duplicated branches and dead match arms
 - *(search)* Remove duplicated code from the table, the gate and the ledger [bench 5965973]
 - *(board)* Read a file's letter and index off its discriminant [bench 5965973]
+- *(board)* Keep DerefMut on the board to tests and fix stale make comments [bench 9939754]
+- *(eval)* Read the capped phase through the accumulator's accessor [bench 9939754]
+- *(search)* Shorten the aspiration width comment and fix the forced arm's doc [bench 9939754]
+- *(uci)* Rewrap the soft line's node share doc and state its lower bound plainly
 
 ### Documentation
 
@@ -47,6 +52,14 @@ All notable changes to this project will be documented in this file.
 - *(bench)* Share the recorders' arming fixture and the terms tests' hand count helpers
 - *(ci)* Offer the table size on the Strength workflow's dispatch tab
 - *(docs)* Record the v0.4.7 to v0.4.9 rejections in the roadmap's closed list
+- *(deps)* Bump taiki-e/install-action
+- *(docs)* Correct the release's stale roadmap entries and record five closed arms
+- *(bench)* Build the forced instrument's full kind set from its kinds
+- *(bench)* Check that each forced row's search differs from the default
+- *(uci)* Test the root node counts the soft time line reads
+- *(board)* Check that a detached board keeps the keys from before its root
+- *(search)* Write the root window tests in terms of the aspiration width
+- *(eval)* Price the tempo block in the tuner's bounds test
 
 ## [0.4.8] - 2026-10-04
 
