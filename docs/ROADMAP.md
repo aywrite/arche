@@ -173,7 +173,8 @@ worth doing.
   percentage of those two and little else. An entry below that gives a figure over
   sixteen positions is already clear of them; one that says "the bench tree" is not. At
   the depth of eleven the same change bought, the suite's total is the latest `Bench:`
-  trailer, and no single position is more than about a fifth of it
+  trailer. Since b61acfa its largest position, perft 4, is about a quarter of it
+  (2,627,910 of 9,939,754, 26.4%) and the next, kiwipete, 14.5%
 - mate distance pruning landed without a strength result that settled. Two runs played
   3,500 games at 10+0.1 against `464d3cc`. The first was an sprt of [0, 10] and failed at
   its third batch at -11 ±12 over 1,500 games, which only says the games did not favour
