@@ -2,6 +2,52 @@
 
 All notable changes to this project will be documented in this file.
 
+## [0.4.9-rc.1] - 2026-10-09
+
+### Features
+
+- *(search)* Weigh entry age against depth in transposition table replacement [elo +4 ±9 (sprt [-10, 0] passed, 2500 games, 30+0.3, vs 31eb33b)] [bench 5965973]
+- *(search)* Raise the transposition table's age weight in endgames [elo +10 ±8 (sprt [0, 10] passed, 3000 games, 30+0.3, vs ec2abac)] [bench 5965973]
+- *(eval)* Add a tempo term for the side to move, tapered from 10 to 8 [bench 5312244] [elo +10 ±7 (sprt [0, 10] passed, 5500 games, 10+0.1, vs ec2abac)]
+- *(search)* Open the aspiration window at 15 rather than 30 [bench 5355551] [elo +13 ±9 (sprt [0, 10] passed, 3400 games, 10+0.1, vs ec2abac)]
+- *(uci)* Scale the soft time line by the best move's share of the root's nodes [bench 5355551] [elo +11 ±9 (sprt [0, 10] passed, 3000 games, 10+0.1, vs 36ecabc)]
+
+### Performance
+
+- *(eval)* Keep the pair term as the sum and difference of the two perspectives [bench 5965973] [speed +0.0% (bench nps, 95% interval -1.4% to +1.6%, 60 interleaved rounds over shuffled layouts vs adfd966)]
+- *(eval)* Hold the pawn structure beside the shelter in the shelter table's entry [bench 5965973] [speed +1.6% (bench nps, 95% interval +0.1% to +3.1%, 60 interleaved rounds over shuffled layouts vs d133ba1)]
+- *(eval)* Read material from the piece's row as one white relative sum [bench 5965973] [speed +1.0% (bench nps, 95% interval -0.8% to +2.6%, 60 interleaved rounds over shuffled layouts vs 6b214ea)]
+- *(search)* Store the static evaluation in the transposition table entry [bench 5965973] [speed +0.7% (bench nps, 95% interval -1.2% to +2.5%, 60 interleaved rounds over shuffled layouts vs a620e4b)]
+- *(board)* Switch make and unmake to copy-make on a stack of positions [bench 5355551] [speed +2.6% (bench nps, 95% interval -0.0% to +5.4%, 60 interleaved rounds over shuffled layouts vs 621ecab)]
+- *(board)* Guard the king step test with the kept king square [bench 5355551] [speed +0.4% (bench nps, 95% interval -1.7% to +2.6%, 60 interleaved rounds over shuffled layouts vs 324a485)]
+
+### Refactor
+
+- *(search)* Hold a node's facts and its answer in one value the reductions read [bench 5965973]
+- *(search)* Ask for a child search with the loop's decision [bench 5965973]
+- *(search)* Answer quiescence and the root through one fail soft value [bench 5965973]
+- *(board)* Name the square behind a pawn and the pawn attack masks once [bench 5965973]
+- *(eval)* Fold each term through weigh directly and pin the arithmetic once [bench 5965973]
+- *(uci)* Remove duplicated branches and dead match arms
+- *(search)* Remove duplicated code from the table, the gate and the ledger [bench 5965973]
+- *(board)* Read a file's letter and index off its discriminant [bench 5965973]
+
+### Documentation
+
+- *(uci)* Record that moving the soft time bound past 45% measured nothing
+
+### Development
+
+- *(ci)* Give the mache pins a Dependabot pull request of their own
+- *(bench)* Add a forced decision instrument that inverts one shortcut at a time [bench 5965973] [elo not measured]
+- *(board)* Walk the perft cases through one helper for the three generators
+- *(uci)* Table the reader tests and share the session fixtures
+- *(search)* Merge the repeated table seeding, replay and fifty move tests [bench 5965973]
+- *(bench)* Share the instruments' position parsing, header and share helpers
+- *(bench)* Share the recorders' arming fixture and the terms tests' hand count helpers
+- *(ci)* Offer the table size on the Strength workflow's dispatch tab
+- *(docs)* Record the v0.4.7 to v0.4.9 rejections in the roadmap's closed list
+
 ## [0.4.8] - 2026-10-04
 
 ### Features
