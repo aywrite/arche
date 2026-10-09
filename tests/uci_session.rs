@@ -219,6 +219,31 @@ fn a_fen_without_its_counters_is_the_position_searched() {
 }
 
 #[test]
+fn a_go_after_a_refused_position_is_answered_with_the_null_move() {
+    // the fen's halfmove clock cannot be read, so the board stays where the
+    // first line left it, with black to move
+    let mut s = Session::start(&[]);
+    s.say("position startpos moves e2e4");
+    s.say("position fen 6k1/5ppp/8/8/8/8/8/R5K1 w - - x 1");
+    s.say("go depth 2");
+    let refused = s.wait_for(|l| l.starts_with("bestmove"));
+    assert_eq!(refused, "bestmove 0000", "said: {:#?}", s.said);
+    assert!(
+        s.said
+            .iter()
+            .any(|l| l.starts_with("info string no position to search")),
+        "said: {:#?}",
+        s.said
+    );
+    // and the next position sent is searched
+    s.say("position fen 6k1/5ppp/8/8/8/8/8/R5K1 w - - 0 1");
+    s.say("go depth 2");
+    let best = s.wait_for(|l| l.starts_with("bestmove"));
+    assert_eq!(move_of(&best), "a1a8", "said: {:#?}", s.said);
+    s.quit();
+}
+
+#[test]
 fn the_debug_log_holds_every_line_read_and_said_in_order() {
     let log = std::env::temp_dir().join(format!("arche-session-{}.log", std::process::id()));
     let _ = std::fs::remove_file(&log);
