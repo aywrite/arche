@@ -523,9 +523,7 @@ pub struct Position {
 /// steps the ply back. The search makes and unmakes moves on the one board,
 /// and `pv_line_from` plays its line on a `detached` copy. Outside the crate
 /// the position is read through the accessors and moved on through
-/// `play_by_name`, which has no counterpart that takes a move back. A
-/// position written through `DerefMut` would leave the keys before it
-/// behind.
+/// `play_by_name`, which has no counterpart that takes a move back.
 #[derive(Clone)]
 pub struct Board {
     // the slot at the ply and those below it back to where the board was
@@ -549,6 +547,8 @@ impl std::ops::Deref for Board {
     }
 }
 
+// test only: a position written through it leaves the keys before it behind
+#[cfg(test)]
 impl std::ops::DerefMut for Board {
     #[inline(always)]
     fn deref_mut(&mut self) -> &mut Position {
@@ -1518,11 +1518,11 @@ impl Board {
         // with the king lifted off its own square, so it is settled from the
         // boards before anything moves. An illegal one (most illegal moves
         // are king steps) then costs no copy. A walk that keeps no checkers
-        // takes the probe after the move instead: it is the old path, which
-        // the debug build checks every refused step against.
+        // skips this test and takes the probe after the move; the debug build
+        // checks every refused step against that probe.
         //
         // The guard compares the from square with the kept king square, so a
-        // castle takes the test too, and the probe after the move as before,
+        // castle takes the test too, and the probe after the move as well,
         // since its rook changes the lines. The test cannot refuse a castle
         // the generator offers, which it offers only over unattacked squares,
         // and its answer would be right if it did: the rook's move can only
@@ -1616,6 +1616,7 @@ impl Board {
         }
     }
 
+    /// Take back a move or a pass: the ply steps back to the parent's slot.
     #[inline(always)]
     pub(crate) fn undo_move(&mut self) {
         self.ply -= 1;
@@ -1657,12 +1658,9 @@ impl Board {
         );
     }
 
-    /// Take the pass back. The mirror of `make_null_move`, and the only thing
-    /// that may follow one.
+    /// Take the pass back, as `undo_move` takes back a move.
     pub(crate) fn undo_null_move(&mut self) {
-        self.ply -= 1;
-        self.line_ply -= 1;
-        self.debug_assert_state_in_step();
+        self.undo_move();
     }
 }
 
@@ -1801,8 +1799,8 @@ impl Position {
 }
 
 impl Position {
-    /// Move a piece on the boards and `squares` alone, under the make's
-    /// relocation, which keeps the keys and the accumulator.
+    /// Move a piece on the boards and `squares` alone. Its caller,
+    /// `relocate_piece_index`, keeps the keys and the accumulator.
     #[inline(always)]
     fn relocate_bare(&mut self, from: u8, to: u8, piece: Piece, color: Color) {
         let both = (1u64 << from) | (1u64 << to);
@@ -1818,9 +1816,10 @@ impl Position {
         }
     }
 
-    /// Put down or pick up a piece on the boards and `squares` alone. The
-    /// callers assert that a set lands on an empty square and a clear on an
-    /// occupied one, so this never asks what was standing there.
+    /// Put down or pick up a piece on the boards and `squares` alone.
+    /// `set_piece_index` and `clear_piece_index` assert that a set lands on an
+    /// empty square and a clear on an occupied one, so this never asks what
+    /// was standing there.
     #[inline(always)]
     fn place_bare<const SET: bool>(&mut self, index: u8, piece: Piece, color: Color) {
         let board = &mut self.pieces[piece as usize];
