@@ -410,7 +410,10 @@ inverts both. The inversion applies wherever the search meets the address:
 every visit, in every iteration of the deepening and every aspiration
 re-search, so a row is that decision forced wherever it comes up and not one
 occurrence of it. Each root starts from a fresh engine and table with no
-clock, so the two searches agree until the first such visit. The sampler
+clock, so the two searches agree until the first such visit. What it prices
+is a cold search to a fixed depth from the root on the bench's 16MB table,
+which no game reaches, so its figures are a property of the bench's search
+and not of a game's. The sampler
 keeps revisits of an address as separate records, and the row keeps the
 first visit's.
 
