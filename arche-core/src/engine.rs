@@ -1276,6 +1276,9 @@ pub struct AlphaBeta {
     root_nodes: Vec<(Play, u64)>,
     /// What the singular test did. Never reset, as `quiescence_nodes`.
     singular: SingularCounts,
+    /// What each completed depth handed the soft line, for the tests.
+    #[cfg(test)]
+    soft_lines: Vec<RootNodes>,
 }
 
 /// How often the singular test was reached, run and answered yes, which
@@ -1367,6 +1370,8 @@ impl AlphaBeta {
             forced: None,
             root_nodes: Vec::new(),
             singular: SingularCounts::default(),
+            #[cfg(test)]
+            soft_lines: Vec::new(),
         }
     }
 
@@ -3337,6 +3342,8 @@ impl Engine for AlphaBeta {
                         on_depth(depth, &result, pv, bound);
                         if bound == ScoreBound::Exact {
                             last = Some(self.root_nodes_for(result.best_move, chosen));
+                            #[cfg(test)]
+                            self.soft_lines.extend(last);
                             chosen = Some(result.best_move);
                             exact = Some(result.score);
                             best = Some(result);
