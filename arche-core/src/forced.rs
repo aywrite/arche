@@ -28,7 +28,10 @@ use std::fmt;
 
 /// About one decision in every this many, unless the command says
 /// otherwise. Every kept decision costs a search of its root, so the rate
-/// is far sparser than the recorders' whose rows cost nothing.
+/// is far sparser than the recorders' whose rows cost nothing. On the bench
+/// it inverts 22 decisions at depth nine and moves no root, and 144 at the
+/// default depth of eleven, moving two. That is too few to read a rate
+/// from, so a reading at depth nine asks for something nearer `every 300`.
 pub const DEFAULT_EVERY: u32 = 100_000;
 
 /// What can be inverted.

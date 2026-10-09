@@ -447,9 +447,12 @@ met, rows whose root move changed) and a line per root with what the default
 answered there and the root's id last.
 
 Every kept decision costs a search of its root, so the default rate is one
-decision in 100,000. What a changed move cost is not here: a row whose root
-move did not change lost nothing to the decision, and one whose move did
-change needs its two moves valued by a deeper search, offline.
+decision in 100,000. On the bench that inverts 22 decisions at depth nine and
+moves no root, and 144 at depth eleven, moving two, which is too few to read a
+rate from. A reading at depth nine asks for something nearer `every 300`. What
+a changed move cost is not here: a row whose root move did not change lost
+nothing to the decision, and one whose move did change needs its two moves
+valued by a deeper search, offline.
 
 ## What a position's evaluation is made of
 
