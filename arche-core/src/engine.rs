@@ -1978,6 +1978,7 @@ impl AlphaBeta {
             score,
             selective_depth: self.selective_depth,
             best_move,
+            hashfull: self.transpositions.hashfull(),
         }
     }
 
@@ -3318,10 +3319,12 @@ impl Engine for AlphaBeta {
                             // budget. `self.nodes` is this iteration's and
                             // `total_nodes` every iteration before it. The
                             // elapsed time is rewritten with them, for the
-                            // reason `SearchResult::elapsed` gives.
+                            // reason `SearchResult::elapsed` gives, and the
+                            // table's fill with what this iteration stored.
                             None => best.map(|mut answered| {
                                 answered.nodes = total_nodes + self.nodes;
                                 answered.elapsed = self.limits.elapsed();
+                                answered.hashfull = self.transpositions.hashfull();
                                 answered
                             }),
                         });
@@ -3452,6 +3455,10 @@ pub struct SearchResult {
     pub best_move: Play,
     /// What the search made of `best_move`, from the side to move.
     pub score: Score,
+    /// How full the transposition table was when the result was made, in
+    /// permille of a sample of its entries: the `hashfull` an info line
+    /// reports.
+    pub hashfull: u16,
 }
 
 impl SearchResult {
