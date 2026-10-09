@@ -2498,12 +2498,10 @@ impl Board {
         let en_passant = fen_iter
             .next()
             .ok_or("Error parsing FEN: Could not find en passant square")?;
-        let half_move_clock = fen_iter
-            .next()
-            .ok_or("Error parsing FEN: Could not find half move clock")?;
-        let full_move_clock = fen_iter
-            .next()
-            .ok_or("Error parsing FEN: Could not find full move clock")?;
+        // the two counters may be left off, as an epd position leaves them,
+        // and read as a game's opening counts
+        let half_move_clock = fen_iter.next().unwrap_or("0");
+        let full_move_clock = fen_iter.next().unwrap_or("1");
         let move_number = full_move_clock
             .parse::<usize>()
             .map_err(|e| e.to_string())?;
@@ -3897,6 +3895,25 @@ mod fen_parsing {
         Board::from_fen("rnbqkbnr/pp1ppppp/8/2p5/4P3/8/PPPP1PPP/RNBQKBNR w KQkq c6 0 2")?;
         Board::from_fen("rnbqkbnr/pp1ppppp/8/2p5/4P3/5N2/PPPP1PPP/RNBQKB1R b KQkq - 1 2")?;
         Ok(())
+    }
+
+    #[test]
+    fn a_fen_without_its_counters_reads_them_as_zero_and_one() {
+        // the shape of an epd position, and of the engine's own book
+        let four = Board::from_fen("rnbqkbnr/pppppppp/8/8/4P3/8/PPPP1PPP/RNBQKBNR b KQkq -")
+            .expect("a fen without its counters");
+        assert_eq!(
+            four.to_fen(),
+            "rnbqkbnr/pppppppp/8/8/4P3/8/PPPP1PPP/RNBQKBNR b KQkq - 0 1"
+        );
+    }
+
+    #[test]
+    fn a_fen_without_its_move_number_reads_it_as_one() {
+        let five = Board::from_fen("4k3/8/8/8/8/8/8/R3K3 w - - 37")
+            .expect("a fen without its move number");
+        assert_eq!(five.halfmove_clock(), 37);
+        assert_eq!(five.to_fen(), "4k3/8/8/8/8/8/8/R3K3 w - - 37 1");
     }
 
     #[test]
