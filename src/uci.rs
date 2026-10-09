@@ -521,11 +521,11 @@ impl<T: Engine, W: Write> UCI<T, W> {
     /// count a match harness copies from the last line into the game record
     /// leaves out the deepest iteration.
     ///
-    /// Only the nodes and the time come from the outcome. The other columns
-    /// are the last answering report's, so they read as before. They can lag
-    /// the answer by an iteration (an interrupted iteration that kept the move
-    /// is not reported), and printing its score would need a depth, which a
-    /// `SearchResult` does not carry.
+    /// Only the nodes, the time and the table's fill come from the outcome.
+    /// The other columns are the last answering report's, so they read as
+    /// before. They can lag the answer by an iteration (an interrupted
+    /// iteration that kept the move is not reported), and printing its score
+    /// would need a depth, which a `SearchResult` does not carry.
     ///
     /// Nothing is said when the line would repeat the one just written.
     fn say_the_search_total(&mut self, outcome: &SearchOutcome, reported: &Reported) {
@@ -553,6 +553,7 @@ impl<T: Engine, W: Write> UCI<T, W> {
                 selective_depth: answer.selective_depth,
                 best_move: answer.best_move,
                 score: answer.score,
+                hashfull: spent.hashfull,
             },
             &answer.pv,
             answer.bound,
@@ -818,8 +819,16 @@ fn format_info(
         None => format!("cp {}", result.score),
     };
     format!(
-        "info depth {} seldepth {} nodes {} time {} nps {} score {}{} pv {}",
-        depth, result.selective_depth, result.nodes, millis, nps, score, qualifier, pv
+        "info depth {} seldepth {} nodes {} time {} nps {} hashfull {} score {}{} pv {}",
+        depth,
+        result.selective_depth,
+        result.nodes,
+        millis,
+        nps,
+        result.hashfull,
+        score,
+        qualifier,
+        pv
     )
 }
 
@@ -1120,6 +1129,25 @@ mod tests {
             );
         }
         assert!(lines[3].starts_with("bestmove "));
+    }
+
+    #[test]
+    fn a_search_reports_how_full_its_table_is() {
+        // the table holds 512 entries, all of them in the sample, and a
+        // search to depth four stores in some of them
+        let mut uci = uci();
+        uci.run(Cursor::new("position startpos\ngo depth 4\n"));
+        let said = said(&uci);
+        let info = said.lines().rfind(|line| line.starts_with("info depth "));
+        let hashfull: u16 = info
+            .and_then(|info| {
+                info.split_whitespace()
+                    .skip_while(|word| *word != "hashfull")
+                    .nth(1)
+            })
+            .and_then(|permille| permille.parse().ok())
+            .unwrap_or_else(|| panic!("no hashfull in {}", said));
+        assert!((1..=1000).contains(&hashfull), "{}", said);
     }
 
     #[test]
@@ -1942,6 +1970,7 @@ go depth 3
             selective_depth,
             best_move: play_named("e2e4"),
             score,
+            hashfull: 12,
         };
         for (depth, result, line, bound, expected) in [
             (
@@ -1949,7 +1978,7 @@ go depth 3
                 result(2000, 500, 7, 25),
                 vec!["e2e4", "g1f3"],
                 ScoreBound::Exact,
-                "info depth 5 seldepth 7 nodes 2000 time 500 nps 4000 score cp 25 pv e2e4 g1f3",
+                "info depth 5 seldepth 7 nodes 2000 time 500 nps 4000 hashfull 12 score cp 25 pv e2e4 g1f3",
             ),
             // three plies from checkmate reads as mate in two moves
             (
@@ -1957,7 +1986,7 @@ go depth 3
                 result(1500, 20, 4, 30_000 - 3),
                 vec!["e2e4"],
                 ScoreBound::Exact,
-                "info depth 4 seldepth 4 nodes 1500 time 20 nps 75000 score mate 2 pv e2e4",
+                "info depth 4 seldepth 4 nodes 1500 time 20 nps 75000 hashfull 12 score mate 2 pv e2e4",
             ),
             // under a millisecond: 673 nodes in 673 microseconds
             (
@@ -1968,7 +1997,7 @@ go depth 3
                 },
                 vec![],
                 ScoreBound::Exact,
-                "info depth 1 seldepth 1 nodes 673 time 0 nps 1000000 score cp 0 pv ",
+                "info depth 1 seldepth 1 nodes 673 time 0 nps 1000000 hashfull 12 score cp 0 pv ",
             ),
             // the qualifier goes after the score, where the protocol has it
             (
@@ -1976,14 +2005,14 @@ go depth 3
                 result(2000, 500, 7, 25),
                 vec!["d2d4"],
                 ScoreBound::Lower,
-                "info depth 6 seldepth 7 nodes 2000 time 500 nps 4000 score cp 25 lowerbound pv d2d4",
+                "info depth 6 seldepth 7 nodes 2000 time 500 nps 4000 hashfull 12 score cp 25 lowerbound pv d2d4",
             ),
             (
                 6,
                 result(2000, 500, 7, 25),
                 vec!["d2d4"],
                 ScoreBound::Upper,
-                "info depth 6 seldepth 7 nodes 2000 time 500 nps 4000 score cp 25 upperbound pv d2d4",
+                "info depth 6 seldepth 7 nodes 2000 time 500 nps 4000 hashfull 12 score cp 25 upperbound pv d2d4",
             ),
         ] {
             let pv = PvLine::new(line.into_iter().map(play_named).collect());
@@ -2028,6 +2057,8 @@ go depth 3
                 selective_depth: depth + 1,
                 best_move: play_named(pv[0]),
                 score,
+                // a tenth of the table a depth
+                hashfull: u16::from(depth) * 100,
             },
             pv,
             bound,
@@ -2095,8 +2126,8 @@ go depth 3
         assert_eq!(
             said,
             [
-                "info depth 3 seldepth 4 nodes 1000 time 100 nps 10000 score cp 20 pv e2e4",
-                "info depth 4 seldepth 5 nodes 2000 time 150 nps 13333 score cp 35 lowerbound pv d2d4",
+                "info depth 3 seldepth 4 nodes 1000 time 100 nps 10000 hashfull 300 score cp 20 pv e2e4",
+                "info depth 4 seldepth 5 nodes 2000 time 150 nps 13333 hashfull 400 score cp 35 lowerbound pv d2d4",
                 "bestmove d2d4",
             ],
             "the swap's own report is the search's total, so nothing is added after it"
@@ -2123,13 +2154,14 @@ go depth 3
                 selective_depth: 9,
                 best_move: play_named("e2e4"),
                 score: 33,
+                hashfull: 450,
             },
         });
         assert_eq!(
             said,
             [
-                "info depth 3 seldepth 4 nodes 1000 time 100 nps 10000 score cp 20 pv e2e4 g1f3",
-                "info depth 3 seldepth 4 nodes 2500 time 250 nps 10000 score cp 20 pv e2e4 g1f3",
+                "info depth 3 seldepth 4 nodes 1000 time 100 nps 10000 hashfull 300 score cp 20 pv e2e4 g1f3",
+                "info depth 3 seldepth 4 nodes 2500 time 250 nps 10000 hashfull 450 score cp 20 pv e2e4 g1f3",
                 "bestmove e2e4",
             ]
         );
@@ -2150,14 +2182,15 @@ go depth 3
                 selective_depth: 9,
                 best_move: play_named("e2e4"),
                 score: 20,
+                hashfull: 450,
             },
         });
         assert_eq!(
             said,
             [
-                "info depth 3 seldepth 4 nodes 1000 time 100 nps 10000 score cp 20 pv e2e4 g1f3",
-                "info depth 4 seldepth 5 nodes 1800 time 140 nps 12857 score cp -5 upperbound pv d2d4",
-                "info depth 3 seldepth 4 nodes 2500 time 250 nps 10000 score cp 20 pv e2e4 g1f3",
+                "info depth 3 seldepth 4 nodes 1000 time 100 nps 10000 hashfull 300 score cp 20 pv e2e4 g1f3",
+                "info depth 4 seldepth 5 nodes 1800 time 140 nps 12857 hashfull 400 score cp -5 upperbound pv d2d4",
+                "info depth 3 seldepth 4 nodes 2500 time 250 nps 10000 hashfull 450 score cp 20 pv e2e4 g1f3",
                 "bestmove e2e4",
             ]
         );

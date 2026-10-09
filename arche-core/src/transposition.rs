@@ -506,6 +506,10 @@ impl Bucket {
     }
 }
 
+/// The entries `hashfull` reads: the first thousand, or every entry of a
+/// smaller table.
+const HASHFULL_SAMPLE: usize = 1000;
+
 /// The generations whose entries a store may take whatever they hold, a
 /// bit each: zero, never written, and those `STALE_AFTER_SEARCHES` or more
 /// searches older than `generation`.
@@ -820,6 +824,24 @@ impl TranspositionTable {
         self.generation = self.generation % GENERATIONS + 1;
         self.replaceable = replaceable_under(self.generation);
         self.age_weight = age_weight(phase);
+    }
+
+    /// How full the table is in permille, as the protocol's `hashfull`
+    /// reports it: the share of the first `HASHFULL_SAMPLE` entries that the
+    /// search under way stored. An entry from an earlier search is not
+    /// counted unless it has survived a whole cycle of `GENERATIONS`
+    /// searches and reads as current again, so the figure says how much of
+    /// the table one search fills.
+    pub fn hashfull(&self) -> u16 {
+        let sample = self.table.iter().take(HASHFULL_SAMPLE / BUCKET);
+        let (mut entries, mut current) = (0, 0);
+        for bucket in sample {
+            for i in 0..BUCKET {
+                entries += 1;
+                current += usize::from(bucket.entry(i).generation() == self.generation);
+            }
+        }
+        (current * 1000 / entries) as u16
     }
 
     /// What an entry is worth keeping: its depth, less the search's age
@@ -1273,9 +1295,9 @@ fn entry(
 #[cfg(test)]
 mod tests {
     use super::{
-        AGE_WEIGHT, Bound, Bucket, DEFAULT_TABLE_BYTES, ENDGAME_AGE_WEIGHT, NARROW_WIDTHS, Play,
-        Pv, STALE_AFTER_SEARCHES, Score, TOTAL_PHASE, TranspositionTable, Value, age_weight,
-        halving, largest,
+        AGE_WEIGHT, BUCKET, Bound, Bucket, DEFAULT_TABLE_BYTES, ENDGAME_AGE_WEIGHT, Entry, Home,
+        NARROW_WIDTHS, Play, Pv, STALE_AFTER_SEARCHES, Score, TOTAL_PHASE, TranspositionTable,
+        Value, age_weight, halving, largest,
     };
     use crate::engine::MAX_PLY;
     use crate::misc::{Piece, PromotePiece};
@@ -2018,6 +2040,42 @@ mod tests {
         let counted = table.signatures().expect("audited");
         assert_eq!(counted.false_accepts, 1);
         assert_eq!(counted.false_accept_cutoffs, 1);
+    }
+
+    #[test]
+    fn hashfull_is_the_share_of_one_bucket_this_search_stored() {
+        // a single bucket, so the sample is the whole table
+        let mut table = TranspositionTable::with_capacity(4).expect("a table of one bucket");
+        assert_eq!(table.hashfull(), 0);
+        table.set(1, new_pv(Bound::Exact, 5));
+        assert_eq!(table.hashfull(), 250);
+        for key in 2..=4 {
+            table.set(key, new_pv(Bound::Exact, 5));
+        }
+        assert_eq!(table.hashfull(), 1000);
+        // the entries are still there, and belong to the search before
+        table.new_search(TOTAL_PHASE);
+        assert_eq!(table.hashfull(), 0);
+        table.set(5, new_pv(Bound::Exact, 5));
+        assert_eq!(table.hashfull(), 250);
+        table.clear();
+        assert_eq!(table.hashfull(), 0);
+    }
+
+    #[test]
+    fn hashfull_reads_the_first_thousand_entries_and_no_further() {
+        // 2,000 entries, so a sample of the whole table would read half of
+        // what the first thousand do
+        let mut table = TranspositionTable::with_capacity(2000).expect("a table of 500 buckets");
+        let stored = Entry::pack(1, new_pv(Bound::Exact, 5), table.generation);
+        for bucket in 0..1000 / BUCKET {
+            for i in 0..BUCKET {
+                table.bucket_mut(Home(bucket)).put(i, stored);
+            }
+        }
+        assert_eq!(table.hashfull(), 1000, "every entry of the sample");
+        table.bucket_mut(Home(1000 / BUCKET)).put(0, stored);
+        assert_eq!(table.hashfull(), 1000, "and one past it");
     }
 
     #[test]
