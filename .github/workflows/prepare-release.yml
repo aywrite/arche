@@ -48,7 +48,7 @@ jobs:
           # made the cargo-release install below a no-op with no binary there
           cache-bin: false
 
-      - uses: taiki-e/install-action@83ac0ad63c0167e6f06796fab0fce28db1bf3db0 # v2.87.22
+      - uses: taiki-e/install-action@f7e5d7c961414b23f5b25b2da9294395d08513ad # v2.87.26
         with:
           # pinned exactly, since a tool that floats makes a release
           # unreproducible: these write the release commit and the changelog,
