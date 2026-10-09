@@ -521,9 +521,11 @@ fn replaceable_under(generation: u8) -> u32 {
 /// Every probe that misses the translation buffer pays a page walk before
 /// its cache miss. A 256MB table is 65,536 pages of 4KiB against a second
 /// level buffer of about fifteen hundred entries, so nearly every probe
-/// walks; at 2MiB a page it is 128 entries. The commit that added this has
-/// the measurements. The advice is given once, when the table is
-/// allocated.
+/// walks; at 2MiB a page it is 128 entries. A 256MB table searched 10.6%
+/// faster with the advice over five interleaved rounds on a four core
+/// container. The bench's 16MB table is under `ADVISE_ABOVE`, so its -1.1%
+/// compares a build with itself. The advice is given once, when the table
+/// is allocated.
 ///
 /// Linux only. macOS has no advice for this and Windows wants a privilege
 /// the process does not hold, so `advise` is nothing there.
