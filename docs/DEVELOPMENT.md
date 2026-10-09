@@ -485,10 +485,11 @@ were noise.
 
 The search runs under a `SearchConfig`, and two configurations are named. The
 reference, `SearchConfig::reference()`, is alpha-beta with every shortcut off:
-its table only speeds it up, so a position searched warm answers as it does
-cold, and the tests in `arche-core/src/engine/tests.rs` that say so build the
-reference. They are the soundness check: a change that claims to be sound
-keeps them green whatever else it moves.
+its table never introduces a pruning error, though a cutoff from a deeper entry
+can return a different fail-soft value. The tests in
+`arche-core/src/engine/tests.rs` that search a position warm and cold and
+compare the answers build the reference. They are the soundness check: a
+change that claims to be sound keeps them green whatever else it moves.
 
 The default is what the engine plays with and what the bench prints. Every
 field of `SearchConfig` except the taint policy is a switch the reference has
