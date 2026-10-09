@@ -41,20 +41,19 @@ pub struct TimeControl {
 }
 
 impl TimeControl {
-    /// A clock or a move time that was sent but cannot be read, or has
-    /// nothing after it, reads as spent: read as absent, a `go` with no time
-    /// searches without a limit. A weak move is recoverable and thinking for
-    /// ever is not. A missing count of moves is already a number assumed.
+    /// A `go` whose clock cannot be read is refused before it gets here, so
+    /// every value is read or absent. A missing count of moves is a number
+    /// assumed.
     pub fn of(params: &Params, color: Color) -> Self {
         let (clock, increment) = match color {
             Color::White => ("wtime", "winc"),
             Color::Black => ("btime", "binc"),
         };
         TimeControl {
-            time: params.count(clock).read_or(0),
-            increment: params.count(increment).read_or(0),
+            time: params.count(clock).read(),
+            increment: params.count(increment).read(),
             moves_to_go: params.count("movestogo").read(),
-            move_time: params.count("movetime").read_or(0),
+            move_time: params.count("movetime").read(),
             infinite: params.flag("infinite"),
         }
     }
