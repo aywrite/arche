@@ -755,10 +755,11 @@ are read. A hold freezes both halves of the term's taper.
 
 A fit of a new term holds everything older: the shelter was fitted under
 `--hold tables --hold mobility`, the pawn structure under those and `--hold
-shelter`, and the king attack zone under those and `--hold pawn_structure`. A
-refit of an older term on a grown corpus holds every other term instead, so a
-mobility refit is `--hold tables --hold shelter --hold pawn_structure --hold
-king_attack`. The holds follow from the one term the run means to move.
+shelter`, the king attack zone under those and `--hold pawn_structure`, and
+the tempo under those and `--hold king_attack`. A refit of an older term on a
+grown corpus holds every other term instead, so a mobility refit is `--hold
+tables --hold shelter --hold pawn_structure --hold king_attack --hold tempo`.
+The holds follow from the one term the run means to move.
 
 ## What the table's key signature costs
 
