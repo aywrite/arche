@@ -408,7 +408,9 @@ pub(crate) struct Accumulator {
 }
 
 impl Accumulator {
-    /// What is left on the board, capped where the evaluation caps it.
+    /// What is left on the board, capped at `TOTAL_PHASE`: promotions can
+    /// leave more on the board than the opening had. No weight is negative,
+    /// so it needs no floor.
     pub(crate) fn phase(&self) -> i32 {
         self.phase.min(TOTAL_PHASE)
     }
@@ -493,9 +495,7 @@ impl Accumulator {
     /// `tune::reconstruct` folds a whole row with one.
     #[inline]
     fn score(&self, side: Color, leaf: i32) -> Score {
-        // promotions can leave more on the board than the opening had, so the
-        // phase is capped. It cannot go the other way: no weight is negative.
-        let phase = self.phase.min(TOTAL_PHASE);
+        let phase = self.phase();
         let tapered = self.psqt + leaf;
         let scaled =
             (mg_value(tapered) * phase + eg_value(tapered) * (TOTAL_PHASE - phase)) / TOTAL_PHASE;
@@ -630,7 +630,7 @@ mod evaluate {
                     board.active_color = !board.active_color;
                     let passed = i32::from(eval(&board));
                     board.active_color = !board.active_color;
-                    let phase = board.eval.phase.min(TOTAL_PHASE);
+                    let phase = board.eval.phase();
                     let tempo = tempo::weight(0);
                     let twice = 2
                         * (mg_value(tempo) * phase + eg_value(tempo) * (TOTAL_PHASE - phase))
@@ -806,7 +806,7 @@ mod evaluate {
     fn mobility_joins_the_numerator_rather_than_being_tapered_beside_it() {
         let board = Board::from_fen("4k3/8/8/8/8/8/5P2/1N2K3 w - - 0 1").unwrap();
         let accumulator = board.eval;
-        let phase = accumulator.phase.min(TOTAL_PHASE);
+        let phase = accumulator.phase();
         let mobility = pack(11, -1);
         let together = accumulator.psqt + mobility;
         let inside =
