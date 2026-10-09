@@ -123,11 +123,12 @@ the book. Adding a position to any of these files, or to `bench.epd`, changes
 every number it has ever printed, so add to the end rather than edit.
 
 Coverage has a workflow of its own, run from the actions tab only, because
-instrumented the suite took about eighteen minutes when last measured (at the
-bench depth of seven), most of it the perft tests, and nothing gates on the
-number. Run it when the question is what the tests have never reached. Locally
-it wants a component that `rust-toolchain.toml` leaves out on purpose, so that
-cloning does not install it:
+instrumented the suite took about eighteen minutes when last measured (in
+6f11ca4, 26 August 2026, at the bench depth of seven; the bench now searches to
+eleven), most of it the perft tests, and nothing gates on the number. Run it
+when the question is what the tests have never reached. Locally it wants a
+component that `rust-toolchain.toml` leaves out on purpose, so that cloning
+does not install it:
 
 ```
 rustup component add llvm-tools-preview
