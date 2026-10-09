@@ -34,11 +34,11 @@ const SOFT_LIMIT_PERCENT: u128 = 45;
 /// Once a depth has been answered the line moves with how much of that
 /// depth's nodes went to the move it chose: down to `SETTLED_PERCENT` when
 /// the move took `SETTLED_PERMILLE` of them or more, up to
-/// `UNSETTLED_PERCENT` when it took `UNSETTLED_PERMILLE` or less (down to
-/// `TABLE_ANSWERED_PERMILLE`), and on a straight line between, which crosses `SOFT_LIMIT_PERCENT` at 700. A
-/// move that took most of the tree has had its alternatives refuted
-/// cheaply and seldom changes at the next depth; one that took a minority
-/// has rivals that cost as much as it did.
+/// `UNSETTLED_PERCENT` when it took from `TABLE_ANSWERED_PERMILLE` up to
+/// `UNSETTLED_PERMILLE`, and on a straight line between. A move that took
+/// most of the tree has had its alternatives refuted cheaply and seldom
+/// changes at the next depth; one that took a minority has rivals that
+/// cost as much as it did.
 const SETTLED_PERCENT: u128 = 30;
 const SETTLED_PERMILLE: u128 = 900;
 const UNSETTLED_PERCENT: u128 = 60;
