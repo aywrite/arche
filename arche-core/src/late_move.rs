@@ -136,7 +136,9 @@ const fn reduction_table() -> [[u8; 64]; 64] {
 // attention when its scout failed high or the replay called the denial
 // harmful, and a skipped move that would have failed high is a move lost.
 // Fitted on the pairs of one key parity (5,473,351 rows) and read on the
-// other (5,448,365) at two thresholds.
+// other (5,448,365) at two thresholds. The script's command line does not
+// select these rows (it drops the skipped ones and fits every depth), so
+// running it on a ledger makes a different fit.
 const ATTENTION_DEPTH: i64 = 76;
 const ATTENTION_INDEX: i64 = -3;
 const ATTENTION_BAND8_15: i64 = -284;
