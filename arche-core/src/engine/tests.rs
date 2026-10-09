@@ -20,7 +20,7 @@ mod search {
         DEEP_REDUCTION, DEEP_REDUCTION_MIN_DEPTH, LATE_MOVE_MIN_DEPTH, LATE_MOVE_REDUCTION,
         LATE_MOVE_THRESHOLD,
     };
-    use crate::limits::Clock;
+    use crate::limits::{Clock, RootNodes};
     use crate::misc::{Color, Piece};
     use crate::transposition::Floor;
     use crate::value::CHECKMATE_THRESHOLD;
@@ -1412,6 +1412,77 @@ mod search {
             );
         }
         assert!(swaps > 0, "no budget in the sweep swapped a move in");
+    }
+
+    /// The soft line reads the nodes under the move a depth chose against
+    /// the nodes under every root move, and whether the move changed from
+    /// the depth before. Two root moves, counted twice and once.
+    #[test]
+    fn the_root_nodes_name_the_chosen_move_and_whether_it_changed() {
+        let mut e = engine(Board::new());
+        let (chosen, other) = (play_named(&e.board, "e2e4"), play_named(&e.board, "d2d4"));
+        e.count_root_nodes(chosen, 300);
+        e.count_root_nodes(other, 200);
+        e.count_root_nodes(chosen, 100);
+        let line = |before| e.root_nodes_for(chosen, before);
+        assert_eq!(
+            line(Some(other)),
+            RootNodes {
+                chosen: 400,
+                total: 600,
+                changed: true
+            }
+        );
+        assert_eq!(
+            (line(Some(chosen)).changed, line(None).changed),
+            (false, false)
+        );
+        assert_eq!(line(None).chosen, 400);
+        // a move no search reached took nothing
+        assert_eq!(
+            e.root_nodes_for(play_named(&e.board, "a2a3"), None).chosen,
+            0
+        );
+    }
+
+    /// Each completed depth hands the soft line its root nodes over every
+    /// search of the depth. The sharp middlegame fails low at depth five,
+    /// so that depth's total is more than its last search counted.
+    #[test]
+    fn a_depth_counts_its_root_nodes_over_its_re_searches() {
+        let mut e = engine(Board::from_fen(SHARP_MIDDLEGAME).unwrap());
+        // each search's depth, own nodes, bound and move
+        let mut searches: Vec<(u8, u64, ScoreBound, Play)> = Vec::new();
+        let mut spent = 0;
+        e.iterative_deepening_search(SearchParameters::to_depth(7), |depth, result, _, bound| {
+            searches.push((depth, result.nodes - spent, bound, result.best_move));
+            spent = result.nodes;
+        });
+        assert_eq!(e.soft_lines.len(), 7);
+        let (mut re_searched, mut changed) = (0, 0);
+        let mut before = None;
+        for (depth, line) in (1..).zip(&e.soft_lines) {
+            let of_depth: Vec<_> = searches.iter().filter(|s| s.0 == depth).collect();
+            let &&(_, last, bound, play) = of_depth.last().unwrap();
+            assert_eq!(bound, ScoreBound::Exact);
+            assert!(line.chosen <= line.total, "depth {depth}");
+            // every node of the depth's searches but the root's own
+            let nodes: u64 = of_depth.iter().map(|s| s.1 - 1).sum();
+            assert_eq!(line.total, nodes, "depth {depth}");
+            if of_depth.len() > 1 {
+                assert!(line.total > last, "depth {depth}");
+                re_searched += 1;
+            }
+            assert_eq!(
+                line.changed,
+                before.is_some_and(|before| before != play),
+                "depth {depth}"
+            );
+            changed += usize::from(line.changed);
+            before = Some(play);
+        }
+        assert!(re_searched > 0, "no depth searched again");
+        assert!(changed > 0, "no depth changed its move");
     }
 
     /// A search stopped by its budget says it spent the budget, whichever
