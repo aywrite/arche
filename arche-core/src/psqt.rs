@@ -72,7 +72,8 @@ const fn packed(mg: [i16; 64], eg: [i16; 64]) -> [i32; 64] {
 // at a ridge of 1e-7 toward the weights these replace. Every table but the
 // king's midgame one is folded left to right; castling is not mirrored, so
 // that one is not. Five fold cross validation with whole pairs of games held
-// out scores 0.083124 at the weights these replace and 0.082291 at these,
+// out, run in a harness outside the tree (`scripts/tune.py` folds by game),
+// scores 0.083124 at the weights these replace and 0.082291 at these,
 // -0.000832 against a standard error of 0.000040 over pairs. No sealed group
 // was opened. The fit before this one, over 1,812 games, is 96bad35.
 // Material was held at its shipped values because the delta margin in
