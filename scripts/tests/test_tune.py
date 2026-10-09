@@ -705,9 +705,9 @@ def test_the_pawn_structure_weights_are_priced_too():
 
 
 def test_the_king_attack_weights_are_priced_too():
-    """And the last block of the four. What one knight, one bishop, one rook
-    and one queen can show of the ring, a side, both colours, at the larger of
-    the two halves, which here is the endgame one at seven a count."""
+    """And the king attack block. What one knight, one bishop, one rook and
+    one queen can show of the ring, a side, both colours, at the larger of the
+    two halves, which here is the endgame one at seven a count."""
     vector = weights(
         {
             LAYOUT.start["king_attack"] + index: 5
@@ -722,8 +722,26 @@ def test_the_king_attack_weights_are_priced_too():
     assert inside
     assert worst == 2 * int(np.array(tune.BOUNDS["king_attack"]).sum()) * 7
     huge = weights(
-        {slot: 5000 for slot in range(LAYOUT.start["king_attack"], LAYOUT.slots)}
+        {
+            slot: 5000
+            for slot in range(LAYOUT.start["king_attack"], LAYOUT.start["tempo"])
+        }
     )
+    assert not tune.bounds_hold(np.array(huge), LAYOUT)[0]
+
+
+def test_the_tempo_weights_are_priced_too():
+    """And the last block. The side to move counts one, both colours, at the
+    larger of the two halves, which here is the midgame one at twenty. The
+    count is written out rather than read from `BOUNDS`, so a bound of nothing
+    fails here."""
+    tempo = LAYOUT.start["tempo"]
+    inside, worst = tune.bounds_hold(
+        np.array(weights({tempo: 20, tempo + 1: 10})), LAYOUT
+    )
+    assert inside
+    assert worst == 2 * 1 * 20
+    huge = weights({slot: 20000 for slot in range(tempo, LAYOUT.slots)})
     assert not tune.bounds_hold(np.array(huge), LAYOUT)[0]
 
 
