@@ -147,24 +147,26 @@ worth doing.
   whose king or rook is not standing on its square is dropped, and so is a square that is not
   on the rank a double push crosses, is occupied, has no pawn placed to take there, or has no
   enemy pawn behind it
-- nothing validates the fifteen `unsafe` operations, eight in `board.rs`, four in
+- nothing validates the twenty `unsafe` operations, thirteen in `board.rs`, four in
   `transposition.rs` (the `madvise`, the bucket's SSE load and the two unchecked bucket
   reads), and three blocks of SSE code in `ordering.rs`. `unsafe_op_in_unsafe_fn` is denied
   in `arche-core/Cargo.toml`, so every one of them sits in a block carrying a `SAFETY`
   note, and the `arche` crate forbids unsafe outright. That is the half a compiler can
-  check. The other half is Miri, which needs nightly. Two of the sites are ones where a
-  slip is undefined behaviour rather than a wrong answer: the static exchange gain array's
-  `assume_init` and the move list's writes into its buffer before `set_len`. So are the
-  position stack's four: reading a slot, shared and mutable, that no parse or make has
-  written (a detached board cannot take a move back past the one slot it writes); the copy
-  of one slot into another, whose indices must fall inside the stack; and the detached
-  board, which writes one slot of an uninitialised board. The ordering's SSE blocks are
-  too: a load or a store past the keys, the moves or the history table reads or writes
-  memory the array does not own, and so is the table's: an index past the length reads past
-  its end, and the aligned load faults on an address that is not aligned. A slip in the
-  `madvise` is a refused call or a huge page flag on memory the table does not own, not
-  undefined behaviour. The exposure is carried knowingly until a scheduled Miri run reports
-  on it
+  check. The other half is Miri, which needs nightly. Each of the generator's six sites,
+  and the static exchange gain array's `assume_init`, are ones where a slip is undefined
+  behaviour rather than a wrong answer: the captures written through a cursor into the move
+  list before `set_len`, and the quiet moves written unchecked into a buffer that holds
+  only because no side has more than 63 pieces besides its king, of at most 27 quiet moves
+  each. So are the position stack's four: reading a slot, shared and mutable, that no parse
+  or make has written (a detached board cannot take a move back past the one slot it
+  writes); the copy of one slot into another, whose indices must fall inside the stack; and
+  the detached board, which writes one slot of an uninitialised board. The ordering's SSE
+  blocks are too: a load or a store past the keys, the moves or the history table reads or
+  writes memory the array does not own, and so is the table's: an index past the length
+  reads past its end, and the aligned load faults on an address that is not aligned. A slip
+  in the `madvise` is a refused call or a huge page flag on memory the table does not own,
+  not undefined behaviour. The exposure is carried knowingly until a scheduled Miri run
+  reports on it
 - a bench tree size measured before mate distance pruning cannot be read against one
   measured after it. `bratko kopec 1` and `wac 4` are both forced mates, proved at depth
   five, and without the pruning every iteration after that proved them again over a tree
