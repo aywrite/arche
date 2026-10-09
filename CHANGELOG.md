@@ -63,6 +63,18 @@ All notable changes to this project will be documented in this file.
 
 ## [0.4.8] - 2026-10-04
 
+Corrections to this section, written by hand after it was generated. The
+generated lines below are left as they were published.
+
+- "Widen the late move pruning band to -5457" (`cc865ba`) prints no elo,
+  because its message carries no `Elo:` trailer. Its body gives +17 ±15
+  over 1,000 games at 10+0.1 against its parent, passing a non-regression
+  sprt of [-10, 0].
+- "Refit the pair term's factors at a weaker ridge of 3e-7" (`f76fcaa`)
+  prints its 6,000 games as a fixed sample. Its body says they were an
+  sprt of [0, 10], which passed at a log likelihood ratio of 4.13. The
+  trailer left the verdict out.
+
 ### Features
 
 - *(uci)* Add a debug log of every line read and said
