@@ -102,9 +102,10 @@ factorization machine term over every pair of pieces.
   sooner a good move is found, so ordering has an outsized effect on tree
   size.
 - **limits.rs**: When to stop searching. A clock, a node budget, a soft
-  rule that skips starting an iteration which would get less than half
-  done, and a stop flag shared with the interface thread. The flag is read
-  in the same place as the clock, roughly every three thousand nodes.
+  line past which no new depth begins, set from how much of the last
+  depth's nodes went to the chosen move, and a stop flag shared with the
+  interface thread. The flag is read in the same place as the clock,
+  roughly every three thousand nodes.
 - **value.rs**: A score plus a taint bit recording whether it depended on
   a repetition or fifty move draw somewhere down its line. Such a score is
   only true of the path that produced it, which the table needs to know.

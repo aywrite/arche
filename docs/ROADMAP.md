@@ -291,7 +291,10 @@ of these again without saying what is different this time.
   to +12, LLR -1.19) and was stopped after one batch by its registered futility
   rule, so it is unresolved rather than rejected. On the refitted evaluation the
   margin's answers cross 1.72 times as often, and the depth four mate in two
-  holds down to a margin of 84. A hundred and twenty read -3 ±10 over 2,500
+  holds down to a margin of 84. Since the tempo term (d1dfe41) that mate is
+  lost on the reference at every margin up to a hundred and found from 101,
+  so the shipped margin no longer holds it; the guard is the same mate at
+  depth five, lost at 71 or less. A hundred and twenty read -3 ±10 over 2,500
   games (95% -12 to +7) and failed at an LLR of -3.05, which closes that
   widening. A probe of 1,000 games a point with no sprt read sixty at +9.7 ±16
   and two hundred at -4.5 ±16, and sixty sits under the mate boundary. A
@@ -519,8 +522,9 @@ of these again without saying what is different this time.
   attribute pays and the code carries it. So the answer belongs to the call
   site rather than to the function, and nothing about the shape of either
   says which way it will go. Measured where it stands, the attribute does
-  pay on `move_piece`, `undo_move`, `search_child`, `ordering_key`, the
-  table's probe and the lookup behind it.
+  pay on `move_piece`, `search_child`, `keyed`, the table's probe and the
+  lookup behind it, and it paid on `undo_move` before copy-make made that
+  two decrements.
 - Comparing a `Play` as its six bytes, the way `CastlePermissions` compares
   its four. 0.9% more instructions. The derive reads a field and branches,
   which is the right shape here: the killers are asked about every quiet
@@ -560,16 +564,19 @@ of these again without saying what is different this time.
   -16 ±15 over 1,000 games (sprt [0, 10] failed, LLR -3.31, branch tune/soft-bound-55) and
   65% read -3 ±11 over 2,000 (inconclusive at four batches, LLR -2.57, branch
   tune/soft-bound-65), so the ratio says the old reasoning is stale and not that the line is
-  in the wrong place. The 65% test resumes with `prior_pairs` 77,236,380,242,65. Re-ask at a
-  longer control, or beside a change to `ASSUMED_MOVES_TO_GO`, which was measured with 45%
-  in place.
+  in the wrong place. Both arms moved a flat line. Since 621ecab the line moves between 30%
+  and 60% with the chosen move's share of the root's nodes, goes to 65% when the move
+  changes, and stays at 45% only where the root says nothing, so neither test resumes onto it; their pairs (65%: 77,236,380,242,65) are
+  against a baseline that no longer exists. `ASSUMED_MOVES_TO_GO` was measured with the flat
+  45% in place.
 - Declining the reverse futility cuts the pair term marks as riskiest. On 4.0 million fresh
   cuts from `arche residuals`, a model reading the pair term put 1,078 of 5,674 crossings in
   its riskiest 5%, against 929 for depth, phase and slack alone, +149 (95% +92 to +232).
   Risk fell as the pair term grew. Played as a guard declining that 5%, it lost -9 ±11 over
   2,000 games at 10+0.1 (sprt [0, 10] failed at LLR -4.41) at master's node rate. Two
   variations then screened negative offline, a license for near misses and the same model
-  on null move cuts, so the direction is closed and the constant margin stays.
+  on null move cuts, so this guard and the two variations are rejected and the constant
+  margin stays.
 - Moving the quiet futility margin or the null move pruning evaluation unit after the joint
   refit. Quiet futility at ninety centipawns a ply in place of a hundred read -10 ±21 over
   500 games at 10+0.1 (95% -30 to +11, LLR -1.31) and was stopped after one batch by its
@@ -627,13 +634,30 @@ of these again without saying what is different this time.
   3e-7, matched the shipped table's held out loss (+0.000012, 0.3 pair standard errors) and
   then failed non-regression: -21 ±14 over 1,500 games at 10+0.1 (sprt [-10, 0] failed at
   LLR -3.27) at 0.997 times master's rate. The rank eight control without the names was not
-  played, so the loss is not divided between the narrower table and the names. Somewhere
-  between 57 and 125 centipawns the held out loss stopped being a guide to play.
-- Tapering the transposition table's aging by the root's phase, from eight plies a search at
+  played, so the loss is not divided between the narrower table and the names. For neither
+  table did a level or better held out loss predict play.
+- Lowering the transposition table's age weight in endgames, from eight plies a search at
   full material down to an endgame weight with only kings and pawns left. A screen at two
-  million nodes a move over 53,658 positions from games that reach ply 100 found every lower
-  weight dearer in nodes to the depth eight reaches, on the moves whose root phase is six or
-  less: 1.047 times at four (98.3% bounds 0.982 to 1.115), 1.147 at two and 1.526 at zero.
+  million nodes a move over 53,658 positions from games that reach ply 100 found the lower
+  weights dearer in nodes to the depth eight reaches, on the moves whose root phase is six or
+  less: 1.147 times at two and 1.526 at zero, and 1.047 at four, which the 98.3% bounds
+  (0.982 to 1.115) do not resolve.
   A match of four against master at 30+0.3 with a 256 MB table then lost -10 ±14 over 1,000
   games (sprt [0, 10] accepted H0 at LLR -3.02). The reverse, sixteen plies a search in the
-  endgame, is a separate test, dispatched on 2026-10-06 as run 37431969608 and still open.
+  endgame, passed sprt [0, 10] at +10 ±8 over 3,000 games and shipped as 755d6c6.
+- Leaving the table's own deeper entry its depth but taking the move of a shallower store it
+  refuses. The rule fired at 0.50% of full width stores once aging had landed, and read +0 ±9
+  over 3,000 games at 10+0.1 against 36ecabc (sprt [0, 10] unresolved at the cap, LLR -2.20).
+- Quiet futility to depth six rather than three. +3 ±8 over 4,000 games at 10+0.1 against
+  36ecabc (sprt [0, 10] unresolved at the cap, LLR -1.41).
+- Razoring: at depth three and under, an evaluation more than 300 a ply under alpha answers
+  with quiescence. +6 ±8 over 4,000 games at 10+0.1 against 36ecabc (LLR 0.78), and +3 ±5
+  over 8,000 when continued (LLR -2.00), unresolved both times. It also drops the tactical
+  suite from 228 to 175 at a fixed depth.
+- Refusing the shortcuts and the move rules at a node reached by a capture the swap prices as
+  losing. -15 ±15 over 1,000 games at 10+0.1 against 621ecab (sprt [0, 10] failed at LLR
+  -3.15), at 0.989 to 0.992 times the baseline's node rate.
+- Refusing to begin a depth whose expected cost, twice the last one's time, would run past
+  the share. -7 ±11 over 2,000 games at 10+0.1 against 621ecab (sprt [0, 10] failed at
+  LLR -3.79). The candidate ended 436 ms ahead on the clock and spent 0.624 of its share
+  against 0.692, so the time it banked was never spent.
