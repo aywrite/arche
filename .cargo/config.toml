@@ -4,9 +4,10 @@
 # `u64::trailing_zeros` compile to bit twiddling sequences rather than one
 # instruction each. The evaluation counts mobility with the first and the
 # generator pops bits with the second, so the engine pays on every leaf and
-# every move. Measured over the bench at a889930, when it was 4,089,373
-# nodes: 3,956,655,791 instructions at the plain target against 3,777,101,470
-# at v2, 4.54% fewer, with the node count identical.
+# every move. Measured over the bench at 6f6dce8, when it was 9,939,754
+# nodes: 17,172,465,531 instructions at the plain target against
+# 14,867,684,066 at v2, 15.50% more at the plain target, with the node count
+# identical. v3 runs 2.68% fewer than v2.
 #
 # v2 is sse4.2 and popcnt (Intel Nehalem, 2008; AMD Bulldozer, 2011). A
 # machine without it needs the baseline build, which the release still ships
