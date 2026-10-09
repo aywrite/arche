@@ -155,6 +155,7 @@ const INITIAL_KEY: u64 = 2_340_980_257_093;
 const STACK_PLIES: usize = 256;
 const _: () = assert!(STACK_PLIES > crate::engine::MAX_PLY as usize + 1);
 const _: () = assert!(std::mem::size_of::<Position>() == 256);
+const _: () = assert!(u8::MAX as usize == HISTORY_PLIES - 1);
 
 const A1: u8 = 0;
 const B1: u8 = 1;
@@ -207,11 +208,6 @@ const fn castle_masks(leaving: bool) -> [u8; 64] {
     }
     masks
 }
-
-/// Folded into the key a pass records for its ply, so the entry matches
-/// nothing: `has_repeated` says why a pass must never answer a repetition
-/// test. Odd, so it changes every key, and otherwise arbitrary.
-const NULL_HISTORY_SALT: u64 = 0x9e37_79b9_7f4a_7c15;
 
 static ATTACK_MASKS: AttackMasks = AttackMasks::new();
 // the squares strictly between two aligned squares, empty for a pair that
@@ -503,6 +499,10 @@ pub struct Position {
     checkers: u64,
 
     fifty_move_rule: usize,
+    // plies since the last pass, held at its ceiling when there was none.
+    // The ceiling is the longest window the repetition test reads, so
+    // saturating loses nothing
+    plies_since_pass: u8,
 
     // the evaluation's incremental state. The eval module owns what it
     // means; the board only keeps it in step
@@ -535,7 +535,7 @@ pub struct Board {
     // mate score's distance is measured in
     pub(crate) line_ply: usize,
     // the key of the position at each ply before the current one, for the
-    // repetition test; a pass records it salted
+    // repetition test
     keys: [u64; HISTORY_PLIES],
 }
 
@@ -583,7 +583,7 @@ impl PartialEq for Board {
     // the keys compared are the ones the repetition test can read: those
     // further back, or past the ply, are stale slots of the ring
     fn eq(&self, other: &Self) -> bool {
-        let window = self.fifty_move_rule.min(self.ply).min(HISTORY_PLIES - 1);
+        let window = self.repetition_window();
         **self == **other
             && self.ply == other.ply
             && self.line_ply == other.line_ply
@@ -1419,10 +1419,7 @@ impl Board {
     /// every ply hands the move over, so an entry an odd number of plies
     /// back can never equal this key.
     fn prior_occurrences(&self, enough: usize) -> usize {
-        // only the fifty move window can hold a repetition, since a pawn
-        // move or a capture puts the position out of reach for good. A fen
-        // can claim a count longer than the history or the game
-        let window = self.fifty_move_rule.min(self.ply).min(HISTORY_PLIES - 1);
+        let window = self.repetition_window();
         let mut found = 0;
         let mut back = 2;
         while back <= window {
@@ -1435,6 +1432,18 @@ impl Board {
             back += 2;
         }
         found
+    }
+
+    /// How many plies back a repetition can be found. Only the fifty move
+    /// window can hold one, since a pawn move or a capture puts the position
+    /// out of reach for good, and a fen can claim a count longer than the
+    /// history or the game. Nothing before a pass counts either: `has_repeated`
+    /// says why.
+    fn repetition_window(&self) -> usize {
+        self.fifty_move_rule
+            .min(self.ply)
+            .min(self.plies_since_pass as usize)
+            .min(HISTORY_PLIES - 1)
     }
 
     /// The move number, as the fen prints it: `from_fen` starts the ply at
@@ -1458,12 +1467,10 @@ impl Board {
     /// costs four plies of depth to see what is available now.
     ///
     /// A claim here is a claim that a legal path came back to this position,
-    /// which is why the entry a pass writes is salted. A pass is not a move
-    /// either side has, and an unsalted entry would let a later real
-    /// position count the passed-from position as an occurrence and take a
-    /// draw no rule grants. The real entries either side of a pass still
-    /// compare, since the window is a range of plies. Engines that let a
-    /// repetition be claimed through a pass differ here.
+    /// which is why the window stops at the last pass. A pass is not a move
+    /// either side has, so a position before it reached again after it was
+    /// reached by a line no game can play. Counted, it lets the pass take a
+    /// draw no rule grants, and a side that is losing then fails high on it.
     pub fn has_repeated(&self) -> bool {
         self.prior_occurrences(1) >= 1
     }
@@ -1629,13 +1636,12 @@ impl Board {
     /// side that does nothing.
     ///
     /// The fifty move counter runs on, so near the horizon passing does not
-    /// buy the side to move its way out of a draw. The key recorded for the
-    /// ply is salted to keep the pass out of the repetition arithmetic;
-    /// `has_repeated` has the reasoning.
+    /// buy the side to move its way out of a draw. The repetition window
+    /// starts again at the pass; `has_repeated` has the reasoning.
     pub(crate) fn make_null_move(&mut self) {
         debug_assert!(!self.in_check(), "a side in check cannot pass");
         let here = self.ply % STACK_PLIES;
-        self.keys[history_index(self.ply)] = self.slot(here).key ^ NULL_HISTORY_SALT;
+        self.keys[history_index(self.ply)] = self.slot(here).key;
         let next = (self.ply + 1) % STACK_PLIES;
         self.copy_slot(here, next);
         self.ply += 1;
@@ -1648,6 +1654,7 @@ impl Board {
         child.active_color = !child.active_color;
         child.key ^= ZOBRIST.side;
         child.fifty_move_rule += 1;
+        child.plies_since_pass = 0;
         child.checkers = 0;
 
         self.debug_assert_state_in_step();
@@ -1685,6 +1692,7 @@ impl Position {
         }
         self.en_passant = None;
         self.fifty_move_rule += 1;
+        self.plies_since_pass = self.plies_since_pass.saturating_add(1);
 
         if self.pawns().is_bit_set(play.from) {
             self.fifty_move_rule = 0;
@@ -2517,6 +2525,7 @@ impl Board {
             fifty_move_rule: half_move_clock
                 .parse::<usize>()
                 .map_err(|e| e.to_string())?,
+            plies_since_pass: u8::MAX,
             eval: Accumulator::EMPTY,
 
             key: INITIAL_KEY,
@@ -2965,8 +2974,7 @@ mod null_move {
 
     /// Coming back to the position a pass was made from is not a draw. One
     /// rook travels home in three moves and the other in two, which is what
-    /// lets an odd number of plies undo a pass; the key assertion says an
-    /// unsalted entry would have matched.
+    /// lets an odd number of plies undo a pass.
     #[test]
     fn a_pass_is_not_a_prior_occurrence_of_the_position_it_passed_from() {
         let mut board = Board::from_fen("r6k/8/8/8/8/8/8/R6K w - - 0 1").unwrap();
@@ -2978,6 +2986,71 @@ mod null_move {
         }
         assert_eq!(board.key, key, "the line did not come back to the position");
         assert_eq!(board.has_repeated(), false);
+    }
+
+    /// Nor is coming back to a position from before the pass. Black moves,
+    /// white steps, black passes, and then white steps back in two moves and
+    /// black in one. The same line with no pass in it repeats.
+    #[test]
+    fn a_position_before_a_pass_does_not_repeat_after_it() {
+        let fen = "r6k/8/8/8/8/8/8/R3K3 b - - 0 1";
+        let line = |pass: bool| {
+            let mut board = Board::from_fen(fen).unwrap();
+            for name in ["a8a7", "e1e2", "pass", "e2d1", "a7a8", "d1e1"] {
+                if name == "pass" {
+                    if pass {
+                        board.make_null_move();
+                    } else {
+                        let play = play_named(&board, "h8g8");
+                        assert!(board.make_move(&play));
+                    }
+                    continue;
+                }
+                let play = play_named(&board, name);
+                assert!(board.make_move(&play), "{} is not legal here", name);
+            }
+            board
+        };
+        let start = Board::from_fen(fen).unwrap();
+        let passed = line(true);
+        assert_eq!(passed.key, start.key, "the line did not come back");
+        assert_eq!(passed.has_repeated(), false);
+        let mut moved = line(false);
+        for name in ["g8h8", "e1e2", "h8g8", "e2e1", "g8h8"] {
+            let play = play_named(&moved, name);
+            assert!(moved.make_move(&play), "{} is not legal here", name);
+        }
+        assert_eq!(moved.has_repeated(), true);
+    }
+
+    /// A repetition wholly after a pass still counts: the window starts at
+    /// the pass rather than closing.
+    #[test]
+    fn a_repetition_after_a_pass_counts() {
+        let mut board = Board::from_fen("r6k/8/8/8/8/8/8/R3K3 b - - 0 1").unwrap();
+        board.make_null_move();
+        let key = board.key;
+        for name in ["e1e2", "h8g8", "e2e1", "g8h8"] {
+            let play = play_named(&board, name);
+            assert!(board.make_move(&play), "{} is not legal here", name);
+        }
+        assert_eq!(board.key, key, "the line did not come back to the position");
+        assert_eq!(board.has_repeated(), true);
+    }
+
+    /// Taking the pass back takes the window's start with it.
+    #[test]
+    fn undoing_a_pass_restores_the_window() {
+        let mut board = Board::from_fen("r6k/8/8/8/8/8/8/R3K3 w - - 0 1").unwrap();
+        for name in ["e1e2", "h8g8", "e2e1"] {
+            let play = play_named(&board, name);
+            assert!(board.make_move(&play), "{} is not legal here", name);
+        }
+        board.make_null_move();
+        board.undo_null_move();
+        let play = play_named(&board, "g8h8");
+        assert!(board.make_move(&play));
+        assert_eq!(board.has_repeated(), true);
     }
 }
 
