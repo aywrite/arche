@@ -313,13 +313,133 @@ mod search {
             Some(play_named(&e.board, "d1d5"))
         );
         let counts = e.singular_counts();
-        assert_eq!((counts.tested, counts.extended), (1, 1), "{counts:?}");
+        assert_eq!(
+            (counts.tested, counts.extended, counts.cut),
+            (1, 1, 0),
+            "{counts:?}"
+        );
     }
 
+    /// Over the open window the excluded search's window is under beta, so
+    /// a close second is no cut either.
     #[test]
     fn a_table_move_with_a_close_second_is_not_extended() {
         let counts = singular_search(fens::START).singular_counts();
-        assert_eq!((counts.tested, counts.extended), (1, 0), "{counts:?}");
+        assert_eq!(
+            (counts.tested, counts.extended, counts.cut),
+            (1, 0, 0),
+            "{counts:?}"
+        );
+    }
+
+    /// The multi-cut's shapes. The floor is planted as above, at the score
+    /// a depth three search gives unless one is named, and the node is
+    /// searched at a zero window whose beta stands `above` the singular
+    /// test's own window, with no pass, so the node reaches the test. In
+    /// the starting position several moves reach the window, so at a beta
+    /// at the window the node answers it without searching the table move,
+    /// and leaves its entry as it found it. Where the rook takes a hanging
+    /// queen nothing else does, so the capture is extended and nothing is
+    /// cut. Returns the window and what the node answered.
+    fn multi_cut_search(
+        fen: &str,
+        config: SearchConfig,
+        floor: Option<Score>,
+        above: Score,
+    ) -> (AlphaBeta, Score, Score) {
+        let mut e = AlphaBeta::with_config(Board::from_fen(fen).unwrap(), TABLE_BYTES, config);
+        let worth = completed(e.search(3));
+        let planted = Floor {
+            play: worth.best_move,
+            score: floor.unwrap_or(worth.score),
+            depth: SINGULAR_MIN_DEPTH - SINGULAR_ENTRY_SLACK,
+        };
+        assert!(e.transpositions.record_cutoff(
+            &e.board,
+            planted.play,
+            Value::clean(planted.score),
+            planted.depth,
+            crate::transposition::NO_EVAL
+        ));
+        let window = planted.score - SINGULAR_MARGIN * Score::from(SINGULAR_MIN_DEPTH);
+        let beta = window + above;
+        let Ok(value) = e.alpha_beta(
+            beta - 1,
+            beta,
+            SINGULAR_MIN_DEPTH,
+            false,
+            RootBounds::Neither,
+            None,
+        ) else {
+            panic!("an unlimited search aborted");
+        };
+        let _ = e
+            .transpositions
+            .probe(&e.board, Score::MIN + 1, Score::MAX - 1, 0, false, false);
+        if e.singular_counts().cut > 0 {
+            assert_eq!(
+                e.transpositions.probed_floor(e.board.key, 0),
+                Some(planted),
+                "the cut stored over the entry"
+            );
+        }
+        (e, window, value.score)
+    }
+
+    /// The singular test's counts after one search: run, extended, cut.
+    fn tested_extended_cut(e: &AlphaBeta) -> (u64, u64, u64) {
+        let counts = e.singular_counts();
+        (counts.tested, counts.extended, counts.cut)
+    }
+
+    #[test]
+    fn a_node_where_several_moves_reach_beta_is_cut_at_the_window() {
+        let (e, window, score) = multi_cut_search(fens::START, SearchConfig::default(), None, 0);
+        assert_eq!(tested_extended_cut(&e), (1, 0, 1));
+        assert_eq!(score, window);
+    }
+
+    /// With the switch off the same node goes on to search the table move
+    /// and the rest, at more nodes than the cut spent.
+    #[test]
+    fn with_the_multi_cut_off_that_node_is_searched() {
+        let config = SearchConfig::without("multi_cut")
+            .expect("a switch")
+            .config();
+        let (off, _, _) = multi_cut_search(fens::START, config, None, 0);
+        let (on, _, _) = multi_cut_search(fens::START, SearchConfig::default(), None, 0);
+        assert_eq!(tested_extended_cut(&off), (1, 0, 0));
+        assert!(off.nodes > on.nodes, "{} against {}", off.nodes, on.nodes);
+    }
+
+    /// A beta a point over the window: the moves that reach the window
+    /// have not been shown to reach beta.
+    #[test]
+    fn a_window_under_beta_is_no_cut() {
+        let (e, _, _) = multi_cut_search(fens::START, SearchConfig::default(), None, 1);
+        assert_eq!(tested_extended_cut(&e), (1, 0, 0));
+    }
+
+    #[test]
+    fn a_node_where_one_move_reaches_beta_is_not_cut() {
+        let (e, _, _) = multi_cut_search(SINGULAR, SearchConfig::default(), None, 0);
+        assert_eq!(tested_extended_cut(&e), (1, 1, 0));
+    }
+
+    /// A floor at the edge of the mate band, which is no mate, puts the
+    /// window inside it on the mated side. Every move reaches that window,
+    /// and the node is searched rather than answered with a mate distance
+    /// nothing proved.
+    #[test]
+    fn a_window_in_the_mate_band_is_no_cut() {
+        let (e, window, score) = multi_cut_search(
+            fens::START,
+            SearchConfig::default(),
+            Some(-CHECKMATE_THRESHOLD),
+            0,
+        );
+        assert_eq!(tested_extended_cut(&e), (1, 0, 0));
+        assert!(score > window, "{score} against {window}");
     }
 
     /// The excluded search at the planted entry's own depth would store a

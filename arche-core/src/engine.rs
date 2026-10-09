@@ -547,6 +547,12 @@ pub struct SearchConfig {
     /// other move, shown by a half depth search with that move excluded,
     /// searches the table move a ply deeper.
     pub singular_extensions: bool,
+    /// Whether a node whose singular test searched a window at or above
+    /// beta, and reached it without the table move, answers that window as
+    /// a fail high without searching the table move or the rest. Asked only
+    /// where the singular test runs, so it has no site with that switch
+    /// off.
+    pub multi_cut: bool,
 }
 
 /// What to do with a draw tainted score: one stored by a search that read
@@ -652,7 +658,7 @@ impl SearchConfig {
     ///
     /// `taint` is not among them: it is a policy with four values rather
     /// than a switch, and `residuals` already takes it.
-    pub const SWITCHES: [(&'static str, TurnOff); 14] = [
+    pub const SWITCHES: [(&'static str, TurnOff); 15] = [
         ("reverse_futility", |config| config.reverse_futility = false),
         ("null_move", |config| config.null_move = false),
         ("adaptive_null_move", |config| {
@@ -675,6 +681,7 @@ impl SearchConfig {
         ("singular_extensions", |config| {
             config.singular_extensions = false
         }),
+        ("multi_cut", |config| config.multi_cut = false),
     ];
 
     /// The default with one switch off, or none for a name the table does
@@ -711,6 +718,7 @@ impl SearchConfig {
             move_memory: false,
             aspiration: false,
             singular_extensions: false,
+            multi_cut: false,
         }
     }
 
@@ -766,6 +774,7 @@ impl Default for SearchConfig {
             move_memory: true,
             aspiration: true,
             singular_extensions: true,
+            multi_cut: true,
         }
     }
 }
@@ -1294,6 +1303,22 @@ pub struct SingularCounts {
     pub tested: u64,
     /// Nodes whose table move proved singular and was searched deeper.
     pub extended: u64,
+    /// Nodes the multi-cut answered: the excluded search reached a window
+    /// at or above the node's beta.
+    pub cut: u64,
+}
+
+/// What the singular test decided for the table move.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+enum TableMoveTest {
+    /// Searched at the node's depth: the test was not run, or another
+    /// move came within the margin under a window below beta.
+    Plain,
+    /// Searched a ply deeper: no other move came within the margin.
+    Singular,
+    /// Not searched: another move reached a window at or above beta, so
+    /// the node answers with this.
+    Cut(Value),
 }
 
 /// What a search can be armed to record. Implemented here rather than
@@ -2475,31 +2500,47 @@ impl AlphaBeta {
         Ok(Some(self.cutoff(&tt, &[], node, value.score, static_eval)))
     }
 
-    /// Whether the table move is singular: whether a search of this node
-    /// with that move excluded, at half the depth and over a zero window a
-    /// margin under the move's floor, fails low, so that no other move
-    /// comes close. Asked only of a node deep enough, under the rail, that
-    /// is not itself such a search, whose entry names the table move from
-    /// near the node's depth with a floor that is no mate. The floor is
-    /// read whatever the taint policy made of the entry, since nothing of
-    /// the excluded search is stored and the extended move's answer is
-    /// stamped as any other. The excluded search's own taint is dropped
-    /// for the same reason: its result is a decision about depth, not a
-    /// score the node answers with. `depth` is the node's, check extension
-    /// included, and the excluded search of a node in check extends itself
-    /// again, so there it runs a ply over the half.
-    fn table_move_is_singular(
+    /// The singular test: whether a search of this node with the table
+    /// move excluded, at half the depth and over a zero window a margin
+    /// under the move's floor, fails low, so that no other move comes
+    /// close and the move is searched a ply deeper. Asked only of a node
+    /// deep enough, under the rail, that is not itself such a search,
+    /// whose entry names the table move from near the node's depth with a
+    /// floor that is no mate. The floor is read whatever the taint policy
+    /// made of the entry: it places the window and proves nothing, nothing
+    /// of the excluded search is stored, and the extended move's answer is
+    /// stamped as any other. The extension drops the excluded search's own
+    /// taint for the same reason, since it is a decision about depth and
+    /// not a score the node answers with. `depth` is the node's, check
+    /// extension included, and the excluded search of a node in check
+    /// extends itself again, so there it runs a ply over the half.
+    ///
+    /// When the window is at or above the node's `beta` and the excluded
+    /// search reaches it, the multi-cut answers the window as a fail high.
+    /// Usually another move reached beta at half depth; the excluded frame
+    /// can also be answered by reverse futility, which it does not refuse.
+    /// The floor says the table move would reach it too, so the node
+    /// searches neither. The excluded search reached the window whatever
+    /// the floor's taint, and the node answers with it, so the answer
+    /// carries the excluded search's taint and not the floor's. It is the
+    /// window rather than the excluded search's own value, which can
+    /// stand far above what the zero window proved, and never a score in
+    /// the mate band, where a floor at its edge on the mated side can put
+    /// the window and nothing here proved a mate. A node whose beta is the
+    /// root's is cut as any other.
+    fn test_table_move(
         &mut self,
         tt: Play,
         floor: Option<Floor>,
         depth: u8,
+        beta: Score,
         excluded: Option<Play>,
-    ) -> Result<bool, Aborted> {
+    ) -> Result<TableMoveTest, Aborted> {
         if !self.config.singular_extensions
             || excluded.is_some()
             || !(SINGULAR_MIN_DEPTH..MAX_PLY).contains(&depth)
         {
-            return Ok(false);
+            return Ok(TableMoveTest::Plain);
         }
         self.singular.asked += 1;
         let Some(floor) = floor.filter(|floor| {
@@ -2507,7 +2548,7 @@ impl AlphaBeta {
                 && depth.saturating_sub(floor.depth) <= SINGULAR_ENTRY_SLACK
                 && !is_mate(floor.score)
         }) else {
-            return Ok(false);
+            return Ok(TableMoveTest::Plain);
         };
         self.singular.tested += 1;
         // a floor just under the mate threshold puts the window inside the
@@ -2524,9 +2565,18 @@ impl AlphaBeta {
             RootBounds::Neither,
             Some(tt),
         )?;
-        let singular = rest.score < singular_beta;
-        self.singular.extended += u64::from(singular);
-        Ok(singular)
+        if rest.score < singular_beta {
+            self.singular.extended += 1;
+            return Ok(TableMoveTest::Singular);
+        }
+        if self.config.multi_cut && singular_beta >= beta && !is_mate(singular_beta) {
+            self.singular.cut += 1;
+            return Ok(TableMoveTest::Cut(Value::with_taint(
+                singular_beta,
+                rest.tainted,
+            )));
+        }
+        Ok(TableMoveTest::Plain)
     }
 
     /// The quiet moves put in order as far as the loop reads them, asked
@@ -2859,7 +2909,16 @@ impl AlphaBeta {
             FailSoft::open(alpha, beta, root_bounds, taint),
         );
         if let Some(tt) = table_move {
-            let extension = u8::from(self.table_move_is_singular(tt, floor, depth, excluded)?);
+            let extension = match self.test_table_move(tt, floor, depth, beta, excluded)? {
+                TableMoveTest::Plain => 0,
+                TableMoveTest::Singular => 1,
+                // nothing stored: the entry already holds the table move's
+                // floor, from deeper than the excluded search
+                TableMoveTest::Cut(value) => {
+                    taint.absorb(value);
+                    return Ok(taint.stamp(value.score));
+                }
+            };
             if let Some(value) = self.search_table_move(tt, &mut node, static_eval, extension)? {
                 return Ok(value);
             }

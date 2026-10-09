@@ -503,8 +503,8 @@ fn a_root_move_that_reaches_beta_is_reported_as_a_floor_and_then_answered_with()
 fn a_floor_answers_until_the_wider_search_replaces_it() {
     // what the engine plays when the wider search never finishes. WAC.021 is
     // answered with d2c3 at depth eight. At depth nine d2h6 reaches beta and
-    // is reported as a floor at 87,942 nodes, and again at 89,089 and 91,472
-    // as the window widens, and the search finishes at 189,094. A budget
+    // is reported as a floor at 81,653 nodes, and again at 82,687 and 84,915
+    // as the window widens, and the search finishes at 157,556. A budget
     // after d2h6's last floor and inside that is interrupted before anything
     // beats alpha, so the floor is what is left to answer with; with the
     // floor not held it answers d2c3, the move the search has just shown
