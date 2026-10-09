@@ -49,9 +49,8 @@ const _: () = assert!(MAX_PLY < u8::MAX);
 // the_reverse_futility_margin_keeps_the_depth_five_mate pins. That test
 // guards only a cut below seventy two, so re-measure before moving the
 // figure. At depth four the boundary is a hundred and one, above this
-// figure, since the tempo; the default search loses that one at every
-// margin from sixty to a hundred. docs/ROADMAP.md has the shadow lane's
-// reading.
+// figure; the default search loses that one at every margin from sixty to
+// a hundred. docs/ROADMAP.md has the shadow lane's reading.
 const REVERSE_FUTILITY_MARGIN: Score = 100;
 // The deepest node the margin may answer. Four, six and eight give the
 // same bench count to a tenth of a percent.
@@ -83,13 +82,9 @@ const NULL_MOVE_EVAL_CAP: u8 = 3;
 // quiescence. The conventional figure for conventional piece values.
 const DELTA_MARGIN: Score = 200;
 // How far either side of the previous iteration's score the root opens.
-// Thirty was chosen by a bench sweep of ten to forty at depth nine as the
-// widest width within a percent of the cheapest that also cost less than
-// opening full (5902681 has the table), and never played against another
-// width. Fifteen read above thirty in fixed node self play on three draws
-// of openings at 40,000 and 200,000 nodes a move (+24 ±23, +31 ±25 and
-// +36 ±28), where twenty read +27 ±23 and ten +7 ±23, and passed sprt
-// [0, 10] at 10+0.1 by +13 ±9 over 3,400 games.
+// Thirty came from a bench node sweep at depth nine (5902681 has the
+// table) and was not played against another width until fifteen beat it
+// at 10+0.1 (sprt [0, 10] passed, +13 ±9 over 3,400 games, 36ecabc).
 const ASPIRATION_WIDTH: Score = 15;
 // The first depth the root opens narrow at. Below it the whole iteration
 // costs less than one re-search deeper down. A judgment rather than a
@@ -1271,7 +1266,8 @@ pub struct AlphaBeta {
     effort_depths: effort::Depths,
     /// The forced decision instrument's arm, or none, on the sampler's
     /// terms: read behind a bare check where each decision it can invert
-    /// is taken, and nowhere else.
+    /// is taken, and in the two places that set those decisions up (the
+    /// quiet ordering asked move by move and the scout's staged reduction).
     forced: Option<Box<forced::Arm>>,
     /// The nodes searched under each root move over every search of the
     /// depth under way, which the soft line reads once the depth completes.
