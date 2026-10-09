@@ -234,11 +234,9 @@ impl<T: Engine, W: Write> UCI<T, W> {
             // moment. The reader has already raised the flag
             "stop" => control.stop_dispatched(),
             "isready" => self.say(format_args!("readyok")),
-            "ucinewgame" => {
-                self.engine.new_game();
-                let result = self.parse_position("position startpos");
-                self.report(result);
-            }
+            // forgets the table and leaves the position to the `position`
+            // that follows
+            "ucinewgame" => self.engine.new_game(),
             "uci" => {
                 self.say(format_args!(
                     "id name {} {}",
@@ -1199,12 +1197,20 @@ mod tests {
     }
 
     #[test]
-    fn a_new_game_resets_the_position() {
-        let mut uci = uci();
-        uci.parse_position("position startpos moves e2e4").unwrap();
-        assert_eq!(uci.engine.active_color(), Color::Black);
-        assert!(uci.handle("ucinewgame"));
-        assert_eq!(uci.engine.active_color(), Color::White);
+    fn a_new_game_leaves_the_position_to_the_next_position_line() {
+        // a go with no position since the new game searches the one there
+        // was: the rook mates on a8, which is no move from the start
+        let mut kept = uci();
+        kept.run(Cursor::new(
+            "position fen 6k1/5ppp/8/8/8/8/8/R5K1 w - - 0 1\nucinewgame\ngo depth 2\n",
+        ));
+        assert!(said(&kept).ends_with("bestmove a1a8\n"), "{}", said(&kept));
+
+        // and a position after it is set as before
+        let mut set = uci();
+        set.run(Cursor::new("ucinewgame\nposition startpos moves e2e4\n"));
+        assert_eq!(set.engine.active_color(), Color::Black);
+        assert_eq!(said(&set), "");
     }
 
     /// The table a request for `megabytes` builds: the whole entries that fit,
