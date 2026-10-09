@@ -4,6 +4,14 @@ All notable changes to this project will be documented in this file.
 
 ## [0.4.9] - 2026-10-09
 
+Corrections to this section, written by hand after it was generated. The
+generated lines below are left as they were published.
+
+- "Add singular extensions from the table move's floor" (`b61acfa`)
+  prints +44 ±22, an sprt that passed on its first batch of 500 games and
+  so leans high. Its body also gives a fixed sample of 1,000 games at
+  30+0.3 against the same base (`621ecab`), which read +28 ±15.
+
 ### Features
 
 - *(search)* Weigh entry age against depth in transposition table replacement [elo +4 ±9 (sprt [-10, 0] passed, 2500 games, 30+0.3, vs 31eb33b)] [bench 5965973]
