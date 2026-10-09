@@ -136,7 +136,7 @@ const fn reduction_table() -> [[u8; 64]; 64] {
 // attention when its scout failed high or the replay called the denial
 // harmful, and a skipped move that would have failed high is a move lost.
 // Fitted on the pairs of one key parity (5,473,351 rows) and read on the
-// other (5,448,365) once.
+// other (5,448,365) at two thresholds.
 const ATTENTION_DEPTH: i64 = 76;
 const ATTENTION_INDEX: i64 = -3;
 const ATTENTION_BAND8_15: i64 = -284;
@@ -153,9 +153,11 @@ const ATTENTION_INTERCEPT: i64 = -3540;
 // The score at or under which a late quiet is not searched at all: the
 // largest whose region's attention rate on the fitting half is no worse
 // than the weights these replaced had at their own threshold, -7954. On
-// the other half it skips 46.55% of the rows at 0.0364% attention, against
-// 41.29% at 0.0373% for the weights it replaced. The refit first stood at
-// -5932, where it matched their coverage instead (41.32% at 0.0303%).
+// the other half (read at this threshold and at -5932, so the figures
+// describe it rather than test it) it skips 46.55% of the rows at 0.0364%
+// attention, against 41.29% at 0.0373% for the weights it replaced. The
+// refit first stood at -5932, where it matched their coverage instead
+// (41.32% at 0.0303%).
 pub(crate) const LATE_MOVE_PRUNING_THRESHOLD: i64 = -5457;
 // The index the deep reduction's rule wants a move to have reached, and
 // how much further along the order per ply of depth over the floor the
