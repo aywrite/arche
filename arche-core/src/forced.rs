@@ -572,10 +572,34 @@ mod tests {
     /// kind that was kept is forced at least once, and each address of a
     /// root has one row. A row whose visits read zero would be a decision
     /// the forced search never reached, which is the instrument failing
-    /// rather than a finding.
+    /// rather than a finding. A decision met and inverted changes the tree,
+    /// so a run whose forced searches count the default's nodes is failing
+    /// the same way.
     #[test]
     fn every_kept_decision_is_met_when_forced_and_rowed_once() {
         let report = run(&suite(), None, 6, 40, 400, Kinds::ALL, 0);
+        each_row_was_met_and_inverted(&report);
+        for kind in [Kind::ReverseFutility, Kind::Skip, Kind::TrustedScout] {
+            assert!(
+                report.rows.iter().any(|row| row.event.address.kind == kind),
+                "no {} row",
+                kind.word()
+            );
+        }
+        // the run above keeps three null moves, too few to stand on, so the
+        // kind is also sampled on its own
+        let report = run(&suite(), None, 6, 10, 400, Kinds::of(&[Kind::NullMove]), 0);
+        each_row_was_met_and_inverted(&report);
+        assert!(
+            report
+                .rows
+                .iter()
+                .all(|row| row.event.address.kind == Kind::NullMove)
+        );
+    }
+
+    /// The checks every row of a run is held to, whatever its kind.
+    fn each_row_was_met_and_inverted(report: &Report) {
         assert!(!report.rows.is_empty(), "nothing was kept");
         let mut addresses: Vec<_> = report
             .rows
@@ -586,6 +610,27 @@ mod tests {
         addresses.dedup();
         assert_eq!(addresses.len(), report.rows.len());
         assert!(report.records >= report.rows.len());
+        // a changed tree can still add up to the default's count: one null
+        // move here searched five nodes more in one aspiration search and
+        // five fewer in the next. So the count is read over a kind's rows,
+        // and a kind of under ten rows may have one
+        for kind in Kind::ALL {
+            let rows = || {
+                report
+                    .rows
+                    .iter()
+                    .filter(|row| row.event.address.kind == kind)
+            };
+            let same = rows()
+                .filter(|row| row.forced.nodes == row.on.nodes)
+                .count();
+            assert!(
+                same * 10 < rows().count().max(10),
+                "{same} of {} {} searches counted the default's nodes",
+                rows().count(),
+                kind.word()
+            );
+        }
         for row in &report.rows {
             assert!(row.visits > 0, "{:?} was never met", row.event.address);
             match row.event.address.kind {
@@ -596,13 +641,6 @@ mod tests {
                     assert!(row.event.features.is_some());
                 }
             }
-        }
-        for kind in [Kind::ReverseFutility, Kind::Skip, Kind::TrustedScout] {
-            assert!(
-                report.rows.iter().any(|row| row.event.address.kind == kind),
-                "no {} row",
-                kind.word()
-            );
         }
     }
 
@@ -628,18 +666,30 @@ mod tests {
     }
 
     /// The model's score is printed where the gate reads one, depth four
-    /// and up, and nowhere else.
+    /// and up, and nowhere else. A skip there scores at or under the
+    /// pruning threshold.
     #[test]
     fn attention_is_read_where_the_gate_reads_it() {
         let report = run(&suite(), None, 7, 20, 2000, Kinds::ALL, 0);
-        let mut deep = 0;
+        let (mut deep, mut skips) = (0, 0);
         for row in &report.rows {
             let e = &row.event;
             let gated = e.features.is_some()
                 && e.address.depth >= crate::late_move::DEEP_REDUCTION_MIN_DEPTH;
             assert_eq!(e.attention.is_some(), gated, "{:?}", e.address);
+            // a skip there is the pruning rule's, which skips on the score
+            if gated && e.address.kind == Kind::Skip {
+                assert!(
+                    e.attention <= Some(crate::late_move::LATE_MOVE_PRUNING_THRESHOLD),
+                    "{:?} scored {:?}",
+                    e.address,
+                    e.attention
+                );
+                skips += 1;
+            }
             deep += usize::from(gated);
         }
         assert!(deep > 0, "no row at the gate's depth");
+        assert!(skips > 0, "no skip at the gate's depth");
     }
 }
