@@ -663,10 +663,10 @@ mod tests {
         assert_eq!(Kind::of_word("skips"), None);
     }
 
-    /// A skip at depth four and up is the margin's, and its row says so: the
-    /// recorded evaluation stands at least the margin under beta.
+    /// A skip at depth four and up is the model's, and its row says so: the
+    /// recorded features and evaluation score at or under its threshold.
     #[test]
-    fn a_deep_skip_stands_the_margin_under_beta() {
+    fn a_deep_skip_scores_under_the_threshold() {
         let report = run(&suite(), None, 7, 20, 2000, Kinds::ALL, 0);
         let mut skips = 0;
         for row in &report.rows {
@@ -675,7 +675,14 @@ mod tests {
                 && e.address.depth >= crate::late_move::DEEP_REDUCTION_MIN_DEPTH
             {
                 assert!(
-                    crate::late_move::under_skip_margin(e.address.depth, i64::from(e.eval_beta)),
+                    crate::late_move::row_skips(
+                        e.address.depth,
+                        e.features
+                            .as_ref()
+                            .expect("a move decision carries its features"),
+                        i64::from(e.eval_beta),
+                        i64::from(e.alpha_gap),
+                    ),
                     "{:?} stood {} from beta",
                     e.address,
                     e.eval_beta

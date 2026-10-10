@@ -2647,7 +2647,7 @@ impl AlphaBeta {
         if !rules.reduces(node, m) {
             return Decision::UNREDUCED;
         }
-        match late_move::decide_admitted(&self.deciding(), node, rules, m) {
+        match late_move::decide_admitted(&self.deciding(), node, rules, moves, m) {
             late_move::Verdict::Skip => {
                 if self.forced.is_some() && self.forced_skip(node, rules, moves, m) {
                     return Decision::UNREDUCED;
