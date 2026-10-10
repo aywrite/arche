@@ -19,10 +19,10 @@ set -euo pipefail
 
 declare -A LADDER TIME_CONTROL GAMES MINUTES RATED_AT ARTIFACT
 
-# The ccrl blitz list of 5 September 2026, bracketing 2870 with no lineage
+# The ccrl blitz list of 5 September 2026, bracketing 3000 with no lineage
 # holding more than two rungs, at 20+0.2, roughly a sixth of 2+1. Fifty games
 # against a rung take about half an hour.
-LADDER[blitz]=blunder:v8.5.5:2663,inanis:v1.1.0:2763,zahak:6.2:2825,weiss:v0.10:2846,weiss:v1.0:2896,stash:v25.0:2932,inanis:v1.4.0:2956,stash:v27.0:3048
+LADDER[blitz]=zahak:6.2:2825,weiss:v1.0:2896,stash:v25.0:2932,inanis:v1.5.0:2994,topple:v0.8.1:3036,inanis:v1.6.0:3091,texel:1.08:3140,stash:v30.0:3152
 TIME_CONTROL[blitz]=20+0.2
 GAMES[blitz]=50
 MINUTES[blitz]=90
@@ -32,7 +32,7 @@ ARTIFACT[blitz]=calibrate
 # The ccrl 40/15 list of 23 September 2026, at 40/150, one sixth of 40/15.
 # The clock allows a game about twelve minutes, so sixteen games against a
 # rung take at most about an hour and a half.
-LADDER[40/15]=blunder:v8.5.5:2692,inanis:v1.1.0:2746,stash:v21.2:2785,weiss:v1.0:2846,inanis:v1.4.0:2921,stash:v27.0:3022
+LADDER[40/15]=weiss:v1.0:2846,inanis:v1.4.0:2921,inanis:v1.5.0:2993,topple:v0.8.1:3031,texel:1.08:3114,stash:v30.0:3130
 TIME_CONTROL[40/15]=40/150
 GAMES[40/15]=16
 MINUTES[40/15]=240
