@@ -1405,7 +1405,9 @@ impl AlphaBeta {
 
     /// A node decision just taken, the margin's or the pass's, offered to
     /// the forced decision instrument. True when it is the decision being
-    /// inverted, which the caller then does not take.
+    /// inverted, which the caller then does not take. `gap` is how far the
+    /// decision's bound cleared beta: the margin's floor or the pass's
+    /// score, less beta.
     // cold and out of line behind a bare is_some, for `sample`'s reason
     #[cold]
     #[inline(never)]
@@ -1416,6 +1418,7 @@ impl AlphaBeta {
         eval: Score,
         alpha: Score,
         beta: Score,
+        gap: i32,
     ) -> bool {
         let address = forced::Address {
             kind,
@@ -1436,6 +1439,7 @@ impl AlphaBeta {
             features: None,
             eval_beta: i32::from(eval) - i32::from(beta),
             alpha_gap: i32::from(alpha) - i32::from(eval),
+            gap: Some(gap),
             fen: board.to_fen(),
         });
         false
@@ -1495,6 +1499,7 @@ impl AlphaBeta {
                 features: Some(features),
                 eval_beta: eval_beta as i32,
                 alpha_gap: alpha_gap as i32,
+                gap: None,
                 fen: board.to_fen(),
             }
         });
@@ -1505,7 +1510,8 @@ impl AlphaBeta {
     /// forced decision instrument before it answers for its move. True when
     /// it is the decision being inverted. The board is the position the
     /// move left, which is the address, and the node's own evaluation is
-    /// read by stepping the move back, for kept events alone.
+    /// read by stepping the move back, for kept events alone. `scout` is
+    /// the scout's fail soft score, at or under alpha.
     #[cold]
     #[inline(never)]
     fn forced_scout(
@@ -1514,6 +1520,7 @@ impl AlphaBeta {
         depth: u8,
         alpha: Score,
         beta: Score,
+        scout: Score,
     ) -> bool {
         let address = forced::Address {
             kind: forced::Kind::TrustedScout,
@@ -1546,6 +1553,7 @@ impl AlphaBeta {
                 features: Some(staged.features),
                 eval_beta: eval_beta as i32,
                 alpha_gap: alpha_gap as i32,
+                gap: Some(i32::from(alpha) - i32::from(scout)),
                 fen,
             }
         });
@@ -2236,7 +2244,14 @@ impl AlphaBeta {
             }
             if floor >= beta {
                 if self.forced.is_some()
-                    && self.forced_node(forced::Kind::ReverseFutility, depth, eval, alpha, beta)
+                    && self.forced_node(
+                        forced::Kind::ReverseFutility,
+                        depth,
+                        eval,
+                        alpha,
+                        beta,
+                        i32::from(floor) - i32::from(beta),
+                    )
                 {
                     margin_inverted = true;
                 } else {
@@ -2265,7 +2280,14 @@ impl AlphaBeta {
             let value = -result?;
             if value.score >= beta
                 && !(self.forced.is_some()
-                    && self.forced_node(forced::Kind::NullMove, depth, eval, alpha, beta))
+                    && self.forced_node(
+                        forced::Kind::NullMove,
+                        depth,
+                        eval,
+                        alpha,
+                        beta,
+                        i32::from(value.score) - i32::from(beta),
+                    ))
             {
                 // a mate found through a pass is not a mate, since the pass
                 // is not a legal move, so the score is held under the window
@@ -2378,7 +2400,8 @@ impl AlphaBeta {
                 );
             }
             if scout.score <= alpha
-                && !(self.forced.is_some() && self.forced_scout(staged, depth, alpha, beta))
+                && !(self.forced.is_some()
+                    && self.forced_scout(staged, depth, alpha, beta, scout.score))
             {
                 return Ok(scout);
             }

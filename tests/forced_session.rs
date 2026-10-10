@@ -24,18 +24,24 @@ fn the_forced_argument_prints_a_header_rows_and_a_line_a_kind_and_a_root() {
     assert!(printed.events() > 0, "header: {}", printed.header);
     for row in &printed.rows {
         let words: Vec<&str> = row.split(' ').collect();
-        // twenty columns before a fen of six fields
-        assert_eq!(words.len(), 26, "row: {row}");
+        // twenty one columns before a fen of six fields
+        assert_eq!(words.len(), 27, "row: {row}");
         assert!(
             ["reverse_futility", "null_move", "skip", "trusted_scout"].contains(&words[0]),
             "row: {row}"
         );
         // depth, visits, root, the two scores and the two node counts
-        for at in [1, 12, 13, 16, 17, 18, 19] {
+        for at in [1, 13, 14, 17, 18, 19, 20] {
             assert!(words[at].parse::<i64>().is_ok(), "field {at} of {row}");
         }
+        // every decision but a skip cleared its bound, by zero or more
+        if words[0] == "skip" {
+            assert_eq!(words[11], "-", "row: {row}");
+        } else {
+            assert!(words[11].parse::<u32>().is_ok(), "row: {row}");
+        }
         // a kept decision the forced search never met is a failed row
-        assert!(words[12] != "0", "row: {row}");
+        assert!(words[13] != "0", "row: {row}");
     }
     let kinds = printed
         .summary

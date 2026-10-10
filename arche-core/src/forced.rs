@@ -176,6 +176,12 @@ pub struct Event {
     pub(crate) features: Option<Features>,
     pub eval_beta: i32,
     pub alpha_gap: i32,
+    /// How far the decision's own bound cleared its window, in the
+    /// direction that took the decision: for a trusted scout, the alpha it
+    /// was read against less its fail soft score; for the null move, the
+    /// pass's score less beta; for reverse futility, the margin's floor
+    /// less beta. Zero at the bound. None on a skip, which searches nothing.
+    pub gap: Option<i32>,
     /// The deciding node's position.
     pub fen: String,
 }
@@ -396,11 +402,11 @@ pub fn run(
 /// and what the default answered at each root.
 ///
 /// A row is `kind depth index searched generated history history_max
-/// killer tt eval_beta alpha_gap answered visits root best_on
+/// killer tt eval_beta alpha_gap gap answered visits root best_on
 /// best_forced score_on score_forced nodes_on nodes_forced fen`,
 /// whitespace separated with the deciding node's fen last. `root` is the
 /// root's place in the suite, which its line names. A move decision's own
-/// columns print `-` on a node decision.
+/// columns print `-` on a node decision, and `gap` prints `-` on a skip.
 impl fmt::Display for Report {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         writeln!(
@@ -435,12 +441,13 @@ impl fmt::Display for Report {
             };
             writeln!(
                 f,
-                "{} {} {} {} {} {} {} {} {} {} {} {} {} {} {}",
+                "{} {} {} {} {} {} {} {} {} {} {} {} {} {} {} {}",
                 e.address.kind.word(),
                 e.address.depth,
                 features,
                 e.eval_beta,
                 e.alpha_gap,
+                e.gap.map_or_else(|| "-".to_string(), |gap| gap.to_string()),
                 row.answered.map_or("-", Answered::word),
                 row.visits,
                 e.root,

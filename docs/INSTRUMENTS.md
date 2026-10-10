@@ -432,9 +432,13 @@ quiets at once never meets the skips in it. The tests hold an armed search's
 move, score and node count to an unarmed one's.
 
 Each row is `kind depth index searched generated history history_max killer
-tt eval_beta alpha_gap answered visits root best_on best_forced score_on
-score_forced nodes_on nodes_forced fen`. The move columns are the ledger's,
-read at the first visit, and print `-` on a node decision. Every skip at
+tt eval_beta alpha_gap gap answered visits root best_on best_forced
+score_on score_forced nodes_on nodes_forced fen`. The move columns are the
+ledger's, read at the first visit, and print `-` on a node decision. `gap`
+is how far the decision's own bound cleared its window, zero at the bound:
+for a trusted scout the alpha less its fail soft score, for the null move
+the pass's score less beta, and for reverse futility the margin's floor
+less beta. A skip searched nothing and prints `-`. Every skip at
 depth four and up has an `eval_beta` at or under minus the skip's margin by
 construction. `answered` is, for a node decision, what answered the node once it
 was inverted. `visits` is how often the forced search met the address, and a
