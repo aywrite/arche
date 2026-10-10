@@ -557,8 +557,8 @@ mod tests {
     use super::*;
     use crate::board::Board;
     use crate::late_move::{
-        DEEP_REDUCTION_MIN_DEPTH, LATE_MOVE_MIN_DEPTH, LATE_MOVE_THRESHOLD, SHALLOW_MAX_DEPTH,
-        under_skip_margin,
+        DEEP_REDUCTION_MIN_DEPTH, Features, LATE_MOVE_MIN_DEPTH, LATE_MOVE_THRESHOLD,
+        SHALLOW_MAX_DEPTH, row_skips,
     };
     use crate::recorder::fixtures::{recording_leaves_the_search_where_it_was, suite};
     use crate::recorder::{DEFAULT_CAP, Sampler};
@@ -1072,7 +1072,7 @@ mod tests {
         assert!(!report.rows.is_empty(), "nothing was recorded");
         assert!(report.events >= report.rows.len() as u64);
         assert_eq!(report.unplayable, 0);
-        let mut margin_skips = 0;
+        let mut model_skips = 0;
         for row in &report.rows {
             let e = &row.event;
             assert!(Board::from_fen(&e.fen).is_ok(), "{} does not parse", e.fen);
@@ -1091,11 +1091,23 @@ mod tests {
                     assert!(e.index >= LATE_MOVE_THRESHOLD, "{:?}", row);
                     // read from the printed columns, the skip is still one
                     assert!(
-                        under_skip_margin(e.depth, i64::from(e.eval_beta)),
+                        row_skips(
+                            e.depth,
+                            &Features {
+                                index: e.index,
+                                generated: e.generated,
+                                history: e.history,
+                                history_max: e.history_max,
+                                killer: e.killer,
+                                tt: e.tt,
+                            },
+                            i64::from(e.eval_beta),
+                            i64::from(e.alpha_gap),
+                        ),
                         "{:?}",
                         row
                     );
-                    margin_skips += 1;
+                    model_skips += 1;
                 } else {
                     assert!(e.depth <= SHALLOW_MAX_DEPTH, "{:?}", row);
                     assert!(e.index >= 1, "{:?}", row);
@@ -1111,7 +1123,7 @@ mod tests {
             }
             assert_eq!(row.reference.is_some(), e.scout != Scout::High, "{:?}", row);
         }
-        assert!(margin_skips > 0, "no skip of the margin's was recorded");
+        assert!(model_skips > 0, "no skip of the model's was recorded");
         assert!(report.rows.iter().any(|row| row.event.scout == Scout::Low));
         assert!(
             report

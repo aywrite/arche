@@ -513,7 +513,7 @@ pub struct SearchConfig {
     /// `late_move_reductions`.
     pub deep_reductions: bool,
     /// Whether a late quiet at depth four and up is searched at all when
-    /// the static evaluation stands a margin under beta. Rides on
+    /// the skip's model scores it at or under its threshold. Rides on
     /// `late_move_reductions`.
     pub late_move_pruning: bool,
     /// Whether a quiet move at depths one to three is dropped when the
@@ -2647,7 +2647,7 @@ impl AlphaBeta {
         if !rules.reduces(node, m) {
             return Decision::UNREDUCED;
         }
-        match late_move::decide_admitted(&self.deciding(), node, rules, m) {
+        match late_move::decide_admitted(&self.deciding(), node, rules, moves, m) {
             late_move::Verdict::Skip => {
                 if self.forced.is_some() && self.forced_skip(node, rules, moves, m) {
                     return Decision::UNREDUCED;
