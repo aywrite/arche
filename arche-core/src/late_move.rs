@@ -12,22 +12,21 @@
 //! has searched `LATE_MOVE_COUNT` moves a ply. Everything in them but the
 //! alpha and the searched count is settled by the node before its moves,
 //! so `Rules` holds it and reads those two off the engine's `Node` per
-//! move. They stop a ply under the model's floor, so a shallow rule and
-//! the model never decide at one depth.
+//! move. They stop a ply under the deep skip's floor, so a shallow rule
+//! and the deep skip never decide at one depth.
 //!
 //! `Rules::reduces` and `decide_admitted` cover the rest. The late move
 //! reduction scouts a quiet move searched after the fourth, with the
 //! exemptions `Admission::reduces` lists. From `DEEP_REDUCTION_MIN_DEPTH`
-//! the attention model (a logistic regression over the reduction ledger's
-//! columns, in fixed point) drops a move whose score is under its
-//! threshold. The scout of a move the model keeps gets an extra ply when
+//! a move is dropped when the static evaluation stands a margin under
+//! beta, the margin growing with depth. The scout of a move the skip keeps
+//! gets an extra ply when
 //! the move's index reaches a floor rising with depth. The ply is added to
 //! the amount rather than naming a depth, so the table's depth scaling
 //! carries it. `amount` reads the plies off a table by depth and index.
 //!
-//! `features` derives the ledger's columns once, and the gate and the
-//! ledger both read them, so the score that decided a move and the row
-//! that says why cannot disagree.
+//! `features` derives the reduction ledger's columns once, for the ledger
+//! and the forced decision instrument. The gate reads none of them.
 
 use crate::board::{Board, CheckInfo, Position};
 use crate::census;
@@ -61,7 +60,7 @@ pub(crate) const QUIET_FUTILITY_MARGIN: Score = 100;
 // scouting if it reached depth one. At depth three it sits above the 7 the
 // deep index rule's line (`DEEP_INDEX_FLOOR`, `DEEP_INDEX_SLOPE`) would
 // reach there. That is the conservative side on purpose: at depth four the
-// model stands behind the cutoff and at depth three nothing does. Untuned;
+// deep skip stands behind the cutoff and at depth three nothing does. Untuned;
 // a match is what would move it.
 pub(crate) const LATE_MOVE_COUNT: usize = 4;
 // How many plies shallower the deep reduction scouts a late quiet the gate
@@ -72,8 +71,8 @@ pub(crate) const DEEP_REDUCTION_MIN_DEPTH: u8 = DEEP_REDUCTION + 2;
 // The gate's extra ply over the flat amount, written as the difference so
 // the table cannot drift from the pair of constants it replaced.
 const DEEP_REDUCTION_BONUS: u8 = DEEP_REDUCTION - LATE_MOVE_REDUCTION;
-// The deepest node either shallow rule decides: a ply under the model's
-// floor, so the two never decide at one depth.
+// The deepest node either shallow rule decides: a ply under the deep
+// skip's floor, so the two never decide at one depth.
 pub(crate) const SHALLOW_MAX_DEPTH: u8 = DEEP_REDUCTION_MIN_DEPTH - 1;
 const _: () = assert!(SHALLOW_MAX_DEPTH < DEEP_REDUCTION_MIN_DEPTH);
 // ln(x) at a scale of 1024 for each index of the table below, as integers
@@ -124,42 +123,19 @@ const fn reduction_table() -> [[u8; 64]; 64] {
     table
 }
 
-// The attention model the pruning is gated by: a logistic regression over
-// the reduction ledger's feature columns, quantized to fixed point at a
-// scale of 1024, so the gate is an integer dot product and a compare.
-// Fitted by `fit_logistic` in `scripts/fit_attention.py` over the ledger `arche
-// reductions 8 every 32` printed at commit 4e8ab28 on 75,024 positions from
-// 43,123 opening pairs of our own strength games, on the rows the skip
-// decides: depth four and up, the move not giving check, the skipped rows
-// beside the scouted ones, since the replay labels both. A row deserves
-// attention when its scout failed high or the replay called the denial
-// harmful, and a skipped move that would have failed high is a move lost.
-// Fitted on the pairs of one key parity (5,473,351 rows) and read on the
-// other (5,448,365) at two thresholds. The script's command line does not
-// select these rows (it drops the skipped ones and fits every depth), so
-// running it on a ledger makes a different fit.
-const ATTENTION_DEPTH: i64 = 76;
-const ATTENTION_INDEX: i64 = -3;
-const ATTENTION_BAND8_15: i64 = -284;
-const ATTENTION_BAND16P: i64 = -362;
-const ATTENTION_HIST_MILLI: i64 = 1;
-const ATTENTION_KILLER: i64 = 265;
-const ATTENTION_TT_MOVE: i64 = -137;
-const ATTENTION_TT_SCORE_ONLY: i64 = 192;
-const ATTENTION_EVAL_BETA: i64 = -5;
-const ATTENTION_ALPHA_GAP: i64 = -13;
-const ATTENTION_GENERATED: i64 = -6;
-const ATTENTION_SEARCHED: i64 = -3;
-const ATTENTION_INTERCEPT: i64 = -3540;
-// The score at or under which a late quiet is not searched at all: the
-// largest whose region's attention rate on the fitting half is no worse
-// than the weights these replaced had at their own threshold, -7954. On
-// the other half (read at this threshold and at -5932, so the figures
-// describe it rather than test it) it skips 46.55% of the rows at 0.0364%
-// attention, against 41.29% at 0.0373% for the weights it replaced. The
-// refit first stood at -5932, where it matched their coverage instead
-// (41.32% at 0.0303%).
-pub(crate) const LATE_MOVE_PRUNING_THRESHOLD: i64 = -5457;
+// The margin under beta at which a late quiet at depth four and up is not
+// searched at all: the base at depth four and the slope per ply over it.
+// It replaced a thirteen-weight logistic model of the reduction ledger's
+// columns. At a zero window node that model's two evaluation terms were
+// one term worth +8 points a centipawn and outweighed the rest on nearly
+// every row. The two constants were fitted so the margin skips as many of
+// the games suite's ledger rows (`arche reductions 8 every 8 cap 300000 epd
+// arche-core/games.epd` at 048dfa7, 19,079 rows at depth four and up) as
+// the model did: 8,451 against 8,459, the two agreeing on 8,325. Against
+// the model in games it read +2 ±9 over 3,000 games at 10+0.1, an sprt of
+// [-10, 0] that passed.
+pub(crate) const SKIP_MARGIN_BASE: i64 = 201;
+pub(crate) const SKIP_MARGIN_SLOPE: i64 = 14;
 // The index the deep reduction's rule wants a move to have reached, and
 // how much further along the order per ply of depth over the floor the
 // deeper scout starts at. Chosen offline on the training half of a ledger
@@ -168,106 +144,13 @@ pub(crate) const LATE_MOVE_PRUNING_THRESHOLD: i64 = -5457;
 // c5fd032b7e0992d22dc38e29be1528080533dcd9387d0d0d8d36808e73d4faa0):
 // 929,539 depth four and up scouted non-checking rows, split by source
 // game into 457,908 and 471,631. Of 36 candidates (floor 4 to 14, slope 0
-// to 3) this pair covers within three points of the model at the lowest
-// attention rate, 77.18% at 0.664% against 79.07% at 0.448%. Held out and
+// to 3) this pair covers within three points of the attention model the
+// skip read then, at the lowest attention rate, 77.18% at 0.664% against
+// 79.07% at 0.448%. Held out and
 // read once after the choice, the model deepens 76.84% at 0.502% attention
 // (0.312% harmful) and this rule 77.17% at 0.728% (0.375% harmful).
 pub(crate) const DEEP_INDEX_FLOOR: usize = 8;
 pub(crate) const DEEP_INDEX_SLOPE: usize = 1;
-
-/// What the attention model reads about a late quiet at the gate, in the
-/// reduction ledger's units. The index bands and the searched count are
-/// derived from the index in the score, so a caller cannot build a row the
-/// training table could not hold.
-struct AttentionFeatures {
-    /// The node's depth, the check extension included, as the ledger
-    /// records it.
-    depth: u8,
-    /// The move's place among the searched moves, the ledger's index.
-    index: usize,
-    /// The move's history in thousandths of the node's largest quiet
-    /// history, or zero when no quiet has any.
-    hist_milli: i64,
-    killer: bool,
-    tt: census::Table,
-    /// The node's static evaluation less its beta.
-    eval_beta: i64,
-    /// The node's alpha less the same evaluation.
-    alpha_gap: i64,
-    /// The moves the node generated.
-    generated: usize,
-}
-
-/// The model's score for one late quiet: the quantized dot product plus
-/// the intercept. Higher means more likely to deserve attention (a scout
-/// that fails high, or a fail low the replay would call harmful). The
-/// searched column is collinear with the index and kept because the
-/// training table had it.
-fn attention_score(f: &AttentionFeatures) -> i64 {
-    let index = f.index as i64;
-    let band8_15 = i64::from((8..=15).contains(&f.index));
-    let band16p = i64::from(f.index >= 16);
-    let (tt_move, tt_score_only) = match f.tt {
-        census::Table::Miss => (0, 0),
-        census::Table::Move => (1, 0),
-        census::Table::ScoreOnly => (0, 1),
-    };
-    ATTENTION_DEPTH * i64::from(f.depth)
-        + ATTENTION_INDEX * index
-        + ATTENTION_BAND8_15 * band8_15
-        + ATTENTION_BAND16P * band16p
-        + ATTENTION_HIST_MILLI * f.hist_milli
-        + ATTENTION_KILLER * i64::from(f.killer)
-        + ATTENTION_TT_MOVE * tt_move
-        + ATTENTION_TT_SCORE_ONLY * tt_score_only
-        + ATTENTION_EVAL_BETA * f.eval_beta
-        + ATTENTION_ALPHA_GAP * f.alpha_gap
-        + ATTENTION_GENERATED * f.generated as i64
-        + ATTENTION_SEARCHED * (index + 1)
-        + ATTENTION_INTERCEPT
-}
-
-/// The model's score for a late quiet the gate would read it at, from what
-/// the node knew there, for the forced decision instrument's rows. None
-/// below the depth the gate reads the model at, where no decision of the
-/// move ever consulted it.
-pub(crate) fn attention(depth: u8, f: &Features, eval_beta: i64, alpha_gap: i64) -> Option<i64> {
-    (depth >= DEEP_REDUCTION_MIN_DEPTH).then(|| model_score(depth, f, eval_beta, alpha_gap))
-}
-
-/// The model's score from the ledger's features, the node's depth and the
-/// two evaluation terms: what the gate and `attention` both read it at.
-#[inline]
-fn model_score(depth: u8, f: &Features, eval_beta: i64, alpha_gap: i64) -> i64 {
-    attention_score(&AttentionFeatures {
-        depth,
-        index: f.index,
-        hist_milli: f.hist_milli(),
-        killer: f.killer,
-        tt: f.tt,
-        eval_beta,
-        alpha_gap,
-        generated: f.generated,
-    })
-}
-
-/// A reduction ledger row scored as `scripts/fit_attention.py` reads it,
-/// with the searched column as printed rather than derived from the index.
-/// What holds the printed column to the one the gate read.
-#[cfg(test)]
-pub(crate) fn ledger_row_score(e: &crate::reduction::Event) -> i64 {
-    let f = AttentionFeatures {
-        depth: e.depth,
-        index: e.index,
-        hist_milli: hist_milli(e.history, e.history_max),
-        killer: e.killer,
-        tt: e.tt,
-        eval_beta: i64::from(e.eval_beta),
-        alpha_gap: i64::from(e.alpha_gap),
-        generated: e.generated,
-    };
-    attention_score(&f) + ATTENTION_SEARCHED * (e.searched as i64 - (e.index as i64 + 1))
-}
 
 /// What the decision reads of the search: references rather than the
 /// engine, so a test can build one with no search behind it.
@@ -287,12 +170,13 @@ pub(crate) struct Search<'a> {
 pub(crate) struct Rules {
     /// The node's static evaluation: what the table's entry held or the
     /// shortcuts read, or none until the first move that needs it. The
-    /// recorders take their own, so a node the gate scores nothing at never
+    /// recorders take their own, so a node the gate never reaches never
     /// computes one.
     pub(crate) eval: Option<Score>,
-    /// The node's history denominator. Held rather than walked again so
-    /// that the row a staging records says what the gate scored: a child
-    /// search between two of the node's moves can teach the history.
+    /// The node's history denominator, for the recorders. Held rather than
+    /// walked again so that every row a node records is read against one
+    /// denominator: a child search between two of the node's moves can
+    /// teach the history. The first move a recorder samples fills it.
     pub(crate) history_max: Option<i32>,
     /// What the check test reads of the position, computed once.
     pub(crate) check: Option<CheckInfo>,
@@ -347,13 +231,14 @@ pub(crate) enum Verdict {
     /// depth only when the scout comes back above alpha. Zero is no
     /// scout: the reduction did not apply.
     Scout(u8),
-    /// Not searched at all: the model prices the move in its deadest band.
+    /// Not searched at all: the evaluation stands the skip's margin under
+    /// beta.
     Skip,
 }
 
 /// What the node knew about a late quiet at the decision, in the units
-/// the reduction ledger prints. The gate scores these and the ledger
-/// records them.
+/// the reduction ledger prints. The ledger and the forced decision
+/// instrument record them.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub(crate) struct Features {
     /// The move's place among the searched moves: the table's move, when
@@ -369,42 +254,18 @@ pub(crate) struct Features {
     pub(crate) tt: census::Table,
 }
 
-impl Features {
-    fn hist_milli(&self) -> i64 {
-        hist_milli(self.history, self.history_max)
-    }
-}
-
-/// The history feature the weights were fitted on, zero to a thousand. A
-/// marked down move reads as one the history knows nothing about, rather
-/// than pushing the score where the fit never saw, and a denominator at or
-/// under zero reads as nothing known.
-fn hist_milli(history: i32, history_max: i32) -> i64 {
-    if history_max > 0 {
-        i64::from(history.max(0)) * 1000 / i64::from(history_max)
-    } else {
-        0
-    }
-}
-
 /// The verdict for one move at a full width node, asked as the loop asks
 /// it once the shallow rules have passed the move: `Rules::reduces`, then
-/// the gate. `moves` is the node's list, and the node's searched count
-/// says how many of them it has searched already, the table's move among
-/// them. The reduction's exemptions are asked first, so a node that
-/// reduces nothing pays for no feature.
+/// the gate. The node's searched count says how many of its moves it has
+/// searched already, the table's move among them. The reduction's
+/// exemptions are asked first, so a node that reduces nothing pays for no
+/// evaluation.
 #[cfg(test)]
-pub(crate) fn decide(
-    search: &Search,
-    node: &Node,
-    rules: &mut Rules,
-    moves: &[Play],
-    m: &Play,
-) -> Verdict {
+pub(crate) fn decide(search: &Search, node: &Node, rules: &mut Rules, m: &Play) -> Verdict {
     if !rules.reduces(node, m) {
         return Verdict::Scout(0);
     }
-    decide_admitted(search, node, rules, moves, m)
+    decide_admitted(search, node, rules, m)
 }
 
 /// The node's half of the two shallow rules, held across its move loop.
@@ -616,7 +477,8 @@ impl Admission {
 
 /// The gate: whether a move `Rules::reduces` accepted is skipped, or
 /// scouted a ply shallower than the amount alone would give it. The skip is
-/// asked first, off the model's score. Both need the depth where the deeper
+/// asked first, off the evaluation's margin under beta. Both need the depth
+/// where the deeper
 /// scout keeps its full width ply, and neither is offered a move that gives
 /// check: the exemption arm measured checks as the scout's blind spot. The
 /// check test runs last because the slider probes cost more than everything
@@ -625,7 +487,6 @@ pub(crate) fn decide_admitted(
     search: &Search,
     node: &Node,
     rules: &mut Rules,
-    moves: &[Play],
     m: &Play,
 ) -> Verdict {
     let searched = node.answer.searched;
@@ -636,14 +497,9 @@ pub(crate) fn decide_admitted(
         return plain();
     }
     let eval = i64::from(eval_memo(search.board, &mut rules.eval));
-    let f = features(search, node, rules, moves, m);
-    let score = model_score(
-        node.depth,
-        &f,
-        eval - i64::from(node.answer.beta),
-        i64::from(node.answer.alpha) - eval,
-    );
-    if search.config.late_move_pruning && score <= LATE_MOVE_PRUNING_THRESHOLD {
+    if search.config.late_move_pruning
+        && under_skip_margin(node.depth, eval - i64::from(node.answer.beta))
+    {
         let info = rules.check.get_or_insert_with(|| search.board.check_info());
         return if search.board.gives_check_with(info, m) {
             plain()
@@ -666,6 +522,15 @@ pub(crate) fn decide_admitted(
         ));
     }
     plain()
+}
+
+/// Whether the skip leaves a late quiet unsearched: the node's evaluation
+/// at least the margin under beta. Alpha is not read, so an open window
+/// node skips as a zero window one does.
+pub(crate) fn under_skip_margin(depth: u8, eval_beta: i64) -> bool {
+    debug_assert!(depth >= DEEP_REDUCTION_MIN_DEPTH);
+    let over = i64::from(depth - DEEP_REDUCTION_MIN_DEPTH);
+    eval_beta <= -(SKIP_MARGIN_BASE + SKIP_MARGIN_SLOPE * over)
 }
 
 /// Whether the gate gives a move the deeper scout's extra ply: by depth
@@ -746,12 +611,11 @@ fn denominator(search: &Search, rules: &mut Rules, moves: &[Play]) -> i32 {
 #[cfg(test)]
 mod tests {
     use super::{
-        ATTENTION_ALPHA_GAP, ATTENTION_EVAL_BETA, ATTENTION_KILLER, AttentionFeatures,
         DEEP_INDEX_FLOOR, DEEP_INDEX_SLOPE, DEEP_REDUCTION, DEEP_REDUCTION_BONUS,
         DEEP_REDUCTION_MIN_DEPTH, Features, LATE_MOVE_COUNT, LATE_MOVE_MIN_DEPTH,
-        LATE_MOVE_PRUNING_THRESHOLD, LATE_MOVE_REDUCTION, LATE_MOVE_THRESHOLD,
-        QUIET_FUTILITY_MARGIN, REDUCTION, Rules, SHALLOW_MAX_DEPTH, Search, Verdict, admission,
-        amount, attention_score, decide, features, survives_shallow,
+        LATE_MOVE_REDUCTION, LATE_MOVE_THRESHOLD, QUIET_FUTILITY_MARGIN, REDUCTION, Rules,
+        SHALLOW_MAX_DEPTH, SKIP_MARGIN_BASE, SKIP_MARGIN_SLOPE, Search, Verdict, admission, amount,
+        decide, features, survives_shallow,
     };
     use crate::board::{Board, MoveList, fens, play_named};
     use crate::census::Table;
@@ -779,7 +643,7 @@ mod tests {
         }
     }
 
-    /// `reducing` with the model's skip on top and the deep reduction off,
+    /// `reducing` with the margin's skip on top and the deep reduction off,
     /// so a move the skip passes is scouted at the flat amount.
     fn skipping() -> SearchConfig {
         SearchConfig {
@@ -789,7 +653,7 @@ mod tests {
         }
     }
 
-    /// `deep_reducing` with the model's skip on top.
+    /// `deep_reducing` with the margin's skip on top.
     fn pruning() -> SearchConfig {
         SearchConfig {
             late_move_reductions: true,
@@ -917,7 +781,7 @@ mod tests {
             self.history_max = None;
             let (mut node, mut rules) = self.node(depth, alpha, beta);
             node.answer.searched = searched;
-            let verdict = decide(&self.search(), &node, &mut rules, &self.moves, m);
+            let verdict = decide(&self.search(), &node, &mut rules, m);
             self.keep(&rules);
             verdict
         }
@@ -990,40 +854,23 @@ mod tests {
         }
 
         /// The position's static evaluation, which the bounds in the
-        /// threshold tests are solved against.
+        /// margin tests are set against.
         fn eval(&self) -> i64 {
             i64::from(crate::eval::eval(&self.board))
         }
     }
 
-    /// Bounds that land a score exactly on a threshold. A point of alpha
-    /// moves the score by the alpha gap's weight and a point of beta by
-    /// the eval gap's, negated. The two are coprime, so as many betas as
-    /// the alpha weight's size cover every residue of it, and one of them
-    /// leaves alpha a whole number to close the rest.
-    fn solved(score_at: impl Fn(Score, Score) -> i64, threshold: i64) -> (Score, Score) {
-        let per_alpha = -ATTENTION_ALPHA_GAP;
-        for beta in 100..100 + per_alpha as Score {
-            let over = score_at(0, beta) - threshold;
-            if over % per_alpha == 0 {
-                return ((over / per_alpha) as Score, beta);
-            }
-        }
-        panic!("the betas tried cover every residue of the alpha weight");
+    /// The margin the skip reads at a depth.
+    fn margin(depth: u8) -> i64 {
+        SKIP_MARGIN_BASE + SKIP_MARGIN_SLOPE * i64::from(depth - DEEP_REDUCTION_MIN_DEPTH)
     }
 
-    /// The smallest move of the bounds that raises the score by exactly
-    /// one, as a change to alpha and a change to beta, so a threshold test
-    /// can stand one over the line it solved onto.
-    fn one_over(alpha: Score, beta: Score) -> (Score, Score) {
-        let (per_alpha, per_beta) = (ATTENTION_ALPHA_GAP, -ATTENTION_EVAL_BETA);
-        (0..=16i64)
-            .flat_map(|reach| {
-                (-reach..=reach).flat_map(move |a| [(a, reach - a.abs()), (a, a.abs() - reach)])
-            })
-            .find(|&(a, b)| per_alpha * a + per_beta * b == 1)
-            .map(|(a, b)| (alpha + a as Score, beta + b as Score))
-            .expect("the two weights are coprime and small")
+    /// Zero window bounds that put the evaluation exactly the margin under
+    /// beta, where the skip fires, and the same a point inside it, where it
+    /// does not.
+    fn on_margin(eval: i64, depth: u8) -> ((Score, Score), (Score, Score)) {
+        let beta = (eval + margin(depth)) as Score;
+        ((beta - 1, beta), (beta - 2, beta - 1))
     }
 
     #[test]
@@ -1257,156 +1104,11 @@ mod tests {
         );
     }
 
-    /// Rows ported from the training table, asserted to the exact integer
-    /// the python fit's quantized score gives them, so a sign or an off by
-    /// one anywhere in `attention_score` fails here rather than in a
-    /// match.
-    #[test]
-    fn the_attention_score_matches_the_training_fit_on_ported_rows() {
-        let row = |depth, index, hist_milli, killer, tt, eval_beta, alpha_gap, generated| {
-            attention_score(&AttentionFeatures {
-                depth,
-                index,
-                hist_milli,
-                killer,
-                tt,
-                eval_beta,
-                alpha_gap,
-                generated,
-            })
-        };
-        // a killer with the whole of the node's history, deep in a lost
-        // window: dead despite both
-        assert_eq!(row(4, 4, 1000, true, Table::Miss, -1883, 1882, 32), -17241);
-        // one of the 171 fitting rows at depth four and up that sat on the
-        // refit's first threshold exactly
-        assert_eq!(row(6, 5, 107, false, Table::Move, -325, 324, 33), -5932);
-        // the deadest row of the fitting half
-        assert_eq!(row(4, 4, 0, false, Table::Move, -3744, 3743, 25), -33489);
-        // the most alive attention row: an eval standing over beta
-        assert_eq!(row(4, 7, 0, false, Table::Move, 368, -1343, 24), 12057);
-        // a row the gate skipped at depth five
-        assert_eq!(row(5, 8, 0, false, Table::Move, -338, 337, 40), -6563);
-        // the killer weight raises a row by exactly its coefficient. It is
-        // a weight and not an exemption: the first row above is a killer
-        // and dead all the same, so the model may skip a killer whose
-        // bounds bury it
-        let on_edge = row(6, 5, 107, false, Table::Move, -325, 324, 33);
-        let as_killer = row(6, 5, 107, true, Table::Move, -325, 324, 33);
-        assert_eq!(as_killer - on_edge, ATTENTION_KILLER);
-    }
-
-    /// The gate's history feature under signed entries: a marked down
-    /// move reads as nothing, and a list of nothing but marked down moves
-    /// has no denominator to divide by.
-    #[test]
-    fn a_marked_down_move_reads_the_gate_s_history_as_nothing() {
-        let mut s = Stand::new(fens::A_CAPTURE_AND_QUIETS, skipping());
-        let quiet = play_named(&s.board, "a4a5");
-        let rival = play_named(&s.board, "a4a6");
-        let color = s.board.active_color;
-        const SEARCHED: usize = 10;
-        const DEPTH: u8 = 6;
-        // bounds solved so that the score with no history lands exactly on
-        // the threshold
-        let eval = s.eval();
-        let generated = s.moves.len();
-        let score_at = |alpha: Score, beta: Score, hist_milli: i64| {
-            attention_score(&AttentionFeatures {
-                depth: DEPTH,
-                index: SEARCHED,
-                hist_milli,
-                killer: false,
-                tt: Table::Miss,
-                eval_beta: eval - i64::from(beta),
-                alpha_gap: i64::from(alpha) - eval,
-                generated,
-            })
-        };
-        let (alpha, beta) = solved(
-            |alpha, beta| score_at(alpha, beta, 0),
-            LATE_MOVE_PRUNING_THRESHOLD,
-        );
-        assert_eq!(score_at(alpha, beta, 0), LATE_MOVE_PRUNING_THRESHOLD);
-        // and a second pair one point over it. A feature of nothing fires
-        // the gate at the first pair and not at the second, and a
-        // thousandth either way moves the verdict at one of them, so the
-        // two together say the feature is zero exactly rather than merely
-        // small
-        let (over_alpha, over_beta) = one_over(alpha, beta);
-        assert_eq!(
-            score_at(over_alpha, over_beta, 0),
-            LATE_MOVE_PRUNING_THRESHOLD + 1
-        );
-        assert!(score_at(alpha, beta, 1000) > LATE_MOVE_PRUNING_THRESHOLD);
-        assert!(score_at(over_alpha, over_beta, -1000) <= LATE_MOVE_PRUNING_THRESHOLD);
-        // what a move the table knows nothing about reads, which is what
-        // the two cases below have to match
-        assert_eq!(
-            s.verdict(&quiet, SEARCHED, DEPTH, alpha, beta),
-            Verdict::Skip
-        );
-        assert_eq!(
-            s.verdict(&quiet, SEARCHED, DEPTH, over_alpha, over_beta),
-            Verdict::Scout(LATE_MOVE_REDUCTION)
-        );
-
-        // the move holding the whole of the node's history reads the top
-        // of the feature instead
-        s.ordering.cutoff(color, &quiet, &[], 0, 8);
-        assert_eq!(
-            s.verdict(&quiet, SEARCHED, DEPTH, alpha, beta),
-            Verdict::Scout(LATE_MOVE_REDUCTION)
-        );
-
-        // the same move marked down, under a rival that holds the history
-        // instead, reads as the unknown move did at both pairs
-        s.ordering.forget();
-        s.ordering.cutoff(color, &rival, &[quiet], 0, 8);
-        assert!(s.ordering.history_score(color, &quiet) < 0);
-        assert_eq!(
-            s.verdict(&quiet, SEARCHED, DEPTH, alpha, beta),
-            Verdict::Skip
-        );
-        assert_eq!(
-            s.verdict(&quiet, SEARCHED, DEPTH, over_alpha, over_beta),
-            Verdict::Scout(LATE_MOVE_REDUCTION)
-        );
-
-        // and with every quiet in the list marked down there is no
-        // denominator and nothing is divided. The move that did the
-        // marking is one no generator produces here, so nothing in the
-        // list holds the bonus it earned
-        s.ordering.forget();
-        let elsewhere = Play::new(0, 1, None, None, false, false);
-        assert!(!s.moves.contains(&elsewhere));
-        let all_quiets: Vec<Play> = s
-            .moves
-            .iter()
-            .filter(|m| m.capture.is_none())
-            .copied()
-            .collect();
-        s.ordering.cutoff(color, &elsewhere, &all_quiets, 0, 8);
-        assert!(
-            all_quiets
-                .iter()
-                .all(|m| s.ordering.history_score(color, m) < 0)
-        );
-        assert_eq!(
-            s.verdict(&quiet, SEARCHED, DEPTH, alpha, beta),
-            Verdict::Skip
-        );
-        assert_eq!(
-            s.verdict(&quiet, SEARCHED, DEPTH, over_alpha, over_beta),
-            Verdict::Scout(LATE_MOVE_REDUCTION)
-        );
-    }
-
     #[test]
     fn the_deep_reduction_stands_down_off_switch_and_under_its_floor() {
         // under the reference's switch nothing deepens, and the refusal
-        // comes before the node features, so a node the gate never fires
-        // at never pays for the eval or the history scan
+        // comes before the evaluation, so a node the gate never fires at
+        // never pays for it
         let mut off = Stand::new(fens::A_CAPTURE_AND_QUIETS, reducing());
         let quiet = play_named(&off.board, "a4a5");
         let (alpha, beta): (Score, Score) = (20_000, 20_001);
@@ -1429,20 +1131,21 @@ mod tests {
             "the refused gate computed the features"
         );
         // and at the floor with the same bounds it fires, filling the
-        // node features for the moves after it
+        // evaluation for the moves after it. The gate reads no history, so
+        // the scan of the list is left for the recorders
         assert_eq!(
             s.verdict(&quiet, 10, DEEP_REDUCTION_MIN_DEPTH, alpha, beta),
             Verdict::Scout(DEEP_REDUCTION)
         );
         assert!(
-            s.eval.is_some() && s.history_max.is_some(),
-            "the fired gate left nothing to reuse"
+            s.eval.is_some() && s.history_max.is_none(),
+            "the fired gate filled the wrong memos"
         );
     }
 
     /// The index rule at the depth the deeper scout starts at: deepened at
     /// the floor and not one place earlier in the order. The bounds put the
-    /// score far over the skip's threshold, so neither index is skipped.
+    /// evaluation far over beta, so neither index is skipped.
     #[test]
     fn the_index_rule_deepens_a_late_quiet_at_its_floor() {
         let config = SearchConfig::default();
@@ -1454,7 +1157,7 @@ mod tests {
         // under it is not reduced at all, so this test would be asking
         // about a move no gate sees
         const { assert!(DEEP_INDEX_FLOOR > LATE_MOVE_THRESHOLD) };
-        // an eval standing far over beta, which the model reads as alive
+        // an eval standing far over beta, nowhere near the skip's margin
         let (alpha, beta): (Score, Score) = (-5_000, -4_999);
         let flat = amount(&config, DEPTH, DEEP_INDEX_FLOOR, 0);
         let deeper = amount(&config, DEPTH, DEEP_INDEX_FLOOR, DEEP_REDUCTION_BONUS);
@@ -1520,51 +1223,39 @@ mod tests {
         );
     }
 
-    /// The gate driven with the bounds solved to land the score exactly
-    /// on the pruning threshold, and one over it: at or under the move
-    /// is skipped, one over it falls through to the deep reduction, which
-    /// the index rule gives a tenth move at depth six.
+    /// The gate driven with the bounds that put the evaluation exactly the
+    /// margin under beta, and a point inside it: on the margin the move is
+    /// skipped, inside it the move falls through to the deep reduction,
+    /// which the index rule gives a tenth move at depths four to six. Three
+    /// depths, so the test sees the margin grow with depth rather than only
+    /// fire, and an alpha far under beta skips as a zero window does.
     #[test]
-    fn the_pruning_fires_at_its_threshold_and_not_one_over_it() {
+    fn the_pruning_fires_at_its_margin_and_not_a_point_inside_it() {
         let mut s = Stand::new(fens::A_CAPTURE_AND_QUIETS, pruning());
         let quiet = play_named(&s.board, "a4a5");
         let eval = s.eval();
-        let generated = s.moves.len();
         const SEARCHED: usize = 10;
-        const DEPTH: u8 = 6;
-        let score_at = |alpha: Score, beta: Score| {
-            attention_score(&AttentionFeatures {
-                depth: DEPTH,
-                index: SEARCHED,
-                hist_milli: 0,
-                killer: false,
-                tt: Table::Miss,
-                eval_beta: eval - i64::from(beta),
-                alpha_gap: i64::from(alpha) - eval,
-                generated,
-            })
-        };
-        let (alpha, beta) = solved(score_at, LATE_MOVE_PRUNING_THRESHOLD);
-        assert_eq!(score_at(alpha, beta), LATE_MOVE_PRUNING_THRESHOLD);
-        assert_eq!(
-            s.verdict(&quiet, SEARCHED, DEPTH, alpha, beta),
-            Verdict::Skip
-        );
-        let (over_alpha, over_beta) = one_over(alpha, beta);
-        assert_eq!(
-            score_at(over_alpha, over_beta),
-            LATE_MOVE_PRUNING_THRESHOLD + 1
-        );
-        assert_eq!(
-            s.verdict(&quiet, SEARCHED, DEPTH, over_alpha, over_beta),
-            Verdict::Scout(DEEP_REDUCTION)
-        );
+        for depth in [DEEP_REDUCTION_MIN_DEPTH, 5, 6] {
+            let ((alpha, beta), (inside_alpha, inside_beta)) = on_margin(eval, depth);
+            assert_eq!(
+                s.verdict(&quiet, SEARCHED, depth, alpha, beta),
+                Verdict::Skip
+            );
+            assert_eq!(
+                s.verdict(&quiet, SEARCHED, depth, alpha - 300, beta),
+                Verdict::Skip
+            );
+            assert_eq!(
+                s.verdict(&quiet, SEARCHED, depth, inside_alpha, inside_beta),
+                Verdict::Scout(DEEP_REDUCTION)
+            );
+        }
     }
 
     #[test]
     fn a_checking_quiet_is_never_skipped() {
-        // the deep exemption's two moves under bounds that price both
-        // far under the pruning threshold: the push is skipped and the
+        // the deep exemption's two moves under bounds that put both far
+        // past the skip's margin: the push is skipped and the
         // check is not, and the check is not handed to the deep
         // reduction either, which carries the same exemption
         let mut s = Stand::new(fens::A_CAPTURE_AND_QUIETS, pruning());
@@ -1591,8 +1282,8 @@ mod tests {
             deep.verdict(&quiet, 10, 6, alpha, beta),
             Verdict::Scout(DEEP_REDUCTION)
         );
-        // with the pruning alone on the model is still asked and the move
-        // is still skipped: only the skip reads the score
+        // with the pruning alone on the margin is still asked and the move
+        // is still skipped: only the skip reads it
         let mut alone = Stand::new(fens::A_CAPTURE_AND_QUIETS, skipping());
         assert_eq!(alone.verdict(&quiet, 10, 6, alpha, beta), Verdict::Skip);
         // and under the shared floor nothing is scored at all
@@ -1702,7 +1393,7 @@ mod tests {
     /// becoming a depth of its own. At depth four and index four that is
     /// `DEEP_REDUCTION`.
     #[test]
-    fn the_model_gate_is_worth_one_ply_over_the_flat_amount() {
+    fn the_deep_gate_is_worth_one_ply_over_the_flat_amount() {
         let config = SearchConfig::default();
         for depth in DEEP_REDUCTION_MIN_DEPTH..64 {
             for searched in [LATE_MOVE_THRESHOLD, 10, 30, 63] {
@@ -1727,13 +1418,12 @@ mod tests {
         );
     }
 
-    /// The features the gate scores are the features the ledger records.
-    /// The pair that can part is the history and its denominator, one
-    /// signed and one clamped, so this teaches the move part of the
-    /// node's history and holds the gate's edge to the score the recorded
-    /// row gives.
+    /// The features the ledger records read the node as it stands. The
+    /// pair that can part is the history and its denominator, one signed
+    /// and one clamped, so this teaches the move part of the node's
+    /// history.
     #[test]
-    fn the_gate_scores_the_features_the_ledger_records() {
+    fn the_ledger_s_features_read_the_node_s_history_and_killers() {
         let mut s = Stand::new(fens::A_CAPTURE_AND_QUIETS, skipping());
         let quiet = play_named(&s.board, "a4a5");
         let rival = play_named(&s.board, "a4a6");
@@ -1746,8 +1436,6 @@ mod tests {
         s.ordering.cutoff(color, &quiet, &[], 0, 4);
         s.ordering.cutoff(color, &rival, &[], 1, 5);
         const SEARCHED: usize = 10;
-        const DEPTH: u8 = 6;
-        let eval = s.eval();
         let generated = s.moves.len();
         let f = s.features(&quiet, SEARCHED);
         assert_eq!(f.index, SEARCHED);
@@ -1756,32 +1444,6 @@ mod tests {
         assert_eq!(f.history_max, 25);
         assert!(f.killer);
         assert_eq!(f.tt, Table::Miss);
-        assert_eq!(f.hist_milli(), 640);
-        // the row the ledger would record, scored, with the bounds solved
-        // to land it exactly on the skip's threshold: a place the gate
-        // reaches only by reading this same fraction
-        let score_at = |alpha: Score, beta: Score| {
-            attention_score(&AttentionFeatures {
-                depth: DEPTH,
-                index: f.index,
-                hist_milli: f.hist_milli(),
-                killer: f.killer,
-                tt: f.tt,
-                eval_beta: eval - i64::from(beta),
-                alpha_gap: i64::from(alpha) - eval,
-                generated: f.generated,
-            })
-        };
-        let (alpha, beta) = solved(score_at, LATE_MOVE_PRUNING_THRESHOLD);
-        assert_eq!(
-            s.verdict(&quiet, SEARCHED, DEPTH, alpha, beta),
-            Verdict::Skip
-        );
-        let (over_alpha, over_beta) = one_over(alpha, beta);
-        assert_eq!(
-            s.verdict(&quiet, SEARCHED, DEPTH, over_alpha, over_beta),
-            Verdict::Scout(LATE_MOVE_REDUCTION)
-        );
     }
 
     /// The margin fires where the evaluation plus a pawn a ply lands
@@ -1881,13 +1543,13 @@ mod tests {
         }
     }
 
-    /// At the model's floor both shallow rules are silent and the model's
-    /// verdict stands. The row is solved onto the pruning threshold and one
-    /// over it, with an alpha the margin would fire on and a searched count
-    /// past the count's line, so a ceiling that leaked a ply would skip the
-    /// move the model let through.
+    /// At the deep skip's floor both shallow rules are silent and the
+    /// margin's verdict stands. The skipping bounds hold an alpha the
+    /// futility margin would fire on a ply lower and a searched count past
+    /// the count's line, so a ceiling that leaked a ply would skip the move
+    /// the deep skip lets through a point inside its margin.
     #[test]
-    fn neither_shallow_rule_decides_at_the_models_floor() {
+    fn neither_shallow_rule_decides_at_the_deep_skips_floor() {
         const DEPTH: u8 = DEEP_REDUCTION_MIN_DEPTH;
         const SEARCHED: usize = 20;
         assert!(
@@ -1898,23 +1560,11 @@ mod tests {
         let mut without = Stand::new(fens::A_CAPTURE_AND_QUIETS, pruning());
         let quiet = play_named(&with.board, "a4a5");
         let eval = with.eval();
-        let generated = with.moves.len();
-        let score_at = |alpha: Score, beta: Score| {
-            attention_score(&AttentionFeatures {
-                depth: DEPTH,
-                index: SEARCHED,
-                hist_milli: 0,
-                killer: false,
-                tt: Table::Miss,
-                eval_beta: eval - i64::from(beta),
-                alpha_gap: i64::from(alpha) - eval,
-                generated,
-            })
-        };
-        let (alpha, beta) = solved(score_at, LATE_MOVE_PRUNING_THRESHOLD);
-        assert_eq!(score_at(alpha, beta), LATE_MOVE_PRUNING_THRESHOLD);
-        // the row's alpha stands over the evaluation by more than the
-        // margin reaches a ply lower, so a ceiling that leaked would skip
+        // a beta far past the margin, so the alpha under it stands over
+        // the evaluation by more than the futility margin reaches a ply
+        // lower, and a ceiling that leaked would skip
+        let beta = (eval + 1_000) as Score;
+        let alpha = beta - 1;
         assert!(with.skips(&quiet, SEARCHED, SHALLOW_MAX_DEPTH, alpha, beta));
         assert!(!with.skips(&quiet, SEARCHED, DEPTH, alpha, beta));
         // and neither rule on its own reaches it either
@@ -1930,19 +1580,16 @@ mod tests {
             with.verdict(&quiet, SEARCHED, DEPTH, alpha, beta),
             Verdict::Skip
         );
-        // one over the threshold the move is kept and the index rule
-        // deepens its scout, and the rule must not turn that into a skip
-        let (over_alpha, over_beta) = one_over(alpha, beta);
+        // a point inside the margin the move is kept and the index rule
+        // deepens its scout, and the shallow rules must not turn that into
+        // a skip
+        let (_, (inside_alpha, inside_beta)) = on_margin(eval, DEPTH);
         assert_eq!(
-            score_at(over_alpha, over_beta),
-            LATE_MOVE_PRUNING_THRESHOLD + 1
-        );
-        assert_eq!(
-            without.verdict(&quiet, SEARCHED, DEPTH, over_alpha, over_beta),
+            without.verdict(&quiet, SEARCHED, DEPTH, inside_alpha, inside_beta),
             Verdict::Scout(DEEP_REDUCTION)
         );
         assert_eq!(
-            with.verdict(&quiet, SEARCHED, DEPTH, over_alpha, over_beta),
+            with.verdict(&quiet, SEARCHED, DEPTH, inside_alpha, inside_beta),
             Verdict::Scout(DEEP_REDUCTION)
         );
     }
@@ -2203,10 +1850,10 @@ mod tests {
         assert!(!s.asks(&mut node, &quiet, 1, 29_500));
     }
 
-    /// The denominator is read once for the node and held: a row records
-    /// the largest the gate scored against, not the largest by the time
-    /// the staging ran, and a child search between two of a node's moves
-    /// can teach the history.
+    /// The denominator is read once for the node and held: every row a
+    /// node records reads the largest at the first sample, not the largest
+    /// by the time each staging ran, and a child search between two of a
+    /// node's moves can teach the history.
     #[test]
     fn the_history_denominator_is_read_once_for_the_node() {
         let mut s = Stand::new(fens::A_CAPTURE_AND_QUIETS, deep_reducing());

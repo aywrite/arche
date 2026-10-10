@@ -2,14 +2,15 @@
 # SPDX-License-Identifier: GPL-3.0-or-later
 # Copyright (C) 2022-2026 Andrew Wright
 
-"""Fit the attention model the late move pruning gates on.
+"""Fit a logistic attention model to the reduction ledger.
 
     arche reductions 8 every 1 cap 2000000 > ledger.txt
     scripts/fit_attention.py ledger.txt
 
-The engine carries thirteen `ATTENTION_*` integers in `arche-core/src/late_move.rs`
-and reads them as a dot product against a late quiet move's features. They
-come from a logistic regression over the reduction ledger, split by fen so a
+The late move pruning once read thirteen `ATTENTION_*` integers as a dot
+product against a late quiet move's features, until a margin on the
+evaluation under beta matched it in games and replaced it. They came from a
+logistic regression over the reduction ledger, split by fen so a
 position cannot be in both halves, quantized to fixed point at a scale of 1024.
 
 A scout deserves attention when it failed high or the replay called its fail
@@ -19,7 +20,7 @@ training half and read off the holdout half, and a two-feature gate on the
 index and the history fraction beside it, since a model is only worth carrying
 if it beats the obvious rule.
 
-The weights in the engine were fitted with `fit_logistic` below on rows this
+Those weights were fitted with `fit_logistic` below on rows this
 command line does not select: a ledger at 4e8ab28 over 75,024 positions from
 our own strength games, kept to the rows the skip decides (depth four and up,
 the move not giving check) with the skipped rows beside the scouted ones, and
@@ -36,9 +37,9 @@ The ledger at 5217271 had seventeen, without `reduction`, and its history was
 never negative.
 
 The parser follows the engine in two places: a negative history counts as no
-history, the way `late_move.rs` clamps it before dividing, and a row the pruning
+history, the way `late_move.rs` clamped it before dividing, and a row the pruning
 skipped is not a scout and is left out of the fit. A skipped row's `searched`
-is one past its index, the model's feature as the gate read it, in a ledger
+is one past its index, the model's feature as the gate once read it, in a ledger
 printed from 25 September 2026 on, and equal to the index before that.
 
 Features, all integers: depth, index, band8_15, band16p, hist_milli (1000 *
@@ -49,7 +50,7 @@ tt_move, tt_score_only, eval_beta, alpha_gap, generated, searched.
 belong to, and splits by group instead of by fen, so a ledger recorded one
 root at a time keeps every row of a root on one side: rows from one root share
 a parent node and most of a feature vector. `--drop` leaves a feature out of
-the fit and gives the engine a zero for its constant.
+the fit and prints a zero for its constant.
 """
 
 import argparse
@@ -59,7 +60,7 @@ from pathlib import Path
 
 import numpy as np
 
-# the fixed point scale late_move.rs reads the ATTENTION_ constants at
+# the fixed point scale late_move.rs read the ATTENTION_ constants at
 SHIFT = 10
 
 # in the order the engine sums them

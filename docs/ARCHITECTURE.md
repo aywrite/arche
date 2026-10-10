@@ -81,14 +81,12 @@ factorization machine term over every pair of pieces.
   late. The late move reduction scouts such a move shallower, by plies read
   off a table by the node's depth and the move's index, and trusts the
   answer when it comes back low. The scout runs a ply deeper still once the
-  move's index passes a floor that rises with the node's depth. The
-  attention model, a logistic regression over what the node knows about the
-  move, fitted offline and carried as integers, decides which moves are not
-  searched at all. At depths one to three, below the model's floor, two
-  rules drop a quiet move after the node's first: quiet futility, where the
-  static evaluation plus a pawn a ply cannot reach alpha, and a count, once
-  the node has searched four moves a ply. The features the model scores are
-  the ones the reduction ledger records.
+  move's index passes a floor that rises with the node's depth. From depth
+  four a move is not searched at all when the static evaluation stands a
+  margin under beta that grows with depth. At depths one to three, below
+  that floor, two rules drop a quiet move after the node's first: quiet
+  futility, where the static evaluation plus a pawn a ply cannot reach
+  alpha, and a count, once the node has searched four moves a ply.
 - **ordering.rs**: The order moves are tried in. The transposition table's
   move first, then the captures the swap prices as winning or even, by
   what each wins with most valuable victim / least valuable attacker
@@ -247,10 +245,11 @@ factorization machine term over every pair of pieces.
 
 Most of `scripts/` is measurement plumbing, described in DEVELOPMENT.md
 where each measurement is, or in the script's own header where it is not.
-`fit_attention.py` fits the `ATTENTION_*` integers `late_move.rs` carries,
-from a `reductions` ledger. The four below are the offline half of the
-evaluation tuner, described in [INSTRUMENTS.md](INSTRUMENTS.md), and each
-carries its reasoning in its docstring:
+`fit_attention.py` fits a logistic attention model to a `reductions` ledger,
+the model the late move pruning read before it moved to a margin. The four
+below are the offline half of the evaluation tuner, described in
+[INSTRUMENTS.md](INSTRUMENTS.md), and each carries its reasoning in its
+docstring:
 
 - **groups.py**: Which of the three groups (train, selection, sealed) a pair
   of games falls in. Both scripts below import it, so a corpus cannot be built

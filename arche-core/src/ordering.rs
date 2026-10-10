@@ -226,8 +226,7 @@ impl MoveOrdering {
             .count()
     }
 
-    /// The killers standing at a ply. On the hot path: the attention score
-    /// reads it.
+    /// The killers standing at a ply, for the instruments' rows.
     pub(crate) fn killers_at(&self, ply: usize) -> [Option<Play>; 2] {
         self.killers[ply]
     }
