@@ -790,24 +790,26 @@ pairing that ends 25-0 puts no upper bound on the winner. A ladder lives in
 `scripts/ladders.sh` so it can be moved up as the engine improves without
 touching either workflow.
 
-The blitz ladder has eight rungs of five lineages, none holding more than two,
-four below 2870 and four above. Master at 89700c4 placed at 2868 ±30 (95%)
-over 400 games on the previous panel of 2555 to 2932 (Calibrate run
-36238254299, 26 September 2026), scoring 76% to 86% against its bottom three
-rungs, so Tantabus 2.0.0 and Stash 21.0 came off and Inanis 1.4.0 and Stash
-27.0 went on. At 2868 the expected score runs from about 76% against the
-bottom rung to about 26% against the top.
+The blitz ladder has eight rungs of six lineages, none holding more than two,
+four below 3000 and four above. It was moved up ahead of the release after
+v0.4.9, on the assumption that the release plays near 3000. v0.4.9 placed at
+2955 ±31 (95%) over 400 games on the previous panel of 2663 to 3048, scoring
+77% against its bottom rung and 38% against its top. Blunder 8.5.5, Inanis
+1.1.0, Weiss 0.10, Inanis 1.4.0 and Stash 27.0 came off, and Inanis 1.5.0
+and 1.6.0, Topple 0.8.1, Texel 1.08 and Stash 30.0 went on. At 3000 the
+expected score runs from about 73% against the bottom rung to about 29%
+against the top.
 
 | rung | ccrl blitz | |
 | --- | --- | --- |
-| blunder:v8.5.5 | 2663 ±11 | Blunder 8.5.5 64-bit |
-| inanis:v1.1.0 | 2763 ±17 | Inanis 1.1.0 64-bit |
 | zahak:6.2 | 2825 ±17 | Zahak 6.2 64-bit |
-| weiss:v0.10 | 2846 ±17 | Weiss 0.10 64-bit |
 | weiss:v1.0 | 2896 ±18 | Weiss 1.0 64-bit |
 | stash:v25.0 | 2932 ±18 | Stash 25.0 64-bit |
-| inanis:v1.4.0 | 2956 ±16 | Inanis 1.4.0 64-bit |
-| stash:v27.0 | 3048 ±17 | Stash 27.0 64-bit |
+| inanis:v1.5.0 | 2994 ±17 | Inanis 1.5.0 64-bit |
+| topple:v0.8.1 | 3036 ±9 | Topple 0.8.1 64-bit |
+| inanis:v1.6.0 | 3091 ±11 | Inanis 1.6.0 64-bit |
+| texel:1.08 | 3140 ±17 | Texel 1.08 64-bit |
+| stash:v30.0 | 3152 ±17 | Stash 30.0 64-bit |
 
 The ladder started as Stash alone, and a ladder of one lineage measures partly
 how this engine does against that lineage: a shared blind spot, or an opening a
@@ -832,26 +834,36 @@ September 2026 (twenty games each against the v0.4.6 tag, 2816 ±94 over the
 forty, all ending normally). Inanis 1.4.0 and Stash 27.0 were proved by runs
 36241955584 and 36242568862 on 26 September 2026 (twenty games each against
 the v0.4.6 tag: 27.5% and 12.5%, implying 2788 ±128 and 2710 ±187, all
-ending normally). Inanis and Tantabus print principal variations
-that run past a threefold repetition, so their logs fill with fastchess
+ending normally). Inanis 1.5.0 and 1.6.0, Topple 0.8.1, Texel 1.08 and Stash
+30.0 were proved by run 38030053955 on 10 October 2026 (twenty games each at
+20+0.2 against the v0.4.9 tag: 22.5%, 50%, 37.5%, 40% and 25%, implying 2779
+to 3070, 2972 ±62 over the hundred). Inanis and Tantabus print principal
+variations that run past a threefold repetition, so their logs fill with fastchess
 warnings about moves nobody played. Every rung takes the 256MB both sides are
 asked for. fastchess will not send a size an engine declares it cannot take,
 and such an engine plays on its own default instead; BBC, which still has a
 block, declares a maximum of 128MB. The refusal is in the rung's result block,
 which is why the manifest calls the figure `hash_mb_asked`.
 
-Rungs far below the engine were dropped, because more games against them
-narrow nothing (BadChessEngine 0.4.4 at 1926 took 11.7% of sixty games). The
-blocks of every dropped rung stay in `scripts/opponent.sh`, so a ladder can name
-them again: BadChessEngine 0.4.4, Stash 13, 15.3, 17.0, 19.0, 20.0.1 and 21.0,
-BBC 1.1, Zagreus 5.0, Goldfish 2.1.1, SoFCheck 0.9 beta, Tantabus 2.0.0 and
-Weiss 0.9. Cinnamon
-2.4 (2326) and FoxSEE 8.2 (2471) have blocks, were built at their pins and played twenty games, and
-are on no ladder; Cinnamon prints an illegal move at the end of a principal
+Rungs were dropped as the engine passed them, because more games against a
+rung far below it narrow nothing (BadChessEngine 0.4.4 at 1926 took 11.7% of
+sixty games), and each move of the ladder keeps it centred on where the next
+release is expected. The blocks of every dropped rung stay in
+`scripts/opponent.sh`, so a ladder can name them again: BadChessEngine 0.4.4,
+Stash 13, 15.3, 17.0, 19.0, 20.0.1, 21.0, 21.2 and 27.0, BBC 1.1, Zagreus
+5.0, Goldfish 2.1.1, SoFCheck 0.9 beta, Tantabus 2.0.0, Weiss 0.9 and 0.10,
+Blunder 8.5.5 and Inanis 1.1.0 (Inanis 1.4.0 left the blitz ladder and stays
+on the 40/15 one). Cinnamon 2.4 (2326) and FoxSEE 8.2 (2471) have blocks,
+were built at their pins and played twenty games, and are on no ladder; Cinnamon prints an illegal move at the end of a principal
 variation. Halogen 8 does not compile under a current g++ and Zahak 5.0 crashes
 in its hash under a current Go, so neither has a block. Zahak 7.1 (2972) builds
 from the Zahak block but is an NNUE engine whose network the block does not
 fetch, and it stops at startup on an empty one, so it is on no ladder.
+Stash 31.0 (3207) builds, but the source at its tag still calls itself v30.15,
+so the pin may not be the build the list rates. Stash 32.0 (3239) does not
+build under a current gcc, which turns a warning the link time optimiser
+raises into an error. Texel 1.07 (3129) has no build files at its tag, and
+1.08 is the first release with a cmake file.
 
 The Stash releases a ladder can pick from, with whether ccrl ranked the version
 itself or the figure is a community estimate from the games around it. From
@@ -872,6 +884,9 @@ v13 up they were read off the 5 September list, which does not have v22 to v24:
 | v21.0 | 2713 | ranked |
 | v25.0 | 2932 | ranked |
 | v27.0 | 3048 | ranked |
+| v28.0 | 3082 | ranked |
+| v29.0 | 3127 | ranked |
+| v30.0 | 3152 | ranked |
 
 ### Reading the result
 
@@ -924,29 +939,39 @@ measurement; a rung is capped at four hours. Ninety-six games over six rungs
 settle about sixty elo either side, a rough second placement at a slower
 control, with the same hundred points of systematic error.
 
-The ladder brackets 2800, from 2692 to 3022, three rungs either side, read
+The ladder brackets 3000, from 2846 to 3130, three rungs either side, read
 off the complete 40/15 list of 23 September 2026. It moved up with the blitz
-panel on 26 September: Tantabus 2.0.0 and Weiss 0.9 came off, and Inanis 1.4.0
-and Stash 27.0 went on.
+panel: Blunder 8.5.5, Inanis 1.1.0, Stash 21.2 and Stash 27.0 came off, and
+Inanis 1.5.0, Topple 0.8.1, Texel 1.08 and Stash 30.0 went on. v0.4.9 placed
+at 2944 ±60 (95%) on the previous ladder of 2692 to 3022. At 3000 the expected
+score runs from about 71% against the bottom rung to about 32% against the
+top. The four new rungs were proved with sixteen games each against the v0.4.9
+tag (run 38030055811): 59.4% against Inanis 1.5.0, 34.4% against Topple
+0.8.1, 12.5% against Texel 1.08 and 9.4% against Stash 30.0, 2907 ±72 over the
+sixty four. The top two are near the edge of what a pairing can bound at that
+strength, and come into range as the engine reaches 3000.
 
 | rung | ccrl 40/15 | ccrl blitz | |
 | --- | --- | --- | --- |
-| blunder:v8.5.5 | 2692 ±11 | 2663 | Blunder 8.5.5 64-bit |
-| inanis:v1.1.0 | 2746 ±17 | 2763 | Inanis 1.1.0 64-bit |
-| stash:v21.2 | 2785 ±20 | | Stash 21.2 64-bit |
 | weiss:v1.0 | 2846 ±20 | 2896 | Weiss 1.0 64-bit |
 | inanis:v1.4.0 | 2921 ±20 | 2956 | Inanis 1.4.0 64-bit |
-| stash:v27.0 | 3022 ±20 | 3048 | Stash 27.0 64-bit |
+| inanis:v1.5.0 | 2993 ±16 | 2994 | Inanis 1.5.0 64-bit |
+| topple:v0.8.1 | 3031 ±11 | 3036 | Topple 0.8.1 64-bit |
+| texel:1.08 | 3114 ±18 | 3140 | Texel 1.08 64-bit |
+| stash:v30.0 | 3130 ±19 | 3152 | Stash 30.0 64-bit |
 
-Five of these are on the blitz panel. The 40/15 list rates four of them within
-thirty five points of their blitz figures and Weiss 1.0 fifty under. Zahak 6.2,
-Weiss 0.10 and Stash 25.0 are not on the 40/15 list. Stash 21.2 is the Stash
-block at a pin the blitz ladder does not use. The two new rungs were
-proved first with sixteen games each against v0.4.6 (run 36269977260).
+Five of these are on the blitz panel, and Inanis 1.4.0 is the Inanis block at
+a pin the blitz ladder no longer uses. The 40/15 list rates Inanis 1.5.0 and
+Topple 0.8.1 within five points of their blitz figures, Stash 30.0 and Texel
+1.08 twenty to thirty under, and Weiss 1.0 fifty under. Zahak 6.2 and Stash
+25.0 are not on the 40/15 list, and Inanis 1.6.0 is left off it so that no
+lineage holds more than two rungs.
 
-Other rungs the 40/15 list rates and a block here can build: Tantabus 2.0.0 at
-2559, Weiss 0.9 at 2651, Inanis 1.2.0 at 2835 and Stash 23.0 at 2902. Stash
-18.0, SoFCheck 0.9 beta and FoxSEE 8.2 sit below 2500.
+Other rungs the 40/15 list rates and a block here can build: Blunder 8.5.5 at
+2692, Inanis 1.1.0 at 2746, Stash 21.2 at 2785, Inanis 1.2.0 at 2835, Stash
+23.0 at 2902, Stash 27.0 at 3022, Inanis 1.6.0 at 3046 and Stash 29.0 at 3101.
+Tantabus 2.0.0, Weiss 0.9, Stash 18.0, SoFCheck 0.9 beta and FoxSEE 8.2 sit
+below 2700.
 
 ## Cutting a release
 

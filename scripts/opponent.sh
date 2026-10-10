@@ -147,6 +147,31 @@ inanis_build() {
     echo target/release/inanis
 }
 
+# Topple, built by its own cmake file, which fetches Catch2 and Fathom from
+# github when it configures. Its plain target asks for the machine it is built
+# on, so the popcnt target its release builds is used instead (nehalem). That
+# target is named for the version in the cmake file, which is read rather than
+# taken from the pin, since a pin can be a sha.
+REPOSITORY[topple]=https://github.com/konsolas/ToppleChess.git
+topple_build() {
+    local target
+    target=Topple_$(sed -n 's/^set(TOPPLE_VERSION \(.*\))$/\1/p' CMakeLists.txt)_popcnt
+    cmake -S . -B build -DCMAKE_BUILD_TYPE=Release > /dev/null
+    cmake --build build -j"$(nproc)" --target "$target" > /dev/null
+    echo "build/${target}"
+}
+
+# Texel, built by its own cmake file from 1.08, the first release to have one.
+# Its defaults are a plain x86-64; popcount and the bit scans are asked for
+# as in the weiss block. Its tags carry no v, so a pin is 1.08.
+REPOSITORY[texel]=https://github.com/peterosterlund2/texel.git
+texel_build() {
+    cmake -S . -B build -DCMAKE_BUILD_TYPE=Release \
+        -DUSE_POPCNT=ON -DUSE_CTZ=ON -DUSE_PREFETCH=ON > /dev/null
+    cmake --build build -j"$(nproc)" --target texel > /dev/null
+    echo build/texel
+}
+
 # An engine with a repository and no build, or the reverse, is not listed, so
 # the workflow refuses it where the ladder is read rather than after the clone.
 list() {
