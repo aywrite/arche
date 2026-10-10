@@ -12,6 +12,7 @@ use crate::swap_table;
 use crate::zobrist::Zobrist;
 use smallvec::SmallVec;
 use std::fmt;
+use std::marker::PhantomData;
 use std::mem::MaybeUninit;
 
 // A list's inline capacity, and the size of the ordering module's key
@@ -22,11 +23,13 @@ pub type MoveList = SmallVec<[Play; MOVE_LIST_INLINE]>;
 
 /// The widest a generated list can be. No legal position has been shown to
 /// offer more than 218 moves, but `from_fen` bounds neither the number of
-/// pieces nor what they are (nine queens is accepted and played from), so
-/// the margin is against a parsed position rather than the generator. The
-/// buffer is uninitialised and lives in one frame, so the width costs stack
-/// and nothing else.
-const MAX_GENERATED: usize = 512;
+/// pieces nor what they are (nine queens is accepted and played from). No
+/// piece has more than 27 moves (a queen in the centre of an empty board)
+/// and a side has at most 63 pieces besides its king, which `from_fen`
+/// requires, so this bounds any parsed position and the quiet buffer needs no
+/// check on a push. The buffer is uninitialised,
+/// so the width costs stack and nothing else.
+const MAX_GENERATED: usize = 64 * 27;
 
 /// See `Board::check_info`.
 #[derive(Clone, Copy, Debug)]
@@ -36,82 +39,128 @@ pub(crate) struct CheckInfo {
     blockers: u64,
 }
 
-/// A move list while it is being generated, the captures kept apart from the
-/// other moves.
+/// The captures of a list while it is generated, written straight into the
+/// list. The cursor and the count are kept apart from any buffer so that
+/// they stay in registers.
 ///
-/// A `SmallVec` push asks whether the list has spilled and whether it is
-/// full on every push. Here a push is a store and an increment, and the list
-/// is built once at the end, the captures ahead of the rest.
-struct Building {
-    captures: [MaybeUninit<Play>; MAX_GENERATED],
-    quiets: [MaybeUninit<Play>; MAX_GENERATED],
-    captures_len: usize,
-    quiets_len: usize,
+/// The list is held as a raw pointer, and the cursor is taken from it. A
+/// list short of a spill keeps its moves inside itself, so a `&mut` to it
+/// moved or reborrowed after the cursor was taken would invalidate the
+/// cursor (Miri reports it).
+struct Front<'a> {
+    out: *mut MoveList,
+    at: *mut Play,
+    len: usize,
+    cap: usize,
+    _out: PhantomData<&'a mut MoveList>,
 }
 
-impl Building {
+impl<'a> Front<'a> {
     #[inline(always)]
-    fn new() -> Self {
-        // `Play` has no zero value to memset (`None` for the captured piece
-        // is a niche), so an initialiser costs a store per entry, and one
-        // here measured thirteen percent slower than the pushing it replaced
-        // (49747fa).
-        Self {
-            captures: [const { MaybeUninit::uninit() }; MAX_GENERATED],
-            quiets: [const { MaybeUninit::uninit() }; MAX_GENERATED],
-            captures_len: 0,
-            quiets_len: 0,
-        }
-    }
-
-    #[inline(always)]
-    fn capture(&mut self, play: Play) {
-        debug_assert!(play.capture.is_some());
-        self.captures[self.captures_len].write(play);
-        self.captures_len += 1;
-    }
-
-    #[inline(always)]
-    fn quiet(&mut self, play: Play) {
-        debug_assert!(play.capture.is_none());
-        self.quiets[self.quiets_len].write(play);
-        self.quiets_len += 1;
-    }
-
-    /// Write the list into `out`, the captures first, and return how many
-    /// captures lead it.
-    #[inline(always)]
-    fn finish(&self, out: &mut MoveList) -> usize {
+    fn new(out: &'a mut MoveList) -> Self {
         // the captures lead the list only if it starts empty
         debug_assert!(out.is_empty());
-        let captures = self.captures_len;
-        let len = captures + self.quiets_len;
-        if len > MOVE_LIST_INLINE {
-            out.reserve(len);
+        let cap = out.capacity();
+        let out: *mut MoveList = out;
+        // SAFETY: `out` comes from a `&mut` that `Front` holds for `'a`, and
+        // nothing else reaches the list while it lives
+        let at = unsafe { (*out).as_mut_ptr() };
+        Self {
+            out,
+            at,
+            len: 0,
+            cap,
+            _out: PhantomData,
         }
-        // SAFETY: each push writes an entry before it counts it, so the
-        // first `len` of each array are initialised; `MaybeUninit<Play>`
-        // has the layout of `Play`. The list has room for `len` from its
-        // first slot whatever it held: its capacity is at least
-        // `MOVE_LIST_INLINE`, and `reserve` makes it at least `len` more
-        // than it held. So `set_len` covers only slots written here. The
-        // captures are few, so they go one at a time rather than through a
-        // call to memcpy.
+    }
+
+    #[inline(always)]
+    fn push(&mut self, play: Play) {
+        if self.len == self.cap {
+            (self.at, self.cap) = grow(self.out, self.len, 1);
+        }
+        // SAFETY: `len < cap`, and `at` is the list's buffer of `cap` slots,
+        // taken from `out` after any growth
+        unsafe { self.at.add(self.len).write(play) };
+        self.len += 1;
+    }
+
+    /// Close the list with the quiet moves behind the captures, and return
+    /// how many captures lead it.
+    #[inline(always)]
+    fn finish(self, quiets: &Back) -> usize {
+        let captures = self.len;
+        let len = captures + quiets.len;
+        let mut at = self.at;
+        if len > self.cap {
+            (at, _) = grow(self.out, captures, quiets.len);
+        }
+        // SAFETY: the first `captures` slots were written by `push`, the
+        // list has room for `len`, and the quiet buffer's first `quiets.len`
+        // entries are written. The buffer is on the stack and the list is
+        // apart from it, so the two do not overlap. `set_len` covers only
+        // written slots, and `out` is live as in `new`.
         unsafe {
-            let at = out.as_mut_ptr();
-            for i in 0..captures {
-                at.add(i).write(self.captures[i].assume_init());
-            }
-            std::ptr::copy_nonoverlapping(
-                self.quiets.as_ptr().cast::<Play>(),
-                at.add(captures),
-                self.quiets_len,
-            );
-            out.set_len(len);
+            std::ptr::copy_nonoverlapping(quiets.at, at.add(captures), quiets.len);
+            (*self.out).set_len(len);
         }
         captures
     }
+
+    /// Close a list that has nothing behind what was pushed.
+    #[inline(always)]
+    fn close(self) {
+        // SAFETY: the first `len` slots were written by `push`, and `out` is
+        // live as in `new`
+        unsafe { (*self.out).set_len(self.len) };
+    }
 }
+
+/// Make room in `out` for `additional` more than the `len` written into it,
+/// and return its buffer and capacity.
+#[cold]
+#[inline(never)]
+fn grow(out: *mut MoveList, len: usize, additional: usize) -> (*mut Play, usize) {
+    // SAFETY: `out` is a `Front`'s list, live as in `Front::new`. The first
+    // `len` slots are written, and `len` is at most the capacity, since the
+    // cursor grows the list before it writes past it.
+    unsafe {
+        (*out).set_len(len);
+        (*out).reserve(additional);
+        ((*out).as_mut_ptr(), (*out).capacity())
+    }
+}
+
+/// The quiet moves of a list while it is generated, in a buffer of
+/// `MAX_GENERATED` that no list can fill. The captures door has no quiet
+/// moves and gives a `Back` with no room, which nothing may push to.
+struct Back {
+    at: *mut Play,
+    len: usize,
+    /// The room behind `at`, checked in a debug build.
+    #[cfg(debug_assertions)]
+    room: usize,
+}
+
+impl Back {
+    #[inline(always)]
+    fn push(&mut self, play: Play) {
+        #[cfg(debug_assertions)]
+        assert!(self.len < self.room, "a quiet move past the buffer");
+        // SAFETY: `at` is the full and evasions doors' buffer of
+        // `MAX_GENERATED`, which no list fills (see there); the captures
+        // door's `Back` is never pushed to
+        unsafe { self.at.add(self.len).write(play) };
+        self.len += 1;
+    }
+}
+
+const FILE_A: u64 = 0x0101_0101_0101_0101;
+const FILE_H: u64 = FILE_A << 7;
+const RANK_2: u64 = 0xFF << 8;
+const RANK_3: u64 = 0xFF << 16;
+const RANK_6: u64 = 0xFF << 40;
+const RANK_7: u64 = 0xFF << 48;
 
 /// Pop the lowest set bit and return its index.
 #[inline(always)]
@@ -857,7 +906,41 @@ impl Position {
         &self,
         out: &mut MoveList,
     ) -> usize {
-        let mut moves = Building::new();
+        let mut front = Front::new(out);
+        if CAPTURES_ONLY {
+            // the promoting pushes follow the captures in `front` itself
+            let mut back = Back {
+                at: std::ptr::NonNull::dangling().as_ptr(),
+                len: 0,
+                #[cfg(debug_assertions)]
+                room: 0,
+            };
+            let captures = self.walk::<CAPTURES_ONLY, EVASIONS>(&mut front, &mut back);
+            debug_assert_eq!(back.len, 0);
+            front.close();
+            captures
+        } else {
+            let mut quiets = [const { MaybeUninit::<Play>::uninit() }; MAX_GENERATED];
+            let mut back = Back {
+                at: quiets.as_mut_ptr().cast::<Play>(),
+                len: 0,
+                #[cfg(debug_assertions)]
+                room: MAX_GENERATED,
+            };
+            self.walk::<CAPTURES_ONLY, EVASIONS>(&mut front, &mut back);
+            front.finish(&back)
+        }
+    }
+
+    /// `generate`'s walk over the pieces: the captures into `front`, the
+    /// other moves into `back` (in the captures door, the promoting pushes
+    /// into `front` behind the captures). Returns the count of captures.
+    #[inline(always)]
+    fn walk<const CAPTURES_ONLY: bool, const EVASIONS: bool>(
+        &self,
+        front: &mut Front,
+        back: &mut Back,
+    ) -> usize {
         let (color_mask, capture_mask) = self.sides(self.active_color);
         let all_pieces = self.black | self.white;
         let attack_masks = &ATTACK_MASKS;
@@ -871,11 +954,11 @@ impl Position {
         };
         let evasion_filter = if EVASIONS { self.evasion_targets() } else { !0 };
         let target_filter = king_filter & evasion_filter;
-        let push = |moves: &mut Building, from: u8, targets: u64| {
+        let push = |front: &mut Front, back: &mut Back, from: u8, targets: u64| {
             let mut captures = targets & capture_mask;
             while captures != 0 {
                 let to = pop_lsb(&mut captures);
-                moves.capture(Play::new(
+                front.push(Play::new(
                     from,
                     to,
                     self.get_piece_index(to),
@@ -888,7 +971,7 @@ impl Position {
                 let mut quiets = targets & !capture_mask;
                 while quiets != 0 {
                     let to = pop_lsb(&mut quiets);
-                    moves.quiet(Play::new(from, to, None, None, false, false));
+                    back.push(Play::new(from, to, None, None, false, false));
                 }
             }
         };
@@ -896,25 +979,25 @@ impl Position {
         while knights != 0 {
             let from = pop_lsb(&mut knights);
             let targets = attack_masks.knights[from as usize] & target_filter;
-            push(&mut moves, from, targets);
+            push(front, back, from, targets);
         }
         let mut queens_and_rooks = (self.queens() | self.rooks()) & color_mask;
         while queens_and_rooks != 0 {
             let from = pop_lsb(&mut queens_and_rooks);
             let targets = magic.get_straight_move(from, all_pieces) & target_filter;
-            push(&mut moves, from, targets);
+            push(front, back, from, targets);
         }
         let mut queens_and_bishops = (self.queens() | self.bishops()) & color_mask;
         while queens_and_bishops != 0 {
             let from = pop_lsb(&mut queens_and_bishops);
             let targets = magic.get_diagonal_move(from, all_pieces) & target_filter;
-            push(&mut moves, from, targets);
+            push(front, back, from, targets);
         }
         let mut kings = self.kings() & color_mask;
         while kings != 0 {
             let from = pop_lsb(&mut kings);
             let targets = attack_masks.kings[from as usize] & king_filter;
-            push(&mut moves, from, targets);
+            push(front, back, from, targets);
             if CAPTURES_ONLY {
                 continue;
             }
@@ -944,90 +1027,124 @@ impl Position {
                         && (empty & all_pieces) == 0
                         && !passes.iter().any(|s| self.square_attacked(*s, opponent))
                     {
-                        moves.quiet(Play::new(from, king_to, None, None, false, true));
+                        back.push(Play::new(from, king_to, None, None, false, true));
                     }
                 }
             }
         }
-        let mut pawns = self.pawns() & color_mask;
-        while pawns != 0 {
-            let from = pop_lsb(&mut pawns);
-            let rank = rank_of(from);
-            let can_promote = match self.active_color {
-                Color::White => rank == 7,
-                Color::Black => rank == 2,
+        // The pawns are walked as sets: the pawns with a capture or an en
+        // passant capture, and then the pawns with a push, each from its
+        // lowest square. A pawn with nothing to give is never visited. The
+        // two walks write to the two parts of the list, so each part holds
+        // the pawns in square order, each pawn's captures before its en
+        // passant capture and its single push before its double push.
+        let pawns = self.pawns() & color_mask;
+        let taken = capture_mask & evasion_filter;
+        let empty = !all_pieces;
+        // `seventh` is the rank a pawn promotes from, `takers` the pawns
+        // with a capture, `singles` and `doubles` the pawns whose single or
+        // double push is open (and, in check, blocks)
+        let (seventh, takers, singles, doubles, en_passant_from) = match self.active_color {
+            Color::White => {
+                let one = (pawns << 8) & empty;
+                let two = ((one & RANK_3) << 8) & empty & evasion_filter;
+                (
+                    RANK_7,
+                    (((taken & !FILE_H) >> 7) | ((taken & !FILE_A) >> 9)) & pawns,
+                    (one & evasion_filter) >> 8,
+                    two >> 16,
+                    self.en_passant
+                        .map_or(0, |s| attack_masks.white_pawns[s.as_index() as usize]),
+                )
+            }
+            Color::Black => {
+                let one = (pawns >> 8) & empty;
+                let two = ((one & RANK_6) >> 8) & empty & evasion_filter;
+                (
+                    RANK_2,
+                    (((taken & !FILE_A) << 7) | ((taken & !FILE_H) << 9)) & pawns,
+                    (one & evasion_filter) << 8,
+                    two << 16,
+                    self.en_passant
+                        .map_or(0, |s| attack_masks.black_pawns[s.as_index() as usize]),
+                )
+            }
+        };
+        let en_passant_from = en_passant_from & pawns;
+        let mut capturing = takers | en_passant_from;
+        while capturing != 0 {
+            let from = pop_lsb(&mut capturing);
+            let attacks = match self.active_color {
+                Color::White => attack_masks.black_pawns[from as usize],
+                Color::Black => attack_masks.white_pawns[from as usize],
             };
-            // read off the table here rather than through `pawn_attacks_from`:
-            // through the helper the compiler laid this loop out differently
-            // and the full generator measured 7% more instructions over the
-            // bench (callgrind against 31eb33b), 0.25% of the whole run
-            let pmoves: u64 = match self.active_color {
-                Color::White => attack_masks.black_pawns[from as usize] & capture_mask,
-                Color::Black => attack_masks.white_pawns[from as usize] & capture_mask,
-            };
-            let mut targets = pmoves & evasion_filter;
-            while targets != 0 {
-                let to = pop_lsb(&mut targets);
-                let capture = self.get_piece_index(to);
-                if can_promote {
+            let mut targets = attacks & taken;
+            if seventh.is_bit_set(from) {
+                while targets != 0 {
+                    let to = pop_lsb(&mut targets);
+                    let capture = self.get_piece_index(to);
                     for p in PromotePiece::VARIANTS {
-                        moves.capture(Play::new(from, to, capture, Some(p), false, false));
+                        front.push(Play::new(from, to, capture, Some(p), false, false));
                     }
-                } else {
-                    moves.capture(Play::new(from, to, capture, None, false, false));
+                }
+            } else {
+                while targets != 0 {
+                    let to = pop_lsb(&mut targets);
+                    front.push(Play::new(
+                        from,
+                        to,
+                        self.get_piece_index(to),
+                        None,
+                        false,
+                        false,
+                    ));
                 }
             }
-            // the captures list keeps the promoting pushes: quiescence would
-            // otherwise stand a pawn on the seventh and score it as a pawn
-            if !CAPTURES_ONLY || can_promote {
-                let to = match self.active_color {
-                    Color::White => from as isize + 8,
-                    Color::Black => from as isize - 8,
-                };
+            if en_passant_from.is_bit_set(from) {
+                let to = self.en_passant.map_or(0, |s| s.as_index());
+                front.push(Play::new(from, to, Some(Piece::Pawn), None, true, false));
+            }
+        }
+        let captures = front.len;
+        // the captures list keeps the promoting pushes: quiescence would
+        // otherwise stand a pawn on the seventh and score it as a pawn
+        let mut pushing = if CAPTURES_ONLY {
+            singles & seventh
+        } else {
+            singles | doubles
+        };
+        while pushing != 0 {
+            let from = pop_lsb(&mut pushing);
+            let to = match self.active_color {
+                Color::White => from + 8,
+                Color::Black => from - 8,
+            };
+            if seventh.is_bit_set(from) {
+                for p in PromotePiece::VARIANTS {
+                    let play = Play::new(from, to, None, Some(p), false, false);
+                    if CAPTURES_ONLY {
+                        front.push(play);
+                    } else {
+                        back.push(play);
+                    }
+                }
+            } else if !CAPTURES_ONLY {
                 // the evasion mask is asked of each push and not of the step
                 // they share: a double push can block a check the single
                 // push does not reach
-                if (0..64).contains(&to) && !all_pieces.is_bit_set(to as u8) {
-                    let to = to as u8;
-                    let blocks = evasion_filter.is_bit_set(to);
-                    if can_promote {
-                        if blocks {
-                            for p in PromotePiece::VARIANTS {
-                                moves.quiet(Play::new(from, to, None, Some(p), false, false));
-                            }
-                        }
-                    } else {
-                        if blocks {
-                            moves.quiet(Play::new(from, to, None, None, false, false));
-                        }
-                        if match self.active_color {
-                            Color::White => rank == 2,
-                            Color::Black => rank == 7,
-                        } {
-                            let to = match self.active_color {
-                                Color::White => to as isize + 8,
-                                Color::Black => to as isize - 8,
-                            };
-                            if !all_pieces.is_bit_set(to as u8)
-                                && evasion_filter.is_bit_set(to as u8)
-                            {
-                                moves.quiet(Play::new(from, to as u8, None, None, false, false));
-                            }
-                        }
-                    }
+                if singles.is_bit_set(from) {
+                    back.push(Play::new(from, to, None, None, false, false));
                 }
-            }
-            if let Some(en_passant) = &self.en_passant {
-                let i = en_passant.as_index();
-                let can_en_passant = attack_masks
-                    .pawn_attacks_from(from, self.active_color)
-                    .is_bit_set(i);
-                if can_en_passant {
-                    moves.capture(Play::new(from, i, Some(Piece::Pawn), None, true, false));
+                if doubles.is_bit_set(from) {
+                    let to = match self.active_color {
+                        Color::White => to + 8,
+                        Color::Black => to - 8,
+                    };
+                    back.push(Play::new(from, to, None, None, false, false));
                 }
             }
         }
-        moves.finish(out)
+        captures
     }
 
     /// Check everything maintained a piece at a time against the position it
@@ -2788,6 +2905,85 @@ mod make_move {
                 .collect();
             assert_eq!(board.generate_captures(), filtered, "in {}", fen);
         }
+    }
+
+    /// The order the pawns' moves are listed in, pinned by the lists the
+    /// generator gave when it walked one pawn at a time: promotions with and
+    /// without a capture, en passant for either side, single and double
+    /// pushes, and pawns on the back ranks, which `from_fen` accepts.
+    #[test]
+    fn the_pawns_moves_keep_the_one_pawn_at_a_time_order() {
+        let cases = [
+            (
+                "r3k2r/1P4P1/8/2pP4/8/8/P1P1P1P1/R3K2R w KQkq c6 0 1",
+                "h1h8 d5c6 b7a8n b7a8b b7a8r b7a8q g7h8n g7h8b g7h8r g7h8q a1b1 a1c1 a1d1 h1f1 \
+                 h1g1 h1h2 h1h3 h1h4 h1h5 h1h6 h1h7 e1d1 e1f1 e1d2 e1f2 e1c1 e1g1 a2a3 a2a4 c2c3 \
+                 c2c4 e2e3 e2e4 g2g3 g2g4 d5d6 b7b8n b7b8b b7b8r b7b8q g7g8n g7g8b g7g8r g7g8q",
+            ),
+            (
+                "r3k2r/p1p1p1p1/8/8/3pP3/8/1p4p1/R3K2R b KQkq e3 0 1",
+                "h8h1 b2a1n b2a1b b2a1r b2a1q g2h1n g2h1b g2h1r g2h1q d4e3 a8b8 a8c8 a8d8 h8h2 \
+                 h8h3 h8h4 h8h5 h8h6 h8h7 h8f8 h8g8 e8d7 e8f7 e8d8 e8f8 e8c8 e8g8 b2b1n b2b1b \
+                 b2b1r b2b1q g2g1n g2g1b g2g1r g2g1q d4d3 a7a6 a7a5 c7c6 c7c5 e7e6 e7e5 g7g6 g7g5",
+            ),
+            (
+                "P3k3/8/8/8/8/8/8/p3K2P w - - 0 1",
+                "e1d1 e1f1 e1d2 e1e2 e1f2 h1h2",
+            ),
+            (
+                "P3k3/8/8/8/8/8/8/p3K2P b - - 0 1",
+                "e8d7 e8e7 e8f7 e8d8 e8f8",
+            ),
+        ];
+        for (fen, expected) in cases {
+            let board = Board::from_fen(fen).unwrap();
+            let names = |list: super::MoveList| -> Vec<String> {
+                list.iter().map(|m| m.to_string()).collect()
+            };
+            let full: Vec<&str> = expected.split_whitespace().collect();
+            assert_eq!(
+                names(board.generate_moves()),
+                full,
+                "the full list in {fen}"
+            );
+            let material: Vec<&str> = full
+                .iter()
+                .copied()
+                .filter(|name| {
+                    board.generate_moves().iter().any(|m| {
+                        m.to_string() == *name && (m.capture.is_some() || m.promote.is_some())
+                    })
+                })
+                .collect();
+            assert_eq!(
+                names(board.generate_captures()),
+                material,
+                "the captures list in {fen}"
+            );
+        }
+    }
+
+    /// A captures list wider than the list's inline capacity grows while the
+    /// captures are written, and still holds the full list's captures in its
+    /// order.
+    #[test]
+    fn a_captures_list_wider_than_the_inline_list_grows_in_place() {
+        let board =
+            Board::from_fen("nnnnnnnn/QQQQQQQQ/nnnnnnnn/QQQQQQQQ/nnnnnnnn/8/8/K6k w - - 0 1")
+                .unwrap();
+        let captures = board.generate_captures();
+        assert!(
+            captures.len() > super::MOVE_LIST_INLINE,
+            "{}",
+            captures.len()
+        );
+        let filtered: super::MoveList = board
+            .generate_moves()
+            .iter()
+            .filter(|c| c.capture.is_some() || c.promote.is_some())
+            .copied()
+            .collect();
+        assert_eq!(captures, filtered);
     }
 
     #[test]
