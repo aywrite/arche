@@ -84,8 +84,10 @@ const TIE_MIDDLE: i32 = 1 << (TIE_BITS - 1);
 /// tie, still fits the key's 32 bits.
 const _: () = assert!(((QUIET_KILLER[0] as i64) << BONUS_SHIFT) < i32::MAX as i64);
 /// Whether the tie break reads the pair term's change beside the piece
-/// square tables' or the tables' alone.
-const TIE_PAIR: bool = true;
+/// square tables' or the tables' alone. Alone: on the randomised ordering
+/// recordings the pair term's change by itself ordered the tie worse than
+/// generation order did.
+const TIE_PAIR: bool = false;
 /// A quiet run's keys and a vector's width of padding after the run, which
 /// `key_quiets` fills with `i32::MAX`.
 const QUIET_KEYS: usize = MOVE_LIST_INLINE + 4;
