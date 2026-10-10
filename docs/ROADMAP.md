@@ -436,8 +436,8 @@ of these again without saying what is different this time.
   skip's rows of 75,024 game positions, skipped ones included, the refit
   skips 1.230 times fewer attention rows at the same coverage on the pairs
   it did not see, and plays even with the old weights over 4,500 games
-  (+0 ±7, sprt [-10, 0] passed). It ships as a model fitted to its own gate
-  at no measured cost, not as a gain.
+  (+0 ±7, sprt [-10, 0] passed). It shipped as a model fitted to its own gate
+  at no measured cost, not as a gain, and was later replaced by a margin.
 - Prefetching a child's transposition slot straight after `make_move`, 6.7%
   slower over six interleaved rounds. The prefetch sits immediately before the
   recursive call and the child probes the table almost first, so there is no
@@ -627,7 +627,9 @@ of these again without saying what is different this time.
   -43 ±16 over 1,000 games at 10+0.1 (sprt [-5, 0] failed at LLR -3.04), where 5 elo was the
   most deleting the model's code was allowed to cost. Offline the rule read 41.3 times the
   refitted model's attention rate at 3.5 points less coverage. The -43 is a stopped
-  estimate, and the model stays.
+  estimate, and the model stayed. A margin on the evaluation under beta later
+  replaced it: matched to the model's coverage, it read +2 ±9 over 3,000 games
+  (sprt [-10, 0] passed).
 - Replacing the pair term's table with one the held out loss prefers. Two tables that read
   level or better on that loss lost their matches. Fitted at a factor ridge of 3e-8, the rank
   sixteen term widens from 36 to 125 centipawns and gains 0.001962 of cross validated loss

@@ -122,7 +122,7 @@ class TestFeatures:
         assert self.milli(history=250, history_max=1000) == 250
 
     def test_a_history_below_zero_counts_as_none(self):
-        # late_move.rs takes the larger of the score and nought before dividing.
+        # late_move.rs took the larger of the score and nought before dividing.
         # 607 rows of the sample are this case
         assert self.milli(history=-4000, history_max=1000) == 0
 

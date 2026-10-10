@@ -81,8 +81,8 @@ impl Scout {
 }
 
 /// The move loop's half of an event, handed to `windowed`, which finishes
-/// it when the scout answers. The features are the ones the gate scored,
-/// so a row cannot say something the score did not.
+/// it when the scout answers. The features are read when the move is
+/// staged, before the scout can teach the history.
 #[derive(Clone, Copy, Debug)]
 pub(crate) struct Staged {
     /// Kept so the recorder can step it back for the node's own evaluation
@@ -109,10 +109,9 @@ pub struct Event {
     /// move threshold on a scouted row; a shallow skip records its own,
     /// which is never under one.
     pub index: usize,
-    /// `index + 1` on every row: the attention model's searched feature,
-    /// whether or not the model decided the row. A skipped row's move was
-    /// never searched. The model's own skips, at depth four and up, read
-    /// this value; a shallow rule's skip reads the index.
+    /// `index + 1` on every row, the column the attention model the skip
+    /// once read took as its searched feature. A skipped row's move was
+    /// never searched.
     pub searched: usize,
     /// The moves the node generated.
     pub generated: usize,
@@ -558,8 +557,8 @@ mod tests {
     use super::*;
     use crate::board::Board;
     use crate::late_move::{
-        DEEP_REDUCTION_MIN_DEPTH, LATE_MOVE_MIN_DEPTH, LATE_MOVE_PRUNING_THRESHOLD,
-        LATE_MOVE_THRESHOLD, SHALLOW_MAX_DEPTH, ledger_row_score,
+        DEEP_REDUCTION_MIN_DEPTH, LATE_MOVE_MIN_DEPTH, LATE_MOVE_THRESHOLD, SHALLOW_MAX_DEPTH,
+        under_skip_margin,
     };
     use crate::recorder::fixtures::{recording_leaves_the_search_where_it_was, suite};
     use crate::recorder::{DEFAULT_CAP, Sampler};
@@ -1073,7 +1072,7 @@ mod tests {
         assert!(!report.rows.is_empty(), "nothing was recorded");
         assert!(report.events >= report.rows.len() as u64);
         assert_eq!(report.unplayable, 0);
-        let mut model_skips = 0;
+        let mut margin_skips = 0;
         for row in &report.rows {
             let e = &row.event;
             assert!(Board::from_fen(&e.fen).is_ok(), "{} does not parse", e.fen);
@@ -1083,21 +1082,20 @@ mod tests {
             assert!(e.history <= e.history_max, "{:?}", row);
             assert!(e.depth >= 1, "{:?}", row);
             if e.scout == Scout::Skipped {
-                // three rules skip, and the model's never shares a depth
+                // three rules skip, and the deep one never shares a depth
                 // with the two shallow ones. The row does not say which
                 // shallow rule took it
                 assert_eq!(e.cost, 0, "{:?}", row);
                 assert_eq!(e.reduction, 0, "{:?}", row);
                 if e.depth >= DEEP_REDUCTION_MIN_DEPTH {
                     assert!(e.index >= LATE_MOVE_THRESHOLD, "{:?}", row);
-                    // rescored from the printed columns, the model's skip
-                    // is still one
+                    // read from the printed columns, the skip is still one
                     assert!(
-                        ledger_row_score(e) <= LATE_MOVE_PRUNING_THRESHOLD,
+                        under_skip_margin(e.depth, i64::from(e.eval_beta)),
                         "{:?}",
                         row
                     );
-                    model_skips += 1;
+                    margin_skips += 1;
                 } else {
                     assert!(e.depth <= SHALLOW_MAX_DEPTH, "{:?}", row);
                     assert!(e.index >= 1, "{:?}", row);
@@ -1113,7 +1111,7 @@ mod tests {
             }
             assert_eq!(row.reference.is_some(), e.scout != Scout::High, "{:?}", row);
         }
-        assert!(model_skips > 0, "no skip of the model's was recorded");
+        assert!(margin_skips > 0, "no skip of the margin's was recorded");
         assert!(report.rows.iter().any(|row| row.event.scout == Scout::Low));
         assert!(
             report

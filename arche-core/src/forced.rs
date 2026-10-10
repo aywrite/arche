@@ -44,7 +44,7 @@ pub enum Kind {
     /// The pass cleared beta and answered the node. Inverted, the node goes
     /// on to its moves.
     NullMove,
-    /// A late quiet was passed over, by the model at depth four and up or
+    /// A late quiet was passed over, by the margin at depth four and up or
     /// by either shallow rule below. Inverted, it is searched unreduced.
     Skip,
     /// A reduced scout came back at or below alpha and answered for its
@@ -176,8 +176,6 @@ pub struct Event {
     pub(crate) features: Option<Features>,
     pub eval_beta: i32,
     pub alpha_gap: i32,
-    /// The model's score, where the gate reads one.
-    pub attention: Option<i64>,
     /// The deciding node's position.
     pub fen: String,
 }
@@ -398,12 +396,11 @@ pub fn run(
 /// and what the default answered at each root.
 ///
 /// A row is `kind depth index searched generated history history_max
-/// killer tt eval_beta alpha_gap attention answered visits root best_on
+/// killer tt eval_beta alpha_gap answered visits root best_on
 /// best_forced score_on score_forced nodes_on nodes_forced fen`,
 /// whitespace separated with the deciding node's fen last. `root` is the
 /// root's place in the suite, which its line names. A move decision's own
-/// columns print `-` on a node decision, and `attention` prints `-` below
-/// the depth the gate reads the model at.
+/// columns print `-` on a node decision.
 impl fmt::Display for Report {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         writeln!(
@@ -438,14 +435,12 @@ impl fmt::Display for Report {
             };
             writeln!(
                 f,
-                "{} {} {} {} {} {} {} {} {} {} {} {} {} {} {} {}",
+                "{} {} {} {} {} {} {} {} {} {} {} {} {} {} {}",
                 e.address.kind.word(),
                 e.address.depth,
                 features,
                 e.eval_beta,
                 e.alpha_gap,
-                e.attention
-                    .map_or_else(|| "-".to_string(), |score| score.to_string()),
                 row.answered.map_or("-", Answered::word),
                 row.visits,
                 e.root,
@@ -668,31 +663,26 @@ mod tests {
         assert_eq!(Kind::of_word("skips"), None);
     }
 
-    /// The model's score is printed where the gate reads one, depth four
-    /// and up, and nowhere else. A skip there scores at or under the
-    /// pruning threshold.
+    /// A skip at depth four and up is the margin's, and its row says so: the
+    /// recorded evaluation stands at least the margin under beta.
     #[test]
-    fn attention_is_read_where_the_gate_reads_it() {
+    fn a_deep_skip_stands_the_margin_under_beta() {
         let report = run(&suite(), None, 7, 20, 2000, Kinds::ALL, 0);
-        let (mut deep, mut skips) = (0, 0);
+        let mut skips = 0;
         for row in &report.rows {
             let e = &row.event;
-            let gated = e.features.is_some()
-                && e.address.depth >= crate::late_move::DEEP_REDUCTION_MIN_DEPTH;
-            assert_eq!(e.attention.is_some(), gated, "{:?}", e.address);
-            // a skip there is the pruning rule's, which skips on the score
-            if gated && e.address.kind == Kind::Skip {
+            if e.address.kind == Kind::Skip
+                && e.address.depth >= crate::late_move::DEEP_REDUCTION_MIN_DEPTH
+            {
                 assert!(
-                    e.attention <= Some(crate::late_move::LATE_MOVE_PRUNING_THRESHOLD),
-                    "{:?} scored {:?}",
+                    crate::late_move::under_skip_margin(e.address.depth, i64::from(e.eval_beta)),
+                    "{:?} stood {} from beta",
                     e.address,
-                    e.attention
+                    e.eval_beta
                 );
                 skips += 1;
             }
-            deep += usize::from(gated);
         }
-        assert!(deep > 0, "no row at the gate's depth");
         assert!(skips > 0, "no skip at the gate's depth");
     }
 }

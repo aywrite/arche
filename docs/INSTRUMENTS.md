@@ -229,19 +229,20 @@ is the bound the scout was asked about, `scout` is `low`, `high` or `skipped`,
 and `cost` is the nodes the scout spent. A fail high prints `-` in the
 `reference` and `label` columns.
 
-`skipped` is the pruning rules'. A move the attention model prices in its
-deadest band at depth four and up, and a quiet at depth one to three that
-either shallow rule drops, are never scouted, so a sampled skip is recorded
-where the loop passes it over, with a cost and a reduction of zero, and
-replayed as a fail low would be. Its `searched` count stands one past the
-index, as a scouted row's does, because that is the model's feature (ledgers
-printed before 25 September 2026 have the index there instead). The recorder
-makes and unmakes the skipped move around the record, and a move that turns
-out illegal is not recorded, because the skip denied it nothing.
+`skipped` is the pruning rules'. A move at depth four and up whose node's
+evaluation stands the skip's margin under beta, and a quiet at depth one to
+three that either shallow rule drops, are never scouted, so a sampled skip is
+recorded where the loop passes it over, with a cost and a reduction of zero, and
+replayed as a fail low would be. Its `searched` count stands one past the index,
+as a scouted row's does, because that was the attention model's feature when the
+skip read one (ledgers printed before 25 September 2026 have the index there
+instead). The recorder makes and unmakes the skipped move around the record, and
+a move that turns out illegal is not recorded, because the skip denied it
+nothing.
 
 A skipped row at depth one to three is a shallow rule's and one at four or more
-is the model's, since the model decides from four and both shallow rules stop at
-three. The ledger does not say which shallow rule took a row, and the two
+is the margin's, since the margin decides from four and both shallow rules stop
+at three. The ledger does not say which shallow rule took a row, and the two
 overlap on the same moves, so an ablation (`effort`) is what separates them.
 
 A depth one row is labelled against a deeper search than the skip denied.
@@ -254,10 +255,10 @@ been measured.
 
 The sampling is the census's. Only a late quiet at a node deep enough to reduce
 offers a scout, so the stream is sparser than the census's, and every fail low
-kept costs a reference search in the replay. The attention model was fitted on
-positions from our own games, one ledger a root, split by opening pair, so a
-threshold chosen off these rows is read back on the other half of the pairs
-rather than on the rows it was chosen on.
+kept costs a reference search in the replay. The attention model the skip once
+read was fitted on positions from our own games, one ledger a root, split by
+opening pair, so a threshold chosen off these rows is read back on the other
+half of the pairs rather than on the rows it was chosen on.
 
 The run ends with a line per depth: the scouts (skipped rows are counted apart,
 so the fail low share keeps its denominator), the skipped count, the fail low
@@ -395,12 +396,12 @@ decision with that one decision inverted. Four kinds can be inverted:
 | --- | --- | --- |
 | `reverse_futility` | the margin answered the node | the node does not answer from the margin, and the null move then gets its turn |
 | `null_move` | the pass cleared beta | the node goes on to its moves |
-| `skip` | a late quiet was passed over, by the model at depth four and up or by a shallow rule below | the move is searched unreduced |
+| `skip` | a late quiet was passed over, by the margin at depth four and up or by a shallow rule below | the move is searched unreduced |
 | `trusted_scout` | a reduced scout came back at or below alpha | the move goes on to the probe and the proof, as if the scout had failed high |
 
 `kinds` narrows the sampling to the kinds named, and `from` to decisions at
 that depth and deeper. Shallow decisions are most of them, so a run after
-the model's decisions asks for `from 4`.
+the margin's decisions asks for `from 4`.
 
 A decision is addressed by its kind, a position key and the deciding node's
 depth. A node decision is keyed by the node's position; a move decision by
@@ -431,13 +432,11 @@ quiets at once never meets the skips in it. The tests hold an armed search's
 move, score and node count to an unarmed one's.
 
 Each row is `kind depth index searched generated history history_max killer
-tt eval_beta alpha_gap attention answered visits root best_on best_forced
-score_on score_forced nodes_on nodes_forced fen`. The move columns are the
-ledger's, read at the first visit, and print `-` on a node decision.
-`attention` is the model's score where the gate reads one (a late quiet at
-depth four and up) and `-` elsewhere; every skip at those depths scores at
-or under the pruning threshold by construction, so the column is read within
-a kind. `answered` is, for a node decision, what answered the node once it
+tt eval_beta alpha_gap answered visits root best_on best_forced score_on
+score_forced nodes_on nodes_forced fen`. The move columns are the ledger's,
+read at the first visit, and print `-` on a node decision. Every skip at
+depth four and up has an `eval_beta` at or under minus the skip's margin by
+construction. `answered` is, for a node decision, what answered the node once it
 was inverted. `visits` is how often the forced search met the address, and a
 row that reads zero is the instrument failing, not a finding. `root` is the
 root's place in the suite, and the fen is the deciding node's.

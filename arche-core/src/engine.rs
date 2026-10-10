@@ -512,8 +512,9 @@ pub struct SearchConfig {
     /// with depth runs a ply shallower still. Rides on
     /// `late_move_reductions`.
     pub deep_reductions: bool,
-    /// Whether a late quiet the attention model prices in its deadest band
-    /// is searched at all. Rides on `late_move_reductions`.
+    /// Whether a late quiet at depth four and up is searched at all when
+    /// the static evaluation stands a margin under beta. Rides on
+    /// `late_move_reductions`.
     pub late_move_pruning: bool,
     /// Whether a quiet move at depths one to three is dropped when the
     /// static evaluation plus a margin a ply cannot reach alpha.
@@ -1435,7 +1436,6 @@ impl AlphaBeta {
             features: None,
             eval_beta: i32::from(eval) - i32::from(beta),
             alpha_gap: i32::from(alpha) - i32::from(eval),
-            attention: None,
             fen: board.to_fen(),
         });
         false
@@ -1495,7 +1495,6 @@ impl AlphaBeta {
                 features: Some(features),
                 eval_beta: eval_beta as i32,
                 alpha_gap: alpha_gap as i32,
-                attention: late_move::attention(node.depth, &features, eval_beta, alpha_gap),
                 fen: board.to_fen(),
             }
         });
@@ -1547,7 +1546,6 @@ impl AlphaBeta {
                 features: Some(staged.features),
                 eval_beta: eval_beta as i32,
                 alpha_gap: alpha_gap as i32,
-                attention: late_move::attention(depth, &staged.features, eval_beta, alpha_gap),
                 fen,
             }
         });
@@ -2650,7 +2648,7 @@ impl AlphaBeta {
         if !rules.reduces(node, m) {
             return Decision::UNREDUCED;
         }
-        match late_move::decide_admitted(&self.deciding(), node, rules, moves, m) {
+        match late_move::decide_admitted(&self.deciding(), node, rules, m) {
             late_move::Verdict::Skip => {
                 if self.forced.is_some() && self.forced_skip(node, rules, moves, m) {
                     return Decision::UNREDUCED;

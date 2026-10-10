@@ -283,8 +283,8 @@ impl Memo for Caches {
 ///
 /// Material that cannot mate reads zero before any of it, which is why
 /// `tune::run` turns such a position away rather than fitting it. The check
-/// sits here rather than at the node because the model gate, the tuner's
-/// walk and the instruments all read this function.
+/// sits here rather than at the node because the late move gate, the
+/// tuner's walk and the instruments all read this function.
 #[inline]
 fn sum(board: &Position, memo: &mut impl Memo) -> Score {
     if board.drawn_by_material() {

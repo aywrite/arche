@@ -507,10 +507,9 @@ mod search {
     fn a_proven_mate_is_not_searched_again_a_ply_deeper() {
         // The bench position `wac 4`, a mate in two. When mate distance
         // pruning landed (c7730f1) depth nine searched 385 times depth
-        // five's nodes without it and 15 times with it. With the attention
-        // weights refitted on game positions it reads 98 times with it and
-        // 384 without. The bound holds that shape loosely; bench.rs pins
-        // the exact counts.
+        // five's nodes without it and 15 times with it. The ratio has moved
+        // with every change to the pruning since, so the bound holds that
+        // shape loosely; bench.rs pins the exact counts.
         const FEN: &str = "r1bq2rk/pp3pbp/2p1p1pQ/7P/3P4/2PB1N2/PP3PPR/2KR4 w - - 0 1";
         let at_five = completed(engine(Board::from_fen(FEN).unwrap()).search(5));
         let at_nine = completed(engine(Board::from_fen(FEN).unwrap()).search(9));
