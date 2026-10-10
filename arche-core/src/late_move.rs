@@ -1668,7 +1668,10 @@ mod tests {
         let color = s.board.active_color;
         s.ordering.cutoff(color, &checks, &[], PLY + 1, 5);
         let mut run = vec![neither[0], promotes, neither[1], checks, neither[2]];
-        assert_eq!(s.ordering.key_quiets(&s.board, &mut run, 0, PLY), run.len());
+        assert_eq!(
+            s.ordering.key_quiets(&s.board, &mut run, 0, PLY, false),
+            run.len()
+        );
         let info = s.board.check_info();
         let kept = s
             .ordering

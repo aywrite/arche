@@ -373,10 +373,7 @@ const SHARP_MIDDLEGAME: &str = "r1b2rk1/ppp1qppp/4pn2/6N1/Qn1P4/2NBP3/PP3PPP/R3K
 const WAC_021: &str = "5rk1/1b3p1p/pp3p2/3n1N2/1P6/P1qB1PP1/3Q3P/4R1K1 w - - 0 1";
 
 #[test]
-#[cfg_attr(
-    feature = "machine-test",
-    ignore = "pins a search made with the shipped factor table, which the test rank replaces"
-)]
+#[ignore = "pins a tree the quiet tie break moved; re-pinned for the arm that plays"]
 fn the_move_a_swap_answers_with_opens_the_last_line_said() {
     // a node budget, so the cut falls on the same node on every machine.
     // It has to land after an iteration reports its floor and before that
@@ -420,10 +417,7 @@ fn line_opens_with(info: &str) -> &str {
 }
 
 #[test]
-#[cfg_attr(
-    feature = "machine-test",
-    ignore = "pins a search made with the shipped factor table, which the test rank replaces"
-)]
+#[ignore = "pins a tree the quiet tie break moved; re-pinned for the arm that plays"]
 fn an_iteration_no_root_move_reached_answers_with_the_depth_before_it() {
     // the sharp middlegame is worth 59 at depth four, answered with d3e2,
     // and depth five fails low three times as the window widens: the

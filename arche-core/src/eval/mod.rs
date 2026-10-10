@@ -121,6 +121,37 @@ pub(crate) fn row(index: u8, piece: Piece, color: Color) -> &'static Row {
     &ROWS[piece.table_index(color) * 64 + (index & 63) as usize]
 }
 
+/// What a quiet move changes in the piece square tables and, with `PAIR`,
+/// the pair term, from the mover's side, in centipawns, read off the
+/// accumulator before the move is made. The move ordering breaks the
+/// quiets' ties by it. A promotion is the pawn's row off and the new
+/// piece's on, its material gain included, read at the phase before it.
+/// A castle moves two pieces and reads zero.
+#[inline(always)]
+pub(crate) fn quiet_delta<const PAIR: bool>(board: &Position, m: &crate::play::Play) -> i32 {
+    if m.castle {
+        return 0;
+    }
+    let Some(piece) = board.get_piece_index(m.from) else {
+        return 0;
+    };
+    let color = board.active_color;
+    let arrives = m.promote.map_or(piece, Piece::from);
+    let left = row(m.from, piece, color);
+    let arrived = row(m.to, arrives, color);
+    let accumulator = &board.eval;
+    let phase = accumulator.phase();
+    let moved = arrived.psqt - left.psqt;
+    let mut white = (mg_value(moved) * phase + eg_value(moved) * (TOTAL_PHASE - phase))
+        / TOTAL_PHASE
+        + arrived.material
+        - left.material;
+    if PAIR {
+        white += accumulator.machine.moved(left, arrived);
+    }
+    color.sign() * white
+}
+
 /// The material weight of one piece, which the board's seeding walk, the
 /// delta margin in quiescence and the tuner read.
 pub(crate) fn material(piece: Piece) -> u32 {
@@ -768,6 +799,41 @@ mod evaluate {
             ending
         );
         assert!(opening < 0 && ending > 0, "{} then {}", opening, ending);
+    }
+
+    /// The tie break's delta is what making the move does to the
+    /// accumulator's piece square and pair terms, read from the mover's
+    /// side, a centipawn either way for each truncation.
+    #[test]
+    fn a_quiet_moves_delta_is_what_making_it_does_to_the_accumulator() {
+        let taper = |a: &super::Accumulator| {
+            let phase = a.phase();
+            (mg_value(a.psqt) * phase + eg_value(a.psqt) * (TOTAL_PHASE - phase)) / TOTAL_PHASE
+        };
+        let mut checked = 0;
+        for fen in suite_fens() {
+            let mut board = Board::from_fen(&fen).unwrap();
+            let sign = board.active_color.sign();
+            for m in &board.generate_moves() {
+                if m.capture.is_some() || m.castle || m.promote.is_some() || m.en_passant {
+                    continue;
+                }
+                let before = board.eval;
+                let squares_delta = super::quiet_delta::<false>(&board, m);
+                let both_delta = super::quiet_delta::<true>(&board, m);
+                if !board.make_move(m) {
+                    continue;
+                }
+                let after = board.eval;
+                board.undo_move();
+                let squares = sign * (taper(&after) - taper(&before));
+                let pair = sign * (after.machine.score() - before.machine.score());
+                assert!((squares_delta - squares).abs() <= 1, "{m} in {fen}");
+                assert!((both_delta - squares - pair).abs() <= 2, "{m} in {fen}");
+                checked += 1;
+            }
+        }
+        assert!(checked > 10_000, "{checked} quiet moves");
     }
 
     /// A position and its reflection, colours swapped, have to score the same

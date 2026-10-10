@@ -613,8 +613,8 @@ mod tests {
             ],
             [
                 [177_161, 6_475, 22_519, 437, 0, 181, 0],
-                [12_948, 1_021, 3_399, 38, 15, 0, 0],
-                [14_088, 1_084, 3_717, 1, 0, 0, 8],
+                [13_359, 1_208, 3_515, 93, 26, 0, 0],
+                [13_822, 1_202, 3_639, 2, 0, 0, 32],
             ],
             "nodes, cutoffs, stores, tainted, tcuts, refused, skipped"
         );
@@ -830,24 +830,24 @@ mod tests {
         assert_eq!(
             counted,
             vec![
-                ("start", 495_700),
-                ("italian", 1_121_074),
-                ("ruy lopez", 366_742),
-                ("kiwipete", 1_575_476),
-                ("perft 4", 2_814_759),
-                ("promotions", 1_983_365),
-                ("middlegame", 532_079),
-                ("sharp middlegame", 449_131),
-                ("bratko kopec 1", 11_714),
-                ("wac 4", 1_516),
-                ("rook and pawns", 214_156),
-                ("tarrasch", 238_448),
-                ("lucena", 361_398),
-                ("philidor", 357_659),
-                ("minor endgame", 156_339),
-                ("queen endgame", 337_681),
-                ("king and pawn", 38_955),
-                ("trebuchet", 32_344),
+                ("start", 500_700),
+                ("italian", 1_090_439),
+                ("ruy lopez", 562_591),
+                ("kiwipete", 1_370_519),
+                ("perft 4", 3_109_453),
+                ("promotions", 771_149),
+                ("middlegame", 555_565),
+                ("sharp middlegame", 710_022),
+                ("bratko kopec 1", 11_772),
+                ("wac 4", 1_605),
+                ("rook and pawns", 221_262),
+                ("tarrasch", 264_106),
+                ("lucena", 264_374),
+                ("philidor", 365_282),
+                ("minor endgame", 177_590),
+                ("queen endgame", 475_006),
+                ("king and pawn", 41_998),
+                ("trebuchet", 52_678),
             ]
         );
     }

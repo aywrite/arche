@@ -303,6 +303,30 @@ impl Machine {
         kept
     }
 
+    /// What `relocate` with these two rows would do to [`Machine::score`],
+    /// before it is done: with `e` the rows' difference, the numerator
+    /// moves by `u·e1 + v·e0 + e0·e1` less the diagonals' difference, where
+    /// `u` and `v` are the sum and the difference this keeps. Read in i64,
+    /// and truncated once, so it can differ from the change in the
+    /// truncated score by one.
+    #[inline(always)]
+    pub(crate) fn moved(&self, left: &super::Row, arrived: &super::Row) -> i32 {
+        if RANK == 0 {
+            return 0;
+        }
+        let mut total = 0_i64;
+        for lane in 0..RANK {
+            let e0 = i64::from(arrived.lanes[0][lane]) - i64::from(left.lanes[0][lane]);
+            let e1 = i64::from(arrived.lanes[1][lane]) - i64::from(left.lanes[1][lane]);
+            total += i64::from(self.sums[0][lane]) * e1 + i64::from(self.sums[1][lane]) * e0;
+            total += e0 * e1;
+        }
+        for (&on, &off) in arrived.diagonal.iter().zip(&left.diagonal) {
+            total -= i64::from(on) - i64::from(off);
+        }
+        (total / (2 * Q * Q)) as i32
+    }
+
     /// The term, white relative, in centipawns.
     #[inline(always)]
     pub(crate) fn score(&self) -> i32 {

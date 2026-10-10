@@ -69,6 +69,23 @@ const PLACE_MASK: i64 = (1 << PLACE_BITS) - 1;
 /// The killers' ranks in the quiet run's 32 bit keys: the two just over
 /// the history's bound, so the keys order as the 64 bit bonuses do.
 const QUIET_KILLER: [i32; 2] = [HISTORY_MAX + 2, HISTORY_MAX + 1];
+/// How many bits of a quiet key, above the place, break a tie between the
+/// quiets the memories key zero. A tie scores from 1 for the move whose
+/// accumulator delta (`eval::quiet_delta`) is largest to 1,023 for the
+/// least, and 0 where the tie break is off, which leaves them in generated
+/// order. A delta past the field is clamped to its end, so a quiet
+/// promotion to a queen ties with any other move of that much.
+const TIE_BITS: u32 = 10;
+/// Where a quiet key's bonus starts: above the place and the tie.
+const BONUS_SHIFT: u32 = PLACE_BITS + TIE_BITS;
+/// The tie score of a delta of zero, the middle of its field.
+const TIE_MIDDLE: i32 = 1 << (TIE_BITS - 1);
+/// The largest bonus a quiet key holds, shifted past the place and the
+/// tie, still fits the key's 32 bits.
+const _: () = assert!(((QUIET_KILLER[0] as i64) << BONUS_SHIFT) < i32::MAX as i64);
+/// Whether the tie break reads the pair term's change beside the piece
+/// square tables' or the tables' alone.
+const TIE_PAIR: bool = true;
 /// A quiet run's keys and a vector's width of padding after the run, which
 /// `key_quiets` fills with `i32::MAX`.
 const QUIET_KEYS: usize = MOVE_LIST_INLINE + 4;
@@ -530,6 +547,7 @@ impl MoveOrdering {
         rest: &mut [Play],
         losing: usize,
         ply: usize,
+        tie_break: bool,
     ) {
         debug_assert!(ply < MAX_PLY as usize, "no killers past the rail");
         // `order` hands back the whole length of a list that spilled
@@ -555,7 +573,16 @@ impl MoveOrdering {
         let mut scored = 0;
         let mut plain = 0;
         for (i, m) in quiets.iter().enumerate() {
-            let key = -quiet.bonus(m);
+            // the tie break between the bonus and the place, as
+            // `key_quiets` packs it, so the two paths order alike
+            let bonus = quiet.bonus(m);
+            let key = if bonus != 0 {
+                -bonus << TIE_BITS
+            } else if tie_break {
+                i64::from(tie(board, m))
+            } else {
+                0
+            };
             if key == 0 {
                 plain |= 1 << i;
             } else {
@@ -583,6 +610,7 @@ impl MoveOrdering {
         rest: &mut [Play],
         losing: usize,
         ply: usize,
+        tie_break: bool,
     ) -> usize {
         let run = rest.len() - losing;
         let killers = self.killers[ply];
@@ -616,6 +644,14 @@ impl MoveOrdering {
                 keys[i] = pack_quiet(bonus, i);
             }
         }
+        if tie_break {
+            // a key the memories left at zero is its place alone
+            for (key, m) in keys[..run].iter_mut().zip(&rest[..run]) {
+                if (0..1 << PLACE_BITS).contains(key) {
+                    *key += tie(board, m) << PLACE_BITS;
+                }
+            }
+        }
         keys[run..run + 4].fill(i32::MAX);
         #[cfg(debug_assertions)]
         {
@@ -631,7 +667,12 @@ impl MoveOrdering {
                     b if b == KILLER_BONUS[1] => QUIET_KILLER[1],
                     b => i32::try_from(b).expect("a history entry fits 32 bits"),
                 };
-                assert_eq!(keys[i], pack_quiet(bonus, i), "{m} at {i}");
+                let tied = if tie_break && bonus == 0 {
+                    tie(board, m) << PLACE_BITS
+                } else {
+                    0
+                };
+                assert_eq!(keys[i], pack_quiet(bonus, i) + tied, "{m} at {i}");
             }
         }
         run
@@ -778,12 +819,22 @@ fn named_by_its_squares(k: &Play) -> bool {
     k.promote.is_none() && !k.castle && !promotes && !castles
 }
 
-/// A quiet's key: the bonus above its place, smallest first.
+/// A quiet's key: the bonus above its place, smallest first, with room
+/// between the two for the tie break.
 #[inline(always)]
 fn pack_quiet(bonus: i32, place: usize) -> i32 {
     debug_assert!(place < 1 << PLACE_BITS, "a place has to fit its field");
     debug_assert!(bonus.abs() <= HISTORY_MAX + 2, "the bonus outgrew its band");
-    place as i32 - (bonus << PLACE_BITS)
+    place as i32 - (bonus << BONUS_SHIFT)
+}
+
+/// Where a quiet the memories key zero sorts among the others: from 1 for
+/// the largest accumulator delta to `2 * TIE_MIDDLE - 1` for the least, a
+/// delta past the field clamped to its end.
+#[inline(always)]
+fn tie(board: &Position, m: &Play) -> i32 {
+    let delta = crate::eval::quiet_delta::<TIE_PAIR>(board, m);
+    TIE_MIDDLE - delta.clamp(1 - TIE_MIDDLE, TIE_MIDDLE - 1)
 }
 
 /// Where the least key of `keys[t..len]` stands. The keys are distinct and
@@ -935,7 +986,7 @@ fn key_fours(history: &[i32], ranks: &KillerRanks, quiets: &[Play], keys: &mut [
                 entries = _mm_blendv_epi8(entries, killer_rank[k], is_killer);
             }
             // the place less the entry above it, as `pack_quiet` makes it
-            let key = _mm_sub_epi32(place, _mm_slli_epi32::<6>(entries));
+            let key = _mm_sub_epi32(place, _mm_slli_epi32::<{ BONUS_SHIFT as i32 }>(entries));
             _mm_storeu_si128(keys.as_mut_ptr().add(i).cast::<__m128i>(), key);
             place = _mm_add_epi32(place, four);
             i += 4;
@@ -1216,8 +1267,89 @@ mod order {
         let mut moves = board.generate_moves();
         let ordered = ordering.order(&board, &mut moves, table_move, Some(0));
         let front = ordered.front;
-        ordering.order_quiets(&board, &mut moves[front..], ordered.losing, 0);
+        ordering.order_quiets(&board, &mut moves[front..], ordered.losing, 0, false);
         moves.to_vec()
+    }
+
+    /// The tie break orders the quiets the memories key zero by the
+    /// accumulator's delta, largest first, a tie in generated order, and
+    /// leaves the killers ahead of them and the history either side: a move
+    /// that has cut ahead, one marked down behind. The lazy keys sorted
+    /// whole give the ledger's order, with the memories empty and taught.
+    #[test]
+    fn the_tie_break_orders_the_quiets_nothing_is_known_about() {
+        let fen = "r1bqkbnr/pppp1ppp/2n5/4p3/4P3/5N2/PPPP1PPP/RNBQKB1R w KQkq - 2 3";
+        let board = Board::from_fen(fen).unwrap();
+        let named = |name: &str| {
+            *board
+                .generate_moves()
+                .iter()
+                .find(|m| format!("{m}") == name)
+                .unwrap_or_else(|| panic!("no {name}"))
+        };
+        let mut taught = MoveOrdering::new();
+        let color = board.active_color;
+        // killers b1c3 and f1c4 at ply 0, d2d3 cut at ply 1 only, and the
+        // moves tried before each marked down
+        taught.cutoff(color, &named("b1c3"), &[named("a2a3")], 0, 4);
+        taught.cutoff(color, &named("f1c4"), &[named("h2h3")], 0, 3);
+        taught.cutoff(color, &named("d2d3"), &[named("g2g3")], 1, 5);
+        for mut ordering in [MoveOrdering::new(), taught] {
+            let mut moves = board.generate_moves();
+            let ordered = ordering.order(&board, &mut moves, None, Some(0));
+            let (front, losing) = (ordered.front, ordered.losing);
+            let end = moves.len() - losing;
+            let killers = ordering.killers_at(0);
+            let bonuses: Vec<i64> = moves[front..end]
+                .iter()
+                .map(|m| {
+                    if killers[0] == Some(*m) {
+                        i64::from(super::QUIET_KILLER[0])
+                    } else if killers[1] == Some(*m) {
+                        i64::from(super::QUIET_KILLER[1])
+                    } else {
+                        i64::from(ordering.history_score(color, m))
+                    }
+                })
+                .collect();
+            let mut expected: Vec<(i64, i32, usize, Play)> = moves[front..end]
+                .iter()
+                .zip(&bonuses)
+                .enumerate()
+                .map(|(place, (m, &b))| {
+                    let tie = if b == 0 { super::tie(&board, m) } else { 0 };
+                    (-b, tie, place, *m)
+                })
+                .collect();
+            expected.sort_by_key(|&(b, tie, place, _)| (b, tie, place));
+            let ties: Vec<i32> = expected.iter().filter(|e| e.0 == 0).map(|e| e.1).collect();
+            assert!(
+                ties.first() < ties.last(),
+                "every unknown quiet scores alike"
+            );
+            let expected: Vec<Play> = expected.into_iter().map(|e| e.3).collect();
+            let mut whole = moves.clone();
+            ordering.order_quiets(&board, &mut whole[front..], losing, 0, true);
+            assert_eq!(&whole[front..end], &expected[..]);
+            let mut lazy = moves.clone();
+            let run = ordering.key_quiets(&board, &mut lazy[front..], losing, 0, true);
+            assert_eq!(run, end - front);
+            ordering.sort_rest(&mut lazy[front..end], 0, 0);
+            assert_eq!(&lazy[..], &whole[..]);
+        }
+    }
+
+    /// A quiet promotion's delta carries its material, so it leads the tie.
+    #[test]
+    fn a_quiet_promotion_leads_the_tie() {
+        let board = Board::from_fen("8/P7/8/8/8/8/8/k6K w - - 0 1").unwrap();
+        let moves = board.generate_moves();
+        let queen = moves
+            .iter()
+            .find(|m| format!("{m}") == "a7a8q")
+            .expect("the push to a queen");
+        assert_eq!(super::tie(&board, queen), 1);
+        assert!(moves.iter().all(|m| super::tie(&board, m) >= 1));
     }
 
     fn position_of(moves: &[Play], name: &str) -> usize {

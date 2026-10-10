@@ -549,6 +549,11 @@ pub struct SearchConfig {
     /// other move, shown by a half depth search with that move excluded,
     /// searches the table move a ply deeper.
     pub singular_extensions: bool,
+    /// Whether the quiet moves the memories key zero are tried by what
+    /// each changes in the evaluation's accumulator (`eval::quiet_delta`),
+    /// largest first, rather than in the order they were generated. Read
+    /// only where `move_memory` keys the quiets.
+    pub quiet_tie_break: bool,
 }
 
 /// What to do with a draw tainted score: one stored by a search that read
@@ -654,7 +659,7 @@ impl SearchConfig {
     ///
     /// `taint` is not among them: it is a policy with four values rather
     /// than a switch, and `residuals` already takes it.
-    pub const SWITCHES: [(&'static str, TurnOff); 14] = [
+    pub const SWITCHES: [(&'static str, TurnOff); 15] = [
         ("reverse_futility", |config| config.reverse_futility = false),
         ("null_move", |config| config.null_move = false),
         ("adaptive_null_move", |config| {
@@ -677,6 +682,7 @@ impl SearchConfig {
         ("singular_extensions", |config| {
             config.singular_extensions = false
         }),
+        ("quiet_tie_break", |config| config.quiet_tie_break = false),
     ];
 
     /// The default with one switch off, or none for a name the table does
@@ -713,6 +719,7 @@ impl SearchConfig {
             move_memory: false,
             aspiration: false,
             singular_extensions: false,
+            quiet_tie_break: false,
         }
     }
 
@@ -768,6 +775,7 @@ impl Default for SearchConfig {
             move_memory: true,
             aspiration: true,
             singular_extensions: true,
+            quiet_tie_break: true,
         }
     }
 }
@@ -2560,6 +2568,7 @@ impl AlphaBeta {
                         &mut moves[front..],
                         quiets.losing,
                         ply,
+                        self.config.quiet_tie_break,
                     );
                 } else {
                     let run = self.ordering.key_quiets(
@@ -2567,6 +2576,7 @@ impl AlphaBeta {
                         &mut moves[front..],
                         quiets.losing,
                         ply,
+                        self.config.quiet_tie_break,
                     );
                     if run > 1 {
                         quiets.lazy = Some((front + run, 0));
