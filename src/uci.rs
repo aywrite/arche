@@ -560,15 +560,32 @@ struct Go {
     overhead: u64,
 }
 
+/// The node budget every `go` is held to, whatever it asks. A match build
+/// sets it so both sides search the same nodes and the clock only referees.
+const FIXED_NODES: Option<u64> = Some(679_539);
+
+/// The depth every `go` is held to, whatever it asks, for the same purpose.
+const FIXED_DEPTH: Option<u8> = None;
+
 impl Go {
     fn of(params: &Params, color: Color, overhead: u64) -> Self {
+        let fixed = FIXED_NODES.is_some() || FIXED_DEPTH.is_some();
+        // a fixed effort reads the clock as absent, so the budget alone stops
+        // the search
+        let time = if fixed {
+            TimeControl::of(&Params::of("go"), color)
+        } else {
+            TimeControl::of(params, color)
+        };
         Go {
-            depth: params
-                .count("depth")
-                .read()
-                .map(|depth| depth.try_into().unwrap_or(u8::MAX).min(arche_core::MAX_PLY)),
-            nodes: params.count("nodes").read(),
-            time: TimeControl::of(params, color),
+            depth: FIXED_DEPTH.or_else(|| {
+                params
+                    .count("depth")
+                    .read()
+                    .map(|depth| depth.try_into().unwrap_or(u8::MAX).min(arche_core::MAX_PLY))
+            }),
+            nodes: FIXED_NODES.or_else(|| params.count("nodes").read()),
+            time,
             overhead,
         }
     }
