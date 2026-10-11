@@ -431,17 +431,22 @@ move, as it does under the ledger, since a run that drops a whole run of
 quiets at once never meets the skips in it. The tests hold an armed search's
 move, score and node count to an unarmed one's.
 
-Each row is `kind depth index searched generated history history_max killer
-tt eval_beta alpha_gap gap answered visits root best_on best_forced
-score_on score_forced nodes_on nodes_forced fen`. The move columns are the
-ledger's, read at the first visit, and print `-` on a node decision. `gap`
-is how far the decision's own bound cleared its window, zero at the bound:
-for a trusted scout the alpha less its fail soft score, for the null move
-the pass's score less beta, and for reverse futility the margin's floor
-less beta. A skip searched nothing and prints `-`. Every skip at
-depth four and up has an `eval_beta` at or under minus the skip's margin by
-construction. `answered` is, for a node decision, what answered the node once it
-was inverted. `visits` is how often the forced search met the address, and a
+Each row is `kind depth index searched generated history history_max killer tt
+eval_beta alpha_gap gap ply pv root_index came_by answered visits root best_on
+best_forced score_on score_forced nodes_on nodes_forced fen`. The move columns
+are the ledger's, read at the first visit, and print `-` on a node decision.
+`gap` is how far the decision's own bound cleared its window, zero at the
+bound: for a trusted scout the alpha less its fail soft score, for the null
+move the pass's score less beta, and for reverse futility the margin's floor
+less beta. A skip searched nothing and prints `-`. The next four place the
+deciding node: `ply` is its distance from the root, `pv` is 1 at an open window
+(the shortcuts refuse one, so it is 0 on their rows), `root_index` is the place
+in the root's order, in that search of the root, of the root move the node sits
+under, and `came_by` is how the node was entered (`quiet`, `capture`, `check`
+for any move that gave check, or `pass` under a null move). Every skip at depth
+four and up has an `eval_beta` at or under minus the skip's margin by
+construction. `answered` is, for a node decision, what answered the node once
+it was inverted. `visits` is how often the forced search met the address, and a
 row that reads zero is the instrument failing, not a finding. `root` is the
 root's place in the suite, and the fen is the deciding node's.
 

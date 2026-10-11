@@ -19,6 +19,7 @@
 //! fresh engine and table with no clock.
 
 use crate::bench::{self, Position};
+use crate::board;
 use crate::engine::{AlphaBeta, Engine, SearchOutcome, SearchParameters};
 use crate::late_move::Features;
 use crate::misc::Score;
@@ -162,6 +163,61 @@ impl Answered {
     }
 }
 
+/// How the deciding node was entered from its parent.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum Entry {
+    /// A move that neither captured nor gave check.
+    Quiet,
+    /// A capture that did not give check.
+    Capture,
+    /// A move that gave check, capturing or not.
+    Check,
+    /// The null move's pass.
+    Pass,
+}
+
+impl Entry {
+    /// The move from `parent` to `here`, told from the two positions: a
+    /// pass moves no piece, and a capture leaves fewer on the board.
+    pub(crate) fn between(parent: &board::Position, here: &board::Position) -> Entry {
+        if here.in_check() {
+            Entry::Check
+        } else if here.occupied() == parent.occupied() {
+            Entry::Pass
+        } else if here.occupied().count_ones() < parent.occupied().count_ones() {
+            Entry::Capture
+        } else {
+            Entry::Quiet
+        }
+    }
+
+    pub fn word(self) -> &'static str {
+        match self {
+            Entry::Quiet => "quiet",
+            Entry::Capture => "capture",
+            Entry::Check => "check",
+            Entry::Pass => "pass",
+        }
+    }
+}
+
+/// Where in the tree a decision was taken, for the forced rows and for a
+/// policy to read.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct Place {
+    /// The deciding node's distance from the root.
+    pub ply: u16,
+    /// Whether the deciding node's window was open at the decision. A node
+    /// that opened wide and has raised alpha to one under beta reads closed.
+    pub pv: bool,
+    /// The place, in the root's order in that search of the root, of the
+    /// root move the node sits under. Zero is the move searched first.
+    pub root_index: u16,
+    /// How the deciding node was entered. None at the root, where no
+    /// decision is taken.
+    pub came_by: Option<Entry>,
+}
+
 /// One decision taken under the default, kept by the sampler.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct Event {
@@ -182,6 +238,8 @@ pub struct Event {
     /// pass's score less beta; for reverse futility, the margin's floor
     /// less beta. Zero at the bound. None on a skip, which searches nothing.
     pub gap: Option<i32>,
+    /// Where in the tree the decision was taken.
+    pub place: Place,
     /// The deciding node's position.
     pub fen: String,
 }
@@ -402,11 +460,12 @@ pub fn run(
 /// and what the default answered at each root.
 ///
 /// A row is `kind depth index searched generated history history_max
-/// killer tt eval_beta alpha_gap gap answered visits root best_on
-/// best_forced score_on score_forced nodes_on nodes_forced fen`,
-/// whitespace separated with the deciding node's fen last. `root` is the
-/// root's place in the suite, which its line names. A move decision's own
-/// columns print `-` on a node decision, and `gap` prints `-` on a skip.
+/// killer tt eval_beta alpha_gap gap ply pv root_index came_by answered
+/// visits root best_on best_forced score_on score_forced nodes_on
+/// nodes_forced fen`, whitespace separated with the deciding node's fen
+/// last. `root` is the root's place in the suite, which its line names. A
+/// move decision's own columns print `-` on a node decision, `gap` prints
+/// `-` on a skip, and `came_by` prints `-` at the root.
 impl fmt::Display for Report {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         writeln!(
@@ -441,13 +500,17 @@ impl fmt::Display for Report {
             };
             writeln!(
                 f,
-                "{} {} {} {} {} {} {} {} {} {} {} {} {} {} {} {}",
+                "{} {} {} {} {} {} {} {} {} {} {} {} {} {} {} {} {} {} {} {}",
                 e.address.kind.word(),
                 e.address.depth,
                 features,
                 e.eval_beta,
                 e.alpha_gap,
                 e.gap.map_or_else(|| "-".to_string(), |gap| gap.to_string()),
+                e.place.ply,
+                u8::from(e.place.pv),
+                e.place.root_index,
+                e.place.came_by.map_or("-", Entry::word),
                 row.answered.map_or("-", Answered::word),
                 row.visits,
                 e.root,
@@ -668,6 +731,114 @@ mod tests {
             assert_eq!(Kind::of_word(kind.word()), Some(kind));
         }
         assert_eq!(Kind::of_word("skips"), None);
+    }
+
+    /// Each way into a position is told from the line, and the root has none.
+    #[test]
+    fn a_node_is_entered_as_its_line_shows() {
+        let entered = |fen: &str, moves: &[&str], pass: bool| {
+            let mut board = Board::from_fen(fen).unwrap();
+            assert_eq!(board.line_position(1), None, "the root was entered");
+            for name in moves {
+                board.play_by_name(name).unwrap();
+            }
+            if pass {
+                board.make_null_move();
+            }
+            Entry::between(
+                board.line_position(1).expect("a ply was made"),
+                board.line_position(0).expect("the board is on its line"),
+            )
+        };
+        let start = "rnbqkbnr/pppppppp/8/8/8/8/PPPPPPPP/RNBQKBNR w KQkq - 0 1";
+        assert_eq!(entered(start, &["e2e4"], false), Entry::Quiet);
+        assert_eq!(entered(start, &["e2e4"], true), Entry::Pass);
+        assert_eq!(
+            entered(start, &["e2e4", "d7d5", "e4d5"], false),
+            Entry::Capture
+        );
+        // a castle and a promotion move pieces and take none
+        assert_eq!(
+            entered("r3k2r/8/8/8/8/8/8/R3K2R w KQkq - 0 1", &["e1g1"], false),
+            Entry::Quiet
+        );
+        assert_eq!(
+            entered("8/P6k/8/8/8/8/8/K7 w - - 0 1", &["a7a8n"], false),
+            Entry::Quiet
+        );
+        assert_eq!(
+            entered("4k3/8/8/3pP3/8/8/8/4K3 w - d6 0 1", &["e5d6"], false),
+            Entry::Capture
+        );
+        assert_eq!(
+            entered("1n5k/P7/8/8/8/8/8/K7 w - - 0 1", &["a7b8n"], false),
+            Entry::Capture
+        );
+        // a check that captures is a check
+        assert_eq!(
+            entered("4k3/8/8/8/8/8/4p3/4R1K1 w - - 0 1", &["e1e2"], false),
+            Entry::Check
+        );
+        assert_eq!(
+            entered("4k3/8/8/8/8/8/8/R5K1 w - - 0 1", &["a1a8"], false),
+            Entry::Check
+        );
+    }
+
+    /// The columns that place a row agree with its own position. The fen
+    /// is the deciding node's, so its side to move is the root's on an even
+    /// ply, it stands in check exactly when the node was entered by a
+    /// check, and a node below the root was entered somehow. The shortcuts
+    /// refuse an open window, so their rows are never at one, and the root
+    /// move a row sits under is one the root has.
+    #[test]
+    fn a_row_is_placed_where_its_position_is() {
+        let positions = suite();
+        let report = run(&positions, None, 6, 10, 2000, Kinds::ALL, 0);
+        assert!(!report.rows.is_empty());
+        let mut kinds_seen = Kinds(0);
+        for row in &report.rows {
+            let e = &row.event;
+            kinds_seen.0 |= e.address.kind.bit();
+            let root = Board::from_fen(&positions[e.root].fen).unwrap();
+            let node = Board::from_fen(&e.fen).unwrap();
+            let place = e.place;
+            assert!(place.ply >= 1, "{:?} decided at the root", e.address);
+            assert_eq!(
+                node.active_color() == root.active_color(),
+                place.ply % 2 == 0,
+                "{:?} at ply {}",
+                e.address,
+                place.ply
+            );
+            assert_eq!(
+                node.in_check(),
+                place.came_by == Some(Entry::Check),
+                "{:?} came by {:?}",
+                e.address,
+                place.came_by
+            );
+            if matches!(e.address.kind, Kind::ReverseFutility | Kind::NullMove) {
+                assert!(!place.pv, "{:?} at an open window", e.address);
+            }
+            let legal = root
+                .generate_moves()
+                .iter()
+                .filter(|m| root.clone().make_move(m))
+                .count();
+            assert!(usize::from(place.root_index) < legal, "{:?}", e.address);
+        }
+        assert_eq!(kinds_seen, Kinds::ALL, "a kind was never placed");
+        // a node under a pass is met at this depth, and so are rows under
+        // later root moves and at open windows
+        assert!(
+            report
+                .rows
+                .iter()
+                .any(|row| row.event.place.came_by == Some(Entry::Pass))
+        );
+        assert!(report.rows.iter().any(|row| row.event.place.root_index > 0));
+        assert!(report.rows.iter().any(|row| row.event.place.pv));
     }
 
     /// A skip at depth four and up is the margin's, and its row says so: the

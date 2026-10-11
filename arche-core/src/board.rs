@@ -1563,12 +1563,27 @@ impl Board {
 
     #[inline(always)]
     fn slot(&self, index: usize) -> &Position {
-        // SAFETY: every caller names the slot at the ply, or one a make has
-        // just copied into. Both are written: a parse writes every slot, a
-        // make writes the one it steps onto, and a detached board, which
-        // writes only the slot at its root, cannot take a move back
-        // (`Detached`), so its ply never falls below that slot
+        // SAFETY: every caller names the slot at the ply, one a make has
+        // just copied into, or (`line_position`) one on the search's line
+        // below the ply. All are written: a parse writes every slot, a make
+        // writes the one it steps onto, and the line's plies were each made
+        // since its root. A detached board, which writes only the slot at
+        // its root, cannot take a move back (`Detached`), so its ply never
+        // falls below that slot, and its line is never read
         unsafe { self.stack[index].assume_init_ref() }
+    }
+
+    /// The position `back` plies under the current one, while that is still
+    /// on the search's line: none above the line's root. For the forced
+    /// decision instrument, which reads how a node was entered.
+    pub(crate) fn line_position(&self, back: usize) -> Option<&Position> {
+        // the line's plies were each made from the root's slot, so every
+        // slot from the root up to the ply is written
+        debug_assert!(
+            self.line_ply <= self.ply,
+            "the line is longer than the board's plies"
+        );
+        (back <= self.line_ply).then(|| self.slot((self.ply - back) % STACK_PLIES))
     }
 
     #[inline(always)]

@@ -1271,6 +1271,10 @@ pub struct AlphaBeta {
     /// is taken, and in the two places that set those decisions up (the
     /// quiet ordering asked move by move and the scout's staged reduction).
     forced: Option<Box<forced::Arm>>,
+    /// The place of the root move being searched in the root's order, in
+    /// this search of the root (each aspiration window orders it again),
+    /// which the forced decision instrument reads.
+    root_index: u16,
     /// The nodes searched under each root move over every search of the
     /// depth under way, which the soft line reads once the depth completes.
     /// Cleared by the deepening loop at each depth and by a fixed depth
@@ -1370,6 +1374,7 @@ impl AlphaBeta {
             effort: None,
             effort_depths: effort::Depths::default(),
             forced: None,
+            root_index: 0,
             root_nodes: Vec::new(),
             singular: SingularCounts::default(),
             #[cfg(test)]
@@ -1425,6 +1430,7 @@ impl AlphaBeta {
             key: self.board.key,
             depth,
         };
+        let place = self.forced_place(0, alpha, beta);
         let board = &self.board;
         let Some(arm) = self.forced.as_mut() else {
             return false;
@@ -1440,9 +1446,30 @@ impl AlphaBeta {
             eval_beta: i32::from(eval) - i32::from(beta),
             alpha_gap: i32::from(alpha) - i32::from(eval),
             gap: Some(gap),
+            place,
             fen: board.to_fen(),
         });
         false
+    }
+
+    /// Where the deciding node stands: `back` plies under the board, which
+    /// is the node itself for a node decision and one more for a scout,
+    /// whose board is the position its move left.
+    fn forced_place(&self, back: usize, alpha: Score, beta: Score) -> forced::Place {
+        let came_by = match (
+            self.board.line_position(back),
+            self.board.line_position(back + 1),
+        ) {
+            (Some(here), Some(parent)) => Some(forced::Entry::between(parent, here)),
+            _ => None,
+        };
+        forced::Place {
+            ply: (self.board.line_ply - back) as u16,
+            // spelt without the subtraction, as `shortcuts` spells it
+            pv: alpha + 1 < beta,
+            root_index: self.root_index,
+            came_by,
+        }
     }
 
     /// What answered a node whose margin was inverted, kept from the first
@@ -1479,6 +1506,7 @@ impl AlphaBeta {
             key,
             depth: node.depth,
         };
+        let place = self.forced_place(0, node.answer.alpha, node.answer.beta);
         let board = &self.board;
         let Some(arm) = self.forced.as_mut() else {
             return false;
@@ -1500,6 +1528,7 @@ impl AlphaBeta {
                 eval_beta: eval_beta as i32,
                 alpha_gap: alpha_gap as i32,
                 gap: None,
+                place,
                 fen: board.to_fen(),
             }
         });
@@ -1527,6 +1556,7 @@ impl AlphaBeta {
             key: self.board.key,
             depth,
         };
+        let place = self.forced_place(1, alpha, beta);
         let board = &mut self.board;
         let Some(arm) = self.forced.as_mut() else {
             return false;
@@ -1554,6 +1584,7 @@ impl AlphaBeta {
                 eval_beta: eval_beta as i32,
                 alpha_gap: alpha_gap as i32,
                 gap: Some(i32::from(alpha) - i32::from(scout)),
+                place,
                 fen,
             }
         });
@@ -3092,7 +3123,8 @@ impl AlphaBeta {
         self.ordering.order(&self.board, &mut moves, pv_play, None);
 
         // the root reduces nothing
-        for m in &moves {
+        for (index, m) in moves.iter().enumerate() {
+            self.root_index = index as u16;
             let decision = if answer.searched > 0 {
                 Decision::UNREDUCED
             } else {
