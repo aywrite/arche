@@ -691,3 +691,13 @@ of these again without saying what is different this time.
   and pair term change, -4 ±9 over 3,000 games at 10+0.1 against 2d7fe54 (sprt [0, 10]
   failed at LLR -4.58), at 0.945 to 0.961 times master's nodes a second; with the piece
   square change alone, -6 ±9 over 2,500 games (LLR -4.76).
+- One ply continuation history in the quiet order: a second history table keyed by the
+  move's piece and to square under the piece and to square of the move that reached the
+  node, summed with the butterfly entry and taught the same way. +6 ±8 over 4,000 games
+  at 10+0.1 against 8ade39b (sprt [0, 10] unresolved at the cap, LLR 0.33), at 0.946 to
+  0.961 times master's nodes a second, nearly all of it the cost of reading the second
+  table rather than a different tree.
+- The same table with the late move reduction reading the summed history, a ply for each
+  128 of it either way, and the continuation read folded into the vector keying.
+  -2 ±10 over 2,500 games at 10+0.1 against 8ade39b (sprt [0, 10] failed at LLR -3.08),
+  at 0.962 to 0.965 times master's nodes a second.
