@@ -12,6 +12,7 @@ use crate::limits::{Limits, RootNodes};
 use crate::misc::{Color, Piece, Score};
 use crate::ordering::{MoveOrdering, Ordered};
 use crate::play::Play;
+use crate::policy;
 use crate::recorder::{Sampler, Window};
 use crate::reduction;
 use crate::residual::{Sample, Shortcut};
@@ -1435,6 +1436,16 @@ impl AlphaBeta {
         let Some(arm) = self.forced.as_mut() else {
             return false;
         };
+        if arm.policy.is_some() {
+            let offer = policy::Offer {
+                depth,
+                gap,
+                place,
+                features: None,
+                eval_beta: Some(i32::from(eval) - i32::from(beta)),
+            };
+            return arm.decides(address, &offer);
+        }
         if arm.inverts(address) {
             return true;
         }
@@ -1561,6 +1572,34 @@ impl AlphaBeta {
         let Some(arm) = self.forced.as_mut() else {
             return false;
         };
+        if let Some(policy) = arm.policy.as_ref() {
+            // the forced arm stages every reduced scout's features
+            let Some(staged) = staged else {
+                return false;
+            };
+            let mut offer = policy::Offer {
+                depth,
+                gap: i32::from(alpha) - i32::from(scout),
+                place,
+                features: Some(staged.features),
+                eval_beta: None,
+            };
+            // the evaluation costs a make, so it is read only where the rest
+            // of the rule could still select the decision
+            if !policy.may_select(address, &offer) {
+                return false;
+            }
+            if policy.reads(forced::Kind::TrustedScout, policy::Input::EvalBeta) {
+                board.undo_move();
+                let eval = crate::eval::eval(board);
+                assert!(
+                    board.make_move(&staged.play),
+                    "the scouted move was made once already"
+                );
+                offer.eval_beta = Some(i32::from(eval) - i32::from(beta));
+            }
+            return arm.decides(address, &offer);
+        }
         if arm.inverts(address) {
             return true;
         }

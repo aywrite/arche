@@ -12,8 +12,8 @@ use crate::command::{Command, Keyword};
 use crate::params::{NO_VALUE, Param, Params};
 use crate::uci;
 use arche_core::{
-    Ablation, Board, SearchConfig, bench, census, effort, forced, recorder, reduction, residual,
-    tune,
+    Ablation, Board, SearchConfig, bench, census, effort, forced, policy, recorder, reduction,
+    residual, tune,
 };
 use std::fmt;
 
@@ -31,7 +31,7 @@ pub struct Instrument {
 
 /// Every command the binary takes, in usage order. The dispatch and the
 /// usage both walk it, so a command cannot be listed without being taken.
-pub const INSTRUMENTS: [Instrument; 7] = [
+pub const INSTRUMENTS: [Instrument; 8] = [
     Instrument {
         command: &uci::BENCH,
         read: read_bench,
@@ -55,6 +55,10 @@ pub const INSTRUMENTS: [Instrument; 7] = [
     Instrument {
         command: &FORCED,
         read: |params| report(forced_settings(params)?, ForcedSettings::run),
+    },
+    Instrument {
+        command: &POLICY,
+        read: |params| report(policy_settings(params)?, PolicySettings::run),
     },
     Instrument {
         command: &TERMS,
@@ -553,6 +557,88 @@ impl ForcedSettings {
     }
 }
 
+pub const POLICY: Command = Command {
+    name: "policy",
+    depth: false,
+    keywords: &[
+        Keyword {
+            word: "rule",
+            value: "<file>|none",
+        },
+        Keyword {
+            word: "nodes",
+            value: "<n>",
+        },
+        Keyword {
+            word: "epd",
+            value: "<file>",
+        },
+    ],
+    flags: &[],
+    summary: &[
+        "search the bench's suite, or the one named, to a node",
+        "budget, with a rule deciding at each trusted scout and null",
+        "move cut whether to invert it",
+    ],
+};
+
+/// The budget when a policy line names none: enough to try the command,
+/// not a reading.
+pub const POLICY_NODES: u64 = 100_000;
+
+/// What a policy argument asked for. `rule none`, or no rule, is the search
+/// under no rule.
+pub struct PolicySettings {
+    pub rule: Option<String>,
+    pub policy: policy::Policy,
+    pub nodes: u64,
+    pub epd: Option<String>,
+    pub positions: Vec<bench::Position>,
+}
+
+pub fn policy_settings(params: &Params) -> Result<PolicySettings, String> {
+    let rule = params
+        .value("rule")
+        .or_refuse("rule")?
+        .filter(|word| *word != "none")
+        .map(str::to_string);
+    let nodes = params
+        .parse::<u64>("nodes")
+        .or_refuse("nodes")?
+        .unwrap_or(POLICY_NODES);
+    if nodes == 0 {
+        return Err("nodes: 0".to_string());
+    }
+    POLICY.claim(params)?;
+    let (epd, positions) = suite(params)?;
+    let policy = match &rule {
+        None => policy::Policy::default(),
+        Some(path) => {
+            let text = std::fs::read_to_string(path).map_err(|_| format!("rule: {path}"))?;
+            policy::Policy::parse(&text)?
+        }
+    };
+    Ok(PolicySettings {
+        rule,
+        policy,
+        nodes,
+        epd,
+        positions,
+    })
+}
+
+impl PolicySettings {
+    pub fn run(&self) -> policy::Report {
+        policy::run(
+            &self.positions,
+            self.epd.as_deref(),
+            self.rule.as_deref(),
+            &self.policy,
+            self.nodes,
+        )
+    }
+}
+
 /// What a terms argument asked for. No depth, rate or cap: a run states
 /// every quiet position of the suite, because the corpus is what is being
 /// built.
@@ -630,6 +716,8 @@ mod tests {
             "off" => "null_move",
             "kinds" => "skip",
             "from" => "1",
+            "rule" => "none",
+            "nodes" => "1",
             _ => panic!("no value to give {keyword}"),
         }
     }

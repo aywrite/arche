@@ -24,6 +24,7 @@ use crate::engine::{AlphaBeta, Engine, SearchOutcome, SearchParameters};
 use crate::late_move::Features;
 use crate::misc::Score;
 use crate::play::Play;
+use crate::policy::{Offer, Policy};
 use crate::recorder::{self, Sampler};
 use std::fmt;
 
@@ -245,7 +246,8 @@ pub struct Event {
 }
 
 /// What an engine carries while the instrument is armed: the reservoir the
-/// default run samples into, or the address a forced run inverts.
+/// default run samples into, the address a forced run inverts, or the
+/// policy a policy run decides by.
 #[derive(Debug)]
 pub(crate) struct Arm {
     pub(crate) sampler: Option<Sampler<Event>>,
@@ -261,6 +263,9 @@ pub(crate) struct Arm {
     /// For a node decision, what answered the node at the first inverted
     /// visit.
     pub(crate) answered: Option<Answered>,
+    pub(crate) policy: Option<Policy>,
+    /// The decisions the policy inverted, by kind, every visit counted.
+    pub(crate) decided: [u64; Kind::ALL.len()],
 }
 
 impl Arm {
@@ -274,6 +279,8 @@ impl Arm {
             invert: None,
             visits: 0,
             answered: None,
+            policy: None,
+            decided: [0; Kind::ALL.len()],
         }
     }
 
@@ -287,7 +294,38 @@ impl Arm {
             invert: Some(address),
             visits: 0,
             answered: None,
+            policy: None,
+            decided: [0; Kind::ALL.len()],
         }
+    }
+
+    pub(crate) fn deciding(policy: Policy) -> Self {
+        Arm {
+            sampler: None,
+            kinds: Kinds(0),
+            from: 0,
+            root: 0,
+            offered: 0,
+            invert: None,
+            visits: 0,
+            answered: None,
+            policy: Some(policy),
+            decided: [0; Kind::ALL.len()],
+        }
+    }
+
+    /// Whether the policy inverts this decision, counting it if so. False
+    /// when no policy is armed.
+    pub(crate) fn decides(&mut self, address: Address, offer: &Offer) -> bool {
+        let inverted = self
+            .policy
+            .as_ref()
+            .is_some_and(|policy| policy.selects(address, offer));
+        if inverted {
+            self.visits += 1;
+            self.decided[address.kind as usize] += 1;
+        }
+        inverted
     }
 
     /// Whether this address is the one inverted, counting the visit. A
@@ -331,7 +369,7 @@ pub struct Answer {
 /// One root searched with the arm given, to the depth. The table is the
 /// bench's and there is no clock, so two searches of a root agree until
 /// the arm makes them differ.
-fn search(position: &Position, depth: u8, arm: Arm) -> (Answer, Arm) {
+pub(crate) fn search(position: &Position, depth: u8, arm: Arm) -> (Answer, Arm) {
     let mut engine = AlphaBeta::with_table_bytes(position.board("forced"), bench::TABLE_BYTES);
     engine.arm_forced(arm);
     let outcome =

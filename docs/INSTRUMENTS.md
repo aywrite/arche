@@ -1,8 +1,8 @@
 # Instruments
 
 These measurements ask what the engine gave up rather than how large a tree it
-walked. `residuals`, `cutoffs`, `reductions`, `effort` and `forced` are
-arguments of their own and measure the search, as does the bench's `audit`
+walked. `residuals`, `cutoffs`, `reductions`, `effort`, `forced` and `policy`
+are arguments of their own and measure the search, as does the bench's `audit`
 word. `terms` measures the evaluation, and the last section is the offline
 harness under `scripts/` that fits and scores the weights `terms` states.
 
@@ -461,6 +461,54 @@ rate from. A reading at depth nine asks for something nearer `every 300`. What
 a changed move cost is not here: a row whose root move did not change lost
 nothing to the decision, and one whose move did change needs its two moves
 valued by a deeper search, offline.
+
+## What a rule for re-searching costs the root
+
+`forced` inverts one decision and asks what that cost. A rule that inverts
+every decision of a kind it selects is a different thing: the inversions act
+on each other, a re-search leaves its entries in the table for the visits
+after it, and the work they add comes out of the same budget as the rest of
+the search. `arche policy` searches each root once at a node budget under
+such a rule:
+
+```
+target/release/arche policy [rule <file>|none] [nodes <n>] [epd <file>]
+```
+
+Each root is searched from a fresh 16 MB table on one thread to the budget,
+which stops it as `go nodes` does, so a root answers from its last completed
+depth unless the interrupted iteration found a move that beat alpha. With no
+rule (`rule none`, or none named) it answers as the unarmed search does at
+that budget, move, score and nodes, which a test holds. The default budget,
+100,000, is for trying the command.
+
+A rule file has a line a kind, `null_move` or `trusted_scout`:
+
+```
+<kind> <threshold> <input>=<lo>:<hi> ... | <input>*<weight> ...
+```
+
+A decision is inverted when every bound holds (either end may be left open) and
+the weighted sum after the bar is above the threshold; a rule with no weights
+compares zero with it. Every rule carries a lower bound of at least one on
+`depth`, and the reader refuses one that does not, or a bound whose ends cross.
+The inputs, each as the rule reads it: `depth`; `gap`, log2(1 + the gap
+`forced` prints); `ply`; `pv`; `root_index`, at most 3; `capture` and `check`,
+1 when the node was entered by one (a capture that checks is a check); and on a
+trusted scout alone `index`, at most 16; `history`, its sign times log2(1 + its
+size); `history_max`, log2(1 + it); `history_ratio`, the history over the
+node's largest, held to [-1, 1]; `killer`; `tt`, 1 when the node had a table
+move; and `eval_beta`, held to ±1000 and in pawns. A scout's evaluation is read
+only when its rule asks for it. A line `address <kind> <key> <depth>`, the key
+in hexadecimal, selects one address as `forced` does, for the tests. `#` starts
+a comment.
+
+The run prints a header that reruns it, the rule's lines each after `rule`,
+and a line a root: `root <i> best <move> score <cp> depth <d> swapped <0|1>
+nodes <n> scouts <n> nulls <n> <id>`, the root's place in the suite first and
+its id last. `depth` is the deepest completed exactly,
+`swapped` says the interrupted iteration's move answered in its place, and
+`scouts` and `nulls` count the inversions, every visit.
 
 ## What a position's evaluation is made of
 
