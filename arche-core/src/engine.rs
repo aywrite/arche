@@ -55,6 +55,17 @@ const REVERSE_FUTILITY_MARGIN: Score = 100;
 // The deepest node the margin may answer. Four, six and eight give the
 // same bench count to a tenth of a percent.
 const REVERSE_FUTILITY_MAX_DEPTH: u8 = 4;
+// How far under alpha the static eval has to stand for a zero window node
+// to ask quiescence instead of its moves: RAZOR_BASE plus RAZOR_MARGIN times
+// the square of the depth, so 800, 1,700 and 3,200 at depths one to three.
+// The prior art's shape, not a fitted one. Three pawns a ply, flat, with
+// quiescence's value taken whatever it was, played to +3 ±5 over 8,000
+// games and cost the tactical suite 53 positions; this form cost it 6 on an
+// earlier master.
+const RAZOR_BASE: i32 = 500;
+const RAZOR_MARGIN: i32 = 300;
+// The deepest node razoring may answer.
+const RAZOR_MAX_DEPTH: u8 = 3;
 // How many plies shallower than the node the pass is searched. An opening
 // value; what moves it is a match, not the bench.
 const NULL_MOVE_REDUCTION: u8 = 2;
@@ -492,6 +503,10 @@ pub struct SearchConfig {
     /// Whether a node near the leaves may answer from its static evaluation
     /// alone when that stands far enough above beta.
     pub reverse_futility: bool,
+    /// Whether a zero window node near the leaves whose static evaluation
+    /// stands far enough under alpha is answered by quiescence instead,
+    /// when quiescence comes back under alpha as well.
+    pub razoring: bool,
     /// Whether a node whose eval already stands above beta may hand the
     /// move to the other side and answer from a reduced search of that.
     pub null_move: bool,
@@ -654,8 +669,9 @@ impl SearchConfig {
     ///
     /// `taint` is not among them: it is a policy with four values rather
     /// than a switch, and `residuals` already takes it.
-    pub const SWITCHES: [(&'static str, TurnOff); 14] = [
+    pub const SWITCHES: [(&'static str, TurnOff); 15] = [
         ("reverse_futility", |config| config.reverse_futility = false),
+        ("razoring", |config| config.razoring = false),
         ("null_move", |config| config.null_move = false),
         ("adaptive_null_move", |config| {
             config.adaptive_null_move = false
@@ -700,6 +716,7 @@ impl SearchConfig {
         Self {
             taint: TaintPolicy::Refuse,
             reverse_futility: false,
+            razoring: false,
             null_move: false,
             adaptive_null_move: false,
             delta_margin: false,
@@ -755,6 +772,7 @@ impl Default for SearchConfig {
         Self {
             taint: TaintPolicy::Rule50,
             reverse_futility: true,
+            razoring: true,
             null_move: true,
             adaptive_null_move: true,
             delta_margin: true,
@@ -2162,13 +2180,19 @@ impl AlphaBeta {
     }
 
     /// What can answer a full width node before a move of it is searched:
-    /// reverse futility, then the null move. Each claims the position
-    /// already stands above beta, the margin from the static eval alone and
-    /// the pass from a reduced search. Nothing is stored on either: an entry
-    /// names the play it was reached by, and no move was searched here.
+    /// reverse futility, razoring, then the null move. The margin and the
+    /// pass each claim the position already stands above beta, the margin
+    /// from the static eval alone and the pass from a reduced search.
+    /// Razoring claims the other side: an eval far under alpha is answered
+    /// by quiescence when quiescence stays under alpha too, on the guess
+    /// that no quiet move lifts it that far.
+    /// Nothing is stored for the node on any of them: an entry names the
+    /// play it was reached by, and no move was searched here. Quiescence
+    /// stores what it found as it would anywhere.
     ///
-    /// Both rest on the static eval being a floor, which gives way in four
-    /// gates. A side in check cannot decline to move. A side down to pawns
+    /// The margin and the pass rest on the static eval being a floor, which
+    /// gives way in four gates, and razoring is held to the same ones. A
+    /// side in check cannot decline to move. A side down to pawns
     /// and a king is where zugzwang happens. A beta inside the mate window
     /// is cleared by every eval, so a cutoff against one would leave a
     /// faster mate unsearched (the positive half is redundant while
@@ -2177,7 +2201,7 @@ impl AlphaBeta {
     /// open window, has had nothing claimed of it to stand above: an open
     /// window asks for the node's score rather than a bound on it. The root
     /// bounds alone would leave the proof after a probe fails high open to
-    /// both shortcuts, since it takes the window turned round, with alpha
+    /// the shortcuts, since it takes the window turned round, with alpha
     /// the root's and beta a returned score. The reductions and the shallow
     /// rules still read the root bounds alone: exempting every open window
     /// from them as well measured a loss.
@@ -2189,7 +2213,9 @@ impl AlphaBeta {
     /// was read, fired or not, so the move loop does not evaluate twice. It
     /// arrives filled where the node's table entry held the evaluation, and
     /// is then read rather than computed.
-    /// Alpha is read only for the open window and by the sampler.
+    /// Alpha is read for the open window, by razoring and by the sampler.
+    /// Razoring is neither sampled nor offered to the forced decision
+    /// instrument, whose labels assume a claim above beta.
     // two arguments past clippy's limit: the root bounds and the evaluation
     // handed back to the loop.
     #[allow(clippy::too_many_arguments)]
@@ -2205,6 +2231,7 @@ impl AlphaBeta {
         eval_memo: &mut Option<Score>,
     ) -> Result<Option<Value>, Aborted> {
         let margin = self.config.reverse_futility && depth <= REVERSE_FUTILITY_MAX_DEPTH;
+        let razor = self.config.razoring && depth <= RAZOR_MAX_DEPTH;
         // no pass directly under a pass, or the search would answer a
         // position from a line neither side moved in. The eval gate below
         // does not hold it: the window turns round under a pass but the
@@ -2213,7 +2240,7 @@ impl AlphaBeta {
         // gate too. `can_null` holds it, since a pass's child is searched
         // with it false
         let pass = self.config.null_move && can_null && depth >= NULL_MOVE_MIN_DEPTH;
-        if (!margin && !pass)
+        if (!margin && !pass && !razor)
             || in_check
             || !self.board.has_non_pawn_material()
             || is_mate(beta)
@@ -2260,6 +2287,19 @@ impl AlphaBeta {
                     }
                     return Ok(Some(Value::clean(floor)));
                 }
+            }
+        }
+
+        // an eval this far under alpha asks quiescence whether a capture
+        // lifts it. Still under alpha, that answers the node; at or over
+        // it, the node searches its moves as it would have. The margin and
+        // the pass both need the eval above beta, so neither could have
+        // fired here
+        let depth_sq = i32::from(depth) * i32::from(depth);
+        if razor && i32::from(eval) + RAZOR_BASE + RAZOR_MARGIN * depth_sq < i32::from(alpha) {
+            let value = self.quiescence(alpha, beta)?;
+            if value.score < alpha {
+                return Ok(Some(value));
             }
         }
 
