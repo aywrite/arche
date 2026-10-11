@@ -321,6 +321,25 @@ impl MoveOrdering {
         self.history[color as usize][m.from as usize][m.to as usize]
     }
 
+    /// What the order keys a quiet move by at a node `ply` from the root,
+    /// the killers aside: the butterfly entry plus the continuation entry
+    /// under the move that reached the node. Read without teaching
+    /// anything.
+    #[inline]
+    pub(crate) fn quiet_score(&self, board: &Position, m: &Play, ply: usize) -> i32 {
+        let color = board.active_color;
+        let butterfly = self.history_score(color, m);
+        self.continuation_base(color, ply)
+            .map_or(butterfly, |base| {
+                butterfly
+                    + continued(
+                        &self.continuation[base..base + CONTINUATION_BLOCK],
+                        board,
+                        m,
+                    )
+            })
+    }
+
     /// The butterfly score of a quiet move, and none for a capture or a
     /// promotion: the memories score quiet moves alone.
     #[inline]

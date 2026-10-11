@@ -555,6 +555,10 @@ pub struct SearchConfig {
     /// the history is the butterfly table alone. It does nothing with
     /// `move_memory` off.
     pub continuation_history: bool,
+    /// Whether a late quiet's reduction reads its history, the butterfly
+    /// and continuation entries summed: a ply less for good history and a
+    /// ply more for bad, within the clamp.
+    pub history_reductions: bool,
 }
 
 /// What to do with a draw tainted score: one stored by a search that read
@@ -660,7 +664,7 @@ impl SearchConfig {
     ///
     /// `taint` is not among them: it is a policy with four values rather
     /// than a switch, and `residuals` already takes it.
-    pub const SWITCHES: [(&'static str, TurnOff); 15] = [
+    pub const SWITCHES: [(&'static str, TurnOff); 16] = [
         ("reverse_futility", |config| config.reverse_futility = false),
         ("null_move", |config| config.null_move = false),
         ("adaptive_null_move", |config| {
@@ -685,6 +689,9 @@ impl SearchConfig {
         }),
         ("continuation_history", |config| {
             config.continuation_history = false
+        }),
+        ("history_reductions", |config| {
+            config.history_reductions = false
         }),
     ];
 
@@ -723,6 +730,7 @@ impl SearchConfig {
             aspiration: false,
             singular_extensions: false,
             continuation_history: false,
+            history_reductions: false,
         }
     }
 
@@ -779,6 +787,7 @@ impl Default for SearchConfig {
             aspiration: true,
             singular_extensions: true,
             continuation_history: true,
+            history_reductions: true,
         }
     }
 }
@@ -2392,7 +2401,8 @@ impl AlphaBeta {
         };
         let mut tainted = false;
         if reduction > 0 {
-            // `late_move::amount` clamps the reduction to `depth - 2`
+            // `late_move::amount` clamps the reduction to `depth - 2`, and
+            // the history's move in `by_history` keeps the same clamp
             debug_assert!(depth > reduction + 1, "the scout would be quiescence");
             let entered_at = self.nodes;
             let scout = -self.alpha_beta(

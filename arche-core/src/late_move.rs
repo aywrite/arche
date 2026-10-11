@@ -23,7 +23,9 @@
 //! gets an extra ply when
 //! the move's index reaches a floor rising with depth. The ply is added to
 //! the amount rather than naming a depth, so the table's depth scaling
-//! carries it. `amount` reads the plies off a table by depth and index.
+//! carries it. `amount` reads the plies off a table by depth and index, and
+//! `by_history` moves them by the move's history, the score the order keys
+//! a quiet by when it is not a killer.
 //!
 //! `features` derives the reduction ledger's columns once, for the ledger
 //! and the forced decision instrument. The gate reads none of them.
@@ -104,6 +106,14 @@ const REDUCTION_HALF: u32 = REDUCTION_DIV / 2;
 /// thousand numbers. The floor of one holds the shallow corner at the flat
 /// ply.
 const REDUCTION: [[u8; 64]; 64] = reduction_table();
+
+// How much summed history moves a reduction by a ply. The entries rest far
+// under their bound in a search: a cutoff's step is the square of the
+// depth and every quiet tried before it pays the same back. At the bench's
+// depth eleven the reductions' middle ninety percent read −200 to +104, so
+// 128 adds a ply to about one reduction in seven and takes one off about
+// one in twenty-five. A first value, set by where the rule fires.
+const HISTORY_REDUCTION_DIV: i32 = 128;
 
 const fn reduction_table() -> [[u8; 64]; 64] {
     let mut table = [[1u8; 64]; 64];
@@ -229,7 +239,8 @@ impl Rules {
 pub(crate) enum Verdict {
     /// Scouted this many plies shallower, and searched at the node's
     /// depth only when the scout comes back above alpha. Zero is no
-    /// scout: the reduction did not apply.
+    /// scout: the reduction did not apply, or the move's history took
+    /// the whole amount back.
     Scout(u8),
     /// Not searched at all: the evaluation stands the skip's margin under
     /// beta.
@@ -491,7 +502,21 @@ pub(crate) fn decide_admitted(
     m: &Play,
 ) -> Verdict {
     let searched = node.answer.searched;
-    let plain = || Verdict::Scout(amount(search.config, node.depth, searched, 0));
+    // read only by a scout, so a skipped move never looks its history up
+    let history = || match node.ply {
+        Some(ply) if search.config.history_reductions => {
+            search.ordering.quiet_score(search.board, m, ply)
+        }
+        _ => 0,
+    };
+    let scout = |bonus| {
+        Verdict::Scout(by_history(
+            amount(search.config, node.depth, searched, bonus),
+            history(),
+            node.depth,
+        ))
+    };
+    let plain = || scout(0);
     if (!search.config.deep_reductions && !search.config.late_move_pruning)
         || node.depth < DEEP_REDUCTION_MIN_DEPTH
     {
@@ -515,14 +540,18 @@ pub(crate) fn decide_admitted(
             m,
         )
     {
-        return Verdict::Scout(amount(
-            search.config,
-            node.depth,
-            searched,
-            DEEP_REDUCTION_BONUS,
-        ));
+        return scout(DEEP_REDUCTION_BONUS);
     }
     plain()
+}
+
+/// The amount moved by the move's history, both tables summed: a ply less
+/// for each `HISTORY_REDUCTION_DIV` above zero and a ply more for each
+/// under, rounded toward zero, between nought (the scout is skipped and the
+/// move probed at full depth) and the clamp `amount` applies.
+fn by_history(reduction: u8, history: i32, depth: u8) -> u8 {
+    let moved = i32::from(reduction) - history / HISTORY_REDUCTION_DIV;
+    moved.clamp(0, i32::from(depth - 2)) as u8
 }
 
 /// Whether the skip leaves a late quiet unsearched: the node's evaluation
@@ -613,10 +642,10 @@ fn denominator(search: &Search, rules: &mut Rules, moves: &[Play]) -> i32 {
 mod tests {
     use super::{
         DEEP_INDEX_FLOOR, DEEP_INDEX_SLOPE, DEEP_REDUCTION, DEEP_REDUCTION_BONUS,
-        DEEP_REDUCTION_MIN_DEPTH, Features, LATE_MOVE_COUNT, LATE_MOVE_MIN_DEPTH,
-        LATE_MOVE_REDUCTION, LATE_MOVE_THRESHOLD, QUIET_FUTILITY_MARGIN, REDUCTION, Rules,
-        SHALLOW_MAX_DEPTH, SKIP_MARGIN_BASE, SKIP_MARGIN_SLOPE, Search, Verdict, admission, amount,
-        decide, features, survives_shallow,
+        DEEP_REDUCTION_MIN_DEPTH, Features, HISTORY_REDUCTION_DIV, LATE_MOVE_COUNT,
+        LATE_MOVE_MIN_DEPTH, LATE_MOVE_REDUCTION, LATE_MOVE_THRESHOLD, QUIET_FUTILITY_MARGIN,
+        REDUCTION, Rules, SHALLOW_MAX_DEPTH, SKIP_MARGIN_BASE, SKIP_MARGIN_SLOPE, Search, Verdict,
+        admission, amount, by_history, decide, features, survives_shallow,
     };
     use crate::board::{Board, MoveList, fens, play_named};
     use crate::census::Table;
@@ -1388,6 +1417,30 @@ mod tests {
                 }
             }
         }
+    }
+
+    /// A ply for each whole divisor of history either way, rounded toward
+    /// zero, never under nought and never past the clamp that keeps the
+    /// scout a full width ply.
+    #[test]
+    fn history_moves_the_reduction_a_ply_a_divisor_within_the_clamp() {
+        const DIV: i32 = HISTORY_REDUCTION_DIV;
+        assert_eq!(by_history(2, 0, 10), 2);
+        assert_eq!(by_history(2, DIV - 1, 10), 2);
+        assert_eq!(by_history(2, -(DIV - 1), 10), 2);
+        assert_eq!(by_history(2, DIV, 10), 1);
+        assert_eq!(by_history(2, -DIV, 10), 3);
+        assert_eq!(by_history(2, 5 * DIV, 10), 0, "nought, not under");
+        assert_eq!(
+            by_history(2, -100 * DIV, 10),
+            8,
+            "the clamp at depth less two"
+        );
+        assert_eq!(
+            by_history(1, -DIV, 3),
+            1,
+            "a depth three scout keeps its ply"
+        );
     }
 
     /// The gate's word stays worth a ply over the flat amount rather than

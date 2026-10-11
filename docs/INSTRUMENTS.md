@@ -209,6 +209,13 @@ depth, so its cost is the wasted scout rather than a wrong answer, and it is
 never replayed; the fail highs stay in the stream at the same rate because they
 are the denominator a reduction policy is read against.
 
+Since the reduction reads the move's history (`history_reductions`), an
+admitted quiet whose history takes the whole amount back is probed at full
+depth without a scout, and the ledger records nothing for it. The `reduction`
+column is the amount after the history's move. It reads the butterfly and
+continuation entries summed, while the `history` column is the butterfly
+entry alone, so a row does not give back its own reduction.
+
 A fail low is labelled by a replay under the reference, on the residuals
 replay's terms. The fen on a row is the position the reduced move left, so its
 side to move is the side the move was played against. The replay searches it to
