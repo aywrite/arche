@@ -838,7 +838,7 @@ mod tests {
                 ("promotions", 1_983_365),
                 ("middlegame", 532_079),
                 ("sharp middlegame", 449_131),
-                ("bratko kopec 1", 11_714),
+                ("bratko kopec 1", 10_715),
                 ("wac 4", 1_516),
                 ("rook and pawns", 214_156),
                 ("tarrasch", 238_448),

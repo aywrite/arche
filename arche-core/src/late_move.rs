@@ -418,11 +418,10 @@ pub(crate) fn survives_shallow(board: &Position, info: &CheckInfo, m: &Play) -> 
 }
 
 /// The late move reduction's node half: what the node's facts settle, held
-/// across the loop, so the loop asks the searched count, the mate test and
-/// the move per move.
+/// across the loop, so the loop asks the searched count and the move per
+/// move.
 struct Admission {
-    /// The searched count from which the node admits a reduction while
-    /// alpha is short of a mate, or never.
+    /// The searched count from which the node admits a reduction, or never.
     from: usize,
 }
 
@@ -430,7 +429,6 @@ fn admission(config: &SearchConfig, node: &Node) -> Admission {
     let admits = config.late_move_reductions
         && node.depth >= LATE_MOVE_MIN_DEPTH
         && !node.in_check
-        && !is_mate(node.answer.beta)
         && !node.answer.root_bounds.beta_is_roots();
     Admission {
         from: if admits {
@@ -446,7 +444,7 @@ impl Admission {
     /// move: the searched count and alpha against the half held.
     #[inline]
     fn admits(&self, node: &Node) -> bool {
-        node.answer.searched >= self.from && !is_mate(node.answer.alpha)
+        node.answer.searched >= self.from
     }
 
     /// Whether a move at a full width node is scouted shallower before it
@@ -458,7 +456,14 @@ impl Admission {
     /// promotion was priced on material, not on its place in the order;
     /// that takes in the losing captures, which sort behind the quiets, and
     /// reducing them is a follow-up. A side in check has evasions, not late
-    /// moves. A scout a ply short of a mate at either bound can only say no.
+    /// moves.
+    ///
+    /// A mate at either bound does not refuse it. A reduced move that fails
+    /// high is searched again at full depth, so the reduction can miss a
+    /// faster mate under a late move but cannot claim one. Refusing it there
+    /// searched whole subtrees at full width in won endings, where nearly
+    /// every node sits under a mate found in a side line: a depth 13 search
+    /// could run for minutes.
     ///
     /// A beta that is still the root's own bound stands the reduction down
     /// as a policy rather than a proof: that node's answer is what the root
@@ -491,8 +496,12 @@ pub(crate) fn decide_admitted(
 ) -> Verdict {
     let searched = node.answer.searched;
     let plain = || Verdict::Scout(amount(search.config, node.depth, searched, 0));
+    // a mate beta would put every eval under the skip margin, the mating
+    // move's too, so in a mate window the move is only reduced
     if (!search.config.deep_reductions && !search.config.late_move_pruning)
         || node.depth < DEEP_REDUCTION_MIN_DEPTH
+        || is_mate(node.answer.alpha)
+        || is_mate(node.answer.beta)
     {
         return plain();
     }
@@ -915,11 +924,12 @@ mod tests {
     }
 
     /// The reduction's node half is built once, and asked per move with
-    /// the alpha standing, so it reads the mate window off the alpha it is
-    /// handed rather than the one it was built at. Read with no board: the
-    /// half reads the node and the configuration alone.
+    /// the alpha standing. A mate at alpha, whether it rose there or the
+    /// node opened there, admits the reduction from the same count as any
+    /// other alpha. Read with no board: the half reads the node and the
+    /// configuration alone.
     #[test]
-    fn a_mate_alpha_admits_no_reduction_at_any_count() {
+    fn a_mate_alpha_admits_the_reduction_from_the_same_count() {
         let config = reducing();
         let mut node = Node::open(
             LATE_MOVE_MIN_DEPTH,
@@ -931,28 +941,17 @@ mod tests {
             FailSoft::open(0, 100, RootBounds::Neither, Taint::default()),
         );
         let half = admission(&config, &node);
-        for searched in 0..64 {
-            node.answer.searched = searched;
-            assert_eq!(
-                half.admits(&node),
-                searched >= LATE_MOVE_THRESHOLD,
-                "an ordinary alpha at {searched} searched"
-            );
-        }
         // alpha a mate against the side to move, under an ordinary beta
         node.answer.alpha = -29_500;
         assert!(
             crate::value::is_mate(node.answer.alpha) && !crate::value::is_mate(node.answer.beta)
         );
+        let opened = admission(&config, &node);
         for searched in 0..64 {
             node.answer.searched = searched;
-            assert!(!half.admits(&node), "a mate alpha at {searched} searched");
-        }
-        // and a node that opened there admits nothing either
-        let half = admission(&config, &node);
-        for searched in 0..64 {
-            node.answer.searched = searched;
-            assert!(!half.admits(&node), "opened at a mate, {searched} searched");
+            let late = searched >= LATE_MOVE_THRESHOLD;
+            assert_eq!(half.admits(&node), late, "risen to a mate, {searched}");
+            assert_eq!(opened.admits(&node), late, "opened at a mate, {searched}");
         }
     }
 
@@ -1042,42 +1041,36 @@ mod tests {
     }
 
     #[test]
-    fn the_mate_window_stands_the_reduction_down() {
+    fn the_mate_window_reduces_a_late_quiet_and_skips_nothing() {
         // either edge: a mate in hand as alpha, or one being proved
-        // against the side to move as beta
+        // against the side to move as beta, and a mate at beta alone
+        let windows: [(Score, Score); 3] = [(29_500, 29_501), (-29_501, -29_500), (-100, 29_500)];
         let mut s = Stand::new(fens::A_CAPTURE_AND_QUIETS, reducing());
         let quiet = play_named(&s.board, "a4a5");
-        assert_eq!(
-            s.verdict(
-                &quiet,
-                LATE_MOVE_THRESHOLD,
-                LATE_MOVE_MIN_DEPTH,
-                29_500,
-                29_501
-            ),
-            Verdict::Scout(0)
-        );
-        assert_eq!(
-            s.verdict(
-                &quiet,
-                LATE_MOVE_THRESHOLD,
-                LATE_MOVE_MIN_DEPTH,
-                -29_501,
-                -29_500
-            ),
-            Verdict::Scout(0)
-        );
-        // a mate at beta alone, which the alpha test does not answer
-        assert_eq!(
-            s.verdict(
-                &quiet,
-                LATE_MOVE_THRESHOLD,
-                LATE_MOVE_MIN_DEPTH,
-                -100,
-                29_500
-            ),
-            Verdict::Scout(0)
-        );
+        for (alpha, beta) in windows {
+            assert_eq!(
+                s.verdict(
+                    &quiet,
+                    LATE_MOVE_THRESHOLD,
+                    LATE_MOVE_MIN_DEPTH,
+                    alpha,
+                    beta
+                ),
+                Verdict::Scout(LATE_MOVE_REDUCTION),
+                "{alpha} {beta}"
+            );
+        }
+        // a mate beta puts any eval under the skip's margin, so with the
+        // skip and the deep reduction on, the move still gets the plain
+        // reduction and nothing more
+        let mut s = Stand::new(fens::A_CAPTURE_AND_QUIETS, pruning());
+        for (alpha, beta) in windows {
+            assert_eq!(
+                s.verdict(&quiet, 10, 6, alpha, beta),
+                Verdict::Scout(LATE_MOVE_REDUCTION),
+                "{alpha} {beta}"
+            );
+        }
     }
 
     /// The same bounds four ways, so what moves is the root bounds and

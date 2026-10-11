@@ -2439,40 +2439,36 @@ mod search {
     }
 
     #[test]
-    fn the_mate_window_searches_what_the_reference_searches() {
+    fn the_mate_window_reduces_as_an_ordinary_window_does() {
         // a zero window inside the mate scores puts every node at a mate
-        // edge, so none reduces, where an ordinary window reduces plenty.
-        // Depth five puts the grandchildren at the floor with alpha the
-        // mate in hand (`late_move::tests::the_mate_window_stands_the_reduction_down`)
+        // edge, and the reduction is not refused there: in won endings
+        // nearly every node sits under one, and refusing it searched them
+        // at full width (`late_move::tests::the_mate_window_reduces_a_late_quiet_and_skips_nothing`).
+        // The reduced search must still come out on the same side of the
+        // window
         let fen = SHARP_MIDDLEGAME;
-        let mut e = reducing(Board::from_fen(fen).unwrap());
-        let Ok(value) = e.alpha_beta(29_500, 29_501, 5, true, RootBounds::Neither, None) else {
-            panic!("an unlimited search aborted");
-        };
-        let mut cold = reference(Board::from_fen(fen).unwrap());
-        let Ok(expected) = cold.alpha_beta(29_500, 29_501, 5, true, RootBounds::Neither, None)
-        else {
-            panic!("an unlimited search aborted");
-        };
-        assert_eq!(e.nodes, cold.nodes);
-        assert_eq!(value, expected);
-
-        let mut e = reducing(Board::from_fen(fen).unwrap());
-        assert!(
-            e.alpha_beta(-1, 0, 5, true, RootBounds::Neither, None)
-                .is_ok()
-        );
-        let mut cold = reference(Board::from_fen(fen).unwrap());
-        assert!(
-            cold.alpha_beta(-1, 0, 5, true, RootBounds::Neither, None)
-                .is_ok()
-        );
-        assert!(
-            e.nodes < cold.nodes,
-            "nothing was reduced outside the mate window: {} against {}",
-            e.nodes,
-            cold.nodes
-        );
+        for (alpha, beta) in [(29_500, 29_501), (-1, 0)] {
+            let mut e = reducing(Board::from_fen(fen).unwrap());
+            let Ok(value) = e.alpha_beta(alpha, beta, 5, true, RootBounds::Neither, None) else {
+                panic!("an unlimited search aborted");
+            };
+            let mut cold = reference(Board::from_fen(fen).unwrap());
+            let Ok(expected) = cold.alpha_beta(alpha, beta, 5, true, RootBounds::Neither, None)
+            else {
+                panic!("an unlimited search aborted");
+            };
+            assert_eq!(
+                value.score >= beta,
+                expected.score >= beta,
+                "{alpha} {beta}"
+            );
+            assert!(
+                e.nodes < cold.nodes,
+                "nothing was reduced at {alpha} {beta}: {} against {}",
+                e.nodes,
+                cold.nodes
+            );
+        }
     }
 
     #[test]
