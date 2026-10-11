@@ -1755,11 +1755,21 @@ go depth 3
     fn what_a_go_line_asks_of_the_search() {
         // a move time arrives fixed and less the overhead
         let fixed = |millis| Some(Clock::Fixed(Duration::from_millis(millis)));
+        let share = |millis| Some(Clock::Share(Duration::from_millis(millis)));
         for (line, depth, clock, nodes) in [
             ("go movetime 500", None, fixed(450), u64::MAX),
             ("go infinite wtime 60000", None, None, u64::MAX),
             ("go nodes 5000", None, None, 5000),
             ("go depth 3", Some(3), None, u64::MAX),
+            // a depth keeps the clock beside it, and whichever comes first
+            // stops the search
+            (
+                "go depth 13 wtime 60000 btime 60000 winc 1000 binc 1000",
+                Some(13),
+                share(3_700),
+                u64::MAX,
+            ),
+            ("go depth 13 movetime 500", Some(13), fixed(450), u64::MAX),
             ("go", None, None, u64::MAX),
             ("go movetime 500 nodes 5000", None, fixed(450), 5000),
             // the root deepens by one more in check, so the largest depth a
