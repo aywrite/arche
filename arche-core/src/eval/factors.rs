@@ -33,11 +33,11 @@ use crate::misc::{Color, Piece};
 pub(crate) const RANK: usize = 16;
 
 /// The table's scale: a factor of `v` is stored as `v × Q`, so a product of
-/// two is `Q²` too large and the term divides by it. 64 is the largest power
-/// of two at which [`in_range`] holds for this table; the i32 sum of squares
-/// is what binds.
+/// two is `Q²` too large and the term divides by it. 128 is the largest power
+/// of two at which [`in_range`] holds for this table; the i16 lanes are what
+/// bind.
 #[cfg(not(feature = "machine-test"))]
-pub(crate) const Q: i64 = 64;
+pub(crate) const Q: i64 = 128;
 
 /// The rank the tests run the term at, on the seeded table the
 /// `machine-test` feature swaps in.
@@ -87,16 +87,16 @@ const fn seeded() -> [[i16; RANK]; FEATURES] {
 }
 
 /// Each feature's `‖q_i‖²`, worked out from the table when it compiles.
-static DIAGONAL: [[i32; LIVE]; FEATURES] = diagonal();
+static DIAGONAL: [[i64; LIVE]; FEATURES] = diagonal();
 
-const fn diagonal() -> [[i32; LIVE]; FEATURES] {
+const fn diagonal() -> [[i64; LIVE]; FEATURES] {
     let mut out = [[0; LIVE]; FEATURES];
     let mut feature = 0;
     while feature < FEATURES {
         let mut lane = 0;
         let mut total = 0;
         while lane != RANK {
-            let factor = FACTORS[feature][lane] as i32;
+            let factor = FACTORS[feature][lane] as i64;
             total += factor * factor;
             lane += 1;
         }
@@ -152,20 +152,19 @@ const fn lane_bounds() -> [i64; RANK] {
 }
 
 /// Whether no legal position can overflow the arithmetic: every lane fits
-/// i16, and a perspective's sum of squares fits i32. `D` fits with it, since
+/// i16. A perspective's sum of squares is then at most sixteen times
+/// `i16::MAX²`, which fits i64 by far, and `D` fits with it, since
 /// `Σ_i q_i,r²` is at most `(Σ_i |q_i,r|)²` in every lane.
 const fn in_range() -> bool {
     let bounds = lane_bounds();
-    let mut squares = 0;
     let mut lane = 0;
     while lane != RANK {
         if bounds[lane] > i16::MAX as i64 {
             return false;
         }
-        squares += bounds[lane] * bounds[lane];
         lane += 1;
     }
-    squares <= i32::MAX as i64
+    true
 }
 
 const _: () = assert!(in_range(), "a legal position could overflow the factors");
@@ -198,7 +197,7 @@ pub(crate) fn row(feature: usize) -> &'static [i16; RANK] {
 #[derive(Debug, Copy, Clone, PartialEq, Eq)]
 pub(crate) struct Machine {
     sums: [[i16; RANK]; 2],
-    diagonal: [[i32; LIVE]; 2],
+    diagonal: [[i64; LIVE]; 2],
 }
 
 impl Machine {
@@ -266,7 +265,7 @@ impl Machine {
     /// than through `count`, for `Accumulator::recomputed`.
     pub(crate) fn of(pieces: impl Iterator<Item = (u8, Piece, Color)>) -> Self {
         let mut sums = [[0_i16; RANK]; 2];
-        let mut diagonal = [[0_i32; LIVE]; 2];
+        let mut diagonal = [[0_i64; LIVE]; 2];
         for (index, piece, color) in pieces {
             for perspective in [Color::Black, Color::White] {
                 let feature = feature(perspective, index, piece, color);
@@ -274,9 +273,9 @@ impl Machine {
                 for (sum, &factor) in sums[at].iter_mut().zip(&FACTORS[feature]) {
                     *sum = sum.wrapping_add(factor);
                 }
-                let square: i32 = FACTORS[feature]
+                let square: i64 = FACTORS[feature]
                     .iter()
-                    .map(|&factor| i32::from(factor) * i32::from(factor))
+                    .map(|&factor| i64::from(factor) * i64::from(factor))
                     .sum();
                 for total in &mut diagonal[at] {
                     *total = total.wrapping_add(square);
@@ -293,11 +292,11 @@ impl Machine {
             return 0;
         }
         let doubled = |at: usize| {
-            let squares = self.sums[at].iter().fold(0_i32, |total, &sum| {
-                total.wrapping_add(i32::from(sum) * i32::from(sum))
+            let squares = self.sums[at].iter().fold(0_i64, |total, &sum| {
+                total.wrapping_add(i64::from(sum) * i64::from(sum))
             });
-            let diagonal: i32 = self.diagonal[at].iter().sum();
-            i64::from(squares) - i64::from(diagonal)
+            let diagonal: i64 = self.diagonal[at].iter().sum();
+            squares - diagonal
         };
         // truncated toward zero, so a mirrored position scores the exact
         // negation of its mirror
