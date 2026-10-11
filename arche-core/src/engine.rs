@@ -411,6 +411,9 @@ pub trait Engine {
 
     fn active_color(&self) -> Color;
 
+    /// The move number the position's fen would print.
+    fn move_number(&self) -> u64;
+
     /// Search each depth in turn until one is the last to finish. Every
     /// completed iteration is reported through `on_depth`. A result's node
     /// count covers the whole deepening so far, as the uci info convention
@@ -3234,6 +3237,10 @@ impl Engine for AlphaBeta {
 
     fn active_color(&self) -> Color {
         self.board.active_color
+    }
+
+    fn move_number(&self) -> u64 {
+        self.board.move_number() as u64
     }
 
     fn parse_fen(&mut self, fen_string: &str) -> Result<(), String> {

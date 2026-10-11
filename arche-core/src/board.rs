@@ -1449,7 +1449,7 @@ impl Board {
     /// The move number, as the fen prints it: `from_fen` starts the ply at
     /// twice the number it read, one more with black to move, so the number
     /// is the ply halved and needs no keeping.
-    fn move_number(&self) -> usize {
+    pub(crate) fn move_number(&self) -> usize {
         self.ply / 2
     }
 

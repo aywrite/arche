@@ -572,8 +572,8 @@ of these again without saying what is different this time.
   in the wrong place. Both arms moved a flat line. Since 621ecab the line moves between 30%
   and 60% with the chosen move's share of the root's nodes, goes to 65% when the move
   changes, and stays at 45% only where the root says nothing, so neither test resumes onto it; their pairs (65%: 77,236,380,242,65) are
-  against a baseline that no longer exists. `ASSUMED_MOVES_TO_GO` was measured with the flat
-  45% in place.
+  against a baseline that no longer exists. The twentieth horizon was measured with the flat
+  45% in place; the horizon now falls from 20 to 10 by move 60.
 - Declining the reverse futility cuts the pair term marks as riskiest. On 4.0 million fresh
   cuts from `arche residuals`, a model reading the pair term put 1,078 of 5,674 crossings in
   its riskiest 5%, against 929 for depth, phase and slack alone, +149 (95% +92 to +232).
