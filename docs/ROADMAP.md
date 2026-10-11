@@ -668,3 +668,26 @@ of these again without saying what is different this time.
   the share. -7 ±11 over 2,000 games at 10+0.1 against 621ecab (sprt [0, 10] failed at
   LLR -3.79). The candidate ended 436 ms ahead on the clock and spent 0.624 of its share
   against 0.692, so the time it banked was never spent.
+- Multi-cut at a singular test node: when the search with the table move excluded comes
+  back at or over a window that is itself at or over beta, answer that window as a fail
+  high without searching the table move. It fired on 17.3% of the bench's eligible nodes
+  and 1.6% of the games suite's, and read +2 ±21 over 300 pairs at 200,000 nodes a move.
+  The match against 048dfa7 capped unresolved at +5 ±7 over 4,000 games at 10+0.1 (sprt
+  [0, 10], LLR 0.09).
+- Refitting the late move pruning skip as a logistic model over the move as well as the
+  node, in place of the evaluation's margin under beta: history kept signed rather than
+  clamped at zero, the window's width, the index bands, the killer and the table word,
+  with the threshold matched to the margin's skip count. Fitted on a million rows from
+  10,000 game positions, it skipped 37 moves that mattered on the held out half against
+  the margin's 47, and lost -15 ±15 over 1,000 games at 10+0.1 against 93e5b1b (sprt
+  [0, 10] failed at LLR -3.08). Its depth weight, fitted on rows nearly all at depths four
+  to six, made the skip more aggressive with depth where the margin grows more cautious.
+  With depth entering only through the margin's own line, the same features lost
+  -9 ±12 over 1,500 games (LLR -3.48) while skipping within half a percent of the
+  margin's count at every depth. The per move features are worth nothing measurable over
+  the margin.
+- Ordering the quiet moves the killers and the history score at zero by their change to
+  the evaluation, largest first, rather than in generated order. With the piece square
+  and pair term change, -4 ±9 over 3,000 games at 10+0.1 against 2d7fe54 (sprt [0, 10]
+  failed at LLR -4.58), at 0.945 to 0.961 times master's nodes a second; with the piece
+  square change alone, -6 ±9 over 2,500 games (LLR -4.76).
