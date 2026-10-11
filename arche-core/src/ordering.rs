@@ -96,12 +96,18 @@ const _: () = assert!(MOVE_LIST_INLINE <= u64::BITS as usize);
 /// ordering behind one the search knows nothing about.
 type History = [[[i32; 64]; 64]; 2];
 
+/// The previous moves the continuation table keys by: each piece and to
+/// square.
+const CONTINUATION_PREVIOUS: usize = 6 * 64;
 /// One block of the continuation table: the entries of every piece and to
-/// square, under one previous move by one side.
-const CONTINUATION_BLOCK: usize = 6 * 64;
-/// Under each side to move, a block for each piece and to square the
-/// previous move could have.
-const CONTINUATION_LEN: usize = 2 * CONTINUATION_BLOCK * CONTINUATION_BLOCK;
+/// square under one previous move by one side, and a seventh row of zeros
+/// that an empty from square reads, so the read needs no branch. Nothing
+/// writes that row: an update needs a piece.
+const CONTINUATION_BLOCK: usize = 7 * 64;
+/// Under each side to move, a block for each previous move.
+const CONTINUATION_LEN: usize = 2 * CONTINUATION_PREVIOUS * CONTINUATION_BLOCK;
+/// What a node with no previous move reads in place of a block.
+static NO_CONTINUATION: [i16; CONTINUATION_BLOCK] = [0; CONTINUATION_BLOCK];
 /// What `line` holds at a ply whose move the table does not key: a pass,
 /// or a search that does not tell the table what it played.
 const NO_PREVIOUS: u16 = u16::MAX;
@@ -136,8 +142,8 @@ pub(crate) struct MoveOrdering {
     /// The continuation table, cutoffs against tries as `history` keeps
     /// them, indexed by the side to move, the previous move's piece and to
     /// square, then this move's piece and to square. Sixteen bits, since
-    /// an entry is held to `HISTORY_MAX`, so the table is 576 kilobytes and
-    /// the block one node reads is 768 bytes.
+    /// an entry is held to `HISTORY_MAX`, so the table is 672 kilobytes and
+    /// the block one node reads is 896 bytes.
     continuation: Box<[i16]>,
     /// The piece and to square of the move played at each ply, as the
     /// continuation table indexes a previous move, or `NO_PREVIOUS`. A node
@@ -205,7 +211,7 @@ impl MoveOrdering {
     fn continuation_base(&self, color: Color, ply: usize) -> Option<usize> {
         let previous = *self.line.get(ply.checked_sub(1)?)?;
         (previous != NO_PREVIOUS).then(|| {
-            (color as usize * CONTINUATION_BLOCK + usize::from(previous)) * CONTINUATION_BLOCK
+            (color as usize * CONTINUATION_PREVIOUS + usize::from(previous)) * CONTINUATION_BLOCK
         })
     }
 
@@ -701,6 +707,8 @@ impl MoveOrdering {
         let continuation = self
             .continuation_base(board.active_color, ply)
             .map(|base| &self.continuation[base..base + CONTINUATION_BLOCK]);
+        // a node with no previous move reads zeros, which keeps one path
+        let block = continuation.unwrap_or(&NO_CONTINUATION);
         let keys = &mut self.quiet_keys[ply];
         let orig = &mut self.quiet_orig[ply];
         orig[..run].copy_from_slice(&rest[..run]);
@@ -709,14 +717,15 @@ impl MoveOrdering {
             .all(|k| k.is_none_or(|k| named_by_its_squares(&k)))
         {
             // a killer is the only quiet on its squares, so a quiet's key is
-            // its butterfly entry unless its index is a killer's, when it is
-            // the killer's rank: one read and two compares. The history is
-            // read and never written here
+            // its two entries unless its index is a killer's, when it is
+            // the killer's rank: three reads and two compares. The history
+            // is read and never written here
             let ranks = KillerRanks::of(killers);
             let flat = history.as_flattened();
-            let fours = key_fours(flat, &ranks, &rest[..run], &mut keys[..run]);
+            let fours = key_fours(flat, block, board, &ranks, &rest[..run], &mut keys[..run]);
             for i in fours..run {
-                keys[i] = pack_quiet(ranks.entry(flat, history_index(&rest[i])), i);
+                let index = history_index(&rest[i]);
+                keys[i] = pack_quiet(ranks.entry(flat, block, board, index), i);
             }
         } else {
             for (i, m) in rest[..run].iter().enumerate() {
@@ -726,18 +735,9 @@ impl MoveOrdering {
                     QUIET_KILLER[1]
                 } else {
                     history[(m.from & 63) as usize][(m.to & 63) as usize]
+                        + continued(block, board, m)
                 };
                 keys[i] = pack_quiet(bonus, i);
-            }
-        }
-        if let Some(continuation) = continuation {
-            // the second entry needs the piece, which the vector form does
-            // not read, so it is added one by one. A killer's rank stands
-            // above every butterfly entry and is left as it is
-            for (key, m) in keys[..run].iter_mut().zip(&rest[..run]) {
-                if -(*key >> PLACE_BITS) <= HISTORY_MAX {
-                    *key -= continued(continuation, board, m) << PLACE_BITS;
-                }
             }
         }
         keys[run..run + 4].fill(i32::MAX);
@@ -905,12 +905,21 @@ fn piece_square(piece: Piece, to: u8) -> usize {
 }
 
 /// A quiet's entry in a node's continuation block. A move whose from
-/// square is empty reads nothing, which only a test's made up move can be.
+/// square is empty reads the zero row, which only a test's made up move
+/// can do.
 #[inline(always)]
 fn continued(block: &[i16], board: &Position, m: &Play) -> i32 {
-    board
-        .get_piece_index(m.from)
-        .map_or(0, |piece| i32::from(block[piece_square(piece, m.to)]))
+    continued_at(block, board, history_index(m))
+}
+
+/// The same read by the move's butterfly index, from times sixty four
+/// plus to, which is what the vector keying holds.
+#[inline(always)]
+fn continued_at(block: &[i16], board: &Position, index: usize) -> i32 {
+    let row = board
+        .get_piece_index((index >> 6) as u8)
+        .map_or(6, |piece| piece as usize);
+    i32::from(block[row << 6 | index & 63])
 }
 
 /// Whether a killer's squares name it among the quiets of any list: no
@@ -989,12 +998,19 @@ fn least_from(keys: &[i32; QUIET_KEYS], t: usize, len: usize) -> usize {
 }
 
 /// Key the run's quiets four at a time, as far as whole fours go, by their
-/// history entries or a killer's rank, and return how many were keyed. The
-/// entries are read one by one; only the indexes are computed four at a
-/// time.
+/// two history entries or a killer's rank, and return how many were keyed.
+/// The entries are read one by one; only the indexes are computed four at
+/// a time.
 #[cfg(all(target_arch = "x86_64", target_feature = "sse4.1"))]
 #[inline(always)]
-fn key_fours(history: &[i32], ranks: &KillerRanks, quiets: &[Play], keys: &mut [i32]) -> usize {
+fn key_fours(
+    history: &[i32],
+    block: &[i16],
+    board: &Position,
+    ranks: &KillerRanks,
+    quiets: &[Play],
+    keys: &mut [i32],
+) -> usize {
     use core::arch::x86_64::{
         __m128i, _mm_add_epi32, _mm_and_si128, _mm_blendv_epi8, _mm_cmpeq_epi32,
         _mm_cvtepu16_epi32, _mm_cvtsi128_si32, _mm_extract_epi32, _mm_loadu_si128,
@@ -1073,11 +1089,18 @@ fn key_fours(history: &[i32], ranks: &KillerRanks, quiets: &[Play], keys: &mut [
                 square,
             );
             let index = _mm_cvtepu16_epi32(_mm_maddubs_epi16(squares, weights));
+            let lanes = [
+                _mm_cvtsi128_si32(index) as usize,
+                _mm_extract_epi32::<1>(index) as usize,
+                _mm_extract_epi32::<2>(index) as usize,
+                _mm_extract_epi32::<3>(index) as usize,
+            ];
+            let entry = |lane: usize| *table.add(lane) + continued_at(block, board, lane);
             let mut entries = _mm_setr_epi32(
-                *table.add(_mm_cvtsi128_si32(index) as usize),
-                *table.add(_mm_extract_epi32::<1>(index) as usize),
-                *table.add(_mm_extract_epi32::<2>(index) as usize),
-                *table.add(_mm_extract_epi32::<3>(index) as usize),
+                entry(lanes[0]),
+                entry(lanes[1]),
+                entry(lanes[2]),
+                entry(lanes[3]),
             );
             // a lane whose index is a killer's takes the killer's rank, the
             // first killer last as in `entry`; no two quiets share an index
@@ -1098,7 +1121,14 @@ fn key_fours(history: &[i32], ranks: &KillerRanks, quiets: &[Play], keys: &mut [
 
 #[cfg(not(all(target_arch = "x86_64", target_feature = "sse4.1")))]
 #[inline(always)]
-fn key_fours(_: &[i32], _: &KillerRanks, _: &[Play], _: &mut [i32]) -> usize {
+fn key_fours(
+    _: &[i32],
+    _: &[i16],
+    _: &Position,
+    _: &KillerRanks,
+    _: &[Play],
+    _: &mut [i32],
+) -> usize {
     0
 }
 
@@ -1123,15 +1153,15 @@ impl KillerRanks {
     }
 
     /// What a quiet whose entry sits at `index` keys at: a killer's rank
-    /// when the index is one of theirs, else the entry itself.
+    /// when the index is one of theirs, else its two entries.
     #[inline(always)]
-    fn entry(&self, history: &[i32], index: usize) -> i32 {
+    fn entry(&self, history: &[i32], block: &[i16], board: &Position, index: usize) -> i32 {
         if index == self.index[0] as usize {
             QUIET_KILLER[0]
         } else if index == self.index[1] as usize {
             QUIET_KILLER[1]
         } else {
-            history[index]
+            history[index] + continued_at(block, board, index)
         }
     }
 }
