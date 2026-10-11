@@ -11,11 +11,11 @@ mod report_command;
 /// ten keeps hundreds of rows at this depth, and the switch is one whose
 /// rule acts at exactly these depths.
 ///
-/// Depth three, because the saving the test asks for shows there (3,436
-/// events off against 3,415 on). Since the pair term's refit at a ridge of
-/// 3e-7, the run with the rule off offers fewer events than the run with it
-/// on at every depth from four to eight.
-const ARGUMENTS: [&str; 6] = ["effort", "3", "every", "10", "off", "quiet_futility"];
+/// Reverse futility at depth three, because the saving the test asks for
+/// shows there (3,806 events off against 3,181 on). Quiet futility was the
+/// switch until the continuation history, after which it parted no row at
+/// depth three and saved nothing at four or five.
+const ARGUMENTS: [&str; 6] = ["effort", "3", "every", "10", "off", "reverse_futility"];
 
 #[test]
 #[cfg_attr(
@@ -27,7 +27,7 @@ fn the_effort_argument_prints_a_header_rows_and_two_summaries() {
     assert!(
         printed
             .header
-            .starts_with("effort depth 3 every 10 off quiet_futility positions "),
+            .starts_with("effort depth 3 every 10 off reverse_futility positions "),
         "header: {}",
         printed.header
     );
@@ -180,6 +180,6 @@ fn a_switch_the_engine_does_not_have_is_refused() {
         .strip_prefix("unrecognised effort off: quiet_futilty (a switch is one of ")
         .and_then(|rest| rest.strip_suffix(')'))
         .unwrap_or_else(|| panic!("stderr: {printed}"));
-    assert_eq!(named.split(", ").count(), 14, "stderr: {printed}");
+    assert_eq!(named.split(", ").count(), 15, "stderr: {printed}");
     assert!(output.stdout.is_empty());
 }

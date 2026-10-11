@@ -156,19 +156,19 @@ Quiescence and the root are out of scope: quiescence cuts on capture order, and
 the root searches every move.
 
 Each row is `depth window check outcome generated searched index class history
-history_max scored tt eval_beta cost reduced fen`. A `cut` row names the
-cutting move's place among the searched moves (`index`, 0 for a table move
-searched first), its `class` (`table`, `capture`, `promotion`, `killer` or
-`quiet`, material first, so a capture that is also a killer is a capture), the
-history table's score for it (`history`, quiet moves only and signed, since a
-move tried more often than it cuts sits under zero), and whether its answer came
-through the reduced scout (`reduced`). A `held` row prints `-` in those four
-columns.
+history_max scored tt eval_beta cost reduced fen`. A `cut` row names the cutting
+move's place among the searched moves (`index`, 0 for a table move searched
+first), its `class` (`table`, `capture`, `promotion`, `killer` or `quiet`,
+material first, so a capture that is also a killer is a capture), the butterfly
+history's score for it (`history`, quiet moves only and signed, since a move
+tried more often than it cuts sits under zero, and without the continuation
+entry the order adds to it), and whether its answer came through the reduced
+scout (`reduced`). A `held` row prints `-` in those four columns.
 
 `generated` and `searched` are what the list held and what the loop made; the
 censored count is the reader's subtraction, and a node its table move cut
 before anything was generated says `generated 0`. `history_max` is the largest
-history score among the generated quiets, clamped at zero, which is what
+butterfly score among the generated quiets, clamped at zero, which is what
 `history` is read against; it is 0 when every one of them is marked down.
 `scored` says whether the staged ordering ever scored the quiet band at this
 node. `tt` is what the probe gave: `miss`, `move`, or `score_only` for a hit

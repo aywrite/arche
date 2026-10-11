@@ -245,9 +245,10 @@ pub(crate) struct Features {
     /// it was searched, is 0.
     pub(crate) index: usize,
     pub(crate) generated: usize,
-    /// The history table's score for the move at the decision, signed.
+    /// The butterfly history's score for the move at the decision, signed.
+    /// The continuation entry the order adds is not in it.
     pub(crate) history: i32,
-    /// The largest history score among the node's generated quiets,
+    /// The largest butterfly score among the node's generated quiets,
     /// clamped at zero: the denominator `history` is read against.
     pub(crate) history_max: i32,
     pub(crate) killer: bool,
@@ -1433,8 +1434,8 @@ mod tests {
         // is neither nothing nor the whole. The slot it took at ply zero
         // is the killer column, which the node reads here
         s.ply = Some(0);
-        s.ordering.cutoff(color, &quiet, &[], 0, 4);
-        s.ordering.cutoff(color, &rival, &[], 1, 5);
+        s.ordering.cutoff(&s.board, color, &quiet, &[], 0, 4);
+        s.ordering.cutoff(&s.board, color, &rival, &[], 1, 5);
         const SEARCHED: usize = 10;
         let generated = s.moves.len();
         let f = s.features(&quiet, SEARCHED);
@@ -1666,7 +1667,7 @@ mod tests {
         // the check is taught at another ply, so it is no killer at this one
         const PLY: usize = 0;
         let color = s.board.active_color;
-        s.ordering.cutoff(color, &checks, &[], PLY + 1, 5);
+        s.ordering.cutoff(&s.board, color, &checks, &[], PLY + 1, 5);
         let mut run = vec![neither[0], promotes, neither[1], checks, neither[2]];
         assert_eq!(s.ordering.key_quiets(&s.board, &mut run, 0, PLY), run.len());
         let info = s.board.check_info();
@@ -1860,11 +1861,11 @@ mod tests {
         let quiet = play_named(&s.board, "a4a5");
         let rival = play_named(&s.board, "a4a6");
         let color = s.board.active_color;
-        s.ordering.cutoff(color, &rival, &[], 1, 5);
+        s.ordering.cutoff(&s.board, color, &rival, &[], 1, 5);
         assert_eq!(s.features(&quiet, 10).history_max, 25);
         // taught again and deeper, as a child search between two of the
         // node's moves would teach it
-        s.ordering.cutoff(color, &rival, &[], 1, 8);
+        s.ordering.cutoff(&s.board, color, &rival, &[], 1, 8);
         let taught = s.ordering.history_score(color, &rival);
         assert!(taught > 25, "the second cutoff taught nothing: {}", taught);
         assert_eq!(s.features(&quiet, 10).history_max, 25);
