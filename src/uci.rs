@@ -4,7 +4,7 @@
 use crate::command::{Command, Keyword};
 use crate::params::{Param, Params};
 use crate::session::{self, SessionControl, SharedWriter, first_word, report_panics_to};
-use crate::time_control::{DEFAULT_MOVE_OVERHEAD_MS, TimeControl};
+use crate::time_control::{DEFAULT_MOVE_OVERHEAD_MS, GameMoves, TimeControl};
 use arche_core::{
     Color, Engine, Limits, Play, Score, ScoreBound, SearchConfig, SearchOutcome, SearchParameters,
     SearchResult, bench,
@@ -177,6 +177,10 @@ pub struct UCI<T: Engine, W: Write> {
     /// with the null move rather than searched on the board left behind.
     position_refused: bool,
 
+    /// The move number of the first position searched on a clock since
+    /// `ucinewgame`, where the time horizon starts to fall.
+    first_move_on_clock: Option<u64>,
+
     engine: T,
     out: SharedWriter<W>,
 }
@@ -220,6 +224,7 @@ impl<T: Engine, W: Write> UCI<T, W> {
         Self {
             move_overhead: DEFAULT_MOVE_OVERHEAD_MS,
             position_refused: false,
+            first_move_on_clock: None,
             engine,
             out,
         }
@@ -236,7 +241,10 @@ impl<T: Engine, W: Write> UCI<T, W> {
             "isready" => self.say(format_args!("readyok")),
             // forgets the table and leaves the position to the `position`
             // that follows
-            "ucinewgame" => self.engine.new_game(),
+            "ucinewgame" => {
+                self.first_move_on_clock = None;
+                self.engine.new_game();
+            }
             "uci" => {
                 self.say(format_args!(
                     "id name {} {}",
@@ -503,15 +511,27 @@ impl<T: Engine, W: Write> UCI<T, W> {
     }
 
     /// What a `go` asks for, or why it cannot be searched.
-    fn read_go(&self, line: &str) -> Result<Go, String> {
+    fn read_go(&mut self, line: &str) -> Result<Go, String> {
         if self.position_refused {
             return Err("no position to search: the last one sent was refused".to_string());
         }
-        Go::of(
+        let mut go = Go::of(
             &Params::of(line),
             self.engine.active_color(),
             self.move_overhead,
-        )
+        )?;
+        if go.time.time.is_some() {
+            let now = self.engine.move_number();
+            // an earlier move than the first is a new game that came without
+            // a ucinewgame, or a takeback, and either starts the count again
+            let first = self
+                .first_move_on_clock
+                .filter(|&first| first <= now)
+                .unwrap_or(now);
+            self.first_move_on_clock = Some(first);
+            go.time.game = GameMoves { first, now };
+        }
+        Ok(go)
     }
 
     /// The last info line, said for the whole search rather than an iteration.
@@ -858,6 +878,7 @@ mod tests {
     struct Recorder {
         asked: Option<SearchParameters>,
         color: Color,
+        move_number: u64,
         cleared: usize,
     }
 
@@ -866,6 +887,7 @@ mod tests {
             Self {
                 asked: None,
                 color,
+                move_number: 1,
                 cleared: 0,
             }
         }
@@ -883,6 +905,10 @@ mod tests {
 
         fn active_color(&self) -> Color {
             self.color
+        }
+
+        fn move_number(&self) -> u64 {
+            self.move_number
         }
 
         fn parse_fen(&mut self, _fen: &str) -> Result<(), String> {
@@ -1367,6 +1393,51 @@ go depth 3
             said.lines().last().unwrap_or("").starts_with("bestmove "),
             "{}",
             said
+        );
+    }
+
+    /// The share a `go wtime 60000` asks for at each move number in turn,
+    /// with a `ucinewgame` where the list says `None`.
+    fn shares_at_moves(moves: &[Option<u64>]) -> Vec<u64> {
+        let mut uci = recording();
+        let mut shares = Vec::new();
+        for &number in moves {
+            match number {
+                None => {
+                    uci.handle("ucinewgame");
+                }
+                Some(number) => {
+                    uci.engine.move_number = number;
+                    uci.handle("go wtime 60000");
+                    let asked = uci.engine.asked.take().expect("no search");
+                    shares.push(asked.limits.clock().unwrap().deadline().as_millis() as u64);
+                }
+            }
+        }
+        shares
+    }
+
+    #[test]
+    fn the_horizon_falls_from_the_first_move_searched_on_a_clock() {
+        // a twentieth at move 9, a tenth from move 60, less the overhead
+        assert_eq!(shares_at_moves(&[Some(9), Some(60)]), [2_950, 5_950]);
+        // a move time does not start the game's horizon
+        let mut uci = recording();
+        uci.engine.move_number = 50;
+        uci.handle("go movetime 500");
+        assert_eq!(uci.first_move_on_clock, None);
+    }
+
+    #[test]
+    fn a_new_game_or_an_earlier_move_starts_the_horizon_again() {
+        assert_eq!(
+            shares_at_moves(&[Some(9), Some(60), None, Some(60)]),
+            [2_950, 5_950, 2_950]
+        );
+        assert_eq!(
+            shares_at_moves(&[Some(9), Some(5), Some(30)]),
+            // from move 5, 25 of 55 moves on: 60000 * 55 / 850 - 50
+            [2_950, 2_950, 3_832]
         );
     }
 
@@ -2084,6 +2155,9 @@ go depth 3
 
         fn active_color(&self) -> Color {
             Color::White
+        }
+        fn move_number(&self) -> u64 {
+            1
         }
         fn parse_fen(&mut self, _fen: &str) -> Result<(), String> {
             Ok(())

@@ -10,14 +10,27 @@ use std::time::Duration;
 /// budget. Fifty covers a local interface; a network costs more.
 pub const DEFAULT_MOVE_OVERHEAD_MS: u64 = 50;
 
-/// Moves we plan for when the time control does not say how many are left.
+/// Moves we plan for when the time control does not say how many are left,
+/// at the first move searched in a game.
 ///
 /// With an increment the clock falls until a move's spend equals the
 /// increment and then holds, so the horizon decides how much clock is unspent
 /// at the end rather than how fast it runs out. At a fortieth, two self play
 /// games at 10+0.1 ended with about half the clock banked; a twentieth halves
-/// the floor, to about 1.9 seconds (7913356).
-const ASSUMED_MOVES_TO_GO: u64 = 20;
+/// the floor, to about 1.9 seconds (7913356). At a twentieth throughout,
+/// games at 10+0.1 still ended with about 3.5 seconds of the 10 left, so the
+/// horizon falls as the game goes on and spends that on the middle and late
+/// game: a re-run of 500 games' clocks with it ends them 1.27 seconds lower,
+/// with 1.10 of the time and no clock under 750 ms.
+const OPENING_HORIZON: u64 = 20;
+
+/// The fewest moves the horizon falls to.
+const LATE_HORIZON: u64 = 10;
+
+/// The move number by which the horizon has fallen to `LATE_HORIZON`, in a
+/// straight line from the first move searched. A game first searched at or
+/// past it falls to `LATE_HORIZON` on the move after.
+const LATE_MOVE: u64 = 60;
 
 /// Share of the increment we count on. It is credited only after the move,
 /// so spending all of it leaves nothing to cover the overhead.
@@ -30,6 +43,28 @@ const MAX_CLOCK_PERCENT: u64 = 33;
 /// Searched even on a spent clock, so that a legal move comes back.
 const MIN_BUDGET_MS: u64 = 1;
 
+/// Where a game stands for the horizon: the move number of the first
+/// position searched on a clock in it, and of this one.
+#[derive(Debug, Default, Clone, Copy, PartialEq, Eq)]
+pub struct GameMoves {
+    pub first: u64,
+    pub now: u64,
+}
+
+impl GameMoves {
+    /// The clock over the horizon, which falls from `OPENING_HORIZON` at
+    /// the first move to `LATE_HORIZON` at `LATE_MOVE` and stays there.
+    /// The horizon times the span is kept whole, so the share is exact.
+    fn share_of(&self, time: u64) -> u64 {
+        let span = LATE_MOVE.saturating_sub(self.first).max(1);
+        let gone = self.now.saturating_sub(self.first);
+        let horizon_by_span = (OPENING_HORIZON * span)
+            .saturating_sub((OPENING_HORIZON - LATE_HORIZON).saturating_mul(gone))
+            .max(LATE_HORIZON * span);
+        (time as u128 * span as u128 / horizon_by_span as u128) as u64
+    }
+}
+
 /// The time part of a `go` command for the side to move, in milliseconds.
 #[derive(Debug, Default, PartialEq, Eq)]
 pub struct TimeControl {
@@ -38,6 +73,8 @@ pub struct TimeControl {
     pub moves_to_go: Option<u64>,
     pub move_time: Option<u64>,
     pub infinite: bool,
+    /// Not on the line: the interface sets it from the game.
+    pub game: GameMoves,
 }
 
 impl TimeControl {
@@ -55,6 +92,7 @@ impl TimeControl {
             moves_to_go: params.count("movestogo").read(),
             move_time: params.count("movetime").read(),
             infinite: params.flag("infinite"),
+            game: GameMoves::default(),
         }
     }
 
@@ -82,11 +120,11 @@ impl TimeControl {
     fn clock_share(&self, time: u64, increment: u64) -> u64 {
         // the protocol does not define a count of zero, so it is no answer
         // rather than "this is the last move"
-        let moves_to_go = self
-            .moves_to_go
-            .filter(|&moves| moves > 0)
-            .unwrap_or(ASSUMED_MOVES_TO_GO);
-        let share = (time / moves_to_go).saturating_add(percent(increment, INCREMENT_PERCENT));
+        let clock_part = match self.moves_to_go.filter(|&moves| moves > 0) {
+            Some(moves) => time / moves,
+            None => self.game.share_of(time),
+        };
+        let share = clock_part.saturating_add(percent(increment, INCREMENT_PERCENT));
         share.min(percent(time, MAX_CLOCK_PERCENT))
     }
 }
@@ -205,9 +243,42 @@ mod tests {
     }
 
     #[test]
-    fn sudden_death_plans_for_twenty_more_moves() {
+    fn sudden_death_plans_for_twenty_more_moves_at_the_first_move() {
         // 60000 / 20 - 50
         assert_eq!(millis(&clock(60_000)), Some(2_950));
+    }
+
+    fn at_move(first: u64, now: u64) -> TimeControl {
+        TimeControl {
+            game: GameMoves { first, now },
+            ..clock(60_000)
+        }
+    }
+
+    #[test]
+    fn the_horizon_falls_from_twenty_to_ten_by_move_sixty() {
+        // the first move searched, at 8moves' exit: 60000 / 20 - 50
+        assert_eq!(millis(&at_move(9, 9)), Some(2_950));
+        // 25 of 51 moves on, the horizon is 20 - 250/51: 60000 * 51 / 770 - 50
+        assert_eq!(millis(&at_move(9, 34)), Some(3_924));
+        // 60000 / 10 - 50, and no further
+        assert_eq!(millis(&at_move(9, 60)), Some(5_950));
+        assert_eq!(millis(&at_move(9, 120)), Some(5_950));
+    }
+
+    #[test]
+    fn a_first_move_at_or_past_sixty_falls_to_ten_a_move_later() {
+        assert_eq!(millis(&at_move(70, 70)), Some(2_950));
+        assert_eq!(millis(&at_move(70, 71)), Some(5_950));
+    }
+
+    #[test]
+    fn moves_to_go_is_read_whatever_the_move() {
+        let control = TimeControl {
+            moves_to_go: Some(10),
+            ..at_move(9, 9)
+        };
+        assert_eq!(millis(&control), Some(5_950));
     }
 
     #[test]
