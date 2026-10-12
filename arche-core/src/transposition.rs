@@ -244,6 +244,38 @@ pub(crate) struct Floor {
     pub(crate) depth: u8,
 }
 
+/// The entry a probe found, or none on a miss, handed back beside its
+/// answer for the node to read its static evaluation and its floor from.
+/// A node that reads neither (quiescence, or one the answer cut) drops it,
+/// and nothing of it is kept.
+#[derive(Copy, Clone, Debug)]
+pub(crate) struct Found(Option<Pv>);
+
+impl Found {
+    /// The entry's static evaluation, or `NO_EVAL` where there is no entry
+    /// or the entry holds none.
+    #[inline(always)]
+    pub(crate) fn eval(self) -> Score {
+        self.0.map_or(NO_EVAL, |pv| pv.static_eval)
+    }
+
+    /// The floor the entry puts under the position, where its bound is a
+    /// floor or the truth, or none on a miss or a ceiling. The score is made
+    /// relative to the root at `line_ply`.
+    #[inline(always)]
+    pub(crate) fn floor(self, line_ply: usize) -> Option<Floor> {
+        let pv = self.0?;
+        match pv.bound {
+            Bound::Exact | Bound::Lower => Some(Floor {
+                play: pv.play,
+                score: score_from_tt(pv.score, line_ply),
+                depth: pv.depth,
+            }),
+            Bound::Upper | Bound::Ordering => None,
+        }
+    }
+}
+
 /// What a probe found.
 #[derive(Copy, Clone, Debug)]
 pub enum Probe {
@@ -520,6 +552,16 @@ fn replaceable_under(generation: u8) -> u32 {
     })
 }
 
+/// The age weight times each generation's age under `generation`, a
+/// generation a slot.
+fn penalties(generation: u8, weight: i16) -> [i16; 32] {
+    let mut penalty = [0; 32];
+    for (g, slot) in (0..).zip(penalty.iter_mut()) {
+        *slot = weight * i16::from((generation + GENERATIONS - g) % GENERATIONS);
+    }
+    penalty
+}
+
 /// Asking the kernel to back the table with huge pages.
 ///
 /// Every probe that misses the translation buffer pays a page walk before
@@ -676,17 +718,14 @@ pub struct TranspositionTable {
     replaceable: u32,
     /// `age_weight` of the search under way's root.
     age_weight: i16,
+    /// What `worth` takes off an entry of each generation: the age weight
+    /// times the searches since that generation, kept beside the generation
+    /// so that a contest reads it rather than taking the age modulo the
+    /// cycle.
+    penalty: [i16; 32],
     /// The full keys of the entries, or none, which is what every table an
     /// engine plays with holds. `audit_signatures` fills it in.
     audit: Option<Box<Audit>>,
-    /// The entry the last probe found, or none on a miss, for the node to
-    /// read its static evaluation and its floor back from. A cell, since
-    /// the probe reads the table.
-    probed: Cell<Option<Pv>>,
-    /// The key the last probe asked for, so a debug build can tell a read
-    /// of `probed` that another probe came between.
-    #[cfg(debug_assertions)]
-    probed_key: Cell<u64>,
 }
 
 /// What an entry holds for the static evaluation when the node that stored
@@ -742,10 +781,8 @@ impl TranspositionTable {
             generation: 1,
             replaceable: replaceable_under(1),
             age_weight: AGE_WEIGHT,
+            penalty: penalties(1, AGE_WEIGHT),
             audit: None,
-            probed: Cell::new(None),
-            #[cfg(debug_assertions)]
-            probed_key: Cell::new(0),
         })
     }
 
@@ -753,6 +790,7 @@ impl TranspositionTable {
         self.table.fill(Bucket::EMPTY);
         self.generation = 1;
         self.replaceable = replaceable_under(1);
+        self.penalty = penalties(1, self.age_weight);
         if let Some(audit) = self.audit.as_deref_mut() {
             audit.keys.fill(0);
         }
@@ -824,6 +862,7 @@ impl TranspositionTable {
         self.generation = self.generation % GENERATIONS + 1;
         self.replaceable = replaceable_under(self.generation);
         self.age_weight = age_weight(phase);
+        self.penalty = penalties(self.generation, self.age_weight);
     }
 
     /// How full the table is in permille, as the protocol's `hashfull`
@@ -846,10 +885,16 @@ impl TranspositionTable {
 
     /// What an entry is worth keeping: its depth, less the search's age
     /// weight for each search since it was stored. An entry from this
-    /// search is worth its depth.
+    /// search is worth its depth. The weight times the age is read from
+    /// `penalty` rather than worked out at each contest.
     #[inline(always)]
     fn worth(&self, entry: Entry) -> i16 {
-        i16::from(entry.depth) - self.age_weight * i16::from(self.age(entry))
+        let worth = i16::from(entry.depth) - self.penalty[usize::from(entry.generation())];
+        debug_assert_eq!(
+            worth,
+            i16::from(entry.depth) - self.age_weight * i16::from(self.age(entry))
+        );
+        worth
     }
 
     /// How many searches ago an entry was stored.
@@ -1160,7 +1205,7 @@ impl TranspositionTable {
     /// the entry is deep enough, its bound allows a cutoff at the window,
     /// and the policy (`refuse_tainted`, `guard_rule50`) trusts it. A
     /// cutoff the policy turns away comes back as `Refused`, so the caller
-    /// can count it.
+    /// can count it. The entry found is handed back beside the answer.
     #[inline(always)]
     pub fn probe(
         &self,
@@ -1170,14 +1215,12 @@ impl TranspositionTable {
         depth: u8,
         refuse_tainted: bool,
         guard_rule50: bool,
-    ) -> Probe {
+    ) -> (Probe, Found) {
         let (found, foreign) = self.get_audited(board.key);
-        #[cfg(debug_assertions)]
-        self.probed_key.set(board.key);
-        self.probed.set(found);
         let Some(pv) = found else {
-            return Probe::Miss;
+            return (Probe::Miss, Found(None));
         };
+        let found = Found(found);
         if pv.depth >= depth {
             let score = score_from_tt(pv.score, board.line_ply);
             let cuts = match pv.bound {
@@ -1190,69 +1233,31 @@ impl TranspositionTable {
                 if guard_rule50 && board.fifty_move_near_expiry() {
                     // near the horizon every stored score is suspect,
                     // tainted or not
-                    return Probe::Refused(pv.play);
+                    return (Probe::Refused(pv.play), found);
                 }
                 if refuse_tainted && pv.tainted {
                     // the stored draw may not be reachable by this path
-                    return Probe::Refused(pv.play);
+                    return (Probe::Refused(pv.play), found);
                 }
                 self.count_false_accept_cutoff(foreign);
-                return Probe::Cut(Value::with_taint(score, pv.tainted));
+                return (Probe::Cut(Value::with_taint(score, pv.tainted)), found);
             }
         }
-        Probe::Order(pv.play)
+        (Probe::Order(pv.play), found)
     }
 
     /// The entry's move for ordering and never its cutoff, with the entry
-    /// kept for the node to read back as `probe` keeps it. For a search
-    /// with a move excluded: the entry's score is the excluded move's, so
-    /// it answers nothing about the rest.
+    /// beside it as `probe` hands it. For a search with a move
+    /// excluded: the entry's score is the excluded move's, so it answers
+    /// nothing about the rest.
     #[inline(always)]
-    pub(crate) fn probe_for_ordering(&self, board: &Board) -> Probe {
+    pub(crate) fn probe_for_ordering(&self, board: &Board) -> (Probe, Found) {
         let (found, _) = self.get_audited(board.key);
-        #[cfg(debug_assertions)]
-        self.probed_key.set(board.key);
-        self.probed.set(found);
-        match found {
+        let probe = match found {
             Some(pv) => Probe::Order(pv.play),
             None => Probe::Miss,
-        }
-    }
-
-    /// The entry the last probe found for the position `key` names, or
-    /// none. The last probe must have been of `key`: a search between the
-    /// two would leave its own entry here.
-    #[inline(always)]
-    fn probed(&self, key: u64) -> Option<Pv> {
-        #[cfg(debug_assertions)]
-        assert_eq!(self.probed_key.get(), key, "another probe came between");
-        #[cfg(not(debug_assertions))]
-        let _ = key;
-        self.probed.get()
-    }
-
-    /// The static evaluation the last probe found in the entry of the
-    /// position `key` names, or `NO_EVAL` where it found none or the entry
-    /// holds none.
-    #[inline(always)]
-    pub(crate) fn probed_eval(&self, key: u64) -> Score {
-        self.probed(key).map_or(NO_EVAL, |pv| pv.static_eval)
-    }
-
-    /// The floor the last probe's entry puts under the position `key`
-    /// names, where its bound is a floor or the truth, or none on a miss or
-    /// a ceiling. The score is made relative to the root at `line_ply`.
-    #[inline(always)]
-    pub(crate) fn probed_floor(&self, key: u64, line_ply: usize) -> Option<Floor> {
-        let pv = self.probed(key)?;
-        match pv.bound {
-            Bound::Exact | Bound::Lower => Some(Floor {
-                play: pv.play,
-                score: score_from_tt(pv.score, line_ply),
-                depth: pv.depth,
-            }),
-            Bound::Upper | Bound::Ordering => None,
-        }
+        };
+        (probe, Found(found))
     }
 
     /// The move to try first here, whatever wrote it, quiescence included.
@@ -1506,18 +1511,18 @@ mod tests {
         let board = crate::board::Board::new();
         let play = Play::new(0, 1, None, None, false, false);
         assert!(table.record_ceiling(&board, play, Value::clean(-50), 5, super::NO_EVAL));
-        match table.probe(&board, -10, 10, 5, true, false) {
+        match table.probe(&board, -10, 10, 5, true, false).0 {
             Probe::Cut(value) => assert_eq!(value, Value::clean(-50)),
             other => panic!("a ceiling under alpha did not cut: {other:?}"),
         }
         assert!(matches!(
-            table.probe(&board, -100, 10, 5, true, false),
+            table.probe(&board, -100, 10, 5, true, false).0,
             Probe::Order(_)
         ));
     }
 
     /// The ordering probe hands back the move of an entry that would have
-    /// cut, and keeps the entry for the floor read as the probe does; a
+    /// cut, and the entry beside it for the floor read as the probe does; a
     /// ceiling is no floor under either probe.
     #[test]
     fn an_ordering_probe_never_cuts_and_a_floor_is_read_from_either() {
@@ -1526,24 +1531,20 @@ mod tests {
         let board = crate::board::Board::new();
         let play = Play::new(0, 1, None, None, false, false);
         assert!(table.record_cutoff(&board, play, Value::clean(50), 5, super::NO_EVAL));
-        assert!(matches!(
-            table.probe(&board, -10, 10, 5, true, false),
-            Probe::Cut(_)
-        ));
+        let (probe, found) = table.probe(&board, -10, 10, 5, true, false);
+        assert!(matches!(probe, Probe::Cut(_)));
         let floor = Some(Floor {
             play,
             score: 50,
             depth: 5,
         });
-        assert_eq!(table.probed_floor(board.key, 0), floor);
-        assert!(matches!(
-            table.probe_for_ordering(&board),
-            Probe::Order(found) if found == play
-        ));
-        assert_eq!(table.probed_floor(board.key, 0), floor);
+        assert_eq!(found.floor(0), floor);
+        let (probe, found) = table.probe_for_ordering(&board);
+        assert!(matches!(probe, Probe::Order(found) if found == play));
+        assert_eq!(found.floor(0), floor);
         assert!(table.record_ceiling(&board, play, Value::clean(-50), 6, super::NO_EVAL));
-        let _ = table.probe_for_ordering(&board);
-        assert_eq!(table.probed_floor(board.key, 0), None);
+        let (_, found) = table.probe_for_ordering(&board);
+        assert_eq!(found.floor(0), None);
     }
 
     #[test]
@@ -1584,7 +1585,10 @@ mod tests {
             assert!(table.record_best(&board, play, stored, 5, super::NO_EVAL));
 
             board.line_ply = PROBED_AT;
-            match table.probe(&board, Score::MIN + 1, Score::MAX - 1, 5, false, false) {
+            match table
+                .probe(&board, Score::MIN + 1, Score::MAX - 1, 5, false, false)
+                .0
+            {
                 Probe::Cut(value) => assert_eq!(value.score, wanted.score, "{what}"),
                 other => panic!("{what} did not cut: {other:?}"),
             }
@@ -1603,10 +1607,10 @@ mod tests {
         let play = Play::new(0, 1, None, None, false, false);
         assert!(table.record_best(&fresh, play, Value::clean(0), 5, super::NO_EVAL));
         assert!(matches!(
-            table.probe(&fresh, -10, 10, 5, false, true),
+            table.probe(&fresh, -10, 10, 5, false, true).0,
             Probe::Cut(_)
         ));
-        match table.probe(&near, -10, 10, 5, false, true) {
+        match table.probe(&near, -10, 10, 5, false, true).0 {
             Probe::Refused(refused) => assert_eq!(refused, play),
             other => panic!("the horizon did not refuse the cutoff: {other:?}"),
         }
@@ -1621,17 +1625,17 @@ mod tests {
         let board = crate::board::Board::new();
         let play = Play::new(0, 1, None, None, false, false);
         assert!(table.record_best(&board, play, Value::tainted(0), 5, super::NO_EVAL));
-        match table.probe(&board, -10, 10, 5, false, false) {
+        match table.probe(&board, -10, 10, 5, false, false).0 {
             Probe::Cut(value) => assert_eq!(value, Value::tainted(0)),
             other => panic!("a trusting probe did not cut: {other:?}"),
         }
-        match table.probe(&board, -10, 10, 5, true, false) {
+        match table.probe(&board, -10, 10, 5, true, false).0 {
             Probe::Refused(refused) => assert_eq!(refused, play),
             other => panic!("a refusing probe did not refuse: {other:?}"),
         }
         // too shallow to cut is a move alone, not a refusal
         assert!(matches!(
-            table.probe(&board, -10, 10, 6, true, false),
+            table.probe(&board, -10, 10, 6, true, false).0,
             Probe::Order(_)
         ));
     }
@@ -1645,7 +1649,7 @@ mod tests {
         assert!(table.record_best(&board, play, Value::clean(20), 5, super::NO_EVAL));
         let shared = &table;
         assert!(matches!(
-            shared.probe(&board, -10, 10, 5, true, false),
+            shared.probe(&board, -10, 10, 5, true, false).0,
             Probe::Cut(_)
         ));
     }
@@ -2033,7 +2037,7 @@ mod tests {
         // a key differing above the slice, sharing the one bucket's index
         let mut twin = board.clone();
         twin.key ^= 1 << 63;
-        match table.probe(&twin, -10, 10, 5, true, false) {
+        match table.probe(&twin, -10, 10, 5, true, false).0 {
             Probe::Cut(value) => assert_eq!(value, Value::clean(20)),
             other => panic!("the foreign entry did not cut: {other:?}"),
         }
