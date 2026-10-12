@@ -691,3 +691,13 @@ of these again without saying what is different this time.
   and pair term change, -4 ±9 over 3,000 games at 10+0.1 against 2d7fe54 (sprt [0, 10]
   failed at LLR -4.58), at 0.945 to 0.961 times master's nodes a second; with the piece
   square change alone, -6 ±9 over 2,500 games (LLR -4.76).
+- Choosing by a fitted score which trusted reduced scouts to re-search and which null
+  move cuts to decline. A ridge score over what the node holds (depth, the decision's
+  gap, ply, window, root move index, how the node was entered, and for a scout its index,
+  history, killer, table move and evaluation) was fitted on 6,000 game positions and read
+  on 6,000 others from different openings, each root searched to the depth it completes
+  at 650,000 nodes and every changed root move valued five plies deeper at two depths.
+  Its picks were 15 better to 14 worse moves among trusted scouts and 77 to 66 among
+  null move cuts, neither resolved from zero and each below a rule needing no fit (depth
+  and move index for scouts, the null move's own margin over beta for null cuts).
+  Measured with `arche forced nodes` and `arche policy`; no game was played.
