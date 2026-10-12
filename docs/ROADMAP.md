@@ -709,3 +709,12 @@ of these again without saying what is different this time.
   games at 10+0.1 against 54fb9a6 (sprt [0, 10] failed at LLR -3.01) at equal time (end
   clock -16 ms). In practice it only moved a tenth of the time from the first ten moves
   after the book to the next thirty; from move 60 both rules sit at the floor of 10.
+- Re-searching a root fail high a ply shallower for each fail high since the depth
+  opened or last failed low, a fail low restoring the full depth. The move a fail high
+  names was the depth's answer after a full depth re-search at 89 of 100 such depths on
+  the games suite, and replayed one depth at a time the shorter re-search made those
+  depths a median 0.53 to 0.55 of their nodes on every position of the games suite and
+  the bench. -4 ±6 over 6,000 games at 10+0.1 against d82638a (sprt [0, 5] failed at LLR
+  -3.11 on the last batch the cap allowed), with 1.04 times master's nodes at the same
+  time. The tactical count fell from 228 to 217 at depth six. One ply for the whole
+  re-search, however many fail highs, is a different change to measure.
