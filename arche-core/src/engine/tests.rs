@@ -464,6 +464,74 @@ mod search {
     }
 
     #[test]
+    fn the_loop_asks_a_child_as_windowed_does() {
+        // `search_child` asks a move's first search itself and the rest of
+        // principal variation search from `windowed_rest`, which carries
+        // the taints as `windowed` did. Both are asked the same children
+        // under the three decisions the loop makes (the first move, a later
+        // one, and a later one scouted a ply shallower), each on an engine
+        // of its own, and must return the same values and taints after
+        // counting the same nodes. The positions stand two or three plies
+        // short of the fifty move rule, so many scores carry a draw's taint.
+        let decisions = [Decision::First, Decision::UNREDUCED, later(1)];
+        let mut asked = 0;
+        let mut tainted = 0;
+        for position in crate::bench::positions()
+            .iter()
+            .chain(crate::bench::games().iter())
+        {
+            for counter in ["97", "98"] {
+                let mut fields: Vec<&str> = position.fen.split_whitespace().take(4).collect();
+                fields.extend([counter, "60"]);
+                let board = Board::from_fen(&fields.join(" ")).unwrap();
+                if board.in_check() {
+                    continue;
+                }
+                let mut direct = AlphaBeta::with_table_bytes(board.clone(), 64 * 1024);
+                let mut whole = AlphaBeta::with_table_bytes(board, 64 * 1024);
+                let moves = direct.board.generate_moves();
+                for m in moves.iter().take(4) {
+                    for decision in &decisions {
+                        for (alpha, beta) in [(-30, 30), (-1, 0), (0, 1), (40, 41)] {
+                            let Ok(answer) = direct.search_child(
+                                m,
+                                alpha,
+                                beta,
+                                3,
+                                decision,
+                                RootBounds::Neither,
+                            ) else {
+                                panic!("an unlimited search aborted");
+                            };
+                            let expected = if whole.board.make_move(m) {
+                                let result =
+                                    whole.windowed(alpha, beta, 3, decision, RootBounds::Neither);
+                                whole.board.undo_move();
+                                let Ok(value) = result else {
+                                    panic!("an unlimited search aborted");
+                                };
+                                Some(value)
+                            } else {
+                                None
+                            };
+                            assert_eq!(
+                                answer.map(|v| (v.score, v.tainted)),
+                                expected.map(|v| (v.score, v.tainted)),
+                                "{} {m} {alpha} {beta}",
+                                position.id
+                            );
+                            assert_eq!(direct.nodes, whole.nodes);
+                            asked += 1;
+                            tainted += usize::from(answer.is_some_and(|v| v.tainted));
+                        }
+                    }
+                }
+            }
+        }
+        assert!(asked > 5000 && tainted > 500, "{asked} {tainted}");
+    }
+
+    #[test]
     fn a_re_search_answers_with_its_own_score_not_the_probes() {
         // The node count above says a re-search ran, not whose answer came
         // back. A ceiling planted one point inside the probe's window and
@@ -4191,5 +4259,71 @@ mod node {
         }
         // four promotions, the rook to the eighth and the rook to the h file
         assert_eq!(kept - front, 6);
+    }
+}
+
+mod leaf {
+    use crate::board::play_named;
+    use crate::engine::{AlphaBeta, Board, MAX_PLY, RootBounds, Score};
+    use crate::value::CHECKMATE_THRESHOLD;
+
+    #[test]
+    fn the_leaf_answers_as_alpha_beta_does_at_depth_zero() {
+        // A child at depth zero out of check goes from its parent to the
+        // leaf, which asks what `alpha_beta` asks of such a node before it
+        // hands the node to quiescence. The two are asked the same nodes
+        // here, each on an engine of its own, and must return the same
+        // values after counting the same nodes: the draw rules, the rail
+        // and mate distance included.
+        let mut boards: Vec<Board> = crate::bench::positions()
+            .iter()
+            .chain(crate::bench::games().iter())
+            .map(|position| Board::from_fen(&position.fen).unwrap())
+            .collect();
+        boards.push(Board::from_fen("8/8/4k3/8/8/3K4/8/7R w - - 100 80").unwrap());
+        let mut again = Board::from_fen(crate::STARTING_FEN).unwrap();
+        for name in ["g1f3", "g8f6", "f3g1", "f6g8"] {
+            let m = play_named(&again, name);
+            assert!(again.make_move(&m));
+        }
+        assert!(again.has_repeated());
+        boards.push(again);
+        let windows = [
+            (Score::MIN + 1, Score::MAX - 1),
+            (-30, 30),
+            (0, 1),
+            (CHECKMATE_THRESHOLD, Score::MAX - 1),
+            (Score::MIN + 1, -CHECKMATE_THRESHOLD),
+            // windows mate distance narrows or closes at these plies
+            (CHECKMATE_THRESHOLD + 995, Score::MAX - 1),
+            (Score::MIN + 1, -CHECKMATE_THRESHOLD - 995),
+        ];
+        let mut asked = 0;
+        for board in boards.into_iter().filter(|board| !board.in_check()) {
+            let mut full = AlphaBeta::with_table_bytes(board.clone(), 64 * 1024);
+            let mut leaf = AlphaBeta::with_table_bytes(board, 64 * 1024);
+            for line_ply in [0, 3, MAX_PLY as usize - 1, MAX_PLY as usize] {
+                full.board.line_ply = line_ply;
+                leaf.board.line_ply = line_ply;
+                for (alpha, beta) in windows {
+                    let (Ok(expected), Ok(value)) = (
+                        full.alpha_beta(alpha, beta, 0, true, RootBounds::Neither, None),
+                        leaf.leaf(alpha, beta),
+                    ) else {
+                        panic!("an unlimited search aborted");
+                    };
+                    assert_eq!(
+                        (value.score, value.tainted),
+                        (expected.score, expected.tainted)
+                    );
+                    assert_eq!(
+                        (leaf.nodes, leaf.quiescence_nodes, leaf.selective_depth),
+                        (full.nodes, full.quiescence_nodes, full.selective_depth)
+                    );
+                    asked += 1;
+                }
+            }
+        }
+        assert!(asked > 1000, "{asked}");
     }
 }
