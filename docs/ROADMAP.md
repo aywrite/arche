@@ -667,13 +667,18 @@ of these again without saying what is different this time.
 - Refusing to begin a depth whose expected cost, twice the last one's time, would run past
   the share. -7 ±11 over 2,000 games at 10+0.1 against 621ecab (sprt [0, 10] failed at
   LLR -3.79). The candidate ended 436 ms ahead on the clock and spent 0.624 of its share
-  against 0.692, so the time it banked was never spent.
+  against 0.692, so the time it banked was never spent. With that time spent instead,
+  the clock planned over 18 moves rather than 20 so both sides used the same time (end
+  clock -68 ms), the same refusal lost -26 ±20 over 500 games at 10+0.1 against 8ade39b
+  and was stopped for futility after one batch. A depth the deadline cuts is not wasted
+  work.
 - Multi-cut at a singular test node: when the search with the table move excluded comes
   back at or over a window that is itself at or over beta, answer that window as a fail
   high without searching the table move. It fired on 17.3% of the bench's eligible nodes
   and 1.6% of the games suite's, and read +2 ±21 over 300 pairs at 200,000 nodes a move.
   The match against 048dfa7 capped unresolved at +5 ±7 over 4,000 games at 10+0.1 (sprt
-  [0, 10], LLR 0.09).
+  [0, 10], LLR 0.09). Continued, it read +2 ±7 over 5,000 games and failed the sprt at
+  LLR -2.95.
 - Refitting the late move pruning skip as a logistic model over the move as well as the
   node, in place of the evaluation's margin under beta: history kept signed rather than
   clamped at zero, the window's width, the index bands, the killer and the table word,
@@ -691,3 +696,16 @@ of these again without saying what is different this time.
   and pair term change, -4 ±9 over 3,000 games at 10+0.1 against 2d7fe54 (sprt [0, 10]
   failed at LLR -4.58), at 0.945 to 0.961 times master's nodes a second; with the piece
   square change alone, -6 ±9 over 2,500 games (LLR -4.76).
+- Reducing late moves by their history: a ply less reduction for each 128 the butterfly
+  and continuation entries sum to above zero, a ply more for each 128 below, together with
+  the one ply continuation table it reads. -2 ±10 over 2,500 games at 10+0.1 against
+  8ade39b (sprt [0, 10] failed at LLR -3.08), at 0.962 to 0.965 times master's nodes a
+  second.
+- Planning the clock over an estimate of the moves left rather than by the move number:
+  log(moves left) fitted on the non-pawn material, the pawns and the last search's score,
+  averaged over the side's moves, scaled to spend what the falling horizon spends and held
+  between 10 and 30. It predicted the moves left a little better than the move number (a
+  median error of 12 moves against 14 on games it was not fitted on), but -6 ±12 over 1,500
+  games at 10+0.1 against 54fb9a6 (sprt [0, 10] failed at LLR -3.01) at equal time (end
+  clock -16 ms). In practice it only moved a tenth of the time from the first ten moves
+  after the book to the next thirty; from move 60 both rules sit at the floor of 10.
