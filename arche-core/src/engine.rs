@@ -2039,6 +2039,7 @@ impl AlphaBeta {
         }
     }
 
+    #[inline(always)]
     fn quiescence(&mut self, alpha: Score, beta: Score) -> Result<Value, Aborted> {
         // no repetition check: a capture cannot repeat a position and the
         // only quiet moves here are evasions, so a cycle needs a line of
@@ -2057,6 +2058,45 @@ impl AlphaBeta {
         // searches those nodes full width), so a check seen here was
         // delivered by a capture searched here. Fail soft.
         let in_check = self.board.in_check();
+        self.quiescence_body(alpha, beta, in_check)
+    }
+
+    /// A full width child at depth zero out of check: `alpha_beta`'s entry
+    /// for such a node, then quiescence's, then the body they share.
+    /// The draw rules and the rail below are `answered_by_rule`'s with the
+    /// check known false, written out; the two change together.
+    #[inline(never)]
+    fn leaf(&mut self, mut alpha: Score, mut beta: Score) -> Result<Value, Aborted> {
+        // `alpha_beta`'s entry at depth zero out of check, in its order
+        self.poll_deadline()?;
+        self.selective_depth = self.selective_depth.max(self.board.line_ply as u8);
+        self.nodes += 1;
+        debug_assert!(!self.board.in_check());
+        if self.board.fifty_move_expired() || self.board.has_repeated() {
+            return Ok(Value::tainted(0));
+        }
+        if self.board.line_ply >= MAX_PLY as usize {
+            return Ok(Value::clean(self.eval()));
+        }
+        (alpha, beta) = match mate_distance_window(alpha, beta, self.board.line_ply) {
+            MateDistanceWindow::Open { alpha, beta } => (alpha, beta),
+            MateDistanceWindow::Closed(score) => return Ok(Value::clean(score)),
+        };
+
+        self.poll_deadline()?;
+        self.nodes += 1;
+        self.quiescence_nodes += 1;
+        self.quiescence_body(alpha, beta, false)
+    }
+
+    /// Quiescence after its entry, which says whether the side is in check.
+    #[inline(never)]
+    fn quiescence_body(
+        &mut self,
+        alpha: Score,
+        beta: Score,
+        in_check: bool,
+    ) -> Result<Value, Aborted> {
         // a stalemate is not in check, so standing pat would read it as the
         // eval. Only a side with nothing but pawns and a king is asked: a
         // piece almost always has a move, and where the king test fails the
@@ -2294,13 +2334,12 @@ impl AlphaBeta {
         if pass && eval >= beta {
             let reduction = null_move_reduction(self.config, depth, eval - beta);
             self.board.make_null_move();
-            let result = self.alpha_beta(
+            let result = self.child_search(
                 -beta,
                 -beta + 1,
                 depth - 1 - reduction,
                 false,
                 root_bounds.child(ChildSearch::Pass),
-                None,
             );
             // undo before an abort can propagate
             self.board.undo_null_move();
@@ -2343,6 +2382,10 @@ impl AlphaBeta {
     /// a later one, and a later one carries the scout's reduction and the
     /// ledger's staging, which travels as a parameter rather than as a
     /// field of the engine. A skipped move never reaches here.
+    ///
+    /// The first search `windowed` would ask is asked here, and the rest of
+    /// the sequence (`windowed_rest`) only where it rose above alpha. A
+    /// child at depth zero out of check goes straight to `leaf`.
     #[inline(always)]
     fn search_child(
         &mut self,
@@ -2360,9 +2403,122 @@ impl AlphaBeta {
         if !self.board.make_move(m) {
             return Ok(None);
         }
-        let result = self.windowed(alpha, beta, depth, decision, root_bounds);
+        // the first search `windowed` would ask, asked here. At a zero
+        // window with no reduction it is the only one, and the rest of the
+        // sequence runs only where it rose above alpha. The instruments'
+        // scouts keep the whole sequence in `windowed`
+        let result = match decision {
+            Decision::First => self
+                .child_search(
+                    -beta,
+                    -alpha,
+                    depth - 1,
+                    true,
+                    root_bounds.child(ChildSearch::FirstMove),
+                )
+                .map(|value| -value),
+            Decision::Search {
+                reduction,
+                staged: None,
+            } => {
+                let reduction = *reduction;
+                // the scout `forced_scout` and `ledger_event` read is staged
+                // whenever either is armed (`stage_scout`), so a scout here
+                // has neither to tell
+                debug_assert!(
+                    reduction == 0 || (self.forced.is_none() && self.ledger.is_none()),
+                    "an instrument's scout was not staged"
+                );
+                match self.child_search(
+                    -alpha - 1,
+                    -alpha,
+                    depth - 1 - reduction,
+                    true,
+                    root_bounds.child(ChildSearch::Probe),
+                ) {
+                    Ok(value) => {
+                        let value = -value;
+                        if value.score > alpha && (reduction > 0 || alpha + 1 < beta) {
+                            self.windowed_rest(value, alpha, beta, depth, reduction, root_bounds)
+                        } else {
+                            Ok(value)
+                        }
+                    }
+                    Err(aborted) => Err(aborted),
+                }
+            }
+            _ => self.windowed(alpha, beta, depth, decision, root_bounds),
+        };
         self.board.undo_move();
         Ok(Some(result?))
+    }
+
+    /// What `windowed` asks after its first search rose above alpha at a
+    /// later move: after a scout, the probe at full depth and then the
+    /// proof; after a probe, the proof.
+    #[cold]
+    #[inline(never)]
+    fn windowed_rest(
+        &mut self,
+        first: Value,
+        alpha: Score,
+        beta: Score,
+        depth: u8,
+        reduction: u8,
+        root_bounds: RootBounds,
+    ) -> Result<Value, Aborted> {
+        let (probe, tainted) = if reduction > 0 {
+            debug_assert!(depth > reduction + 1, "the scout would be quiescence");
+            let probe = -self.alpha_beta(
+                -alpha - 1,
+                -alpha,
+                depth - 1,
+                true,
+                root_bounds.child(ChildSearch::Probe),
+                None,
+            )?;
+            if probe.score <= alpha || alpha + 1 >= beta {
+                return Ok(Value::with_taint(
+                    probe.score,
+                    probe.tainted || first.tainted,
+                ));
+            }
+            (probe, first.tainted)
+        } else {
+            (first, false)
+        };
+        let proof = -self.alpha_beta(
+            -beta,
+            -alpha,
+            depth - 1,
+            true,
+            root_bounds.child(ChildSearch::Proof),
+            None,
+        )?;
+        Ok(Value::with_taint(
+            proof.score,
+            proof.tainted || probe.tainted || tainted,
+        ))
+    }
+
+    /// A child of a full width node, asked straight after the make. A
+    /// child at depth zero and out of check is a leaf: what `alpha_beta`
+    /// asks of it before handing it to quiescence is asked by the leaf's
+    /// own entry, without the full width frame between them.
+    #[inline(always)]
+    fn child_search(
+        &mut self,
+        alpha: Score,
+        beta: Score,
+        depth: u8,
+        can_null: bool,
+        root_bounds: RootBounds,
+    ) -> Result<Value, Aborted> {
+        if depth == 0 && !self.board.in_check() {
+            self.leaf(alpha, beta)
+        } else {
+            self.alpha_beta(alpha, beta, depth, can_null, root_bounds, None)
+        }
     }
 
     /// Principal variation search: the recursion behind one made move. The
@@ -2379,7 +2535,11 @@ impl AlphaBeta {
     /// does.
     ///
     /// A body of its own rather than `search_child`'s so that an abort from
-    /// any pass runs through the one undo there.
+    /// any pass runs through the one undo there. `search_child` asks the
+    /// first search of this sequence itself and `windowed_rest` the rest,
+    /// so this whole body runs only for a move the instruments staged a
+    /// scout for.
+    #[inline(never)]
     fn windowed(
         &mut self,
         alpha: Score,
@@ -2738,6 +2898,9 @@ impl AlphaBeta {
     /// below the root, so a
     /// repetition is a draw either side can take; at the root the engine
     /// still has to move.
+    ///
+    /// `leaf` asks the same rules of a depth zero child out of check,
+    /// written out there, so a rule added here goes there too.
     fn answered_by_rule(&mut self, in_check: bool) -> Option<Value> {
         if self.board.fifty_move_expired() {
             // a mate delivered by the hundredth half move is a mate. A
@@ -2880,6 +3043,9 @@ impl AlphaBeta {
         if in_check {
             depth += 1;
         }
+        // a child the loop asks at depth zero out of check goes to `leaf`
+        // instead, which repeats the entry above: a change to it goes there
+        // too
         if depth == 0 {
             return self.quiescence(alpha, beta);
         }

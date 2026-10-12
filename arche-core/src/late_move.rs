@@ -4,7 +4,7 @@
 //! What a full width node does with a quiet move its ordering put late:
 //! search it whole, scout it some plies shallower first, or not search it
 //! at all. `decide_admitted` answers with a `Verdict`; the scout itself
-//! is `windowed`'s, in `engine.rs`.
+//! is asked by `search_child`, in `engine.rs`.
 //!
 //! At depths one to three `Rules::skips` asks two pruning rules of a quiet
 //! move after the node's first: quiet futility, when the evaluation plus a
