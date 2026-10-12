@@ -10,15 +10,25 @@ use std::time::Duration;
 /// budget. Fifty covers a local interface; a network costs more.
 pub const DEFAULT_MOVE_OVERHEAD_MS: u64 = 50;
 
-/// Moves we plan for when the time control does not say how many are left,
-/// at the first move searched in a game.
-///
-/// This is a planning horizon, not an estimate of the moves left. Games here
-/// last about 65 moves a side after the book, so 20 falling to 10 is about
-/// 0.3 of the moves left, on purpose: the search spends about 70% of the
-/// clock over the horizon, and matches favoured spending faster than an even
-/// spread. At equal time, a horizon set from a fitted estimate of the moves
-/// left did no better (see docs/ROADMAP.md).
+/// The moves a side is taken to have left when the time control does not
+/// say: `OPENING_MOVES_LEFT` at the first move searched in a game, falling
+/// in a straight line to `LATE_MOVES_LEFT` at `LATE_MOVE` and held there.
+/// An assumption, not an estimate of this game: over 1,000 games at 10+0.1
+/// a side had 67 moves left on average at its first searched move (median
+/// 63) and 29 at move 60 (median 21). A fitted estimate from material and
+/// score placed the same time no better (see docs/ROADMAP.md).
+const OPENING_MOVES_LEFT: u64 = 60;
+const LATE_MOVES_LEFT: u64 = 30;
+
+/// The move number by which the moves left have fallen to `LATE_MOVES_LEFT`.
+/// A game first searched at or past it falls there on the move after.
+const LATE_MOVE: u64 = 60;
+
+/// The clock is planned over this fraction of the moves left, a third, so
+/// the horizon is 20 at the first searched move and 10 from move 60.
+/// Planning over all of them would bank most of the clock: the search
+/// stops short of its share on most moves, and matches favoured spending
+/// faster than an even spread.
 ///
 /// With an increment the clock falls until a move's spend equals the
 /// increment and then holds, so the horizon decides how much clock is unspent
@@ -29,15 +39,7 @@ pub const DEFAULT_MOVE_OVERHEAD_MS: u64 = 50;
 /// horizon falls as the game goes on and spends that on the middle and late
 /// game: a re-run of 500 games' clocks with it ends them 1.27 seconds lower,
 /// with 1.10 of the time and no clock under 750 ms.
-const OPENING_HORIZON: u64 = 20;
-
-/// The fewest moves the horizon falls to.
-const LATE_HORIZON: u64 = 10;
-
-/// The move number by which the horizon has fallen to `LATE_HORIZON`, in a
-/// straight line from the first move searched. A game first searched at or
-/// past it falls to `LATE_HORIZON` on the move after.
-const LATE_MOVE: u64 = 60;
+const PLANNED_FRACTION_OF_MOVES_LEFT: (u64, u64) = (1, 3);
 
 /// Share of the increment we count on. It is credited only after the move,
 /// so spending all of it leaves nothing to cover the overhead.
@@ -74,16 +76,19 @@ pub struct GameMoves {
 }
 
 impl GameMoves {
-    /// The clock over the horizon, which falls from `OPENING_HORIZON` at
-    /// the first move to `LATE_HORIZON` at `LATE_MOVE` and stays there.
-    /// The horizon times the span is kept whole, so the share is exact.
+    /// The clock over the horizon: `PLANNED_FRACTION_OF_MOVES_LEFT` of the
+    /// moves taken to be left, which fall from `OPENING_MOVES_LEFT` at the
+    /// first move to `LATE_MOVES_LEFT` at `LATE_MOVE` and stay there.
+    /// The moves left times the span are kept whole, so the share is exact.
     fn share_of(&self, time: u64) -> u64 {
         let span = LATE_MOVE.saturating_sub(self.first).max(1);
         let gone = self.now.saturating_sub(self.first);
-        let horizon_by_span = (OPENING_HORIZON * span)
-            .saturating_sub((OPENING_HORIZON - LATE_HORIZON).saturating_mul(gone))
-            .max(LATE_HORIZON * span);
-        (time as u128 * span as u128 / horizon_by_span as u128) as u64
+        let moves_left_by_span = (OPENING_MOVES_LEFT * span)
+            .saturating_sub((OPENING_MOVES_LEFT - LATE_MOVES_LEFT).saturating_mul(gone))
+            .max(LATE_MOVES_LEFT * span);
+        let (planned, of) = PLANNED_FRACTION_OF_MOVES_LEFT;
+        (time as u128 * span as u128 * of as u128 / (moves_left_by_span as u128 * planned as u128))
+            as u64
     }
 }
 
