@@ -385,7 +385,7 @@ cost nothing: a re-search recovers them, or the root's move survives them.
 `arche forced` asks it:
 
 ```
-target/release/arche forced [depth] [every <n>] [cap <n>] [epd <file>] [kinds <kind>[,<kind>]] [from <depth>]
+target/release/arche forced [depth] [every <n>] [cap <n>] [epd <file>] [kinds <kind>[,<kind>]] [from <depth>] [nodes <n>] [per <n>]
 ```
 
 It searches each root of the suite under the default, sampling the shortcut
@@ -402,6 +402,19 @@ decision with that one decision inverted. Four kinds can be inverted:
 `kinds` narrows the sampling to the kinds named, and `from` to decisions at
 that depth and deeper. Shallow decisions are most of them, so a run after
 the margin's decisions asks for `from 4`.
+
+`nodes` searches each root to the deepest depth it completes with an exact
+score at that budget, as `policy` reads it, in place of one depth for all,
+and at most depth 32, since a forced line can complete every depth inside a
+small budget; a line names a depth or a budget, not both. A root is then
+searched about as deep as a game's share of the clock would search it, where
+one depth for all searches a large tree far deeper than play does and lets
+it supply most of a run's rows and time. Each root costs one search more, at
+the budget, to find its depth. `per` keeps at most that many rows a root of
+each kind, those with the smallest sampling keys, since a root with a larger
+tree offers more decisions. The header names the depth or the budget and the
+limit, and each root's line under `summary` gives the depth it was searched
+to.
 
 A decision is addressed by its kind, a position key and the deciding node's
 depth. A node decision is keyed by the node's position; a move decision by
@@ -451,8 +464,8 @@ row that reads zero is the instrument failing, not a finding. `root` is the
 root's place in the suite, and the fen is the deciding node's.
 
 The run ends, under `summary`, with a line per kind (rows forced, rows never
-met, rows whose root move changed) and a line per root with what the default
-answered there and the root's id last.
+met, rows whose root move changed) and a line per root with the depth it was
+searched to, what the default answered there and the root's id last.
 
 Every kept decision costs a search of its root, so the default rate is one
 decision in 100,000. On the bench that inverts 22 decisions at depth nine and

@@ -15,7 +15,7 @@ fn the_forced_argument_prints_a_header_rows_and_a_line_a_kind_and_a_root() {
     let printed = report_command::run(&ARGUMENTS);
     assert!(
         printed.header.starts_with(
-            "forced depth 5 every 3000 cap 10000 epd bench \
+            "forced depth 5 per - every 3000 cap 10000 epd bench \
              kinds reverse_futility,null_move,skip,trusted_scout from 0 positions "
         ),
         "header: {}",

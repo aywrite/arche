@@ -235,6 +235,14 @@ pub const FORCED: Command = Command {
             word: "from",
             value: "<depth>",
         },
+        Keyword {
+            word: "nodes",
+            value: "<n>",
+        },
+        Keyword {
+            word: "per",
+            value: "<n>",
+        },
     ],
     flags: &[],
     summary: &[
@@ -492,9 +500,12 @@ impl EffortSettings {
 /// What a forced argument asked for. `kinds` narrows the decisions sampled
 /// to those named, comma separated, and is absent for all four. `from` is
 /// the shallowest depth a decision is sampled at, since the shallow ones
-/// are most of them and a run may be after the deep.
+/// are most of them and a run may be after the deep. `nodes` searches each
+/// root to the depth it completes at that budget in place of one depth for
+/// all, and `per` keeps at most that many rows a root of each kind.
 pub struct ForcedSettings {
-    pub depth: u8,
+    pub reach: forced::Reach,
+    pub per: Option<usize>,
     pub every: u32,
     pub cap: usize,
     pub kinds: forced::Kinds,
@@ -531,9 +542,26 @@ pub fn forced_settings(params: &Params) -> Result<ForcedSettings, String> {
         Param::Bare | Param::Unreadable(_) => return Err(no_such_kind(NO_VALUE)),
     };
     let from = params.parse::<u8>("from").or_refuse("from")?.unwrap_or(0);
+    let nodes = params.parse::<u64>("nodes").or_refuse("nodes")?;
+    let per = params.parse::<usize>("per").or_refuse("per")?;
+    if nodes == Some(0) {
+        return Err("nodes: 0".to_string());
+    }
+    if per == Some(0) {
+        return Err("per: 0".to_string());
+    }
+    // a depth and a budget would each say how deep, so a line names one
+    let reach = match (nodes, params.parse::<u8>(FORCED.name)) {
+        (Some(_), Param::Read(depth)) => {
+            return Err(format!("nodes: given with depth {depth}"));
+        }
+        (Some(nodes), _) => forced::Reach::Budget(nodes),
+        (None, _) => forced::Reach::Depth(depth),
+    };
     let (epd, positions) = suite(params)?;
     Ok(ForcedSettings {
-        depth,
+        reach,
+        per,
         every,
         cap,
         kinds,
@@ -548,7 +576,8 @@ impl ForcedSettings {
         forced::run(
             &self.positions,
             self.epd.as_deref(),
-            self.depth,
+            self.reach,
+            self.per,
             self.every,
             self.cap,
             self.kinds,
@@ -717,7 +746,7 @@ mod tests {
             "kinds" => "skip",
             "from" => "1",
             "rule" => "none",
-            "nodes" => "1",
+            "nodes" | "per" => "1",
             _ => panic!("no value to give {keyword}"),
         }
     }
@@ -939,7 +968,10 @@ mod tests {
             }),
             (&FORCED, |line| {
                 let s = forced_settings(&Params::of(line)).expect(line);
-                (Some(s.depth), s.epd, s.positions)
+                let forced::Reach::Depth(depth) = s.reach else {
+                    panic!("{line} read a budget");
+                };
+                (Some(depth), s.epd, s.positions)
             }),
             (&TERMS, |line| {
                 let s = term_settings(&Params::of(line)).expect(line);
@@ -1130,7 +1162,10 @@ mod tests {
             cutoffs.depth,
             reductions.depth,
             effort.depth,
-            forced.depth,
+            match forced.reach {
+                forced::Reach::Depth(depth) => depth,
+                forced::Reach::Budget(nodes) => panic!("a budget of {nodes} by default"),
+            },
         ] {
             assert_eq!(depth, bench::DEPTH);
         }
@@ -1146,6 +1181,7 @@ mod tests {
         assert_eq!(forced.every, forced::DEFAULT_EVERY);
         assert_eq!(forced.kinds, forced::Kinds::ALL);
         assert_eq!(forced.from, 0);
+        assert_eq!(forced.per, None);
         assert_eq!(
             forced_settings(&Params::of("forced from 4")).map(|s| s.from),
             Ok(4)
@@ -1165,5 +1201,23 @@ mod tests {
             let read = sampling(&Params::of(word), command, default).expect(word);
             assert_eq!(read.every, default, "{word} took a rate not its own");
         }
+    }
+
+    /// A budget says how deep in place of a depth, so a line naming both is
+    /// refused, and a budget or a row limit of nothing is refused too.
+    #[test]
+    fn forced_reads_a_budget_in_place_of_a_depth_and_a_limit_a_root() {
+        let read = |line: &str| forced_settings(&Params::of(line)).map(|s| (s.reach, s.per));
+        assert_eq!(
+            read("forced nodes 650000 per 20"),
+            Ok((forced::Reach::Budget(650_000), Some(20)))
+        );
+        assert_eq!(read("forced 9"), Ok((forced::Reach::Depth(9), None)));
+        assert_eq!(
+            read("forced 9 nodes 650000").err(),
+            Some("nodes: given with depth 9".to_string())
+        );
+        assert_eq!(read("forced nodes 0").err(), Some("nodes: 0".to_string()));
+        assert_eq!(read("forced per 0").err(), Some("per: 0".to_string()));
     }
 }

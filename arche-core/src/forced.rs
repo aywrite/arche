@@ -408,10 +408,31 @@ impl Row {
     }
 }
 
+/// How deep a run searches each root.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum Reach {
+    /// Every root to this depth.
+    Depth(u8),
+    /// Each root to the deepest depth it completes with an exact score at
+    /// this many nodes, as `policy` reads it, and at most
+    /// `BUDGET_DEPTH_CEILING`: about as deep as a game's share of the clock
+    /// reaches there, so a root whose tree is large is searched about as
+    /// shallowly as play would search it.
+    Budget(u64),
+}
+
+/// The deepest a budget sends a root. A root whose line is forced, a mate
+/// above all, can complete every depth to the rail inside a small budget,
+/// and with one of its decisions inverted the same depth need not be cheap,
+/// with nothing to stop it. No root a game's share reaches comes near this.
+pub const BUDGET_DEPTH_CEILING: u8 = 32;
+
 /// What a run kept and what each forced search answered.
 #[derive(Clone, Debug)]
 pub struct Report {
-    pub depth: u8,
+    pub reach: Reach,
+    /// The most rows a root keeps of each kind, or none for no limit.
+    pub per: Option<usize>,
     pub every: u32,
     pub cap: usize,
     pub suite: Option<String>,
@@ -424,28 +445,44 @@ pub struct Report {
     pub overflowed: u64,
     /// Kept records, before the revisits of an address were folded.
     pub records: usize,
-    /// Each root's id and what the default answered there.
-    pub roots: Vec<(String, Answer)>,
+    /// Each root's id, the depth it was searched to, and what the default
+    /// answered there.
+    pub roots: Vec<(String, u8, Answer)>,
     pub rows: Vec<Row>,
 }
 
 /// Search every root under the default with the reservoir armed, keep the
 /// first visit's record of each address, and search each kept address's
 /// root again with that decision inverted.
+#[allow(clippy::too_many_arguments)]
 pub fn run(
     positions: &[Position],
     suite: Option<&str>,
-    depth: u8,
+    reach: Reach,
+    per: Option<usize>,
     every: u32,
     cap: usize,
     kinds: Kinds,
     from: u8,
 ) -> Report {
-    let depth = depth.max(1);
     let every = every.max(1);
+    let depths: Vec<u8> = positions
+        .iter()
+        .map(|position| match reach {
+            Reach::Depth(depth) => depth.max(1),
+            Reach::Budget(nodes) => crate::policy::search(position, &Policy::default(), nodes)
+                .depth
+                .clamp(1, BUDGET_DEPTH_CEILING),
+        })
+        .collect();
+    let reach = match reach {
+        Reach::Depth(depth) => Reach::Depth(depth.max(1)),
+        budget => budget,
+    };
     let mut sampler = Sampler::with_cap(every, cap);
     let mut answers = Vec::with_capacity(positions.len());
     for (root, position) in positions.iter().enumerate() {
+        let depth = depths[root];
         let (answer, arm) = search(position, depth, Arm::recording(sampler, kinds, from, root));
         sampler = arm
             .sampler
@@ -459,12 +496,29 @@ pub fn run(
     // its own window and features, and the forced search inverts them all
     kept.sort_by_key(|event| (event.root, event.address, event.at));
     kept.dedup_by_key(|event| (event.root, event.address));
+    if let Some(per) = per {
+        // a root with a large tree offers more decisions and would supply
+        // more rows; the sampling key picks which of a root's survive, so
+        // the choice is as blind to the outcome as the sampler's
+        kept.sort_by_key(|event| (event.root, event.address.kind, event.address.sample_key()));
+        let mut held = 0;
+        let mut last = None;
+        kept.retain(|event| {
+            let group = (event.root, event.address.kind);
+            if last != Some(group) {
+                last = Some(group);
+                held = 0;
+            }
+            held += 1;
+            held <= per
+        });
+    }
     kept.sort_by_key(|event| (event.root, event.at));
     let rows = kept
         .into_iter()
         .map(|event| {
             let position = &positions[event.root];
-            let (forced, arm) = search(position, depth, Arm::inverting(event.address));
+            let (forced, arm) = search(position, depths[event.root], Arm::inverting(event.address));
             Row {
                 on: answers[event.root],
                 forced,
@@ -475,7 +529,8 @@ pub fn run(
         })
         .collect();
     Report {
-        depth,
+        reach,
+        per,
         every,
         cap,
         suite: suite.map(str::to_string),
@@ -487,8 +542,9 @@ pub fn run(
         records,
         roots: positions
             .iter()
-            .map(|position| position.id.clone())
+            .zip(depths)
             .zip(answers)
+            .map(|((position, depth), answer)| (position.id.clone(), depth, answer))
             .collect(),
         rows,
     }
@@ -508,8 +564,13 @@ impl fmt::Display for Report {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         writeln!(
             f,
-            "forced depth {} every {} cap {} epd {} kinds {} from {} positions {} events {} records {} rows {} overflow {}",
-            self.depth,
+            "forced {} per {} every {} cap {} epd {} kinds {} from {} positions {} events {} records {} rows {} overflow {}",
+            match self.reach {
+                Reach::Depth(depth) => format!("depth {depth}"),
+                Reach::Budget(nodes) => format!("nodes {nodes}"),
+            },
+            self.per
+                .map_or_else(|| "-".to_string(), |per| per.to_string()),
             self.every,
             self.cap,
             self.suite.as_deref().unwrap_or("bench"),
@@ -584,11 +645,11 @@ impl fmt::Display for Report {
                 recorder::share(flipped, rows.len()),
             )?;
         }
-        for (root, (id, answer)) in self.roots.iter().enumerate() {
+        for (root, (id, depth, answer)) in self.roots.iter().enumerate() {
             writeln!(
                 f,
-                "root {} best {} score {} nodes {} {}",
-                root, answer.best, answer.score, answer.nodes, id,
+                "root {} depth {} best {} score {} nodes {} {}",
+                root, depth, answer.best, answer.score, answer.nodes, id,
             )?;
         }
         Ok(())
@@ -683,7 +744,16 @@ mod tests {
     /// the same way.
     #[test]
     fn every_kept_decision_is_met_when_forced_and_rowed_once() {
-        let report = run(&suite(), None, 6, 40, 400, Kinds::ALL, 0);
+        let report = run(
+            &suite(),
+            None,
+            Reach::Depth(6),
+            None,
+            40,
+            400,
+            Kinds::ALL,
+            0,
+        );
         each_row_was_met_and_inverted(&report);
         for kind in [Kind::ReverseFutility, Kind::Skip, Kind::TrustedScout] {
             assert!(
@@ -694,7 +764,16 @@ mod tests {
         }
         // the run above keeps three null moves, too few to stand on, so the
         // kind is also sampled on its own
-        let report = run(&suite(), None, 6, 10, 400, Kinds::of(&[Kind::NullMove]), 0);
+        let report = run(
+            &suite(),
+            None,
+            Reach::Depth(6),
+            None,
+            10,
+            400,
+            Kinds::of(&[Kind::NullMove]),
+            0,
+        );
         each_row_was_met_and_inverted(&report);
         assert!(
             report
@@ -752,7 +831,16 @@ mod tests {
 
     #[test]
     fn the_kinds_asked_for_are_the_kinds_sampled() {
-        let report = run(&suite(), None, 6, 40, 400, Kinds::of(&[Kind::Skip]), 2);
+        let report = run(
+            &suite(),
+            None,
+            Reach::Depth(6),
+            None,
+            40,
+            400,
+            Kinds::of(&[Kind::Skip]),
+            2,
+        );
         assert!(!report.rows.is_empty());
         assert!(
             report
@@ -832,7 +920,16 @@ mod tests {
     #[test]
     fn a_row_is_placed_where_its_position_is() {
         let positions = suite();
-        let report = run(&positions, None, 6, 10, 2000, Kinds::ALL, 0);
+        let report = run(
+            &positions,
+            None,
+            Reach::Depth(6),
+            None,
+            10,
+            2000,
+            Kinds::ALL,
+            0,
+        );
         assert!(!report.rows.is_empty());
         let mut kinds_seen = Kinds(0);
         for row in &report.rows {
@@ -879,11 +976,122 @@ mod tests {
         assert!(report.rows.iter().any(|row| row.event.place.pv));
     }
 
+    /// Under a budget each root is searched to the depth it completes at
+    /// that budget, and its rows are those decisions forced at that depth.
+    #[test]
+    fn a_budget_searches_each_root_as_deep_as_the_budget_reaches() {
+        // the two middlegames reach one depth at any budget, so an ending
+        // whose tree is small stands beside them
+        let mut positions = suite();
+        positions.extend(bench::parse_epd("8/8/4k3/8/8/4K3/4P3/8 w - - id \"pawn\";"));
+        let nodes = 60_000;
+        let report = run(
+            &positions,
+            None,
+            Reach::Budget(nodes),
+            None,
+            40,
+            400,
+            Kinds::of(&[Kind::TrustedScout, Kind::NullMove]),
+            0,
+        );
+        each_row_was_met_and_inverted(&report);
+        for (position, (id, depth, answer)) in positions.iter().zip(&report.roots) {
+            let reached = crate::policy::search(position, &Policy::default(), nodes).depth;
+            assert_eq!((id, *depth), (&position.id, reached));
+            // a root searched to its depth with nothing armed answers as the
+            // run says its default did
+            let (plain, _) = search(
+                position,
+                *depth,
+                Arm::recording(Sampler::with_cap(1, 0), Kinds::ALL, 0, 0),
+            );
+            assert_eq!(&plain, answer, "{id}");
+        }
+        assert!(report.to_string().starts_with("forced nodes 60000 per - "));
+        // a budget is the point only where roots reach different depths
+        let mut depths: Vec<u8> = report.roots.iter().map(|(_, depth, _)| *depth).collect();
+        depths.dedup();
+        assert!(depths.len() > 1, "every root reached the same depth");
+    }
+
+    /// A limit a root keeps the rows the unlimited run kept, at most that
+    /// many of each kind a root.
+    #[test]
+    fn a_limit_a_root_keeps_at_most_that_many_of_each_kind() {
+        let positions = suite();
+        let kinds = Kinds::of(&[Kind::TrustedScout, Kind::NullMove]);
+        let all = run(&positions, None, Reach::Depth(6), None, 10, 4000, kinds, 0);
+        let few = run(
+            &positions,
+            None,
+            Reach::Depth(6),
+            Some(3),
+            10,
+            4000,
+            kinds,
+            0,
+        );
+        let count = |report: &Report, root: usize, kind: Kind| {
+            report
+                .rows
+                .iter()
+                .filter(|row| row.event.root == root && row.event.address.kind == kind)
+                .count()
+        };
+        for root in 0..positions.len() {
+            for kind in [Kind::TrustedScout, Kind::NullMove] {
+                assert_eq!(count(&few, root, kind), count(&all, root, kind).min(3));
+            }
+        }
+        assert!(
+            few.rows.len() < all.rows.len(),
+            "the limit held nothing back"
+        );
+        // and the rows it keeps are those with the smallest sampling keys,
+        // which no outcome can steer
+        for root in 0..positions.len() {
+            for kind in [Kind::TrustedScout, Kind::NullMove] {
+                let keys = |report: &Report| {
+                    let mut keys: Vec<u64> = report
+                        .rows
+                        .iter()
+                        .filter(|row| row.event.root == root && row.event.address.kind == kind)
+                        .map(|row| row.event.address.sample_key())
+                        .collect();
+                    keys.sort_unstable();
+                    keys
+                };
+                let mut smallest = keys(&all);
+                smallest.truncate(3);
+                assert_eq!(keys(&few), smallest, "root {root} {}", kind.word());
+            }
+        }
+        for row in &few.rows {
+            assert!(
+                all.rows
+                    .iter()
+                    .any(|kept| (kept.event.root, kept.event.address)
+                        == (row.event.root, row.event.address))
+            );
+        }
+        assert!(few.to_string().starts_with("forced depth 6 per 3 "));
+    }
+
     /// A skip at depth four and up is the margin's, and its row says so: the
     /// recorded evaluation stands at least the margin under beta.
     #[test]
     fn a_deep_skip_stands_the_margin_under_beta() {
-        let report = run(&suite(), None, 7, 20, 2000, Kinds::ALL, 0);
+        let report = run(
+            &suite(),
+            None,
+            Reach::Depth(7),
+            None,
+            20,
+            2000,
+            Kinds::ALL,
+            0,
+        );
         let mut skips = 0;
         for row in &report.rows {
             let e = &row.event;

@@ -548,7 +548,8 @@ mod tests {
         let report = forced::run(
             &positions,
             None,
-            6,
+            forced::Reach::Depth(6),
+            None,
             40,
             400,
             Kinds::of(&[Kind::TrustedScout, Kind::NullMove]),
@@ -563,11 +564,8 @@ mod tests {
                 a.key,
                 a.depth
             ));
-            let (answer, arm) = forced::search(
-                &positions[row.event.root],
-                report.depth,
-                Arm::deciding(policy),
-            );
+            let (answer, arm) =
+                forced::search(&positions[row.event.root], 6, Arm::deciding(policy));
             assert_eq!(answer, row.forced, "{a:?}");
             assert_eq!(arm.visits, row.visits, "{a:?}");
             assert_eq!(arm.decided[a.kind as usize], row.visits, "{a:?}");
