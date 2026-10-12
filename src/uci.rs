@@ -1410,7 +1410,7 @@ go depth 3
                     uci.engine.move_number = number;
                     uci.handle("go wtime 60000");
                     let asked = uci.engine.asked.take().expect("no search");
-                    shares.push(asked.limits.clock().unwrap().deadline().as_millis() as u64);
+                    shares.push(asked.limits.clock().unwrap().budget().as_millis() as u64);
                 }
             }
         }
@@ -1419,8 +1419,9 @@ go depth 3
 
     #[test]
     fn the_horizon_falls_from_the_first_move_searched_on_a_clock() {
-        // a twentieth at move 9, a tenth from move 60, less the overhead
-        assert_eq!(shares_at_moves(&[Some(9), Some(60)]), [2_950, 5_950]);
+        // 81% of a twentieth at move 9 and of a tenth from move 60, less the
+        // overhead
+        assert_eq!(shares_at_moves(&[Some(9), Some(60)]), [2_380, 4_810]);
         // a move time does not start the game's horizon
         let mut uci = recording();
         uci.engine.move_number = 50;
@@ -1432,12 +1433,12 @@ go depth 3
     fn a_new_game_or_an_earlier_move_starts_the_horizon_again() {
         assert_eq!(
             shares_at_moves(&[Some(9), Some(60), None, Some(60)]),
-            [2_950, 5_950, 2_950]
+            [2_380, 4_810, 2_380]
         );
         assert_eq!(
             shares_at_moves(&[Some(9), Some(5), Some(30)]),
-            // from move 5, 25 of 55 moves on: 60000 * 55 / 850 - 50
-            [2_950, 2_950, 3_832]
+            // from move 5, 25 of 55 moves on: 81% of 60000 * 55 / 850, less 50
+            [2_380, 2_380, 3_094]
         );
     }
 
@@ -1876,12 +1877,18 @@ go depth 3
         let line = "go wtime 60000 btime 4000";
         assert_eq!(
             asked_of_engine_as(line, Color::White).limits.clock(),
-            Some(Clock::Share(Duration::from_millis(2950))),
+            Some(Clock::Share {
+                share: Duration::from_millis(2380),
+                limit: Duration::from_millis(7140),
+            }),
             "white was not given its own clock"
         );
         assert_eq!(
             asked_of_engine_as(line, Color::Black).limits.clock(),
-            Some(Clock::Share(Duration::from_millis(150))),
+            Some(Clock::Share {
+                share: Duration::from_millis(112),
+                limit: Duration::from_millis(336),
+            }),
             "black was not given its own clock"
         );
     }

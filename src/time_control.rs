@@ -15,10 +15,10 @@ pub const DEFAULT_MOVE_OVERHEAD_MS: u64 = 50;
 ///
 /// This is a planning horizon, not an estimate of the moves left. Games here
 /// last about 65 moves a side after the book, so 20 falling to 10 is about
-/// 0.3 of the moves left, on purpose: the search spends about 70% of each
-/// share, and matches favoured spending faster than an even spread. At
-/// equal time, a horizon set from a fitted estimate of the moves left did no
-/// better (see docs/ROADMAP.md).
+/// 0.3 of the moves left, on purpose: the search spends about 70% of the
+/// clock over the horizon, and matches favoured spending faster than an even
+/// spread. At equal time, a horizon set from a fitted estimate of the moves
+/// left did no better (see docs/ROADMAP.md).
 ///
 /// With an increment the clock falls until a move's spend equals the
 /// increment and then holds, so the horizon decides how much clock is unspent
@@ -46,6 +46,21 @@ const INCREMENT_PERCENT: u64 = 75;
 /// The most of the remaining clock a single move may take, which keeps a
 /// large increment from spending time we have not been given yet.
 const MAX_CLOCK_PERCENT: u64 = 33;
+
+/// The part of the share above that a move on a game clock plans for, as a
+/// percentage, taken before the overhead. Below the whole of it because a
+/// depth under way at the share runs on to the limit: replayed over 100
+/// games at a node budget, the search spent 0.71 of each share stopping
+/// there and 0.91 running on, and at 81% the replayed clocks end where they
+/// did. With the overhead taken after, a share at 10+0.1 is about 0.79 of
+/// what it was.
+const SHARE_PERCENT: u64 = 81;
+
+/// The limit a depth begun inside the share may run on to: this many
+/// shares, and no more than `LIMIT_CLOCK_PERCENT` of the clock. Only a depth
+/// already under way uses it, since the soft line still reads the share.
+const LIMIT_SHARES: u32 = 3;
+const LIMIT_CLOCK_PERCENT: u64 = 25;
 
 /// Searched even on a spent clock, so that a legal move comes back.
 const MIN_BUDGET_MS: u64 = 1;
@@ -105,23 +120,34 @@ impl TimeControl {
 
     /// How long to search for, or `None` for no time limit, less the
     /// overhead. A move time is `Fixed`; a share worked out from the clock is
-    /// a guess the search may spend less of.
+    /// a guess the search may spend less of, with a limit past it that a
+    /// depth under way may run on to.
     pub fn budget(&self, overhead: u64) -> Option<Clock> {
         if self.infinite {
             return None;
         }
-        let spend = match (self.move_time, self.time, self.increment) {
-            (Some(move_time), _, _) => move_time,
-            (None, Some(time), increment) => self.clock_share(time, increment.unwrap_or(0)),
-            // some interfaces send an increment with no clock
-            (None, None, Some(increment)) => percent(increment, INCREMENT_PERCENT),
-            (None, None, None) => return None,
-        };
-        let budget = Duration::from_millis(spend.saturating_sub(overhead).max(MIN_BUDGET_MS));
-        Some(match self.move_time {
-            Some(_) => Clock::Fixed(budget),
-            None => Clock::Share(budget),
-        })
+        let less_overhead =
+            |millis: u64| Duration::from_millis(millis.saturating_sub(overhead).max(MIN_BUDGET_MS));
+        match (self.move_time, self.time, self.increment) {
+            (Some(move_time), _, _) => Some(Clock::Fixed(less_overhead(move_time))),
+            (None, Some(time), increment) => {
+                let share = less_overhead(percent(
+                    self.clock_share(time, increment.unwrap_or(0)),
+                    SHARE_PERCENT,
+                ));
+                let limit = (share * LIMIT_SHARES)
+                    .min(less_overhead(percent(time, LIMIT_CLOCK_PERCENT)))
+                    .max(share);
+                Some(Clock::Share { share, limit })
+            }
+            // some interfaces send an increment with no clock, and there is
+            // no clock to run on into
+            (None, None, Some(increment)) => Some(Clock::share(less_overhead(percent(
+                increment,
+                INCREMENT_PERCENT,
+            )))),
+            (None, None, None) => None,
+        }
     }
 
     fn clock_share(&self, time: u64, increment: u64) -> u64 {
@@ -149,7 +175,7 @@ mod tests {
     fn millis_at(control: &TimeControl, overhead: u64) -> Option<u64> {
         control
             .budget(overhead)
-            .map(|clock| clock.deadline().as_millis() as u64)
+            .map(|clock| clock.budget().as_millis() as u64)
     }
 
     fn millis(control: &TimeControl) -> Option<u64> {
@@ -199,7 +225,10 @@ mod tests {
         );
         assert_eq!(
             clock(60_000).budget(DEFAULT_MOVE_OVERHEAD_MS),
-            Some(Clock::Share(Duration::from_millis(2_950)))
+            Some(Clock::Share {
+                share: Duration::from_millis(2_380),
+                limit: Duration::from_millis(7_140),
+            })
         );
         assert_eq!(
             TimeControl {
@@ -207,14 +236,14 @@ mod tests {
                 ..Default::default()
             }
             .budget(DEFAULT_MOVE_OVERHEAD_MS),
-            Some(Clock::Share(Duration::from_millis(700)))
+            Some(Clock::share(Duration::from_millis(700)))
         );
     }
 
     #[test]
     fn the_overhead_is_whatever_the_option_was_set_to() {
-        assert_eq!(millis_at(&clock(60_000), 0), Some(3_000));
-        assert_eq!(millis_at(&clock(60_000), 500), Some(2_500));
+        assert_eq!(millis_at(&clock(60_000), 0), Some(2_430));
+        assert_eq!(millis_at(&clock(60_000), 500), Some(1_930));
         let move_time = TimeControl {
             move_time: Some(500),
             ..Default::default()
@@ -251,8 +280,8 @@ mod tests {
 
     #[test]
     fn sudden_death_plans_for_twenty_more_moves_at_the_first_move() {
-        // 60000 / 20 - 50
-        assert_eq!(millis(&clock(60_000)), Some(2_950));
+        // 81% of 60000 / 20, less 50
+        assert_eq!(millis(&clock(60_000)), Some(2_380));
     }
 
     fn at_move(first: u64, now: u64) -> TimeControl {
@@ -264,19 +293,20 @@ mod tests {
 
     #[test]
     fn the_horizon_falls_from_twenty_to_ten_by_move_sixty() {
-        // the first move searched, at 8moves' exit: 60000 / 20 - 50
-        assert_eq!(millis(&at_move(9, 9)), Some(2_950));
-        // 25 of 51 moves on, the horizon is 20 - 250/51: 60000 * 51 / 770 - 50
-        assert_eq!(millis(&at_move(9, 34)), Some(3_924));
-        // 60000 / 10 - 50, and no further
-        assert_eq!(millis(&at_move(9, 60)), Some(5_950));
-        assert_eq!(millis(&at_move(9, 120)), Some(5_950));
+        // the first move searched, at 8moves' exit: 81% of 60000 / 20, less 50
+        assert_eq!(millis(&at_move(9, 9)), Some(2_380));
+        // 25 of 51 moves on, the horizon is 20 - 250/51: 81% of
+        // 60000 * 51 / 770, less 50
+        assert_eq!(millis(&at_move(9, 34)), Some(3_168));
+        // 81% of 60000 / 10, less 50, and no further
+        assert_eq!(millis(&at_move(9, 60)), Some(4_810));
+        assert_eq!(millis(&at_move(9, 120)), Some(4_810));
     }
 
     #[test]
     fn a_first_move_at_or_past_sixty_falls_to_ten_a_move_later() {
-        assert_eq!(millis(&at_move(70, 70)), Some(2_950));
-        assert_eq!(millis(&at_move(70, 71)), Some(5_950));
+        assert_eq!(millis(&at_move(70, 70)), Some(2_380));
+        assert_eq!(millis(&at_move(70, 71)), Some(4_810));
     }
 
     #[test]
@@ -285,7 +315,7 @@ mod tests {
             moves_to_go: Some(10),
             ..at_move(9, 9)
         };
-        assert_eq!(millis(&control), Some(5_950));
+        assert_eq!(millis(&control), Some(4_810));
     }
 
     #[test]
@@ -294,8 +324,8 @@ mod tests {
             moves_to_go: Some(10),
             ..clock(60_000)
         };
-        // 60000 / 10 - 50
-        assert_eq!(millis(&control), Some(5_950));
+        // 81% of 60000 / 10, less 50
+        assert_eq!(millis(&control), Some(4_810));
     }
 
     #[test]
@@ -313,8 +343,8 @@ mod tests {
             moves_to_go: Some(1),
             ..clock(60_000)
         };
-        // the cap decides: 33% - 50
-        assert_eq!(millis(&control), Some(19_750));
+        // the cap decides: 81% of 33%, less 50
+        assert_eq!(millis(&control), Some(15_988));
     }
 
     #[test]
@@ -323,8 +353,8 @@ mod tests {
             increment: Some(1_000),
             ..clock(60_000)
         };
-        // 60000 / 20 + 750 of the increment - 50
-        assert_eq!(millis(&control), Some(3_700));
+        // 81% of 60000 / 20 + 750 of the increment, less 50
+        assert_eq!(millis(&control), Some(2_987));
     }
 
     #[test]
@@ -338,12 +368,13 @@ mod tests {
             let budget = millis(&control).unwrap();
             assert!(budget < time, "spent {} of {} left", budget, time);
         }
-        // near the floor 7913356 measured at 10+0.1: 1900 / 20 + 75 - 50
+        // near the floor 7913356 measured at 10+0.1: 81% of 1900 / 20 + 75,
+        // less 50
         let control = TimeControl {
             increment: Some(100),
             ..clock(1_900)
         };
-        assert_eq!(millis(&control), Some(120));
+        assert_eq!(millis(&control), Some(87));
     }
 
     #[test]
@@ -354,14 +385,61 @@ mod tests {
             increment: Some(100),
             ..clock(200)
         };
-        // 33% of 200 is 66, which is less than 200 / 20 + 75
-        assert_eq!(millis(&nearly_spent), Some(16));
+        // 33% of 200 is 66, which is less than 200 / 20 + 75; 81% of it
+        assert_eq!(millis(&nearly_spent), Some(3));
         let a_little_more = TimeControl {
             increment: Some(100),
             ..clock(300)
         };
         // 300 / 20 + 75 is 90, which is under the 99 the cap allows
-        assert_eq!(millis(&a_little_more), Some(40));
+        assert_eq!(millis(&a_little_more), Some(22));
+    }
+
+    fn limit_millis(control: &TimeControl) -> Option<u64> {
+        control
+            .budget(DEFAULT_MOVE_OVERHEAD_MS)
+            .map(|clock| clock.deadline().as_millis() as u64)
+    }
+
+    #[test]
+    fn a_depth_under_way_may_run_on_to_three_shares() {
+        assert_eq!(limit_millis(&clock(60_000)), Some(3 * 2_380));
+    }
+
+    #[test]
+    fn the_limit_takes_no_more_than_a_quarter_of_the_clock() {
+        // a share of 81% of 60000 / 5, less 50, is 9670; three of them
+        // would pass a quarter of the clock, less 50
+        let control = TimeControl {
+            moves_to_go: Some(5),
+            ..clock(60_000)
+        };
+        assert_eq!(millis(&control), Some(9_670));
+        assert_eq!(limit_millis(&control), Some(14_950));
+    }
+
+    #[test]
+    fn the_limit_is_never_below_the_share() {
+        // the share's own cap of a third is above a quarter
+        let control = TimeControl {
+            moves_to_go: Some(1),
+            ..clock(60_000)
+        };
+        assert_eq!(limit_millis(&control), millis(&control));
+    }
+
+    #[test]
+    fn a_move_time_and_a_bare_increment_have_nothing_past_the_budget() {
+        let move_time = TimeControl {
+            move_time: Some(500),
+            ..clock(60_000)
+        };
+        assert_eq!(limit_millis(&move_time), Some(450));
+        let increment = TimeControl {
+            increment: Some(1_000),
+            ..Default::default()
+        };
+        assert_eq!(limit_millis(&increment), Some(700));
     }
 
     #[test]

@@ -1130,7 +1130,7 @@ mod search {
     fn already_spent() -> Limits {
         Limits::starting_at(
             time::Instant::now() - time::Duration::from_secs(1),
-            Some(Clock::Share(time::Duration::from_millis(1))),
+            Some(Clock::share(time::Duration::from_millis(1))),
             u64::MAX,
         )
     }
@@ -1528,7 +1528,7 @@ mod search {
             None,
             Limits::starting_at(
                 time::Instant::now() - time::Duration::from_secs(1),
-                Some(Clock::Share(time::Duration::from_millis(1))),
+                Some(Clock::share(time::Duration::from_millis(1))),
                 1_000_000,
             ),
         );
@@ -1543,7 +1543,7 @@ mod search {
         let options = SearchParameters::new(
             None,
             Limits::starting_now(
-                Some(Clock::Share(time::Duration::from_secs(10))),
+                Some(Clock::share(time::Duration::from_secs(10))),
                 Some(limit),
             ),
         );
@@ -1730,7 +1730,7 @@ mod search {
         let mut e = engine(Board::new());
         let params = SearchParameters::new(
             None,
-            Limits::starting_now(Some(Clock::Share(time::Duration::from_millis(50))), None),
+            Limits::starting_now(Some(Clock::share(time::Duration::from_millis(50))), None),
         );
         let outcome = e.iterative_deepening_search(params, |_, _, _, _| {});
         assert!(matches!(outcome, SearchOutcome::Aborted(Some(_))));
@@ -1742,7 +1742,7 @@ mod search {
         // itself has not. The fraction belongs to Limits; this asserts the
         // deepening loop asks it, and only of a share of a game clock
         for (kind, depths) in [
-            (Clock::Share as fn(time::Duration) -> Clock, vec![1]),
+            (Clock::share as fn(time::Duration) -> Clock, vec![1]),
             (Clock::Fixed as fn(time::Duration) -> Clock, vec![1, 2]),
         ] {
             let mut e = engine(Board::new());
@@ -1778,7 +1778,7 @@ mod search {
                 Some(2),
                 Limits::starting_at(
                     time::Instant::now() - time::Duration::from_millis(gone),
-                    Some(Clock::Share(time::Duration::from_secs(1))),
+                    Some(Clock::share(time::Duration::from_secs(1))),
                     u64::MAX,
                 ),
             );
