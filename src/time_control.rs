@@ -13,6 +13,13 @@ pub const DEFAULT_MOVE_OVERHEAD_MS: u64 = 50;
 /// Moves we plan for when the time control does not say how many are left,
 /// at the first move searched in a game.
 ///
+/// This is a planning horizon, not an estimate of the moves left. Games here
+/// last about 65 moves a side after the book, so 20 falling to 10 is about
+/// 0.3 of the moves left, on purpose: the search spends about 70% of each
+/// share, and matches favoured spending faster than an even spread. At
+/// equal time, a horizon set from a fitted estimate of the moves left did no
+/// better (see docs/ROADMAP.md).
+///
 /// With an increment the clock falls until a move's spend equals the
 /// increment and then holds, so the horizon decides how much clock is unspent
 /// at the end rather than how fast it runs out. At a fortieth, two self play
