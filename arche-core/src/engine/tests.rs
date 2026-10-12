@@ -4175,7 +4175,7 @@ mod node {
         let mut rules = late_move::Rules::new(&e.deciding(), &node, None);
         let front = ordered.front;
         assert_eq!(
-            e.order_quiets_at(&mut moves, front, &mut quiets, &node, &mut rules),
+            e.order_quiets_at(&mut moves, front, &mut quiets, &node, Some(&mut rules)),
             None
         );
         assert!(quiets.filtered);
