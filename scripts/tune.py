@@ -198,11 +198,12 @@ HEADERS = ("terms positions ", "terms epd ")
 # them, read from the right because the suite name in the middle can hold
 # anything.
 #
-# `drawn` is the one that has to be here. A header without it was printed by
-# an engine with no drawn material rule, and a fit over its rows would fit an
-# evaluation the engine no longer runs. This file cannot find those rows
-# without a second copy of the rule, so it refuses the extraction.
-HEADER_COUNTS = ("positions", "in_check", "unsettled", "drawn", "kept")
+# `drawn` and `scaled` are the ones that have to be here. A header without
+# them was printed by an engine with no drawn material rule or no endgame
+# scale, and a fit over its rows would fit an evaluation the engine no longer
+# runs. This file cannot find those rows without a second copy of the rules,
+# so it refuses the extraction.
+HEADER_COUNTS = ("positions", "in_check", "unsettled", "drawn", "scaled", "kept")
 
 LAYOUT = "layout "
 

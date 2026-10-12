@@ -177,7 +177,7 @@ const H8: u8 = 63;
 
 /// The light squares: a square is light when its file and rank sum to an
 /// odd number.
-const LIGHT_SQUARES: u64 = 0x55AA_55AA_55AA_55AA;
+pub(crate) const LIGHT_SQUARES: u64 = 0x55AA_55AA_55AA_55AA;
 
 pub(crate) static ZOBRIST: Zobrist = Zobrist::TABLE;
 
@@ -2014,7 +2014,7 @@ impl Position {
     /// one square colour with no knight, whichever side owns them. Two
     /// minors that cancel (a knight each, bishops on opposite colours) are
     /// drawn in practice and left out: the evaluation already reads them
-    /// near zero, and pricing the near drawn endings is a longer rule.
+    /// near zero, and the near drawn endings are scaled (`eval::scale`).
     pub fn drawn_by_material(&self) -> bool {
         if self.pawns() | self.rooks() | self.queens() != 0 {
             return false;

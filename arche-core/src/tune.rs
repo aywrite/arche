@@ -10,11 +10,12 @@
 //! as a constant. This module writes the coefficients down and
 //! `scripts/tune.py` fits them.
 //!
-//! The other place the evaluation is not linear is material that cannot mate,
-//! which `eval` answers with a hard zero. `run` turns those positions away
-//! and counts them in the header, and `scripts/tune.py` refuses a header
-//! without the count, since an extraction printed before the rule holds rows
-//! the rule would have dropped.
+//! The other places the evaluation is not linear are material that cannot
+//! mate, which `eval` answers with a hard zero, and the endings whose score
+//! it scales down. `run` turns those positions away and counts each kind in
+//! the header, and `scripts/tune.py` refuses a header without the counts,
+//! since an extraction printed before a rule holds rows the rule would have
+//! dropped.
 //!
 //! The engine states the coefficients and never the arithmetic, so the tuner
 //! carries no second implementation of the evaluation. [`reconstruct`] states
@@ -338,6 +339,9 @@ pub struct Report {
     /// flag, because a row kept for the record is a row a later fit reads by
     /// accident.
     pub drawn: usize,
+    /// The score is scaled down for an ending the material rarely converts
+    /// (`eval::scales`). Turned away for the same reason.
+    pub scaled: usize,
     pub rows: Vec<Row>,
 }
 
@@ -352,6 +356,7 @@ pub fn run(positions: &[Position], suite: Option<&str>) -> Report {
         in_check: 0,
         unsettled: 0,
         drawn: 0,
+        scaled: 0,
         rows: Vec::new(),
     };
     for position in positions {
@@ -367,6 +372,11 @@ pub fn run(positions: &[Position], suite: Option<&str>) -> Report {
         // `eval` answers a hard zero while the coefficients state the pieces
         if board.drawn_by_material() {
             report.drawn += 1;
+            continue;
+        }
+        // and a scaled one a fraction of what they state
+        if eval::scales(&board) {
+            report.scaled += 1;
             continue;
         }
         let terms = Terms::of(&board);
@@ -419,11 +429,12 @@ impl fmt::Display for Report {
         }
         writeln!(
             f,
-            " positions {} in_check {} unsettled {} drawn {} kept {}",
+            " positions {} in_check {} unsettled {} drawn {} scaled {} kept {}",
             self.positions,
             self.in_check,
             self.unsettled,
             self.drawn,
+            self.scaled,
             self.rows.len(),
         )?;
         write!(
@@ -560,7 +571,8 @@ mod tests {
 
     /// The row from the other side to move is its negative but for the
     /// tempo, whose coefficients go with the move and so keep their sign:
-    /// a row states the evaluation from the side to move.
+    /// a row states the evaluation from the side to move. A position the
+    /// scale reads is passed over, as `run` turns it away.
     #[test]
     fn a_positions_terms_reconstruct_its_evaluation() {
         let fens = every_shape();
@@ -569,6 +581,11 @@ mod tests {
         let moves = |slot: u16| [tempo, tempo + width].contains(&usize::from(slot));
         for fen in fens {
             let mut board = Board::from_fen(&fen).unwrap_or_else(|e| panic!("{}: {}", fen, e));
+            let mut passed = board.clone();
+            passed.active_color = !passed.active_color;
+            if eval::scales(&board) || eval::scales(&passed) {
+                continue;
+            }
             let ours = Terms::of(&board);
             assert_eq!(reconstruct(&ours), eval::eval(&board), "{}", fen);
             board.active_color = !board.active_color;
@@ -944,8 +961,18 @@ mod tests {
     fn a_position_drawn_by_material_is_turned_away_and_counted() {
         let drawn = run(&one_position("8/8/8/8/8/4k3/8/4K1N1 w - - 0 1"), None);
         assert_eq!((drawn.drawn, drawn.rows.len()), (1, 0));
-        let kept = run(&one_position("8/8/8/4p3/8/4k3/8/4K1N1 w - - 0 1"), None);
+        let kept = run(&one_position("8/8/8/8/8/4k3/P7/4K1N1 w - - 0 1"), None);
         assert_eq!((kept.drawn, kept.rows.len()), (0, 1));
+    }
+
+    /// Rook against knight is scaled, counted and not kept, and the same
+    /// position with a pawn for the rook is kept.
+    #[test]
+    fn a_scaled_position_is_turned_away_and_counted() {
+        let scaled = run(&one_position("8/8/8/8/8/4k3/8/n3K2R w - - 0 1"), None);
+        assert_eq!((scaled.scaled, scaled.rows.len()), (1, 0));
+        let kept = run(&one_position("8/8/8/8/8/4k3/P7/n3K2R w - - 0 1"), None);
+        assert_eq!((kept.scaled, kept.rows.len()), (0, 1));
     }
 
     /// Why the position above has to be turned away: the evaluation answers
@@ -964,18 +991,19 @@ mod tests {
         let report = run(&positions, None);
         assert_eq!(report.positions, positions.len());
         assert_eq!(
-            report.in_check + report.unsettled + report.drawn + report.rows.len(),
+            report.in_check + report.unsettled + report.drawn + report.scaled + report.rows.len(),
             positions.len()
         );
         assert!(!report.rows.is_empty(), "the filter kept nothing");
         let text = report.to_string();
         assert!(
             text.starts_with(&format!(
-                "terms positions {} in_check {} unsettled {} drawn {} kept {}\n",
+                "terms positions {} in_check {} unsettled {} drawn {} scaled {} kept {}\n",
                 report.positions,
                 report.in_check,
                 report.unsettled,
                 report.drawn,
+                report.scaled,
                 report.rows.len()
             )),
             "{}",
@@ -1063,6 +1091,7 @@ mod tests {
             in_check: 0,
             unsettled: 0,
             drawn: 0,
+            scaled: 0,
             rows: vec![Row {
                 id: spaced.id.clone(),
                 eval: eval::eval(&board),

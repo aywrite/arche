@@ -17,6 +17,7 @@ pub(crate) mod factors;
 mod king_attack;
 mod mobility;
 mod pawn_structure;
+mod scale;
 mod shelter;
 mod tempo;
 
@@ -281,15 +282,23 @@ impl Memo for Caches {
 /// the walk out for a zero weight, so at a constant false the walk neither
 /// counts nor weighs the ring.
 ///
-/// Material that cannot mate reads zero before any of it, which is why
-/// `tune::run` turns such a position away rather than fitting it. The check
-/// sits here rather than at the node because the late move gate, the
-/// tuner's walk and the instruments all read this function.
+/// Material that cannot mate reads zero before any of it, and material that
+/// rarely converts is scaled after it ([`scale`]), which is why `tune::run`
+/// turns both kinds of position away rather than fitting them. The checks
+/// sit here rather than at the node because the late move gate, the tuner's
+/// walk and the instruments all read this function.
 #[inline]
 fn sum(board: &Position, memo: &mut impl Memo) -> Score {
     if board.drawn_by_material() {
         return 0;
     }
+    scale::scaled(board, unscaled(board, memo))
+}
+
+/// The sum before [`scale`] reads it, which is the dot product the tuner's
+/// rows state.
+#[inline(always)]
+fn unscaled(board: &Position, memo: &mut impl Memo) -> Score {
     // probed before the walk, where llvm had held the tables across it
     let tables = memo.tables(board);
     let walk =
@@ -367,6 +376,18 @@ fn attack_score<const KINDS: u8, const RING: bool>(board: &Position, color: Colo
         }
     }
     packed
+}
+
+/// Whether [`scale`] changed the score, so that `tune::run` can turn the
+/// position away: a scaled score is not the dot product the row states. A
+/// side with no pawns that is behind matches a signature and is not scaled,
+/// so the question is asked of the score rather than of the material.
+pub(crate) fn scales(board: &Position) -> bool {
+    if board.drawn_by_material() {
+        return false;
+    }
+    let unscaled = unscaled(board, &mut NoMemo);
+    scale::scaled(board, unscaled) != unscaled
 }
 
 /// The score with the shelter and the pawn structure computed every time, for
@@ -706,15 +727,16 @@ mod evaluate {
         }
     }
 
-    /// The same signatures with a pawn on the board are outside the rule, so
-    /// the test above cannot pass on a rule that answers zero for every
-    /// pawnless position, or for every position at all.
+    /// The same signatures with a pawn beside the pieces are outside the
+    /// rule, so the test above cannot pass on a rule that answers zero for
+    /// every pawnless position, or for every position at all. The pawn is the
+    /// stronger side's: a minor against a pawn scales to zero (`scale`).
     #[test]
     fn a_pawn_takes_a_position_out_of_the_rule() {
         for fen in [
-            "8/8/8/4p3/8/4k3/8/4K1N1 w - - 0 1",
-            "8/8/8/4p3/8/4k3/8/4KB2 w - - 0 1",
-            "8/8/8/4p3/8/4k3/8/4K1NN w - - 0 1",
+            "8/8/8/8/8/4k3/P7/4K1N1 w - - 0 1",
+            "8/8/8/8/8/4k3/P7/4KB2 w - - 0 1",
+            "8/8/8/8/8/4k3/P7/4K1NN w - - 0 1",
         ] {
             let board = Board::from_fen(fen).unwrap();
             let mut caches = Caches::default();

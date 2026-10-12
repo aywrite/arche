@@ -560,15 +560,18 @@ guess would carry the guess into every weight fitted on it.
 The header states what the run turned away beside what it kept:
 
 ```
-terms positions 18 in_check 1 unsettled 8 drawn 0 kept 9
+terms positions 18 in_check 1 unsettled 8 drawn 0 scaled 1 kept 8
 ```
 
 `drawn` counts the positions whose material cannot mate, which the evaluation
 answers with a hard zero rather than a sum over the weights, so every weight
-vector scores them the same and they are turned away. `tune.py` refuses a
-header without that count, because an extraction by an older engine holds those
-rows. If the yield ever leaves too few positions to fit the weights, dropping
-the pass is the fallback, and the header is what makes that a decision.
+vector scores them the same and they are turned away. `scaled` counts the
+endings whose score the evaluation cuts to a fraction (opposite bishops, and a
+pawnless side at most a bishop ahead in pieces), where the sum over the weights
+is not the score either. `tune.py` refuses a header without both counts,
+because an extraction by an older engine holds those rows. If the yield ever
+leaves too few positions to fit the weights, dropping the pass is the fallback,
+and the header is what makes that a decision.
 
 The argument arms no reservoir and runs no measured search, so it cannot move a
 node count.

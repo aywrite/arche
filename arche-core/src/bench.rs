@@ -612,9 +612,9 @@ mod tests {
                 figures(skipping),
             ],
             [
-                [177_161, 6_475, 22_519, 437, 0, 181, 0],
-                [12_948, 1_021, 3_399, 38, 15, 0, 0],
-                [14_088, 1_084, 3_717, 1, 0, 0, 8],
+                [177_168, 6_475, 22_519, 437, 0, 181, 0],
+                [12_970, 1_020, 3_413, 38, 15, 0, 0],
+                [14_112, 1_083, 3_731, 1, 0, 0, 8],
             ],
             "nodes, cutoffs, stores, tainted, tcuts, refused, skipped"
         );
@@ -840,12 +840,12 @@ mod tests {
                 ("sharp middlegame", 449_131),
                 ("bratko kopec 1", 11_714),
                 ("wac 4", 1_516),
-                ("rook and pawns", 214_156),
+                ("rook and pawns", 241_415),
                 ("tarrasch", 238_448),
-                ("lucena", 361_398),
-                ("philidor", 357_659),
-                ("minor endgame", 156_339),
-                ("queen endgame", 337_681),
+                ("lucena", 229_174),
+                ("philidor", 351_143),
+                ("minor endgame", 194_518),
+                ("queen endgame", 298_219),
                 ("king and pawn", 38_955),
                 ("trebuchet", 32_344),
             ]
@@ -891,10 +891,10 @@ mod tests {
                 ("wac 4", 675),
                 ("rook and pawns", 21_701),
                 ("tarrasch", 46_932),
-                ("lucena", 28_842),
+                ("lucena", 29_753),
                 ("philidor", 37_043),
                 ("minor endgame", 22_523),
-                ("queen endgame", 132_956),
+                ("queen endgame", 107_887),
                 ("king and pawn", 2_843),
                 ("trebuchet", 1_162),
             ]

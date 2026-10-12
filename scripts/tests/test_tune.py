@@ -73,7 +73,7 @@ def row(
 
 def extraction(rows, vector):
     header = (
-        f"terms positions {len(rows)} in_check 0 unsettled 0 drawn 0 kept {len(rows)}"
+        f"terms positions {len(rows)} in_check 0 unsettled 0 drawn 0 scaled 0 kept {len(rows)}"
     )
     line = "weights {} {}".format(
         LAYOUT.slots, " ".join(str(value) for value in vector)
@@ -147,18 +147,18 @@ def test_a_weights_line_of_the_wrong_length_is_refused():
     with pytest.raises(ValueError, match="no weights line"):
         tune.parse_terms(
             [
-                "terms positions 0 in_check 0 unsettled 0 drawn 0 kept 0",
+                "terms positions 0 in_check 0 unsettled 0 drawn 0 scaled 0 kept 0",
                 LAYOUT_LINE,
             ]
         )
 
 
-def test_a_header_without_the_drawn_count_is_refused():
+def test_a_header_without_the_drawn_or_scaled_count_is_refused():
     """The header is a version check. An extraction from an engine with no
-    drawn material rule would parse and rebuild row for row, and a fit over
-    it would fit an evaluation the engine no longer runs. This file cannot
-    find those rows without a second copy of the rule, so the count is what
-    is read."""
+    drawn material rule or no endgame scale would parse and rebuild row for
+    row, and a fit over it would fit an evaluation the engine no longer runs.
+    This file cannot find those rows without a second copy of the rules, so
+    the counts are what is read."""
     vector = weights()
     lines = extraction([row("a", [(LAYOUT.start["material"], 1)], vector)], vector)
     _, _, rows = tune.parse_terms(lines)
@@ -166,6 +166,7 @@ def test_a_header_without_the_drawn_count_is_refused():
     for header in [
         "terms positions 1 in_check 0 unsettled 0 kept 1",
         "terms epd corpus.epd positions 1 in_check 0 unsettled 0 kept 1",
+        "terms positions 1 in_check 0 unsettled 0 drawn 0 kept 1",
     ]:
         with pytest.raises(ValueError, match="extraction is to redo"):
             tune.parse_terms([header, *lines[1:]])
@@ -232,7 +233,7 @@ def test_a_row_whose_id_opens_with_the_header_word_is_kept():
     _, _, rows = tune.parse_terms(lines)
     assert [parsed.id for parsed in rows] == ["terms of the endgame"]
     # and both shapes of the header are still skipped rather than read as rows
-    header = "terms epd corpus.epd positions 1 in_check 0 unsettled 0 drawn 0 kept 1"
+    header = "terms epd corpus.epd positions 1 in_check 0 unsettled 0 drawn 0 scaled 0 kept 1"
     _, _, rows = tune.parse_terms([header, *lines])
     assert [parsed.id for parsed in rows] == ["terms of the endgame"]
 
