@@ -118,7 +118,7 @@ pub const RESIDUALS: Command = Command {
         },
         Keyword {
             word: "taint",
-            value: "refuse|trust|skip|rule50",
+            value: "refuse|trust|skip|rule50|certificate",
         },
     ],
     flags: &[],

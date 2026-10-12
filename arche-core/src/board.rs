@@ -1475,6 +1475,44 @@ impl Board {
         self.prior_occurrences(1) >= 1
     }
 
+    /// How many plies back this position last stood, where `has_repeated`
+    /// would find it: the distance a repetition's draw leans on the path.
+    pub(crate) fn repeated_back(&self) -> Option<usize> {
+        let window = self.repetition_window();
+        let mut back = 2;
+        while back <= window {
+            if self.keys[history_index(self.ply - back)] == self.key {
+                return Some(back);
+            }
+            back += 2;
+        }
+        None
+    }
+
+    /// The ply the board stands at, counted as `from_fen` starts it.
+    pub(crate) fn ply(&self) -> usize {
+        self.ply
+    }
+
+    /// Eleven bits that stand for the `back` positions before this one and
+    /// the fifty move counter, or none where the counter or the history
+    /// does not reach that far. Two paths with the same digest are, but for
+    /// a collision one time in 2,048, the same path as far as a draw within
+    /// `back` plies can tell: the same positions in the same order and the
+    /// same counter, so the same repetitions and the same fifty move draws.
+    pub(crate) fn path_digest(&self, back: usize) -> Option<u16> {
+        let reaches = self.fifty_move_rule.min(self.ply).min(HISTORY_PLIES - 1);
+        if back == 0 || back > reaches {
+            return None;
+        }
+        let mut digest = self.fifty_move_rule as u64;
+        for behind in 1..=back {
+            digest = (digest ^ self.keys[history_index(self.ply - behind)])
+                .wrapping_mul(0x9E37_79B9_7F4A_7C15);
+        }
+        Some((digest >> 53) as u16)
+    }
+
     /// Whether the side to move has a legal move at all. Asked where a draw
     /// rule and a mate could coincide, and behind the king test at pawn-only
     /// quiescence nodes, so it plays the moves rather than keeping anything

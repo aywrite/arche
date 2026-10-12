@@ -574,6 +574,13 @@ pub enum TaintPolicy {
     /// quiescence besides. The taint still travels and is still counted,
     /// so the figures say what this policy trusts that the others refuse.
     Rule50,
+    /// `Rule50`, and a tainted entry trusted only where the probing path is
+    /// the one its draws leaned on: the entry keeps how many plies above it
+    /// they reach and a digest of those plies' positions and the fifty move
+    /// counter, in the slot its static evaluation would take, and a probe
+    /// whose path digests otherwise refuses the cutoff. A tainted result
+    /// whose draws all lie below the node storing it is stored clean.
+    Certificate,
 }
 
 impl TaintPolicy {
@@ -584,7 +591,12 @@ impl TaintPolicy {
 
     /// Whether a probe refuses every cutoff near the fifty move horizon.
     pub(crate) fn guards_rule50(self) -> bool {
-        matches!(self, TaintPolicy::Rule50)
+        matches!(self, TaintPolicy::Rule50 | TaintPolicy::Certificate)
+    }
+
+    /// Whether a tainted entry carries a certificate of its path.
+    pub(crate) fn certifies(self) -> bool {
+        matches!(self, TaintPolicy::Certificate)
     }
 
     /// Whether a tainted result is stored at all.
@@ -724,6 +736,7 @@ impl SearchConfig {
             TaintPolicy::Trust => "trust",
             TaintPolicy::Skip => "skip",
             TaintPolicy::Rule50 => "rule50",
+            TaintPolicy::Certificate => "certificate",
         }
     }
 
@@ -735,6 +748,7 @@ impl SearchConfig {
             "trust" => TaintPolicy::Trust,
             "skip" => TaintPolicy::Skip,
             "rule50" => TaintPolicy::Rule50,
+            "certificate" => TaintPolicy::Certificate,
             _ => return None,
         };
         Some(Self {
@@ -1350,7 +1364,12 @@ impl AlphaBeta {
         Self::with_table(board, TranspositionTable::of_bytes(bytes), config)
     }
 
-    fn with_table(board: Board, transpositions: TranspositionTable, config: SearchConfig) -> Self {
+    fn with_table(
+        board: Board,
+        mut transpositions: TranspositionTable,
+        config: SearchConfig,
+    ) -> Self {
+        transpositions.certify(config.taint.certifies());
         Self {
             board,
             config,
@@ -2299,7 +2318,7 @@ impl AlphaBeta {
                 if margin_inverted {
                     self.forced_answered(forced::Answered::NullMove);
                 }
-                return Ok(Some(Value::with_taint(score, value.tainted)));
+                return Ok(Some(value.rescored(score)));
             }
             taint.absorb(value);
         }
@@ -2375,7 +2394,7 @@ impl AlphaBeta {
             Decision::Search { reduction, staged } => (*reduction, staged.as_ref()),
             Decision::Skip => unreachable!("a skipped move is never searched"),
         };
-        let mut tainted = false;
+        let mut taint = Taint::default();
         if reduction > 0 {
             // `late_move::amount` clamps the reduction to `depth - 2`
             debug_assert!(depth > reduction + 1, "the scout would be quiescence");
@@ -2408,7 +2427,7 @@ impl AlphaBeta {
             // the scout's fail high asked for the searches below, so they
             // carry its taint, as does a trusted fail low the forced
             // decision instrument inverted
-            tainted = scout.tainted;
+            taint.absorb(scout);
         }
         let probe = -self.alpha_beta(
             -alpha - 1,
@@ -2421,7 +2440,8 @@ impl AlphaBeta {
         // `alpha + 1 >= beta` is the zero window, spelt without the
         // subtraction: `beta - alpha` overflows a Score at the full window
         if probe.score <= alpha || alpha + 1 >= beta {
-            return Ok(Value::with_taint(probe.score, probe.tainted || tainted));
+            taint.absorb(probe);
+            return Ok(taint.stamp(probe.score));
         }
         let proof = -self.alpha_beta(
             -beta,
@@ -2431,10 +2451,9 @@ impl AlphaBeta {
             root_bounds.child(ChildSearch::Proof),
             None,
         )?;
-        Ok(Value::with_taint(
-            proof.score,
-            proof.tainted || probe.tainted || tainted,
-        ))
+        taint.absorb(probe);
+        taint.absorb(proof);
+        Ok(taint.stamp(proof.score))
     }
 
     /// A fail high at a full width node: the move that proved it goes to
@@ -2701,10 +2720,17 @@ impl AlphaBeta {
             }
             // where the taint starts: the draw is true of the path that
             // reached this position, not of the position itself
-            return Some(Value::tainted(0));
+            // the reach is the ply before the reset, so that a certificate
+            // covers the counter: the position after the reset is reached
+            // with the counter higher down another path
+            return Some(Value::drawn(
+                self.board
+                    .ply()
+                    .saturating_sub(self.board.halfmove_clock() + 1),
+            ));
         }
-        if self.board.has_repeated() {
-            return Some(Value::tainted(0));
+        if let Some(back) = self.board.repeated_back() {
+            return Some(Value::drawn(self.board.ply() - back));
         }
         // a line of checks that keeps capturing is ended by neither draw
         // rule nor depth, since the extension holds the depth, so the rail
@@ -2716,13 +2742,20 @@ impl AlphaBeta {
         None
     }
 
+    /// A store offered to the table, counted with the taint it was stored
+    /// with, which the certificate policy can clear.
+    fn count_store(&mut self, landed: bool, value: Value) {
+        let tainted = self.transpositions.stores_tainted(&self.board, value);
+        self.ghi.count_store(landed, Value { tainted, ..value });
+    }
+
     /// A cutoff's value to the table, when the taint policy allows.
     fn store_cutoff(&mut self, m: &Play, value: Value, depth: u8, static_eval: Score) {
         if self.keeps(value) {
             let landed =
                 self.transpositions
                     .record_cutoff(&self.board, *m, value, depth, static_eval);
-            self.ghi.count_store(landed, value);
+            self.count_store(landed, value);
         }
     }
 
@@ -2746,7 +2779,7 @@ impl AlphaBeta {
                 self.transpositions
                     .record_ceiling(&self.board, play, value, depth, static_eval)
             };
-            self.ghi.count_store(landed, value);
+            self.count_store(landed, value);
         }
     }
 
@@ -3188,7 +3221,7 @@ impl AlphaBeta {
                 .record_answer(&self.board, play, value, depth),
             ScoreBound::Upper => return,
         };
-        self.ghi.count_store(landed, value);
+        self.count_store(landed, value);
     }
 
     /// Replay the line the table holds on a copy of the board, checking
@@ -3252,7 +3285,8 @@ impl Engine for AlphaBeta {
 
     fn set_table_bytes(&mut self, bytes: usize) -> bool {
         match TranspositionTable::with_capacity_bytes(bytes) {
-            Some(table) => {
+            Some(mut table) => {
+                table.certify(self.config.taint.certifies());
                 self.transpositions = table;
                 true
             }

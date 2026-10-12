@@ -679,6 +679,11 @@ pub struct TranspositionTable {
     /// The full keys of the entries, or none, which is what every table an
     /// engine plays with holds. `audit_signatures` fills it in.
     audit: Option<Box<Audit>>,
+    /// Whether a draw tainted entry carries a certificate of the path it
+    /// leaned on in place of its static evaluation, and a probe takes its
+    /// cutoff only where the probing path matches it: the certificate taint
+    /// policy. See `certificate`.
+    certify: bool,
     /// The entry the last probe found, or none on a miss, for the node to
     /// read its static evaluation and its floor back from. A cell, since
     /// the probe reads the table.
@@ -743,10 +748,21 @@ impl TranspositionTable {
             replaceable: replaceable_under(1),
             age_weight: AGE_WEIGHT,
             audit: None,
+            certify: false,
             probed: Cell::new(None),
             #[cfg(debug_assertions)]
             probed_key: Cell::new(0),
         })
+    }
+
+    /// Whether a value stored here would be kept as tainted.
+    pub(crate) fn stores_tainted(&self, board: &Board, value: Value) -> bool {
+        value.tainted && !(self.certify && drawn_below(board, value))
+    }
+
+    /// Turn the certificate taint policy's storage on or off.
+    pub(crate) fn certify(&mut self, on: bool) {
+        self.certify = on;
     }
 
     pub fn clear(&mut self) {
@@ -1121,7 +1137,7 @@ impl TranspositionTable {
     ) -> bool {
         self.set(
             board.key,
-            entry(board, play, value, depth, bound, static_eval),
+            entry(board, play, value, depth, bound, static_eval, self.certify),
         )
     }
 
@@ -1132,7 +1148,15 @@ impl TranspositionTable {
     pub fn record_answer(&mut self, board: &Board, play: Play, score: Value, depth: u8) -> bool {
         self.set_always(
             board.key,
-            entry(board, play, score, depth, Bound::Exact, NO_EVAL),
+            entry(
+                board,
+                play,
+                score,
+                depth,
+                Bound::Exact,
+                NO_EVAL,
+                self.certify,
+            ),
         );
         true
     }
@@ -1150,7 +1174,15 @@ impl TranspositionTable {
     ) -> bool {
         self.set_always(
             board.key,
-            entry(board, play, floor, depth, Bound::Lower, NO_EVAL),
+            entry(
+                board,
+                play,
+                floor,
+                depth,
+                Bound::Lower,
+                NO_EVAL,
+                self.certify,
+            ),
         );
         true
     }
@@ -1196,6 +1228,19 @@ impl TranspositionTable {
                     // the stored draw may not be reachable by this path
                     return Probe::Refused(pv.play);
                 }
+                if self.certify && pv.tainted {
+                    // the stored draw is reachable where this path is the
+                    // one it leaned on
+                    let Some(back) = certified(board, pv.static_eval) else {
+                        return Probe::Refused(pv.play);
+                    };
+                    self.count_false_accept_cutoff(foreign);
+                    return Probe::Cut(Value {
+                        score,
+                        tainted: true,
+                        reach: (board.ply() - back).min(usize::from(u16::MAX) - 1) as u16,
+                    });
+                }
                 self.count_false_accept_cutoff(foreign);
                 return Probe::Cut(Value::with_taint(score, pv.tainted));
             }
@@ -1236,7 +1281,14 @@ impl TranspositionTable {
     /// holds none.
     #[inline(always)]
     pub(crate) fn probed_eval(&self, key: u64) -> Score {
-        self.probed(key).map_or(NO_EVAL, |pv| pv.static_eval)
+        self.probed(key).map_or(NO_EVAL, |pv| {
+            if self.certify && pv.tainted {
+                // the slot holds the certificate
+                NO_EVAL
+            } else {
+                pv.static_eval
+            }
+        })
     }
 
     /// The floor the last probe's entry puts under the position `key`
@@ -1272,7 +1324,9 @@ impl TranspositionTable {
 }
 
 /// Fold a position and a result into an entry, converting the score to the
-/// table's form so no caller has to.
+/// table's form so no caller has to. Under `certify` a tainted result whose
+/// draws all lie below this position is stored clean, and any other keeps
+/// its certificate where the static evaluation would go.
 #[inline]
 fn entry(
     board: &Board,
@@ -1281,15 +1335,60 @@ fn entry(
     depth: u8,
     bound: Bound,
     static_eval: Score,
+    certify: bool,
 ) -> Pv {
+    let (tainted, static_eval) = if certify && value.tainted {
+        if drawn_below(board, value) {
+            (false, static_eval)
+        } else {
+            (
+                true,
+                certificate(board, board.ply() - usize::from(value.reach)),
+            )
+        }
+    } else {
+        (value.tainted, static_eval)
+    };
     Pv {
         play,
         depth,
         static_eval,
         score: score_to_tt(value.score, board.line_ply),
         bound,
-        tainted: value.tainted,
+        tainted,
     }
+}
+
+/// Whether every draw a tainted value leaned on lies at this position or
+/// below it: the repeated position is this one or under it, or the fifty
+/// move reset came after it. Every path here then reaches the same draws.
+fn drawn_below(board: &Board, value: Value) -> bool {
+    usize::from(value.reach) >= board.ply()
+}
+
+/// The plies above a position a certificate can cover: five bits.
+const CERTIFIED_PLIES: usize = 31;
+
+/// What a tainted entry keeps in place of its static evaluation under the
+/// certificate policy: the plies its draws lean on above it, in the top
+/// five bits, and the path digest over them in the low eleven. Zero, which
+/// no probe accepts, where they lean further back than five bits or the
+/// history holds.
+fn certificate(board: &Board, back: usize) -> Score {
+    if back > CERTIFIED_PLIES {
+        return 0;
+    }
+    match board.path_digest(back) {
+        Some(digest) => ((back as u16) << 11 | digest) as Score,
+        None => 0,
+    }
+}
+
+/// The plies a certificate covers, where the probing path matches it.
+fn certified(board: &Board, certificate: Score) -> Option<usize> {
+    let bits = certificate as u16;
+    let back = usize::from(bits >> 11);
+    (back > 0 && board.path_digest(back) == Some(bits & 0x7ff)).then_some(back)
 }
 
 #[cfg(test)]
@@ -1633,6 +1732,74 @@ mod tests {
         assert!(matches!(
             table.probe(&board, -10, 10, 6, true, false),
             Probe::Order(_)
+        ));
+    }
+
+    /// The starting position reached again after both sides' knights went
+    /// out and back by `names`, so two different shuffles reach one key
+    /// down two different paths.
+    fn shuffled(names: [&str; 4]) -> crate::board::Board {
+        let mut board = crate::board::Board::new();
+        for name in names {
+            board.play_by_name(name).expect("a knight move plays");
+        }
+        board
+    }
+
+    #[test]
+    fn a_certified_cutoff_is_taken_only_down_the_path_that_stored_it() {
+        use super::Probe;
+        let mut table = TranspositionTable::with_capacity(4).expect("a table of a few buckets");
+        table.certify(true);
+        let stored = shuffled(["g1f3", "g8f6", "f3g1", "f6g8"]);
+        let other = shuffled(["b1c3", "b8c6", "c3b1", "c6b8"]);
+        assert_eq!(stored.key, other.key);
+        let play = Play::new(0, 1, None, None, false, false);
+        // a draw leaning on the position two plies up
+        let reach = stored.ply() - 2;
+        assert!(table.record_best(&stored, play, Value::drawn(reach), 5, 40));
+        match table.probe(&stored, -10, 10, 5, false, true) {
+            Probe::Cut(value) => {
+                assert!(value.tainted);
+                assert_eq!(usize::from(value.reach), reach);
+            }
+            other => panic!("the storing path did not cut: {other:?}"),
+        }
+        // the slot holds the certificate, so no static evaluation is read
+        assert_eq!(table.probed_eval(stored.key), super::NO_EVAL);
+        match table.probe(&other, -10, 10, 5, false, true) {
+            Probe::Refused(refused) => assert_eq!(refused, play),
+            other => panic!("another path took the cutoff: {other:?}"),
+        }
+        // a draw leaning further back than the history holds is refused on
+        // either path
+        assert!(table.record_best(&stored, play, Value::drawn(0), 5, 40));
+        assert!(matches!(
+            table.probe(&stored, -10, 10, 5, false, true),
+            Probe::Refused(_)
+        ));
+    }
+
+    #[test]
+    fn a_draw_found_below_the_storing_position_is_stored_clean() {
+        use super::Probe;
+        let mut table = TranspositionTable::with_capacity(4).expect("a table of a few buckets");
+        table.certify(true);
+        let stored = shuffled(["g1f3", "g8f6", "f3g1", "f6g8"]);
+        let other = shuffled(["b1c3", "b8c6", "c3b1", "c6b8"]);
+        let play = Play::new(0, 1, None, None, false, false);
+        assert!(table.record_best(&stored, play, Value::drawn(stored.ply()), 5, 40));
+        match table.probe(&other, -10, 10, 5, false, true) {
+            Probe::Cut(value) => assert_eq!(value, Value::clean(0)),
+            other => panic!("a clean entry did not cut: {other:?}"),
+        }
+        assert_eq!(table.probed_eval(other.key), 40);
+        // without the policy the same result is stored tainted, as before
+        table.certify(false);
+        assert!(table.record_best(&stored, play, Value::drawn(stored.ply()), 5, 40));
+        assert!(matches!(
+            table.probe(&other, -10, 10, 5, true, true),
+            Probe::Refused(_)
         ));
     }
 

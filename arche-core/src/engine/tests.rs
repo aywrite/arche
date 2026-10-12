@@ -1824,7 +1824,7 @@ mod search {
     #[test]
     fn every_taint_word_names_a_policy_and_the_policy_names_it_back() {
         // a report has to be rerunnable from the word its header prints
-        for word in ["refuse", "trust", "skip", "rule50"] {
+        for word in ["refuse", "trust", "skip", "rule50", "certificate"] {
             let config =
                 SearchConfig::with_taint(word).unwrap_or_else(|| panic!("{word} is not a policy"));
             assert_eq!(config.taint_word(), word);
@@ -2247,7 +2247,7 @@ mod search {
         let Ok(value) = e.alpha_beta(-1, 0, 3, true, RootBounds::Neither, None) else {
             panic!("nothing was armed to abort this search");
         };
-        assert_eq!(value, Value::tainted(0));
+        assert_eq!((value.score, value.tainted), (0, true));
     }
 
     #[test]

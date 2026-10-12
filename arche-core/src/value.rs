@@ -56,7 +56,16 @@ pub struct Value {
     /// True if the score flowed from a repetition or a fifty move draw
     /// somewhere below it.
     pub tainted: bool,
+    /// The earliest ply of the game, counted as the board counts it, whose
+    /// position a draw below this score leaned on: the earlier occurrence
+    /// of a repetition, or the move that last reset the fifty move counter.
+    /// `CLEAN` for a clean score and zero where nothing says, as for a
+    /// score read back from the table. Only the certificate policy reads it.
+    pub reach: u16,
 }
+
+/// The reach of a score no draw stands behind.
+pub(crate) const CLEAN: u16 = u16::MAX;
 
 impl Value {
     /// A score that is true of the position: a static evaluation, a mate, a
@@ -65,22 +74,45 @@ impl Value {
         Self {
             score,
             tainted: false,
+            reach: CLEAN,
         }
     }
 
     /// A score that is true of the path taken here and not of the position:
-    /// the draw a rule allows either side to claim.
+    /// the draw a rule allows either side to claim, leaning on a path that
+    /// reaches back to the game's start.
+    #[cfg(test)]
     pub fn tainted(score: Score) -> Self {
         Self {
             score,
             tainted: true,
+            reach: 0,
         }
     }
 
-    /// A score whose taint was established elsewhere: a stored entry read
-    /// back, or a pass's answer clamped under the mate window.
+    /// A draw that leans on the path back to the position at `reach`.
+    pub(crate) fn drawn(reach: usize) -> Self {
+        Self {
+            score: 0,
+            tainted: true,
+            reach: reach.min(usize::from(CLEAN) - 1) as u16,
+        }
+    }
+
+    /// A score whose taint was established elsewhere, with nothing said of
+    /// how far back it leans: a stored entry read back.
     pub fn with_taint(score: Score, tainted: bool) -> Self {
-        Self { score, tainted }
+        Self {
+            score,
+            tainted,
+            reach: if tainted { 0 } else { CLEAN },
+        }
+    }
+
+    /// Another score carrying this one's taint: a pass's answer clamped
+    /// under the mate window.
+    pub(crate) fn rescored(self, score: Score) -> Self {
+        Self { score, ..self }
     }
 
     /// The side to move is mated, this many plies into the line. Clean, since
@@ -146,7 +178,7 @@ impl std::ops::Neg for Value {
     fn neg(self) -> Self {
         Self {
             score: -self.score,
-            tainted: self.tainted,
+            ..self
         }
     }
 }
@@ -154,18 +186,33 @@ impl std::ops::Neg for Value {
 /// What a node has seen so far. The taint of a node is the taint of every
 /// child it looked at, not of the one it chose: a best move found beside a
 /// tainted score still stands on a comparison against that score.
-#[derive(Copy, Clone, Debug, Default)]
-pub(crate) struct Taint(bool);
+/// The reach is the earliest of theirs.
+#[derive(Copy, Clone, Debug)]
+pub(crate) struct Taint {
+    tainted: bool,
+    reach: u16,
+}
+
+impl Default for Taint {
+    fn default() -> Self {
+        Self {
+            tainted: false,
+            reach: CLEAN,
+        }
+    }
+}
 
 impl Taint {
     pub(crate) fn absorb(&mut self, value: Value) {
-        self.0 |= value.tainted;
+        self.tainted |= value.tainted;
+        self.reach = self.reach.min(value.reach);
     }
 
     pub(crate) fn stamp(self, score: Score) -> Value {
         Value {
             score,
-            tainted: self.0,
+            tainted: self.tainted,
+            reach: self.reach,
         }
     }
 }

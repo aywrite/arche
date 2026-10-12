@@ -302,11 +302,11 @@ match tools and the trailer read.
 `bench` is also a uci command. Both take a depth after the word, as in `arche
 bench 3`, for trying the command cheaply; the number that means anything is the
 one at the default. Both also take `hash <MB>` and `taint
-refuse|trust|skip|rule50`, as in `arche bench 7 hash 256 taint trust`, for
-measuring what the table and the draw taint policy do rather than for pinning
-anything; the header states what a run used, so it can be rerun from it. A
-fourth word, `audit`, adds what the table's key signature costs and is
-described in [INSTRUMENTS.md](INSTRUMENTS.md).
+refuse|trust|skip|rule50|certificate`, as in `arche bench 7 hash 256 taint
+trust`, for measuring what the table and the draw taint policy do rather than
+for pinning anything; the header states what a run used, so it can be rerun
+from it. A fourth word, `audit`, adds what the table's key signature costs and
+is described in [INSTRUMENTS.md](INSTRUMENTS.md).
 
 The suite, depth and table are fixed because changing any of them changes every
 number the bench has ever printed. The depth has been raised twice, each time
