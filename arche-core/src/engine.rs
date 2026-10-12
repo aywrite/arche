@@ -128,6 +128,20 @@ fn null_move_reduction(config: SearchConfig, depth: u8, eval_beta: Score) -> u8 
     grown.min(depth - 1)
 }
 
+/// The moves a node searched before place `i`, not the whole list: the
+/// history marks down what the node asked and got nothing from.
+fn tried_before<'a>(
+    moves: &'a [Play],
+    made: &'a Searched,
+    i: usize,
+) -> impl Iterator<Item = &'a Play> + 'a {
+    moves[..i]
+        .iter()
+        .enumerate()
+        .filter(|(place, _)| made.holds(*place))
+        .map(|(_, tried)| tried)
+}
+
 /// Quiescence's delta test: a capture short of alpha with its piece counted
 /// as fully won is expected to be worth less than alpha. Which captures it
 /// applies to is the caller's, and the move loop says why.
@@ -353,6 +367,11 @@ struct QuietOrder {
     scored: bool,
     /// Whether a shallow rule filtered the run.
     filtered: bool,
+    /// The first place at which there is work to do: the front while the
+    /// run waits to be keyed, the next place while it is taken in order,
+    /// then the dropped run's start. The loop's other places ask nothing
+    /// more of the ordering.
+    at: usize,
 }
 
 impl QuietOrder {
@@ -365,6 +384,11 @@ impl QuietOrder {
             dropped: usize::MAX..usize::MAX,
             scored: false,
             filtered: false,
+            at: if ply.is_some() {
+                ordered.front
+            } else {
+                usize::MAX
+            },
         }
     }
 }
@@ -2564,16 +2588,24 @@ impl AlphaBeta {
     /// on for the rest of the node, when only the moves it would still
     /// search are kept and the rest of the run is dropped. Returns the
     /// place the loop continues from when place `i` opens a dropped run,
-    /// which the loop steps past whole.
+    /// which the loop steps past whole. `rules` is none before the node's
+    /// first searched move, where no shallow rule is on. A place under
+    /// `QuietOrder::at` asks nothing more.
     #[inline(always)]
     fn order_quiets_at(
         &mut self,
-        moves: &mut MoveList,
+        moves: &mut [Play],
         i: usize,
         quiets: &mut QuietOrder,
         node: &Node,
-        rules: &mut late_move::Rules,
+        rules: Option<&mut late_move::Rules>,
     ) -> Option<usize> {
+        debug_assert!(rules.is_some() || node.answer.searched == 0);
+        if i < quiets.at {
+            debug_assert!(i != quiets.front || quiets.ply.is_none());
+            debug_assert!(quiets.lazy.is_none() && i < quiets.dropped.start);
+            return None;
+        }
         let front = quiets.front;
         if i == front {
             if let Some(ply) = quiets.ply {
@@ -2606,7 +2638,15 @@ impl AlphaBeta {
             let end = *end;
             if i + 1 >= end {
                 quiets.lazy = None;
-            } else if rules.shallow_active(&self.deciding(), node) {
+            } else if let Some(rules) =
+                // none before the node's first searched move, where neither
+                // shallow rule is on
+                rules.and_then(|rules| {
+                    rules
+                        .shallow_active(&self.deciding(), node)
+                        .then_some(rules)
+                })
+            {
                 let board = &self.board;
                 let info = *rules.check.get_or_insert_with(|| board.check_info());
                 // the promotions and the checks, a handful at most, which
@@ -2638,8 +2678,14 @@ impl AlphaBeta {
             debug_assert!(i < quiets.dropped.end, "the dropped run is behind the loop");
             let past = quiets.dropped.end;
             quiets.dropped = usize::MAX..usize::MAX;
+            quiets.at = usize::MAX;
             return Some(past);
         }
+        quiets.at = if quiets.lazy.is_some() {
+            i + 1
+        } else {
+            quiets.dropped.start
+        };
         None
     }
 
@@ -2651,8 +2697,8 @@ impl AlphaBeta {
     /// whether it was legal is never learned and nothing is taught about
     /// it. The ledger's staged half travels to the scout as a parameter,
     /// so the reduced moves inside it cannot mistake it for their own. The
-    /// first move the node searches is no late move, and none of this is
-    /// asked of it.
+    /// first move the node searches is no late move, and the loop asks
+    /// none of this of it.
     #[inline(always)]
     fn late_move_decision(
         &mut self,
@@ -2661,9 +2707,7 @@ impl AlphaBeta {
         moves: &[Play],
         m: &Play,
     ) -> Decision {
-        if node.answer.searched == 0 {
-            return Decision::First;
-        }
+        debug_assert!(node.answer.searched > 0, "the first move is no late move");
         if rules.skips(&self.deciding(), node, m) {
             if self.forced.is_some() && self.forced_skip(node, rules, moves, m) {
                 return Decision::UNREDUCED;
@@ -2910,88 +2954,128 @@ impl AlphaBeta {
             None
         };
         let mut quiets = QuietOrder::new(&ordered, node.ply);
-        let mut rules = late_move::Rules::new(&self.deciding(), &node, eval);
         // a skipped move has no bit, and nor has one that turned out illegal
         let mut made = Searched::default();
+        let moves = moves.as_mut_slice();
         let len = moves.len();
         let mut next = 0;
-        while next < len {
-            let i = next;
-            next += 1;
-            if let Some(past) = self.order_quiets_at(&mut moves, i, &mut quiets, &node, &mut rules)
-            {
-                next = past;
-                continue;
-            }
-            let m = &moves[i];
-            if tt_at == Some(i) {
-                debug_assert_eq!(table_move, Some(*m), "the place is not the table's move");
-                if tt_searched {
-                    made.mark(i);
+        // up to the first move searched, when the table's move was not:
+        // that move is no late move and no rule is asked of it, so a node
+        // whose first move cuts never builds the rules' node halves
+        if !tt_searched {
+            while next < len {
+                let i = next;
+                next += 1;
+                if let Some(past) = self.order_quiets_at(moves, i, &mut quiets, &node, None) {
+                    next = past;
+                    continue;
                 }
-                continue;
-            }
-            if Some(*m) == excluded {
-                continue;
-            }
-            let decision = self.late_move_decision(&node, &mut rules, &moves, m);
-            if let Decision::Skip = decision {
-                continue;
-            }
-            let Some(value) = self.search_child(
-                m,
-                node.answer.alpha,
-                node.answer.beta,
-                depth,
-                &decision,
-                node.answer.root_bounds,
-            )?
-            else {
-                continue;
-            };
-            made.mark(i);
-            match node.answer.absorb(m, value) {
-                Reached::Beta => {
+                let m = &moves[i];
+                // the table's place holds a move that was not legal here
+                if tt_at == Some(i) || Some(*m) == excluded {
+                    continue;
+                }
+                let Some(value) = self.search_child(
+                    m,
+                    node.answer.alpha,
+                    node.answer.beta,
+                    depth,
+                    &Decision::First,
+                    node.answer.root_bounds,
+                )?
+                else {
+                    continue;
+                };
+                made.mark(i);
+                if let Reached::Beta = node.answer.absorb(m, value) {
                     let cutting = census::Cutting {
                         play: m,
-                        reduced: matches!(decision, Decision::Search { reduction: 1.., .. }),
+                        reduced: false,
                         table: false,
                     };
-                    self.record_node(&node, &moves, quiets.scored, Some(cutting));
-                    // the moves the node searched, not the whole list: the
-                    // history marks down what the node asked and got
-                    // nothing from
-                    let tried = moves[..i]
-                        .iter()
-                        .enumerate()
-                        .filter(|(place, _)| made.holds(*place))
-                        .map(|(_, tried)| tried);
+                    self.record_node(&node, moves, quiets.scored, Some(cutting));
+                    let tried = tried_before(moves, &made, i);
                     return Ok(self.cutoff(m, tried, &node, value.score, static_eval));
                 }
-                Reached::Alpha => {
-                    // the dropped moves stay dropped only while alpha is
-                    // short of a mate. The rules admit no node whose beta
-                    // is a mate score, so any mate a survivor finds is at
-                    // or above beta and has cut the node off before
-                    // reaching here
-                    debug_assert!(
-                        !(quiets.filtered && is_mate(node.answer.alpha)),
-                        "a filtered node raised alpha to a mate without cutting off"
-                    );
-                }
-                Reached::Neither => {}
+                break;
             }
-            debug_assert_eq!(
-                made.count(),
-                node.answer.searched,
-                "a bit for every move made and searched, and for no other"
-            );
+        }
+        // built only for a node with a place after its first searched move
+        if next < len {
+            let mut rules = late_move::Rules::new(&self.deciding(), &node, eval);
+            while next < len {
+                let i = next;
+                next += 1;
+                if let Some(past) =
+                    self.order_quiets_at(moves, i, &mut quiets, &node, Some(&mut rules))
+                {
+                    next = past;
+                    continue;
+                }
+                let m = &moves[i];
+                if tt_at == Some(i) {
+                    debug_assert_eq!(table_move, Some(*m), "the place is not the table's move");
+                    if tt_searched {
+                        made.mark(i);
+                    }
+                    continue;
+                }
+                if Some(*m) == excluded {
+                    continue;
+                }
+                let decision = self.late_move_decision(&node, &mut rules, moves, m);
+                if let Decision::Skip = decision {
+                    continue;
+                }
+                let Some(value) = self.search_child(
+                    m,
+                    node.answer.alpha,
+                    node.answer.beta,
+                    depth,
+                    &decision,
+                    node.answer.root_bounds,
+                )?
+                else {
+                    continue;
+                };
+                made.mark(i);
+                match node.answer.absorb(m, value) {
+                    Reached::Beta => {
+                        let cutting = census::Cutting {
+                            play: m,
+                            reduced: matches!(decision, Decision::Search { reduction: 1.., .. }),
+                            table: false,
+                        };
+                        self.record_node(&node, moves, quiets.scored, Some(cutting));
+                        let tried = tried_before(moves, &made, i);
+                        return Ok(self.cutoff(m, tried, &node, value.score, static_eval));
+                    }
+                    Reached::Alpha => {
+                        rules.raise(node.answer.alpha);
+                        // the dropped moves stay dropped only while alpha is
+                        // short of a mate. The rules admit no node whose beta
+                        // is a mate score, so any mate a survivor finds is at
+                        // or above beta and has cut the node off before
+                        // reaching here
+                        debug_assert!(
+                            !(quiets.filtered && is_mate(node.answer.alpha)),
+                            "a filtered node raised alpha to a mate without cutting off"
+                        );
+                    }
+                    Reached::Neither => {}
+                }
+                debug_assert_eq!(
+                    made.count(),
+                    node.answer.searched,
+                    "a bit for every move made and searched, and for no other"
+                );
+            }
         }
 
         // the held half, at the same rate: a cut-only stream would
         // reproduce the censoring the census measures, and a rule moves
         // effort between held nodes and cut ones as well as away from both
-        self.record_node(&node, &moves, quiets.scored, None);
+        self.record_node(&node, moves, quiets.scored, None);
 
         if node.answer.searched == 0 {
             // clean: mate and stalemate are properties of the position

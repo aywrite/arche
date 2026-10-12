@@ -9,9 +9,11 @@
 //! At depths one to three `Rules::skips` asks two pruning rules of a quiet
 //! move after the node's first: quiet futility, when the evaluation plus a
 //! margin a ply cannot reach alpha, and the late move count, when the node
-//! has searched `LATE_MOVE_COUNT` moves a ply. Everything in them but the
-//! alpha and the searched count is settled by the node before its moves,
-//! so `Rules` holds it and reads those two off the engine's `Node` per
+//! has searched `LATE_MOVE_COUNT` moves a ply. Everything in them but
+//! alpha and the searched count is settled by the node before the moves
+//! they can drop, so `Rules` holds it. It holds the mate test on alpha as
+//! well, asked again at each rise of alpha (`Rules::raise`), and reads the
+//! searched count, and alpha for the margin, off the engine's `Node` per
 //! move. They stop a ply under the deep skip's floor, so a shallow rule
 //! and the deep skip never decide at one depth.
 //!
@@ -162,11 +164,13 @@ pub(crate) struct Search<'a> {
 
 /// What the late move rules hold across one full width node's move loop:
 /// the memos its moves fill and the node's half of each rule. Built once
-/// the node's table move has been searched. The node's facts, its alpha as
-/// it stands and its searched count are the engine's `Node`, handed to
-/// every call, so nothing here has to be kept in step with a rise of
-/// alpha. The list is not held either, since the loop sorts it under the
-/// decision; the calls that read it are handed it.
+/// the node has searched a move (the table's or the loop's first) and has
+/// a place left, since no rule acts on the first move searched. The node's
+/// facts, its alpha as it stands and its searched count are the engine's
+/// `Node`, handed to every call. Each half holds whether alpha is short of
+/// a mate, so the loop hands every rise of alpha to `raise`. The list is
+/// not held, since the loop sorts it under the decision; the calls that
+/// read it are handed it.
 pub(crate) struct Rules {
     /// The node's static evaluation: what the table's entry held or the
     /// shortcuts read, or none until the first move that needs it. The
@@ -185,9 +189,9 @@ pub(crate) struct Rules {
 }
 
 impl Rules {
-    /// The rules once the node's table move has been searched, with `eval`
-    /// as the table and the shortcuts left it. The two rule halves are read
-    /// off the node's facts here.
+    /// The rules once the node has searched a move, with `eval` as the
+    /// table and the shortcuts left it. The two rule halves are read off the
+    /// node's facts here, and the mate test off its alpha as it stands.
     pub(crate) fn new(search: &Search, node: &Node, eval: Option<Score>) -> Self {
         Self {
             eval,
@@ -196,6 +200,15 @@ impl Rules {
             shallow: shallow(search.config, search.board, node),
             admission: admission(search.config, node),
         }
+    }
+
+    /// The rules at the node's alpha as it now stands: the loop hands
+    /// them every rise, since a rise into the mate window turns both rules
+    /// off.
+    #[inline]
+    pub(crate) fn raise(&mut self, alpha: Score) {
+        self.shallow.raise(alpha);
+        self.admission.raise(alpha);
     }
 
     /// Whether either shallow rule drops this move, at the node's alpha and
@@ -286,14 +299,17 @@ pub(crate) fn decide(search: &Search, node: &Node, rules: &mut Rules, m: &Play) 
 /// Alpha only rises, so the margin's test is a latch once it holds
 /// (`under`). A rising alpha can reach the mate window, which is an
 /// exemption, and a margin short at one alpha can hold at a higher one, so
-/// both are read against the alpha handed in: the exemption at every move,
-/// and the margin again whenever alpha differs from the one it was last
-/// found short at.
+/// both are read against alpha as it stands: the exemption held in `reach`
+/// and read again at each rise (`Rules::raise`), and the margin again
+/// whenever alpha differs from the one it was last found short at.
 struct Shallow {
     /// The searched count from which either rule may drop a move while
     /// alpha is short of a mate: one where the node's own facts admit them,
     /// else never.
     from: usize,
+    /// `from` while alpha is short of a mate, else never: the count the
+    /// loop compares, so it asks no mate test per move.
+    reach: usize,
     /// `QUIET_FUTILITY_MARGIN` at this node's depth.
     margin: i32,
     /// The searched count at or past which the count drops a quiet, or
@@ -317,8 +333,8 @@ enum Under {
     Held,
 }
 
-/// The node's half of the two rules, read once before the loop off the
-/// node's facts.
+/// The node's half of the two rules, read off the node's facts when the
+/// rules are built, after the node's first searched move.
 fn shallow(config: &SearchConfig, board: &Position, node: &Node) -> Shallow {
     let admits = (config.quiet_futility || config.late_move_count)
         && (1..=SHALLOW_MAX_DEPTH).contains(&node.depth)
@@ -326,8 +342,14 @@ fn shallow(config: &SearchConfig, board: &Position, node: &Node) -> Shallow {
         && !is_mate(node.answer.beta)
         && !node.answer.root_bounds.beta_is_roots()
         && board.has_non_pawn_material();
+    let from = if admits { 1 } else { usize::MAX };
     Shallow {
-        from: if admits { 1 } else { usize::MAX },
+        from,
+        reach: if is_mate(node.answer.alpha) {
+            usize::MAX
+        } else {
+            from
+        },
         margin: i32::from(QUIET_FUTILITY_MARGIN) * i32::from(node.depth),
         count: if admits && config.late_move_count {
             LATE_MOVE_COUNT * usize::from(node.depth)
@@ -344,11 +366,25 @@ fn shallow(config: &SearchConfig, board: &Position, node: &Node) -> Shallow {
 
 impl Shallow {
     /// Whether either rule may drop a move at this searched count and
-    /// alpha. The mate test is asked after the count, so a node the rules
-    /// do not admit never asks it.
+    /// alpha: one compare, with the mate test on alpha held in `reach`. A
+    /// debug build asks the test again.
     #[inline]
     fn reached(&self, searched: usize, alpha: Score) -> bool {
-        searched >= self.from && !is_mate(alpha)
+        debug_assert_eq!(
+            searched >= self.reach,
+            searched >= self.from && !is_mate(alpha),
+            "the held mate test"
+        );
+        searched >= self.reach
+    }
+
+    /// The mate test on a risen alpha.
+    fn raise(&mut self, alpha: Score) {
+        self.reach = if is_mate(alpha) {
+            usize::MAX
+        } else {
+            self.from
+        };
     }
 
     /// Whether either rule drops this move, at the node's alpha and
@@ -418,12 +454,14 @@ pub(crate) fn survives_shallow(board: &Position, info: &CheckInfo, m: &Play) -> 
 }
 
 /// The late move reduction's node half: what the node's facts settle, held
-/// across the loop, so the loop asks the searched count, the mate test and
-/// the move per move.
+/// across the loop with the mate test on alpha, so the loop asks the
+/// searched count and the move per move.
 struct Admission {
     /// The searched count from which the node admits a reduction while
     /// alpha is short of a mate, or never.
     from: usize,
+    /// `from` while alpha is short of a mate, else never.
+    reach: usize,
 }
 
 fn admission(config: &SearchConfig, node: &Node) -> Admission {
@@ -432,11 +470,17 @@ fn admission(config: &SearchConfig, node: &Node) -> Admission {
         && !node.in_check
         && !is_mate(node.answer.beta)
         && !node.answer.root_bounds.beta_is_roots();
+    let from = if admits {
+        LATE_MOVE_THRESHOLD
+    } else {
+        usize::MAX
+    };
     Admission {
-        from: if admits {
-            LATE_MOVE_THRESHOLD
-        } else {
+        from,
+        reach: if is_mate(node.answer.alpha) {
             usize::MAX
+        } else {
+            from
         },
     }
 }
@@ -446,7 +490,21 @@ impl Admission {
     /// move: the searched count and alpha against the half held.
     #[inline]
     fn admits(&self, node: &Node) -> bool {
-        node.answer.searched >= self.from && !is_mate(node.answer.alpha)
+        debug_assert_eq!(
+            node.answer.searched >= self.reach,
+            node.answer.searched >= self.from && !is_mate(node.answer.alpha),
+            "the held mate test"
+        );
+        node.answer.searched >= self.reach
+    }
+
+    /// The mate test on a risen alpha.
+    fn raise(&mut self, alpha: Score) {
+        self.reach = if is_mate(alpha) {
+            usize::MAX
+        } else {
+            self.from
+        };
     }
 
     /// Whether a move at a full width node is scouted shallower before it
@@ -837,6 +895,7 @@ mod tests {
         ) -> bool {
             node.answer.alpha = alpha;
             node.answer.searched = searched;
+            rules.raise(alpha);
             let skips = rules.skips(&self.search(), node, m);
             self.keep(rules);
             skips
@@ -914,10 +973,10 @@ mod tests {
         );
     }
 
-    /// The reduction's node half is built once, and asked per move with
-    /// the alpha standing, so it reads the mate window off the alpha it is
-    /// handed rather than the one it was built at. Read with no board: the
-    /// half reads the node and the configuration alone.
+    /// The reduction's node half holds the mate test on alpha, read when
+    /// it is built and again at each rise the loop hands it (`raise`), so
+    /// alpha risen into the mate window admits nothing at any count. Read
+    /// with no board: the half reads the node and the configuration alone.
     #[test]
     fn a_mate_alpha_admits_no_reduction_at_any_count() {
         let config = reducing();
@@ -930,7 +989,7 @@ mod tests {
             None,
             FailSoft::open(0, 100, RootBounds::Neither, Taint::default()),
         );
-        let half = admission(&config, &node);
+        let mut half = admission(&config, &node);
         for searched in 0..64 {
             node.answer.searched = searched;
             assert_eq!(
@@ -944,6 +1003,7 @@ mod tests {
         assert!(
             crate::value::is_mate(node.answer.alpha) && !crate::value::is_mate(node.answer.beta)
         );
+        half.raise(node.answer.alpha);
         for searched in 0..64 {
             node.answer.searched = searched;
             assert!(!half.admits(&node), "a mate alpha at {searched} searched");
