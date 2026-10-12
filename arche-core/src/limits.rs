@@ -55,8 +55,7 @@ const UNSETTLED_PERMILLE: u128 = 500;
 const TABLE_ANSWERED_PERMILLE: u128 = 100;
 
 /// The line after a depth that chose another move than the depth before
-/// it, whatever its nodes say. Still under the deadline, which stays the
-/// share.
+/// it, whatever its nodes say. Still under the share.
 const CHANGED_PERCENT: u128 = 65;
 
 /// How a completed depth spent its nodes at the root, which is what the
@@ -99,17 +98,36 @@ impl RootNodes {
 /// exactly that much thinking and there is nothing to save it for.
 #[derive(Copy, Clone, Debug, PartialEq, Eq)]
 pub enum Clock {
-    /// A share of a running game clock, worked out from what is left of it.
-    Share(Duration),
+    /// A share of a running game clock, worked out from what is left of it,
+    /// and the limit a depth begun inside the share may run on to.
+    Share { share: Duration, limit: Duration },
     /// A time the caller named, spent as named.
     Fixed(Duration),
 }
 
 impl Clock {
+    /// A share with no room past it.
+    pub fn share(share: Duration) -> Self {
+        Clock::Share {
+            share,
+            limit: share,
+        }
+    }
+
+    /// What the move is planned to take: the share, or the time named. The
+    /// soft line is read against it.
+    pub fn budget(self) -> Duration {
+        match self {
+            Clock::Share { share, .. } => share,
+            Clock::Fixed(budget) => budget,
+        }
+    }
+
     /// How long the search may run, whichever kind of clock this is.
     pub fn deadline(self) -> Duration {
         match self {
-            Clock::Share(budget) | Clock::Fixed(budget) => budget,
+            Clock::Share { limit, .. } => limit,
+            Clock::Fixed(budget) => budget,
         }
     }
 }
@@ -172,7 +190,7 @@ impl Limits {
         match self.clock {
             // nanoseconds in a u128: multiplying the durations themselves
             // panics on a clock large enough to overflow
-            Some(Clock::Share(budget)) => {
+            Some(Clock::Share { share: budget, .. }) => {
                 self.started.elapsed().as_nanos() * 100
                     < budget.as_nanos() * last.soft_line_percent()
             }
@@ -248,7 +266,7 @@ mod tests {
     fn already_spent() -> Limits {
         Limits::starting_at(
             Instant::now() - Duration::from_secs(1),
-            Some(Clock::Share(Duration::from_millis(1))),
+            Some(Clock::share(Duration::from_millis(1))),
             u64::MAX,
         )
     }
@@ -300,7 +318,7 @@ mod tests {
 
     #[test]
     fn nothing_is_armed_until_a_depth_has_been_answered() {
-        let limits = Limits::starting_at(Instant::now(), Some(Clock::Share(Duration::ZERO)), 10);
+        let limits = Limits::starting_at(Instant::now(), Some(Clock::share(Duration::ZERO)), 10);
         let first = limits.for_iteration(false, 0);
         assert!(!first.expired(1_000_000), "depth one was stoppable");
     }
@@ -332,11 +350,11 @@ mod tests {
         // any scheduling stall that long
         let soft = Duration::from_millis(SOFT_LIMIT_PERCENT as u64 * 10);
         assert!(
-            a_second_of(Clock::Share, soft - Duration::from_millis(50))
+            a_second_of(Clock::share, soft - Duration::from_millis(50))
                 .worth_another_iteration(answered())
         );
         assert!(
-            !a_second_of(Clock::Share, soft + Duration::from_millis(50))
+            !a_second_of(Clock::share, soft + Duration::from_millis(50))
                 .worth_another_iteration(answered())
         );
     }
@@ -383,7 +401,7 @@ mod tests {
     fn the_root_moves_the_line_an_iteration_is_begun_under() {
         // each elapsed share sits at least five points from every line it
         // is read against, since the call reads the clock again
-        let at = |percent: u64| a_second_of(Clock::Share, Duration::from_millis(percent * 10));
+        let at = |percent: u64| a_second_of(Clock::share, Duration::from_millis(percent * 10));
         // a settled root gives up where the line before it did not
         assert!(at(38).worth_another_iteration(answered()));
         assert!(!at(38).worth_another_iteration(Some(took(950))));
@@ -391,7 +409,7 @@ mod tests {
         assert!(!at(52).worth_another_iteration(answered()));
         assert!(at(52).worth_another_iteration(Some(took(400))));
         assert!(!at(52).worth_another_iteration(Some(took(50))));
-        // and a changed move further still, short of the deadline
+        // and a changed move further still, short of the share
         let changed = RootNodes {
             changed: true,
             ..took(950)
@@ -405,7 +423,35 @@ mod tests {
         // an elapsed share that a clock budget would refuse is still begun
         let late = Duration::from_millis(990);
         assert!(a_second_of(Clock::Fixed, late).worth_another_iteration(answered()));
-        assert!(!a_second_of(Clock::Share, late).worth_another_iteration(answered()));
+        assert!(!a_second_of(Clock::share, late).worth_another_iteration(answered()));
+    }
+
+    #[test]
+    fn a_depth_under_way_runs_past_the_share_to_its_limit() {
+        // a second and a half into a share of a second that may run to two
+        let limits = Limits::starting_at(
+            Instant::now() - Duration::from_millis(1_500),
+            Some(Clock::Share {
+                share: Duration::from_secs(1),
+                limit: Duration::from_secs(2),
+            }),
+            u64::MAX,
+        );
+        assert!(!limits.expired(0), "the share was read as the deadline");
+        assert!(
+            !limits.worth_another_iteration(answered()),
+            "a depth was begun past the share"
+        );
+    }
+
+    #[test]
+    fn every_iteration_keeps_the_limit_past_the_share() {
+        let clock = Clock::Share {
+            share: Duration::from_secs(1),
+            limit: Duration::from_secs(3),
+        };
+        let limits = Limits::starting_now(Some(clock), None);
+        assert_eq!(limits.for_iteration(true, 5_000).clock(), Some(clock));
     }
 
     #[test]
@@ -428,7 +474,7 @@ mod tests {
         let started = Instant::now() - Duration::from_secs(1);
         let limits = Limits::starting_at(
             started,
-            Some(Clock::Share(Duration::from_secs(2))),
+            Some(Clock::share(Duration::from_secs(2))),
             u64::MAX,
         );
         // the second iteration does not start the two seconds again
@@ -437,7 +483,7 @@ mod tests {
 
     #[test]
     fn a_search_with_no_node_limit_never_takes_one_from_the_deepening() {
-        let limits = Limits::starting_now(Some(Clock::Share(Duration::from_secs(1))), None);
+        let limits = Limits::starting_now(Some(Clock::share(Duration::from_secs(1))), None);
         assert_eq!(limits.node_budget(), u64::MAX);
         assert_eq!(limits.for_iteration(true, 5_000).node_budget(), u64::MAX);
     }
