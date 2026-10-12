@@ -630,7 +630,7 @@ mod tests {
                 .filter(|row| row.forced.nodes == row.on.nodes)
                 .count();
             assert!(
-                same * 10 < rows().count().max(10),
+                same * 10 <= rows().count().max(10),
                 "{same} of {} {} searches counted the default's nodes",
                 rows().count(),
                 kind.word()

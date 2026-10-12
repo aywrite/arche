@@ -492,7 +492,7 @@ The line after the header states the layout, so that what reads these rows
 holds no copy of it:
 
 ```
-layout midgame 384 endgame 384 material 6 mobility 4 shelter 7 pawn_structure 8 king_attack 4 tempo 1
+layout midgame 384 endgame 384 material 6 mobility 4 shelter 7 pawn_structure 8 king_attack 4 tempo 1 pawn_pairs 2
 ```
 
 The first three are runs of slots. The names after them are the leaf terms in
@@ -523,7 +523,8 @@ evaluation:
 eval = mat . w_mat + trunc((psqt . w_psqt + mobility . w_mobility
                             + shelter . w_shelter + pawns . w_pawns
                             + king_attack . w_king_attack
-                            + tempo . w_tempo) / 24)
+                            + tempo . w_tempo
+                            + pawn_pairs . w_pawn_pairs) / 24)
        + machine
 ```
 
@@ -767,7 +768,9 @@ A fit of a new term holds everything older: the shelter was fitted under
 shelter`, the king attack zone under those and `--hold pawn_structure`, and
 the tempo under those and `--hold king_attack`. A refit of an older term on a
 grown corpus holds every other term instead, so a mobility refit is `--hold
-tables --hold shelter --hold pawn_structure --hold king_attack --hold tempo`.
+tables --hold shelter --hold pawn_structure --hold king_attack --hold tempo
+--hold pawn_pairs`. Every fit holds `pawn_pairs`: its four slots only carry
+the table's two sums into the evaluation, and the table is fitted elsewhere.
 The holds follow from the one term the run means to move.
 
 ## What the table's key signature costs
