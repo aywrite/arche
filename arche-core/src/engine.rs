@@ -16,7 +16,7 @@ use crate::recorder::{Sampler, Window};
 use crate::reduction;
 use crate::residual::{Sample, Shortcut};
 use crate::transposition::{
-    DEFAULT_TABLE_BYTES, Floor, NO_EVAL, Probe, SignatureCounters, TranspositionTable,
+    DEFAULT_TABLE_BYTES, Floor, Found, NO_EVAL, Probe, SignatureCounters, TranspositionTable,
 };
 use crate::value::{
     MateDistanceWindow, Taint, Value, below_the_mate_window, is_mate, mate_distance_window,
@@ -1871,8 +1871,8 @@ impl AlphaBeta {
     /// What the table knows about the position, under the taint policy,
     /// counted.
     #[inline(always)]
-    fn probe(&mut self, alpha: Score, beta: Score, depth: u8) -> Probe {
-        let probe = self.transpositions.probe(
+    fn probe(&mut self, alpha: Score, beta: Score, depth: u8) -> (Probe, Found) {
+        let (probe, found) = self.transpositions.probe(
             &self.board,
             alpha,
             beta,
@@ -1881,17 +1881,17 @@ impl AlphaBeta {
             self.config.taint.guards_rule50(),
         );
         self.ghi.count_probe(probe);
-        probe
+        (probe, found)
     }
 
     /// The table's move for ordering and never its cutoff, counted: what a
     /// search with a move excluded asks, since the entry's score is the
     /// excluded move's.
     #[inline(always)]
-    fn probe_for_ordering(&mut self) -> Probe {
-        let probe = self.transpositions.probe_for_ordering(&self.board);
+    fn probe_for_ordering(&mut self) -> (Probe, Found) {
+        let (probe, found) = self.transpositions.probe_for_ordering(&self.board);
         self.ghi.count_probe(probe);
-        probe
+        (probe, found)
     }
 
     /// Whether a result may be stored under the taint policy. A refused
@@ -2056,7 +2056,7 @@ impl AlphaBeta {
         }
 
         // a probe at depth zero: any stored bound is deep enough here
-        let pv_play = match self.probe(answer.alpha, beta, 0) {
+        let pv_play = match self.probe(answer.alpha, beta, 0).0 {
             Probe::Cut(value) => return Ok(value),
             Probe::Order(play) | Probe::Refused(play) => Some(play),
             Probe::Miss => None,
@@ -2840,7 +2840,7 @@ impl AlphaBeta {
             return self.quiescence(alpha, beta);
         }
 
-        let probe = match excluded {
+        let (probe, found) = match excluded {
             None => self.probe(alpha, beta, depth),
             Some(_) => self.probe_for_ordering(),
         };
@@ -2852,13 +2852,10 @@ impl AlphaBeta {
         let mut taint = Taint::default();
         // the node's static evaluation, filled by the shortcuts and read by
         // the late move decision, or found in the table's entry. The entry's
-        // floor is read here too, before the shortcuts' searches probe
-        // other keys
-        let table_eval = self.transpositions.probed_eval(self.board.key);
+        // floor is read from the probe's entry too
+        let table_eval = found.eval();
         let mut eval: Option<Score> = (table_eval != NO_EVAL).then_some(table_eval);
-        let floor = self
-            .transpositions
-            .probed_floor(self.board.key, self.board.line_ply);
+        let floor = found.floor(self.board.line_ply);
         if let Some(value) = self.shortcuts(
             alpha,
             beta,

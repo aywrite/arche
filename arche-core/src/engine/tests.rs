@@ -54,10 +54,10 @@ mod search {
     #[test]
     fn a_table_entry_holds_its_own_positions_evaluation() {
         fn stored(e: &AlphaBeta, board: &Board) -> Option<Score> {
-            let _ = e
-                .transpositions
-                .probe(board, Score::MIN + 1, Score::MAX - 1, 0, false, false);
-            let found = e.transpositions.probed_eval(board.key);
+            let (_, found) =
+                e.transpositions
+                    .probe(board, Score::MIN + 1, Score::MAX - 1, 0, false, false);
+            let found = found.eval();
             (found != crate::transposition::NO_EVAL).then_some(found)
         }
         for fen in fens::CORE {
@@ -359,11 +359,11 @@ mod search {
             rest.score
         );
         assert_eq!(e.singular_counts().asked, 0, "the excluded search asked");
-        let _ = e
-            .transpositions
-            .probe(&e.board, Score::MIN + 1, Score::MAX - 1, 0, false, false);
+        let (_, found) =
+            e.transpositions
+                .probe(&e.board, Score::MIN + 1, Score::MAX - 1, 0, false, false);
         assert_eq!(
-            e.transpositions.probed_floor(e.board.key, 0),
+            found.floor(0),
             Some(planted),
             "the excluded search stored over the entry"
         );
