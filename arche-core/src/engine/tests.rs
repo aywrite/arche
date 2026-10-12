@@ -1416,6 +1416,47 @@ mod search {
         assert!(swaps > 0, "no budget in the sweep swapped a move in");
     }
 
+    #[test]
+    fn a_stopped_shortened_search_answers_with_the_floor_before_it() {
+        // after a root fail high the depth is searched a ply shallower, and
+        // a stop inside that search answers with the floor rather than with
+        // the shallower search's partial best, move and score alike. Every
+        // floor of a deepening is swept, since which depths fail high is a
+        // fact about the position
+        let mut swept = 0;
+        for fen in [SHARP_MIDDLEGAME, fens::KIWIPETE] {
+            let mut whole = engine(Board::from_fen(fen).unwrap());
+            let mut reports: Vec<(u8, u64, ScoreBound, Play, Score)> = Vec::new();
+            let options = SearchParameters::new(None, nodes_only(150_000));
+            let _ = whole.iterative_deepening_search(options, |depth, result, _, bound| {
+                reports.push((depth, result.nodes, bound, result.best_move, result.score));
+            });
+            for pair in reports.windows(2) {
+                let [(depth, from, bound, play, score), (next_depth, to, _, _, _)] = *pair else {
+                    unreachable!("a window of two");
+                };
+                if bound != ScoreBound::Lower || next_depth != depth || to <= from + 1 {
+                    continue;
+                }
+                for limit in (from + 1..to).step_by(((to - from) / 40).max(1) as usize) {
+                    let mut e = engine(Board::from_fen(fen).unwrap());
+                    let options = SearchParameters::new(None, nodes_only(limit));
+                    let outcome = e.iterative_deepening_search(options, |_, _, _, _| {});
+                    let SearchOutcome::Aborted(Some(result)) = outcome else {
+                        panic!("budget {limit} in {fen}: {outcome:?}");
+                    };
+                    assert_eq!(
+                        (result.best_move, result.score),
+                        (play, score),
+                        "budget {limit} in {fen}: the floor at depth {depth} was replaced"
+                    );
+                    swept += 1;
+                }
+            }
+        }
+        assert!(swept > 0, "no depth failed high before the next search");
+    }
+
     /// The soft line reads the nodes under the move a depth chose against
     /// the nodes under every root move, and whether the move changed from
     /// the depth before. Two root moves, counted twice and once.

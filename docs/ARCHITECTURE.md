@@ -66,9 +66,9 @@ factorization machine term over every pair of pieces.
   worse than one we can force), deepening one ply at a time with each pass
   seeding the next through the transposition table and opening at an
   aspiration window around the last pass's score, widened on the side a
-  pass falls outside it. At the horizon,
-  quiescence search keeps following captures until the position goes
-  quiet, since evaluating in the middle of an exchange scores a hanging
+  pass falls outside it and searched a ply shallower after each fail high.
+  At the horizon, quiescence search keeps following captures until the
+  position goes quiet, since evaluating in the middle of an exchange scores a hanging
   queen as material. Also here: principal variation search (ask a move
   after the first whether it beats the best so far before searching it
   properly), reverse futility pruning (answer a node from its evaluation

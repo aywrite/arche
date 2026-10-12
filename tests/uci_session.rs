@@ -368,7 +368,7 @@ fn the_clear_hash_button_empties_the_table() {
 const SHARP_MIDDLEGAME: &str = "r1b2rk1/ppp1qppp/4pn2/6N1/Qn1P4/2NBP3/PP3PPP/R3K2R w KQ - 9 12";
 
 /// WAC.021 of the tactical suite. Its depth five fails low, its depth eight
-/// fails high, and its depth nine changes the root move and reports the new
+/// fails high, and its depth ten changes the root move and reports the new
 /// move as a floor first.
 const WAC_021: &str = "5rk1/1b3p1p/pp3p2/3n1N2/1P6/P1qB1PP1/3Q3P/4R1K1 w - - 0 1";
 
@@ -377,17 +377,19 @@ const WAC_021: &str = "5rk1/1b3p1p/pp3p2/3n1N2/1P6/P1qB1PP1/3Q3P/4R1K1 w - - 0 1
     feature = "machine-test",
     ignore = "pins a search made with the shipped factor table, which the test rank replaces"
 )]
-fn the_move_a_swap_answers_with_opens_the_last_line_said() {
+fn a_stop_in_the_shortened_re_search_answers_the_floor_the_last_line_said() {
     // a node budget, so the cut falls on the same node on every machine.
     // It has to land after an iteration reports its floor and before that
-    // iteration ends: depth seven answers d3e2 and finishes at 41,237
-    // nodes, and depth eight reports d3e2 as a floor from 58,527 nodes on
-    // and finishes at 90,907. The floor names the move depth seven
-    // answered, so the swap is to the same move. The budget moves with the
+    // iteration ends: depth seven answers d3e2 and finishes at 41,216
+    // nodes, and depth eight reports d3e2 as a floor at 58,506 and again
+    // at 64,869 and finishes at 65,727. The cut falls in the re-search a
+    // ply shallower that follows the first floor, so the floor is held
+    // rather than swapped for that search's partial answer. The floor
+    // names the move depth seven answered. The budget moves with the
     // tree, in the commit that moved it
     let mut s = Session::start(&[]);
     s.say(&format!("position fen {}", SHARP_MIDDLEGAME));
-    s.say("go nodes 70000");
+    s.say("go nodes 61000");
     let answer = s.wait_for(|l| l.starts_with("bestmove"));
     let best = move_of(&answer);
     let info = s
@@ -545,16 +547,17 @@ fn a_root_move_that_reaches_beta_is_reported_as_a_floor_and_then_answered_with()
 )]
 fn a_floor_answers_until_the_wider_search_replaces_it() {
     // what the engine plays when the wider search never finishes. WAC.021 is
-    // answered with d2c3 at depth eight. At depth nine d2h6 reaches beta and
-    // is reported as a floor at 87,942 nodes, and again at 89,089 and 91,472
-    // as the window widens, and the search finishes at 189,094. A budget
-    // after d2h6's last floor and inside that is interrupted before anything
-    // beats alpha, so the floor is what is left to answer with; with the
-    // floor not held it answers d2c3, the move the search has just shown
-    // worse
+    // answered with d2c3 at depth nine. At depth ten d2c3 reaches beta at
+    // 37,691 nodes, then d2h6 does in the re-search at nine and is reported
+    // as a floor at 62,711 and again, at eight, at 64,045, and a search at
+    // seven finishes the depth at 67,092. A budget after d2h6's last
+    // floor and inside that stops a shallower search, whose partial answer
+    // never replaces a floor, so the floor is what is left to answer with;
+    // with the floor not held it answers d2c3, the move the search has just
+    // shown worse
     let mut s = Session::start(&[]);
     s.say(&format!("position fen {}", WAC_021));
-    s.say("go nodes 100000");
+    s.say("go nodes 65500");
     let answer = s.wait_for(|l| l.starts_with("bestmove"));
     let best = move_of(&answer);
 

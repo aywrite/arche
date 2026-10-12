@@ -299,7 +299,8 @@ frees more or less than that. A keyword given twice is refused, so a pair is
 one word; the same switch twice and a third switch are refused too. Where one
 switch of a pair is only ever asked under the other (`adaptive_null_move` under
 `null_move`; `deep_reductions`, `late_move_pruning` and `reduction_table`
-under `late_move_reductions`), the pair searches as many nodes as the outer
+under `late_move_reductions`; `fail_high_reduction` under `aspiration`), the
+pair searches as many nodes as the outer
 single, position by position, which a test holds.
 
 **`off` absent means both sides are the default**, which the header says as

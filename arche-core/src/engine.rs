@@ -548,6 +548,13 @@ pub struct SearchConfig {
     /// the control. Only the deepening loop reads it, so a search asked for
     /// a fixed depth opens full.
     pub aspiration: bool,
+    /// Whether the search after a root fail high runs a ply shallower for
+    /// each fail high since the depth opened or last failed low. Rides on
+    /// `aspiration`, since only a window fails high.
+    ///
+    /// Off in the reference: it changes what a depth answers, where the
+    /// window alone changes only what the depth costs.
+    pub fail_high_reduction: bool,
     /// Whether a deep node whose table move stands a margin above every
     /// other move, shown by a half depth search with that move excluded,
     /// searches the table move a ply deeper.
@@ -657,7 +664,7 @@ impl SearchConfig {
     ///
     /// `taint` is not among them: it is a policy with four values rather
     /// than a switch, and `residuals` already takes it.
-    pub const SWITCHES: [(&'static str, TurnOff); 14] = [
+    pub const SWITCHES: [(&'static str, TurnOff); 15] = [
         ("reverse_futility", |config| config.reverse_futility = false),
         ("null_move", |config| config.null_move = false),
         ("adaptive_null_move", |config| {
@@ -677,6 +684,9 @@ impl SearchConfig {
         ("reduction_table", |config| config.reduction_table = false),
         ("move_memory", |config| config.move_memory = false),
         ("aspiration", |config| config.aspiration = false),
+        ("fail_high_reduction", |config| {
+            config.fail_high_reduction = false
+        }),
         ("singular_extensions", |config| {
             config.singular_extensions = false
         }),
@@ -715,6 +725,7 @@ impl SearchConfig {
             reduction_table: false,
             move_memory: false,
             aspiration: false,
+            fail_high_reduction: false,
             singular_extensions: false,
         }
     }
@@ -770,6 +781,7 @@ impl Default for SearchConfig {
             reduction_table: true,
             move_memory: true,
             aspiration: true,
+            fail_high_reduction: true,
             singular_extensions: true,
         }
     }
@@ -878,7 +890,7 @@ mod switches {
         };
         let one = |name| SearchConfig::without(name).expect(name);
         let default = nodes(SearchConfig::default());
-        let outers: Vec<(&str, Vec<u64>)> = ["null_move", "late_move_reductions"]
+        let outers: Vec<(&str, Vec<u64>)> = ["null_move", "late_move_reductions", "aspiration"]
             .into_iter()
             .map(|outer| (outer, nodes(one(outer).config())))
             .collect();
@@ -887,6 +899,7 @@ mod switches {
             ("late_move_reductions", "deep_reductions"),
             ("late_move_reductions", "late_move_pruning"),
             ("late_move_reductions", "reduction_table"),
+            ("aspiration", "fail_high_reduction"),
         ] {
             assert_ne!(nodes(one(inner).config()), default, "{inner} did nothing");
             let pair = one(outer).and(one(inner)).expect("a pair");
@@ -1080,6 +1093,12 @@ struct Aspiration {
     /// at the edge and stays there.
     low_failures: u8,
     high_failures: u8,
+    /// The plies the next search of the depth is shortened by: one for
+    /// each fail high since the depth opened or last failed low. The move
+    /// a fail high names was the depth's answer after a full depth
+    /// re-search at 89 of 100 such depths on the games suite (d82638a), so
+    /// that re-search was spent mostly confirming it.
+    shallower: u8,
 }
 
 impl Aspiration {
@@ -1102,6 +1121,7 @@ impl Aspiration {
             centre: 0,
             low_failures: ASPIRATION_FAILURES,
             high_failures: ASPIRATION_FAILURES,
+            shallower: 0,
         };
         let Some(centre) = previous else {
             return full;
@@ -1115,12 +1135,21 @@ impl Aspiration {
             centre,
             low_failures: 0,
             high_failures: 0,
+            shallower: 0,
         }
+    }
+
+    /// The depth the next search of an iteration at `depth` runs to. A
+    /// side fails at most `ASPIRATION_FAILURES` times and the window opens
+    /// narrow only from `ASPIRATION_MIN_DEPTH`, so this never reaches zero.
+    fn depth(self, depth: u8) -> u8 {
+        depth - self.shallower
     }
 
     /// The window after an iteration answered `bound` rather than a score
     /// inside this one. Only the side that failed moves, since the other
-    /// proved nothing.
+    /// proved nothing. A fail high also shortens the next search by a ply,
+    /// and a fail low restores the full depth.
     fn widen(self, bound: ScoreBound) -> Self {
         match bound {
             ScoreBound::Upper => {
@@ -1128,6 +1157,7 @@ impl Aspiration {
                 Self {
                     alpha: Self::below(self.centre, low_failures),
                     low_failures,
+                    shallower: 0,
                     ..self
                 }
             }
@@ -1136,6 +1166,7 @@ impl Aspiration {
                 Self {
                     beta: Self::above(self.centre, high_failures),
                     high_failures,
+                    shallower: self.shallower + 1,
                     ..self
                 }
             }
@@ -1211,6 +1242,33 @@ mod aspiration {
         // each doubling is measured from the centre, not from the last bound
         let twice = low.widen(ScoreBound::Upper);
         assert_eq!((twice.alpha, twice.beta), (30 - 4 * W, 30 + W));
+    }
+
+    #[test]
+    fn each_fail_high_shortens_the_next_search_and_a_fail_low_restores_it() {
+        let opened = Aspiration::open(Some(30), AT + 3);
+        assert_eq!(opened.depth(AT + 3), AT + 3);
+
+        let once = opened.widen(ScoreBound::Lower);
+        assert_eq!(once.depth(AT + 3), AT + 2);
+        let twice = once.widen(ScoreBound::Lower);
+        assert_eq!(twice.depth(AT + 3), AT + 1);
+
+        // a fail low proves nothing about the move that failed high, so the
+        // search is back at the full depth, and the next fail high counts
+        // from there
+        let low = twice.widen(ScoreBound::Upper);
+        assert_eq!(low.depth(AT + 3), AT + 3);
+        assert_eq!(low.widen(ScoreBound::Lower).depth(AT + 3), AT + 2);
+
+        // the fewest plies a depth that opened narrow can be searched to
+        let mut spent = Aspiration::open(Some(30), AT);
+        for _ in 0..3 {
+            spent = spent.widen(ScoreBound::Lower);
+        }
+        assert_eq!(spent.beta, Aspiration::FULL_BETA);
+        assert_eq!(spent.depth(AT), AT - 3);
+        assert_eq!(full().depth(AT), AT);
     }
 
     #[test]
@@ -3308,8 +3366,18 @@ impl Engine for AlphaBeta {
             self.root_nodes.clear();
             loop {
                 let (limits, stop) = search_options.for_iteration(best.is_some(), total_nodes);
-                match self.search_root(depth, limits, stop, window) {
+                let searched = if self.config.fail_high_reduction {
+                    window.depth(depth)
+                } else {
+                    depth
+                };
+                match self.search_root(searched, limits, stop, window) {
                     SearchOutcome::Aborted(deeper) => {
+                        // a shortened search follows a fail high, which
+                        // `best` holds. Its partial best comes from a
+                        // shallower search than that floor's and does not
+                        // replace it
+                        let deeper = deeper.filter(|_| searched == depth);
                         // the interrupted search's best outranks what
                         // answers now, whenever it has one. The move it
                         // hands back beat the window's alpha, and the moves
