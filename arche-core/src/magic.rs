@@ -97,7 +97,7 @@ pub(crate) static MAGIC: Magic = Magic::new();
 /// square of each, since a piece there blocks nothing behind it, and less the
 /// square the slider stands on.
 ///
-/// Every bit dropped halves the square's block of the table.
+/// Every bit dropped halves the slots the square fills in the table.
 const fn blocker_mask(mailbox: &BaseConversions, from: u8, directions: [isize; 4]) -> u64 {
     let mut mask = 0u64;
     let mut d = 0;
@@ -169,78 +169,84 @@ fn blocker_configurations(mask: u64) -> Vec<u64> {
         .collect()
 }
 
-/// How wide each kind's attack table is: the sum over the squares of two to the
-/// power of the bits in that square's blocker mask. Stated rather than counted
-/// because an array is sized before it is filled; `new` asserts that the masks
-/// fill it exactly, so a wrong number fails the build.
-const STRAIGHT_ATTACKS: usize = 102_400;
-const DIAGONAL_ATTACKS: usize = 5_248;
+/// How many bits every square's index takes, for each kind: the widest
+/// mask's. One shift for all sixty four squares is a constant, so a probe
+/// needs no per square shift.
+const STRAIGHT_BITS: u32 = 12;
+const DIAGONAL_BITS: u32 = 9;
+
+/// How far each kind's table reaches: one past the highest slot any square
+/// writes. Stated rather than counted because an array is sized before it is
+/// filled; `new` asserts the reach, so a wrong number fails the build.
+const STRAIGHT_ATTACKS: usize = 114_947;
+const DIAGONAL_ATTACKS: usize = 5_423;
 
 /// The arrays those tables live in, each the next power of two up. A probe
 /// masks its index to the array's length, which is a bound llvm can prove, so
 /// the probe carries no bounds check. The mask never changes an index, since
-/// every index a probe computes is one `new` wrote, below the table's width.
+/// every index a probe computes is one `new` wrote, below the table's reach.
 const STRAIGHT_LEN: usize = 131_072;
 const DIAGONAL_LEN: usize = 8_192;
 
-/// One slider kind's lookup tables. Every square's attack sets sit end to end
-/// in a single array, with `offsets` saying where each square's block starts.
-struct SliderTables<const ATTACKS: usize, const LEN: usize> {
+/// One slider kind's lookup tables, every square's attack sets in one array.
+///
+/// At a fixed width a square with a narrower mask than the widest leaves most
+/// of its `1 << BITS` slots empty, so the squares' blocks overlap: each starts
+/// at `offsets[square]`, chosen with the magics, so that its slots land on
+/// slots no other square uses, or on one holding the same attack set.
+struct SliderTables<const BITS: u32, const ATTACKS: usize, const LEN: usize> {
     blocker_masks: [u64; 64],
     magics: [u64; 64],
-    /// `64 - bits` for each square, so a probe shifts without subtracting
-    /// first.
-    shifts: [u8; 64],
     offsets: [u32; 64],
     attacks: [u64; LEN],
 }
 
-impl<const ATTACKS: usize, const LEN: usize> SliderTables<ATTACKS, LEN> {
-    const fn new(directions: [isize; 4], magics: [u64; 64]) -> Self {
+impl<const BITS: u32, const ATTACKS: usize, const LEN: usize> SliderTables<BITS, ATTACKS, LEN> {
+    const fn new(directions: [isize; 4], magics: [u64; 64], offsets: [u32; 64]) -> Self {
         assert!(
             LEN.is_power_of_two() && LEN >= ATTACKS,
-            "the array must be a power of two at least the table's width"
+            "the array must be a power of two at least the table's reach"
         );
         let mut blocker_masks = [0u64; 64];
-        let mut shifts = [0u8; 64];
-        let mut offsets = [0u32; 64];
         let mut attacks = [0u64; LEN];
-        let mut filled = 0usize;
+        let mut reach = 0usize;
         let mailbox = BASE_CONVERSIONS;
 
         let mut square = 0u8;
         while square < 64 {
             let i = square as usize;
             let mask = blocker_mask(&mailbox, square, directions);
-            let bits = mask.count_ones();
+            assert!(mask.count_ones() <= BITS, "a mask is wider than the index");
             blocker_masks[i] = mask;
-            shifts[i] = 64 - bits as u8;
-            offsets[i] = filled as u32;
 
-            let configurations = 1u64 << bits;
+            let configurations = 1u64 << mask.count_ones();
             let mut configuration = 0u64;
             while configuration < configurations {
                 let blockers = blocker_configuration(mask, configuration);
-                let index = (blockers.wrapping_mul(magics[i]) >> shifts[i]) as usize;
+                let index = (blockers.wrapping_mul(magics[i]) >> (64 - BITS)) as usize;
+                let slot = offsets[i] as usize + index;
                 let moves = attacks_from(&mailbox, square, blockers, directions);
-                // two configurations may share an index only when they admit
-                // the same moves, which is what makes the magic a valid one
-                assert!(attacks[filled + index] == 0 || attacks[filled + index] == moves);
-                attacks[filled + index] = moves;
+                // two configurations may share a slot only when they admit the
+                // same moves, whether they come from one square or two (every
+                // attack set has a bit, so an empty slot reads zero)
+                assert!(slot < ATTACKS, "a slot is past the table's reach");
+                assert!(attacks[slot] == 0 || attacks[slot] == moves);
+                attacks[slot] = moves;
+                if slot >= reach {
+                    reach = slot + 1;
+                }
                 configuration += 1;
             }
-            filled += configurations as usize;
             square += 1;
         }
         assert!(
-            filled == ATTACKS,
-            "the table is not the width the masks ask for"
+            reach == ATTACKS,
+            "the table does not reach as far as stated"
         );
 
         Self {
             blocker_masks,
             magics,
-            shifts,
             offsets,
             attacks,
         }
@@ -250,21 +256,29 @@ impl<const ATTACKS: usize, const LEN: usize> SliderTables<ATTACKS, LEN> {
     fn attacks(&self, square: u8, occupied: u64) -> u64 {
         let i = square as usize;
         let blockers = occupied & self.blocker_masks[i];
-        let index = blockers.wrapping_mul(self.magics[i]) >> self.shifts[i];
+        let index = blockers.wrapping_mul(self.magics[i]) >> (64 - BITS);
         self.attacks[(self.offsets[i] as usize + index as usize) & (LEN - 1)]
     }
 }
 
 pub struct Magic {
-    straight: SliderTables<STRAIGHT_ATTACKS, STRAIGHT_LEN>,
-    diagonal: SliderTables<DIAGONAL_ATTACKS, DIAGONAL_LEN>,
+    straight: SliderTables<STRAIGHT_BITS, STRAIGHT_ATTACKS, STRAIGHT_LEN>,
+    diagonal: SliderTables<DIAGONAL_BITS, DIAGONAL_ATTACKS, DIAGONAL_LEN>,
 }
 
 impl Magic {
     pub const fn new() -> Self {
         Self {
-            straight: SliderTables::new(BaseConversions::STRAIGHT_STEPS, STRAIGHT_MAGICS),
-            diagonal: SliderTables::new(BaseConversions::DIAGONAL_STEPS, DIAGONAL_MAGICS),
+            straight: SliderTables::new(
+                BaseConversions::STRAIGHT_STEPS,
+                STRAIGHT_MAGICS,
+                STRAIGHT_OFFSETS,
+            ),
+            diagonal: SliderTables::new(
+                BaseConversions::DIAGONAL_STEPS,
+                DIAGONAL_MAGICS,
+                DIAGONAL_OFFSETS,
+            ),
         }
     }
 
@@ -281,49 +295,73 @@ impl Magic {
 
 #[rustfmt::skip]
 pub const STRAIGHT_MAGICS: [u64; 64] = [
-    0x0080052033400282, 0x0240009004402000, 0x03000c4010200100, 0x8200104020060008,
-    0x820020020004d830, 0x018004000d120080, 0x0100408401000200, 0x2600010860804a04,
-    0x8000800082204010, 0x0011004001002080, 0x00010054c0200100, 0x2001001900201000,
-    0x2006000600595020, 0x0101001c000a0900, 0x001c004d108a0804, 0x0011000500028042,
-    0x2410308004884000, 0x0204808020014002, 0x1220808020005000, 0x031012000a0060c2,
-    0x0e88008018240081, 0x2002808024000200, 0x0001a40010020881, 0x0ca0220008840641,
-    0x4000882080004001, 0x0088802100400100, 0x0180408200120021, 0x0c280080801a1000,
-    0x0554008080050800, 0x0100540080800600, 0x0008080c00910210, 0x000400420008812c,
-    0x8200400081800220, 0x5210012000400640, 0x0000803202004020, 0x4003041001000860,
-    0x0a00080080804400, 0x2500a04028011004, 0x0500108204000809, 0x48028241020000a4,
-    0x08c0018040288000, 0x001002200040c001, 0x2488200010008080, 0x0038100009010060,
-    0x2418011100290004, 0x40a0820004008080, 0x8001000200050024, 0x00000c1048820011,
-    0x0020800044611100, 0x2080288100400100, 0x800120030110c100, 0x2102401202600a00,
-    0x0692050008009100, 0x1004010002004040, 0x0200225938100c00, 0x8000204484011200,
-    0x2100410020800a51, 0x0010210840001181, 0x02c0404b20001101, 0x004810000844a101,
-    0x1041004402100801, 0x0041002804001e85, 0x0a08c8020104b004, 0x0000002144059102,
+    0x0080052033400282, 0x0020001000080020, 0x8040080050004004, 0x0040040048004002,
+    0x0020010020020404, 0x00400100020000c0, 0x0040010000400080, 0x0200010081402204,
+    0x1400400020001048, 0x0280100400080090, 0x3000080402010008, 0x0100200400200201,
+    0x0100200100200200, 0x0400202000800100, 0xc000202000400080, 0x0000400020800040,
+    0x4040002000100020, 0x1090000802040009, 0x2004000802010088, 0x0004002002002144,
+    0x0212001001001080, 0x2029002020008001, 0x0000801020004010, 0x1020802000400020,
+    0x0200200040001040, 0x2000080010040010, 0x0800880040044010, 0x84000400200200a1,
+    0x4000010020020020, 0x0040008020200100, 0x2000400040008001, 0x00c4400040002080,
+    0x1c40001000200021, 0x0000080400100012, 0x4044000800404010, 0x8002000400202002,
+    0x8000200100200200, 0x4000200080200100, 0x0200008000404001, 0x0080882000200040,
+    0xc110204104000803, 0x0010080102000400, 0x0002c00409004010, 0x0042000204002020,
+    0x2000a20001002020, 0x0000410000802020, 0x0020401080004001, 0x004000a002009001,
+    0x0040012000100020, 0x8000080210040010, 0x6404010200080008, 0x0000040020020020,
+    0x0000020020010020, 0x0040200080010020, 0x0210200040008020, 0x1080802000400020,
+    0x0201401100220082, 0x0800081081002041, 0x0010050840802012, 0x0000401064200802,
+    0x0400041020080102, 0x0000100081040802, 0x8000010400480482, 0x0421030460840042,
+];
+
+#[rustfmt::skip]
+pub const STRAIGHT_OFFSETS: [u32; 64] = [
+         0,  16384,  18432,  20480,  22560,  24616,  26920,   4096,
+     28968,  76881,  77921,  78946,  79970,  80994,  82018,  31016,
+     33320,  83042,  84066,  85090,  86274,  87298,  88322,  35368,
+     37417,  89346,  90370,  91618,  92706,  93730,  94754,  39465,
+     41769,  95778,  96802,  98082,  99106, 100130, 101154,  43817,
+     45930, 102178, 103203, 104451, 105571, 106627, 107715,  48000,
+     50432, 108739, 109827, 110851, 111875, 112899, 113923,  52496,
+      8192,  54545,  58321,  62305,  66145,  69729,  73041,  12288,
 ];
 
 #[rustfmt::skip]
 pub const DIAGONAL_MAGICS: [u64; 64] = [
-    0x0050050a08020022, 0x8010211504288002, 0x1804040282100000, 0x0282208204308812,
-    0x81011140001024a0, 0x0400900421000008, 0x10c08290886001c6, 0x0421010042200410,
-    0x0500100a10030204, 0x1802021002020040, 0x0001480208420050, 0x60a0480604408008,
-    0x0004041420448344, 0x0000020202200008, 0x0300820802021080, 0x00022a0244124884,
-    0x0005102048220808, 0x0002100810214200, 0x4802000400240102, 0x0004000124008000,
-    0x001010060210200b, 0x0006000101018285, 0x8004000184011810, 0x8008802a0c440211,
-    0x500c400030100901, 0x0010120e04040404, 0x0084020044006402, 0x4408080004202060,
-    0x034f010040304001, 0x00010a0007080100, 0x0444010084090101, 0x8000870000640201,
-    0x3010102604080801, 0x8808080204188600, 0x2b04042200841400, 0x00402020a0480080,
-    0x0140058020020020, 0xa020008100020901, 0x9088080882811182, 0x00824140408b0400,
-    0x2804122004001111, 0x2054011908483084, 0x00822018c8011000, 0x0800032124000803,
-    0x0000401040910100, 0x002000b000800040, 0x0002a80212800420, 0x0202020246000100,
-    0x4090a18820502180, 0x00208404220a4808, 0x0002020100c80000, 0x0008008041108800,
-    0x6000801042020010, 0x8041481001160100, 0x2550e06801014080, 0x082830008a10480e,
-    0x504200210110b008, 0x24212114008c0404, 0x0048080204ea0810, 0x082001108094040a,
-    0x9020010812020200, 0x6000002004100094, 0x0001045044080080, 0x0d20022218010310,
+    0x0000820081000408, 0x0000208080100402, 0x0000401020214000, 0x4800804810102904,
+    0x4020440200600020, 0x088041008050c800, 0x0020104202004012, 0x0004402080480040,
+    0x3864804100401040, 0x000a008100100410, 0x0002804040082000, 0x4412808048101000,
+    0x010040440200a000, 0x2006004100804020, 0x0804001100820040, 0x024400201042002a,
+    0x2004080100208010, 0x0000200080801040, 0x0002000400100409, 0x0200200200801080,
+    0x0e00240080840140, 0x0000120080808800, 0x2008086040208020, 0x0000040008208010,
+    0x020202000100401a, 0x0000802402002020, 0x0012004582008008, 0x0040040000410220,
+    0x8200840000802008, 0x2000208000404028, 0x1120200400208022, 0xc24040042808200e,
+    0x01008200b0010020, 0x5000804108004010, 0x0420808084004200, 0x1000c04800008200,
+    0x00042500102400c0, 0x8204008008208020, 0x0001000820201010, 0x0000082020800808,
+    0x01c0208200800040, 0x100840404040c021, 0x2000804100800040, 0xa000008840200040,
+    0x0800020041000010, 0x4804080020080041, 0x0200404080202004, 0x4000202040104002,
+    0x0c40802101004040, 0x00c0104100402800, 0x40c0001010806000, 0x2054830408403007,
+    0x0048020100202210, 0x2002820040102003, 0x8000420020401000, 0x2000208020400400,
+    0x8a00801082010040, 0x0000001011010020, 0x0200044808208060, 0x448020a008084030,
+    0x4000138001002020, 0x3058010040810010, 0x2100040100200810, 0x0001010010808004,
+];
+
+#[rustfmt::skip]
+pub const DIAGONAL_OFFSETS: [u32; 64] = [
+      3599,   3855,   3887,   3919,   3951,   3998,   4016,   3663,
+      4078,   4110,   4142,   4174,   4206,   4253,   4271,   4317,
+      4379,   4411,   2048,   2176,   2304,   2434,   4443,   4475,
+      4507,   4539,   2570,      0,    512,   2698,   4571,   4603,
+      4635,   4667,   2826,   1024,   1536,   2954,   4699,   4731,
+      4763,   4795,   3082,   3210,   3343,   3471,   4827,   4859,
+      4891,   4893,   4955,   4987,   5048,   5080,   5112,   5144,
+      3665,   5176,   5234,   5266,   5327,   5359,   5391,   3791,
 ];
 
 #[cfg(test)]
 mod tests {
     use super::{
-        BASE_CONVERSIONS, BaseConversions, MAGIC, attacks_from, blocker_configurations,
-        blocker_mask,
+        BASE_CONVERSIONS, BaseConversions, DIAGONAL_BITS, MAGIC, STRAIGHT_BITS, attacks_from,
+        blocker_configurations, blocker_mask,
     };
     use crate::misc::split_mix;
 
@@ -331,11 +369,10 @@ mod tests {
     const DIAGONAL: [isize; 4] = BaseConversions::DIAGONAL_STEPS;
 
     /// Everything a magic for one square has to map: each blocker
-    /// configuration, the attacks it admits, and how wide the index is.
+    /// configuration and the attacks it admits.
     struct Cases {
         blockers: Vec<u64>,
         attacks: Vec<u64>,
-        bits: u8,
     }
 
     fn cases(square: u8, directions: [isize; 4]) -> Cases {
@@ -345,11 +382,7 @@ mod tests {
             .iter()
             .map(|&b| attacks_from(&BASE_CONVERSIONS, square, b, directions))
             .collect();
-        Cases {
-            blockers,
-            attacks,
-            bits: mask.count_ones() as u8,
-        }
+        Cases { blockers, attacks }
     }
 
     /// Three draws anded together, which leaves each bit set with probability
@@ -364,31 +397,104 @@ mod tests {
         a & b & c
     }
 
-    /// True if this magic maps every blocker configuration for the square onto
-    /// a collision free index. Two configurations may share an index only when
-    /// they have the same attack set, which is harmless.
-    fn is_valid(magic: u64, cases: &Cases) -> bool {
-        let mut table = vec![0u64; 1usize << cases.bits];
-        let shift = 64 - cases.bits;
+    /// The slots a magic fills at `bits`, in index order with the attacks
+    /// each holds, or nothing if two configurations that admit different
+    /// moves land on one slot. `scratch` is `1 << bits` zeros and is left so.
+    fn slots(
+        magic: u64,
+        cases: &Cases,
+        bits: u32,
+        scratch: &mut [u64],
+    ) -> Option<Vec<(usize, u64)>> {
+        let mut used = Vec::new();
+        let mut valid = true;
         for (blocker, &attacks) in cases.blockers.iter().zip(&cases.attacks) {
-            let index = (blocker.wrapping_mul(magic) >> shift) as usize;
-            if table[index] != 0 && table[index] != attacks {
-                return false;
+            let index = (blocker.wrapping_mul(magic) >> (64 - bits)) as usize;
+            if scratch[index] == 0 {
+                scratch[index] = attacks;
+                used.push(index);
+            } else if scratch[index] != attacks {
+                valid = false;
+                break;
             }
-            table[index] = attacks;
         }
-        true
+        let mut filled: Vec<(usize, u64)> = used.iter().map(|&i| (i, scratch[i])).collect();
+        used.iter().for_each(|&i| scratch[i] = 0);
+        filled.sort_unstable();
+        valid.then_some(filled)
     }
 
-    /// The search that produced the committed magics. Kept here so they can be
-    /// regenerated, and compiled with the tests so it cannot rot.
-    fn find_magic(state: &mut u64, cases: &Cases) -> u64 {
-        loop {
-            let candidate = sparse_candidate(state);
-            if is_valid(candidate, cases) {
-                return candidate;
+    /// How many candidates each square draws, and how many of the valid ones
+    /// with the narrowest spread of slots it tries to place.
+    const DRAWS: usize = 4_000_000;
+    const PLACED: usize = 30;
+
+    /// The search that produced the committed magics and offsets. Kept here
+    /// so they can be regenerated, and compiled with the tests so it cannot
+    /// rot.
+    ///
+    /// The squares go widest mask first. Each draws its candidates and keeps
+    /// the valid ones whose slots spread least. It places each of those at its
+    /// lowest offset that collides with nothing already placed (a slot holding
+    /// the same attacks is no collision), and takes the one that ends the table
+    /// soonest, the lower offset on a tie. Greedy, so the table is not as short
+    /// as a longer search could make it, only short enough.
+    fn place(state: &mut u64, directions: [isize; 4], bits: u32) -> ([u64; 64], [u32; 64], usize) {
+        let all: Vec<Cases> = (0..64).map(|square| cases(square, directions)).collect();
+        let mut order: Vec<usize> = (0..64).collect();
+        order.sort_by_key(|&square| std::cmp::Reverse(all[square].blockers.len()));
+
+        let mut scratch = vec![0u64; 1 << bits];
+        let mut table = vec![0u64; 64 << bits];
+        let (mut magics, mut offsets, mut reach) = ([0u64; 64], [0u32; 64], 0);
+        for square in order {
+            // each valid magic with how far its slots spread, the slots
+            // themselves found again for the few that are kept
+            let mut spreads = Vec::new();
+            for _ in 0..DRAWS {
+                let magic = sparse_candidate(state);
+                if let Some(filled) = slots(magic, &all[square], bits, &mut scratch) {
+                    spreads.push((filled[filled.len() - 1].0 - filled[0].0, magic));
+                }
             }
+            spreads.sort_by_key(|c| c.0);
+            spreads.truncate(PLACED);
+            let candidates: Vec<_> = spreads
+                .into_iter()
+                .map(|(spread, magic)| {
+                    let filled = slots(magic, &all[square], bits, &mut scratch).unwrap();
+                    (spread, magic, filled)
+                })
+                .collect();
+            assert!(
+                !candidates.is_empty(),
+                "square {} drew no valid magic",
+                square
+            );
+
+            let mut best: Option<(usize, usize, usize)> = None; // reach, offset, which
+            for (which, (_, _, filled)) in candidates.iter().enumerate() {
+                let offset = (0..)
+                    .find(|&o| {
+                        filled
+                            .iter()
+                            .all(|&(i, a)| table[o + i] == 0 || table[o + i] == a)
+                    })
+                    .unwrap();
+                let ends = reach.max(offset + filled[filled.len() - 1].0 + 1);
+                if best.is_none_or(|b| (ends, offset) < (b.0, b.1)) {
+                    best = Some((ends, offset, which));
+                }
+            }
+            let (ends, offset, which) = best.unwrap();
+            for &(i, a) in &candidates[which].2 {
+                table[offset + i] = a;
+            }
+            magics[square] = candidates[which].1;
+            offsets[square] = offset as u32;
+            reach = ends;
         }
+        (magics, offsets, reach)
     }
 
     /// The assert in `SliderTables::new` already fails the build on a magic
@@ -425,28 +531,36 @@ mod tests {
     }
 
     /// Prints a fresh set of constants to paste into this file. Ignored because
-    /// it is only needed if the blocker masks or the table layout change.
+    /// it is only needed if the blocker masks or the table layout change, and
+    /// it takes about a quarter of an hour.
     ///
-    ///     cargo test -p arche-core regenerate_magics -- --ignored --nocapture
+    ///     cargo test --release -p arche-core regenerate_magics -- --ignored --nocapture
     #[test]
     #[ignore = "prints replacement constants, see the doc comment"]
     fn regenerate_magics() {
         let mut state: u64 = 102938423890384;
+        let (straight, straight_offsets, straight_reach) =
+            place(&mut state, STRAIGHT, STRAIGHT_BITS);
+        let (diagonal, diagonal_offsets, diagonal_reach) =
+            place(&mut state, DIAGONAL, DIAGONAL_BITS);
 
-        // interleaved per square, the order the original code consumed the
-        // generator in, so this reproduces the committed values
-        let mut straight = Vec::with_capacity(64);
-        let mut diagonal = Vec::with_capacity(64);
-        for square in 0..64u8 {
-            straight.push(find_magic(&mut state, &cases(square, STRAIGHT)));
-            diagonal.push(find_magic(&mut state, &cases(square, DIAGONAL)));
-        }
-
-        for (name, magics) in [("STRAIGHT_MAGICS", straight), ("DIAGONAL_MAGICS", diagonal)] {
+        println!("const STRAIGHT_ATTACKS: usize = {};", straight_reach);
+        println!("const DIAGONAL_ATTACKS: usize = {};", diagonal_reach);
+        for (name, magics, offsets) in [
+            ("STRAIGHT", straight, straight_offsets),
+            ("DIAGONAL", diagonal, diagonal_offsets),
+        ] {
             println!("#[rustfmt::skip]");
-            println!("pub const {}: [u64; 64] = [", name);
+            println!("pub const {}_MAGICS: [u64; 64] = [", name);
             for chunk in magics.chunks(4) {
                 let line: Vec<String> = chunk.iter().map(|m| format!("0x{:016x}", m)).collect();
+                println!("    {},", line.join(", "));
+            }
+            println!("];");
+            println!("#[rustfmt::skip]");
+            println!("pub const {}_OFFSETS: [u32; 64] = [", name);
+            for chunk in offsets.chunks(8) {
+                let line: Vec<String> = chunk.iter().map(|o| format!("{:>6}", o)).collect();
                 println!("    {},", line.join(", "));
             }
             println!("];");
