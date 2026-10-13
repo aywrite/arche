@@ -720,3 +720,10 @@ of these again without saying what is different this time.
   -3.11 on the last batch the cap allowed), with 1.04 times master's nodes at the same
   time. The tactical count fell from 228 to 217 at depth six. One ply for the whole
   re-search, however many fail highs, is a different change to measure.
+- Scaling the score down in endings the material rarely converts, for the side it
+  favours: bishops of opposite colours with only pawns besides to a half, and a side
+  with no pawns that leads in pieces by a bishop or less to nothing, 4/64 or 14/64 as
+  Stockfish scales the same signatures. Rook against knight read +14 for +232. +1 ±5
+  over 8,000 games at 10+0.1 against d82638a (sprt [0, 5] unresolved at LLR -0.93, the
+  cap raised from 4,000, where it read +2 ±7), at level speed. The bench moved only in
+  its endgames.
