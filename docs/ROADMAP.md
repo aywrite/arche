@@ -701,3 +701,7 @@ of these again without saying what is different this time.
   null move cuts, neither resolved from zero and each below a rule needing no fit (depth
   and move index for scouts, the null move's own margin over beta for null cuts).
   Measured with `arche forced nodes` and `arche policy`; no game was played.
+- A gentler null move reduction along the two terms never played: the depth divisor at 8
+  in place of 6 read -17 ±23 and the margin's cap at 2 in place of 3 read -12 ±20, each over
+  300 opening pairs at 300,000 nodes a move against f424675, while the divisor at 4 read
+  +7 ±21. Fixed node screens, not sprts; the gentler reductions do not earn one.
