@@ -705,3 +705,8 @@ of these again without saying what is different this time.
   in place of 6 read -17 ±23 and the margin's cap at 2 in place of 3 read -12 ±20, each over
   300 opening pairs at 300,000 nodes a move against f424675, while the divisor at 4 read
   +7 ±21. Fixed node screens, not sprts; the gentler reductions do not earn one.
+- A harsher null move reduction along the depth term: the divisor at 4 in place of 6, one
+  ply more at depths 4 and 5 and 8 to 15, with 19.7% fewer bench nodes. It read -0.3 ±7.6
+  over 4,000 games at 10+0.1 against 7256449 (sprt [0, 10] failed at LLR -3.48), at the
+  same time and within 1% of the same nodes a game. The fixed node screen's +7 ±21 at
+  300,000 nodes a move did not hold at a clock.
