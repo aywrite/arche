@@ -8,14 +8,16 @@ mod report_command;
 
 /// A shallow run with a switch off, at a rate that still records plenty:
 /// the instrument offers an event at every full width node on each side, so
-/// ten keeps hundreds of rows at this depth, and the switch is one whose
+/// four keeps hundreds of rows at this depth, and the switch is one whose
 /// rule acts at exactly these depths.
 ///
-/// Depth three, because the saving the test asks for shows there (3,436
-/// events off against 3,415 on). Since the pair term's refit at a ridge of
+/// Depth three, because the saving the test asks for shows there (2,784
+/// events off against 2,778 on). Since the pair term's refit at a ridge of
 /// 3e-7, the run with the rule off offers fewer events than the run with it
-/// on at every depth from four to eight.
-const ARGUMENTS: [&str; 6] = ["effort", "3", "every", "10", "off", "quiet_futility"];
+/// on at every depth from four to eight. Every four rather than ten since
+/// the passed pawn squares were scored: at ten no recorded key was reached by
+/// one side alone, and at four two are.
+const ARGUMENTS: [&str; 6] = ["effort", "3", "every", "4", "off", "quiet_futility"];
 
 #[test]
 #[cfg_attr(
@@ -27,7 +29,7 @@ fn the_effort_argument_prints_a_header_rows_and_two_summaries() {
     assert!(
         printed
             .header
-            .starts_with("effort depth 3 every 10 off quiet_futility positions "),
+            .starts_with("effort depth 3 every 4 off quiet_futility positions "),
         "header: {}",
         printed.header
     );

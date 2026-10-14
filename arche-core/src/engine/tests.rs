@@ -1021,11 +1021,14 @@ mod search {
         // at a ridge of 3e-7, under which a queen and a rook promotion tie
         // at depth six (573 each) and the two searches break the tie
         // differently. A tie says nothing about the schedule, so the sharp
-        // middlegame stands in for it, and every position here answers with
-        // the same move both ways with the fitted table and the test rank
+        // middlegame stands in for it. The rook and pawns ending tied the
+        // same way at depth six once the passed pawn squares were scored, and
+        // the quiet middlegame stands in for that. Every position here
+        // answers with the same move both ways with the fitted table and the
+        // test rank
         for fen in [
             fens::KIWIPETE,
-            "8/2p5/3p4/KP5r/1R3p1k/8/4P1P1/8 w - - 10 10",
+            "r4rk1/1pp1qppp/p1np1n2/2b1p1B1/2B1P1b1/P1NP1N2/1PP1QPPP/R4RK1 w - - 0 1",
             fens::SHARP_MIDDLEGAME,
         ] {
             let mut direct = reference(Board::from_fen(fen).unwrap());

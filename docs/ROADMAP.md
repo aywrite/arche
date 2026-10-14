@@ -37,12 +37,14 @@ worth doing.
   at both ends of the taper at every ridge on the grid, likely from the quiet filter,
   since a position with a passer one square from queening is rarely settled unless the
   pawn is blockaded or falling. Thirteen of the strategic suite's fifteen themes rose when
-  that term was fitted; AKPC fell by 112 and 7th Rank by 217. The term leaves out
-  everything that reads a square rather than a file: whether the square in front of a
-  passer is occupied or attacked, how far each king stands from the promotion square,
-  candidate, connected and backward pawns, pawn islands, and the rule of the square. The
-  first two are the valuable ones, and neither can sit behind a key over the pawns. The
-  tuner is built ([INSTRUMENTS.md](INSTRUMENTS.md)), so a candidate term is one appended
+  that term was fitted; AKPC fell by 112 and 7th Rank by 217. A second term, computed at
+  the leaf, reads the squares in front of a passer on the fourth to seventh: both kings'
+  distance from its stop and queening squares, whether the stop is taken or attacked, and
+  whether the way to the eighth is clear. Fitted freely it put a blockaded passer on the
+  seventh above a free one in the ending, the same quiet filter at work, so it was fitted
+  with every weight held to the sign chess expects. Candidate, connected and backward
+  pawns, pawn islands, a rook behind the passer and the rule of the square are still
+  left out. The tuner is built ([INSTRUMENTS.md](INSTRUMENTS.md)), so a candidate term is one appended
   column whose held-out loss can be read before there is engine code for it. Fitting on
   our own games does buy strength: four fits each passed an sprt bounded [0, 10] at
   10+0.1, the twelve tables at +54 ±13 over 2,000 games, the first mobility fit at +12 ±8

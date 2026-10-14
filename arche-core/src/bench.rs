@@ -571,12 +571,15 @@ mod tests {
         assert_eq!(column("score"), position.score.to_string());
         assert_eq!(column("refused"), position.refused_cutoffs.to_string());
 
+        // a ply deeper than the refusing run: at seven, once the passed pawn
+        // squares were scored, the test rank's tree met no tainted entry to
+        // trust
         let trusting = SearchConfig::with_taint("trust").expect("trust is a policy");
-        let trusted = run_suite(&suite, 7, 1 << 20, trusting);
+        let trusted = run_suite(&suite, 8, 1 << 20, trusting);
         assert!(
             trusted
                 .to_string()
-                .starts_with("bench depth 7 hash 1MB positions 1 taint trust\n")
+                .starts_with("bench depth 8 hash 1MB positions 1 taint trust\n")
         );
         assert_eq!(trusted.positions[0].refused_cutoffs, 0);
         assert!(trusted.positions[0].tainted_cutoffs > 0);
@@ -612,9 +615,9 @@ mod tests {
                 figures(skipping),
             ],
             [
-                [177_161, 6_475, 22_519, 437, 0, 181, 0],
-                [12_948, 1_021, 3_399, 38, 15, 0, 0],
-                [14_088, 1_084, 3_717, 1, 0, 0, 8],
+                [182_505, 7_085, 22_788, 535, 0, 287, 0],
+                [11_884, 914, 3_056, 52, 24, 0, 0],
+                [15_165, 1_224, 3_823, 3, 0, 0, 39],
             ],
             "nodes, cutoffs, stores, tainted, tcuts, refused, skipped"
         );
@@ -830,24 +833,24 @@ mod tests {
         assert_eq!(
             counted,
             vec![
-                ("start", 495_700),
-                ("italian", 1_121_074),
-                ("ruy lopez", 366_742),
-                ("kiwipete", 1_575_476),
-                ("perft 4", 2_814_759),
-                ("promotions", 1_983_365),
-                ("middlegame", 532_079),
-                ("sharp middlegame", 449_131),
-                ("bratko kopec 1", 11_714),
+                ("start", 564_019),
+                ("italian", 1_137_689),
+                ("ruy lopez", 378_968),
+                ("kiwipete", 1_625_682),
+                ("perft 4", 2_901_384),
+                ("promotions", 1_643_811),
+                ("middlegame", 494_644),
+                ("sharp middlegame", 449_762),
+                ("bratko kopec 1", 11_568),
                 ("wac 4", 1_516),
-                ("rook and pawns", 214_156),
-                ("tarrasch", 238_448),
-                ("lucena", 361_398),
-                ("philidor", 357_659),
-                ("minor endgame", 156_339),
+                ("rook and pawns", 355_432),
+                ("tarrasch", 136_354),
+                ("lucena", 1_403_340),
+                ("philidor", 237_927),
+                ("minor endgame", 156_423),
                 ("queen endgame", 337_681),
-                ("king and pawn", 38_955),
-                ("trebuchet", 32_344),
+                ("king and pawn", 45_261),
+                ("trebuchet", 35_531),
             ]
         );
     }
@@ -881,22 +884,22 @@ mod tests {
             vec![
                 ("start", 40_734),
                 ("italian", 181_047),
-                ("ruy lopez", 155_177),
-                ("kiwipete", 220_649),
-                ("perft 4", 172_939),
+                ("ruy lopez", 155_167),
+                ("kiwipete", 182_229),
+                ("perft 4", 179_921),
                 ("promotions", 101_321),
-                ("middlegame", 159_802),
-                ("sharp middlegame", 255_709),
-                ("bratko kopec 1", 6_675),
+                ("middlegame", 159_814),
+                ("sharp middlegame", 255_669),
+                ("bratko kopec 1", 6_654),
                 ("wac 4", 675),
-                ("rook and pawns", 21_701),
-                ("tarrasch", 46_932),
-                ("lucena", 28_842),
-                ("philidor", 37_043),
+                ("rook and pawns", 23_516),
+                ("tarrasch", 32_961),
+                ("lucena", 49_407),
+                ("philidor", 38_260),
                 ("minor endgame", 22_523),
                 ("queen endgame", 132_956),
-                ("king and pawn", 2_843),
-                ("trebuchet", 1_162),
+                ("king and pawn", 2_696),
+                ("trebuchet", 1_007),
             ]
         );
     }

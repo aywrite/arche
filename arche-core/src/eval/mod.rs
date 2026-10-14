@@ -16,6 +16,7 @@ mod cache;
 pub(crate) mod factors;
 mod king_attack;
 mod mobility;
+mod passer_squares;
 mod pawn_structure;
 mod shelter;
 mod tempo;
@@ -189,6 +190,12 @@ pub(crate) const TERMS: &[Term] = &[
         weight: tempo::weight,
         counts: tempo::counts,
     },
+    Term {
+        name: "passer_squares",
+        width: passer_squares::COUNTS,
+        weight: passer_squares::weight,
+        counts: passer_squares::counts,
+    },
 ];
 
 /// The widest term, which is how long a buffer the tuner's walk needs to ask
@@ -228,6 +235,9 @@ const fn widest() -> usize {
 trait Memo {
     /// The shelter and the pawn structure, added.
     fn tables(&mut self, board: &Position) -> i32;
+    /// Both sides' passers on the squares [`passer_squares`] reads them on,
+    /// which the pawns alone decide.
+    fn passers(&mut self, board: &Position) -> u64;
 }
 
 /// The memo that remembers nothing, which is what [`eval`] hands the sum.
@@ -237,6 +247,11 @@ impl Memo for NoMemo {
     #[inline]
     fn tables(&mut self, board: &Position) -> i32 {
         shelter::fold(board) + pawn_structure::fold(board)
+    }
+
+    #[inline]
+    fn passers(&mut self, board: &Position) -> u64 {
+        passer_squares::passers(board)
     }
 }
 
@@ -249,16 +264,24 @@ impl Memo for NoMemo {
 /// The pawn table stays behind it: a key of the shelter's alone would
 /// recompute the pawn structure on every king move, the half of the
 /// shelter's key that term does not need. Measured on the fitted build.
+///
+/// The passed pawn squares read the pieces and are not remembered, but which
+/// pawns they read is the pawns' alone, so that set has a table of its own
+/// under the pawn key.
 #[derive(Default)]
 pub(crate) struct Caches {
     shelter: ShelterCache,
     pawns: PawnCache,
+    passers: PasserCache,
 }
 
 /// The shelter's table, as wide as that term measured it wants.
 type ShelterCache = Cache<{ 1 << shelter::CACHE_BITS }>;
 /// The pawn structure's, on its own key and its own measurement.
 type PawnCache = Cache<{ 1 << pawn_structure::CACHE_BITS }>;
+/// The passers the passed pawn squares read, under the same key at the same
+/// width as the pawn structure's.
+type PasserCache = Cache<{ 1 << pawn_structure::CACHE_BITS }, u64>;
 
 impl Memo for Caches {
     #[inline]
@@ -267,6 +290,12 @@ impl Memo for Caches {
         self.shelter.get(shelter::key(board), || {
             shelter::fold(board) + pawns.get(board.pawn_key, || pawn_structure::fold(board))
         })
+    }
+
+    #[inline]
+    fn passers(&mut self, board: &Position) -> u64 {
+        self.passers
+            .get(board.pawn_key, || passer_squares::passers(board))
     }
 }
 
@@ -294,7 +323,13 @@ fn sum(board: &Position, memo: &mut impl Memo) -> Score {
     let tables = memo.tables(board);
     let walk =
         |color| attack_score::<{ mobility::SCORED_KINDS }, { king_attack::SCORED }>(board, color);
-    let leaf = walk(Color::White) - walk(Color::Black) + tables + tempo::fold(board);
+    // read at the leaf: it reads the pieces, which no memo here is keyed on
+    let passers = if passer_squares::SCORED {
+        passer_squares::fold(board, memo.passers(board))
+    } else {
+        0
+    };
+    let leaf = walk(Color::White) - walk(Color::Black) + tables + tempo::fold(board) + passers;
     board.eval.score(board.active_color, leaf)
 }
 
@@ -542,8 +577,8 @@ pub(crate) fn suite_fens() -> Vec<String> {
 mod evaluate {
     use super::{
         Board, Caches, Memo, PawnCache, ShelterCache, TERMS, TOTAL_PHASE, eval, eval_cached,
-        factors, king_attack, mobility, pawn_structure, pieces_of, shelter, suite_fens, tempo,
-        weigh,
+        factors, king_attack, mobility, passer_squares, pawn_structure, pieces_of, shelter,
+        suite_fens, tempo, weigh,
     };
     use crate::board::fens;
     use crate::misc::{Color, File, coordinate_to_index};
@@ -1040,7 +1075,7 @@ mod evaluate {
         }
     }
 
-    /// The table names the five leaf terms the sum adds. The sum is hand
+    /// The table names the six leaf terms the sum adds. The sum is hand
     /// written rather than a walk over the table, so this is the one place
     /// the two lists are held against each other; a priced term in the table
     /// and not the sum would fail the tuner's identity, and this says which
@@ -1055,11 +1090,12 @@ mod evaluate {
                 "shelter",
                 "pawn_structure",
                 "king_attack",
-                "tempo"
+                "tempo",
+                "passer_squares"
             ]
         );
         // two queens and a rook against none, a king in each corner and pawns
-        // of both colours on six files, so that no one of the five folds to
+        // of both colours on six files, so that no one of the six folds to
         // nothing. The queen on a4 bears on d7 and e8 of the black king's
         // ring
         let board = Board::from_fen("3k4/P4p2/8/3P2p1/Q2P4/PP2p2p/1P6/1Q4KR w - - 0 1").unwrap();
@@ -1069,6 +1105,10 @@ mod evaluate {
             ("pawn structure", pawn_structure::fold(&board)),
             ("king attack", king_attack::fold(&board)),
             ("tempo", tempo::fold(&board)),
+            (
+                "passer squares",
+                passer_squares::fold(&board, passer_squares::passers(&board)),
+            ),
         ] {
             assert_ne!(term, 0, "{} is level here, so it says nothing", name);
         }
@@ -1076,7 +1116,8 @@ mod evaluate {
             + shelter::fold(&board)
             + pawn_structure::fold(&board)
             + king_attack::fold(&board)
-            + tempo::fold(&board);
+            + tempo::fold(&board)
+            + passer_squares::fold(&board, passer_squares::passers(&board));
         assert_eq!(eval(&board), board.eval.score(board.active_color, leaf));
     }
 
