@@ -63,12 +63,11 @@ const NULL_MOVE_REDUCTION: u8 = 2;
 // are clamped to the depth by `null_move_reduction` rather than raising
 // this floor.
 const NULL_MOVE_MIN_DEPTH: u8 = NULL_MOVE_REDUCTION + 1;
-// How many plies of depth buy one more ply of reduction: the conventional
-// step, taking the reduction to three from depth six. The bench did not
-// choose it (ba921e1 has a sweep that ranks nothing). It leaves depths
-// three to five alone, which gives the residual sampler a band the term
-// does not touch to be read against.
-const NULL_MOVE_DEPTH_DIVISOR: u8 = 6;
+// How many plies of depth buy one more ply of reduction: three from depth
+// four, four from depth eight. Fixed node screens put four ahead of the
+// conventional six and of a gentler eight. It leaves depth three alone, the
+// only band the term does not touch.
+const NULL_MOVE_DEPTH_DIVISOR: u8 = 4;
 // How far the static evaluation must stand above beta to buy one more ply
 // of reduction: a ply for every two pawns of clearance. The residual
 // sampler's split at this margin (ba921e1) supports the direction of the

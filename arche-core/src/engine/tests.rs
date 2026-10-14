@@ -2143,7 +2143,7 @@ mod search {
     #[test]
     fn the_depth_term_grows_the_reduction_and_the_switch_holds_it_flat() {
         // off the switch every depth reads the base, on it the base plus a
-        // sixth of the depth
+        // quarter of the depth
         let flat = SearchConfig {
             adaptive_null_move: false,
             ..SearchConfig::default()
@@ -2160,7 +2160,7 @@ mod search {
                 "depth {depth} off the switch at a wide margin"
             );
         }
-        for (depth, expected) in [(3, 2), (5, 2), (6, 3), (9, 3), (11, 3), (12, 4), (18, 5)] {
+        for (depth, expected) in [(3, 2), (4, 3), (5, 3), (8, 4), (11, 4), (12, 5), (18, 6)] {
             assert_eq!(
                 null_move_reduction(SearchConfig::default(), depth, 0),
                 expected,
@@ -2171,18 +2171,18 @@ mod search {
 
     #[test]
     fn the_margin_term_steps_every_two_pawns_and_stops_at_its_cap() {
-        // at depth 18 the clamp cannot reach and the depth term gives 5
+        // at depth 18 the clamp cannot reach and the depth term gives 6
         let deep = 18;
         for (eval_beta, expected) in [
-            (0, 5),
-            (199, 5),
-            (200, 6),
-            (399, 6),
-            (400, 7),
-            (599, 7),
-            (600, 8),
-            (5_000, 8),
-            (Score::MAX, 8),
+            (0, 6),
+            (199, 6),
+            (200, 7),
+            (399, 7),
+            (400, 8),
+            (599, 8),
+            (600, 9),
+            (5_000, 9),
+            (Score::MAX, 9),
         ] {
             assert_eq!(
                 null_move_reduction(SearchConfig::default(), deep, eval_beta),
@@ -2195,7 +2195,7 @@ mod search {
     #[test]
     fn the_margin_term_is_clamped_where_the_depth_cannot_hold_it() {
         // the clamp leaves the reduced search at depth zero, quiescence
-        for (depth, expected) in [(3, 2), (4, 3), (5, 4), (6, 5), (7, 6), (8, 6)] {
+        for (depth, expected) in [(3, 2), (4, 3), (5, 4), (6, 5), (7, 6), (8, 7), (9, 7)] {
             assert_eq!(
                 null_move_reduction(SearchConfig::default(), depth, 600),
                 expected,
@@ -2206,8 +2206,8 @@ mod search {
 
     #[test]
     fn the_depth_term_looks_at_less_of_the_tree_than_the_flat_reduction() {
-        // the switch has to reach the search. Depth 8, because the term
-        // first moves at a node of depth 6
+        // the switch has to reach the search. Depth 8, so the term, which
+        // first moves at a node of depth 4, acts at several depths
         let mut e = passing_adaptively(Board::from_fen(SHARP_MIDDLEGAME).unwrap());
         completed(e.search(8));
         let mut flat = passing(Board::from_fen(SHARP_MIDDLEGAME).unwrap());
