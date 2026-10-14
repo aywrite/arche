@@ -223,6 +223,31 @@ pub(crate) fn counts_of(board: &Position, color: Color) -> [i32; COUNTS] {
     counts
 }
 
+/// This side's passed pawns as a set, by the rule [`counts_of`] counts them
+/// on and on every rank: no pawn of theirs ahead on its file or a file beside
+/// it, and no pawn of ours ahead on its own file. Set-wise rather than a pawn
+/// at a time, for the leaf's [`super::passer_squares`], which cannot read it
+/// from the memo.
+#[inline]
+pub(crate) fn passers(board: &Position, color: Color) -> u64 {
+    const FILE_A: u64 = 0x0101_0101_0101_0101;
+    const FILE_H: u64 = FILE_A << 7;
+    let (ours, theirs) = board.sides(color);
+    let pawns = board.pawns();
+    let (our_pawns, their_pawns) = (pawns & ours, pawns & theirs);
+    // every square behind one of their pawns, as they move, is a square
+    // where a pawn of ours has that pawn ahead of it on the same file
+    let behind = ahead_of(their_pawns, !color);
+    let stopped = behind | ((behind & !FILE_H) << 1) | ((behind & !FILE_A) >> 1);
+    our_pawns & !stopped & !ahead_of(our_pawns, !color)
+}
+
+/// The squares in front of a pawn of this colour on its own file.
+#[inline]
+pub(crate) fn file_ahead(square: u8, color: Color) -> u64 {
+    MASKS.file_ahead[color as usize][square as usize]
+}
+
 /// The eight counts, written into `into`, which is what [`super::TERMS`] hands
 /// the tuner's walk.
 pub(crate) fn counts(board: &Position, color: Color, into: &mut [i32]) {
@@ -414,6 +439,40 @@ mod tests {
         ] {
             let board = Board::from_fen(fen).unwrap();
             assert_eq!(counts_of(&board, Color::Black), counts, "{}", why);
+        }
+    }
+
+    /// The set-wise passers agree with the count, rank by rank, on every
+    /// position the hand counts above use and on a mixed one.
+    #[test]
+    fn the_passer_set_agrees_with_the_passed_counts() {
+        for fen in [
+            "4k3/P4p2/8/3P2p1/3P4/PP2p2p/1P6/4K3 w - - 0 1",
+            "4k3/8/8/3p4/4P3/8/8/4K3 w - - 0 1",
+            "4k3/8/8/8/3pP3/8/8/4K3 w - - 0 1",
+            "4k3/8/8/4P3/4P3/8/8/4K3 w - - 0 1",
+            "4k3/8/8/1p6/P7/8/8/4K3 w - - 0 1",
+            "4k3/8/8/6p1/7P/8/8/4K3 w - - 0 1",
+            "r1bq1rk1/pp3ppp/2n5/8/8/2N5/PPP2PP1/R1BQK2R w KQ - 0 1",
+            "8/1p3k2/p1p5/P1P1p3/4P1p1/6P1/5K2/8 w - - 0 1",
+        ] {
+            let board = Board::from_fen(fen).unwrap();
+            for color in [Color::White, Color::Black] {
+                let counts = counts_of(&board, color);
+                let set = super::passers(&board, color);
+                for relative in 1..7 {
+                    let rank = match color {
+                        Color::White => relative,
+                        Color::Black => 7 - relative,
+                    };
+                    let on_rank = (set >> (rank * 8)) & 0xff;
+                    assert_eq!(
+                        on_rank.count_ones() as i32,
+                        counts[relative - 1],
+                        "{fen} {color:?} relative {relative}"
+                    );
+                }
+            }
         }
     }
 

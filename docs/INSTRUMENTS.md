@@ -492,7 +492,7 @@ The line after the header states the layout, so that what reads these rows
 holds no copy of it:
 
 ```
-layout midgame 384 endgame 384 material 6 mobility 4 shelter 7 pawn_structure 8 king_attack 4 tempo 1
+layout midgame 384 endgame 384 material 6 mobility 4 shelter 7 pawn_structure 8 king_attack 4 tempo 1 passer_squares 28
 ```
 
 The first three are runs of slots. The names after them are the leaf terms in
@@ -523,7 +523,8 @@ evaluation:
 eval = mat . w_mat + trunc((psqt . w_psqt + mobility . w_mobility
                             + shelter . w_shelter + pawns . w_pawns
                             + king_attack . w_king_attack
-                            + tempo . w_tempo) / 24)
+                            + tempo . w_tempo
+                            + passer_squares . w_passer_squares) / 24)
        + machine
 ```
 
@@ -765,9 +766,10 @@ are read. A hold freezes both halves of the term's taper.
 A fit of a new term holds everything older: the shelter was fitted under
 `--hold tables --hold mobility`, the pawn structure under those and `--hold
 shelter`, the king attack zone under those and `--hold pawn_structure`, and
-the tempo under those and `--hold king_attack`. A refit of an older term on a
-grown corpus holds every other term instead, so a mobility refit is `--hold
-tables --hold shelter --hold pawn_structure --hold king_attack --hold tempo`.
+the tempo under those and `--hold king_attack`, and the passer squares under
+those and `--hold tempo`. A refit of an older term on a grown corpus holds
+every other term instead, so a mobility refit is `--hold tables --hold shelter
+--hold pawn_structure --hold king_attack --hold tempo --hold passer_squares`.
 The holds follow from the one term the run means to move.
 
 ## What the table's key signature costs

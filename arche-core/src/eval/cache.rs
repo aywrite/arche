@@ -6,16 +6,16 @@
 //! One cache type, not one table: a term names its key, its fold and its
 //! width, and [`super::Caches`] holds an instance of this per term.
 
-/// One remembered score, under the whole key rather than a tag, since a
+/// One remembered answer, under the whole key rather than a tag, since a
 /// wrong hit would be a silently wrong evaluation. The whole key costs sixteen
 /// bytes an entry against eight once the alignment is paid.
 #[derive(Copy, Clone)]
-struct Entry {
+struct Entry<T> {
     key: u64,
-    packed: i32,
+    value: T,
 }
 
-/// What one term has already worked out, `SLOTS` scores of it, in an array of
+/// What one term has already worked out, `SLOTS` answers of it, in an array of
 /// that length rather than a slice, so the slot's mask bounds its index and a
 /// probe carries no bounds check.
 ///
@@ -26,25 +26,36 @@ struct Entry {
 ///
 /// Owned by the searcher rather than by the board, because it is scratch and
 /// not position.
-pub(super) struct Cache<const SLOTS: usize> {
-    entries: Box<[Entry; SLOTS]>,
+///
+/// What it holds is a score by default; the passed pawn squares keep a set
+/// of squares in one under the pawn key.
+pub(super) struct Cache<const SLOTS: usize, T: Copy + Default = i32> {
+    entries: Box<[Entry<T>; SLOTS]>,
 }
 
-impl<const SLOTS: usize> Default for Cache<SLOTS> {
+impl<const SLOTS: usize, T: Copy + Default> Default for Cache<SLOTS, T> {
     fn default() -> Self {
         // an empty entry is key zero holding zero. A pawnless board's pawn
-        // key is zero and its pawn structure scores zero, so it reads the
-        // entry correctly; any other key of zero is the same sixty four bit
-        // coincidence a wrong hit needs anywhere else in the table
-        let entries = vec![Entry { key: 0, packed: 0 }; Self::SLOTS].into_boxed_slice();
+        // key is zero and its pawn structure scores zero (and it has no
+        // passers), so it reads the entry correctly; any other key of zero is
+        // the same sixty four bit coincidence a wrong hit needs anywhere else
+        // in the table
+        let entries = vec![
+            Entry {
+                key: 0,
+                value: T::default()
+            };
+            Self::SLOTS
+        ]
+        .into_boxed_slice();
         Cache {
             entries: entries.try_into().unwrap_or_else(|_| unreachable!()),
         }
     }
 }
 
-impl<const SLOTS: usize> Cache<SLOTS> {
-    /// How many scores the table holds. A power of two, so the index is a
+impl<const SLOTS: usize, T: Copy + Default> Cache<SLOTS, T> {
+    /// How many answers the table holds. A power of two, so the index is a
     /// mask rather than a remainder.
     pub(super) const SLOTS: usize = {
         assert!(SLOTS.is_power_of_two());
@@ -54,24 +65,24 @@ impl<const SLOTS: usize> Cache<SLOTS> {
     /// What `key` stands for, read back where the table holds it and folded
     /// where it does not.
     #[inline]
-    pub(super) fn get(&mut self, key: u64, fold: impl FnOnce() -> i32) -> i32 {
+    pub(super) fn get(&mut self, key: u64, fold: impl FnOnce() -> T) -> T {
         let slot = (key as usize) & (Self::SLOTS - 1);
         let entry = &mut self.entries[slot];
         if entry.key == key {
-            return entry.packed;
+            return entry.value;
         }
-        let packed = fold();
-        *entry = Entry { key, packed };
-        packed
+        let value = fold();
+        *entry = Entry { key, value };
+        value
     }
 
     /// What the table holds under `key`, and nothing where the slot stands
     /// for another key. For the tests in [`super`], which read the tables
     /// rather than the score.
     #[cfg(test)]
-    pub(super) fn stored(&self, key: u64) -> Option<i32> {
+    pub(super) fn stored(&self, key: u64) -> Option<T> {
         let entry = &self.entries[(key as usize) & (Self::SLOTS - 1)];
-        (entry.key == key).then_some(entry.packed)
+        (entry.key == key).then_some(entry.value)
     }
 }
 
@@ -102,7 +113,7 @@ mod tests {
         assert_eq!((shares as usize) & (Cache::<SLOTS>::SLOTS - 1), slot);
 
         assert_eq!(cache.entries[slot].key, 0, "the slot starts empty");
-        assert_eq!(cache.entries[slot].packed, 0, "holding nothing");
+        assert_eq!(cache.entries[slot].value, 0, "holding nothing");
         assert_eq!(cache.stored(key), None);
         assert_eq!(cache.stored(0), Some(0), "and a key of zero reads it");
 
