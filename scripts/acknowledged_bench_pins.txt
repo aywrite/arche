@@ -22,3 +22,12 @@ a0bf845 4395471 4162584
 # which the 0.4.6 changelog notes as lapses beside their entries
 3298289 48354803 47836191
 b9325ae 48354803 47836191
+
+# 2026-10-09, the six protocol fixes of PR #392, written on v0.4.9 (9939754)
+# and rebased onto the repetition window bounded at the null move (10026152)
+cfd2029 9939754 10026152
+f42bfa7 9939754 10026152
+85333b4 9939754 10026152
+9afde98 9939754 10026152
+fceaf76 9939754 10026152
+c2c8414 9939754 10026152
