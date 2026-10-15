@@ -225,7 +225,20 @@ class TestAcknowledged:
             if line.strip() and not line.startswith("#")
         ]
         assert sorted(entries) == sorted(
-            ["f1f0730", "5b12f03", "ac47935", "a0bf845", "3298289", "b9325ae"]
+            [
+                "f1f0730",
+                "5b12f03",
+                "ac47935",
+                "a0bf845",
+                "3298289",
+                "b9325ae",
+                "cfd2029",
+                "f42bfa7",
+                "85333b4",
+                "9afde98",
+                "fceaf76",
+                "c2c8414",
+            ]
         )
 
 
