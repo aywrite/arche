@@ -2,7 +2,7 @@
 
 All notable changes to this project will be documented in this file.
 
-## [0.4.10-rc.1] - 2026-10-15
+## [0.4.10-rc.2] - 2026-10-15
 
 ### Features
 
@@ -62,6 +62,7 @@ All notable changes to this project will be documented in this file.
 - *(docs)* List multi-cut, the attention refits and the quiet tie break as rejected
 - *(docs)* List the depth veto with its time spent, history reductions and the moves-left horizon as rejected
 - *(docs)* List the shallower re-search after a root fail high as rejected
+- *(release)* Acknowledge the six stale bench trailers that stopped 0.4.10-rc.1
 
 ## [0.4.9] - 2026-10-09
 
