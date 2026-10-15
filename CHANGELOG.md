@@ -2,6 +2,67 @@
 
 All notable changes to this project will be documented in this file.
 
+## [0.4.10-rc.1] - 2026-10-15
+
+### Features
+
+- *(uci)* Report hashfull in the info line from a sample of the table [bench 9939754]
+- *(search)* Prune late quiets on an eval minus beta margin and remove the attention model [elo +2 ±9 (sprt [-10, 0] passed, 3000 games, 10+0.1, vs 048dfa7)] [bench 11088536]
+- *(uci)* Let the time horizon fall from a twentieth to a tenth by move 60 [bench 11088536] [elo +18 ±10 (sprt [0, 10] passed, 2000 games, 10+0.1, vs 8ade39b)]
+- *(uci)* Let a depth under way run past the share to a hard limit [bench 11088536] [elo +32 ±14 (sprt [0, 10] passed, 1000 games, 10+0.1, vs d82638a)]
+- *(eval)* Add passed pawn terms that read the stop and queening squares [bench 11916992]
+
+### Bug Fixes
+
+- *(board)* Stop the repetition test at the last null move [elo +1 ±11 (sprt [-10, 0] inconclusive, 2000 games, 10+0.1, vs 048dfa7)] [bench 10026152]
+- *(board)* Read a FEN without its halfmove clock and fullmove number [bench 9939754]
+- *(uci)* Refuse a go after a position that could not be set [bench 9939754]
+- *(uci)* Stop ucinewgame from setting the start position [bench 9939754]
+- *(uci)* Compute the info line's nps from microseconds [bench 9939754]
+- *(uci)* Refuse a go whose depth, node budget or clock cannot be read [bench 9939754]
+
+### Performance
+
+- *(search)* Hand the probe's entry back to the node and read the age penalty from an array [bench 11088536] [speed +2.4% (bench nps, 95% interval +0.4% to +4.6%, 60 interleaved rounds over shuffled layouts vs b48777a)]
+- *(search)* Build the late move rules only after a node's first searched move, in a two phase move loop [bench 11088536] [speed +0.3% (bench nps, 95% interval -1.1% to +1.8%, 60 interleaved rounds over shuffled layouts vs 3a8a067)]
+- *(search)* Ask the first search from the move loop and send a depth zero child to a leaf entry [bench 11088536] [speed +1.1% (bench nps, 95% interval -1.3% to +3.5%, 60 interleaved rounds over shuffled layouts vs 4d4741e)]
+- *(magic)* Generate pawn moves set-wise from shifted pawn masks [bench 11088536] [speed +1.7% (bench nps, 95% interval -1.1% to +4.6%, 60 interleaved rounds over shuffled layouts vs e147526)]
+- *(magic)* Write the captures straight into the caller's move list [bench 11088536] [speed +2.0% (bench nps, 95% interval -0.8% to +4.5%, 60 interleaved rounds over shuffled layouts vs f764299)]
+- *(magic)* Read every magic at a fixed shift with the squares' tables overlapping [bench 11088536] [speed -0.7% (bench nps, 95% interval -3.2% to +1.5%, 60 interleaved rounds over shuffled layouts vs f424675)]
+
+### Refactor
+
+- *(search)* Write the late move reduction's admission and the shallow survivor test once [bench 9939754]
+- *(uci)* Plan the clock over a stated fraction of an assumed moves left [bench 11088536]
+
+### Documentation
+
+- *(eval)* Say the refit's pair-fold cross validation ran outside the tree [bench 9939754]
+- *(search)* Say the attention model's holdout was read at two thresholds [bench 9939754]
+- *(search)* Record the huge pages gain at 256MB beside the bench's -1.1% [bench 9939754]
+- *(search)* Name the third part of the attention objective's gain split [bench 9939754]
+- *(search)* Say the reference search's table never introduces a pruning error [bench 9939754]
+- *(search)* Drop the uncited Stockfish comparison from the table's age weight [bench 9939754]
+- *(search)* Say the attention weights cannot be refitted from the script's command line [bench 9939754]
+- *(uci)* Say the time horizon is a planning horizon and not the moves left
+
+### Development
+
+- *(release)* Date the release checks in the 0.4.2 corrections to 0.4.3 [bench 9939754]
+- *(workspace)* Restate what the x86-64-v2 build saves at 6f6dce8 [bench 9939754]
+- *(release)* Record the band widening's result and the 3e-7 refit's sprt in 0.4.8 [bench 9939754]
+- *(bench)* Give perft 4's share of the bench since singular extensions [bench 9939754]
+- *(ci)* Date the coverage run's eighteen minutes and give its bench depth [bench 9939754]
+- *(bench)* Say the forced decision instrument prices the bench's search, not a game's [bench 9939754]
+- *(bench)* Say what the forced instrument's default rate yields on the bench [bench 9939754]
+- *(ci)* Say the Strength workflow plays every arm at 256MB a side [bench 9939754]
+- *(docs)* Say that a stopped sprt estimate leans high [bench 9939754]
+- *(release)* Move the blitz and 40/15 gauntlets up to bracket 3000
+- *(bench)* Print how far each forced decision cleared its bound [bench 11088536]
+- *(docs)* List multi-cut, the attention refits and the quiet tie break as rejected
+- *(docs)* List the depth veto with its time spent, history reductions and the moves-left horizon as rejected
+- *(docs)* List the shallower re-search after a root fail high as rejected
+
 ## [0.4.9] - 2026-10-09
 
 Corrections to this section, written by hand after it was generated. The
