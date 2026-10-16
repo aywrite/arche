@@ -72,6 +72,10 @@ on:
         description: The table both sides are given, in MB. 256 is what the engine defaults to. A smaller table puts the replacement policy under the pressure a longer game would, and figures at different sizes are not comparable.
         type: number
         default: 256
+      candidate_time_control:
+        description: A clock for the candidate alone, for a time odds match, where the same build plays itself with one side given more time. The baseline plays time_control. Left empty both sides play time_control.
+        type: string
+        default: ""
   workflow_call:
     inputs:
       candidate:
@@ -112,6 +116,9 @@ on:
       hash_mb:
         type: number
         default: 256
+      candidate_time_control:
+        type: string
+        default: ""
       publish:
         description: Append the result to the release notes for this tag
         type: boolean
@@ -260,6 +267,7 @@ jobs:
       # each other's openings
       seed: ${{ inputs.seed || github.run_id }}
       time_control: ${{ inputs.time_control }}
+      candidate_time_control: ${{ inputs.candidate_time_control }}
       sprt: ${{ fromJSON(needs.resolve.outputs.sprt) }}
       elo0: ${{ fromJSON(needs.resolve.outputs.elo0) }}
       elo1: ${{ fromJSON(needs.resolve.outputs.elo1) }}
@@ -290,6 +298,7 @@ jobs:
       book: ${{ needs.resolve.outputs.book }}
       seed: ${{ inputs.seed || github.run_id }}
       time_control: ${{ inputs.time_control }}
+      candidate_time_control: ${{ inputs.candidate_time_control }}
       sprt: ${{ fromJSON(needs.resolve.outputs.sprt) }}
       elo0: ${{ fromJSON(needs.resolve.outputs.elo0) }}
       elo1: ${{ fromJSON(needs.resolve.outputs.elo1) }}
@@ -320,6 +329,7 @@ jobs:
       book: ${{ needs.resolve.outputs.book }}
       seed: ${{ inputs.seed || github.run_id }}
       time_control: ${{ inputs.time_control }}
+      candidate_time_control: ${{ inputs.candidate_time_control }}
       sprt: ${{ fromJSON(needs.resolve.outputs.sprt) }}
       elo0: ${{ fromJSON(needs.resolve.outputs.elo0) }}
       elo1: ${{ fromJSON(needs.resolve.outputs.elo1) }}
@@ -350,6 +360,7 @@ jobs:
       book: ${{ needs.resolve.outputs.book }}
       seed: ${{ inputs.seed || github.run_id }}
       time_control: ${{ inputs.time_control }}
+      candidate_time_control: ${{ inputs.candidate_time_control }}
       sprt: ${{ fromJSON(needs.resolve.outputs.sprt) }}
       elo0: ${{ fromJSON(needs.resolve.outputs.elo0) }}
       elo1: ${{ fromJSON(needs.resolve.outputs.elo1) }}
