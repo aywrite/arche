@@ -29,7 +29,7 @@ jobs:
     runs-on: ${{ matrix.os }}
     steps:
     - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
-    - uses: Swatinem/rust-cache@6323deb102c322ba6fcbdcafc7e3dddab59af2b6 # v2.9.2
+    - uses: Swatinem/rust-cache@d1527c8f67ef9af357290475d4af4b0fab8f12e0 # v2.9.3
     - name: Check formatting
       run: cargo fmt --all --check
     - name: Build
@@ -41,7 +41,7 @@ jobs:
     runs-on: ubuntu-latest
     steps:
     - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
-    - uses: Swatinem/rust-cache@6323deb102c322ba6fcbdcafc7e3dddab59af2b6 # v2.9.2
+    - uses: Swatinem/rust-cache@d1527c8f67ef9af357290475d4af4b0fab8f12e0 # v2.9.3
     - name: Run clippy
       run: cargo clippy --workspace --locked --all-targets -- -D warnings
 
@@ -51,7 +51,7 @@ jobs:
     runs-on: ubuntu-latest
     steps:
     - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
-    - uses: Swatinem/rust-cache@6323deb102c322ba6fcbdcafc7e3dddab59af2b6 # v2.9.2
+    - uses: Swatinem/rust-cache@d1527c8f67ef9af357290475d4af4b0fab8f12e0 # v2.9.3
     - name: Run tests
       run: cargo test --workspace --locked
 
@@ -61,7 +61,7 @@ jobs:
     runs-on: ubuntu-latest
     steps:
     - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
-    - uses: Swatinem/rust-cache@6323deb102c322ba6fcbdcafc7e3dddab59af2b6 # v2.9.2
+    - uses: Swatinem/rust-cache@d1527c8f67ef9af357290475d4af4b0fab8f12e0 # v2.9.3
     - name: Run tests with the pair term on
       run: cargo test --workspace --locked --features machine-test
     - name: Run clippy with the pair term on
@@ -77,7 +77,7 @@ jobs:
       RUSTFLAGS: -C target-cpu=x86-64
     steps:
     - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
-    - uses: Swatinem/rust-cache@6323deb102c322ba6fcbdcafc7e3dddab59af2b6 # v2.9.2
+    - uses: Swatinem/rust-cache@d1527c8f67ef9af357290475d4af4b0fab8f12e0 # v2.9.3
     - name: Run tests on the baseline target
       run: cargo test --workspace --locked --release
 
@@ -98,7 +98,7 @@ jobs:
     timeout-minutes: 15
     steps:
     - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
-    - uses: Swatinem/rust-cache@6323deb102c322ba6fcbdcafc7e3dddab59af2b6 # v2.9.2
+    - uses: Swatinem/rust-cache@d1527c8f67ef9af357290475d4af4b0fab8f12e0 # v2.9.3
     - name: Run the tactical suite
       run: cargo test --release --locked -p arche-core -- --ignored the_suite_finds_what_it_found_before --nocapture | tee /dev/stderr | grep -qxF "test tactics::tests::the_suite_finds_what_it_found_before ... ok"
     - name: Run the strategic suite
@@ -116,6 +116,6 @@ jobs:
     # a bump would move this job off the version it exists to check.
     # .github/dependabot.yml keeps it out of the bumps.
     - uses: dtolnay/rust-toolchain@85c23e28f7ccc75a9a153d45d385d94a85464876 # 1.85
-    - uses: Swatinem/rust-cache@6323deb102c322ba6fcbdcafc7e3dddab59af2b6 # v2.9.2
+    - uses: Swatinem/rust-cache@d1527c8f67ef9af357290475d4af4b0fab8f12e0 # v2.9.3
     - name: Check the workspace
       run: cargo check --workspace --locked --all-targets
