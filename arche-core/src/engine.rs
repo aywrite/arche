@@ -53,19 +53,6 @@ const _: () = assert!(MAX_PLY < u8::MAX);
 // figure; the default search loses that one at every margin from sixty to
 // a hundred. docs/ROADMAP.md has the shadow lane's reading.
 const REVERSE_FUTILITY_MARGIN: Score = 100;
-// The margin when the gate reads the corrected evaluation, at depths two
-// to four. Chosen with `correction::CLAMP` on shadow rows from the games
-// suite at depth 9, as the rule that fires most while crossing beta no more
-// often than the raw evaluation at a hundred, at each of those depths; read
-// back on positions from the strategic suite before any game was played.
-// The corrections run positive (a median of 43 at those depths), so the
-// margin rises a little to keep its distance from a mate the gate can miss.
-const CORRECTED_REVERSE_FUTILITY_MARGIN: Score = 105;
-// The shallowest depth the gate reads the corrected evaluation at. At depth
-// one the same selection, read back on the tactical suite, crossed beta 18%
-// more often than the raw gate, so depth one keeps the raw evaluation and
-// the margin of a hundred.
-const CORRECTED_REVERSE_FUTILITY_MIN_DEPTH: u8 = 2;
 // The deepest node the margin may answer. Four, six and eight give the
 // same bench count to a tenth of a percent.
 const REVERSE_FUTILITY_MAX_DEPTH: u8 = 4;
@@ -590,10 +577,12 @@ pub struct SearchConfig {
     /// other move, shown by a half depth search with that move excluded,
     /// searches the table move a ply deeper.
     pub singular_extensions: bool,
-    /// Whether the two shortcut gates read the static evaluation moved by
+    /// Whether the late move rules that read the static evaluation (quiet
+    /// futility at depths one to three, late move pruning from four) read it
+    /// moved by
     /// the correction history, the running error the search has found
     /// under the pair term's embedding size. The table entry, the stand pat
-    /// and the late move rules keep the raw evaluation.
+    /// and the two shortcut gates keep the raw evaluation.
     pub correction_history: bool,
 }
 
@@ -763,23 +752,6 @@ impl SearchConfig {
             aspiration: false,
             singular_extensions: false,
             correction_history: false,
-        }
-    }
-
-    /// Whether the reverse futility gate at `depth` reads the corrected
-    /// evaluation.
-    pub(crate) const fn corrects_reverse_futility(self, depth: u8) -> bool {
-        self.correction_history && depth >= CORRECTED_REVERSE_FUTILITY_MIN_DEPTH
-    }
-
-    /// How far above beta, per ply, the evaluation the reverse futility gate
-    /// reads at `depth` must stand: a corrected evaluation is held to its own
-    /// margin.
-    pub(crate) const fn reverse_futility_margin(self, depth: u8) -> Score {
-        if self.corrects_reverse_futility(depth) {
-            CORRECTED_REVERSE_FUTILITY_MARGIN
-        } else {
-            REVERSE_FUTILITY_MARGIN
         }
     }
 
@@ -2374,19 +2346,11 @@ impl AlphaBeta {
         {
             return Ok(None);
         }
-        let raw = match *eval_memo {
+        let eval = match *eval_memo {
             Some(eval) => eval,
             None => self.eval(),
         };
-        // the memo keeps the raw evaluation for the table and the late move
-        // rules; the pass reads the corrected one, and the margin reads it
-        // from its corrected depths on
-        *eval_memo = Some(raw);
-        let corrected = if self.config.correction_history {
-            correction::corrected(raw, self.correction())
-        } else {
-            raw
-        };
+        *eval_memo = Some(eval);
         // set only by the forced decision instrument, which then wants to
         // know what answered the node instead
         let mut margin_inverted = false;
@@ -2394,13 +2358,7 @@ impl AlphaBeta {
         // the margin proves `eval - margin` as a lower bound, and fail soft
         // returns that. Clean: a static eval consulted no path
         if margin {
-            let eval = if self.config.corrects_reverse_futility(depth) {
-                corrected
-            } else {
-                raw
-            };
-            let per_ply = self.config.reverse_futility_margin(depth);
-            let floor = eval.saturating_sub(per_ply * depth as Score);
+            let floor = eval.saturating_sub(REVERSE_FUTILITY_MARGIN * depth as Score);
             // the shadow row: every candidate, fired or not, since the fired
             // rows say nothing about where a tighter margin would fire
             if self.sampler.is_some() && eval >= beta {
@@ -2428,7 +2386,6 @@ impl AlphaBeta {
         }
 
         // a zero window: the question is only whether a pass beats beta
-        let eval = corrected;
         if pass && eval >= beta {
             let reduction = null_move_reduction(self.config, depth, eval - beta);
             self.board.make_null_move();
@@ -3283,7 +3240,12 @@ impl AlphaBeta {
         }
         // built only for a node with a place after its first searched move
         if next < len {
-            let mut rules = late_move::Rules::new(&self.deciding(), &node, eval);
+            let correction = if self.config.correction_history {
+                self.correction()
+            } else {
+                0
+            };
+            let mut rules = late_move::Rules::new(&self.deciding(), &node, eval, correction);
             while next < len {
                 let i = next;
                 next += 1;

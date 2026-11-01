@@ -3,7 +3,7 @@
 
 //! A correction history: the running error between the static evaluation
 //! and the answers the search found under it, kept by the side to move and
-//! a key, and added back to the evaluation the two shortcut gates read.
+//! a key, and added back to the evaluation the late move rules read.
 //!
 //! The key is the size of the pair term's embedding for the side to move,
 //! `‖s‖` (see `eval::factors`), in 64 buckets. Positions the pair term sees
@@ -14,8 +14,14 @@
 //! The update and the read are the conventional ones. An entry is held at
 //! `GRAIN` times the centipawns, moved a weight of `min(depth + 1, 16)` in
 //! 256 towards the error each time a node answers, with the target held to
-//! `LIMIT`. The read is held to `CLAMP`, which is smaller than the stored
-//! range so the margin it sits beside keeps its headroom.
+//! `LIMIT`. The read is held to `CLAMP`.
+//!
+//! The entries run positive (a median near 45 cp), since a cutoff may only
+//! teach that the evaluation was too low and cutoffs are most of the nodes
+//! that teach. Read by reverse futility, a table like this crossed beta more
+//! often than the raw evaluation on held out positions, at every margin
+//! that a fit on other positions chose, so the shortcut gates keep the raw
+//! evaluation.
 
 use crate::misc::{Color, Score};
 use crate::value::{CHECKMATE_THRESHOLD, Value, is_mate};
@@ -31,9 +37,8 @@ const GRAIN: i32 = 256;
 const LIMIT: i32 = 64;
 
 /// The most the read adds to or takes from an evaluation, in centipawns.
-/// Chosen with the reverse futility margin on shadow rows before any game
-/// was played. It equals `LIMIT`, so it does not bind: the selection found
-/// no smaller clamp that did better.
+/// It equals `LIMIT`, so it does not bind; it is kept apart so a reader can
+/// be held tighter than what the table stores.
 pub(crate) const CLAMP: i32 = 64;
 
 /// What the node's answer says about the evaluation: a fail high is a

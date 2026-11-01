@@ -182,6 +182,9 @@ pub(crate) struct Rules {
     /// denominator: a child search between two of the node's moves can
     /// teach the history. The first move a recorder samples fills it.
     pub(crate) history_max: Option<i32>,
+    /// What the correction history adds to the node's evaluation, which the
+    /// rules read corrected: zero with the switch off.
+    correction: i32,
     /// What the check test reads of the position, computed once.
     pub(crate) check: Option<CheckInfo>,
     shallow: Shallow,
@@ -190,12 +193,14 @@ pub(crate) struct Rules {
 
 impl Rules {
     /// The rules once the node has searched a move, with `eval` as the
-    /// table and the shortcuts left it. The two rule halves are read off the
+    /// table and the shortcuts left it (raw) and `correction` what the
+    /// correction history adds to it. The two rule halves are read off the
     /// node's facts here, and the mate test off its alpha as it stands.
-    pub(crate) fn new(search: &Search, node: &Node, eval: Option<Score>) -> Self {
+    pub(crate) fn new(search: &Search, node: &Node, eval: Option<Score>, correction: i32) -> Self {
         Self {
-            eval,
+            eval: eval.map(|raw| crate::correction::corrected(raw, correction)),
             history_max: None,
+            correction,
             check: None,
             shallow: shallow(search.config, search.board, node),
             admission: admission(search.config, node),
@@ -215,8 +220,14 @@ impl Rules {
     /// searched count as the move is reached.
     #[inline]
     pub(crate) fn skips(&mut self, search: &Search, node: &Node, m: &Play) -> bool {
-        self.shallow
-            .skips(search, &mut self.eval, &mut self.check, m, node)
+        self.shallow.skips(
+            search,
+            &mut self.eval,
+            self.correction,
+            &mut self.check,
+            m,
+            node,
+        )
     }
 
     /// Whether either shallow rule would drop every later quiet that
@@ -226,7 +237,8 @@ impl Rules {
     /// ordering relies on that.
     #[inline]
     pub(crate) fn shallow_active(&mut self, search: &Search, node: &Node) -> bool {
-        self.shallow.active(search, &mut self.eval, node)
+        self.shallow
+            .active(search, &mut self.eval, self.correction, node)
     }
 
     /// Whether the late move reduction may scout this move, at the node's
@@ -399,6 +411,7 @@ impl Shallow {
         &mut self,
         search: &Search,
         eval: &mut Option<Score>,
+        correction: i32,
         check: &mut Option<CheckInfo>,
         m: &Play,
         node: &Node,
@@ -406,7 +419,8 @@ impl Shallow {
         let searched = node.answer.searched;
         self.reached(searched, node.answer.alpha)
             && m.capture.is_none()
-            && (searched >= self.count || self.under_alpha(search, eval, node.answer.alpha))
+            && (searched >= self.count
+                || self.under_alpha(search, eval, correction, node.answer.alpha))
             && !survives_shallow(
                 search.board,
                 check.get_or_insert_with(|| search.board.check_info()),
@@ -416,21 +430,34 @@ impl Shallow {
 
     /// The half of `skips` that does not read the move.
     #[inline]
-    fn active(&mut self, search: &Search, eval: &mut Option<Score>, node: &Node) -> bool {
+    fn active(
+        &mut self,
+        search: &Search,
+        eval: &mut Option<Score>,
+        correction: i32,
+        node: &Node,
+    ) -> bool {
         let searched = node.answer.searched;
         self.reached(searched, node.answer.alpha)
-            && (searched >= self.count || self.under_alpha(search, eval, node.answer.alpha))
+            && (searched >= self.count
+                || self.under_alpha(search, eval, correction, node.answer.alpha))
     }
 
     #[inline]
-    fn under_alpha(&mut self, search: &Search, eval: &mut Option<Score>, alpha: Score) -> bool {
+    fn under_alpha(
+        &mut self,
+        search: &Search,
+        eval: &mut Option<Score>,
+        correction: i32,
+        alpha: Score,
+    ) -> bool {
         match self.under {
             Under::Held => true,
             Under::Off => false,
             Under::Short(at) if at == alpha => false,
             Under::Ask | Under::Short(_) => {
-                let held =
-                    i32::from(eval_memo(search.board, eval)) + self.margin <= i32::from(alpha);
+                let held = i32::from(eval_memo(search.board, eval, correction)) + self.margin
+                    <= i32::from(alpha);
                 self.under = if held {
                     Under::Held
                 } else {
@@ -554,7 +581,7 @@ pub(crate) fn decide_admitted(
     {
         return plain();
     }
-    let eval = i64::from(eval_memo(search.board, &mut rules.eval));
+    let eval = i64::from(eval_memo(search.board, &mut rules.eval, rules.correction));
     if search.config.late_move_pruning
         && under_skip_margin(node.depth, eval - i64::from(node.answer.beta))
     {
@@ -647,10 +674,10 @@ pub(crate) fn features(
     }
 }
 
-/// The node's static evaluation, computed by the first call and read back
-/// by the rest.
-fn eval_memo(board: &Position, eval: &mut Option<Score>) -> Score {
-    *eval.get_or_insert_with(|| crate::eval::eval(board))
+/// The node's static evaluation moved by its correction, computed by the
+/// first call and read back by the rest.
+fn eval_memo(board: &Position, eval: &mut Option<Score>, correction: i32) -> Score {
+    *eval.get_or_insert_with(|| crate::correction::corrected(crate::eval::eval(board), correction))
 }
 
 /// The largest history score among the node's generated quiets, signed:
@@ -813,7 +840,7 @@ mod tests {
                 None,
                 FailSoft::open(alpha, beta, self.root_bounds, Taint::default()),
             );
-            let mut rules = Rules::new(&self.search(), &node, self.eval);
+            let mut rules = Rules::new(&self.search(), &node, self.eval, 0);
             rules.history_max = self.history_max;
             (node, rules)
         }
