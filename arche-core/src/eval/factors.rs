@@ -303,6 +303,24 @@ impl Machine {
         kept
     }
 
+    /// The size of `side`'s embedding, `‖s‖`, in buckets of 512 factor
+    /// units, the last bucket taking everything above it: the correction
+    /// history's key. The kept sum and difference are twice a perspective's
+    /// `s`, hence the 1,024 below.
+    #[inline(always)]
+    pub(crate) fn magnitude(&self, side: Color) -> usize {
+        let mut squares = 0_u64;
+        for (&sum, &difference) in self.sums[0].iter().zip(&self.sums[1]) {
+            let (sum, difference) = (i32::from(sum), i32::from(difference));
+            let lane = match side {
+                Color::White => sum + difference,
+                Color::Black => sum - difference,
+            };
+            squares += u64::from(lane.unsigned_abs()).pow(2);
+        }
+        (squares.isqrt() / 1024).min(crate::correction::SLOTS as u64 - 1) as usize
+    }
+
     /// The term, white relative, in centipawns.
     #[inline(always)]
     pub(crate) fn score(&self) -> i32 {

@@ -450,6 +450,13 @@ impl Accumulator {
         self.phase.min(TOTAL_PHASE)
     }
 
+    /// The bucket of the pair term's embedding size for `side`, which keys
+    /// the correction history.
+    #[inline(always)]
+    pub(crate) fn embedding_magnitude(&self, side: Color) -> usize {
+        self.machine.magnitude(side)
+    }
+
     /// A board with nothing on it scores nothing.
     pub(crate) const EMPTY: Self = Self {
         material: 0,

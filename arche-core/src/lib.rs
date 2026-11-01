@@ -5,6 +5,7 @@ pub mod bench;
 mod bitboard;
 mod board;
 pub mod census;
+mod correction;
 pub mod effort;
 mod engine;
 mod eval;

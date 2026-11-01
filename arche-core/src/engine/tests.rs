@@ -3091,14 +3091,19 @@ mod search {
 mod sampling {
     use crate::board::fens::SHARP_MIDDLEGAME;
     use crate::engine::{
-        AlphaBeta, Board, Engine, REVERSE_FUTILITY_MARGIN, REVERSE_FUTILITY_MAX_DEPTH, RootBounds,
-        Score, SearchConfig, SearchParameters, Taint,
+        AlphaBeta, Board, Engine, REVERSE_FUTILITY_MAX_DEPTH, RootBounds, Score, SearchConfig,
+        SearchParameters, Taint,
     };
     use crate::recorder::{Sampled, Sampler, Window};
     use crate::residual::{Sample, Shortcut, sample_key};
     use pretty_assertions::assert_eq;
 
     const TABLE_BYTES: usize = 1024 * 1024;
+
+    /// The margin the default's gate holds its evaluation to at `depth`.
+    fn margin(depth: u8) -> Score {
+        SearchConfig::default().reverse_futility_margin(depth)
+    }
 
     fn engine(fen: &str) -> AlphaBeta {
         AlphaBeta::with_table_bytes(Board::from_fen(fen).unwrap(), TABLE_BYTES)
@@ -3213,7 +3218,7 @@ mod sampling {
             ) {
                 assert_eq!(
                     i32::from(sample.claimed) - i32::from(sample.beta),
-                    sample.eval_beta - i32::from(REVERSE_FUTILITY_MARGIN) * i32::from(sample.depth),
+                    sample.eval_beta - i32::from(margin(sample.depth)) * i32::from(sample.depth),
                     "{:?}",
                     sample
                 );
@@ -3251,7 +3256,7 @@ mod sampling {
     fn the_recorded_beta_is_the_one_the_gate_cleared() {
         let eval = engine(SHARP_MIDDLEGAME).eval();
 
-        // the margin at depth one claims `eval - 100`, which clears a beta
+        // the margin at depth one claims `eval - margin(1)`, which clears a beta
         // two hundred under the evaluation
         let beta = eval - 200;
         let taken = shortcut_at(SearchConfig::default(), beta - 1, beta, 1);
@@ -3259,7 +3264,7 @@ mod sampling {
         let fired = one_of(&taken, Shortcut::ReverseFutility);
         assert_eq!(fired.beta, beta);
         assert_eq!(fired.eval_beta, 200);
-        assert_eq!(fired.claimed, eval - REVERSE_FUTILITY_MARGIN);
+        assert_eq!(fired.claimed, eval - margin(1));
         assert_eq!(fired.window, Window::Zero);
 
         // the pass, with the margin off so nothing answers the node first
@@ -3348,7 +3353,7 @@ mod sampling {
         assert_eq!(taken[0].kind, Shortcut::ShadowFutility);
         assert_eq!(taken[0].beta, beta);
         assert_eq!(taken[0].eval_beta, 50);
-        assert_eq!(taken[0].claimed, eval - REVERSE_FUTILITY_MARGIN);
+        assert_eq!(taken[0].claimed, eval - margin(1));
         assert!(taken[0].claimed < taken[0].beta);
     }
 
@@ -3510,7 +3515,7 @@ mod sampling {
         for sample in collected(&mut e).taken {
             let floor = match sample.kind {
                 Shortcut::ReverseFutility => {
-                    i32::from(REVERSE_FUTILITY_MARGIN) * i32::from(sample.depth)
+                    i32::from(margin(sample.depth)) * i32::from(sample.depth)
                 }
                 Shortcut::NullMove | Shortcut::ShadowFutility => 0,
             };

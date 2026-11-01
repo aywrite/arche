@@ -3,6 +3,7 @@
 
 use crate::board::{Board, MOVE_LIST_INLINE, MoveList, Unplayable};
 use crate::census;
+use crate::correction;
 use crate::effort;
 use crate::eval;
 use crate::forced;
@@ -52,6 +53,19 @@ const _: () = assert!(MAX_PLY < u8::MAX);
 // figure; the default search loses that one at every margin from sixty to
 // a hundred. docs/ROADMAP.md has the shadow lane's reading.
 const REVERSE_FUTILITY_MARGIN: Score = 100;
+// The margin when the gate reads the corrected evaluation, at depths two
+// to four. Chosen with `correction::CLAMP` on shadow rows from the games
+// suite at depth 9, as the rule that fires most while crossing beta no more
+// often than the raw evaluation at a hundred, at each of those depths; read
+// back on positions from the strategic suite before any game was played.
+// The corrections run positive (a median of 43 at those depths), so the
+// margin rises a little to keep its distance from a mate the gate can miss.
+const CORRECTED_REVERSE_FUTILITY_MARGIN: Score = 105;
+// The shallowest depth the gate reads the corrected evaluation at. At depth
+// one the same selection, read back on the tactical suite, crossed beta 18%
+// more often than the raw gate, so depth one keeps the raw evaluation and
+// the margin of a hundred.
+const CORRECTED_REVERSE_FUTILITY_MIN_DEPTH: u8 = 2;
 // The deepest node the margin may answer. Four, six and eight give the
 // same bench count to a tenth of a percent.
 const REVERSE_FUTILITY_MAX_DEPTH: u8 = 4;
@@ -576,6 +590,11 @@ pub struct SearchConfig {
     /// other move, shown by a half depth search with that move excluded,
     /// searches the table move a ply deeper.
     pub singular_extensions: bool,
+    /// Whether the two shortcut gates read the static evaluation moved by
+    /// the correction history, the running error the search has found
+    /// under the pair term's embedding size. The table entry, the stand pat
+    /// and the late move rules keep the raw evaluation.
+    pub correction_history: bool,
 }
 
 /// What to do with a draw tainted score: one stored by a search that read
@@ -681,7 +700,7 @@ impl SearchConfig {
     ///
     /// `taint` is not among them: it is a policy with four values rather
     /// than a switch, and `residuals` already takes it.
-    pub const SWITCHES: [(&'static str, TurnOff); 14] = [
+    pub const SWITCHES: [(&'static str, TurnOff); 15] = [
         ("reverse_futility", |config| config.reverse_futility = false),
         ("null_move", |config| config.null_move = false),
         ("adaptive_null_move", |config| {
@@ -703,6 +722,9 @@ impl SearchConfig {
         ("aspiration", |config| config.aspiration = false),
         ("singular_extensions", |config| {
             config.singular_extensions = false
+        }),
+        ("correction_history", |config| {
+            config.correction_history = false
         }),
     ];
 
@@ -740,6 +762,24 @@ impl SearchConfig {
             move_memory: false,
             aspiration: false,
             singular_extensions: false,
+            correction_history: false,
+        }
+    }
+
+    /// Whether the reverse futility gate at `depth` reads the corrected
+    /// evaluation.
+    pub(crate) const fn corrects_reverse_futility(self, depth: u8) -> bool {
+        self.correction_history && depth >= CORRECTED_REVERSE_FUTILITY_MIN_DEPTH
+    }
+
+    /// How far above beta, per ply, the evaluation the reverse futility gate
+    /// reads at `depth` must stand: a corrected evaluation is held to its own
+    /// margin.
+    pub(crate) const fn reverse_futility_margin(self, depth: u8) -> Score {
+        if self.corrects_reverse_futility(depth) {
+            CORRECTED_REVERSE_FUTILITY_MARGIN
+        } else {
+            REVERSE_FUTILITY_MARGIN
         }
     }
 
@@ -795,6 +835,7 @@ impl Default for SearchConfig {
             move_memory: true,
             aspiration: true,
             singular_extensions: true,
+            correction_history: true,
         }
     }
 }
@@ -1298,6 +1339,9 @@ pub struct AlphaBeta {
     /// is taken, and in the two places that set those decisions up (the
     /// quiet ordering asked move by move and the scout's staged reduction).
     forced: Option<Box<forced::Arm>>,
+    /// The correction history. Kept across the searches of a game and
+    /// cleared with the table, at a new game or by the button.
+    corrections: correction::Table,
     /// The nodes searched under each root move over every search of the
     /// depth under way, which the soft line reads once the depth completes.
     /// Cleared by the deepening loop at each depth and by a fixed depth
@@ -1397,6 +1441,7 @@ impl AlphaBeta {
             effort: None,
             effort_depths: effort::Depths::default(),
             forced: None,
+            corrections: correction::Table::default(),
             root_nodes: Vec::new(),
             singular: SingularCounts::default(),
             #[cfg(test)]
@@ -1862,6 +1907,44 @@ impl AlphaBeta {
         crate::eval::eval_cached(&self.board, &mut self.caches)
     }
 
+    /// The correction history's slot for this position and side to move.
+    #[inline(always)]
+    fn correction_key(&self) -> usize {
+        self.board.eval.embedding_magnitude(self.board.active_color)
+    }
+
+    /// What the correction history adds to this node's evaluation.
+    #[inline(always)]
+    fn correction(&self) -> i32 {
+        self.corrections
+            .read(self.board.active_color, self.correction_key())
+    }
+
+    /// Teach the correction history what this node returned against the raw
+    /// evaluation it stood on, where there was one. A node in check has no
+    /// static evaluation, and one searched without a move answers a
+    /// different question from the position's.
+    #[inline(always)]
+    fn learn(
+        &mut self,
+        raw: Option<Score>,
+        answer: Value,
+        bound: correction::Bound,
+        depth: u8,
+        in_check: bool,
+        excluded: Option<Play>,
+    ) {
+        if !self.config.correction_history || in_check || excluded.is_some() {
+            return;
+        }
+        let Some(raw) = raw else {
+            return;
+        };
+        let (side, key) = (self.board.active_color, self.correction_key());
+        self.corrections
+            .update(side, key, raw, answer, bound, depth);
+    }
+
     /// The ply the quiet memories are indexed by at this node, or none when
     /// the configuration has them off or the ply is past the table. The
     /// rail keeps every line inside the table; the second test makes the
@@ -2291,11 +2374,19 @@ impl AlphaBeta {
         {
             return Ok(None);
         }
-        let eval = match *eval_memo {
+        let raw = match *eval_memo {
             Some(eval) => eval,
             None => self.eval(),
         };
-        *eval_memo = Some(eval);
+        // the memo keeps the raw evaluation for the table and the late move
+        // rules; the pass reads the corrected one, and the margin reads it
+        // from its corrected depths on
+        *eval_memo = Some(raw);
+        let corrected = if self.config.correction_history {
+            correction::corrected(raw, self.correction())
+        } else {
+            raw
+        };
         // set only by the forced decision instrument, which then wants to
         // know what answered the node instead
         let mut margin_inverted = false;
@@ -2303,7 +2394,13 @@ impl AlphaBeta {
         // the margin proves `eval - margin` as a lower bound, and fail soft
         // returns that. Clean: a static eval consulted no path
         if margin {
-            let floor = eval.saturating_sub(REVERSE_FUTILITY_MARGIN * depth as Score);
+            let eval = if self.config.corrects_reverse_futility(depth) {
+                corrected
+            } else {
+                raw
+            };
+            let per_ply = self.config.reverse_futility_margin(depth);
+            let floor = eval.saturating_sub(per_ply * depth as Score);
             // the shadow row: every candidate, fired or not, since the fired
             // rows say nothing about where a tighter margin would fire
             if self.sampler.is_some() && eval >= beta {
@@ -2331,6 +2428,7 @@ impl AlphaBeta {
         }
 
         // a zero window: the question is only whether a pass beats beta
+        let eval = corrected;
         if pass && eval >= beta {
             let reduction = null_move_reduction(self.config, depth, eval - beta);
             self.board.make_null_move();
@@ -3098,6 +3196,14 @@ impl AlphaBeta {
         if let Some(tt) = table_move {
             let extension = u8::from(self.table_move_is_singular(tt, floor, depth, excluded)?);
             if let Some(value) = self.search_table_move(tt, &mut node, static_eval, extension)? {
+                self.learn(
+                    eval,
+                    value,
+                    correction::Bound::Lower,
+                    depth,
+                    in_check,
+                    excluded,
+                );
                 return Ok(value);
             }
         }
@@ -3161,7 +3267,16 @@ impl AlphaBeta {
                     };
                     self.record_node(&node, moves, quiets.scored, Some(cutting));
                     let tried = tried_before(moves, &made, i);
-                    return Ok(self.cutoff(m, tried, &node, value.score, static_eval));
+                    let cut = self.cutoff(m, tried, &node, value.score, static_eval);
+                    self.learn(
+                        eval,
+                        cut,
+                        correction::Bound::Lower,
+                        depth,
+                        in_check,
+                        excluded,
+                    );
+                    return Ok(cut);
                 }
                 break;
             }
@@ -3214,7 +3329,16 @@ impl AlphaBeta {
                         };
                         self.record_node(&node, moves, quiets.scored, Some(cutting));
                         let tried = tried_before(moves, &made, i);
-                        return Ok(self.cutoff(m, tried, &node, value.score, static_eval));
+                        let cut = self.cutoff(m, tried, &node, value.score, static_eval);
+                        self.learn(
+                            eval,
+                            cut,
+                            correction::Bound::Lower,
+                            depth,
+                            in_check,
+                            excluded,
+                        );
+                        return Ok(cut);
                     }
                     Reached::Alpha => {
                         rules.raise(node.answer.alpha);
@@ -3258,6 +3382,12 @@ impl AlphaBeta {
         if excluded.is_none() {
             self.store_answer(play, value, depth, node.answer.raised_alpha(), static_eval);
         }
+        let bound = if node.answer.raised_alpha() {
+            correction::Bound::Exact
+        } else {
+            correction::Bound::Upper
+        };
+        self.learn(eval, value, bound, depth, in_check, excluded);
         Ok(value)
     }
 
@@ -3498,10 +3628,14 @@ impl Engine for AlphaBeta {
 
     fn new_game(&mut self) {
         self.clear_transpositions();
+        self.corrections.clear();
     }
 
     fn clear_table(&mut self) {
+        // the button returns the engine to the cold one a new game starts
+        // with, which the corrections are part of
         self.clear_transpositions();
+        self.corrections.clear();
     }
 
     fn set_table_bytes(&mut self, bytes: usize) -> bool {
