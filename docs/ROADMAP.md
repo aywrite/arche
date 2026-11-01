@@ -253,6 +253,25 @@ of these again without saying what is different this time.
   held-out positions before any games, and measures correcting the leaf and
   correcting the gates separately before together. The pawn key the arm was
   built on landed on its own.
+
+  Re-asked on 2026-11-01 on that protocol, keyed by the size of the pair
+  term's embedding for the side to move (64 buckets), with the table kept
+  through a game. The gates arm was closed before any game. Its entries run
+  positive (a median of 43 to 49 cp at depths one to four on three suites),
+  since a cutoff may only teach that the evaluation was too low, so a gate
+  reading them behaves much like a smaller margin. The rule chosen on the
+  games suite's shadow rows at depth 9 (the read held to ±64, the margin 125
+  at depths one to four) crossed beta 432 times against the raw gate's 365
+  at depth one on the tactical suite. Chosen again with depth one left raw
+  (105 at depths two to four), it crossed 72 and 14 times against 45 and 9
+  at depths two and three on 300 positions of the strategic suite. The leaf
+  arm, quiet futility and late move pruning reading the corrected
+  evaluation with the gates raw, failed: -14 ±15 over 1,000 games at
+  10+0.1 (sprt [0, 10], LLR -3.13, 24fb967 against f6f27ff), with the bench
+  15.9% smaller, the tactical suite unmoved, and 0.97 times the baseline's
+  nodes a second in the games. A third key or a table that learns from
+  exact nodes alone would be a different question; this key is closed for
+  both consumers.
 - Correcting the evaluation reverse futility reads by a table entry's score and
   bound (a stored floor above the evaluation raised it before the margin was
   measured). Inconclusive at the game cap, +6 ±11 over 1,980 games at 5+0.05
