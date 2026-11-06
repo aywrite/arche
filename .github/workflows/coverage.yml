@@ -30,7 +30,7 @@ jobs:
       # not in rust-toolchain.toml, so a clone does not install them
       - name: Install the llvm tools
         run: rustup component add llvm-tools-preview
-      - uses: taiki-e/install-action@5488ac5a951645ce95062214902ac4b6bc1a1037 # v2.87.32
+      - uses: taiki-e/install-action@b80e2bb2635f28eb98b9fce1e2f0887e1535c6b2 # v2.90.0
         with:
           # pinned for the reason the actions are
           tool: cargo-llvm-cov@0.9.0
