@@ -133,7 +133,8 @@ pub struct Cut {
     /// it.
     pub index: usize,
     pub class: Class,
-    /// The history score at the cutoff, quiets only and 0 otherwise.
+    /// The butterfly history's score at the cutoff, quiets only and 0
+    /// otherwise. The continuation entry the order adds is not in it.
     /// Signed: a move tried more often than it cuts sits below zero. Read as
     /// a fraction of `history_max`, since the raw number moves with what the
     /// search has learned.
@@ -157,7 +158,7 @@ pub struct Event {
     pub searched: usize,
     /// None when the loop ran out.
     pub cut: Option<Cut>,
-    /// The largest history score among the generated quiets, clamped at
+    /// The largest butterfly score among the generated quiets, clamped at
     /// zero: what `Cut::history` is read against.
     pub history_max: i32,
     /// Whether the staged ordering scored the quiet band before the node

@@ -576,6 +576,12 @@ pub struct SearchConfig {
     /// other move, shown by a half depth search with that move excluded,
     /// searches the table move a ply deeper.
     pub singular_extensions: bool,
+    /// Whether the search tells the move ordering what it played, so a
+    /// quiet's history adds the continuation table's entry under the move
+    /// that reached the node. Off, the table is never written or read and
+    /// the history is the butterfly table alone. It does nothing with
+    /// `move_memory` off.
+    pub continuation_history: bool,
 }
 
 /// What to do with a draw tainted score: one stored by a search that read
@@ -681,7 +687,7 @@ impl SearchConfig {
     ///
     /// `taint` is not among them: it is a policy with four values rather
     /// than a switch, and `residuals` already takes it.
-    pub const SWITCHES: [(&'static str, TurnOff); 14] = [
+    pub const SWITCHES: [(&'static str, TurnOff); 15] = [
         ("reverse_futility", |config| config.reverse_futility = false),
         ("null_move", |config| config.null_move = false),
         ("adaptive_null_move", |config| {
@@ -703,6 +709,9 @@ impl SearchConfig {
         ("aspiration", |config| config.aspiration = false),
         ("singular_extensions", |config| {
             config.singular_extensions = false
+        }),
+        ("continuation_history", |config| {
+            config.continuation_history = false
         }),
     ];
 
@@ -740,6 +749,7 @@ impl SearchConfig {
             move_memory: false,
             aspiration: false,
             singular_extensions: false,
+            continuation_history: false,
         }
     }
 
@@ -795,6 +805,7 @@ impl Default for SearchConfig {
             move_memory: true,
             aspiration: true,
             singular_extensions: true,
+            continuation_history: true,
         }
     }
 }
@@ -1888,7 +1899,7 @@ impl AlphaBeta {
     ) {
         if let Some(ply) = self.memory_ply() {
             self.ordering
-                .cutoff(self.board.active_color, m, tried, ply, depth);
+                .cutoff(&self.board, self.board.active_color, m, tried, ply, depth);
         }
     }
 
@@ -2170,7 +2181,7 @@ impl AlphaBeta {
         // no memories here: they say nothing about captures or evasions
         let Ordered { front, .. } =
             self.ordering
-                .order_split(&self.board, &mut moves, captures, pv_play, None);
+                .order_split(&self.board, &mut moves, captures, pv_play, None, 0);
 
         for (i, m) in moves.iter().enumerate() {
             // two skips the reference does not make. A promotion is exempt
@@ -2333,6 +2344,7 @@ impl AlphaBeta {
         // a zero window: the question is only whether a pass beats beta
         if pass && eval >= beta {
             let reduction = null_move_reduction(self.config, depth, eval - beta);
+            self.ordering.passed(self.board.line_ply);
             self.board.make_null_move();
             let result = self.child_search(
                 -beta,
@@ -2400,6 +2412,10 @@ impl AlphaBeta {
             !matches!(decision, Decision::Skip),
             "the loop searched a move it decided to skip"
         );
+        if self.config.continuation_history {
+            self.ordering
+                .played(&self.board, m, self.board.line_ply, depth);
+        }
         if !self.board.make_move(m) {
             return Ok(None);
         }
@@ -2778,6 +2794,7 @@ impl AlphaBeta {
                         &mut moves[front..],
                         quiets.losing,
                         ply,
+                        node.depth,
                     );
                 } else {
                     let run = self.ordering.key_quiets(
@@ -2785,6 +2802,7 @@ impl AlphaBeta {
                         &mut moves[front..],
                         quiets.losing,
                         ply,
+                        node.depth,
                     );
                     if run > 1 {
                         quiets.lazy = Some((front + run, 0));
@@ -3109,9 +3127,14 @@ impl AlphaBeta {
         } else {
             self.board.generate_moves_into(&mut moves)
         };
-        let ordered =
-            self.ordering
-                .order_split(&self.board, &mut moves, captures, pv_play, node.ply);
+        let ordered = self.ordering.order_split(
+            &self.board,
+            &mut moves,
+            captures,
+            pv_play,
+            node.ply,
+            node.depth,
+        );
         // `order_split` sorts by `pv_play`, and the search played
         // `table_move`, which differ when `is_pseudo_legal` refused the move
         let tt_at = if table_move.is_some() {
@@ -3339,7 +3362,8 @@ impl AlphaBeta {
         // debug assertion in `order` holds the table's move at the head
         let pv_play = self.transpositions.ordering_play(&self.board);
         let mut moves = self.board.generate_moves();
-        self.ordering.order(&self.board, &mut moves, pv_play, None);
+        self.ordering
+            .order(&self.board, &mut moves, pv_play, None, 0);
 
         // the root reduces nothing
         for m in &moves {

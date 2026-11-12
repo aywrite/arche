@@ -3616,8 +3616,8 @@ mod cutoffs {
         let color = e.board.active_color;
         // the first is taught at another ply with the larger history, so
         // only the killer slot makes the second the class
-        e.ordering.cutoff(color, &cool, &[], 1, 5);
-        e.ordering.cutoff(color, &killer, &[], 0, 4);
+        e.ordering.cutoff(&e.board, color, &cool, &[], 1, 5);
+        e.ordering.cutoff(&e.board, color, &killer, &[], 0, 4);
         let moves = e.board.generate_moves();
         let (alpha, beta): (Score, Score) = (10, 11);
         e.census_event(
@@ -3674,7 +3674,8 @@ mod cutoffs {
             .filter(|m| m.capture.is_none() && m.promote.is_none())
             .copied()
             .collect();
-        e.ordering.cutoff(color, &elsewhere, &marked, 1, 4);
+        e.ordering
+            .cutoff(&e.board, color, &elsewhere, &marked, 1, 4);
         e.census_event(
             &node(3, (10, 11), Some(0), Table::Miss, 2, e.nodes),
             &moves,
@@ -3761,7 +3762,8 @@ mod cutoffs {
     fn a_held_node_records_no_cutting_move() {
         let mut e = engine(SHARP_MIDDLEGAME);
         let (taught, _) = quiets(&e);
-        e.ordering.cutoff(e.board.active_color, &taught, &[], 0, 3);
+        e.ordering
+            .cutoff(&e.board, e.board.active_color, &taught, &[], 0, 3);
         let moves = e.board.generate_moves();
         e.census_event(
             &node(
@@ -3861,8 +3863,8 @@ mod reductions {
         let color = e.board.active_color;
         // the first is taught at another ply with the larger history, so
         // only the killer slot makes the second the class
-        e.ordering.cutoff(color, &cool, &[], 1, 5);
-        e.ordering.cutoff(color, &killer, &[], 0, 4);
+        e.ordering.cutoff(&e.board, color, &cool, &[], 1, 5);
+        e.ordering.cutoff(&e.board, color, &killer, &[], 0, 4);
         let moves = e.board.generate_moves();
         let parent_eval = i32::from(crate::eval::eval(&e.board));
         let staged = staged(&e, &killer, 5, Some(0));
@@ -3952,7 +3954,8 @@ mod reductions {
             .filter(|q| q.capture.is_none() && q.promote.is_none())
             .copied()
             .collect();
-        e.ordering.cutoff(color, &elsewhere, &marked, 1, 4);
+        e.ordering
+            .cutoff(&e.board, color, &elsewhere, &marked, 1, 4);
         let staged = staged(&e, &m, 5, Some(0));
         assert_eq!(staged.features.history, -16);
         assert_eq!(staged.features.history_max, 0);
@@ -4241,7 +4244,7 @@ mod node {
         node.answer.searched = 12;
         let ordered = e
             .ordering
-            .order_split(&e.board, &mut moves, captures, None, node.ply);
+            .order_split(&e.board, &mut moves, captures, None, node.ply, node.depth);
         let mut quiets = QuietOrder::new(&ordered, node.ply);
         let mut rules = late_move::Rules::new(&e.deciding(), &node, None);
         let front = ordered.front;

@@ -22,8 +22,13 @@
 //! Two memories carry across nodes: the killers, the quiet moves that cut
 //! a node off at each distance from the root, and the history, how often
 //! each quiet move has cut off against how often it was tried and did not.
-//! The search fills both, and `SearchConfig::move_memory` says whether a
-//! node consults them.
+//! The history has two tables. The butterfly table keys a move by its
+//! squares alone, and the continuation table keys it by its piece and to
+//! square under the move that reached the node, so a reply is scored
+//! against what it replies to. A quiet's history is the two entries
+//! summed. The search fills the memories, `SearchConfig::move_memory` says
+//! whether a node consults them, and `SearchConfig::continuation_history`
+//! whether the search tells the continuation table what it played.
 //!
 //! `the_bands_do_not_overlap` checks the constants. The root's
 //! aborted-answer swap is sound only because the table's move sorts first,
@@ -50,11 +55,12 @@ const SEE_UNIT: i64 = 2_000;
 /// The two killers, in the order they are tried. Both sit under the
 /// smallest even capture, and above the quiet moves themselves.
 const KILLER_BONUS: [i64; 2] = [9_000_000, 8_000_000];
-/// The bound `gravitate` holds a history entry to, either way. Three
-/// orders under the second killer, and under the least losing capture's
-/// `SEE_UNIT * 100` less the largest tiebreak, so a marked down quiet stays
-/// ahead of every losing capture on the spilled list path.
-/// `the_bands_do_not_overlap` checks both.
+/// The bound `gravitate` holds a history entry to, either way. A quiet
+/// sums two entries, and twice the bound is still two orders under the
+/// second killer, and under the least losing capture's `SEE_UNIT * 100`
+/// less the largest tiebreak, so a marked down quiet stays ahead of every
+/// losing capture on the spilled list path. `the_bands_do_not_overlap`
+/// checks both.
 const HISTORY_MAX: i32 = 8_192;
 
 /// Most valuable victim: what taking each piece is worth.
@@ -66,9 +72,12 @@ const ATTACKER_SCORES: [i64; 6] = [6, 5, 4, 3, 2, 1];
 /// in. Six, since a list wider than the buffer takes the other sort.
 const PLACE_BITS: u32 = 6;
 const PLACE_MASK: i64 = (1 << PLACE_BITS) - 1;
+/// The widest a quiet's history can be either way: the butterfly entry and
+/// the continuation entry, each held to `HISTORY_MAX`.
+const QUIET_HISTORY_MAX: i32 = 2 * HISTORY_MAX;
 /// The killers' ranks in the quiet run's 32 bit keys: the two just over
-/// the history's bound, so the keys order as the 64 bit bonuses do.
-const QUIET_KILLER: [i32; 2] = [HISTORY_MAX + 2, HISTORY_MAX + 1];
+/// the summed history's bound, so the keys order as the 64 bit bonuses do.
+const QUIET_KILLER: [i32; 2] = [QUIET_HISTORY_MAX + 2, QUIET_HISTORY_MAX + 1];
 /// A quiet run's keys and a vector's width of padding after the run, which
 /// `key_quiets` fills with `i32::MAX`.
 const QUIET_KEYS: usize = MOVE_LIST_INLINE + 4;
@@ -86,6 +95,30 @@ const _: () = assert!(MOVE_LIST_INLINE <= u64::BITS as usize);
 /// entry). Signed, since a move tried more often than it cuts is worth
 /// ordering behind one the search knows nothing about.
 type History = [[[i32; 64]; 64]; 2];
+
+/// The previous moves the continuation table keys by: each piece and to
+/// square.
+const CONTINUATION_PREVIOUS: usize = 6 * 64;
+/// The least depth a node has to have left, any reduction and the check
+/// extension included, to read the continuation table and to teach it. On
+/// the games suite 65% of the quiets keyed are keyed at depth one, where
+/// the order decides little, and the read is most of what the table costs
+/// a node: at two the table costs 2.6% of the suite's instructions in
+/// play against 5.1% read everywhere.
+pub(crate) const CONTINUATION_MIN_DEPTH: u8 = 2;
+
+/// One block of the continuation table: the entries of every piece and to
+/// square under one previous move by one side, and a seventh row of zeros
+/// that an empty from square reads, so the read needs no branch. Nothing
+/// writes that row: an update needs a piece.
+const CONTINUATION_BLOCK: usize = 7 * 64;
+/// Under each side to move, a block for each previous move.
+const CONTINUATION_LEN: usize = 2 * CONTINUATION_PREVIOUS * CONTINUATION_BLOCK;
+/// What a node with no previous move reads in place of a block.
+static NO_CONTINUATION: [i16; CONTINUATION_BLOCK] = [0; CONTINUATION_BLOCK];
+/// What `line` holds at a ply whose move the table does not key: a pass,
+/// or a search that does not tell the table what it played.
+const NO_PREVIOUS: u16 = u16::MAX;
 
 /// What `order` worked out about the list while it keyed it.
 #[derive(Debug, PartialEq, Eq)]
@@ -114,6 +147,16 @@ pub(crate) struct MoveOrdering {
     /// node's list.
     killers: [[Option<Play>; 2]; MAX_PLY as usize],
     history: History,
+    /// The continuation table, cutoffs against tries as `history` keeps
+    /// them, indexed by the side to move, the previous move's piece and to
+    /// square, then this move's piece and to square. Sixteen bits, since
+    /// an entry is held to `HISTORY_MAX`, so the table is 672 kilobytes and
+    /// the block one node reads is 896 bytes.
+    continuation: Box<[i16]>,
+    /// The piece and to square of the move played at each ply, as the
+    /// continuation table indexes a previous move, or `NO_PREVIOUS`. A node
+    /// reads the entry one ply above its own.
+    line: [u16; MAX_PLY as usize],
     /// The quiet run's packed keys at each ply, kept as the search picks
     /// from it, and the run in generated order, which a key's place
     /// indexes. Per ply because the picking spans the node's child
@@ -129,14 +172,16 @@ impl MoveOrdering {
             sorted: [Play::NOWHERE; MOVE_LIST_INLINE],
             killers: [[None; 2]; MAX_PLY as usize],
             history: [[[0; 64]; 64]; 2],
+            continuation: vec![0; CONTINUATION_LEN].into_boxed_slice(),
+            line: [NO_PREVIOUS; MAX_PLY as usize],
             quiet_keys: Box::new([[0; QUIET_KEYS]; MAX_PLY as usize]),
             quiet_orig: Box::new([[Play::NOWHERE; MOVE_LIST_INLINE]; MAX_PLY as usize]),
         }
     }
 
-    /// Forget both memories. Each `go` starts with this: the memories
-    /// describe the tree being searched now, and the iterations of one
-    /// deepening share them.
+    /// Forget both memories, and the line the continuation table is read
+    /// under. Each `go` starts with this: the memories describe the tree
+    /// being searched now, and the iterations of one deepening share them.
     pub(crate) fn forget(&mut self) {
         self.killers.fill([None; 2]);
         for side in self.history.iter_mut() {
@@ -144,20 +189,67 @@ impl MoveOrdering {
                 from.fill(0);
             }
         }
+        self.continuation.fill(0);
+        self.line.fill(NO_PREVIOUS);
+    }
+
+    /// The move about to be made at `ply` by a node with `depth` left, for
+    /// the continuation table of the node it leads to. Called with the move
+    /// unmade, so the board says which piece makes it. A parent at the
+    /// table's least depth or under writes no move: its children are
+    /// shallower than the least depth unless they are in check, and a child
+    /// the check extension brings back up to it keys by the butterfly entry
+    /// alone and teaches the table nothing.
+    #[inline(always)]
+    pub(crate) fn played(&mut self, board: &Position, m: &Play, ply: usize, depth: u8) {
+        if let Some(slot) = self.line.get_mut(ply) {
+            *slot = if depth > CONTINUATION_MIN_DEPTH {
+                board
+                    .get_piece_index(m.from)
+                    .map_or(NO_PREVIOUS, |piece| piece_square(piece, m.to) as u16)
+            } else {
+                NO_PREVIOUS
+            };
+        }
+    }
+
+    /// A pass at `ply`, which leaves the node under it nothing to key by.
+    #[inline(always)]
+    pub(crate) fn passed(&mut self, ply: usize) {
+        if let Some(slot) = self.line.get_mut(ply) {
+            *slot = NO_PREVIOUS;
+        }
+    }
+
+    /// Where the block a node at `ply` with `depth` left reads for `color`
+    /// starts, or none at the root, under a move the line does not hold and
+    /// under the table's least depth.
+    #[inline(always)]
+    fn continuation_base(&self, color: Color, ply: usize, depth: u8) -> Option<usize> {
+        if depth < CONTINUATION_MIN_DEPTH {
+            return None;
+        }
+        let previous = *self.line.get(ply.checked_sub(1)?)?;
+        (previous != NO_PREVIOUS).then(|| {
+            (color as usize * CONTINUATION_PREVIOUS + usize::from(previous)) * CONTINUATION_BLOCK
+        })
     }
 
     /// A move that cut a node off, `ply` from the root with `depth` left,
     /// and the moves the node made and searched before it. It becomes this
-    /// ply's first killer. Its history entry gains the square of the depth
+    /// ply's first killer. Its history entries gain the square of the depth
     /// and every quiet in `tried` loses the same: the maluses are the
     /// denominator a count of cutoffs lacks, without which an entry
-    /// rewards a move for being ordered early.
+    /// rewards a move for being ordered early. The continuation entries
+    /// are taught only under a previous move the line holds, and `board`,
+    /// the node's position, says which piece each move is.
     ///
     /// A capture is dropped, cutting or tried, since the swap orders the
     /// captures already. The caller passes the moves it has rather than
     /// sorting the quiets out first.
     pub(crate) fn cutoff<'a>(
         &mut self,
+        board: &Position,
         color: Color,
         m: &Play,
         tried: impl IntoIterator<Item = &'a Play>,
@@ -179,18 +271,34 @@ impl MoveOrdering {
         // an entry past it. Only the rail plus a chain of check extensions
         // reaches such a depth, but both bands rest on the bound holding
         let bonus = (i32::from(depth) * i32::from(depth)).min(HISTORY_MAX);
+        let base = self.continuation_base(color, ply, depth);
         for t in tried {
             if t.capture.is_none() {
                 gravitate(
                     &mut self.history[color as usize][t.from as usize][t.to as usize],
                     -bonus,
                 );
+                self.continue_from(base, board, t, -bonus);
             }
         }
         gravitate(
             &mut self.history[color as usize][m.from as usize][m.to as usize],
             bonus,
         );
+        self.continue_from(base, board, m, bonus);
+    }
+
+    /// One continuation entry's update, when the node has a block and the
+    /// board a piece on the move's from square.
+    #[inline(always)]
+    fn continue_from(&mut self, base: Option<usize>, board: &Position, m: &Play, bonus: i32) {
+        let (Some(base), Some(piece)) = (base, board.get_piece_index(m.from)) else {
+            return;
+        };
+        let entry = &mut self.continuation[base + piece_square(piece, m.to)];
+        let mut wide = i32::from(*entry);
+        gravitate(&mut wide, bonus);
+        *entry = wide as i16;
     }
 
     /// Test-only. Signed, so a side taught nothing and a side whose
@@ -231,13 +339,15 @@ impl MoveOrdering {
         self.killers[ply]
     }
 
-    /// The history score of one of `color`'s moves, read without teaching
-    /// anything.
+    /// The butterfly table's score for one of `color`'s moves, read without
+    /// teaching anything. The instruments read this one table: the
+    /// continuation entry the order adds depends on the line, which their
+    /// rows do not carry.
     pub(crate) fn history_score(&self, color: Color, m: &Play) -> i32 {
         self.history[color as usize][m.from as usize][m.to as usize]
     }
 
-    /// The history score of a quiet move, and none for a capture or a
+    /// The butterfly score of a quiet move, and none for a capture or a
     /// promotion: the memories score quiet moves alone.
     #[inline]
     pub(crate) fn quiet_history(&self, color: Color, m: &Play) -> Option<i32> {
@@ -275,9 +385,10 @@ impl MoveOrdering {
         moves: &mut MoveList,
         table_move: Option<Play>,
         ply: Option<usize>,
+        depth: u8,
     ) -> Ordered {
         let captures = moves.iter().take_while(|m| m.capture.is_some()).count();
-        self.order_split(board, moves, captures, table_move, ply)
+        self.order_split(board, moves, captures, table_move, ply, depth)
     }
 
     /// `order` for a list whose first `captures` moves are its captures,
@@ -295,6 +406,7 @@ impl MoveOrdering {
         captures: usize,
         table_move: Option<Play>,
         ply: Option<usize>,
+        depth: u8,
     ) -> Ordered {
         // no capture and no quiet table's move: nothing is keyed and nothing
         // moves, which 29% of the lists came to on the games suite
@@ -302,7 +414,7 @@ impl MoveOrdering {
         let quiet_table_move = table_move.is_some_and(|m| m.capture.is_none());
         if captures == 0 && !quiet_table_move && moves.len() <= MOVE_LIST_INLINE {
             debug_assert_eq!(
-                self.order_by_sort(board, &mut moves.clone(), table_move, ply),
+                self.order_by_sort(board, &mut moves.clone(), table_move, ply, depth),
                 Ordered {
                     front: 0,
                     table_at: None,
@@ -315,7 +427,7 @@ impl MoveOrdering {
                 losing: 0,
             };
         }
-        self.order_keyed(board, moves, captures, table_move, ply)
+        self.order_keyed(board, moves, captures, table_move, ply, depth)
     }
 
     #[inline(never)]
@@ -326,16 +438,17 @@ impl MoveOrdering {
         captures: usize,
         table_move: Option<Play>,
         ply: Option<usize>,
+        depth: u8,
     ) -> Ordered {
         debug_assert!(moves[..captures].iter().all(|m| m.capture.is_some()));
         debug_assert!(moves[captures..].iter().all(|m| m.capture.is_none()));
         #[cfg(debug_assertions)]
         let expected = {
             let mut copy = moves.clone();
-            let ordered = self.order_by_sort(board, &mut copy, table_move, ply);
+            let ordered = self.order_by_sort(board, &mut copy, table_move, ply, depth);
             (copy, ordered)
         };
-        let ordered = self.order_split_inner(board, moves, captures, table_move, ply);
+        let ordered = self.order_split_inner(board, moves, captures, table_move, ply, depth);
         #[cfg(debug_assertions)]
         {
             assert_eq!(expected.1, ordered, "the split order's counts");
@@ -352,9 +465,10 @@ impl MoveOrdering {
         captures: usize,
         table_move: Option<Play>,
         ply: Option<usize>,
+        depth: u8,
     ) -> Ordered {
         if moves.len() > MOVE_LIST_INLINE {
-            return self.order_by_sort(board, moves, table_move, ply);
+            return self.order_by_sort(board, moves, table_move, ply, depth);
         }
         let len = moves.len();
         let keys = &mut self.keys;
@@ -451,6 +565,7 @@ impl MoveOrdering {
         moves: &mut MoveList,
         table_move: Option<Play>,
         ply: Option<usize>,
+        depth: u8,
     ) -> Ordered {
         let keys = &mut self.keys;
         let sorted = &mut self.sorted;
@@ -461,6 +576,10 @@ impl MoveOrdering {
             let quiet = ply.map(|ply| Quiet {
                 killers: self.killers[ply],
                 history: &self.history[board.active_color as usize],
+                continuation: self
+                    .continuation_base(board.active_color, ply, depth)
+                    .map(|base| &self.continuation[base..base + CONTINUATION_BLOCK]),
+                board,
             });
             moves.sort_by_cached_key(|m| keyed(board, m, table_move == Some(*m), quiet.as_ref()));
             // the same key orders this path, so the table's move is at
@@ -530,6 +649,7 @@ impl MoveOrdering {
         rest: &mut [Play],
         losing: usize,
         ply: usize,
+        depth: u8,
     ) {
         debug_assert!(ply < MAX_PLY as usize, "no killers past the rail");
         // `order` hands back the whole length of a list that spilled
@@ -548,6 +668,10 @@ impl MoveOrdering {
         let quiet = Quiet {
             killers: self.killers[ply],
             history: &self.history[board.active_color as usize],
+            continuation: self
+                .continuation_base(board.active_color, ply, depth)
+                .map(|base| &self.continuation[base..base + CONTINUATION_BLOCK]),
+            board,
         };
         let keys = &mut self.keys;
         let sorted = &mut self.sorted;
@@ -583,10 +707,16 @@ impl MoveOrdering {
         rest: &mut [Play],
         losing: usize,
         ply: usize,
+        depth: u8,
     ) -> usize {
         let run = rest.len() - losing;
         let killers = self.killers[ply];
         let history = &self.history[board.active_color as usize];
+        let continuation = self
+            .continuation_base(board.active_color, ply, depth)
+            .map(|base| &self.continuation[base..base + CONTINUATION_BLOCK]);
+        // the zeros stand in where the slower path below reads a block
+        let block = continuation.unwrap_or(&NO_CONTINUATION);
         let keys = &mut self.quiet_keys[ply];
         let orig = &mut self.quiet_orig[ply];
         orig[..run].copy_from_slice(&rest[..run]);
@@ -595,14 +725,27 @@ impl MoveOrdering {
             .all(|k| k.is_none_or(|k| named_by_its_squares(&k)))
         {
             // a killer is the only quiet on its squares, so a quiet's key is
-            // its history entry unless its index is a killer's, when it is
-            // the killer's rank: one read and two compares. The history is
-            // read and never written here
+            // its entries unless its index is a killer's, when it is the
+            // killer's rank: two compares, and three reads under a block or
+            // one without. The history is read and never written here
             let ranks = KillerRanks::of(killers);
             let flat = history.as_flattened();
-            let fours = key_fours(flat, &ranks, &rest[..run], &mut keys[..run]);
-            for i in fours..run {
-                keys[i] = pack_quiet(ranks.entry(flat, history_index(&rest[i])), i);
+            // a node with no block keys the butterfly entries alone, in a
+            // loop that reads nothing else
+            if continuation.is_some() {
+                let fours =
+                    key_fours::<true>(flat, block, board, &ranks, &rest[..run], &mut keys[..run]);
+                for i in fours..run {
+                    let index = history_index(&rest[i]);
+                    keys[i] = pack_quiet(ranks.entry::<true>(flat, block, board, index), i);
+                }
+            } else {
+                let fours =
+                    key_fours::<false>(flat, block, board, &ranks, &rest[..run], &mut keys[..run]);
+                for i in fours..run {
+                    let index = history_index(&rest[i]);
+                    keys[i] = pack_quiet(ranks.entry::<false>(flat, block, board, index), i);
+                }
             }
         } else {
             for (i, m) in rest[..run].iter().enumerate() {
@@ -612,6 +755,7 @@ impl MoveOrdering {
                     QUIET_KILLER[1]
                 } else {
                     history[(m.from & 63) as usize][(m.to & 63) as usize]
+                        + continued(block, board, m)
                 };
                 keys[i] = pack_quiet(bonus, i);
             }
@@ -623,6 +767,8 @@ impl MoveOrdering {
             let quiet = Quiet {
                 killers,
                 history: &self.history[board.active_color as usize],
+                continuation,
+                board,
             };
             for (i, m) in rest[..run].iter().enumerate() {
                 let wide = pack(-quiet.bonus(m), i);
@@ -735,11 +881,14 @@ impl MoveOrdering {
     }
 }
 
-/// What the memories say at one node: this ply's killers and the side to
-/// move's half of the history.
+/// What the memories say at one node: this ply's killers, the side to
+/// move's half of the butterfly history, and the continuation block under
+/// the move that reached the node, with the position it names pieces in.
 struct Quiet<'a> {
     killers: [Option<Play>; 2],
     history: &'a [[i32; 64]; 64],
+    continuation: Option<&'a [i16]>,
+    board: &'a Position,
 }
 
 impl Quiet<'_> {
@@ -760,8 +909,37 @@ impl Quiet<'_> {
         if self.killers[1] == Some(*m) {
             return KILLER_BONUS[1];
         }
-        i64::from(self.history[(m.from & 63) as usize][(m.to & 63) as usize])
+        let butterfly = self.history[(m.from & 63) as usize][(m.to & 63) as usize];
+        let continued = self
+            .continuation
+            .map_or(0, |block| continued(block, self.board, m));
+        i64::from(butterfly + continued)
     }
+}
+
+/// A piece and a square as one index into a continuation block, and as a
+/// previous move's index into the blocks.
+#[inline(always)]
+fn piece_square(piece: Piece, to: u8) -> usize {
+    (piece as usize) << 6 | usize::from(to & 63)
+}
+
+/// A quiet's entry in a node's continuation block. A move whose from
+/// square is empty reads the zero row, which only a test's made up move
+/// can do.
+#[inline(always)]
+fn continued(block: &[i16], board: &Position, m: &Play) -> i32 {
+    continued_at(block, board, history_index(m))
+}
+
+/// The same read by the move's butterfly index, from times sixty four
+/// plus to, which is what the vector keying holds.
+#[inline(always)]
+fn continued_at(block: &[i16], board: &Position, index: usize) -> i32 {
+    let row = board
+        .get_piece_index((index >> 6) as u8)
+        .map_or(6, |piece| piece as usize);
+    i32::from(block[row << 6 | index & 63])
 }
 
 /// Whether a killer's squares name it among the quiets of any list: no
@@ -782,7 +960,10 @@ fn named_by_its_squares(k: &Play) -> bool {
 #[inline(always)]
 fn pack_quiet(bonus: i32, place: usize) -> i32 {
     debug_assert!(place < 1 << PLACE_BITS, "a place has to fit its field");
-    debug_assert!(bonus.abs() <= HISTORY_MAX + 2, "the bonus outgrew its band");
+    debug_assert!(
+        bonus.abs() <= QUIET_HISTORY_MAX + 2,
+        "the bonus outgrew its band"
+    );
     place as i32 - (bonus << PLACE_BITS)
 }
 
@@ -837,12 +1018,19 @@ fn least_from(keys: &[i32; QUIET_KEYS], t: usize, len: usize) -> usize {
 }
 
 /// Key the run's quiets four at a time, as far as whole fours go, by their
-/// history entries or a killer's rank, and return how many were keyed. The
-/// entries are read one by one; only the indexes are computed four at a
-/// time.
+/// two history entries or a killer's rank, and return how many were keyed.
+/// The entries are read one by one; only the indexes are computed four at
+/// a time.
 #[cfg(all(target_arch = "x86_64", target_feature = "sse4.1"))]
 #[inline(always)]
-fn key_fours(history: &[i32], ranks: &KillerRanks, quiets: &[Play], keys: &mut [i32]) -> usize {
+fn key_fours<const CONTINUED: bool>(
+    history: &[i32],
+    block: &[i16],
+    board: &Position,
+    ranks: &KillerRanks,
+    quiets: &[Play],
+    keys: &mut [i32],
+) -> usize {
     use core::arch::x86_64::{
         __m128i, _mm_add_epi32, _mm_and_si128, _mm_blendv_epi8, _mm_cmpeq_epi32,
         _mm_cvtepu16_epi32, _mm_cvtsi128_si32, _mm_extract_epi32, _mm_loadu_si128,
@@ -921,11 +1109,24 @@ fn key_fours(history: &[i32], ranks: &KillerRanks, quiets: &[Play], keys: &mut [
                 square,
             );
             let index = _mm_cvtepu16_epi32(_mm_maddubs_epi16(squares, weights));
+            let lanes = [
+                _mm_cvtsi128_si32(index) as usize,
+                _mm_extract_epi32::<1>(index) as usize,
+                _mm_extract_epi32::<2>(index) as usize,
+                _mm_extract_epi32::<3>(index) as usize,
+            ];
+            let entry = |lane: usize| {
+                if CONTINUED {
+                    *table.add(lane) + continued_at(block, board, lane)
+                } else {
+                    *table.add(lane)
+                }
+            };
             let mut entries = _mm_setr_epi32(
-                *table.add(_mm_cvtsi128_si32(index) as usize),
-                *table.add(_mm_extract_epi32::<1>(index) as usize),
-                *table.add(_mm_extract_epi32::<2>(index) as usize),
-                *table.add(_mm_extract_epi32::<3>(index) as usize),
+                entry(lanes[0]),
+                entry(lanes[1]),
+                entry(lanes[2]),
+                entry(lanes[3]),
             );
             // a lane whose index is a killer's takes the killer's rank, the
             // first killer last as in `entry`; no two quiets share an index
@@ -946,7 +1147,14 @@ fn key_fours(history: &[i32], ranks: &KillerRanks, quiets: &[Play], keys: &mut [
 
 #[cfg(not(all(target_arch = "x86_64", target_feature = "sse4.1")))]
 #[inline(always)]
-fn key_fours(_: &[i32], _: &KillerRanks, _: &[Play], _: &mut [i32]) -> usize {
+fn key_fours<const CONTINUED: bool>(
+    _: &[i32],
+    _: &[i16],
+    _: &Position,
+    _: &KillerRanks,
+    _: &[Play],
+    _: &mut [i32],
+) -> usize {
     0
 }
 
@@ -971,13 +1179,21 @@ impl KillerRanks {
     }
 
     /// What a quiet whose entry sits at `index` keys at: a killer's rank
-    /// when the index is one of theirs, else the entry itself.
+    /// when the index is one of theirs, else its two entries.
     #[inline(always)]
-    fn entry(&self, history: &[i32], index: usize) -> i32 {
+    fn entry<const CONTINUED: bool>(
+        &self,
+        history: &[i32],
+        block: &[i16],
+        board: &Position,
+        index: usize,
+    ) -> i32 {
         if index == self.index[0] as usize {
             QUIET_KILLER[0]
         } else if index == self.index[1] as usize {
             QUIET_KILLER[1]
+        } else if CONTINUED {
+            history[index] + continued_at(block, board, index)
         } else {
             history[index]
         }
@@ -1189,7 +1405,7 @@ fn sort_on_the_stack(
 
 #[cfg(test)]
 mod order {
-    use super::MoveOrdering;
+    use super::{CONTINUATION_MIN_DEPTH, MoveOrdering, NO_PREVIOUS};
     use crate::board::Board;
     use crate::misc::Color;
     use crate::play::Play;
@@ -1214,9 +1430,9 @@ mod order {
     fn ordered_by(fen: &str, table_move: Option<Play>, ordering: &mut MoveOrdering) -> Vec<Play> {
         let board = Board::from_fen(fen).unwrap();
         let mut moves = board.generate_moves();
-        let ordered = ordering.order(&board, &mut moves, table_move, Some(0));
+        let ordered = ordering.order(&board, &mut moves, table_move, Some(0), u8::MAX);
         let front = ordered.front;
-        ordering.order_quiets(&board, &mut moves[front..], ordered.losing, 0);
+        ordering.order_quiets(&board, &mut moves[front..], ordered.losing, 0, u8::MAX);
         moves.to_vec()
     }
 
@@ -1256,7 +1472,7 @@ mod order {
         let taught = named(&board.generate_moves(), "g1f1");
         // taught at another ply, so it sorts by history and not as a killer
         let mut ordering = MoveOrdering::new();
-        ordering.cutoff(Color::White, &taught, &[], 1, 4);
+        ordering.cutoff(&board, Color::White, &taught, &[], 1, 4);
 
         let moves = ordered_by(CAPTURES, None, &mut ordering);
         let losing = position_of(&moves, "h5h7");
@@ -1264,6 +1480,69 @@ mod order {
         for quiet in quiets(&moves) {
             assert!(losing > position_of(&moves, &quiet.to_string()));
         }
+    }
+
+    // a reply taught under one previous move ranks by both entries under
+    // that move, and by the butterfly entry alone under another move or
+    // after a pass. Read at a ply neither move was taught at, so neither is
+    // a killer there, and on both the sorted and the keyed path
+    #[test]
+    fn a_reply_is_ranked_by_the_move_it_replies_to() {
+        let board = Board::new();
+        let generated = board.generate_moves();
+        let (plain, reply) = (named(&generated, "a2a3"), named(&generated, "h2h3"));
+        let (asked, other) = (named(&generated, "g1f3"), named(&generated, "b1c3"));
+        let mut ordering = MoveOrdering::new();
+        // 25 in the butterfly table alone, since the root has no previous move
+        ordering.cutoff(&board, Color::White, &plain, &[], 0, 5);
+        // 16 in each table, under the knight's move to f3
+        ordering.played(&board, &asked, 0, u8::MAX);
+        ordering.cutoff(&board, Color::White, &reply, &[], 1, 4);
+        let mut first = |previous: Option<&Play>, depth: u8| {
+            match previous {
+                Some(previous) => ordering.played(&board, previous, 2, u8::MAX),
+                None => ordering.passed(2),
+            }
+            let mut sorted = generated.clone();
+            ordering.order_quiets(&board, &mut sorted[..], 0, 3, depth);
+            let mut keyed = generated.clone();
+            let run = ordering.key_quiets(&board, &mut keyed[..], 0, 3, depth);
+            ordering.sort_rest(&mut keyed[..run], 0, 3);
+            assert_eq!(&sorted[..], &keyed[..], "the two paths disagree");
+            sorted[0]
+        };
+        assert_eq!(first(Some(&asked), u8::MAX), reply);
+        assert_eq!(first(Some(&other), u8::MAX), plain);
+        assert_eq!(first(None, u8::MAX), plain);
+        // the table is read from its least depth and not under it
+        assert_eq!(first(Some(&asked), CONTINUATION_MIN_DEPTH), reply);
+        assert_eq!(first(Some(&asked), CONTINUATION_MIN_DEPTH - 1), plain);
+    }
+
+    // a node under the table's least depth teaches it nothing, and a node
+    // at that depth is not told the move that reached its children
+    #[test]
+    fn the_continuation_table_is_left_alone_under_its_least_depth() {
+        let board = Board::new();
+        let generated = board.generate_moves();
+        let (asked, reply) = (named(&generated, "g1f3"), named(&generated, "h2h3"));
+        let mut ordering = MoveOrdering::new();
+        ordering.played(&board, &asked, 0, u8::MAX);
+        ordering.cutoff(
+            &board,
+            Color::White,
+            &reply,
+            &[],
+            1,
+            CONTINUATION_MIN_DEPTH - 1,
+        );
+        assert!(ordering.continuation.iter().all(|&entry| entry == 0));
+        ordering.cutoff(&board, Color::White, &reply, &[], 1, CONTINUATION_MIN_DEPTH);
+        assert!(ordering.continuation.iter().any(|&entry| entry != 0));
+        ordering.played(&board, &asked, 0, CONTINUATION_MIN_DEPTH);
+        assert_eq!(ordering.line[0], NO_PREVIOUS);
+        ordering.played(&board, &asked, 0, CONTINUATION_MIN_DEPTH + 1);
+        assert_ne!(ordering.line[0], NO_PREVIOUS);
     }
 
     // a rook for a rook: an even swap ranks with the winning captures,
@@ -1274,7 +1553,7 @@ mod order {
         let board = Board::from_fen(ROOKS).unwrap();
         let killer = named(&board.generate_moves(), "h1g1");
         let mut ordering = MoveOrdering::new();
-        ordering.cutoff(Color::White, &killer, &[], 0, 4);
+        ordering.cutoff(&board, Color::White, &killer, &[], 0, 4);
 
         let moves = ordered_by(ROOKS, None, &mut ordering);
         assert!(position_of(&moves, "e1e8") < position_of(&moves, "h1g1"));
@@ -1296,7 +1575,7 @@ mod order {
         ] {
             let table_move = table_move.map(|name| named(&generated, name));
             let mut moves = generated.clone();
-            let ordered = MoveOrdering::new().order(&board, &mut moves, table_move, ply);
+            let ordered = MoveOrdering::new().order(&board, &mut moves, table_move, ply, u8::MAX);
             let front = ordered.front;
             assert_eq!(front, 2 + usize::from(table_move.is_some()));
             // the place the search skips, which it plays without
@@ -1325,7 +1604,7 @@ mod order {
             let table_move = table_move.map(|name| named(&moves, name));
             let spilled = moves.len() > crate::board::MOVE_LIST_INLINE;
             assert_eq!(spilled, fen == CROWDED, "{fen}");
-            let ordered = MoveOrdering::new().order(&board, &mut moves, table_move, None);
+            let ordered = MoveOrdering::new().order(&board, &mut moves, table_move, None, u8::MAX);
             let front = ordered.front;
             assert_eq!(ordered.table_at.map(|at| moves[at]), table_move, "{fen}");
             if spilled {
@@ -1358,7 +1637,7 @@ mod order {
         for killer in [false, true] {
             let mut ordering = MoveOrdering::new();
             if killer {
-                ordering.cutoff(Color::White, &push, &[], 0, 4);
+                ordering.cutoff(&board, Color::White, &push, &[], 0, 4);
             }
             let moves = ordered_by(CAPTURES, Some(push), &mut ordering);
             assert_eq!(moves[0], push, "killer {killer}");
@@ -1379,7 +1658,7 @@ mod order {
         let board = Board::from_fen(CAPTURES).unwrap();
         let killer = named(&board.generate_moves(), "e4e5");
         let mut ordering = MoveOrdering::new();
-        ordering.cutoff(Color::White, &killer, &[], 0, 4);
+        ordering.cutoff(&board, Color::White, &killer, &[], 0, 4);
 
         let moves = ordered_by(CAPTURES, None, &mut ordering);
         assert!(position_of(&moves, "e4e5") > position_of(&moves, "e4d5"));
@@ -1395,8 +1674,8 @@ mod order {
         let first = named(&generated, "e4e5");
         let second = named(&generated, "g1f1");
         let mut ordering = MoveOrdering::new();
-        ordering.cutoff(Color::White, &second, &[], 0, 4);
-        ordering.cutoff(Color::White, &first, &[], 0, 4);
+        ordering.cutoff(&board, Color::White, &second, &[], 0, 4);
+        ordering.cutoff(&board, Color::White, &first, &[], 0, 4);
 
         let moves = quiets(&ordered_by(CAPTURES, None, &mut ordering));
         assert_eq!(moves[0], first);
@@ -1412,8 +1691,8 @@ mod order {
         // taught at another ply, so this ply's killers are empty and what
         // is left to order the two by is the history alone
         let mut ordering = MoveOrdering::new();
-        ordering.cutoff(Color::White, &generated[0], &[], 1, 1);
-        ordering.cutoff(Color::White, &last, &[], 1, 4);
+        ordering.cutoff(&board, Color::White, &generated[0], &[], 1, 1);
+        ordering.cutoff(&board, Color::White, &last, &[], 1, 4);
 
         let moves = quiets(&ordered_by(CAPTURES, None, &mut ordering));
         assert_eq!(moves[0], last);
@@ -1435,7 +1714,7 @@ mod order {
         // taught at another ply, so nothing here stands in a killer slot
         // and the history alone orders the band
         let mut ordering = MoveOrdering::new();
-        ordering.cutoff(Color::White, &cut, &tried, 1, 4);
+        ordering.cutoff(&board, Color::White, &cut, &tried, 1, 4);
 
         let moves = ordered_by(CAPTURES, None, &mut ordering);
         let mut expected = vec![cut];
@@ -1448,7 +1727,7 @@ mod order {
     // the same band on the spilled list path, where one sort orders the
     // quiets and the losing captures together and a marked down quiet keys
     // positive like a losing capture. What keeps the two apart is the
-    // distance between `HISTORY_MAX` and the least losing capture's key
+    // distance between twice `HISTORY_MAX` and the least losing capture's key
     #[test]
     fn a_marked_down_quiet_stays_ahead_of_the_losing_captures_on_a_spilled_list() {
         let board = Board::from_fen(CROWDED).unwrap();
@@ -1463,7 +1742,7 @@ mod order {
         // taught at another ply, so this ply's killers are empty and the
         // history alone orders the quiet moves
         let mut ordering = MoveOrdering::new();
-        ordering.cutoff(Color::White, &cut, &[marked], 1, 4);
+        ordering.cutoff(&board, Color::White, &cut, &[marked], 1, 4);
         assert!(ordering.history_score(Color::White, &marked) < 0);
 
         let moves = ordered_by(CROWDED, None, &mut ordering);
@@ -1486,9 +1765,11 @@ mod order {
 
 #[cfg(test)]
 mod memory {
+    use super::QUIET_HISTORY_MAX;
     use super::SEE_UNIT;
     use super::{ATTACKER_SCORES, HISTORY_MAX, KILLER_BONUS, MoveOrdering, PLACE_BITS};
     use super::{TABLE_MOVE_BONUS, VICTIM_SCORES, WINNING_CAPTURE_BASE, gravitate};
+    use crate::board::Board;
     use crate::board::SEE_VALUES;
     use crate::engine::MAX_PLY;
     use crate::misc::{Color, Piece};
@@ -1534,14 +1815,14 @@ mod memory {
         // order above the history
         assert!(WINNING_CAPTURE_BASE + smallest > KILLER_BONUS[0]);
         assert!(KILLER_BONUS[0] > KILLER_BONUS[1]);
-        assert!(KILLER_BONUS[1] > i64::from(HISTORY_MAX));
+        assert!(KILLER_BONUS[1] > i64::from(QUIET_HISTORY_MAX));
 
         // the other side of the history's band: a losing capture loses a
         // pawn at least, so the best it can key is that swap with the
-        // largest tiebreak on top, and the worst a quiet can key is the
-        // whole bound. The quiet has to stay ahead on the spilled list path
+        // largest tiebreak on top, and the worst a quiet can key is both
+        // tables' bound. The quiet has to stay ahead on the spilled list path
         let least_losing = -i64::from(SEE_VALUES[Piece::Pawn as usize]) * SEE_UNIT + biggest;
-        assert!(-i64::from(HISTORY_MAX) > least_losing);
+        assert!(-i64::from(QUIET_HISTORY_MAX) > least_losing);
 
         // the widest key there could be has to survive the place shift; the
         // place half of `pack` has a compile time assert of its own
@@ -1566,7 +1847,7 @@ mod memory {
             (second, [Some(second), Some(first)]),
             (first, [Some(first), Some(second)]),
         ] {
-            ordering.cutoff(Color::White, &m, &[], 3, 4);
+            ordering.cutoff(&Board::new(), Color::White, &m, &[], 3, 4);
             assert_eq!(ordering.killers[3], killers, "after {m}");
         }
         // and the ply is what indexes them
@@ -1578,7 +1859,7 @@ mod memory {
         let mut ordering = MoveOrdering::new();
         let take = Play::new(8, 16, Some(Piece::Pawn), None, false, false);
         let tried = quiet(9, 17);
-        ordering.cutoff(Color::White, &take, &[tried], 0, 4);
+        ordering.cutoff(&Board::new(), Color::White, &take, &[tried], 0, 4);
         assert_eq!(ordering.killers[0], [None, None]);
         assert_eq!(ordering.history[Color::White as usize][8][16], 0);
         // the moves tried before it are not marked down either
@@ -1591,7 +1872,7 @@ mod memory {
         let m = quiet(8, 16);
         let tried = quiet(9, 17);
         let take = Play::new(10, 18, Some(Piece::Pawn), None, false, false);
-        ordering.cutoff(Color::White, &m, &[tried, take], 0, 5);
+        ordering.cutoff(&Board::new(), Color::White, &m, &[tried, take], 0, 5);
         let history = &ordering.history[Color::White as usize];
         // gravity gives back a share of the entry, which is nothing at
         // zero, so a first update is the step itself
@@ -1623,7 +1904,7 @@ mod memory {
         let hot = quiet(8, 16);
         let cold = quiet(9, 17);
         for _ in 0..10_000 {
-            ordering.cutoff(Color::White, &hot, &[cold], 0, DEPTH);
+            ordering.cutoff(&Board::new(), Color::White, &hot, &[cold], 0, DEPTH);
         }
         let history = &ordering.history[Color::White as usize];
         assert!(history[8][16] > HISTORY_MAX / 2 && history[8][16] <= HISTORY_MAX);
@@ -1638,7 +1919,7 @@ mod memory {
         let m = quiet(8, 16);
         assert!(i32::from(MAX_PLY) * i32::from(MAX_PLY) > HISTORY_MAX);
         for _ in 0..2 {
-            ordering.cutoff(Color::White, &m, &[], 0, MAX_PLY);
+            ordering.cutoff(&Board::new(), Color::White, &m, &[], 0, MAX_PLY);
             assert_eq!(ordering.history[Color::White as usize][8][16], HISTORY_MAX);
         }
     }
@@ -1648,7 +1929,7 @@ mod memory {
         let mut ordering = MoveOrdering::new();
         let m = quiet(8, 16);
         let tried = quiet(9, 17);
-        ordering.cutoff(Color::White, &m, &[tried], 2, 4);
+        ordering.cutoff(&Board::new(), Color::White, &m, &[tried], 2, 4);
         assert!(ordering.history[Color::White as usize][9][17] < 0);
         ordering.forget();
         assert_eq!(ordering.killers[2], [None, None]);
