@@ -92,8 +92,11 @@ factorization machine term over every pair of pieces.
   what each wins with most valuable victim / least valuable attacker
   breaking the ties, then the quiet moves by two memories the search fills
   as it goes: the killers, which are the quiet moves that cut off at this
-  distance from the root, and a history table of how often each quiet move
-  has cut off anywhere against how often it was tried and did not. A move
+  distance from the root, and a history of how often each quiet move has
+  cut off against how often it was tried and did not. The history is two
+  tables summed: one keyed by the move's squares, and from two plies of
+  depth a continuation table keyed by the move's piece and to square under
+  the move that reached the node. A move
   the table has marked down sorts behind the quiet moves nothing is known
   about. The losing captures close the list. The quiet moves are put in
   order only as far as the move loop reads them. Alpha beta prunes more the
