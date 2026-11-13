@@ -2178,7 +2178,7 @@ impl AlphaBeta {
                 }
             }
         }
-        // no memories here: they say nothing about captures or evasions
+        // no memories here: the main search alone reads them
         let Ordered { front, .. } =
             self.ordering
                 .order_split(&self.board, &mut moves, captures, pv_play, None, 0);
