@@ -729,3 +729,11 @@ of these again without saying what is different this time.
   over 8,000 games at 10+0.1 against d82638a (sprt [0, 5] unresolved at LLR -0.93, the
   cap raised from 4,000, where it read +2 ±7), at level speed. The bench moved only in
   its endgames.
+- Capture history: a table by side, mover, destination and victim that orders captures
+  within the swap's band. It was taught at the cutoffs the butterfly table is taught at.
+  The capture that cut gained depth squared, and every capture tried before it lost as
+  much. Its entry, times 16, was added to the swap's key, so it could reorder captures in
+  a band but never move one out of it. The main search read it below the root, and
+  quiescence did not read it. +1 ±6 over 6,000 games at 10+0.1 against b0600cb (sprt
+  [0, 5] unresolved at the cap, LLR -0.86), at 0.975 to 0.995 times master's nodes a
+  second. The bench rose 7.1% and the tactical count went from 231 to 232.
